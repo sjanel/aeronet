@@ -730,6 +730,10 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   EXPECT_THROW(state.makeContext(Encoding::none), std::invalid_argument);
   EXPECT_THROW(state.makeContext(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))),
                std::invalid_argument);
+
+  EXPECT_THROW(state.context(Encoding::none), std::invalid_argument);
+  EXPECT_THROW(state.context(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))),
+               std::invalid_argument);
 }
 
 #ifdef AERONET_ENABLE_ZLIB

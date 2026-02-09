@@ -447,6 +447,77 @@ Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
   [aeronet/objects/test/zlib-encoder-decoder_test.cpp](aeronet/objects/test/zlib-encoder-decoder_test.cpp),
   [aeronet/objects/test/zstd-encoder-decoder_test.cpp](aeronet/objects/test/zstd-encoder-decoder_test.cpp).
 
+#### Direct Compression (Inline Body Streaming Compression)
+
+Responses created via `HttpRequest::makeResponse()` gain a second, earlier compression layer called **direct
+compression**: the body is compressed inline as `body()` / `bodyAppend()` calls are made, *before* finalization.
+This eliminates the need for a separate compression pass at finalization time (TryCompressResponse) for eligible
+inline bodies, reducing latency and memory copies.
+
+**Two-layer compression model:**
+
+| Layer | When | Scope |
+|-------|------|-------|
+| Direct compression | At `body()` / `bodyAppend()` call time | Inline (non-captured) bodies only |
+| Finalization compression | At response finalization (TryCompressResponse) | Captured and inline bodies not already compressed |
+
+Direct compression only activates when **all** conditions are met:
+
+1. Response was created via `HttpRequest::makeResponse()` (provides `Accept-Encoding` negotiation context)
+2. `DirectCompressionMode` is not `Off`
+3. No user-supplied `Content-Encoding` header is present
+4. Body is set as inline data (not captured by value, not a file)
+5. In `Auto` mode: body size ≥ `CompressionConfig::minBytes` and content-type matches `contentTypeAllowList`
+6. In `On` mode: conditions 4–5 are bypassed
+
+**`DirectCompressionMode` enum:**
+
+| Mode | Description |
+|------|-------------|
+| `Auto` | Compress if `Accept-Encoding` present, size ≥ `minBytes`, content-type matches allow‑list |
+| `Off` | Never initiate direct compression; finalization layer handles compression |
+| `On` | Like `Auto` but bypasses `minBytes` and content-type checks (still requires `Accept-Encoding`) |
+
+**Configuration:**
+
+```cpp
+// Set the default direct compression mode for all responses
+CompressionConfig cfg;
+cfg.defaultDirectCompressionMode = DirectCompressionMode::Auto; // default
+
+Router router;
+router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequest& req) {
+  auto resp = req.makeResponse();
+  // Override per-response
+  resp.directCompressionMode(DirectCompressionMode::On);  // force direct compression
+  resp.body("my response body that may be compressed inline...");
+  return resp;
+});
+
+```
+
+**Key behaviors:**
+
+- When direct compression is active, `Content-Encoding` and `Vary: Accept-Encoding` headers are
+  automatically managed (added, updated, or removed as body changes).
+- Resetting the body (calling `body()` again) re-initiates direct compression with a new encoder context.
+- Removing the body removes the associated compression headers.
+- HEAD responses do not activate direct compression (to avoid extra CPU work). As a result, HEAD
+  headers reflect the uncompressed body size and no `Content-Encoding` is added. A future
+  configuration option may allow matching GET headers if needed.
+- Appending via `bodyAppend()` feeds additional chunks to the active encoder.
+- If direct compression is active, the finalization layer (`TryCompressResponse`) sees the existing
+  `Content-Encoding` header and skips, preventing double compression.
+- The `bodyInlineAppend()` template works with direct compression: it writes through the active encoder
+  via `appendEncodedInlineOrThrow()`.
+
+**Important API note:** `body(std::string, ...)` captures the body by value and does **not** trigger
+direct compression (captured bodies are compressed at finalization). Use `body(std::string_view, ...)`
+for inline storage with direct compression eligibility.
+
+Tests: [aeronet/http/test/http-response_test.cpp](aeronet/http/test/http-response_test.cpp) (unit),
+[tests/http-compression_test.cpp](tests/http-compression_test.cpp) (e2e — `DirectCompression_*` tests).
+
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 
 When you stream or build a response using `HttpResponseWriter`, aeronet will decide whether to apply

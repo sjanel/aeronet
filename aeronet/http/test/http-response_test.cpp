@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -19,11 +20,17 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -41,6 +48,25 @@
 
 namespace aeronet {
 
+namespace {
+
+auto SupportedEncodings() {
+  FixedCapacityVector<Encoding, kNbContentEncodings> encs;
+#ifdef AERONET_ENABLE_ZLIB
+  encs.push_back(Encoding::gzip);
+  encs.push_back(Encoding::deflate);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  encs.push_back(Encoding::br);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  encs.push_back(Encoding::zstd);
+#endif
+  return encs;
+}
+
+}  // namespace
+
 class HttpResponseTest : public ::testing::Test {
  protected:
   static constexpr SysTimePoint kTp{};
@@ -50,27 +76,55 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr std::size_t kMinCapturedBodySize = 4096;
   static const RawChars kExpectedDateRaw;
 
-  static HttpResponse MakePrepared(bool isPrepared, bool head, const ConcatenatedHeaders& globalHeaders = {}) {
+  CompressionConfig cfg;
+  internal::ResponseCompressionState compressionState{cfg};
+
+  struct PreparedOptions {
+    bool head = false;
+    bool addVaryAcceptEncoding = false;
+    bool addTrailerHeader = false;
+    bool close = false;
+    Encoding expectedEncoding = Encoding::none;
+    // if we remove {}, we get a compiler warning about missing initializer...
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    ConcatenatedHeaders gh{};
+  };
+
+  HttpResponse makePrepared(const PreparedOptions& opts) {
     HttpResponse resp;
-    if (isPrepared) {
-      resp._opts.setPrepared();
-      for (std::string_view headerNameAndValue : globalHeaders) {
-        const auto sepPos = headerNameAndValue.find(http::HeaderSep);
-        if (sepPos == std::string_view::npos) {
-          throw std::invalid_argument("Invalid header in global headers");
-        }
-        resp.headerAddLine(headerNameAndValue.substr(0, sepPos),
-                           headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
+#ifdef AERONET_HAS_ANY_CODEC
+    resp._opts = HttpResponse::Options(compressionState, opts.expectedEncoding);
+#endif
+    resp._opts.setPrepared();
+    for (std::string_view headerNameAndValue : opts.gh) {
+      const auto sepPos = headerNameAndValue.find(http::HeaderSep);
+      if (sepPos == std::string_view::npos) {
+        throw std::invalid_argument("Invalid header in global headers");
       }
-      resp._opts.headMethod(head);
+      resp.headerAddLine(headerNameAndValue.substr(0, sepPos),
+                         headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
     }
+    resp._opts.headMethod(opts.head);
+    resp._opts.addVaryAcceptEncoding(opts.addVaryAcceptEncoding);
+    resp._opts.addTrailerHeader(opts.addTrailerHeader);
+    resp._opts.close(opts.close);
     return resp;
   }
 
-  static void AddTrailerHeader(HttpResponse& resp, bool addTrailerHeader) {
-    if (resp._opts.isPrepared()) {
-      resp._opts.addTrailerHeader(addTrailerHeader);
+  static void FinalizeCompressedBody([[maybe_unused]] HttpResponse& resp) {
+#ifdef AERONET_HAS_ANY_CODEC
+    if (IsAutomaticDirectCompression(resp)) {
+      resp.finalizeInlineBody();
     }
+#endif
+  }
+
+  static bool IsAutomaticDirectCompression([[maybe_unused]] const HttpResponse& resp) {
+#ifdef AERONET_HAS_ANY_CODEC
+    return resp._opts.isAutomaticDirectCompression();
+#else
+    return false;
+#endif
   }
 
   static HttpResponseData finalizePrepared(HttpResponse&& resp, bool head = kIsHeadMethod,
@@ -120,7 +174,7 @@ class HttpResponseTest : public ::testing::Test {
   }
 
 #ifdef AERONET_ENABLE_HTTP2
-  static void MakeAllHeaderNamesLowerCase(HttpResponse& resp) { resp.finalizeForHttp2(); }
+  static void FinalizeForHttp2(HttpResponse& resp) { resp.finalizeForHttp2(); }
 #endif
 };
 
@@ -606,6 +660,19 @@ TEST_F(HttpResponseTest, ContentTypeAndContentLengthShouldBeAddedWhenSettingBody
   resp.headerAddLine("Content-lengty", "10");
 }
 
+TEST_F(HttpResponseTest, ContentEncodingCanBeModifiedOnlyBeforeTheBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("Content-Encoding", "identity");
+  EXPECT_TRUE(resp.hasHeader(http::ContentEncoding));
+  resp.headerRemoveLine(http::ContentEncoding);  // should be possible, no body set
+  EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+  resp.headerAddLine("Content-Encoding", "identity");
+  resp.body("Hello");
+  EXPECT_THROW(resp.header("Content-Encoding", "deflate"), std::logic_error);
+  EXPECT_THROW(resp.headerRemoveLine(http::ContentEncoding), std::logic_error);
+  EXPECT_EQ(resp.headerValueOrEmpty("Content-Encoding"), "identity");
+}
+
 TEST_F(HttpResponseTest, AllowsDuplicates) {
   HttpResponse resp;
   resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
@@ -782,14 +849,14 @@ TEST_F(HttpResponseTest, HeaderRemoveLineMultipleTimes) {
 
 TEST_F(HttpResponseTest, HeaderRemoveLineWithBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("content-encoding", "value");
+  resp.headerAddLine("X-Header", "value");
   resp.body("Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 
-  EXPECT_TRUE(resp.hasHeader("content-encoding"));
-  resp.headerRemoveLine("content-encoding");
+  EXPECT_TRUE(resp.hasHeader("X-Header"));
+  resp.headerRemoveLine("X-Header");
 
-  EXPECT_FALSE(resp.hasHeader("content-encoding"));
+  EXPECT_FALSE(resp.hasHeader("X-Header"));
   EXPECT_EQ(resp.bodyInMemory(), "Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 }
@@ -1801,7 +1868,7 @@ TEST_F(HttpResponseTest, BodyFromVectorBytes) {
   resp.body(std::move(bodyBytes));
   EXPECT_EQ(resp.bodyInMemory(), "Bytes");
 
-  resp = MakePrepared(true, true);
+  resp = makePrepared(PreparedOptions{.head = true});
   resp.body(std::vector<std::byte>{std::byte{'B'}, std::byte{'y'}, std::byte{'t'}, std::byte{'e'}, std::byte{'s'}});
   EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_EQ(resp.bodyInMemoryLength(), 5UL);
@@ -1866,7 +1933,7 @@ TEST_F(HttpResponseTest, BodyStaticSv) {
   EXPECT_FALSE(resp.hasHeader(http::ContentLength));
 
   // Even for HEAD method, static body should not be visible
-  resp = MakePrepared(true, true).bodyStatic("Head method static body", "text/head");
+  resp = makePrepared(PreparedOptions{.head = true}).bodyStatic("Head method static body", "text/head");
   EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_EQ(resp.headerValue(http::ContentType), "text/head");
 
@@ -2093,7 +2160,7 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
   for (bool head : {false, true}) {
-    auto resp = MakePrepared(head, head);
+    auto resp = makePrepared(PreparedOptions{.head = head});
     resp.reason("Longer Reason");
     static constexpr const char text[] = "UniquePtrBody";
     auto bodyPtr = std::make_unique<std::byte[]>(sizeof(text) - 1);
@@ -2139,7 +2206,7 @@ TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentType
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyShouldResetBodyAndRemoveContentTypeUniquePtrBytes) {
   for (bool head : {false, true}) {
-    auto resp = MakePrepared(head, head);
+    auto resp = makePrepared(PreparedOptions{.head = head});
     resp.reason("OK");
     resp.body("Non-empty body");
     if (head) {
@@ -2375,6 +2442,928 @@ TEST_F(HttpResponseTest, SetInlineBodyFromWriterShouldThrowAfterTrailers) {
   resp.trailerAddLine("X-Trailer", "value");
   EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneA), std::logic_error);
   EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneABytes), std::logic_error);
+}
+
+// ============================
+// Direct Compression Tests
+// ============================
+
+// Test that body remains uncompressed when no compression state is set
+TEST_F(HttpResponseTest, Body_NoCompressionState_NoCompression) {
+  HttpResponse resp;
+  const std::string body = "Hello, World!";
+  const std::string_view bodyView(body);
+
+  EXPECT_EQ(resp.directCompressionMode(), DirectCompressionMode::Off);
+  resp.body(bodyView, http::ContentTypeTextPlain);
+  EXPECT_EQ(resp.bodyInMemoryLength(), bodyView.size());
+  EXPECT_EQ(resp.bodyInMemory(), bodyView);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+}
+
+// Test that body remains uncompressed when no encoding was negotiated
+TEST_F(HttpResponseTest, Body_NoEncodingNegotiated_NoCompression) {
+  // Set up compression state but with no acceptable encoding (Encoding::none)
+  HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = Encoding::none});
+
+  const std::string body = "Hello, World!";
+  const std::string_view bodyView(body);
+
+  // Even with compression state, if no encoding was negotiated, body should remain uncompressed
+  resp.directCompressionMode(DirectCompressionMode::On);
+
+  EXPECT_EQ(resp.directCompressionMode(), DirectCompressionMode::On);
+  resp.body(bodyView, http::ContentTypeTextPlain);
+  EXPECT_EQ(resp.bodyInMemoryLength(), bodyView.size());
+  EXPECT_EQ(resp.bodyInMemory(), bodyView);
+  EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+}
+
+// Test successful compression with compressed body
+TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
+  static constexpr std::string_view kVaryContents[] = {"", http::AcceptEncoding, "User-Agent",
+                                                       "Accept-Encoding, User-Agent", "*"};
+
+  const std::string body(1024, 'A');  // Compressible content
+  for (std::string_view varyContent : kVaryContents) {
+    for (bool addVary : {false, true}) {
+      for (Encoding enc : SupportedEncodings()) {
+        HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc})
+                                .directCompressionMode(DirectCompressionMode::Auto);
+
+        if (!varyContent.empty()) {
+          resp.headerAddLine(http::Vary, varyContent);
+        }
+
+        const std::string_view bodyView(body);
+
+        EXPECT_EQ(resp.directCompressionMode(), DirectCompressionMode::Auto);
+        resp.body(bodyView, http::ContentTypeTextPlain);
+        FinalizeCompressedBody(resp);
+
+        // Body should be compressed (smaller than original)
+        EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+        EXPECT_NE(resp.bodyInMemory(), body);
+        // Content-Encoding should be set
+        EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+        // Content-Type should be set
+        EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+        // Vary should not be set by default
+        if (addVary) {
+          if (varyContent.empty()) {
+            EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+          } else if (varyContent == "*") {
+            EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), "*");
+          } else {
+            int count = 0;
+            for (http::HeaderValueReverseTokensIterator<','> it(resp.headerValueOrEmpty(http::Vary)); it.hasNext();) {
+              if (CaseInsensitiveEqual(it.next(), http::AcceptEncoding)) {
+                ++count;
+              }
+            }
+            EXPECT_EQ(count, 1);
+          }
+        } else {
+          EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), varyContent);
+        }
+      }
+    }
+  }
+}
+
+// Test compressed body with bytes span
+TEST_F(HttpResponseTest, Body_BytesSpan_CompressesBody) {
+  const std::vector<std::byte> body(1024, std::byte{'B'});
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::span<const std::byte>(body));
+    FinalizeCompressedBody(resp);
+
+    // Body should be compressed
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    const std::string_view bodyView(reinterpret_cast<const char*>(body.data()), body.size());
+    EXPECT_NE(resp.bodyInMemory(), bodyView);
+  }
+}
+
+TEST_F(HttpResponseTest, Body_CString_CompressesBody) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    std::string body(1024, 'a');
+
+    resp.body(body.c_str());
+    FinalizeCompressedBody(resp);
+
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+TEST_F(HttpResponseTest, BodyAppend_Accepted_CompressesBody) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    const std::string body(1024, 'C');
+
+    resp.bodyAppend(body, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
+    EXPECT_NE(resp.bodyInMemory(), body);
+  }
+}
+
+// Test Vary: Accept-Encoding for bodyAppend when enabled
+TEST_F(HttpResponseTest, BodyAppend_Accepted_VaryEnabled_AddsHeader) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
+
+    const std::string body(1024, 'C');
+
+    resp.bodyAppend(body, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+  }
+}
+
+// Test bodyAppend stays uncompressed when no compression state
+TEST_F(HttpResponseTest, BodyAppend_NoCompressionState_NoCompression) {
+  HttpResponse resp;
+  const std::string body = "Hello!";
+
+  resp.bodyAppend(body, http::ContentTypeTextPlain);
+  FinalizeCompressedBody(resp);
+
+  EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
+  EXPECT_EQ(resp.bodyInMemory(), body);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+}
+
+// Test bodyAppend without encoding continues compression stream
+TEST_F(HttpResponseTest, BodyAppend_ContinuesStreamingCompression) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    std::string data(16384, 'A');
+
+    resp.bodyAppend(data, http::ContentTypeTextPlain);
+    const auto beforeLen = resp.bodyInMemoryLength();
+    EXPECT_NE(resp.bodyInMemory(), data);
+
+    std::memset(data.data(), 'B', data.size());
+
+    resp.bodyAppend(data);
+
+    FinalizeCompressedBody(resp);
+
+    const auto afterLen = resp.bodyInMemoryLength();
+
+    EXPECT_LT(afterLen - beforeLen, data.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// ============================
+// Direct Compression - Corner Cases
+// ============================
+
+// Test that setting body() below minBytes threshold does NOT trigger direct compression (Auto mode)
+TEST_F(HttpResponseTest, Body_BelowMinBytes_NoDirectCompression) {
+  cfg.minBytes = 2048;
+  const std::string body(1024, 'A');  // Below 2048 threshold
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(body, http::ContentTypeTextPlain);
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
+// Test that DirectCompressionMode::On bypasses minBytes threshold
+TEST_F(HttpResponseTest, Body_OnMode_BypassesMinBytes) {
+  cfg.minBytes = 2048;
+  const std::string body(256, 'B');  // Well below 2048 threshold
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+
+    resp.body(body, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test DirectCompressionMode::Off disables even with large body
+TEST_F(HttpResponseTest, Body_OffMode_NoCompression) {
+  const std::string body(4096, 'C');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::Off);
+
+    resp.body(body, http::ContentTypeTextPlain);
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
+// Test: reset body multiple times, each time re-initiating streaming compression
+TEST_F(HttpResponseTest, Body_ResetMultipleTimes_ReinitiatesCompression) {
+  const std::string body1(2048, 'X');
+  const std::string body2(4096, 'Y');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    // First body set
+    resp.body(std::string_view{body1}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    // Reset with a different body
+    resp.body(std::string_view{body2}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    FinalizeCompressedBody(resp);
+
+    // Verify we can decompress and get body2 (not body1)
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body2);
+  }
+}
+
+// Test: set body, then reset to empty body, verify Content-Encoding removed
+TEST_F(HttpResponseTest, Body_SetThenClear_RemovesEncodingHeaders) {
+  const std::string body(2048, 'A');
+  for (bool addVary : {false, true}) {
+    for (Encoding enc : SupportedEncodings()) {
+      HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
+
+      resp.body(body, http::ContentTypeTextPlain);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+      if (addVary) {
+        EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+      } else {
+        EXPECT_FALSE(resp.hasHeader(http::Vary));
+      }
+
+      // Clear the body
+      resp.body("", http::ContentTypeTextPlain);
+      EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+      EXPECT_FALSE(resp.hasBody());
+      EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+      EXPECT_FALSE(resp.hasHeader(http::Vary));
+    }
+  }
+}
+
+// Test: set body with compression, then reset to small body (below minBytes), verify headers removed
+TEST_F(HttpResponseTest, Body_CompressedThenSmall_RemovesEncodingHeaders) {
+  const std::string largeBody(2048, 'L');
+  const std::string smallBody = "tiny";
+  for (bool addVary : {false, true}) {
+    for (Encoding enc : SupportedEncodings()) {
+      HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
+
+      resp.body(std::string_view{largeBody}, http::ContentTypeTextPlain);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+      if (addVary) {
+        EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+      } else {
+        EXPECT_FALSE(resp.hasHeader(http::Vary));
+      }
+
+      // Reset with a small body below threshold
+      resp.body(smallBody, http::ContentTypeTextPlain);
+      EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.bodyInMemory(), smallBody);
+      EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+      EXPECT_FALSE(resp.hasHeader(http::Vary));
+    }
+  }
+}
+
+// Test: bodyAppend after body() continues streaming compression
+TEST_F(HttpResponseTest, BodyAppend_AfterBody_ContinuesStreaming) {
+  const std::string body1(2048, 'A');
+  const std::string body2(1024, 'B');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string_view{body1}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    resp.bodyAppend(body2);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_LT(resp.bodyInMemoryLength(), body1.size() + body2.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    // Verify decompressed content is body1 + body2
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    std::string expected = body1 + body2;
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+  }
+}
+
+// Test: multiple bodyAppend calls build up streaming compression
+TEST_F(HttpResponseTest, BodyAppend_MultipleChunks_StreamingCompression) {
+  std::string aaa(1024, 'A');
+  std::string bbb(1024, 'B');
+  std::string ccc(1024, 'C');
+  std::string ddd(1024, 'D');
+  std::string expected = aaa + bbb + ccc + ddd;  // Expect all chunks concatenated in decompressed output
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.bodyAppend(aaa, http::ContentTypeTextPlain);
+    resp.bodyAppend(bbb);
+    resp.bodyAppend(ccc);
+    resp.bodyAppend(ddd);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), 4096U);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+  }
+}
+
+// Test: body() after bodyAppend() resets and re-initiates compression
+TEST_F(HttpResponseTest, Body_AfterBodyAppend_ResetsCompression) {
+  const std::string newBody(3000, 'Z');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.bodyAppend(std::string(2048, 'X'), http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    // Now reset with body()
+    resp.body(std::string_view{newBody}, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), newBody);
+  }
+}
+
+// Test: bodyInlineAppend during active streaming compression fallback path
+TEST_F(HttpResponseTest, BodyInlineAppend_DuringStreamingCompression) {
+  const std::string initialBody(2048, 'A');
+  const std::string appendData(512, 'A');
+  const std::string expected = initialBody + appendData;
+
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    // Use bodyInlineAppend — this triggers the decompress-and-append path
+    for (std::size_t i = 0; i < 2UL * appendData.size(); ++i) {
+      resp.bodyInlineAppend(1U, kAppendZeroOrOneA);
+    }
+    FinalizeCompressedBody(resp);
+
+    // The body should still be compressed
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    EXPECT_LT(resp.bodyInMemoryLength(), initialBody.size() + appendData.size());
+
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+  }
+}
+
+// Test: bodyInlineAppend with bytes writer during streaming compression
+TEST_F(HttpResponseTest, BodyInlineAppend_BytesWriter_DuringStreamingCompression) {
+  const std::string initialBody(1500, 'M');
+  const std::vector<std::byte> appendBytes(256, std::byte{'N'});
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    for (std::size_t i = 0; i < 2UL * appendBytes.size(); ++i) {
+      resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes);
+    }
+
+    FinalizeCompressedBody(resp);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(decompressed.size(), initialBody.size() + appendBytes.size());
+  }
+}
+
+// Test: bodyInlineAppend writes zero bytes during streaming compression
+TEST_F(HttpResponseTest, BodyInlineAppend_ZeroWritten_DuringStreamingCompression) {
+  const std::string initialBody(2048, 'Q');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    resp.bodyInlineAppend(1U, kAppendZeroOrOneA);
+    char dummy{};
+    kAppendZeroOrOneA(&dummy);  // dummy call to reset counter
+    FinalizeCompressedBody(resp);
+
+    // Body should still be compressed with original data only
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), initialBody);
+  }
+}
+
+// Test: User-provided Content-Encoding header prevents direct compression
+TEST_F(HttpResponseTest, Body_UserContentEncoding_PreventsDirectCompression) {
+  const std::string body(4096, 'D');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.headerAddLine(http::ContentEncoding, "identity");
+    resp.body(body, http::ContentTypeTextPlain);
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "identity");
+  }
+}
+
+// Test: encoding headers are not duplicated on body reset
+TEST_F(HttpResponseTest, Body_ResetDoesNotDuplicateContentEncoding) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
+
+    // Set body 3 times
+    for (int ii = 0; ii < 3; ++ii) {
+      const std::string body(2048, static_cast<char>('A' + ii));
+      resp.body(body, http::ContentTypeTextPlain);
+    }
+    FinalizeCompressedBody(resp);
+
+    // Count occurrences of Content-Encoding in headers
+    auto flatHeaders = resp.headersFlatView();
+    int ceCount = 0;
+    int varyCount = 0;
+    std::string_view needle = http::ContentEncoding;
+    auto pos = flatHeaders.find(needle);
+    while (pos != std::string_view::npos) {
+      ++ceCount;
+      pos = flatHeaders.find(needle, pos + 1);
+    }
+    needle = http::Vary;
+    pos = flatHeaders.find(needle);
+    while (pos != std::string_view::npos) {
+      ++varyCount;
+      pos = flatHeaders.find(needle, pos + 1);
+    }
+    EXPECT_EQ(ceCount, 1) << "Content-Encoding should appear exactly once";
+    EXPECT_EQ(varyCount, 1) << "Vary should appear exactly once";
+  }
+}
+
+// Test: bodyInlineSet clears direct compression state
+TEST_F(HttpResponseTest, BodyInlineSet_AfterDirectCompression_ClearsState) {
+  const std::string body(2048, 'A');
+  const std::string newBody = "A";
+  for (bool bodyInlineSetBytes : {false, true}) {
+    for (Encoding enc : SupportedEncodings()) {
+      HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+      resp.body(body, http::ContentTypeTextPlain);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+      // bodyInlineSet replaces the body — it calls removeBodyAndItsHeaders()
+      if (bodyInlineSetBytes) {
+        resp.bodyInlineSet(1U, kAppendZeroOrOneABytes);
+        resp.bodyInlineSet(1U, kAppendZeroOrOneABytes);
+      } else {
+        resp.bodyInlineSet(1U, kAppendZeroOrOneA);
+        resp.bodyInlineSet(1U, kAppendZeroOrOneA);
+      }
+
+      // Direct compression state should be cleared
+      EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.bodyInMemory(), newBody);
+      EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+    }
+  }
+}
+
+// Test: captured body (moved string) does NOT use direct compression
+TEST_F(HttpResponseTest, Body_CapturedString_NoDirectCompression) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string(4096, 'C'));
+
+    // Captured bodies should not trigger direct compression (compressed at finalization instead)
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
+// Test: file body does NOT use direct compression
+TEST_F(HttpResponseTest, File_NoDirectCompression) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string(2048, 'F'));
+
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    File fl(tmp.filePath().string());
+    ASSERT_TRUE(fl);
+
+    resp.file(std::move(fl));
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
+// Test: Vary header correctly managed alongside existing Vary header
+TEST_F(HttpResponseTest, Body_ExistingVaryHeader_Appends) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
+
+    resp.headerAddLine(http::Vary, "Origin");
+    const std::string body(2048, 'V');
+    resp.body(body, http::ContentTypeTextPlain);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    auto varyValue = resp.headerValueOrEmpty(http::Vary);
+    // Vary should contain both Origin and Accept-Encoding
+    EXPECT_TRUE(varyValue.contains("Origin"));
+    EXPECT_TRUE(varyValue.contains(http::AcceptEncoding));
+  }
+}
+
+// Test: Content-Type allowlist filtering works in Auto mode
+TEST_F(HttpResponseTest, Body_ContentTypeNotInAllowList_NoCompression) {
+  cfg.contentTypeAllowList.append("text/html");
+  cfg.contentTypeAllowList.append("application/json");
+
+  const std::string body(2048, 'I');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    // image/png is not in the allowlist
+    resp.body(body, "image/png");
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
+// Test: Content-Type in allowlist allows compression
+TEST_F(HttpResponseTest, Body_ContentTypeInAllowList_CompressesBody) {
+  cfg.contentTypeAllowList.append("text/html");
+  cfg.contentTypeAllowList.append("application/json");
+
+  const std::string body(2048, '{');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(body, "application/json");
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test: On mode bypasses content type allow list check
+TEST_F(HttpResponseTest, Body_OnMode_BypassesContentTypeAllowList) {
+  cfg.contentTypeAllowList.append("text/html");
+
+  const std::string body(2048, 'P');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+
+    resp.body(body, "image/png");  // Not in allowlist
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test: head method does not trigger compression (no body sent)
+TEST_F(HttpResponseTest, Body_HeadMethod_NoDirectCompression) {
+  const std::string body(2048, 'H');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.head = true, .expectedEncoding = enc});
+
+    resp.body(body, http::ContentTypeTextPlain);
+
+    // HEAD method should not store body
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+  }
+}
+
+// Test: large body with multiple bodyAppend cycles verifying round-trip
+TEST_F(HttpResponseTest, BodyAppend_LargeDataRoundTrip) {
+  cfg.minBytes = 256;
+
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    std::string expected;
+    constexpr int kChunks = 20;
+    for (int ii = 0; ii < kChunks; ++ii) {
+      std::string chunk(512, static_cast<char>('a' + (ii % 26)));
+      if (ii == 0) {
+        resp.bodyAppend(chunk, http::ContentTypeTextPlain);
+      } else {
+        resp.bodyAppend(chunk);
+      }
+      expected += chunk;
+    }
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), expected.size());
+
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+  }
+}
+
+// Test: body() with content type change during body reset keeps correct content type
+TEST_F(HttpResponseTest, Body_Reset_ContentTypeUpdated) {
+  const std::string bodyA(2048, 'A');
+  const std::string bodyB(2048, 'B');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::string_view{bodyA}, "text/html");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
+
+    resp.body(std::string_view{bodyB}, "application/json");
+    FinalizeCompressedBody(resp);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/json");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test: bodyAppend with content type update during streaming compression
+TEST_F(HttpResponseTest, BodyAppend_ContentTypeUpdate_DuringStreaming) {
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.bodyAppend(std::string(2048, 'A'), http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    // Append with new content type
+    resp.bodyAppend(std::string(512, 'B'), "application/json");
+    FinalizeCompressedBody(resp);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/json");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test: trailerAddLine finalizes inline body when direct compression is active
+TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
+  const std::string body(2048, 'T');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(body, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    // Adding a trailer should finalize the compressed body
+    resp.trailerAddLine("X-Checksum", "abc123");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    // Verify the body is properly compressed and decompressible
+    auto bodyView = resp.bodyInMemory();
+    EXPECT_LT(bodyView.size(), body.size());
+    auto decompressed = test::Decompress(enc, bodyView);
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body);
+  }
+}
+
+// Test: defaultDirectCompressionMode from CompressionConfig is respected
+TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
+  for (Encoding enc : SupportedEncodings()) {
+    cfg.defaultDirectCompressionMode = DirectCompressionMode::Off;
+    HttpResponse resp1 = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    EXPECT_EQ(resp1.directCompressionMode(), DirectCompressionMode::Off);
+
+    cfg.defaultDirectCompressionMode = DirectCompressionMode::On;
+    HttpResponse resp2 = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    EXPECT_EQ(resp2.directCompressionMode(), DirectCompressionMode::On);
+
+    cfg.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    HttpResponse resp3 = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    EXPECT_EQ(resp3.directCompressionMode(), DirectCompressionMode::Auto);
+  }
+}
+
+// Test: switching directCompressionMode at runtime before setting body
+TEST_F(HttpResponseTest, SwitchMode_BeforeBody) {
+  const std::string body(4096, 'S');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    EXPECT_EQ(resp.directCompressionMode(), DirectCompressionMode::Auto);
+
+    resp.directCompressionMode(DirectCompressionMode::Off);
+    resp.body(body, http::ContentTypeTextPlain);
+
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.bodyInMemory(), body);
+
+    // Switch back and reset body
+    resp.directCompressionMode(DirectCompressionMode::Auto);
+    resp.body(body, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+  }
+}
+
+// Test: rvalue chaining of directCompressionMode
+TEST_F(HttpResponseTest, DirectCompressionMode_RvalueChaining) {
+  const std::string body(256, 'R');
+  for (Encoding enc : SupportedEncodings()) {
+    auto resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+
+    std::move(resp).body(body, http::ContentTypeTextPlain);
+    // Just verify it doesn't crash — rvalue chain
+  }
+}
+
+// Test: finalize for HTTP/1.1 with direct compression updates Content-Length
+TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
+  const std::string body(4096, 'F');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(body, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    // Do NOT call FinalizeCompressedBody here — finalizeForHttp1 handles it internally
+    auto full = concatenated(std::move(resp));
+
+    // Verify the full response is valid and contains compressed body
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+    // Headers use lowercase names in internal representation
+    const auto contentEncodingLine =
+        std::format("{}{}{}{}", http::ContentEncoding, http::HeaderSep, GetEncodingStr(enc), http::CRLF);
+    EXPECT_TRUE(full.contains(contentEncodingLine));
+    EXPECT_TRUE(full.contains("content-length:"));
+    // The compressed body should be much smaller
+    auto headerEnd = full.find(http::DoubleCRLF);
+    ASSERT_NE(headerEnd, std::string::npos);
+    auto bodyPart = std::string_view(full).substr(headerEnd + http::DoubleCRLF.size());
+    EXPECT_LT(bodyPart.size(), body.size());
+  }
+}
+
+// Test: body reset cycle: compressed -> empty -> compressed
+TEST_F(HttpResponseTest, Body_CompressedEmptyCompressedCycle) {
+  const std::string body1(2048, '1');
+  const std::string body2(3000, '2');
+  for (bool addVary : {false, true}) {
+    for (Encoding enc : SupportedEncodings()) {
+      HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
+
+      // Step 1: Set compressed body
+      resp.body(body1, http::ContentTypeTextPlain);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+      // Step 2: Clear body
+      resp.body("", http::ContentTypeTextPlain);
+      EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+      EXPECT_FALSE(resp.hasBody());
+      EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+      EXPECT_FALSE(resp.hasHeader(http::Vary));
+
+      // Step 3: Set compressed body again
+      resp.body(body2, http::ContentTypeTextPlain);
+      FinalizeCompressedBody(resp);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+      if (addVary) {
+        EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+      } else {
+        EXPECT_FALSE(resp.hasHeader(http::Vary));
+      }
+
+      auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+      EXPECT_EQ(std::string_view(decompressed), body2);
+    }
+  }
+}
+
+// Test: many rapid body resets don't corrupt state
+TEST_F(HttpResponseTest, Body_ManyRapidResets) {
+  const std::string finalBody(2048, 'Z');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    for (int ii = 0; ii < 10; ++ii) {
+      const std::string body(static_cast<std::size_t>(1024 + (ii * 100)), static_cast<char>('A' + (ii % 26)));
+      resp.body(body, http::ContentTypeTextPlain);
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    }
+
+    // Final body
+    resp.body(std::string_view{finalBody}, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), finalBody);
+  }
+}
+
+// Test: setting custom headers between body resets
+TEST_F(HttpResponseTest, Body_ResetWithCustomHeaders_HeadersPreserved) {
+  const std::string bodyA(2048, 'A');
+  const std::string bodyB(2048, 'B');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.headerAddLine("X-Custom", "value1");
+    resp.body(std::string_view{bodyA}, http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value1");
+
+    // Reset body
+    resp.body(std::string_view{bodyB}, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    // Custom header should still be present
+    EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value1");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+  }
+}
+
+// Test: CString body with direct compression
+TEST_F(HttpResponseTest, Body_CString_DirectCompression) {
+  std::string body(2048, 'S');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(body.c_str());
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_LT(resp.bodyInMemoryLength(), body.size());
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body);
+  }
+}
+
+// Test: bytes span body with direct compression and round-trip
+TEST_F(HttpResponseTest, Body_BytesSpan_DirectCompressionRoundTrip) {
+  std::vector<std::byte> body(2048, std::byte{'D'});
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+
+    resp.body(std::span<const std::byte>(body));
+    FinalizeCompressedBody(resp);
+
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    std::string_view expectedStr(reinterpret_cast<const char*>(body.data()), body.size());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expectedStr);
+  }
 }
 
 // =============================================================================
@@ -3123,19 +4112,19 @@ TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
 
 #ifdef AERONET_ENABLE_HTTP2
 
-TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_NoHeadersIsNoop) {
+TEST_F(HttpResponseTest, Http2_NoHeadersIsNoop) {
   HttpResponse resp(http::StatusCodeOK);
   // No headers added -> no-op
-  MakeAllHeaderNamesLowerCase(resp);
+  FinalizeForHttp2(resp);
   EXPECT_TRUE(resp.headersFlatView().empty());
 }
 
-TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_LowercasesNamesOnly) {
+TEST_F(HttpResponseTest, Http2_LowercasesNamesOnly) {
   HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine("X-CaSe-Header", "VaLuE");
   resp.headerAddLine("Another-Header", "Val:With:Colon");
 
-  MakeAllHeaderNamesLowerCase(resp);
+  FinalizeForHttp2(resp);
 
   std::string headers(resp.headersFlatView());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-case-header", "VaLuE")));
@@ -3145,32 +4134,133 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_LowercasesNamesOnly) {
   EXPECT_TRUE(headers.contains("Val:With:Colon"));
 }
 
-TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_Idempotent) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Repeat", "V");
-  resp.headerAddLine("Mixed-Case", "Value");
-
-  MakeAllHeaderNamesLowerCase(resp);
-  std::string first(resp.headersFlatView());
-
-  MakeAllHeaderNamesLowerCase(resp);
-  std::string second(resp.headersFlatView());
-
-  EXPECT_EQ(first, second);
-}
-
-TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValuesPreserved) {
+TEST_F(HttpResponseTest, Http2_MultipleHeadersAndValuesPreserved) {
   HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine("X-One", "ONE");
   resp.headerAddLine("X-Two", "Two:COLON:IN:VALUE");
   resp.headerAddLine("Already-Lower", "MixedValue:ABC");
 
-  MakeAllHeaderNamesLowerCase(resp);
+  FinalizeForHttp2(resp);
   std::string headers(resp.headersFlatView());
 
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-one", "ONE")));
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-two", "Two:COLON:IN:VALUE")));
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("already-lower", "MixedValue:ABC")));
+}
+
+TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionFinalization) {
+  // Set a body large enough to be compressed
+  const std::string body(4096, 'C');
+  for (bool addVary : {false, true}) {
+    for (bool addTrailers : {false, true}) {
+      for (Encoding enc : SupportedEncodings()) {
+        HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
+        resp.directCompressionMode(DirectCompressionMode::On);  // Force direct compression
+
+        resp.body(body, http::ContentTypeTextPlain);
+
+        // Verify direct compression is active before finalization
+        EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+        EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+        if (addVary) {
+          EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).contains(http::AcceptEncoding));
+        } else {
+          EXPECT_FALSE(resp.headerValue(http::Vary));
+        }
+        if (addTrailers) {
+          resp.trailerAddLine("X-Trailer", "value");
+        } else {
+          EXPECT_EQ(resp.trailersSize(), 0U);
+        }
+
+        const auto compressedBodySize = resp.bodyInMemoryLength();
+        EXPECT_LT(compressedBodySize, body.size());  // Should be compressed
+
+        FinalizeForHttp2(resp);
+
+        // Verify header names are lowercased
+        std::string headers(resp.headersFlatView());
+        // Content-Encoding header should be present and lowercase
+        EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-encoding", GetEncodingStr(enc))));
+        // Should not contain uppercase version
+        EXPECT_FALSE(headers.contains("Content-Encoding:"));
+
+        // Verify content type header is also lowercased
+        EXPECT_TRUE(headers.contains("content-type:"));
+        EXPECT_FALSE(headers.contains("Content-Type:"));
+
+        if (addVary) {
+          EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).contains(http::AcceptEncoding));
+        } else {
+          EXPECT_FALSE(resp.headerValue(http::Vary));
+        }
+
+        // Decompress and verify original body is recovered
+        auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+        EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body);
+      }
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionWithCustomHeaders) {
+  // Test that custom headers (when mixed case) are also lowercased during HTTP/2 finalization
+  // while compression is being finalized
+  const std::string body(2048, 'D');
+  for (Encoding enc : SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+
+    // Add custom headers before body (so they get lowercased during HTTP/2 finalization)
+    resp.headerAddLine("X-Custom-Header", "ValuePreserved");
+    resp.headerAddLine("Cache-Control", "max-age=3600");
+
+    resp.body(body, http::ContentTypeApplicationJson);
+
+    // Verify setup
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.trailersSize(), 0U);
+
+    FinalizeForHttp2(resp);
+
+    std::string headers(resp.headersFlatView());
+
+    // Verify all header names are lowercased
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-custom-header", "ValuePreserved")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("cache-control", "max-age=3600")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-encoding", GetEncodingStr(enc))));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-type", "application/json")));
+
+    // None should have mixed case
+    EXPECT_FALSE(headers.contains("Cache-Control:"));
+    EXPECT_FALSE(headers.contains("X-Custom-Header:"));
+    EXPECT_FALSE(headers.contains("Content-Type:"));
+
+    // Verify compression still works
+    auto decompressed = test::Decompress(enc, resp.bodyInMemory());
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body);
+  }
+}
+
+TEST_F(HttpResponseTest, FinalizeForHttp2_NoDirectCompressionNoTrailers_Idempotent) {
+  // Test that finalizeForHttp2 can be called multiple times without issues
+  // when there's no direct compression and no trailers
+  HttpResponse resp = makePrepared(PreparedOptions{});
+  resp.directCompressionMode(DirectCompressionMode::Off);  // No compression
+
+  resp.headerAddLine("X-Test", "Value");
+  resp.body("Hello World", "text/plain");
+
+  // Call finalize multiple times
+  FinalizeForHttp2(resp);
+  std::string firstHeaders(resp.headersFlatView());
+
+  FinalizeForHttp2(resp);
+  std::string secondHeaders(resp.headersFlatView());
+
+  // Should be identical
+  EXPECT_EQ(firstHeaders, secondHeaders);
+  EXPECT_TRUE(firstHeaders.contains(MakeHttp1HeaderLine("x-test", "Value")));
 }
 
 #endif
@@ -3194,28 +4284,29 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
   // - minCapturedBodySz small/large (inline vs captured body)
   // - various global headers (none, one, multiple)
   for (std::string_view globalHeaders : kConcatenatedGlobalHeaders) {
-    ConcatenatedHeaders gh;
+    PreparedOptions opts;
     for (std::string_view tmp = globalHeaders; !tmp.empty();) {
       const auto crlfPos = tmp.find(http::CRLF);
       ASSERT_NE(crlfPos, std::string_view::npos);
-      gh.append(tmp.substr(0, crlfPos));
+      opts.gh.append(tmp.substr(0, crlfPos));
       tmp.remove_prefix(crlfPos + http::CRLF.size());
     }
     for (bool isPrepared : {true, false}) {
       for (bool head : {true, false}) {
+        opts.head = head;
         for (bool keepAlive : {true, false}) {
           for (bool addTrailerHeader : {true, false}) {
+            opts.addTrailerHeader = addTrailerHeader;
             for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
               // Captured body
               std::string_view bodySv = "CapturedData12345";  // 17 bytes
-              HttpResponse resp = MakePrepared(isPrepared, head, gh);
-              AddTrailerHeader(resp, addTrailerHeader);
+              HttpResponse resp = isPrepared ? makePrepared(opts) : HttpResponse{};
               resp.body(std::string(bodySv));  // 17 bytes = 0x11
               resp.trailerAddLine("X-Sig", "sig-value");
               resp.trailerAddLine("X-Sig-2", "sig-value-2");
 
               std::string result =
-                  concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
+                  concatenated(std::move(resp), opts.gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
 
               std::string exp;
               exp.reserve(result.size());
@@ -3263,10 +4354,9 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
                                      << globalHeaders << "]" << " head=" << head;
 
               // Inline body
-              resp = MakePrepared(isPrepared, head, gh);
-              AddTrailerHeader(resp, addTrailerHeader);
+              resp = isPrepared ? makePrepared(opts) : HttpResponse{};
               resp.body(bodySv).trailerAddLine("X-Sig", "sig-value").trailerAddLine("X-Sig-2", "sig-value-2");
-              result = concatenated(std::move(resp), gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
+              result = concatenated(std::move(resp), opts.gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
               ASSERT_EQ(result, exp) << "Failed with keepAlive=" << keepAlive
                                      << " addTrailerHeader=" << addTrailerHeader
                                      << " inlineBody=" << (minCapturedBodySz == 1) << " globalHeaders=["
@@ -3296,7 +4386,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedMultipleTrailers) {
 }
 
 TEST_F(HttpResponseTest, HeadLargeBodyDoesNotGrowInlineCapacity) {
-  HttpResponse resp = MakePrepared(true, true);
+  HttpResponse resp = makePrepared(PreparedOptions{.head = true});
 
   const auto initialCapacity = resp.capacityInlined();
   const std::string bigBody(1U << 20, 'x');
@@ -3309,7 +4399,7 @@ TEST_F(HttpResponseTest, HeadLargeBodyDoesNotGrowInlineCapacity) {
 }
 
 TEST_F(HttpResponseTest, HeadLargeCapturedBodyDoesNotGrowInlineCapacity) {
-  HttpResponse resp = MakePrepared(true, true);
+  HttpResponse resp = makePrepared(PreparedOptions{.head = true});
 
   const auto initialCapacity = resp.capacityInlined();
   std::vector<char> bigBody(1U << 20, 'y');
@@ -3324,7 +4414,7 @@ TEST_F(HttpResponseTest, HeadLargeCapturedBodyDoesNotGrowInlineCapacity) {
 TEST_F(HttpResponseTest, HeadBodyInlineAppend) {
   for (bool useBytes : {false, true}) {
     for (bool prepared : {true, false}) {
-      HttpResponse resp = MakePrepared(prepared, true);
+      HttpResponse resp = prepared ? makePrepared(PreparedOptions{.head = true}) : HttpResponse{};
 
       if (useBytes) {
         resp.bodyInlineAppend(2UL, kAppendZeroOrOneABytes);
@@ -3365,7 +4455,7 @@ TEST_F(HttpResponseTest, HeadBodyInlineAppend) {
 
 TEST_F(HttpResponseTest, HeadBodyAppend) {
   for (bool prepared : {true, false}) {
-    HttpResponse resp = MakePrepared(prepared, true);
+    HttpResponse resp = prepared ? makePrepared(PreparedOptions{.head = true}) : HttpResponse{};
 
     resp.bodyAppend("");
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "");
@@ -3390,8 +4480,8 @@ TEST_F(HttpResponseTest, HeadBodyAppend) {
     } else {
       EXPECT_EQ(resp.bodyInMemory(), std::string_view("AA"));
     }
-    // We cannot infer anything for the capacity, because we don't know in advance how many bytes the user will actually
-    // append
+    // We cannot infer anything for the capacity, because we don't know in advance how many bytes the user will
+    // actually append
 
     resp.trailerAddLine("X-Test", "value");
 
@@ -3407,7 +4497,7 @@ TEST_F(HttpResponseTest, HeadBodyAppend) {
 TEST_F(HttpResponseTest, HeadBodyInlineSet) {
   for (bool useBytes : {false, true}) {
     for (bool prepared : {true, false}) {
-      HttpResponse resp = MakePrepared(prepared, true);
+      HttpResponse resp = prepared ? makePrepared(PreparedOptions{.head = true}) : HttpResponse{};
 
       if (useBytes) {
         resp.bodyInlineSet(2UL, kAppendZeroOrOneA);
@@ -3564,7 +4654,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
     auto bodyPtr = std::make_unique<char[]>(sizeof(data));
     std::ranges::copy(data, bodyPtr.get());
 
-    auto resp = MakePrepared(head, head);
+    auto resp = makePrepared(PreparedOptions{.head = head});
     resp.body(std::move(bodyPtr), sizeof(data) - 1);
     resp.trailerAddLine("X-Final", "yes");
 

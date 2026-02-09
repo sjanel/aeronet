@@ -264,6 +264,25 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
   throw std::invalid_argument("Unsupported encoding for makeContext");
 }
 
+EncoderContext* ResponseCompressionState::context([[maybe_unused]] Encoding encoding) {
+#ifdef AERONET_ENABLE_BROTLI
+  if (encoding == Encoding::br) {
+    return brotliEncoder.context();
+  }
+#endif
+#ifdef AERONET_ENABLE_ZLIB
+  if (encoding == Encoding::deflate || encoding == Encoding::gzip) {
+    return zlibEncoder.context();
+  }
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  if (encoding == Encoding::zstd) {
+    return zstdEncoder.context();
+  }
+#endif
+  throw std::invalid_argument("Unsupported encoding for makeContext");
+}
+
 void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
                                     const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp) {
   const auto bodySz = resp.bodyInMemoryLength();
