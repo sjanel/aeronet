@@ -1,10 +1,13 @@
 #pragma once
 
-#include <cassert>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
 #include <type_traits>
+
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+#include <cassert>
+#include <cstring>
+#endif
 
 #include "aeronet/safe-cast.hpp"
 

@@ -95,9 +95,7 @@ template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, uint64_t sz) {
   if (sz != 0) {
     if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-      if (static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) < sz + _size) [[unlikely]] {
-        throw std::overflow_error("capacity overflow");
-      }
+      assert(static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) >= sz + _size);
     }
     assert(sz + _size <= _capacity);
     std::memcpy(_buf + _size, data, sz);
@@ -154,8 +152,8 @@ template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
   static constexpr std::size_t kMinCapacity = 1024;
   if (kMinCapacity < _capacity && 4UL * _size < _capacity) {
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     const size_type newCap = _capacity / 2;
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     pointer newBuf = static_cast<pointer>(std::malloc(newCap));
     if (newBuf != nullptr) [[likely]] {
       if (_size != 0) {
@@ -167,10 +165,10 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
       _capacity = newCap;
     }
 #else
-    pointer newBuf = static_cast<pointer>(std::realloc(_buf, _capacity / 2));
+    pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCap));
     if (newBuf != nullptr) [[likely]] {
       _buf = newBuf;
-      _capacity /= 2;
+      _capacity = newCap;
     }
 #endif
   }
@@ -184,10 +182,6 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
   const uintmax_t required = availableCapacity + _size;
 
   if (_capacity < required) {
-    if (required < availableCapacity) [[unlikely]] {
-      throw std::overflow_error("capacity overflow");
-    }
-
     const uintmax_t doubled = 2ULL * _capacity;
     reallocUp(SafeCast<size_type>(std::max(required, doubled)));
   }
@@ -216,11 +210,11 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
   if (newBuf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
   }
+  std::memset(newBuf + _size, 255, newCapacity - _size);
   if (_size != 0) {
     std::memcpy(newBuf, _buf, _size);
   }
   std::free(_buf);
-  std::memset(newBuf + _size, 255, newCapacity - _size);
 #else
   pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
   if (newBuf == nullptr) [[unlikely]] {

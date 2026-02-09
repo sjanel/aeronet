@@ -201,7 +201,7 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     set(WITH_OTLP_GRPC OFF CACHE BOOL "" FORCE)
 
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
     set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
 
@@ -213,12 +213,19 @@ if(AERONET_ENABLE_OPENTELEMETRY)
       TARGETS
         opentelemetry-cpp::otlp_http_exporter
       DECLARE
-        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.24.0.tar.gz
-        URL_HASH SHA256=7b8e966affca1daf1906272f4d983631cad85fb6ea60fb6f55dcd1811a730604
+        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.25.0.tar.gz
+        URL_HASH SHA256=a0c944a9de981fe1874b31d1fe44b830fc30ee030efa27ee23fc73012a3a13e9
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
 
   endif()
+
+  # Workaround for opentelemetry-cpp v1.25 proto generation: define the
+  # OPENTELEMETRY_PROTO_API macro that appears in generated .pb.h files.
+  # Since aeronet links to opentelemetry as PRIVATE, tests that include
+  # proto headers directly don't inherit the target compile definitions.
+  add_compile_definitions(OPENTELEMETRY_PROTO_API=)
+
 endif()
 
 # Make fetch content available

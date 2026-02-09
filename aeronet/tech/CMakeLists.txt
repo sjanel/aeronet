@@ -106,6 +106,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    safe-cast_test
+    test/safe-cast_test.cpp
+)
+
+AeronetAddUnitTest(
     simple-charconv_test
     test/simple-charconv_test.cpp
     LIBRARIES
