@@ -288,7 +288,7 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Core HTTP/1.1 parsing | ✔ | Request line, headers, chunked bodies, pipelining |
 | Routing | ✔ | Exact path + method allow‑lists; streaming + fixed |
 | Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
-| Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out |
+| Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out; direct compression |
 | Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
 | TLS | ✔ (flag) | ALPN, mTLS, session tickets, kTLS sendfile, timeouts, metrics |
 | OpenTelemetry | ✔ (flag) | Distributed tracing spans, metrics counters (experimental) |
@@ -670,6 +670,11 @@ See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
 ### Compression (gzip, deflate, zstd, brotli)
 
 `aeronet` has built-in support for automatic outbound response compression and inbound requests decompression with multiple algorithms, provided that the library is built with each available encoder compile time flag.
+
+Two compression layers for outbound responses:
+
+- **Direct compression** compresses inline bodies at `body()` / `bodyAppend()` call time when using `HttpRequest::makeResponse()`. Controlled per-response via `DirectCompressionMode` (`Auto` / `Off` / `On`).
+- **Finalization compression** applies at response finalization for bodies not already compressed.
 
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
 See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)

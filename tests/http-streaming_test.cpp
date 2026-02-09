@@ -126,6 +126,7 @@ TEST(HttpStreaming, ChunkedSimple) {
     EXPECT_THROW(writer.headerAddLine("Invalid Header", "value"), std::invalid_argument);
     EXPECT_THROW(writer.headerAddLine("X-Header", "value\r\n"), std::invalid_argument);
     writer.headerAddLine("X-Custom", "value");
+    writer.contentType("text/custom");  // should be allowed to update content type before body is written
     writer.writeBody("hello ");
     writer.status(400);                             // should be ignored after headers sent
     writer.headerAddLine("X-Custom-2", "value 2");  // should be ignored after headers sent
@@ -134,7 +135,7 @@ TEST(HttpStreaming, ChunkedSimple) {
     writer.end();  // second end() should be no-op
   });
   std::string resp = BlockingFetch(port, "GET", "/stream");
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("X-Custom: value\r\n"));
   ASSERT_FALSE(resp.contains("X-Custom-2"));  // header added after headers sent should be ignored
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.

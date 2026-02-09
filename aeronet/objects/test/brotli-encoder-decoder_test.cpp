@@ -90,8 +90,8 @@ void ExpectStreamingDecoderRoundTrip(BrotliEncoder& encoder, std::string_view pa
 
 TEST(BrotliDecoderTest, MallocConstructorFails) {
   // Simulate malloc failure during BrotliDecoderCreateInstance
-  test::FailNextRealloc();
   RawChars buf;
+  test::FailNextRealloc();
   EXPECT_THROW((BrotliDecoder{}.decompressFull("some-data", kMaxPlainBytes, kDecoderChunkSize, buf)), std::bad_alloc);
 
   // Test encoder init failure
