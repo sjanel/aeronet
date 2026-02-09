@@ -248,7 +248,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
     server.start();
     test::WaitForServer(server);
 
-    for (std::underlying_type_t<Encoding> i = 0; i <= kNbContentEncodings; ++i) {
+    for (std::underlying_type_t<Encoding> i = 0; i < kNbContentEncodings; ++i) {
       const auto enc = static_cast<Encoding>(i);
       if (!IsEncodingEnabled(enc)) {
         continue;

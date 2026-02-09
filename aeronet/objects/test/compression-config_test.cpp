@@ -66,10 +66,11 @@ TEST(CompressionConfigTest, ZstdOK) {
 }
 
 #ifdef AERONET_ENABLE_ZSTD
+
 TEST(CompressionConfigTest, ZstdInvalidLevelThrows) {
   CompressionConfig config;
-  config.zstd.compressionLevel = 29;
 
+  config.zstd.compressionLevel = 29;
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

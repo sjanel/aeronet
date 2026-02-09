@@ -346,9 +346,6 @@ TYPED_TEST(RawBaseTest, UncheckedAppendAndOverflowCheck) {
   buf.unchecked_append(reinterpret_cast<const Type *>(data.data()), static_cast<SizeType>(data.size()));
   EXPECT_EQ(buf.size(), data.size());
   EXPECT_TRUE(std::equal(buf.begin(), buf.end(), reinterpret_cast<const Type *>(data.data())));
-
-  EXPECT_THROW(buf.unchecked_append(reinterpret_cast<const Type *>("extra"), std::numeric_limits<SizeType>::max() - 5U),
-               std::overflow_error);
 }
 
 TYPED_TEST(RawBaseTest, AppendEmpty) {

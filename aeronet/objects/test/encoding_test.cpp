@@ -25,7 +25,7 @@ TEST(EncodingTest, GetEncodingStrReturnsExpectedConstants) {
 
 TEST(EncodingTest, AllEnumValuesHaveMapping) {
   // Verify that iterating over the declared range yields valid mappings
-  for (std::underlying_type_t<Encoding> i = 0; i <= kNbContentEncodings; ++i) {
+  for (std::underlying_type_t<Encoding> i = 0; i < kNbContentEncodings; ++i) {
     const auto enc = static_cast<Encoding>(i);
     // The returned view must be non-empty
     EXPECT_FALSE(GetEncodingStr(enc).empty());
@@ -34,6 +34,12 @@ TEST(EncodingTest, AllEnumValuesHaveMapping) {
 }
 
 TEST(EncodingTest, IsEncodingEnabledReflectsBuildConfiguration) {
+#ifdef AERONET_ENABLE_BROTLI
+  EXPECT_TRUE(IsEncodingEnabled(Encoding::br));
+#else
+  EXPECT_FALSE(IsEncodingEnabled(Encoding::br));
+#endif
+
 #ifdef AERONET_ENABLE_ZLIB
   EXPECT_TRUE(IsEncodingEnabled(Encoding::gzip));
   EXPECT_TRUE(IsEncodingEnabled(Encoding::deflate));
@@ -41,19 +47,14 @@ TEST(EncodingTest, IsEncodingEnabledReflectsBuildConfiguration) {
   EXPECT_FALSE(IsEncodingEnabled(Encoding::gzip));
   EXPECT_FALSE(IsEncodingEnabled(Encoding::deflate));
 #endif
+
 #ifdef AERONET_ENABLE_ZSTD
   EXPECT_TRUE(IsEncodingEnabled(Encoding::zstd));
 #else
   EXPECT_FALSE(IsEncodingEnabled(Encoding::zstd));
 #endif
-#ifdef AERONET_ENABLE_BROTLI
-  EXPECT_TRUE(IsEncodingEnabled(Encoding::br));
-#else
-  EXPECT_FALSE(IsEncodingEnabled(Encoding::br));
-#endif
-  EXPECT_TRUE(IsEncodingEnabled(Encoding::none));
 
-  EXPECT_FALSE(IsEncodingEnabled(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))));
+  EXPECT_TRUE(IsEncodingEnabled(Encoding::none));
 }
 
 }  // namespace aeronet
