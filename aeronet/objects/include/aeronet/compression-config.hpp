@@ -32,7 +32,7 @@ struct CompressionConfig {
   // Preferred order of formats to negotiate (first supported & accepted wins).
   // If empty, defaults to enumeration order of Encoding.
   // Duplicates are not allowed, and it should contain a maximum of one of each encoding.
-  FixedCapacityVector<Encoding, kNbContentEncodings> preferredFormats;
+  FixedCapacityVector<Encoding, kNbContentEncodings - 1U> preferredFormats;
 
   // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
   bool addVaryAcceptEncodingHeader{true};
@@ -79,10 +79,6 @@ struct CompressionConfig {
     int8_t window = kDefaultWindow;
   } brotli;
 
-  // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
-  // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.
-  std::size_t minBytes{1024U};
-
   // Compression is applied only if:
   //   compressedSize <= uncompressedSize * maxCompressRatio
   //
@@ -90,6 +86,10 @@ struct CompressionConfig {
   // allowed compressed/uncompressed ratio (i.e. compressedSize/uncompressedSize).
   // Should be in the range (0.0, 1.0), exclusive.
   float maxCompressRatio{0.5};
+
+  // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
+  // For streaming responses (unknown size), compression begins once cumulative bytes reach threshold.
+  std::size_t minBytes{1024U};
 
   // Simple allowlist of content-types (prefix match) eligible for response body compression. If empty, any content type
   // will be eligible for compression.

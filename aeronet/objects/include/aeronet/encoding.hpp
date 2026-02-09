@@ -26,9 +26,6 @@ constexpr std::string_view GetEncodingStr(Encoding enc) {
   static constexpr std::string_view kEncodingStrs[kNbContentEncodings] = {
       http::zstd, http::br, http::gzip, http::deflate, http::identity,
   };
-  if (static_cast<std::underlying_type_t<Encoding>>(enc) >= kNbContentEncodings) [[unlikely]] {
-    return "unknown";
-  }
   return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
@@ -37,9 +34,6 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
   static constexpr bool kEncodingEnabled[kNbContentEncodings] = {
       zstdEnabled(), brotliEnabled(), zlibEnabled(), zlibEnabled(), true,
   };
-  if (static_cast<std::underlying_type_t<Encoding>>(enc) >= kNbContentEncodings) [[unlikely]] {
-    return false;
-  }
   return kEncodingEnabled[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
