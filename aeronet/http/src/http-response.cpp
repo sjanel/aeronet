@@ -103,7 +103,6 @@ constexpr void Copy(std::string_view sv, char* dst) noexcept {
   std::memcpy(dst, sv.data(), sv.size());
 }
 
-// Using std::memcpy for better performance
 [[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) noexcept {
   Copy(sv, dst);
   return dst + sv.size();
@@ -359,13 +358,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
   const auto oldBodyLen = bodyLength();
   if (newBodySize == 0) {
     if (oldBodyLen != 0) {
-      // Remove all body, Content-Length and Content-Encoding headers at once.
-      char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
-      assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) ==
-             http::ContentType);
-      _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
-      Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
-      setBodyStartPos(_data.size());
+      removeBodyAndItsHeaders();
     }
   } else {
     const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
@@ -425,38 +418,35 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
     if (hasBodyFile()) [[unlikely]] {
       throw std::logic_error("Cannot append to a captured file body");
     }
-    bodyPrecheckContentType(contentType);
-
     const auto oldBodyLen = bodyLength();
-    const auto newBodyLen = oldBodyLen + body.size();
-    const auto nbCharsNewBodyLen = nchars(newBodyLen);
-    const bool capturedBody = hasBodyCaptured();
-    int64_t neededCapacity;
-
-    if (oldBodyLen != 0) {
-      const uint8_t nCharsOldBodyLen = nchars(oldBodyLen);
-      neededCapacity = static_cast<int64_t>(nbCharsNewBodyLen) - static_cast<int64_t>(nCharsOldBodyLen);
-      if (!capturedBody) {
-        neededCapacity += static_cast<int64_t>(body.size());
-      }
-      if (!contentType.empty()) {
-        char* pContentTypeValuePtr = getContentTypeValuePtr();
-        const auto it =
-            std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
-        assert(it != _data.data() + _data.size());
-        const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
-        neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
-      }
-    } else {
+    if (oldBodyLen == 0) {
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
       }
-      neededCapacity = static_cast<int64_t>(HeaderSize(http::ContentType.size(), contentType.size())) +
-                       static_cast<int64_t>(HeaderSize(http::ContentLength.size(), nbCharsNewBodyLen)) +
-                       static_cast<int64_t>(body.size());
+      return this->body(body, contentType);
     }
 
-    _data.ensureAvailableCapacity(neededCapacity);
+    bodyPrecheckContentType(contentType);
+
+    const auto newBodyLen = oldBodyLen + body.size();
+    const auto nbCharsNewBodyLen = nchars(newBodyLen);
+    const bool capturedBody = hasBodyCaptured();
+
+    const uint8_t nCharsOldBodyLen = nchars(oldBodyLen);
+    int64_t neededCapacity = static_cast<int64_t>(nbCharsNewBodyLen) - static_cast<int64_t>(nCharsOldBodyLen);
+    if (!capturedBody) {
+      neededCapacity += static_cast<int64_t>(body.size());
+    }
+    if (!contentType.empty()) {
+      char* pContentTypeValuePtr = getContentTypeValuePtr();
+      const auto it =
+          std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
+      assert(it != _data.data() + _data.size());
+      const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
+      neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
+    }
+
+    _data.ensureAvailableCapacityExponential(neededCapacity);
     bodyAppendUpdateHeaders(contentType, http::ContentTypeTextPlain, newBodyLen);
 
     if (isHead()) {
@@ -661,7 +651,7 @@ HttpResponse& HttpResponse::headerAddLine(std::string_view key, std::string_view
   adjustBodyStart(static_cast<int64_t>(headerLineSize));
 
   if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
-    _opts.setHasContentEncoding();
+    _opts.setHasContentEncoding(true);
   }
 
   return *this;
@@ -718,6 +708,10 @@ HttpResponse& HttpResponse::headerRemoveLine(std::string_view key) & {
   std::memmove(dest, last + http::CRLF.size(), sizeToMove);
   _data.setSize(_data.size() - lineSize);
   adjustBodyStart(static_cast<int64_t>(-lineSize));
+
+  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+    _opts.setHasContentEncoding(false);
+  }
 
   return *this;
 }
@@ -792,20 +786,23 @@ HttpResponse& HttpResponse::headerRemoveValue(std::string_view key, std::string_
   return *this;
 }
 
-void HttpResponse::makeAllHeaderNamesLowerCase() {
-  char* headersBeg = _data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size();
-  char* headersEnd = _data.data() + bodyStartPos() - http::CRLF.size();
+#ifdef AERONET_ENABLE_HTTP2
+void HttpResponse::finalizeForHttp2() {
+  // HTTP/2 requires lowercase header names. Do this after all response mutations (incl. compression).
+  // TODO: optimize by building lowercase names directly when adding headers if response is "prepared"
+  char* first = _data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size();
+  char* last = _data.data() + bodyStartPos() - http::CRLF.size();
 
-  while (headersBeg < headersEnd) {
-    for (; *headersBeg != ':'; ++headersBeg) {
-      *headersBeg = tolower(*headersBeg);
+  while (first < last) {
+    for (; *first != ':'; ++first) {
+      *first = tolower(*first);
     }
 
     // move headersBeg to next header
-    headersBeg = std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end()) +
-                 http::CRLF.size();
+    first = std::search(first + http::HeaderSep.size(), last, http::CRLF.begin(), http::CRLF.end()) + http::CRLF.size();
   }
 }
+#endif
 
 [[nodiscard]] std::string_view HttpResponse::trailerValueOrEmpty(std::string_view key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
@@ -901,6 +898,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
 HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
                                                 const ConcatenatedHeaders* pGlobalHeaders,
                                                 std::size_t minCapturedBodySize) {
+  // Write the Http version (1.0 or 1.1)
   version.writeFull(_data.data());
 
   const auto bodySz = bodyLength();
@@ -919,8 +917,8 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
 
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
-  bool writeAllGlobalHeaders = true;
-  if (!_opts.isPrepared()) {
+  bool writeAllGlobalHeaders = !_opts.isPrepared();
+  if (writeAllGlobalHeaders) {
     std::size_t pos = 0;
     assert(pGlobalHeaders != nullptr);
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
@@ -1253,6 +1251,15 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
   // This function is only called to set reserved headers Content-Length (which is never empty) and Content-Type
   // (which we never set to empty, it would be rejected by a std::invalid_argument).
   Copy(newValue, first);
+}
+
+void HttpResponse::removeBodyAndItsHeaders() {
+  // Remove all body, Content-Length and Content-Encoding headers at once.
+  char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
+  assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) == http::ContentType);
+  _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
+  Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
+  setBodyStartPos(_data.size());
 }
 
 }  // namespace aeronet
