@@ -845,20 +845,27 @@ class HttpResponse {
       }
     }
 
+    if (bodyLength() != 0) {
+      removeBodyAndItsHeaders();
+      // Clear any payload variant
+      _payloadVariant = {};
+    }
+
     const auto contentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentType.size());
     const auto contentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(maxLen));
 
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
 
-    bodyAppendUpdateHeaders(contentType, {}, maxLen);
+    headerAddLine(http::ContentType, contentType);
+    headerAddLine(http::ContentLength, maxLen);
 
     // Call writer at body start position
     std::size_t written;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
       written = static_cast<std::size_t>(
           std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(_data.data() + _data.size())));
-    } else if constexpr (std::is_invocable_r_v<std::size_t, W, char*>) {
+    } else {
       written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), _data.data() + _data.size()));
     }
 
@@ -881,10 +888,6 @@ class HttpResponse {
       replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
     }
 
-    // Clear any payload variant
-    if (!isHead() || written == 0) {
-      _payloadVariant = {};
-    }
     return *this;
   }
 
@@ -1066,8 +1069,9 @@ class HttpResponse {
 
   void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodyHeadersOpts opts);
 
-  // Convert all header names to lower-case (for HTTP/2).
-  void makeAllHeaderNamesLowerCase();
+#ifdef AERONET_ENABLE_HTTP2
+  void finalizeForHttp2();
+#endif
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
 
@@ -1138,7 +1142,13 @@ class HttpResponse {
       }
     }
 
-    constexpr void setHasContentEncoding() noexcept { _optionsBitmap |= HasContentEncoding; }
+    constexpr void setHasContentEncoding(bool val) noexcept {
+      if (val) {
+        _optionsBitmap |= HasContentEncoding;
+      } else {
+        _optionsBitmap &= static_cast<BmpType>(~HasContentEncoding);
+      }
+    }
 
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 
@@ -1153,7 +1163,6 @@ class HttpResponse {
     std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
     BmpType _optionsBitmap{};
     Encoding _expectedEncoding{Encoding::none};
-    Encoding _currentEncoding{Encoding::none};
   };
 
   // IMPORTANT: This method finalizes the response by appending reserved headers,
@@ -1244,6 +1253,12 @@ class HttpResponse {
   }
 
   void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
+
+#ifdef AERONET_HAS_ANY_CODEC
+  void finalizeInlineBody(std::size_t additionalCapacity);
+#endif
+
+  void removeBodyAndItsHeaders();
 
   RawChars _data;
   // headersStartPos: the status line length, excluding CRLF.
