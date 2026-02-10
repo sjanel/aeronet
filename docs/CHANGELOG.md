@@ -44,6 +44,7 @@ All notable changes to aeronet are documented in this file.
 - `MSG_ZEROCOPY` support for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
 - Router now uses a more efficient path matching algorithm with a radix tree structure, **it gains around - 40%** in pattern based routes matching speed. Handlers also consume less memory.
 - Reuse codec contexts in automatic compression / decompression for better performance.
+- `HttpResponse::bodyAppend` now reserves memory exponentially to reduce the number of reallocations when appending large bodies in multiple calls.
 
 ### Other
 

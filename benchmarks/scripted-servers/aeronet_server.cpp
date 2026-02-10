@@ -137,7 +137,7 @@ int main(int argc, char* argv[]) {
   router.setPath(http::Method::GET, "/json", [](const HttpRequest& req) {
     const std::size_t items = req.queryParamInt<std::size_t>("items").value();
 
-    auto resp = req.makeResponse(200);
+    auto resp = req.makeResponse(items * 40UL, 200);
     resp.bodyAppend("{\"items\":[", "application/json");
     for (std::size_t itemPos = 0; itemPos < items; ++itemPos) {
       if (itemPos > 0) {

@@ -378,9 +378,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
     internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pServerConfig);
 
-    // HTTP/2 requires lowercase header names. Do this after all response mutations (incl. compression).
-    // TODO: optimize by building lowercase names directly when adding headers if response is "prepared"
-    resp.makeAllHeaderNamesLowerCase();
+    resp.finalizeForHttp2();
 
     err = sendResponse(streamId, std::move(resp), isHead);
     if (err != ErrorCode::NoError) [[unlikely]] {

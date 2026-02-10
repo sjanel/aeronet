@@ -119,7 +119,9 @@ class HttpResponseTest : public ::testing::Test {
     return out;
   }
 
-  static void MakeAllHeaderNamesLowerCase(HttpResponse& resp) { resp.makeAllHeaderNamesLowerCase(); }
+#ifdef AERONET_ENABLE_HTTP2
+  static void MakeAllHeaderNamesLowerCase(HttpResponse& resp) { resp.finalizeForHttp2(); }
+#endif
 };
 
 const RawChars HttpResponseTest::kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
@@ -3085,6 +3087,8 @@ TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), expectedVary);
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+
 TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_NoHeadersIsNoop) {
   HttpResponse resp(http::StatusCodeOK);
   // No headers added -> no-op
@@ -3134,6 +3138,8 @@ TEST_F(HttpResponseTest, MakeAllHeadersLowerCaseForHttp2_MultipleHeadersAndValue
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-two", "Two:COLON:IN:VALUE")));
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("already-lower", "MixedValue:ABC")));
 }
+
+#endif
 
 // =============================================================================
 // Tests for automatic chunked encoding conversion when trailers are present
