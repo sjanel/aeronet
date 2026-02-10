@@ -271,16 +271,14 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   if (bodySz < compressionConfig.minBytes) {
     return;
   }
-
+  if (resp.hasContentEncoding()) {
+    return;
+  }
   if (!compressionConfig.contentTypeAllowList.empty()) {
     const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
       return;
     }
-  }
-
-  if (resp.hasContentEncoding()) {
-    return;
   }
 
   const std::string_view contentEncodingStr = GetEncodingStr(encoding);
