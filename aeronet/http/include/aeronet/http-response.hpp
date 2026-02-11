@@ -17,6 +17,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -29,6 +30,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
@@ -254,7 +256,11 @@ class HttpResponse {
   // Get a contiguous view of the current headers stored in this HttpResponse, except for the Date header which is
   // managed by aeronet. Each header line is formatted as: name + ": " + value + CRLF. If no headers are present, it
   // returns an empty view.
-  [[nodiscard]] std::string_view headersFlatView() const noexcept;
+  [[nodiscard]] std::string_view headersFlatView() const noexcept {
+    return {_data.data() + headersStartPos() + http::Date.size() + http::HeaderSep.size() + RFC7231DateStrLen +
+                http::DoubleCRLF.size(),
+            _data.data() + bodyStartPos() - http::CRLF.size()};
+  }
 
   // Return a non-allocating, iterable view over headers.
   // Each element is a HeaderView with name and value string_views.
@@ -418,6 +424,9 @@ class HttpResponse {
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw std::invalid_argument.
+  //  - Content-Type should be set along with the body methods
+  //  - Content-Length is managed by the library and should not be set manually.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpResponse& headerAddLine(std::string_view key, std::string_view value) &;
 
@@ -465,6 +474,7 @@ class HttpResponse {
   // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved in
   // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
   // The header name and value must be valid per HTTP specifications.
+  // As for 'headerAddLine()', do not insert any reserved header.
   HttpResponse& header(std::string_view key, std::string_view value) & {
     setHeader(key, value, OnlyIfNew::No);
     return *this;
@@ -857,16 +867,15 @@ class HttpResponse {
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
 
-    headerAddLine(http::ContentType, contentType);
-    headerAddLine(http::ContentLength, maxLen);
+    char* insertPtr = addContentTypeAndContentLengthHeaders(contentType, maxLen);
 
     // Call writer at body start position
     std::size_t written;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
-      written = static_cast<std::size_t>(
-          std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(_data.data() + _data.size())));
+      written =
+          static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(insertPtr)));
     } else {
-      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), _data.data() + _data.size()));
+      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), insertPtr));
     }
 
     // If nothing was written, remove the content-type header
@@ -881,7 +890,7 @@ class HttpResponse {
       if (isHead()) {
         setHeadSize(written);
       } else {
-        _data.setSize(bodyStartPos() + written);
+        _data.setSize(static_cast<std::size_t>(insertPtr + written - _data.data()));
       }
 
       const auto newBodyLenCharVec = IntegralToCharVector(written);
@@ -1073,7 +1082,16 @@ class HttpResponse {
   void finalizeForHttp2();
 #endif
 
-  [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept;
+  [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept {
+    return {_data.data() + headersStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
+  }
+
+  // Same as headersFlatView but without Content-Type and Content-Length headers.
+  [[nodiscard]] std::string_view headersFlatViewWithoutCTCL() const noexcept {
+    return {_data.data() + headersStartPos() + http::Date.size() + http::HeaderSep.size() + RFC7231DateStrLen +
+                http::DoubleCRLF.size(),
+            getContentTypeHeaderLinePtr() + http::CRLF.size()};
+  }
 
   // Simple bitmap class to pass finalization options with strong typing and better readability (passing several bools
   // is easy to get it wrong).
@@ -1210,15 +1228,10 @@ class HttpResponse {
     setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
   }
 
-  char* getContentLengthHeaderLinePtr() {
-    char* ptr = _data.data() + bodyStartPos() - http::DoubleCRLF.size() - http::HeaderSep.size() -
-                http::ContentLength.size() - http::CRLF.size() - 1U;
-    for (; *ptr != '\r'; --ptr) {
-    }
-    return ptr;
-  }
-
   char* getContentLengthValueEndPtr() { return _data.data() + bodyStartPos() - http::DoubleCRLF.size(); }
+  [[nodiscard]] const char* getContentLengthValueEndPtr() const {
+    return _data.data() + bodyStartPos() - http::DoubleCRLF.size();
+  }
 
   char* getContentLengthValuePtr() {
     char* ptr = getContentLengthValueEndPtr() - http::HeaderSep.size() - 1U;
@@ -1227,16 +1240,39 @@ class HttpResponse {
     return ptr + http::HeaderSep.size();
   }
 
+  // Returns a pointer to the beginning of the Content-Length header line (starting on CRLF before the header name).
+  char* getContentLengthHeaderLinePtr() {
+    char* ptr =
+        getContentLengthValueEndPtr() - http::HeaderSep.size() - http::ContentLength.size() - http::CRLF.size() - 1U;
+    for (; *ptr != '\r'; --ptr) {
+    }
+    return ptr;
+  }
+  [[nodiscard]] const char* getContentLengthHeaderLinePtr() const {
+    const char* ptr =
+        getContentLengthValueEndPtr() - http::HeaderSep.size() - http::ContentLength.size() - http::CRLF.size() - 1U;
+    for (; *ptr != '\r'; --ptr) {
+    }
+    return ptr;
+  }
+
   // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
   char* getContentTypeHeaderLinePtr() {
-    char* ptr = getContentLengthHeaderLinePtr() - HeaderSize(http::ContentType.size(), 1U);
+    char* ptr = getContentLengthHeaderLinePtr() - HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
+    for (; *ptr != '\r'; --ptr) {
+    }
+    return ptr;
+  }
+
+  [[nodiscard]] const char* getContentTypeHeaderLinePtr() const {
+    const char* ptr = getContentLengthHeaderLinePtr() - HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
     for (; *ptr != '\r'; --ptr) {
     }
     return ptr;
   }
 
   char* getContentTypeValuePtr() {
-    char* ptr = getContentLengthHeaderLinePtr() - http::HeaderSep.size() - 1U;
+    char* ptr = getContentLengthHeaderLinePtr() - http::HeaderSep.size() - http::ContentTypeMinLen;
     for (; *ptr != ':'; --ptr) {
     }
     return ptr + http::HeaderSep.size();
@@ -1259,6 +1295,20 @@ class HttpResponse {
 #endif
 
   void removeBodyAndItsHeaders();
+
+  // Add Content-Type and Content-Length headers for a new body, erasing any existing body and its headers if needed.
+  // Returns a pointer to the position where the body should be written (immediately after the CRLFCRLF sequence).
+  char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize) {
+    char* insertPtr =
+        WriteHeaderCRLF(_data.data() + bodyStartPos() - http::CRLF.size(), http::ContentType, contentType);
+    insertPtr = WriteHeader(insertPtr, http::ContentLength, bodySize);
+    insertPtr = Append(http::DoubleCRLF, insertPtr);
+
+    const auto bodyStart = static_cast<std::uint64_t>(insertPtr - _data.data());
+    setBodyStartPos(bodyStart);
+    _data.setSize(bodyStart);
+    return insertPtr;
+  }
 
   RawChars _data;
   // headersStartPos: the status line length, excluding CRLF.

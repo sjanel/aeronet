@@ -25,6 +25,7 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #include "aeronet/vector.hpp"
@@ -319,8 +320,8 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
 
   // Send response HEADERS (no END_STREAM) + DATA (END_STREAM).
   const uint32_t streamId = 1;
-  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
-    std::array<char, kRFC7231DateStrLen> buf{};
+  const std::array<char, RFC7231DateStrLen> dateBuf = [] {
+    std::array<char, RFC7231DateStrLen> buf{};
     (void)TimeToStringRFC7231(SysClock::now(), buf.data());
     return buf;
   }();
@@ -331,7 +332,7 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   headers.append(MakeHttp1HeaderLine("x-custom", "original"));
   headers.append(MakeHttp1HeaderLine("x-another", "anothervalue"));
   headers.append(MakeHttp1HeaderLine("x-global", "gvalue"));
-  headers.append(MakeHttp1HeaderLine("date", std::string_view{dateBuf.data(), kRFC7231DateStrLen}));
+  headers.append(MakeHttp1HeaderLine("date", std::string_view{dateBuf.data(), RFC7231DateStrLen}));
   headers.append(MakeHttp1HeaderLine("content-length", "1"));
 
   ASSERT_EQ(server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
@@ -352,7 +353,7 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
     expectedEncoder.encode(expectedBlock, "x-custom", "original");
     expectedEncoder.encode(expectedBlock, "x-another", "anothervalue");
     expectedEncoder.encode(expectedBlock, "x-global", "gvalue");
-    expectedEncoder.encode(expectedBlock, "date", std::string_view{dateBuf.data(), kRFC7231DateStrLen});
+    expectedEncoder.encode(expectedBlock, "date", std::string_view{dateBuf.data(), RFC7231DateStrLen});
     expectedEncoder.encode(expectedBlock, "content-length", "1");
 
     ASSERT_EQ(wire.headerBlockBytes.size(), expectedBlock.size()) << "Server HPACK block size differs from expected";
@@ -386,7 +387,7 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
     }
     FAIL() << "Missing 'date' in decoded headers";
   }
-  EXPECT_EQ(it->second.size(), kRFC7231DateStrLen);
+  EXPECT_EQ(it->second.size(), RFC7231DateStrLen);
   EXPECT_TRUE(it->second.ends_with("GMT"));
   EXPECT_NE(TryParseTimeRFC7231(it->second), kInvalidTimePoint);
 }

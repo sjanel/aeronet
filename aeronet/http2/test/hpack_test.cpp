@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
@@ -881,7 +882,7 @@ TEST(HpackRoundTrip, DateHeaderValue) {
   HpackDecoder decoder(4096);
 
   static constexpr std::string_view kDate = "Thu, 01 Jan 1970 00:00:00 GMT";
-  static_assert(kDate.size() == kRFC7231DateStrLen);
+  static_assert(kDate.size() == RFC7231DateStrLen);
 
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
@@ -900,14 +901,14 @@ TEST(HpackRoundTrip, CurrentDateHeaderValue) {
   HpackEncoder encoder(4096);
   HpackDecoder decoder(4096);
 
-  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
-    std::array<char, kRFC7231DateStrLen> buf{};
+  const std::array<char, RFC7231DateStrLen> dateBuf = [] {
+    std::array<char, RFC7231DateStrLen> buf{};
     (void)TimeToStringRFC7231(SysClock::now(), buf.data());
     return buf;
   }();
 
-  const std::string_view dateSv{dateBuf.data(), kRFC7231DateStrLen};
-  ASSERT_EQ(dateSv.size(), kRFC7231DateStrLen);
+  const std::string_view dateSv{dateBuf.data(), RFC7231DateStrLen};
+  ASSERT_EQ(dateSv.size(), RFC7231DateStrLen);
 
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
@@ -930,7 +931,7 @@ TEST(HpackRoundTrip, CurrentDateHeaderValue) {
     }
     FAIL() << "Missing 'date' in decoded headers";
   }
-  EXPECT_EQ(dateIt->second.size(), kRFC7231DateStrLen);
+  EXPECT_EQ(dateIt->second.size(), RFC7231DateStrLen);
   EXPECT_TRUE(dateIt->second.ends_with("GMT"));
 }
 
@@ -938,13 +939,13 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
   HpackEncoder encoder(4096);
   HpackDecoder decoder(4096);
 
-  const std::array<char, kRFC7231DateStrLen> dateBuf = [] {
-    std::array<char, kRFC7231DateStrLen> buf;
+  const std::array<char, RFC7231DateStrLen> dateBuf = [] {
+    std::array<char, RFC7231DateStrLen> buf;
     (void)TimeToStringRFC7231(SysClock::now(), buf.data());
     return buf;
   }();
 
-  const std::string_view dateSv{dateBuf.data(), kRFC7231DateStrLen};
+  const std::string_view dateSv{dateBuf.data(), RFC7231DateStrLen};
 
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
@@ -960,7 +961,7 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
 
   const auto dateIt = result.decodedHeaders.find("date");
   ASSERT_NE(dateIt, result.decodedHeaders.end());
-  EXPECT_EQ(dateIt->second.size(), kRFC7231DateStrLen);
+  EXPECT_EQ(dateIt->second.size(), RFC7231DateStrLen);
   EXPECT_TRUE(dateIt->second.ends_with("GMT"));
 }
 

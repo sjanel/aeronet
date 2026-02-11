@@ -16,6 +16,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
@@ -134,7 +135,7 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   }
 
   const auto len = endPtr - begPtr;
-  if (std::cmp_not_equal(len, kRFC7231DateStrLen)) {
+  if (std::cmp_not_equal(len, RFC7231DateStrLen)) {
     return ret;  // Expect strict IMF-fixdate form
   }
 

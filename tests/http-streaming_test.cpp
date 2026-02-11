@@ -247,12 +247,11 @@ TEST(HttpStreaming, SendFileErrors) {
 
   std::string resp = BlockingFetch(port, "GET", "/file-after-write");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
-  auto headerEnd = resp.find(http::DoubleCRLF);
-  ASSERT_NE(std::string::npos, headerEnd);
-  EXPECT_EQ(ExtractBody(resp), "initial data");
+  EXPECT_TRUE(resp.contains(http::DoubleCRLF));
+  EXPECT_EQ(ExtractBody(resp), "initial data") << resp;
 }
 
 TEST(HttpStreaming, SendFileOverrideContentLength) {
@@ -383,12 +382,12 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
     writer.status(200);
     writer.header("X-Custom-A", "alpha");
     writer.header("X-Custom-B", "beta");
-    writer.header(http::ContentType, "application/json");  // override default
+    writer.contentType("application/json");  // override default
     // First write sends headers implicitly.
     writer.writeBody("{\"k\":1}");
     // These should be ignored because headers already sent.
     writer.header("X-Ignored", "zzz");
-    writer.header(http::ContentType, "text/plain");
+    writer.contentType("text/plain");
     writer.end();
   });
 
@@ -421,7 +420,7 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   // path /mix : GET streaming, POST normal
   ts.router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header(http::ContentType, "text/plain");
+    writer.contentType("text/plain");
     writer.writeBody("S");
     writer.writeBody("TREAM");
     writer.end();
@@ -455,7 +454,7 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("GLOBAL"); });
   ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header(http::ContentType, "text/plain");
+    writer.contentType("text/plain");
     writer.writeBody("STREAMFALLBACK");
     writer.end();
   });
@@ -490,7 +489,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
   // Register streaming handler for GET; it will attempt to write a body.
   ts.router().setPath(http::Method::GET, "/head", [](const HttpRequest& /*unused*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header(http::ContentType, "text/plain");
+    writer.contentType("text/plain");
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
     writer.end();
   });
@@ -531,7 +530,7 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
   // Register streaming GET and normal POST on same path
   ts.router().setPath(http::Method::GET, "/ka", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.header(http::ContentType, "text/plain");
+    writer.contentType("text/plain");
     writer.writeBody("A");
     writer.writeBody("B");
     writer.end();
@@ -680,7 +679,7 @@ TEST(HttpStreaming, ContentLengthAfterFirstWriteShouldBeIgnored) {
   });
   std::string getResp;
   raw(port, "GET", getResp);
-  ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   // Should be chunked since we wrote body before setting length.
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Ensure our ignored length did not appear.
@@ -829,7 +828,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   ASSERT_EQ(kLargeSize, static_cast<size_t>(std::count(body.begin(), body.end(), 'x')));
 }
 
-TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
+TEST(HttpStreaming, CustomContentTypeAndEncoding) {
   if constexpr (!zlibEnabled()) {
     GTEST_SKIP();
   }
@@ -841,8 +840,8 @@ TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
   std::string payload(128, 'Z');
   ts.router().setDefault([payload](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header("cOnTeNt-TyPe", "text/plain");    // mixed case
-    writer.header("cOnTeNt-EnCoDiNg", "identity");  // should suppress auto compression
+    writer.contentType("text/xml");
+    writer.contentEncoding("identity");  // should suppress auto compression
     writer.writeBody(payload.substr(0, 40));
     writer.writeBody(payload.substr(40));
     writer.end();
@@ -854,10 +853,8 @@ TEST(HttpStreaming, CaseInsensitiveContentTypeAndEncodingSuppression) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   // Ensure our original casing appears exactly and no differently cased duplicate exists.
-  ASSERT_TRUE(resp.contains("cOnTeNt-TyPe: text/plain")) << resp;
-  ASSERT_TRUE(resp.contains("cOnTeNt-EnCoDiNg: identity")) << resp;
-  // Should not see an added normalized Content-Type from default path.
-  EXPECT_FALSE(resp.contains("Content-Type: text/plain")) << resp;
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/xml"))) << resp;
+  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "identity"))) << resp;
   // Body should be identity (contains long run of 'Z').
   EXPECT_TRUE(resp.contains(std::string(50, 'Z'))) << "Body appears compressed when it should not";
 }
@@ -886,7 +883,7 @@ TEST(HttpResponseWriterFailures, ContentLengthAfterWrite) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/len-after-write");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 }
 
@@ -908,7 +905,7 @@ TEST(HttpResponseWriterFailures, FileAfterWriteBody) {
                       });
 
   const std::string response = test::simpleGet(ts.port(), "/file-after-write");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
 }
 
 // Test writeBody/trailerAddLine/end after end() - State::Ended checks

@@ -10,6 +10,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
@@ -27,7 +28,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   const auto nbCharsBodyLen = nchars(body.size());
 
   // Exact allocation size
-  RawChars out(datePos + kRFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +
+  RawChars out(datePos + RFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +
                nbCharsBodyLen + http::CRLF.size() + http::Connection.size() + http::HeaderSep.size() +
                http::close.size() + http::DoubleCRLF.size() + globalHeadersSize + body.size());
 
@@ -44,7 +45,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   out.unchecked_append(http::Date);
   out.unchecked_append(http::HeaderSep);
   TimeToStringRFC7231(SysClock::now(), out.data() + datePos);
-  out.addSize(kRFC7231DateStrLen);
+  out.addSize(RFC7231DateStrLen);
   out.unchecked_append(http::CRLF);
 
   // content-length
