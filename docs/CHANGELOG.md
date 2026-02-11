@@ -19,6 +19,8 @@ All notable changes to aeronet are documented in this file.
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
 - `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range — it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
+- Previously indicated as **undefined behavior**, setting `Content-Type` and `Content-Length` is now prohibited using the `header` and `headerAddLine` methods.
+  You should use the dedicated (already existing) `contentType()` and `contentLength()` methods instead for streaming handlers, and set `content-type` along with the body for normal handlers, otherwise `std::invalid_argument` is thrown.
 
 ### New Features
 

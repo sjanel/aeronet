@@ -12,8 +12,8 @@ constexpr bool IsValidHeaderName(std::string_view name) noexcept {
     return false;
   }
   static constexpr auto kNameAllowed = [] {
-    std::array<bool, 256> allowed{};
-    for (int i = 0; i < 256; ++i) {
+    std::array<bool, 255> allowed{};
+    for (decltype(allowed)::size_type i = 0; i < allowed.size(); ++i) {
       allowed[static_cast<unsigned char>(i)] = is_tchar(static_cast<char>(i));
     }
     return allowed;
@@ -30,8 +30,8 @@ constexpr bool IsValidHeaderName(std::string_view name) noexcept {
 
 constexpr bool IsValidHeaderValue(std::string_view value) noexcept {
   static constexpr auto kValueAllowed = [] {
-    std::array<bool, 256> allowed{};
-    for (int i = 0; i < 256; ++i) {
+    std::array<bool, 255> allowed{};
+    for (decltype(allowed)::size_type i = 0; i < allowed.size(); ++i) {
       const unsigned char ch = static_cast<unsigned char>(i);
       if (ch == '\r' || ch == '\n') {
         allowed[ch] = false;

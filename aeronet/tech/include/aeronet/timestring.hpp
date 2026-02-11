@@ -111,7 +111,6 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   return copy3(++out, "GMT");
 }
 
-inline constexpr std::size_t kRFC7231DateStrLen = 29;
 inline constexpr SysTimePoint kInvalidTimePoint = SysTimePoint::max();
 
 // Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and

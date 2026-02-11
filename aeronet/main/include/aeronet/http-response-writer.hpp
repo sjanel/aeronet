@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string_view>
 
@@ -53,7 +52,7 @@ class HttpResponseWriter {
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void contentType(std::string_view ct) { header(http::ContentType, ct); }
+  void contentType(std::string_view ct);
 
   // Inserts or replaces the Content-Encoding header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -208,7 +207,6 @@ class HttpResponseWriter {
   State _state{State::Opened};
   Encoding _compressionFormat{Encoding::none};
   bool _compressionActivated{false};
-  bool _contentEncodingHeaderPresent{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).

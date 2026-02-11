@@ -514,7 +514,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   EXPECT_EQ(resp.reason(), "OK");
   EXPECT_TRUE(resp.hasReason());
   EXPECT_EQ(resp.reasonSize(), resp.reasonLength());
-  resp.headerAddLine(http::ContentType, "text/plain").headerAddLine("X-A", "B").body("Hello");
+  resp.headerAddLine("X-A", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
   auto prefix = full.substr(0, 15);
@@ -574,6 +574,36 @@ TEST_F(HttpResponseTest, InsertingInvalidHeaderValueShouldThrow) {
 
   EXPECT_THROW(resp.header("X-Test", "value\r\n"), std::invalid_argument);
   EXPECT_THROW(resp.header("X-Test", "value\x7F"), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, ContentTypeAndContentLengthShouldBeAddedWhenSettingBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_THROW(resp.header(http::ContentType, "text/plain"), std::invalid_argument);
+  EXPECT_THROW(resp.header(http::ContentLength, "123"), std::invalid_argument);
+
+  EXPECT_THROW(resp.headerAddLine(http::ContentType, "text/plain"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine(http::ContentLength, "123"), std::invalid_argument);
+
+  resp.body("Hello");  // should automatically add Content-Type and Content-Length
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+
+  // modifying content-type and content-length should still be forbidden
+  EXPECT_THROW(resp.header(http::ContentType, "text/html"), std::invalid_argument);
+  EXPECT_THROW(resp.header(http::ContentLength, "10"), std::invalid_argument);
+
+  // test valid corner cases
+  resp.headerAddLine("content-typ", "text/html");
+  resp.headerAddLine("content-lengt", "10");
+
+  resp.headerAddLine("content-typr", "text/html");
+  resp.headerAddLine("content-lengty", "10");
+
+  resp.headerAddLine("Content-typ", "text/html");
+  resp.headerAddLine("Content-lengt", "10");
+
+  resp.headerAddLine("Content-typr", "text/html");
+  resp.headerAddLine("Content-lengty", "10");
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
@@ -752,14 +782,14 @@ TEST_F(HttpResponseTest, HeaderRemoveLineMultipleTimes) {
 
 TEST_F(HttpResponseTest, HeaderRemoveLineWithBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Before-Body", "value");
+  resp.headerAddLine("content-encoding", "value");
   resp.body("Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 
-  EXPECT_TRUE(resp.hasHeader("X-Before-Body"));
-  resp.headerRemoveLine("X-Before-Body");
+  EXPECT_TRUE(resp.hasHeader("content-encoding"));
+  resp.headerRemoveLine("content-encoding");
 
-  EXPECT_FALSE(resp.hasHeader("X-Before-Body"));
+  EXPECT_FALSE(resp.hasHeader("content-encoding"));
   EXPECT_EQ(resp.bodyInMemory(), "Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 }
@@ -1028,6 +1058,10 @@ TEST_F(HttpResponseTest, HeaderRemoveValueComplexSeparator) {
   resp.headerRemoveValue("X-Complex", "item2", "::");
 
   EXPECT_TRUE(resp.hasHeader("X-Complex"));
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Complex"), "item1::item3");
+
+  resp.headerRemoveValue("X-Compley", "item1", "::");  // should do nothing
+
   EXPECT_EQ(resp.headerValueOrEmpty("X-Complex"), "item1::item3");
 }
 
@@ -3432,8 +3466,7 @@ TEST_F(HttpResponseTest, HeadBodyInlineSet) {
 TEST_F(HttpResponseTest, TrailersAutoChunkedPreservesOtherHeaders) {
   HttpResponse resp(http::StatusCodeOK);
   resp.header("X-Custom", "custom-value");
-  resp.header(http::ContentType, "application/json");
-  resp.body(R"({"key":"value"})");
+  resp.body(R"({"key":"value"})", "application/json");
   resp.trailerAddLine("X-Hash", "sha256:...");
 
   const std::string result = concatenated(std::move(resp));

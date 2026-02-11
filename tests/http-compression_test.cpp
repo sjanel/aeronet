@@ -51,12 +51,7 @@ TEST(HttpCompression, BrAppliedWhenEligible) {
   });
 
   std::string payload(400, 'B');
-  ts.router().setDefault([payload](const HttpRequest &) {
-    HttpResponse respObj;
-    respObj.header(http::ContentType, "text/plain");
-    respObj.body(payload);
-    return respObj;
-  });
+  ts.router().setDefault([payload](const HttpRequest &) { return HttpResponse(payload, "text/plain"); });
   auto resp = test::simpleGet(ts.port(), "/br1", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   auto it = resp.headers.find(http::ContentEncoding);
@@ -76,9 +71,8 @@ TEST(HttpCompression, UserContentEncodingIdentityDisablesCompression) {
   std::string payload(128, 'U');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse respObj;
-    respObj.header(http::ContentType, "text/plain");
     respObj.header(http::ContentEncoding, "identity");
-    respObj.body(payload);
+    respObj.body(payload, "text/plain");
     return respObj;
   });
   auto resp = test::simpleGet(ts.port(), "/br2", {{"Accept-Encoding", "br"}});
@@ -415,9 +409,8 @@ TEST(HttpCompression, GzipUserContentEncodingIdentityDisablesCompression) {
   std::string payload(128, 'B');
   ts.router().setDefault([payload](const HttpRequest &) {
     HttpResponse resp;
-    resp.header(http::ContentType, "text/plain");
     resp.header(http::ContentEncoding, "identity");  // explicit suppression
-    resp.body(payload);
+    resp.body(payload, "text/plain");
     return resp;
   });
   auto resp = test::simpleGet(ts.port(), "/o", {{"Accept-Encoding", "gzip"}});
@@ -438,12 +431,7 @@ TEST(HttpCompression, GzipBelowThresholdNotCompressed) {
     cfg.compression.preferredFormats = {Encoding::gzip};
   });
   std::string smallPayload(32, 'C');
-  ts.router().setDefault([smallPayload](const HttpRequest &) {
-    HttpResponse resp;
-    resp.header(http::ContentType, "text/plain");
-    resp.body(smallPayload);
-    return resp;
-  });
+  ts.router().setDefault([smallPayload](const HttpRequest &) { return HttpResponse(smallPayload, "text/plain"); });
   auto resp = test::simpleGet(ts.port(), "/s", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
@@ -459,12 +447,7 @@ TEST(HttpCompression, GzipNoAcceptEncodingHeaderStillCompressesDefault) {
     cfg.compression.preferredFormats = {Encoding::gzip};
   });
   std::string payload(128, 'D');
-  ts.router().setDefault([payload](const HttpRequest &) {
-    HttpResponse resp;
-    resp.header(http::ContentType, "text/plain");
-    resp.body(payload);
-    return resp;
-  });
+  ts.router().setDefault([payload](const HttpRequest &) { return HttpResponse(payload, "text/plain"); });
   auto resp = test::simpleGet(ts.port(), "/i", {});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   auto it = resp.headers.find(http::ContentEncoding);
