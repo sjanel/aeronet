@@ -22,6 +22,25 @@ function(AeronetSetProjectProperties name)
       endif()
     endif()
   endif()
+
+  # Use lld linker with Clang if available for faster linking
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # Try to find lld (unversioned first, then versioned matching compiler version)
+    find_program(LLD_PROGRAM lld)
+    
+    if(NOT LLD_PROGRAM)
+      # Extract version from compiler if it has one (e.g., clang-21 -> -21)
+      string(REGEX MATCH "-[0-9]+$" COMPILER_VERSION_SUFFIX "${CMAKE_CXX_COMPILER}")
+      if(COMPILER_VERSION_SUFFIX)
+        find_program(LLD_PROGRAM "lld${COMPILER_VERSION_SUFFIX}")
+      endif()
+    endif()
+    
+    if(LLD_PROGRAM)
+      target_link_options(${name} PRIVATE "-fuse-ld=lld")
+    endif()
+  endif()
+
   # Address/UB sanitizers (activated via AERONET_ENABLE_ASAN)
   if(AERONET_ENABLE_ASAN)
     target_compile_options(${name} PRIVATE ${AERONET_ASAN_OPTIONS})
