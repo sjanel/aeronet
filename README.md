@@ -128,13 +128,12 @@ Test with curl:
 curl -i http://localhost:8080/hello
 
 HTTP/1.1 200
+date: Wed, 11 Feb 2026 22:46:04 GMT
 content-type: text/plain
-server: aeronet
-date: Sun, 04 Jan 2026 15:49:40 GMT
 content-length: 151
+server: aeronet
 
 Hello from aeronet minimal server! You requested /hello
-...
 ```
 
 ## Handler registration
@@ -605,8 +604,8 @@ You can build it thanks to the numerous provided methods to store the main compo
 Usage guidelines:
 
 - Use `headerAddLine()` when duplicates are acceptable or not possible from the client code (cheapest path).
-- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive; prefer a canonical style (e.g.
-  `Content-Type`) for readability, but behavior is the same regardless of input casing.
+- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive.
+- Do not use any of those to set `Content-Type` and `Content-Length`. The first one is set along with the `body` methods, and the second one is managed by the library.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - For maximum performance, fill the response in order, starting with status/reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
 

@@ -10,7 +10,9 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timestring.hpp"
+
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
@@ -208,7 +210,7 @@ TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
 
   const auto date = response.header("date");
   ASSERT_FALSE(date.empty()) << "Received headers:\n" << DumpResponseHeaders(response);
-  EXPECT_EQ(date.size(), kRFC7231DateStrLen);
+  EXPECT_EQ(date.size(), RFC7231DateStrLen);
   EXPECT_TRUE(date.ends_with("GMT"));
   EXPECT_NE(TryParseTimeRFC7231(date), kInvalidTimePoint);
 }
@@ -249,7 +251,7 @@ TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
   EXPECT_EQ(response.header("content-length"), "3");
 
   const auto date = response.header("date");
-  EXPECT_EQ(date.size(), kRFC7231DateStrLen);
+  EXPECT_EQ(date.size(), RFC7231DateStrLen);
   EXPECT_TRUE(date.ends_with("GMT"));
 }
 

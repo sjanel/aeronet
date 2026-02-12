@@ -27,14 +27,20 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
+
+namespace {
+
+// non-empty body to trigger content-type / content-length header logic in HttpResponse (will not be sent)
+constexpr std::string_view kDummyBody = "a";
+
+}  // namespace
 
 HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
                                        Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
@@ -54,6 +60,11 @@ HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const Http
   opts.headMethod(_head);
   opts.setPrepared();
   _fixedResponse._opts = opts;
+  if (requestConnClose) {
+    _fixedResponse.headerAddLine(http::Connection, http::close);
+    _fixedResponse._opts.close(false);
+  }
+  _fixedResponse.body(kDummyBody, http::ContentTypeApplicationOctetStream);  // default
 }
 
 void HttpResponseWriter::status(http::StatusCode code) {
@@ -83,10 +94,6 @@ void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view v
     log::warn("Streaming: cannot add header after headers sent");
     return;
   }
-  value = TrimOws(value);
-  if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
-    _contentEncodingHeaderPresent = true;
-  }
   _fixedResponse.headerAddLine(name, value);
 }
 
@@ -101,11 +108,15 @@ void HttpResponseWriter::header(std::string_view name, std::string_view value) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
   }
-  value = TrimOws(value);
-  if (CaseInsensitiveEqual(http::ContentEncoding, name)) {
-    _contentEncodingHeaderPresent = true;
-  }
   _fixedResponse.header(name, value);
+}
+
+void HttpResponseWriter::contentType(std::string_view ct) {
+  if (_state != State::Opened) {
+    log::warn("Streaming: cannot set content-type after headers sent");
+    return;
+  }
+  _fixedResponse.body(kDummyBody, ct);
 }
 
 void HttpResponseWriter::contentLength(std::size_t len) {
@@ -122,28 +133,51 @@ void HttpResponseWriter::contentLength(std::size_t len) {
     return;
   }
   _declaredLength = len;
-  _fixedResponse.setHeader(http::ContentLength, std::string_view(IntegralToCharVector(len)));
 }
 
 void HttpResponseWriter::ensureHeadersSent() {
   if (_state != State::Opened) {
     return;
   }
-  // For HEAD requests never emit chunked framing; force zero Content-Length if not provided.
+
+  // Compute needed header size and reserve capacity in the fixed response buffer to have at most 1 allocation.
+  std::size_t neededSize = 0UL;
+
+  if (_compressionActivated) {
+    neededSize += HttpResponse::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_compressionFormat).size());
+    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
+      neededSize += HttpResponse::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+    }
+  }
   if (chunked()) {
-    _fixedResponse.headerAddLine(http::TransferEncoding, "chunked");
-  } else if (!_fixedResponse.hasBodyFile() && _declaredLength == 0) {
-    _fixedResponse.headerAddLine(http::ContentLength, "0");
+    neededSize += HttpResponse::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
+  } else if (!_fixedResponse.hasBodyFile()) {
+    neededSize += HttpResponse::HeaderSize(http::ContentLength.size(), nchars(_declaredLength));
   }
 
-  // If Content-Type has not been set, set to 'application/octet-stream' by default.
-  _fixedResponse.setHeader(http::ContentType, http::ContentTypeApplicationOctetStream, HttpResponse::OnlyIfNew::Yes);
+  _fixedResponse._data.ensureAvailableCapacity(neededSize);
+
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (_compressionActivated) {
     _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
     if (_server->_config.compression.addVaryAcceptEncodingHeader) {
       _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
     }
+  }
+
+  // Content-length or Transfer-Encoding header
+  if (chunked()) {
+    char* insertPtr = _fixedResponse.getContentLengthHeaderLinePtr() + http::CRLF.size();
+    insertPtr = WriteHeader(insertPtr, http::TransferEncoding, http::chunked);
+    insertPtr = Append(http::DoubleCRLF, insertPtr);
+    const auto dataSize = static_cast<std::size_t>(insertPtr - _fixedResponse._data.data());
+    _fixedResponse._data.setSize(dataSize);
+    _fixedResponse.setBodyStartPos(dataSize);
+  } else if (!_fixedResponse.hasBodyFile()) {
+    _fixedResponse.replaceHeaderValueNoRealloc(_fixedResponse.getContentLengthValuePtr(),
+                                               std::string_view(IntegralToCharVector(_declaredLength)));
+    // Remove the dummy body
+    _fixedResponse._data.setSize(_fixedResponse.bodyStartPos());
   }
 
   ApplyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware,
@@ -209,7 +243,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   const auto& compressionConfig = _server->_config.compression;
 
   if (_compressionFormat != Encoding::none && !_compressionActivated &&
-      _preCompressBuffer.size() < compressionConfig.minBytes && !_contentEncodingHeaderPresent) {
+      _preCompressBuffer.size() < compressionConfig.minBytes && !_fixedResponse._opts.hasContentEncoding()) {
     return accumulateInPreCompressBuffer(data);
   }
 
