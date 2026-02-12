@@ -583,45 +583,29 @@ class HttpResponse {
     return std::move(this->body(body, contentType));
   }
 
-  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Capture the body to avoid a copy (and possibly an allocation).
+  // Requires an rvalue reference (std::string&&). To capture an lvalue, use std::move(): body(std::move(myString)).
+  // To use inline storage with direct compression eligibility, use: body(std::string_view{myString}).
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) & {
+  HttpResponse& body(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) & {
     setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
     return *this;
   }
 
-  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Capture the body to avoid a copy (and possibly an allocation).
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::string body, std::string_view contentType = http::ContentTypeTextPlain) && {
+  HttpResponse&& body(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) && {
     return std::move(this->body(std::move(body), contentType));
   }
 
-  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Capture the body to avoid a copy (and possibly an allocation).
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::vector<char> body, std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
-    setBodyInternal(std::string_view{});
-    setCapturedPayload(std::move(body));
-    return *this;
-  }
-
-  // Capture the body by value to avoid a copy (and possibly an allocation).
-  // Empty body is allowed - this will remove any existing body.
-  // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::vector<std::byte> body,
-                      std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
-    return std::move(this->body(std::move(body), contentType));
-  }
-
-  // Capture the body by value to avoid a copy (and possibly an allocation).
-  // Empty body is allowed - this will remove any existing body.
-  // The body instance is moved into this HttpResponse.
-  HttpResponse& body(std::vector<std::byte> body,
+  HttpResponse& body(std::vector<char>&& body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
     setBodyInternal(std::string_view{});
@@ -629,10 +613,29 @@ class HttpResponse {
     return *this;
   }
 
-  // Capture the body by value to avoid a copy (and possibly an allocation).
+  // Capture the body to avoid a copy (and possibly an allocation).
   // Empty body is allowed - this will remove any existing body.
   // The body instance is moved into this HttpResponse.
-  HttpResponse&& body(std::vector<char> body,
+  HttpResponse&& body(std::vector<std::byte>&& body,
+                      std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
+    return std::move(this->body(std::move(body), contentType));
+  }
+
+  // Capture the body to avoid a copy (and possibly an allocation).
+  // Empty body is allowed - this will remove any existing body.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse& body(std::vector<std::byte>&& body,
+                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
+    setBodyHeaders(contentType, body.size(), NewBodyIsCaptured);
+    setBodyInternal(std::string_view{});
+    setCapturedPayload(std::move(body));
+    return *this;
+  }
+
+  // Capture the body to avoid a copy (and possibly an allocation).
+  // Empty body is allowed - this will remove any existing body.
+  // The body instance is moved into this HttpResponse.
+  HttpResponse&& body(std::vector<char>&& body,
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     return std::move(this->body(std::move(body), contentType));
   }
