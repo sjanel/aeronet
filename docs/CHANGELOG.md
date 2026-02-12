@@ -34,19 +34,20 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
-- All Header values stored in `HttpResponse` and `HttpResponseWriter` are now trimmed of leading/trailing whitespace on set.
-- `DogStatsD` is now able to reconnect automatically if the UDS socket becomes unavailable. The client is also more efficient.
-- Make sure that `WebSocketConfig.maxMessageSize` is strictly respected when decompressing a `WebSocket` message
+- All Header values stored in `HttpResponse` and `HttpResponseWriter` are now **trimmed** of leading/trailing whitespace on set.
+- `DogStatsD` is now able to **reconnect automatically** if the UDS socket becomes unavailable. The client is also more efficient.
+- `WebSocketConfig.maxMessageSize` is now **strictly respected** when decompressing a `WebSocket` message
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
-- Faster case insensitive hash using FNV-1a algorithm for header name lookups, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
+- **Faster case insensitive hash using FNV-1a algorithm for header name lookups**, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
 - `HttpRequest::queryParamsRange()` satisfies the **C++20 range** concept.
 - Reuse encoders contexts instead of recreating them on each request for better performance.
 - Faster `HttpResponse::file()` by optimizing body headers update.
 - Smaller memory reallocations when using captured body in `HttpResponse`.
-- `MSG_ZEROCOPY` support for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
-- Router now uses a more efficient path matching algorithm with a radix tree structure, **it gains around - 40%** in pattern based routes matching speed. Handlers also consume less memory.
-- Reuse codec contexts in automatic compression / decompression for better performance.
+- **`MSG_ZEROCOPY` support** for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
+- **`Router` now uses a more efficient path matching algorithm with a radix tree structure**, **it gains around - 40%** in pattern based routes matching speed. Handlers also consume less memory.
+- **Reuse** codec contexts in automatic compression / decompression for better performance.
 - `HttpResponse::bodyAppend` now reserves memory exponentially to reduce the number of reallocations when appending large bodies in multiple calls.
+- **`HttpResponse::body()` capture overloads now require rvalue references**: `body(std::string&&, ...)` and `body(std::vector<std::byte>&&, ...)`. Passing an lvalue `std::string` (e.g. `resp.body(myString)`) now selects the inline `std::string_view` overload. This should not break existing code and would avoid silent copies when the caller passed an lvalue string / vector to the body capture overloads.
 
 ### Other
 
