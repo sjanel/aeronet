@@ -34,6 +34,7 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #include "aeronet/url-encode.hpp"
@@ -89,9 +90,9 @@ void FormatLastModified(SysTimePoint tp, RawChars& buf) {
   if (tp == kInvalidTimePoint) {
     buf.push_back('-');
   } else {
-    buf.ensureAvailableCapacityExponential(kRFC7231DateStrLen);
+    buf.ensureAvailableCapacityExponential(RFC7231DateStrLen);
     TimeToStringRFC7231(tp, buf.data() + buf.size());
-    buf.addSize(kRFC7231DateStrLen);
+    buf.addSize(RFC7231DateStrLen);
   }
 }
 
@@ -291,9 +292,9 @@ struct DirectoryListingResult {
 // Helper to append a Last-Modified header using a transient stack buffer. The HttpResponse copies
 // the header value synchronously, so using a local char buffer is safe and avoids an extra std::string.
 void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
-  std::array<char, kRFC7231DateStrLen> buf;
+  std::array<char, RFC7231DateStrLen> buf;
   auto* end = TimeToStringRFC7231(tp, buf.data());
-  assert(std::cmp_equal(end - buf.data(), kRFC7231DateStrLen));
+  assert(std::cmp_equal(end - buf.data(), RFC7231DateStrLen));
   resp.headerAddLine(http::LastModified, std::string_view(buf.data(), end));
 }
 

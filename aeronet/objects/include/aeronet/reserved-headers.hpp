@@ -8,7 +8,7 @@
 namespace aeronet::http {
 
 // Centralized rule for HTTP response headers the user may not set directly (normal or streaming path).
-// These are either automatically emitted (Date, Content-Length, Connection, Transfer-Encoding) or
+// These are either automatically emitted (Date, Content-Type, Content-Length, Connection, Transfer-Encoding) or
 // would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
 // (Trailer, Upgrade, TE). Keeping this here allows future optimization of storage layout without
 // scattering the logic.
@@ -20,7 +20,7 @@ namespace aeronet::http {
 //     static_assert(!aeronet::http::IsReservedResponseHeader("Content-Length")); // Not OK
 constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
   static constexpr std::string_view kReservedOrderedLowerCaseHeaders[] = {
-      "connection", "content-length", "date", "te", "trailer", "transfer-encoding", "upgrade"};
+      "connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade"};
   static_assert(std::ranges::is_sorted(kReservedOrderedLowerCaseHeaders));
 
   static constexpr auto kMaxLenReserved =
