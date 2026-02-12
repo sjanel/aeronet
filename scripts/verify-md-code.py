@@ -25,6 +25,8 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     # OpenTelemetry libraries - only include those that are actually built.
     # Note: patterns with wildcards (like *_http*.a) can match multiple libs,
     # so we use exact names where possible to avoid duplicates.
+    # Link base OTLP exporter library first (contains class implementations)
+    ("libopentelemetry_exporter_otlp.a", "-lopentelemetry_exporter_otlp"),
     ("libopentelemetry_exporter_otlp_http.a", "-lopentelemetry_exporter_otlp_http"),
     (
         "libopentelemetry_exporter_otlp_http_metric.a",
@@ -47,6 +49,14 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     ("libopentelemetry_common.a", "-lopentelemetry_common"),
     ("libopentelemetry_resources.a", "-lopentelemetry_resources"),
     ("libopentelemetry_version.a", "-lopentelemetry_version"),
+    # Also look for shared object variants (.so) - LLD may require them
+    ("libopentelemetry_exporter_otlp.so*", "-lopentelemetry_exporter_otlp"),
+    ("libopentelemetry_exporter_otlp_http.so*", "-lopentelemetry_exporter_otlp_http"),
+    ("libopentelemetry_exporter_otlp_http_metric.so*", "-lopentelemetry_exporter_otlp_http_metric"),
+    ("libopentelemetry_exporter_otlp_http_client.so*", "-lopentelemetry_exporter_otlp_http_client"),
+    ("libopentelemetry_trace.so*", "-lopentelemetry_trace"),
+    ("libopentelemetry_metrics.so*", "-lopentelemetry_metrics"),
+    ("libopentelemetry_common.so*", "-lopentelemetry_common"),
 ]
 
 SYSTEM_LINK_FLAGS = [

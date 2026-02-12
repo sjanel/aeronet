@@ -9,7 +9,6 @@
 #include <limits>
 #include <new>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 

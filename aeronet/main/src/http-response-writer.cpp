@@ -26,6 +26,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
