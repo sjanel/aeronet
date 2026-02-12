@@ -79,6 +79,7 @@ constexpr void InitData(char* data) {
   data[HttpResponse::kReasonBeg] = '\n';  // marker for no reason
 #ifndef NDEBUG
   // In debug, this allows for easier inspection of the response data before finalization.
+  // In release, it's not needed because the final HTTP version and date will be written at finalization step.
   http::HTTP_1_1.writeFull(data);
   WriteCRLFDateHeader(data + kStatusLineMinLenWithoutCRLF, SysClock::now());
 #endif
