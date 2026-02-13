@@ -35,7 +35,7 @@ std::string toHex(uint64_t value) {
   return out;
 }
 
-std::mt19937_64 &threadRng() {
+std::mt19937_64& threadRng() {
   static std::mt19937_64 engine = [] {
     // Collect multiple entropy sources and mix via seed_seq.
     std::random_device rd;
@@ -71,9 +71,9 @@ ScopedTempDir::ScopedTempDir(std::string_view prefix) {
   throw std::runtime_error("ScopedTempDir: Failed to create temp dir");
 }
 
-ScopedTempDir::ScopedTempDir(ScopedTempDir &&other) noexcept : _dir(std::move(other._dir)) { other._dir.clear(); }
+ScopedTempDir::ScopedTempDir(ScopedTempDir&& other) noexcept : _dir(std::move(other._dir)) { other._dir.clear(); }
 
-ScopedTempDir &ScopedTempDir::operator=(ScopedTempDir &&other) noexcept {
+ScopedTempDir& ScopedTempDir::operator=(ScopedTempDir&& other) noexcept {
   if (this != &other) {
     cleanup();
     _dir = std::move(other._dir);
@@ -94,7 +94,7 @@ void ScopedTempDir::cleanup() noexcept {
 
 // Create a file inside the provided ScopedTempDir. The constructor does not
 // create directories; callers must ensure the target directory exists.
-ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view content) {
+ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view content) {
   _dir = dir.dirPath();
 
   // Create a unique file inside the provided directory. Use mkstemp on a
@@ -126,12 +126,12 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir &dir, std::string_view conten
   _content.assign(content);
 }
 
-ScopedTempFile::ScopedTempFile(ScopedTempFile &&other) noexcept
+ScopedTempFile::ScopedTempFile(ScopedTempFile&& other) noexcept
     : _dir(std::move(other._dir)), _path(std::move(other._path)), _content(std::move(other._content)) {
   other._path.clear();
 }
 
-ScopedTempFile &ScopedTempFile::operator=(ScopedTempFile &&other) noexcept {
+ScopedTempFile& ScopedTempFile::operator=(ScopedTempFile&& other) noexcept {
   if (this != &other) {
     cleanup();
     _dir = std::move(other._dir);

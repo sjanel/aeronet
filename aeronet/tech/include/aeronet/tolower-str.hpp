@@ -69,8 +69,8 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
 }
 
 #if defined(__AVX2__)
-inline void AsciiLowerMask4(const uint64_t *src, uint64_t *dst) {
-  const auto input = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(src));
+inline void AsciiLowerMask4(const uint64_t* src, uint64_t* dst) {
+  const auto input = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
   const auto aMinus1 = _mm256_set1_epi8(static_cast<char>('A' - 1));
   const auto zPlus1 = _mm256_set1_epi8(static_cast<char>('Z' + 1));
   const auto geA = _mm256_cmpgt_epi8(input, aMinus1);
@@ -78,15 +78,15 @@ inline void AsciiLowerMask4(const uint64_t *src, uint64_t *dst) {
   const auto isUpper = _mm256_and_si256(geA, ltZ);
   const auto lowerBit = _mm256_and_si256(isUpper, _mm256_set1_epi8(0x20));
   const auto lowered = _mm256_or_si256(input, lowerBit);
-  _mm256_storeu_si256(reinterpret_cast<__m256i *>(dst), lowered);
+  _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), lowered);
 }
 
-inline void AsciiLowerMask4(uint64_t *v) { AsciiLowerMask4(static_cast<const uint64_t *>(v), v); }
+inline void AsciiLowerMask4(uint64_t* v) { AsciiLowerMask4(static_cast<const uint64_t*>(v), v); }
 #endif
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
-inline void AsciiLowerMask2(const uint64_t *src, uint64_t *dst) {
-  const auto input = vld1q_u8(reinterpret_cast<const uint8_t *>(src));
+inline void AsciiLowerMask2(const uint64_t* src, uint64_t* dst) {
+  const auto input = vld1q_u8(reinterpret_cast<const uint8_t*>(src));
   const auto aVal = vdupq_n_u8(static_cast<uint8_t>('A'));
   const auto zVal = vdupq_n_u8(static_cast<uint8_t>('Z'));
   const auto geA = vcgeq_u8(input, aVal);
@@ -94,15 +94,15 @@ inline void AsciiLowerMask2(const uint64_t *src, uint64_t *dst) {
   const auto isUpper = vandq_u8(geA, leZ);
   const auto lowerBit = vandq_u8(isUpper, vdupq_n_u8(0x20));
   const auto lowered = vorrq_u8(input, lowerBit);
-  vst1q_u8(reinterpret_cast<uint8_t *>(dst), lowered);
+  vst1q_u8(reinterpret_cast<uint8_t*>(dst), lowered);
 }
 
-inline void AsciiLowerMask2(uint64_t *v) { AsciiLowerMask2(static_cast<const uint64_t *>(v), v); }
+inline void AsciiLowerMask2(uint64_t* v) { AsciiLowerMask2(static_cast<const uint64_t*>(v), v); }
 #endif
 
 // Inplace optimized tolower for ASCII characters
 // buf should be at least of size 'len'.
-constexpr void tolower(char *buf, std::size_t len) {
+constexpr void tolower(char* buf, std::size_t len) {
   std::size_t charPos = 0;
 
   static constexpr std::size_t kWordAlign = alignof(std::uint64_t);
@@ -135,20 +135,20 @@ constexpr void tolower(char *buf, std::size_t len) {
 #if defined(__AVX2__)
   // Process 32 bytes at a time
   for (; charPos + 32 <= len; charPos += 32) {
-    auto *chunk = reinterpret_cast<uint64_t *>(buf + charPos);
+    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
     AsciiLowerMask4(chunk);
   }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
   // Process 16 bytes at a time
   for (; charPos + 16 <= len; charPos += 16) {
-    auto *chunk = reinterpret_cast<uint64_t *>(buf + charPos);
+    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
     AsciiLowerMask2(chunk);
   }
 #endif
 
   // Process 8 bytes at a time
   for (; charPos + 8 <= len; charPos += sizeof(uint64_t)) {
-    auto *chunk = reinterpret_cast<uint64_t *>(buf + charPos);
+    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
     *chunk = AsciiLowerMask(*chunk);
   }
 
@@ -160,7 +160,7 @@ constexpr void tolower(char *buf, std::size_t len) {
 
 // Apply tolower from 'from' to 'to' for len bytes.
 // from and to buffers should be at least of size 'len'.
-constexpr void tolower_n(const char *from, std::size_t len, char *to) {
+constexpr void tolower_n(const char* from, std::size_t len, char* to) {
   std::size_t pos = 0;
   static constexpr std::size_t kAlign = alignof(std::uint64_t);
 
@@ -192,8 +192,8 @@ constexpr void tolower_n(const char *from, std::size_t len, char *to) {
   if (fromMisalign == toMisalign) {
     // Both aligned: direct reinterpret_cast (fastest)
     for (; pos + 8 <= len; pos += 8) {
-      const auto *in = reinterpret_cast<const uint64_t *>(from + pos);
-      auto *out = reinterpret_cast<uint64_t *>(to + pos);
+      const auto* in = reinterpret_cast<const uint64_t*>(from + pos);
+      auto* out = reinterpret_cast<uint64_t*>(to + pos);
       *out = AsciiLowerMask(*in);
     }
   } else {

@@ -54,7 +54,7 @@ constexpr std::size_t kChunkSize = 1 << 13;
 }
 
 void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
-  const char *cursor = data.data();
+  const char* cursor = data.data();
   const auto start = std::chrono::steady_clock::now();
   const auto maxTs = start + totalTimeout;
 
@@ -99,7 +99,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
     bool peerClosed = false;
 
     out.resize_and_overwrite(oldSize + kChunkSize,
-                             [fd, oldSize, &again, &peerClosed](char *data, [[maybe_unused]] std::size_t newCap) {
+                             [fd, oldSize, &again, &peerClosed](char* data, [[maybe_unused]] std::size_t newCap) {
                                ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
                                if (recvBytes == -1) {
                                  if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -193,7 +193,7 @@ std::string recvUntilClosed(int fd) {
       out.reserve((out.capacity() * 2UL) + kChunkSize);
     }
 
-    out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char *data, [[maybe_unused]] std::size_t newCap) {
+    out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
       const ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
       if (recvBytes == -1) {
         // When SO_RCVTIMEO is set on a blocking socket, recv returns -1 with errno = EAGAIN/EWOULDBLOCK
@@ -229,7 +229,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;  // ephemeral
-  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
     throw_errno("Error from ::bind");
   }
   if (::listen(listenSock.fd(), 1) == -1) {
@@ -237,7 +237,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
   }
   sockaddr_in actual{};
   socklen_t alen = sizeof(actual);
-  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr *>(&actual), &alen) != 0) {
+  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr*>(&actual), &alen) != 0) {
     throw_errno("Error from ::getsockname");
   }
 
@@ -271,7 +271,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
 
       try {
         sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
-      } catch (const std::exception &ex) {
+      } catch (const std::exception& ex) {
         log::error("Echo server sendAll failed: {}", ex.what());
         break;
       }
@@ -293,7 +293,7 @@ Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
     Socket sock(Socket::Type::Stream);
     int fd = sock.fd();
 
-    if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       return sock;
     }
 
@@ -362,8 +362,8 @@ std::string dechunk(std::string_view raw) {
       return {};  // malformed
     }
     // Use std::from_chars as a compact char->hex conversion (base 16) instead of a manual loop.
-    const char *first = sizeLine.data();
-    const char *last = first + sizeLine.size();
+    const char* first = sizeLine.data();
+    const char* last = first + sizeLine.size();
     auto conv = std::from_chars(first, last, sz, 16);
     if (conv.ec != std::errc() || conv.ptr != last) {
       return {};  // malformed / invalid hex sequence
@@ -397,7 +397,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     throw std::runtime_error("request failed");
   }
   ParsedResponse out;
-  const std::string &raw = *rawOpt;
+  const std::string& raw = *rawOpt;
   auto hEnd = raw.find(http::DoubleCRLF);
   if (hEnd == std::string::npos) {
     throw std::runtime_error("bad response");
@@ -419,7 +419,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
     }
   }
   size_t cursor = 0;
-  auto nextLine = [&](size_t &pos) {
+  auto nextLine = [&](size_t& pos) {
     auto le = out.headersRaw.find(http::CRLF, pos);
     if (le == std::string::npos) {
       return std::string_view{};
@@ -458,7 +458,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 }
 
 std::string toLower(std::string input) {
-  for (char &ch : input) {
+  for (char& ch : input) {
     ch = tolower(ch);
   }
   return input;
@@ -577,18 +577,18 @@ void setRecvTimeout(int fd, SysDuration timeout) {
   }
 }
 
-std::string buildRequest(const RequestOptions &opt) {
+std::string buildRequest(const RequestOptions& opt) {
   std::string req;
   req.reserve(256 + opt.body.size());
   req.append(opt.method).append(" ").append(opt.target).append(" HTTP/1.1\r\n");
   req.append("Host: ").append(opt.host).append(http::CRLF);
   req.append("Connection: ").append(opt.connection).append(http::CRLF);
-  for (auto &header : opt.headers) {
+  for (auto& header : opt.headers) {
     req.append(header.first).append(http::HeaderSep).append(header.second).append(http::CRLF);
   }
   if (!opt.body.empty()) {
     bool haveCL = false;
-    for (auto &header : opt.headers) {
+    for (auto& header : opt.headers) {
       if (header.first.size() == http::ContentLength.size() - 1 &&
           // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
           std::equal(header.first.begin(), header.first.end(), http::ContentLength.data(),
@@ -606,7 +606,7 @@ std::string buildRequest(const RequestOptions &opt) {
   return req;
 }
 
-std::optional<std::string> request(uint16_t port, const RequestOptions &opt) {
+std::optional<std::string> request(uint16_t port, const RequestOptions& opt) {
   ClientConnection cnx(port);
   int fd = cnx.fd();
   setRecvTimeout(fd, opt.recvTimeout);
@@ -720,7 +720,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 // Convenience wrapper that throws std::runtime_error on failure instead of returning std::nullopt.
 // This simplifies test code by eliminating explicit ASSERT checks for has_value(); gtest will treat
 // uncaught exceptions as test failures with the diagnostic message.
-std::string requestOrThrow(uint16_t port, const RequestOptions &opt) {
+std::string requestOrThrow(uint16_t port, const RequestOptions& opt) {
   auto resp = request(port, opt);
   if (!resp.has_value()) {
     throw std::runtime_error("requestOrThrow: request failed (socket/connect/send/recv) ");
@@ -734,7 +734,7 @@ bool AttemptConnect(uint16_t port) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  return ::connect(sock.fd(), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
+  return ::connect(sock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
 }
 
 bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout) {
