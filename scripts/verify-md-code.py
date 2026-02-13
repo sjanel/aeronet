@@ -72,6 +72,8 @@ SYSTEM_LINK_FLAGS = [
 class Snippet:
     source: Path
     path: Path
+    needs_std_module: bool = False
+    needs_aeronet_module: bool = False
 
 
 @dataclass
@@ -288,18 +290,35 @@ def extract_snippets(source: Path, target_dir: Path) -> List[Snippet]:
     for idx, block in enumerate(blocks, start=1):
         dest = target_dir / f"{sanitized}_block_{idx:03d}.cpp"
         has_main = any(re.search(r"\bint\s+main\s*\(", line) for line in block)
+        
+        needs_std_module = any(re.search(r"^\s*import\s+std\s*;", line) for line in block)
+        needs_aeronet_module = any(re.search(r"^\s*import\s+aeronet\s*;", line) for line in block)
+        
         include_lines = [line for line in block if line.strip().startswith("#include")]
-        body_lines = [line for line in block if not line.strip().startswith("#include")]
+        import_lines = [line for line in block if re.search(r"^\s*import\s+", line.strip())]
+        body_lines = [line for line in block 
+                     if not line.strip().startswith("#include") 
+                     and not re.search(r"^\s*import\s+", line.strip())]
+        
         if not has_main:
             indented = [f"  {line}" if line.strip() else "" for line in body_lines]
             body_lines = ["int main() {", *indented, "  return 0;", "}"]
-        final_lines = include_lines + body_lines
-        dest.write_text(
-            "// extracted from {}\n#include <aeronet/aeronet.hpp>\nusing namespace aeronet;\n{}\n".format(
-                source.name, "\n".join(final_lines)
+        
+        final_lines = import_lines + include_lines + body_lines
+        
+        if needs_std_module or needs_aeronet_module:
+            dest.write_text(
+                "// extracted from {}\n{}\n".format(
+                    source.name, "\n".join(final_lines)
+                )
             )
-        )
-        snippets.append(Snippet(source=source, path=dest))
+        else:
+            dest.write_text(
+                "// extracted from {}\n#include <aeronet/aeronet.hpp>\nusing namespace aeronet;\n{}\n".format(
+                    source.name, "\n".join(final_lines)
+                )
+            )
+        snippets.append(Snippet(source=source, path=dest, needs_std_module=needs_std_module, needs_aeronet_module=needs_aeronet_module))
     return snippets
 
 
@@ -463,6 +482,152 @@ def load_target_usage(
     )
 
 
+def detect_cxx_compiler(build_dir: Path) -> str:
+    """Read CMAKE_CXX_COMPILER from CMakeCache.txt, fall back to CXX env or 'c++'."""
+    cached = read_cache_entry(build_dir, "CMAKE_CXX_COMPILER")
+    if cached:
+        return cached
+    return os.environ.get("CXX", "c++")
+
+
+def uses_libcxx(build_dir: Path) -> bool:
+    """Return True if the aeronet build was configured with -stdlib=libc++."""
+    cache_file = build_dir / "CMakeCache.txt"
+    if not cache_file.is_file():
+        return False
+    content = cache_file.read_text()
+    return "-stdlib=libc++" in content
+
+
+def build_std_module(build_dir: Path, cxx: str) -> Optional[Path]:
+    """Build the C++23 std module and return path to std.pcm if successful.
+
+    The std module (import std;) requires libc++.  If the detected compiler
+    does not appear to be Clang or libc++ is unavailable, this returns None.
+    """
+    std_pcm = build_dir / "std.pcm"
+    if std_pcm.exists():
+        return std_pcm
+
+    # Try to find a version suffix from the compiler name (e.g. clang++-21 -> 21)
+    ver_match = re.search(r"(\d+)$", cxx)
+    ver = ver_match.group(1) if ver_match else ""
+
+    # Common locations for std.cppm with libc++
+    std_cppm_locations = [
+        Path("/usr/lib/libc++/v1/std.cppm"),
+        Path("/usr/include/c++/v1/std.cppm.in"),
+    ]
+    if ver:
+        std_cppm_locations.insert(
+            0, Path(f"/usr/lib/llvm-{ver}/lib/clang/{ver}/share/std.cppm")
+        )
+
+    std_cppm = None
+    for location in std_cppm_locations:
+        if location.exists():
+            std_cppm = location
+            break
+
+    if not std_cppm:
+        print("Warning: Could not find std.cppm for module build", file=sys.stderr)
+        return None
+
+    print(f"Building std.pcm module from {std_cppm}")
+
+    cmd = [
+        cxx,
+        "-std=gnu++23",
+        "-stdlib=libc++",
+        "--precompile",
+        "-o", str(std_pcm),
+        str(std_cppm),
+        "-Wno-reserved-module-identifier",
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("Failed to build std.pcm module", file=sys.stderr)
+        if result.stderr:
+            dump_output(result.stderr)
+        return None
+
+    print(f"Successfully built std.pcm at {std_pcm}")
+    return std_pcm
+
+
+@dataclass
+class ModulePaths:
+    pcm: Path   # Binary Module Interface (.pcm)
+    obj: Path   # Compiled object file (.o)
+
+
+def build_aeronet_module(
+    build_dir: Path,
+    include_dirs: List[str],
+    compile_definitions: List[str],
+    cxx: str,
+    libcxx: bool = False,
+    std_pcm_path: Optional[Path] = None,
+) -> Optional[ModulePaths]:
+    """Build the aeronet C++ module and return paths to aeronet.pcm and aeronet.o."""
+    aeronet_pcm = build_dir / "aeronet.pcm"
+    aeronet_obj = build_dir / "aeronet.o"
+    if aeronet_pcm.exists() and aeronet_obj.exists():
+        return ModulePaths(pcm=aeronet_pcm, obj=aeronet_obj)
+
+    aeronet_cppm = Path("modules/aeronet.cppm")
+    if not aeronet_cppm.exists():
+        print(f"Warning: Could not find {aeronet_cppm} for module build", file=sys.stderr)
+        return None
+
+    print(f"Building aeronet.pcm module from {aeronet_cppm}")
+
+    cmd = [
+        cxx,
+        "-std=gnu++23",
+        "--precompile",
+        "-o", str(aeronet_pcm),
+        str(aeronet_cppm),
+    ]
+
+    if libcxx:
+        cmd.append("-stdlib=libc++")
+
+    for inc_dir in include_dirs:
+        cmd.extend(["-I", inc_dir])
+
+    for define in compile_definitions:
+        if define.startswith("-D"):
+            cmd.append(define)
+        else:
+            cmd.append(f"-D{define}")
+
+    if std_pcm_path:
+        cmd.append(f"-fmodule-file=std={std_pcm_path}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("Failed to build aeronet.pcm module", file=sys.stderr)
+        if result.stderr:
+            dump_output(result.stderr)
+        return None
+
+    # Compile the BMI to an object file (contains the module initializer)
+    obj_cmd = [cxx, "-std=gnu++23", "-c", str(aeronet_pcm), "-o", str(aeronet_obj)]
+    if libcxx:
+        obj_cmd.append("-stdlib=libc++")
+    result = subprocess.run(obj_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("Failed to compile aeronet.pcm to object file", file=sys.stderr)
+        if result.stderr:
+            dump_output(result.stderr)
+        return None
+
+    print(f"Successfully built aeronet module at {aeronet_pcm}")
+    return ModulePaths(pcm=aeronet_pcm, obj=aeronet_obj)
+
+
 def cmake_escape(value: str) -> str:
     return value.replace("\\", "/").replace('"', '\\"')
 
@@ -479,6 +644,9 @@ def write_cmake_project(
     system_link_flags: List[str],
     sanitize_flags: List[str],
     link_mode: bool,
+    std_pcm_path: Optional[Path] = None,
+    aeronet_module: Optional[ModulePaths] = None,
+    libcxx: bool = False,
 ) -> Path:
     cmakelists = project_dir / "CMakeLists.txt"
     env_target = "aeronet_doc_env"
@@ -538,6 +706,29 @@ def write_cmake_project(
         else:
             lines.append(f'add_library({target.target} OBJECT "{source}")')
         lines.append(f"target_link_libraries({target.target} PRIVATE {env_target})")
+        
+        module_flags: List[str] = []
+        if target.snippet.needs_std_module and std_pcm_path:
+            std_pcm = cmake_escape(str(std_pcm_path))
+            module_flags.append(f'-fmodule-file=std={std_pcm}')
+        if target.snippet.needs_aeronet_module and aeronet_module:
+            aeronet_pcm = cmake_escape(str(aeronet_module.pcm))
+            module_flags.append(f'-fmodule-file=aeronet={aeronet_pcm}')
+
+        if module_flags:
+            lines.append(f"target_compile_options({target.target} PRIVATE")
+            if libcxx or target.snippet.needs_std_module:
+                lines.append("  -stdlib=libc++")
+            for flag in module_flags:
+                lines.append(f'  "{flag}"')
+            lines.append(")")
+            if libcxx or target.snippet.needs_std_module:
+                lines.append(f"target_link_options({target.target} PRIVATE -stdlib=libc++ -lc++)")
+
+        # Link the compiled module object so the module initializer is defined
+        if link_mode and target.snippet.needs_aeronet_module and aeronet_module:
+            obj_escaped = cmake_escape(str(aeronet_module.obj))
+            lines.append(f'target_link_libraries({target.target} PRIVATE "{obj_escaped}")')
 
     cmakelists.write_text("\n".join(lines) + "\n")
     return cmakelists
@@ -549,12 +740,15 @@ def configure_cmake_project(
     build_dir: Path,
     generator: Optional[str],
     build_type: Optional[str],
+    cxx_compiler: Optional[str] = None,
 ) -> bool:
     cmd = [cmake_bin, "-S", str(source_dir), "-B", str(build_dir)]
     if generator:
         cmd.extend(["-G", generator])
     if build_type:
         cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
+    if cxx_compiler:
+        cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_compiler}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         return True
@@ -653,6 +847,31 @@ def main() -> None:
             print("Checked 0 code snippets, 0 failures")
             return
 
+        cxx = detect_cxx_compiler(build_dir)
+        libcxx = uses_libcxx(build_dir)
+
+        needs_std = any(snippet.needs_std_module for snippet in snippets)
+        needs_aeronet = any(snippet.needs_aeronet_module for snippet in snippets)
+
+        std_pcm_path = None
+        if needs_std:
+            std_pcm_path = build_std_module(tmp_path, cxx)
+            if not std_pcm_path:
+                print("Warning: Some snippets need std module but build failed", file=sys.stderr)
+
+        aeronet_module = None
+        if needs_aeronet:
+            aeronet_module = build_aeronet_module(
+                tmp_path,
+                include_dirs,
+                compile_definitions,
+                cxx,
+                libcxx,
+                std_pcm_path,
+            )
+            if not aeronet_module:
+                print("Warning: Some snippets need aeronet module but build failed", file=sys.stderr)
+
         snippet_targets: List[SnippetTarget] = []
         for idx, snippet in enumerate(snippets, start=1):
             rel_source = snippet.path.relative_to(tmp_path)
@@ -676,11 +895,17 @@ def main() -> None:
             SYSTEM_LINK_FLAGS,
             sanitize_flags,
             args.link,
+            std_pcm_path,
+            aeronet_module,
+            libcxx,
         )
 
         build_type = args.cmake_build_type or read_cache_entry(
             build_dir, "CMAKE_BUILD_TYPE"
         )
+        # Only pass cxx_compiler when snippets use modules (must match the
+        # compiler that produced the .pcm files).
+        snippet_cxx = cxx if (needs_std or needs_aeronet) else None
         cmake_build_dir = tmp_path / "cmake-build"
         if not configure_cmake_project(
             args.cmake,
@@ -688,6 +913,7 @@ def main() -> None:
             cmake_build_dir,
             args.generator,
             build_type,
+            snippet_cxx,
         ):
             sys.exit(1)
 
