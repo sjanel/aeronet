@@ -756,22 +756,32 @@ streaming writer path. For plaintext sockets the server uses the kernel `sendfil
 transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
 and writes through the TLS transport.
 
-### C++ modules support
+### C++ modules support (experimental)
 
-Using the `AERONET_BUILD_MODULES` setting in CMake, the library supports C++ modules (C++20 and onwards).
+When `AERONET_BUILD_MODULES=ON` is set in CMake, the library builds an optional C++20 module interface (`aeronet`).
+The module re-exports the public API surface of `<aeronet/aeronet.hpp>` — only user-facing types, configuration
+structs, handler callbacks, and protocol enums are exported; internal implementation details are omitted.
 
-Module support requires CMake 3.28+, a module-supporting build system (such as Ninja), and is supported by the following compiler (minimum) versions:
-- GCC 15
-- Clang 18
-- MSVC 17.6
+**Requirements:**
+
+- CMake 3.28+
+- A build system with C++20 module support (e.g. Ninja 1.11+)
+- Compiler minimum versions: GCC 15, Clang 18, or MSVC 17.6
+
+```cmake
+cmake -B build -G Ninja -DAERONET_BUILD_MODULES=ON
+cmake --build build
+```
+
 ```cpp
-import std;
 import aeronet;
+
+#include <utility>  // std::move — standard library is not exported by the module
 
 using aeronet::HttpRequest;
 using aeronet::HttpResponse;
 using aeronet::HttpServer;
-using aeronet::HttpServerConfig;;
+using aeronet::HttpServerConfig;
 using aeronet::Router;
 using aeronet::http::Method;
 
@@ -780,8 +790,8 @@ int main() {
     router.setPath(Method::GET, "/hello", [](const HttpRequest& req) {
         return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
     });
-    HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
-    server.run(); // blocking. Use start() for non-blocking
+    HttpServer server(HttpServerConfig{}, std::move(router));
+    server.run();
 }
 ```
 
