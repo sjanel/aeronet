@@ -33,12 +33,12 @@ inline auto IntegralToCharVector(std::integral auto val) {
 }
 
 template <std::integral Integral>
-Integral StringToIntegral(const char *begPtr, std::size_t len) {
+Integral StringToIntegral(const char* begPtr, std::size_t len) {
   // No need to value initialize ret, std::from_chars will set it in case no error is returned
   // And in case of error, exception is thrown instead
   Integral ret;
 
-  const char *endPtr = begPtr + len;
+  const char* endPtr = begPtr + len;
   const auto [ptr, errc] = std::from_chars(begPtr, endPtr, ret);
 
   if (errc != std::errc()) {
@@ -58,7 +58,7 @@ Integral StringToIntegral(std::string_view str) {
   return StringToIntegral<Integral>(str.data(), str.size());
 }
 
-constexpr char *AppendIntegralToCharBuf(char *buf, std::integral auto val) {
+constexpr char* AppendIntegralToCharBuf(char* buf, std::integral auto val) {
   static constexpr auto kMaxCharsInt =
       std::max(nchars(std::numeric_limits<decltype(val)>::max()), nchars(std::numeric_limits<decltype(val)>::min()));
   return std::to_chars(buf, buf + kMaxCharsInt, val).ptr;

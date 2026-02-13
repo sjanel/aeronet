@@ -21,7 +21,7 @@ std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
 }
 
-std::span<const std::byte> buf_bytes(const RawBytes &buf) noexcept { return {buf.data(), buf.size()}; }
+std::span<const std::byte> buf_bytes(const RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
 #endif
 }  // namespace
 // ============================================================================
@@ -285,7 +285,7 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_Defaults) {
   BuildDeflateResponse(params, response);
 
   // With all defaults, should just be the extension name
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(response.data()), response.size()), "permessage-deflate");
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(response.data()), response.size()), "permessage-deflate");
 }
 
 TEST(WebSocketDeflateTest, BuildDeflateResponse_ServerNoContextTakeover) {
@@ -294,9 +294,9 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_ServerNoContextTakeover) {
   RawChars response;
   BuildDeflateResponse(params, response);
 
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .starts_with("permessage-deflate"));
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("server_no_context_takeover"));
 }
 
@@ -306,7 +306,7 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_ClientNoContextTakeover) {
   RawChars response;
   BuildDeflateResponse(params, response);
 
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("client_no_context_takeover"));
 }
 
@@ -317,9 +317,9 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_ReducedWindowBits) {
   RawChars response;
   BuildDeflateResponse(params, response);
 
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("server_max_window_bits=10"));
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("client_max_window_bits=12"));
 }
 
@@ -332,13 +332,13 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_AllParams) {
   RawChars response;
   BuildDeflateResponse(params, response);
 
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("server_no_context_takeover"));
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("client_no_context_takeover"));
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("server_max_window_bits=9"));
-  EXPECT_TRUE(std::string_view(reinterpret_cast<const char *>(response.data()), response.size())
+  EXPECT_TRUE(std::string_view(reinterpret_cast<const char*>(response.data()), response.size())
                   .contains("client_max_window_bits=10"));
 }
 
@@ -351,7 +351,7 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_DefaultWindowBitsNotIncluded) {
 
   // Default window bits should not be included
   EXPECT_TRUE(
-      !std::string_view(reinterpret_cast<const char *>(response.data()), response.size()).contains("window_bits"));
+      !std::string_view(reinterpret_cast<const char*>(response.data()), response.size()).contains("window_bits"));
 }
 
 // ============================================================================
@@ -378,7 +378,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_RoundTrip) {
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   // Verify round-trip
-  std::string_view result(reinterpret_cast<const char *>(decompressed.data()), decompressed.size());
+  std::string_view result(reinterpret_cast<const char*>(decompressed.data()), decompressed.size());
   EXPECT_EQ(result, original);
 }
 
@@ -408,7 +408,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_LargeData) {
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(decompressed.size(), original.size());
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 
 TEST(WebSocketDeflateTest, CompressDecompress_EmptyData) {
@@ -476,7 +476,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_ClientSide) {
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 
 TEST(WebSocketDeflateTest, CompressDecompress_WithNoContextTakeover) {
@@ -503,8 +503,8 @@ TEST(WebSocketDeflateTest, CompressDecompress_WithNoContextTakeover) {
   ASSERT_EQ(ctx.decompress(buf_bytes(compressed1), decompressed1), nullptr);
   ASSERT_EQ(ctx.decompress(buf_bytes(compressed2), decompressed2), nullptr);
 
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed1.data()), decompressed1.size()), msg1);
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed2.data()), decompressed2.size()), msg2);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed1.data()), decompressed1.size()), msg1);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed2.data()), decompressed2.size()), msg2);
 }
 
 TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
@@ -524,7 +524,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 
 TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {
@@ -543,7 +543,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {
   auto compressedSpan = buf_bytes(compressed);
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 
 TEST(WebSocketDeflateTest, ShouldSkipCompression_ZeroThreshold) {
@@ -572,7 +572,7 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
   EXPECT_EQ(ctx.decompress(compressedSpan, decompressed, 0), nullptr);
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(decompressed.data()), decompressed.size()), original);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 
 #endif  // AERONET_ENABLE_ZLIB

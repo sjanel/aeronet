@@ -71,7 +71,7 @@ TEST(StringToIntegral, OutOfRange) {
 }
 
 TEST(StringToIntegral, IncorrectBufferLength) {
-  const char *str = "12345";
+  const char* str = "12345";
   EXPECT_EQ(StringToIntegral<int32_t>(str, 5), 12345);
   EXPECT_EQ(StringToIntegral<int32_t>(str, 3), 123);
   EXPECT_EQ(StringToIntegral<int32_t>(str, 1), 1);

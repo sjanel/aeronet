@@ -33,13 +33,13 @@ class ObjectArrayPool {
   }
 
   // Disable copy operations.
-  ObjectArrayPool(const ObjectArrayPool &) = delete;
-  ObjectArrayPool &operator=(const ObjectArrayPool &) = delete;
+  ObjectArrayPool(const ObjectArrayPool&) = delete;
+  ObjectArrayPool& operator=(const ObjectArrayPool&) = delete;
 
   // Move operations transfer ownership of the pool.
   // No object pointers are invalidated.
-  ObjectArrayPool(ObjectArrayPool &&other) noexcept;
-  ObjectArrayPool &operator=(ObjectArrayPool &&other) noexcept;
+  ObjectArrayPool(ObjectArrayPool&& other) noexcept;
+  ObjectArrayPool& operator=(ObjectArrayPool&& other) noexcept;
 
   ~ObjectArrayPool() { reset(); }
 
@@ -54,7 +54,7 @@ class ObjectArrayPool {
   // allocated before the constructor threw; that allocation is not rolled
   // back by this function.
   // The returned pointer can then be wrapped in a std::span<T> with nbElems size if desired.
-  [[nodiscard]] T *allocateAndDefaultConstruct(size_type nbElems);
+  [[nodiscard]] T* allocateAndDefaultConstruct(size_type nbElems);
 
   // Provided that arr is the last object array returned by allocate,
   // shrinks its size to newSize.
@@ -65,7 +65,7 @@ class ObjectArrayPool {
   //  - the last write operation called on the pool must be allocateAndDefaultConstruct
   //    that returned arr (In particular, it's undefined behavior to call this method after clear or reset).
   // You can call this method with newSize = 0 to free the entire last allocation.
-  void shrinkLastAllocated(T *arr, size_type newSize) noexcept {
+  void shrinkLastAllocated(T* arr, size_type newSize) noexcept {
     assert(_currentBlock != nullptr && arr + newSize <= _currentBlock->begin() + _currentBlock->size);
     std::destroy(arr + newSize, _currentBlock->begin() + _currentBlock->size);
     _currentBlock->size = static_cast<size_type>(arr + newSize - _currentBlock->begin());
@@ -85,10 +85,10 @@ class ObjectArrayPool {
 
  private:
   struct Block {
-    T *begin() noexcept { return reinterpret_cast<T *>(reinterpret_cast<std::byte *>(this + 1) + kMallocPadding); }
+    T* begin() noexcept { return reinterpret_cast<T*>(reinterpret_cast<std::byte*>(this + 1) + kMallocPadding); }
 
-    Block *prevBlock;
-    Block *nextBlock;
+    Block* prevBlock;
+    Block* nextBlock;
     size_type size;
     size_type capacity;
   };
@@ -111,7 +111,7 @@ class ObjectArrayPool {
 
   void getOrCreateNewBlock(size_type nbElems) {
     if (_currentBlock != nullptr) {
-      Block *nextBlock = _currentBlock->nextBlock;
+      Block* nextBlock = _currentBlock->nextBlock;
       while (nextBlock != nullptr) {
         assert(nextBlock->size == 0);  // must be empty
         _currentBlock = nextBlock;
@@ -129,7 +129,7 @@ class ObjectArrayPool {
     // malloc itselfs returns memory aligned to max_align_t, which is
     // sufficient for our needs, but the Block header may have a size
     // that is not a multiple of Slot alignment.
-    Block *newBlock = static_cast<Block *>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockCapa * sizeof(T))));
+    Block* newBlock = static_cast<Block*>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockCapa * sizeof(T))));
     if (newBlock == nullptr) {
       throw std::bad_alloc();
     }
@@ -150,21 +150,21 @@ class ObjectArrayPool {
     _currentBlock = newBlock;
   }
 
-  Block *_firstBlock{nullptr};
-  Block *_currentBlock{nullptr};
+  Block* _firstBlock{nullptr};
+  Block* _currentBlock{nullptr};
   // totalCapacity tracks the total number of allocated slots in the pool
   // or the initial capacity if no blocks have been allocated yet.
   size_type _totalCapacity{kDefaultInitialCapacity};
 };
 
 template <class T, class SizeType>
-ObjectArrayPool<T, SizeType>::ObjectArrayPool(ObjectArrayPool &&other) noexcept
+ObjectArrayPool<T, SizeType>::ObjectArrayPool(ObjectArrayPool&& other) noexcept
     : _firstBlock(std::exchange(other._firstBlock, nullptr)),
       _currentBlock(std::exchange(other._currentBlock, nullptr)),
       _totalCapacity(std::exchange(other._totalCapacity, kDefaultInitialCapacity)) {}
 
 template <class T, class SizeType>
-ObjectArrayPool<T, SizeType> &ObjectArrayPool<T, SizeType>::operator=(ObjectArrayPool &&other) noexcept {
+ObjectArrayPool<T, SizeType>& ObjectArrayPool<T, SizeType>::operator=(ObjectArrayPool&& other) noexcept {
   if (this != &other) [[likely]] {
     reset();
     _firstBlock = std::exchange(other._firstBlock, nullptr);
@@ -175,12 +175,12 @@ ObjectArrayPool<T, SizeType> &ObjectArrayPool<T, SizeType>::operator=(ObjectArra
 }
 
 template <class T, class SizeType>
-T *ObjectArrayPool<T, SizeType>::allocateAndDefaultConstruct(size_type nbElems) {
+T* ObjectArrayPool<T, SizeType>::allocateAndDefaultConstruct(size_type nbElems) {
   if (_currentBlock == nullptr || _currentBlock->size + nbElems > _currentBlock->capacity) {
     getOrCreateNewBlock(nbElems);
   }
 
-  T *slot = _currentBlock->begin() + _currentBlock->size;
+  T* slot = _currentBlock->begin() + _currentBlock->size;
 
   std::uninitialized_default_construct_n(slot, nbElems);
 
@@ -193,7 +193,7 @@ template <class T, class SizeType>
 void ObjectArrayPool<T, SizeType>::clear() noexcept {
   // Destroy constructed objects but keep allocated blocks for reuse.
   // After clear, allocation should start from the first block again.
-  for (Block *block = _firstBlock; block != nullptr; block = block->nextBlock) {
+  for (Block* block = _firstBlock; block != nullptr; block = block->nextBlock) {
     std::destroy_n(block->begin(), block->size);
     block->size = 0;
   }
@@ -210,9 +210,9 @@ void ObjectArrayPool<T, SizeType>::reset() noexcept {
     // Resets total capacity to its initial value (at construction of the pool)
     _totalCapacity = _firstBlock->capacity;
 
-    Block *block = _firstBlock;
+    Block* block = _firstBlock;
     while (block != nullptr) {
-      Block *next = block->nextBlock;
+      Block* next = block->nextBlock;
       std::free(block);
       block = next;
     }
