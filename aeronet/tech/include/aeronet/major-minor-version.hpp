@@ -9,7 +9,7 @@ namespace aeronet {
 
 // Single digit Major.Minor version representation, e.g. HTTP/1.1, TLS 1.2.
 // Are considered valid if both major and minor are in 0-9 range, and major != 0.
-template <const char *Prefix>
+template <const char* Prefix>
 class MajorMinorVersion {
  public:
   static constexpr std::string_view kPrefix = Prefix;
@@ -28,7 +28,7 @@ class MajorMinorVersion {
 
   constexpr MajorMinorVersion(std::string_view versionStr) noexcept {
     if (versionStr.size() == kStrLen) {
-      const char *pStr = versionStr.data();
+      const char* pStr = versionStr.data();
       char major = pStr[kPrefix.size()];
       char minor = pStr[kPrefix.size() + 2UL];
       if (major >= '1' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
@@ -55,21 +55,21 @@ class MajorMinorVersion {
 
   // Write the full version string (e.g. "HTTP/1.1") to out.
   // Returns pointer to one past the last written character.
-  constexpr char *writeFull(char *out) const {
+  constexpr char* writeFull(char* out) const {
     std::memcpy(out, kPrefix.data(), kPrefix.size());
     return writeMajorMinor(out + kPrefix.size());
   }
 
   // Write just the "X.Y" part of the version to out.
   // Returns pointer to one past the last written character.
-  constexpr char *writeMajorMinor(char *out) const {
+  constexpr char* writeMajorMinor(char* out) const {
     *out++ = static_cast<char>('0' + major());
     *out++ = '.';
     *out++ = static_cast<char>('0' + minor());
     return out;
   }
 
-  constexpr auto operator<=>(const MajorMinorVersion &) const noexcept = default;
+  constexpr auto operator<=>(const MajorMinorVersion&) const noexcept = default;
 
  private:
   std::uint8_t _data{};

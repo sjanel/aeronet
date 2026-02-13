@@ -97,7 +97,7 @@ TEST(HttpHeader, CopyAssignment) {
 
 TEST(HttpHeader, SelfCopyAssignment) {
   http::Header original("X-Self-Assign", "SelfValue");
-  auto &alias = original;
+  auto& alias = original;
   original = alias;  // Self-assignment
   EXPECT_EQ(original.name(), "X-Self-Assign");
   EXPECT_EQ(original.value(), "SelfValue");

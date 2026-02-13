@@ -43,7 +43,7 @@ struct TestAddrEntry {
 
 [[nodiscard]] TestAddrEntry MakeLoopbackEntry(uint16_t port) {
   TestAddrEntry entry;
-  auto *sin = reinterpret_cast<sockaddr_in *>(&entry.storage);
+  auto* sin = reinterpret_cast<sockaddr_in*>(&entry.storage);
   sin->sin_family = AF_INET;
   sin->sin_port = htons(port);
   sin->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -68,23 +68,23 @@ struct HookState {
   std::deque<int> socketErrnos;
   std::deque<ConnectAction> connectActions;
   std::optional<AddrinfoOverrideData> addrinfoOverride;
-  std::unordered_set<addrinfo *> customHeads;
+  std::unordered_set<addrinfo*> customHeads;
 };
 
 HookState gHookState;
 std::mutex gHookMutex;
 
-[[nodiscard]] TestAddrinfoNode *DuplicateEntries(const std::vector<TestAddrEntry> &entries) {
-  TestAddrinfoNode *head = nullptr;
-  TestAddrinfoNode *tail = nullptr;
-  for (const auto &entry : entries) {
-    auto *node = new TestAddrinfoNode();
+[[nodiscard]] TestAddrinfoNode* DuplicateEntries(const std::vector<TestAddrEntry>& entries) {
+  TestAddrinfoNode* head = nullptr;
+  TestAddrinfoNode* tail = nullptr;
+  for (const auto& entry : entries) {
+    auto* node = new TestAddrinfoNode();
     node->ai.ai_family = entry.family;
     node->ai.ai_socktype = entry.sockType;
     node->ai.ai_protocol = entry.protocol;
     node->ai.ai_addrlen = entry.addrlen;
     node->storage = entry.storage;
-    node->ai.ai_addr = reinterpret_cast<sockaddr *>(&node->storage);
+    node->ai.ai_addr = reinterpret_cast<sockaddr*>(&node->storage);
     node->ai.ai_next = nullptr;
     if (tail != nullptr) {
       tail->ai.ai_next = &node->ai;
@@ -96,10 +96,10 @@ std::mutex gHookMutex;
   return head;
 }
 
-void FreeCustomList(addrinfo *head) {
-  auto *node = reinterpret_cast<TestAddrinfoNode *>(head);
+void FreeCustomList(addrinfo* head) {
+  auto* node = reinterpret_cast<TestAddrinfoNode*>(head);
   while (node != nullptr) {
-    auto *next = node->ai.ai_next != nullptr ? reinterpret_cast<TestAddrinfoNode *>(node->ai.ai_next) : nullptr;
+    auto* next = node->ai.ai_next != nullptr ? reinterpret_cast<TestAddrinfoNode*>(node->ai.ai_next) : nullptr;
     delete node;
     node = next;
   }
@@ -110,7 +110,7 @@ void ResetHooks() {
   gHookState.socketErrnos.clear();
   gHookState.connectActions.clear();
   gHookState.addrinfoOverride.reset();
-  for (addrinfo *head : gHookState.customHeads) {
+  for (addrinfo* head : gHookState.customHeads) {
     FreeCustomList(head);
   }
   gHookState.customHeads.clear();
@@ -119,8 +119,8 @@ void ResetHooks() {
 class HookGuard {
  public:
   HookGuard() { ResetHooks(); }
-  HookGuard(const HookGuard &) = delete;
-  HookGuard &operator=(const HookGuard &) = delete;
+  HookGuard(const HookGuard&) = delete;
+  HookGuard& operator=(const HookGuard&) = delete;
   ~HookGuard() { ResetHooks(); }
 };
 
@@ -142,12 +142,12 @@ class AddrinfoOverrideGuard {
     activate(std::move(entries), result);
   }
 
-  AddrinfoOverrideGuard(const AddrinfoOverrideGuard &) = delete;
-  AddrinfoOverrideGuard &operator=(const AddrinfoOverrideGuard &) = delete;
+  AddrinfoOverrideGuard(const AddrinfoOverrideGuard&) = delete;
+  AddrinfoOverrideGuard& operator=(const AddrinfoOverrideGuard&) = delete;
 
-  AddrinfoOverrideGuard(AddrinfoOverrideGuard &&other) noexcept { active_ = std::exchange(other.active_, false); }
+  AddrinfoOverrideGuard(AddrinfoOverrideGuard&& other) noexcept { active_ = std::exchange(other.active_, false); }
 
-  AddrinfoOverrideGuard &operator=(AddrinfoOverrideGuard &&other) noexcept {
+  AddrinfoOverrideGuard& operator=(AddrinfoOverrideGuard&& other) noexcept {
     if (this != &other) {
       reset();
       active_ = std::exchange(other.active_, false);
@@ -222,8 +222,8 @@ int socket(int _domain, int _type, int _protocol) {
   return real_socket(_domain, _type, _protocol);
 }
 
-int connect(int _fd, const sockaddr *_addr, socklen_t _len) {
-  using ConnectFn = int (*)(int, const sockaddr *, socklen_t);
+int connect(int _fd, const sockaddr* _addr, socklen_t _len) {
+  using ConnectFn = int (*)(int, const sockaddr*, socklen_t);
   static ConnectFn real_connect = reinterpret_cast<ConnectFn>(dlsym(RTLD_NEXT, "connect"));
   if (real_connect == nullptr) {
     std::abort();
@@ -251,8 +251,8 @@ int connect(int _fd, const sockaddr *_addr, socklen_t _len) {
   return real_connect(_fd, _addr, _len);
 }
 
-int getaddrinfo(const char *_name, const char *_service, const addrinfo *_req, addrinfo **_pai) {
-  using GetAddrInfoFn = int (*)(const char *, const char *, const addrinfo *, addrinfo **);
+int getaddrinfo(const char* _name, const char* _service, const addrinfo* _req, addrinfo** _pai) {
+  using GetAddrInfoFn = int (*)(const char*, const char*, const addrinfo*, addrinfo**);
   static GetAddrInfoFn real_getaddrinfo = reinterpret_cast<GetAddrInfoFn>(dlsym(RTLD_NEXT, "getaddrinfo"));
   if (real_getaddrinfo == nullptr) {
     std::abort();
@@ -271,8 +271,8 @@ int getaddrinfo(const char *_name, const char *_service, const addrinfo *_req, a
     *_pai = nullptr;
     return localOverride->result;
   }
-  TestAddrinfoNode *head = DuplicateEntries(localOverride->entries);
-  addrinfo *headAddr = head != nullptr ? &head->ai : nullptr;
+  TestAddrinfoNode* head = DuplicateEntries(localOverride->entries);
+  addrinfo* headAddr = head != nullptr ? &head->ai : nullptr;
   if (headAddr != nullptr) {
     std::scoped_lock lock(gHookMutex);
     gHookState.customHeads.insert(headAddr);
@@ -281,8 +281,8 @@ int getaddrinfo(const char *_name, const char *_service, const addrinfo *_req, a
   return 0;
 }
 
-void freeaddrinfo(addrinfo *_ai) {
-  using FreeAddrInfoFn = void (*)(addrinfo *);
+void freeaddrinfo(addrinfo* _ai) {
+  using FreeAddrInfoFn = void (*)(addrinfo*);
   static FreeAddrInfoFn real_freeaddrinfo = reinterpret_cast<FreeAddrInfoFn>(dlsym(RTLD_NEXT, "freeaddrinfo"));
   if (_ai == nullptr) {
     return;

@@ -37,11 +37,11 @@ struct level {
   static constexpr int off = 6;
 };
 
-static constexpr const char *kLevelNames[] = {
+static constexpr const char* kLevelNames[] = {
     "trace", "debug", "info", "warn", "error", "critical", "off",
 };
 
-inline level::level_enum &current_level() {
+inline level::level_enum& current_level() {
   static level::level_enum lvl = level::info;  // default verbosity (info and above)
   return lvl;
 }
@@ -51,7 +51,7 @@ inline level::level_enum get_level() { return current_level(); }
 
 namespace detail {
 
-inline void emit_prefix(const char *lvlTag) {
+inline void emit_prefix(const char* lvlTag) {
   char timeBuf[25];
   *TimeToStringISO8601UTCWithMs(SysClock::now(), timeBuf) = '\0';
   std::cout << '[' << timeBuf << "] [" << lvlTag << "] ";
@@ -60,7 +60,7 @@ inline void emit_prefix(const char *lvlTag) {
 }  // namespace detail
 
 template <typename... Args>
-void log(level::level_enum level, std::string_view fmt, Args &&...args) {
+void log(level::level_enum level, std::string_view fmt, Args&&... args) {
   if (static_cast<int>(get_level()) <= static_cast<int>(level)) {
     detail::emit_prefix(kLevelNames[static_cast<int>(level)]);
     if constexpr (sizeof...(Args) == 0) {
@@ -72,27 +72,27 @@ void log(level::level_enum level, std::string_view fmt, Args &&...args) {
 }
 
 template <typename... Args>
-void trace(std::string_view fmt, Args &&...args) {
+void trace(std::string_view fmt, Args&&... args) {
   log(level::trace, fmt, std::forward<Args>(args)...);
 }
 template <typename... Args>
-void debug(std::string_view fmt, Args &&...args) {
+void debug(std::string_view fmt, Args&&... args) {
   log(level::debug, fmt, std::forward<Args>(args)...);
 }
 template <typename... Args>
-void info(std::string_view fmt, Args &&...args) {
+void info(std::string_view fmt, Args&&... args) {
   log(level::info, fmt, std::forward<Args>(args)...);
 }
 template <typename... Args>
-void warn(std::string_view fmt, Args &&...args) {
+void warn(std::string_view fmt, Args&&... args) {
   log(level::warn, fmt, std::forward<Args>(args)...);
 }
 template <typename... Args>
-void error(std::string_view fmt, Args &&...args) {
+void error(std::string_view fmt, Args&&... args) {
   log(level::err, fmt, std::forward<Args>(args)...);
 }
 template <typename... Args>
-void critical(std::string_view fmt, Args &&...args) {
+void critical(std::string_view fmt, Args&&... args) {
   log(level::critical, fmt, std::forward<Args>(args)...);
 }
 

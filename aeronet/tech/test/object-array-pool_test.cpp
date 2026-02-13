@@ -45,15 +45,15 @@ TEST(ObjectArrayPoolCharTest, AllocateZeroLengthAndValueConstruct) {
   ObjectArrayPool<char> pool;
 
   // zero-length allocate should return non-null and count as a live allocation
-  char *zero1 = pool.allocateAndDefaultConstruct(0);
+  char* zero1 = pool.allocateAndDefaultConstruct(0);
   ASSERT_NE(zero1, nullptr);
 
   // zero-length value-construct should also return non-null
-  char *zero2 = pool.allocateAndDefaultConstruct(0);
+  char* zero2 = pool.allocateAndDefaultConstruct(0);
   ASSERT_NE(zero2, nullptr);
 
   // allocate a small array and verify default-initialization for value-construct
-  char *arr = pool.allocateAndDefaultConstruct(4);
+  char* arr = pool.allocateAndDefaultConstruct(4);
   ASSERT_NE(arr, nullptr);
   arr[0] = 'A';
   arr[1] = 'B';
@@ -70,8 +70,8 @@ TEST(ObjectArrayPoolStringTest, AllocateAssignAndClearReset) {
   ObjectArrayPool<std::string> pool(8);
 
   // allocate a few arrays of strings and assign values
-  std::string *s1 = pool.allocateAndDefaultConstruct(3);
-  std::string *s2 = pool.allocateAndDefaultConstruct(2);
+  std::string* s1 = pool.allocateAndDefaultConstruct(3);
+  std::string* s2 = pool.allocateAndDefaultConstruct(2);
   ASSERT_NE(s1, nullptr);
   ASSERT_NE(s2, nullptr);
 
@@ -91,7 +91,7 @@ TEST(ObjectArrayPoolStringTest, AllocateAssignAndClearReset) {
   EXPECT_EQ(pool.capacity(), capBefore);
 
   // allocate again after clear
-  auto *s3 = pool.allocateAndDefaultConstruct(1);
+  auto* s3 = pool.allocateAndDefaultConstruct(1);
   ASSERT_NE(s3, nullptr);
   s3[0] = "again";
   EXPECT_EQ(s3[0], "again");
@@ -104,7 +104,7 @@ TEST(ObjectArrayPoolStringTest, AllocateAssignAndClearReset) {
 TEST(ObjectArrayPoolBothTypesTest, MovePreservesPointersAndValues) {
   // Test with char (trivial)
   ObjectArrayPool<char> charPool;
-  char *carr = charPool.allocateAndDefaultConstruct(3);
+  char* carr = charPool.allocateAndDefaultConstruct(3);
   ASSERT_NE(carr, nullptr);
   carr[0] = 'a';
   carr[1] = 'b';
@@ -115,7 +115,7 @@ TEST(ObjectArrayPoolBothTypesTest, MovePreservesPointersAndValues) {
 
   // Test with std::string (non-trivial)
   ObjectArrayPool<std::string> strPool;
-  std::string *sarr = strPool.allocateAndDefaultConstruct(2);
+  std::string* sarr = strPool.allocateAndDefaultConstruct(2);
   ASSERT_NE(sarr, nullptr);
   sarr[0] = "hello";
   sarr[1] = "world";
@@ -131,13 +131,13 @@ TEST(ObjectArrayPoolMoveTest, MoveConstructorMultipleBlocks) {
   // Force multiple blocks by using a small initial capacity and allocating more.
   ObjectArrayPool<std::string> src(4);
 
-  std::string *arr = src.allocateAndDefaultConstruct(3);
+  std::string* arr = src.allocateAndDefaultConstruct(3);
   arr[0] = "one";
   arr[1] = "two";
   arr[2] = "three";
 
   // Allocate another array to push into the next block
-  std::string *arr2 = src.allocateAndDefaultConstruct(4);
+  std::string* arr2 = src.allocateAndDefaultConstruct(4);
   for (int i = 0; i < 4; ++i) {
     arr2[i] = "b" + std::to_string(i);
   }
@@ -160,11 +160,11 @@ TEST(ObjectArrayPoolMoveTest, MoveConstructorMultipleBlocks) {
 TEST(ObjectArrayPoolMoveTest, MoveAssignmentOverExistingPool) {
   // Destination has some allocations that should be released when move-assigned into.
   ObjectArrayPool<char> dest;
-  char *d0 = dest.allocateAndDefaultConstruct(8);
+  char* d0 = dest.allocateAndDefaultConstruct(8);
   d0[0] = 'x';
 
   ObjectArrayPool<char> src;
-  char *s0 = src.allocateAndDefaultConstruct(3);
+  char* s0 = src.allocateAndDefaultConstruct(3);
   s0[0] = 'a';
   s0[1] = 'b';
 
@@ -179,7 +179,7 @@ TEST(ObjectArrayPoolMoveTest, MoveAssignmentOverExistingPool) {
 
   const auto oldCapa = dest.capacity();
 
-  auto &alias = dest;
+  auto& alias = dest;
   dest = std::move(alias);
 
   EXPECT_EQ(dest.capacity(), oldCapa);
@@ -191,9 +191,9 @@ TEST(ObjectArrayPoolMoveTest, MoveAssignmentOverExistingPool) {
 TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
   ObjectArrayPool<char> pool;
 
-  std::vector<char *> allocated;
+  std::vector<char*> allocated;
   for (int i = 0; i < 128; ++i) {
-    char *arr = pool.allocateAndDefaultConstruct(8);
+    char* arr = pool.allocateAndDefaultConstruct(8);
     ASSERT_NE(arr, nullptr);
     arr[0] = static_cast<char>(i);
     allocated.push_back(arr);
@@ -207,14 +207,14 @@ TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
 
 TEST(ObjectArrayPoolShrinkTest, TrivialTypeShrinkAndReuse) {
   ObjectArrayPool<char> pool;
-  char *arr = pool.allocateAndDefaultConstruct(5);
+  char* arr = pool.allocateAndDefaultConstruct(5);
   ASSERT_NE(arr, nullptr);
 
   // shrink the last allocated array to size 3 IMMEDIATELY after allocation
   pool.shrinkLastAllocated(arr, 3);
 
   // next allocation of size 2 should reuse the freed tail of the previous array
-  char *arr2 = pool.allocateAndDefaultConstruct(2);
+  char* arr2 = pool.allocateAndDefaultConstruct(2);
   ASSERT_NE(arr2, nullptr);
   EXPECT_EQ(arr2, arr + 3);
 
@@ -230,14 +230,14 @@ TEST(ObjectArrayPoolShrinkTest, TrivialTypeShrinkAndReuse) {
 
 TEST(ObjectArrayPoolShrinkTest, NonTrivialTypeDestroyThenShrink) {
   ObjectArrayPool<std::string> pool;
-  std::string *arr = pool.allocateAndDefaultConstruct(3);
+  std::string* arr = pool.allocateAndDefaultConstruct(3);
   ASSERT_NE(arr, nullptr);
 
   // shrink must be called immediately after allocation; do that now.
   pool.shrinkLastAllocated(arr, 1);
 
   // Now allocate the tail and use it.
-  std::string *arr2 = pool.allocateAndDefaultConstruct(2);
+  std::string* arr2 = pool.allocateAndDefaultConstruct(2);
   ASSERT_NE(arr2, nullptr);
   EXPECT_EQ(arr2, arr + 1);
 
@@ -255,7 +255,7 @@ TEST(ObjectArrayPoolTest, ShouldReuseNextBlocksAfterClear) {
   ObjectArrayPool<std::string> pool(4);
 
   for (uint32_t i = 0; i < 128U; ++i) {
-    std::string *arr = pool.allocateAndDefaultConstruct(i);
+    std::string* arr = pool.allocateAndDefaultConstruct(i);
     ASSERT_NE(arr, nullptr);
     for (uint32_t j = 0; j < i; ++j) {
       arr[j] = "A-very-long-string-to-avoid-sso-" + std::to_string(j);
@@ -267,7 +267,7 @@ TEST(ObjectArrayPoolTest, ShouldReuseNextBlocksAfterClear) {
   pool.clear();
 
   for (uint32_t i = 0; i < 64U; ++i) {
-    std::string *arr = pool.allocateAndDefaultConstruct(i);
+    std::string* arr = pool.allocateAndDefaultConstruct(i);
     ASSERT_NE(arr, nullptr);
     for (uint32_t j = 0; j < i; ++j) {
       arr[j] = "A-very-long-string-to-avoid-sso-" + std::to_string(j);
@@ -282,11 +282,11 @@ TEST(ObjectArrayPoolReuseNextBlockAfterClear, TrivialType) {
   ObjectArrayPool<char> pool(4);
 
   // Fill first block completely to force creation of a second block.
-  char *a1 = pool.allocateAndDefaultConstruct(4);
+  char* a1 = pool.allocateAndDefaultConstruct(4);
   ASSERT_NE(a1, nullptr);
 
   // This allocation will be at the start of the second block.
-  char *secondStart = pool.allocateAndDefaultConstruct(1);
+  char* secondStart = pool.allocateAndDefaultConstruct(1);
   ASSERT_NE(secondStart, nullptr);
 
   auto capBefore = pool.capacity();
@@ -295,7 +295,7 @@ TEST(ObjectArrayPoolReuseNextBlockAfterClear, TrivialType) {
   pool.clear();
 
   // Allocate an array that fits into the existing second block.
-  char *reused = pool.allocateAndDefaultConstruct(5);
+  char* reused = pool.allocateAndDefaultConstruct(5);
   ASSERT_NE(reused, nullptr);
 
   // The allocator should have switched to the existing second block rather than allocating a new one.
@@ -306,7 +306,7 @@ TEST(ObjectArrayPoolReuseNextBlockAfterClear, TrivialType) {
 TEST(ObjectArrayPoolReuseNextBlockAfterClear, NonTrivialType) {
   ObjectArrayPool<std::string> pool(3);
 
-  std::string *a1 = pool.allocateAndDefaultConstruct(4);
+  std::string* a1 = pool.allocateAndDefaultConstruct(4);
   ASSERT_NE(a1, nullptr);
 
   *a1 = "first-block-end";
@@ -314,7 +314,7 @@ TEST(ObjectArrayPoolReuseNextBlockAfterClear, NonTrivialType) {
   *(a1 + 2) = "first-block-end-3";
   *(a1 + 3) = "first-block-end-4";
 
-  std::string *secondStart = pool.allocateAndDefaultConstruct(1);
+  std::string* secondStart = pool.allocateAndDefaultConstruct(1);
   ASSERT_NE(secondStart, nullptr);
 
   *secondStart = "second-block-start";
@@ -328,7 +328,7 @@ TEST(ObjectArrayPoolReuseNextBlockAfterClear, NonTrivialType) {
   // clear destroys constructed objects and rewinds to first block
   pool.clear();
 
-  std::string *reused = pool.allocateAndDefaultConstruct(16);
+  std::string* reused = pool.allocateAndDefaultConstruct(16);
   for (std::size_t i = 0; i < 16; ++i) {
     reused[i] = "reused-" + std::to_string(i);
   }
@@ -346,7 +346,7 @@ namespace {
 void RunFuzzPoolChar(unsigned seed) {
   std::mt19937_64 rng(seed);
   aeronet::ObjectArrayPool<char> pool(8);
-  std::vector<std::pair<char *, size_t>> allocated;
+  std::vector<std::pair<char*, size_t>> allocated;
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {
@@ -354,7 +354,7 @@ void RunFuzzPoolChar(unsigned seed) {
     if (choice == 0) {
       // allocate a random small array
       size_t sz = 1 + (rng() % 16);
-      char *ptr = pool.allocateAndDefaultConstruct(static_cast<aeronet::ObjectArrayPool<char>::size_type>(sz));
+      char* ptr = pool.allocateAndDefaultConstruct(static_cast<aeronet::ObjectArrayPool<char>::size_type>(sz));
       allocated.emplace_back(ptr, sz);
       // write some sentinel bytes
       for (size_t i = 0; i < sz; ++i) {
@@ -364,7 +364,7 @@ void RunFuzzPoolChar(unsigned seed) {
     } else if (choice == 1 && !allocated.empty()) {
       // shrink last allocated if any
       if (lastWasAlloc) {
-        auto &last = allocated.back();
+        auto& last = allocated.back();
         size_t newSize = (rng() % (last.second + 1));
         pool.shrinkLastAllocated(last.first, static_cast<aeronet::ObjectArrayPool<char>::size_type>(newSize));
         last.second = newSize;
@@ -387,14 +387,14 @@ void RunFuzzPoolChar(unsigned seed) {
 void RunFuzzPoolString(unsigned seed) {
   std::mt19937_64 rng(seed);
   ObjectArrayPool<std::string> pool(8);
-  std::vector<std::pair<std::string *, size_t>> allocated;
+  std::vector<std::pair<std::string*, size_t>> allocated;
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {
     int choice = rng() % 4;
     if (choice == 0) {
       size_t sz = 1 + (rng() % 12);
-      std::string *ptr =
+      std::string* ptr =
           pool.allocateAndDefaultConstruct(static_cast<aeronet::ObjectArrayPool<std::string>::size_type>(sz));
       allocated.emplace_back(ptr, sz);
       for (size_t i = 0; i < sz; ++i) {
@@ -403,7 +403,7 @@ void RunFuzzPoolString(unsigned seed) {
       lastWasAlloc = true;
     } else if (choice == 1 && !allocated.empty()) {
       if (lastWasAlloc) {
-        auto &last = allocated.back();
+        auto& last = allocated.back();
         size_t newSize = (rng() % (last.second + 1));
         pool.shrinkLastAllocated(last.first, static_cast<aeronet::ObjectArrayPool<std::string>::size_type>(newSize));
         last.second = newSize;

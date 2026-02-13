@@ -24,12 +24,12 @@ class RawBytesBase {
  public:
   using value_type = T;
   using size_type = SizeType;
-  using pointer = value_type *;
-  using const_pointer = const value_type *;
-  using reference = value_type &;
-  using const_reference = const value_type &;
-  using iterator = value_type *;
-  using const_iterator = const value_type *;
+  using pointer = value_type*;
+  using const_pointer = const value_type*;
+  using reference = value_type&;
+  using const_reference = const value_type&;
+  using iterator = value_type*;
+  using const_iterator = const value_type*;
   using view_type = ViewType;
 
   static_assert(std::is_trivially_copyable_v<T> && sizeof(T) == 1);
@@ -48,11 +48,11 @@ class RawBytesBase {
   // Constructs a buffer initialized with the specified data.
   RawBytesBase(const_pointer data, uint64_t sz);
 
-  RawBytesBase(const RawBytesBase &rhs);
-  RawBytesBase(RawBytesBase &&rhs) noexcept;
+  RawBytesBase(const RawBytesBase& rhs);
+  RawBytesBase(RawBytesBase&& rhs) noexcept;
 
-  RawBytesBase &operator=(const RawBytesBase &rhs);
-  RawBytesBase &operator=(RawBytesBase &&rhs) noexcept;
+  RawBytesBase& operator=(const RawBytesBase& rhs);
+  RawBytesBase& operator=(RawBytesBase&& rhs) noexcept;
 
   ~RawBytesBase();
 
@@ -185,9 +185,9 @@ class RawBytesBase {
   [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
   // Swaps the contents of this buffer with another buffer.
-  void swap(RawBytesBase &rhs) noexcept;
+  void swap(RawBytesBase& rhs) noexcept;
 
-  value_type &operator[](size_type pos) {
+  value_type& operator[](size_type pos) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     assert(pos < _capacity);
 #endif
@@ -206,7 +206,7 @@ class RawBytesBase {
     return {_buf, _size};
   }
 
-  bool operator==(const RawBytesBase &rhs) const noexcept;
+  bool operator==(const RawBytesBase& rhs) const noexcept;
 
   using trivially_relocatable = std::true_type;
 
@@ -219,7 +219,7 @@ class RawBytesBase {
 };
 
 template <class T, class ViewType, class SizeType>
-void swap(RawBytesBase<T, ViewType, SizeType> &lhs, RawBytesBase<T, ViewType, SizeType> &rhs) noexcept {
+void swap(RawBytesBase<T, ViewType, SizeType>& lhs, RawBytesBase<T, ViewType, SizeType>& rhs) noexcept {
   lhs.swap(rhs);
 }
 

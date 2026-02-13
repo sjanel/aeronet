@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -26,7 +27,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
-#include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-codec.hpp"
@@ -36,6 +36,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"

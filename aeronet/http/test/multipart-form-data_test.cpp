@@ -513,7 +513,10 @@ TEST(MultipartFormDataTest, FinalBoundaryNoTrailingCRLFAccepted) {
   // !finalBoundary` false as well (because it is a final boundary), so the
   // parser should accept the final boundary and succeed.
   const std::string body = BuildBody({
-      "--Final\r\n", "Content-Disposition: form-data; name=\"a\"\r\n", "\r\n", "1\r\n",
+      "--Final\r\n",
+      "Content-Disposition: form-data; name=\"a\"\r\n",
+      "\r\n",
+      "1\r\n",
       "--Final--",  // final boundary with no trailing CRLF
   });
 

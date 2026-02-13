@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT
-// Unit tests for JSON serialization module (glaze support)
+#include "aeronet/json-serializer.hpp"
 
 #include <gtest/gtest.h>
 
-#include <aeronet/json-serializer.hpp>
+#include <glaze/glaze.hpp>
+#include <string>
 
 // Test structures for serialization
 struct TestMessage {

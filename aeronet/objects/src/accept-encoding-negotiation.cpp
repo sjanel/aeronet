@@ -58,8 +58,8 @@ double ParseQ(std::string_view token) {
         return 0.0;
       }
       double qualityValue = 0.0;
-      const char *begin = val.data();
-      const char *end = begin + val.size();
+      const char* begin = val.data();
+      const char* end = begin + val.size();
       auto fcRes = std::from_chars(begin, end, qualityValue);
       if (fcRes.ec != std::errc() || fcRes.ptr != end) {
         return 0.0;  // invalid format
@@ -125,7 +125,7 @@ void EncodingSelector::initDefault() noexcept {
   _nbPreferences = kNbSupportedEncodings;
 }
 
-EncodingSelector::EncodingSelector(const CompressionConfig &compressionConfig) {
+EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) {
   if (compressionConfig.preferredFormats.empty()) {
     initDefault();
   } else {
@@ -216,7 +216,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     for (EncodingInt pos = 0; pos < _nbPreferences; ++pos) {
       const Encoding enc = _preferenceOrdered[pos];
 
-      const auto encPos = std::ranges::find_if(kSupportedEncodings, [enc](const Sup &sup) { return sup.enc == enc; });
+      const auto encPos = std::ranges::find_if(kSupportedEncodings, [enc](const Sup& sup) { return sup.enc == enc; });
       const auto idx = static_cast<std::size_t>(std::distance(kSupportedEncodings.begin(), encPos));
       assert(idx < kSupportedEncodings.size());
       if (knownEncodingsQuality[idx] < 0.0) {

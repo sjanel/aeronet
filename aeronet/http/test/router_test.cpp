@@ -33,9 +33,9 @@ namespace aeronet {
 
 namespace {
 
-HttpResponse OkHandler([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeOK); }
-HttpResponse AcceptedHandler([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeAccepted); }
-HttpResponse CreatedHandler([[maybe_unused]] const HttpRequest &req) { return HttpResponse(http::StatusCodeCreated); }
+HttpResponse OkHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeOK); }
+HttpResponse AcceptedHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeAccepted); }
+HttpResponse CreatedHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeCreated); }
 
 }  // namespace
 
@@ -49,12 +49,12 @@ class RouterTest : public ::testing::Test {
   // Use an aligned storage because HttpRequest constructor should be kept private
   alignas(HttpRequest) std::byte httpRequestStorage[sizeof(HttpRequest)];
 
-  const HttpRequest &dummyReq() { return *reinterpret_cast<const HttpRequest *>(&httpRequestStorage); }
+  const HttpRequest& dummyReq() { return *reinterpret_cast<const HttpRequest*>(&httpRequestStorage); }
 };
 
 TEST_F(RouterTest, RegisterAndMatchNormalHandler) {
   bool called = false;
-  router.setPath(http::Method::GET, "/hello", [&called](const HttpRequest &) {
+  router.setPath(http::Method::GET, "/hello", [&called](const HttpRequest&) {
     called = true;
     return HttpResponse(http::StatusCodeOK);
   });
@@ -125,7 +125,7 @@ TEST_F(RouterTest, ConflictingParameterNamingThrows) {
 TEST_F(RouterTest, RegisterAndMatchStreamingHandler) {
   bool streamCalled = false;
   router.setPath(http::Method::POST, "/stream",
-                 [&streamCalled](const HttpRequest &, [[maybe_unused]] HttpResponseWriter &) { streamCalled = true; });
+                 [&streamCalled](const HttpRequest&, [[maybe_unused]] HttpResponseWriter&) { streamCalled = true; });
 
   auto res = router.match(http::Method::POST, "/stream");
   ASSERT_EQ(res.requestHandler(), nullptr);
@@ -158,7 +158,7 @@ TEST_F(RouterTest, MethodNotAllowedAndFallback) {
 }
 
 TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
-  router.setDefault([](const HttpRequest &) { return HttpResponse(204); });
+  router.setDefault([](const HttpRequest&) { return HttpResponse(204); });
 
   auto res = router.match(http::Method::GET, "/nope");
   ASSERT_NE(res.requestHandler(), nullptr);
@@ -168,7 +168,7 @@ TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   // streaming default
   Router r2;
   bool sCalled = false;
-  r2.setDefault([&sCalled](const HttpRequest &, HttpResponseWriter &) { sCalled = true; });
+  r2.setDefault([&sCalled](const HttpRequest&, HttpResponseWriter&) { sCalled = true; });
   auto res2 = r2.match(http::Method::GET, "/nope");
   ASSERT_EQ(res2.requestHandler(), nullptr);
   ASSERT_NE(res2.streamingHandler(), nullptr);
@@ -211,13 +211,13 @@ TEST_F(RouterTest, ExplicitHeadHandlerUsed) {
   auto res = router.match(http::Method::HEAD, "/head");
   ASSERT_NE(res.requestHandler(), nullptr);
   alignas(HttpRequest) std::byte storage[sizeof(HttpRequest)];
-  const HttpRequest &req = *reinterpret_cast<const HttpRequest *>(&storage);
+  const HttpRequest& req = *reinterpret_cast<const HttpRequest*>(&storage);
   EXPECT_EQ((*res.requestHandler())(req).status(), 201);
 }
 
 TEST_F(RouterTest, HeadFallbackToStreamingGet) {
   // If GET is registered as a streaming handler, HEAD should fallback to that streaming handler
-  router.setPath(http::Method::GET, "/hstream", StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {}));
+  router.setPath(http::Method::GET, "/hstream", StreamingHandler([](const HttpRequest&, HttpResponseWriter&) {}));
 
   auto res = router.match(http::Method::HEAD, "/hstream");
   EXPECT_EQ(res.requestHandler(), nullptr);
@@ -229,7 +229,7 @@ TEST_F(RouterTest, HeadFallbackToStreamingGet) {
 TEST_F(RouterTest, HeadFallbackToAsyncGet) {
   // If GET is registered as an async handler, HEAD should fallback to that async handler
   router.setPath(http::Method::GET, "/haasync",
-                 AsyncRequestHandler([]([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> {
+                 AsyncRequestHandler([]([[maybe_unused]] HttpRequest& req) -> RequestTask<HttpResponse> {
                    co_return HttpResponse(200);
                  }));
 
@@ -244,7 +244,7 @@ TEST_F(RouterTest, HeadFallbackToAsyncGet) {
 TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
   // Explicit streaming HEAD handler
   Router r1;
-  r1.setPath(http::Method::HEAD, "/hds", StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {}));
+  r1.setPath(http::Method::HEAD, "/hds", StreamingHandler([](const HttpRequest&, HttpResponseWriter&) {}));
   auto r1res = r1.match(http::Method::HEAD, "/hds");
   EXPECT_EQ(r1res.requestHandler(), nullptr);
   EXPECT_NE(r1res.streamingHandler(), nullptr);
@@ -254,7 +254,7 @@ TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
   Router r2;
   r2.setPath(http::Method::HEAD, "/hda",
              AsyncRequestHandler(
-                 []([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> { co_return HttpResponse(202); }));
+                 []([[maybe_unused]] HttpRequest& req) -> RequestTask<HttpResponse> { co_return HttpResponse(202); }));
   auto r2res = r2.match(http::Method::HEAD, "/hda");
   EXPECT_EQ(r2res.requestHandler(), nullptr);
   EXPECT_EQ(r2res.streamingHandler(), nullptr);
@@ -284,7 +284,7 @@ TEST_F(RouterTest, MethodMergingAndOverwrite) {
 
 TEST_F(RouterTest, MethodBitmapRegistersMultipleHandlers) {
   router.setPath(http::Method::GET | http::Method::POST, "/combo",
-                 [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto getRes = router.match(http::Method::GET, "/combo");
   EXPECT_NE(getRes.requestHandler(), nullptr);
@@ -296,10 +296,10 @@ TEST_F(RouterTest, MethodBitmapRegistersMultipleHandlers) {
 }
 
 TEST_F(RouterTest, StreamingVsNormalConflictThrows) {
-  router.setPath(http::Method::GET, "/conf", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+  router.setPath(http::Method::GET, "/conf", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   // Attempting to register a streaming handler for the same path+method should throw
   EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/conf"},
-                              StreamingHandler([](const HttpRequest &, HttpResponseWriter &) {})),
+                              StreamingHandler([](const HttpRequest&, HttpResponseWriter&) {})),
                std::logic_error);
 }
 
@@ -308,7 +308,7 @@ TEST_F(RouterTest, TrailingSlashStrictAndNormalize) {
   RouterConfig cfgStrict;
   cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
   Router rStrict(cfgStrict);
-  rStrict.setPath(http::Method::GET, "/s/", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+  rStrict.setPath(http::Method::GET, "/s/", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   auto res1 = rStrict.match(http::Method::GET, "/s/");
   EXPECT_NE(res1.requestHandler(), nullptr);
   auto res1b = rStrict.match(http::Method::GET, "/s");
@@ -318,7 +318,7 @@ TEST_F(RouterTest, TrailingSlashStrictAndNormalize) {
   RouterConfig cfgNorm;
   cfgNorm.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
   Router rNorm(cfgNorm);
-  rNorm.setPath(http::Method::GET, "/n/", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+  rNorm.setPath(http::Method::GET, "/n/", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   auto res2 = rNorm.match(http::Method::GET, "/n");
   EXPECT_NE(res2.requestHandler(), nullptr);
 }
@@ -337,7 +337,7 @@ TEST_F(RouterTest, NormalizeWithWildcard) {
 
 TEST_F(RouterTest, CapturesNamedParameters) {
   router.setPath(http::Method::GET, "/users/{userId}/posts/{postId}",
-                 [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto res = router.match(http::Method::GET, "/users/42/posts/abc");
   ASSERT_NE(res.requestHandler(), nullptr);
@@ -350,7 +350,7 @@ TEST_F(RouterTest, CapturesNamedParameters) {
 
 TEST_F(RouterTest, CapturesUnnamedParametersAsIndices) {
   router.setPath(http::Method::GET, "/files/{}/chunk/{}",
-                 [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto res = router.match(http::Method::GET, "/files/alpha/chunk/123");
   ASSERT_NE(res.requestHandler(), nullptr);
@@ -363,7 +363,7 @@ TEST_F(RouterTest, CapturesUnnamedParametersAsIndices) {
 
 TEST_F(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
   router.setPath(http::Method::GET, "/api/v{}/foo{}bar",
-                 [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto res = router.match(http::Method::GET, "/api/v1/foo123bar");
   ASSERT_NE(res.requestHandler(), nullptr);
@@ -383,7 +383,7 @@ TEST_F(RouterTest, PathNotStartingWithSlashInvalid) {
 }
 
 TEST_F(RouterTest, WildcardMatchesRemainingSegments) {
-  router.setPath(http::Method::GET, "/static/*", [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+  router.setPath(http::Method::GET, "/static/*", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   auto res = router.match(http::Method::GET, "/static/css/app/main.css");
   ASSERT_NE(res.requestHandler(), nullptr);
@@ -401,21 +401,21 @@ TEST_F(RouterTest, SpecialOperations) {
   moved = anotherRouter;
   EXPECT_TRUE(moved.match(http::Method::GET, "/x").hasHandler());
 
-  auto &routerBis = anotherRouter;
+  auto& routerBis = anotherRouter;
   routerBis = anotherRouter;             // should be no-op
   routerBis = std::move(anotherRouter);  // should be no-op
 }
 
 TEST_F(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
   bool calledA = false;
-  router.setPath(http::Method::GET, "/copy/a", [&calledA](const HttpRequest &) {
+  router.setPath(http::Method::GET, "/copy/a", [&calledA](const HttpRequest&) {
     calledA = true;
     return HttpResponse(200);
   });
 
   bool calledB = false;
   // complex pattern with params and literal mix
-  router.setPath(http::Method::POST, "/files/v{}/part/{}", [&calledB](const HttpRequest &) {
+  router.setPath(http::Method::POST, "/files/v{}/part/{}", [&calledB](const HttpRequest&) {
     calledB = true;
     return HttpResponse(201);
   });
@@ -423,7 +423,7 @@ TEST_F(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
   // streaming handler
   bool streamCalled = false;
   router.setPath(http::Method::PUT, "/stream/x",
-                 StreamingHandler([&streamCalled](const HttpRequest &, HttpResponseWriter &) { streamCalled = true; }));
+                 StreamingHandler([&streamCalled](const HttpRequest&, HttpResponseWriter&) { streamCalled = true; }));
 
   // wildcard
   router.setPath(http::Method::GET, "/wild/*", OkHandler);
@@ -434,7 +434,7 @@ TEST_F(RouterTest, CopyConstructorCopiesHandlersAndPatterns) {
   // original handlers still work
   // prepare a dummy HttpRequest storage used for invoking handlers in tests
   alignas(HttpRequest) std::byte dummyReqStorage[sizeof(HttpRequest)];
-  const HttpRequest &dummyReq = *reinterpret_cast<const HttpRequest *>(&dummyReqStorage);
+  const HttpRequest& dummyReq = *reinterpret_cast<const HttpRequest*>(&dummyReqStorage);
 
   auto resFromOriginal = router.match(http::Method::GET, "/copy/a");
   ASSERT_NE(resFromOriginal.requestHandler(), nullptr);
@@ -463,7 +463,7 @@ TEST_F(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
   Router baseRouter;
 
   int invokedOriginal = 0;
-  baseRouter.setPath(http::Method::GET, "/indep/x", [&invokedOriginal](const HttpRequest &) {
+  baseRouter.setPath(http::Method::GET, "/indep/x", [&invokedOriginal](const HttpRequest&) {
     ++invokedOriginal;
     return HttpResponse(200);
   });
@@ -473,7 +473,7 @@ TEST_F(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
 
   // Both should match initially
   alignas(HttpRequest) std::byte dummyStorage2[sizeof(HttpRequest)];
-  const HttpRequest &dummyReq2 = *reinterpret_cast<const HttpRequest *>(&dummyStorage2);
+  const HttpRequest& dummyReq2 = *reinterpret_cast<const HttpRequest*>(&dummyStorage2);
 
   auto rBase = baseRouter.match(http::Method::GET, "/indep/x");
   ASSERT_NE(rBase.requestHandler(), nullptr);
@@ -516,7 +516,7 @@ TEST_F(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
   auto rp = cTs.match(http::Method::POST, "/ts");
   ASSERT_NE(rp.requestHandler(), nullptr);
   alignas(HttpRequest) std::byte dummyTsReq[sizeof(HttpRequest)];
-  const HttpRequest &dummyTs = *reinterpret_cast<const HttpRequest *>(&dummyTsReq);
+  const HttpRequest& dummyTs = *reinterpret_cast<const HttpRequest*>(&dummyTsReq);
   HttpResponse resp = (*rp.requestHandler())(dummyTs);
   EXPECT_EQ(resp.status(), 201);
 }
@@ -537,7 +537,7 @@ TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   Router original;
 
   int callCount = 0;
-  original.setPath(http::Method::GET, "/api/v1/users/list", [&callCount](const HttpRequest &) {
+  original.setPath(http::Method::GET, "/api/v1/users/list", [&callCount](const HttpRequest&) {
     ++callCount;
     return HttpResponse(200);
   });
@@ -547,7 +547,7 @@ TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
 
   // Verify both original and clone work correctly
   alignas(HttpRequest) std::byte dummyStorage[sizeof(HttpRequest)];
-  const HttpRequest &dummyReq = *reinterpret_cast<const HttpRequest *>(&dummyStorage);
+  const HttpRequest& dummyReq = *reinterpret_cast<const HttpRequest*>(&dummyStorage);
 
   auto resOriginal = original.match(http::Method::GET, "/api/v1/users/list");
   ASSERT_NE(resOriginal.requestHandler(), nullptr);
@@ -560,7 +560,7 @@ TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   EXPECT_EQ(callCount, 2);
 
   // Verify independence: modifying original doesn't affect clone
-  original.setPath(http::Method::GET, "/api/v1/users/list", [](const HttpRequest &) { return HttpResponse(404); });
+  original.setPath(http::Method::GET, "/api/v1/users/list", [](const HttpRequest&) { return HttpResponse(404); });
 
   auto resCloneAfter = clone.match(http::Method::GET, "/api/v1/users/list");
   ASSERT_NE(resCloneAfter.requestHandler(), nullptr);
@@ -604,8 +604,8 @@ TEST_F(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
     mutable bool valid{true};
     Poisonable() = default;
     // Copying creates an invalid copy
-    Poisonable(const Poisonable & /*other*/) : valid(false) {}
-    HttpResponse operator()(const HttpRequest & /*req*/) const {
+    Poisonable(const Poisonable& /*other*/) : valid(false) {}
+    HttpResponse operator()(const HttpRequest& /*req*/) const {
       if (!valid) {
         throw std::bad_function_call();
       }
@@ -613,7 +613,7 @@ TEST_F(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
     }
   };
 
-  std::function<HttpResponse(const HttpRequest &)> handler = Poisonable{};
+  std::function<HttpResponse(const HttpRequest&)> handler = Poisonable{};
 
   http::MethodBmp methods =
       static_cast<http::MethodBmp>(http::Method::GET) | static_cast<http::MethodBmp>(http::Method::POST);
@@ -621,7 +621,7 @@ TEST_F(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
   router.setPath(methods, "/nc", std::move(handler));
 
   alignas(HttpRequest) std::byte reqStorage[sizeof(HttpRequest)];
-  const HttpRequest &dummyReq = *reinterpret_cast<const HttpRequest *>(&reqStorage);
+  const HttpRequest& dummyReq = *reinterpret_cast<const HttpRequest*>(&reqStorage);
 
   // Invoke both methods and record outcomes: one should succeed, the other should throw
   int successCount = 0;
@@ -637,7 +637,7 @@ TEST_F(RouterTest, NonCopyableHandlerAcrossMultipleMethods) {
       if (response.status() == 200) {
         ++successCount;
       }
-    } catch (const std::bad_function_call &) {
+    } catch (const std::bad_function_call&) {
       ++throwCount;
     }
   };
@@ -701,7 +701,7 @@ TEST_F(RouterTest, UnterminatedBraceInPatternThrows) {
 
 TEST_F(RouterTest, FindWildcardEscapedAndTrailingOpenBrace) {
   // Explicit case: escaped open brace '{{' should be treated as literal and skipped by FindWildcard
-  router.setPath(http::Method::GET, "/fw/{{}}/{id}/end", [](const HttpRequest &) { return HttpResponse(200); });
+  router.setPath(http::Method::GET, "/fw/{{}}/{id}/end", [](const HttpRequest&) { return HttpResponse(200); });
   auto res = router.match(http::Method::GET, "/fw/{}/42/end");
   ASSERT_NE(res.requestHandler(), nullptr);
   ASSERT_EQ(res.pathParams.size(), 1U);
@@ -877,7 +877,7 @@ TEST_F(RouterTest, AsteriskAllowedInParamName) {
 }
 
 TEST_F(RouterTest, AllowedMethodsAndGlobalFallback) {
-  router.setDefault([](const HttpRequest &) { return HttpResponse(204); });
+  router.setDefault([](const HttpRequest&) { return HttpResponse(204); });
   router.setPath(http::Method::GET | http::Method::POST, "/combo2", OkHandler);
 
   auto allowed = router.allowedMethods("/combo2");
@@ -911,7 +911,7 @@ TEST_F(RouterTest, InvalidTrailingSlashPolicyNeverMatches) {
 TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
   // Install an async global handler and ensure allowedMethods returns all methods
   router.setDefault(AsyncRequestHandler(
-      []([[maybe_unused]] HttpRequest &req) -> RequestTask<HttpResponse> { co_return HttpResponse(204); }));
+      []([[maybe_unused]] HttpRequest& req) -> RequestTask<HttpResponse> { co_return HttpResponse(204); }));
 
   // Path not registered -> all methods allowed because async global handler present
   auto allAllowed = router.allowedMethods("/still-missing");
@@ -1077,7 +1077,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     vector<int> called(routeCount, 0);
 
     // registration lambda so we reuse logic
-    auto registerRoutes = [&](Router &router) {
+    auto registerRoutes = [&](Router& router) {
       for (uint32_t idx = 0; idx < routeCount; ++idx) {
         http::MethodBmp registerMethod{};
         switch (idx % 4) {
@@ -1110,7 +1110,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
           path += '/';
         }
 
-        router.setPath(registerMethod, path, [idx, &called](const HttpRequest &) {
+        router.setPath(registerMethod, path, [idx, &called](const HttpRequest&) {
           called[idx]++;
           return HttpResponse(200);
         });
@@ -1118,9 +1118,9 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     };
 
     // matching lambda
-    auto matchAndInvoke = [&](Router &router) {
+    auto matchAndInvoke = [&](Router& router) {
       alignas(HttpRequest) std::byte dummyStorage[sizeof(HttpRequest)];
-      const HttpRequest &dummyReq = *reinterpret_cast<const HttpRequest *>(&dummyStorage);
+      const HttpRequest& dummyReq = *reinterpret_cast<const HttpRequest*>(&dummyStorage);
 
       for (uint32_t idx = 0; idx < routeCount; ++idx) {
         std::string matchPath = "/r/tp/id" + std::to_string(idx);
@@ -1201,8 +1201,8 @@ TEST_F(RouterTest, RegisterAndMatchWebSocketEndpoint) {
 
 TEST_F(RouterTest, MatchesWildcardTerminalSegment) {
   // Register a wildcard terminal route /files/*
-  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse{}; });
-  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest &) { return HttpResponse{}; });
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest&) { return HttpResponse{}; });
+  router.setPath(http::Method::GET, "/files/*", [](const HttpRequest&) { return HttpResponse{}; });
 
   // Matching /files/anything/else should match the wildcard route
   auto res = router.match(http::Method::GET, "/files/some/deep/path");
@@ -1413,8 +1413,7 @@ TEST_F(RouterTest, EmptyRouterPrintsEmptyMessage) {
 }
 
 TEST_F(RouterTest, ParamRoutePrintsExpectedTree) {
-  router.setPath(http::Method::GET, "/users/{id}",
-                 [](const HttpRequest &) { return HttpResponse(http::StatusCodeOK); });
+  router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   std::stringstream ss;
   router.printTree(ss);
@@ -1431,9 +1430,9 @@ TEST_F(RouterTest, ParamRoutePrintsExpectedTree) {
 
 TEST_F(RouterTest, DebugOutput) {
   // Tests debug output functionality that was uncovered
-  router.setPath(http::Method::GET, "/test", [](const HttpRequest &) { return HttpResponse("test"); });
-  router.setPath(http::Method::GET, "/api/{id}", [](const HttpRequest &) { return HttpResponse("api"); });
-  router.setPath(http::Method::GET, "/catch/*", [](const HttpRequest &) { return HttpResponse("catch"); });
+  router.setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse("test"); });
+  router.setPath(http::Method::GET, "/api/{id}", [](const HttpRequest&) { return HttpResponse("api"); });
+  router.setPath(http::Method::GET, "/catch/*", [](const HttpRequest&) { return HttpResponse("catch"); });
 
   // Call the printTree function (covers printNode and indent functions)
   std::ostringstream oss;

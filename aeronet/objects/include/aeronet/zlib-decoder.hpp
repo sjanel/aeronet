@@ -16,7 +16,7 @@ class ZlibDecoderContext {
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                       std::size_t decoderChunkSize, RawChars &out);
+                       std::size_t decoderChunkSize, RawChars& out);
 
   /// Initialize (or reinitialize) the decompression context with given parameters.
   /// Reuses internal zlib state if already initialized.
@@ -33,11 +33,11 @@ class ZlibDecoder {
   explicit ZlibDecoder(ZStreamRAII::Variant variant = ZStreamRAII::Variant::gzip) noexcept : _variant(variant) {}
 
   bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                      RawChars &out) {
+                      RawChars& out) {
     return makeContext()->decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
   }
 
-  ZlibDecoderContext *makeContext() {
+  ZlibDecoderContext* makeContext() {
     _ctx.init(_variant);
     return &_ctx;
   }

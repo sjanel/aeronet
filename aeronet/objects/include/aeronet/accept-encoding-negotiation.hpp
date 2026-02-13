@@ -14,7 +14,7 @@ class EncodingSelector {
  public:
   EncodingSelector() noexcept;
 
-  explicit EncodingSelector(const CompressionConfig &compressionConfig);
+  explicit EncodingSelector(const CompressionConfig& compressionConfig);
 
   struct NegotiatedResult {
     Encoding encoding{Encoding::none};
