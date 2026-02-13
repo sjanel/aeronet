@@ -55,8 +55,12 @@ struct ResponseCompressionState {
 
   std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
-  /// Returns a pointer to an internally-owned encoder context (reused across calls).
+  // Initializes a new internally-owned encoder context and returns a pointer to it (reused across calls).
   EncoderContext* makeContext(Encoding encoding);
+
+  // returns a pointer to an internally-owned encoder context for the given encoding, or nullptr if the encoding is not
+  // supported.
+  EncoderContext* context(Encoding encoding);
 
   EncodingSelector selector;
   const CompressionConfig* pCompressionConfig{nullptr};

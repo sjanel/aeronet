@@ -26,6 +26,12 @@
 
 using namespace aeronet;
 
+namespace {
+
+constexpr std::size_t kCompressionMinBytes = 16UL;  // Compress responses larger than 16 bytes
+
+}
+
 int main(int argc, char* argv[]) {
   bench::BenchConfig benchCfg(8080, argc, argv);
 
@@ -37,7 +43,7 @@ int main(int argc, char* argv[]) {
   config.maxBodyBytes = 64UL << 20;      // 64MB bodies for large body tests
   config.globalHeaders.clear();          // No global headers
   config.compression.addVaryAcceptEncodingHeader = true;
-  config.compression.minBytes = 512;  // Compress responses larger than 512 bytes
+  config.compression.minBytes = kCompressionMinBytes;  // Compress responses larger than 16 bytes
   config.compression.preferredFormats = {Encoding::gzip};
 
   // Configure TLS if enabled
@@ -175,14 +181,20 @@ int main(int argc, char* argv[]) {
   // aeronet automatically decompresses request body, then we add +1 to each byte
   // returns response that will be automatically compressed
   // ============================================================
-  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) {
+  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) mutable {
     std::string_view body = req.body();
     auto resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
-    resp.bodyInlineSet(body.size(), [body](std::byte* out) {
-      std::ranges::transform(
-          body, out, [](unsigned char ch) { return static_cast<std::byte>(static_cast<unsigned char>(ch + 1U)); });
-      return body.size();
-    });
+
+    while (!body.empty()) {
+      std::byte buffer[128];
+      static_assert(sizeof(buffer) >= kCompressionMinBytes);
+      const std::string_view chunk = body.substr(0, sizeof(buffer));
+      std::transform(chunk.begin(), chunk.end(), buffer,
+                     [](unsigned char ch) { return static_cast<std::byte>(static_cast<unsigned char>(ch + 1U)); });
+      resp.bodyAppend(std::span<const std::byte>(buffer, sizeof(buffer)));
+      body.remove_prefix(chunk.size());
+    }
+
     return resp;
   });
 

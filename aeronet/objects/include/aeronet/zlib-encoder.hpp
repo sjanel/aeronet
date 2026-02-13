@@ -51,6 +51,8 @@ class ZlibEncoder {
     return &_ctx;
   }
 
+  EncoderContext* context() { return &_ctx; }
+
  private:
   int8_t _level{};
   ZlibEncoderContext _ctx;

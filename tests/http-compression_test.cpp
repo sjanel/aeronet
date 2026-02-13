@@ -6,6 +6,7 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
@@ -69,7 +70,7 @@ TEST(HttpCompression, UserContentEncodingIdentityDisablesCompression) {
     cfg.compression.preferredFormats = {Encoding::br};
   });
   std::string payload(128, 'U');
-  ts.router().setDefault([payload](const HttpRequest &) {
+  ts.router().setDefault([&payload](const HttpRequest &) {
     HttpResponse respObj;
     respObj.header(http::ContentEncoding, "identity");
     respObj.body(payload, "text/plain");
@@ -80,7 +81,7 @@ TEST(HttpCompression, UserContentEncodingIdentityDisablesCompression) {
   auto it = resp.headers.find(http::ContentEncoding);
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "identity");
-  EXPECT_EQ(resp.body.size(), payload.size());
+  EXPECT_EQ(resp.body, payload);
 }
 
 TEST(HttpCompression, BelowThresholdNotCompressed) {
@@ -860,3 +861,449 @@ TEST(HttpCompression, ZstdBelowThresholdIdentity) {
   EXPECT_TRUE(it == resp.headers.end());  // identity
   EXPECT_TRUE(resp.plainBody == data) << "identity path should match input exactly";
 }
+
+// =============================================================================
+// Direct Compression (inline body compressed at body-set time via req.makeResponse())
+// =============================================================================
+
+#ifdef AERONET_ENABLE_ZLIB
+
+TEST(HttpCompression, DirectCompression_GzipRoundTrip) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(512, 'G');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-gz", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  // Round-trip decompression
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+TEST(HttpCompression, DirectCompression_DeflateRoundTrip) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::deflate};
+  });
+
+  std::string payload(512, 'D');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-df", {{"Accept-Encoding", "deflate"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "deflate");
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  auto decompressed = test::Decompress(Encoding::deflate, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+TEST(HttpCompression, DirectCompression_ModeOff_StillCompressedByFinalization) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Off;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(512, 'F');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-off", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  // Even with DC off, finalization layer should apply compression
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+TEST(HttpCompression, DirectCompression_ModeOn_SmallBodyCompressed) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 4096;  // high threshold
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(128, 'S');  // well below minBytes
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.directCompressionMode(DirectCompressionMode::On);  // force direct compression
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-on", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+TEST(HttpCompression, DirectCompression_BodyAppendGzipStreaming) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string chunk1(256, 'A');
+  std::string chunk2(256, 'B');
+  ts.router().setDefault([&chunk1, &chunk2](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{chunk1}, "text/plain");
+    resp.bodyAppend(std::string_view{chunk2});
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-append", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  std::string expected = chunk1 + chunk2;
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+}
+
+TEST(HttpCompression, DirectCompression_BodyResetDeliversFinalContent) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string firstPayload(256, '1');
+  std::string secondPayload(256, '2');
+  ts.router().setDefault([&firstPayload, &secondPayload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{firstPayload}, "text/plain");  // direct-compressed
+    resp.body(std::string_view{secondPayload});               // reset: re-initiates compression with new data
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-reset", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), secondPayload);
+}
+
+TEST(HttpCompression, DirectCompression_VaryHeaderPresent) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.addVaryAcceptEncodingHeader = true;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'V');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload});
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-vary", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto itVary = resp.headers.find(http::Vary);
+  ASSERT_NE(itVary, resp.headers.end());
+  EXPECT_TRUE(itVary->second.contains("accept-encoding") || itVary->second.contains("Accept-Encoding"))
+      << "Vary header = " << itVary->second;
+}
+
+TEST(HttpCompression, DirectCompression_UserContentEncodingPrevents) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'I');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.header(http::ContentEncoding, "identity");  // user sets Content-Encoding
+    resp.body(std::string_view{payload});
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-uce", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "identity");
+  EXPECT_EQ(resp.body, payload);  // not compressed
+}
+
+TEST(HttpCompression, DirectCompression_ContentTypeAllowList) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+    cfg.compression.contentTypeAllowList.clear();
+    cfg.compression.contentTypeAllowList.append("application/json");
+  });
+
+  std::string payload(256, 'X');
+
+  // text/plain is NOT in allow list → should not compress
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload});
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-deny", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
+  EXPECT_EQ(resp.body, payload);
+
+  // application/json IS in allow list → should compress
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "application/json");
+    return resp;
+  });
+
+  auto resp2 = test::simpleGet(ts.port(), "/dc-allow", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp2.statusCode, http::StatusCodeOK);
+  auto it = resp2.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp2.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  // Cleanup
+  ts.postConfigUpdate([](HttpServerConfig &cfg) { cfg.compression.contentTypeAllowList.clear(); });
+}
+
+TEST(HttpCompression, DirectCompression_WithTrailers) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'T');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    resp.trailerAddLine("X-Checksum", "abc123");
+    return resp;
+  });
+
+  test::ClientConnection sock(ts.port());
+  int fd = sock.fd();
+  std::string req =
+      "GET /dc-trailers HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Connection: close\r\n"
+      "Accept-Encoding: gzip\r\n"
+      "\r\n";
+  test::sendAll(fd, req);
+  std::string rawResp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(rawResp.contains("X-Checksum: abc123"));
+}
+
+TEST(HttpCompression, DirectCompression_MultipleSequentialRequests) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'M');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  // Send two sequential requests and verify both are correctly compressed
+  for (int ii = 0; ii < 2; ++ii) {
+    auto resp = test::simpleGet(ts.port(), "/dc-multi", {{"Accept-Encoding", "gzip"}});
+    EXPECT_EQ(resp.statusCode, http::StatusCodeOK) << "request " << ii;
+    auto it = resp.headers.find(http::ContentEncoding);
+    ASSERT_NE(it, resp.headers.end()) << "request " << ii;
+    EXPECT_EQ(it->second, "gzip") << "request " << ii;
+
+    auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload) << "request " << ii;
+  }
+}
+
+TEST(HttpCompression, DirectCompression_MakeResponseWithBodyOverload) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'O');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    // Use the overload that sets body directly
+    return req.makeResponse(std::string_view{payload}, "text/plain");
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-overload", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+TEST(HttpCompression, DirectCompression_ConfigDefaultModeOn) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 4096;                                           // high threshold
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::On;  // bypasses minBytes
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(128, 'C');  // below minBytes
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-cfg-on", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  auto decompressed = test::Decompress(Encoding::gzip, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+
+  // Reset to Auto for subsequent tests
+  ts.postConfigUpdate(
+      [](HttpServerConfig &cfg) { cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto; });
+}
+
+TEST(HttpCompression, DirectCompression_CustomHeadersPreserved) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+
+  std::string payload(256, 'H');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.header("X-Custom-One", "value1");
+    resp.header("X-Custom-Two", "value2");
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-headers", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "gzip");
+
+  // Custom headers must survive
+  auto itC1 = resp.headers.find("X-Custom-One");
+  ASSERT_NE(itC1, resp.headers.end());
+  EXPECT_EQ(itC1->second, "value1");
+  auto itC2 = resp.headers.find("X-Custom-Two");
+  ASSERT_NE(itC2, resp.headers.end());
+  EXPECT_EQ(itC2->second, "value2");
+}
+
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_BROTLI
+
+TEST(HttpCompression, DirectCompression_BrotliRoundTrip) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::br};
+  });
+
+  std::string payload(512, 'R');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload});
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-br", {{"Accept-Encoding", "br"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "br");
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  auto decompressed = test::Decompress(Encoding::br, resp.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+}
+
+#endif  // AERONET_ENABLE_BROTLI
+
+#ifdef AERONET_ENABLE_ZSTD
+
+TEST(HttpCompression, DirectCompression_ZstdRoundTrip) {
+  ts.postConfigUpdate([](HttpServerConfig &cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::zstd};
+  });
+
+  std::string payload(512, 'Z');
+  ts.router().setDefault([&payload](const HttpRequest &req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view{payload}, "text/plain");
+    return resp;
+  });
+
+  auto resp = test::simpleGet(ts.port(), "/dc-zstd", {{"Accept-Encoding", "zstd"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  auto it = resp.headers.find(http::ContentEncoding);
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, "zstd");
+  EXPECT_TRUE(test::HasZstdMagic(resp.body));
+  EXPECT_LT(resp.body.size(), payload.size());
+
+  std::string decompressed = test::ZstdRoundTripDecompress(resp.body, payload.size());
+  EXPECT_EQ(decompressed, payload);
+}
+
+#endif  // AERONET_ENABLE_ZSTD

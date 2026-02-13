@@ -98,6 +98,8 @@ class BrotliEncoder {
     return &_ctx;
   }
 
+  EncoderContext* context() { return &_ctx; }
+
  private:
   int _quality{};
   int _window{};

@@ -504,7 +504,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWith
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
   ASSERT_FALSE(loop.clientData.empty());
-  EXPECT_TRUE(loop.clientData[0].data.contains("Trailers must be added after non empty (nor file) body is set"));
+  EXPECT_TRUE(loop.clientData[0].data.contains("Trailers must be added after a non empty body is set"));
   EXPECT_TRUE(loop.clientData.back().endStream);
 }
 

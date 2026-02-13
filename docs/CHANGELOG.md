@@ -24,6 +24,7 @@ All notable changes to aeronet are documented in this file.
 
 ### New Features
 
+- **Direct compression**: Inline response bodies created via `HttpRequest::makeResponse()` can now be compressed at `body()` / `bodyAppend()` call time, before finalization. This is controlled by `DirectCompressionMode` (`Auto`, `Off`, `On`) and configured via `CompressionConfig::defaultDirectCompressionMode`. See [Direct Compression](FEATURES.md#direct-compression-inline-body-streaming-compression) for details.
 - `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
 - `HttpRequest::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
 - `size` / `length` method helpers in `HttpResponse`, with `reserve` and capacity getters.

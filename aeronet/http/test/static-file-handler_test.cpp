@@ -19,6 +19,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/file-helpers.hpp"
@@ -46,6 +47,7 @@ class StaticFileHandlerTest : public ::testing::Test {
  protected:
   HttpRequest req;
   ConcatenatedHeaders globalHeaders;
+  CompressionConfig compressionConfig;
   internal::ResponseCompressionState compressionState;
 
   test::ScopedTempDir tmpDir;
@@ -54,6 +56,8 @@ class StaticFileHandlerTest : public ::testing::Test {
     req._ownerState = &cs;
     req._pGlobalHeaders = &globalHeaders;
     req._pCompressionState = &compressionState;
+
+    compressionState.pCompressionConfig = &compressionConfig;
   }
 
   void buildReq(std::string_view filePath) {
