@@ -779,9 +779,9 @@ cmake --build build
 ```
 
 ```cpp
-import aeronet;
+#include <utility> // std::move — standard library is not exported by the module
 
-#include <utility>  // std::move — standard library is not exported by the module
+import aeronet;
 
 using aeronet::HttpRequest;
 using aeronet::HttpResponse;
