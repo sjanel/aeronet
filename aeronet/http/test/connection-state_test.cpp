@@ -3,7 +3,6 @@
 
 #include "aeronet/connection-state.hpp"
 
-#include <asm-generic/socket.h>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
@@ -116,6 +115,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   ASSERT_EQ(::fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), 0);
 
   int sndbuf = 1024;  // small
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_SNDBUF
   ASSERT_EQ(setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)), 0);
 
   // Repeatedly call sendFileViaKernel until we observe WouldBlock (EAGAIN) or we

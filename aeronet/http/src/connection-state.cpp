@@ -1,7 +1,5 @@
 #include "aeronet/connection-state.hpp"
 
-#include <netinet/in.h>
-#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -21,6 +19,8 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/sendfile.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
@@ -33,26 +33,6 @@
 #endif
 
 namespace aeronet {
-
-namespace {
-
-// Helper: determine if a sockaddr_storage represents a loopback address.
-bool IsSockaddrLoopback(const sockaddr_storage& addr) noexcept {
-  if (addr.ss_family == AF_INET) {
-    const auto* in = reinterpret_cast<const sockaddr_in*>(&addr);
-    // 127.0.0.0/8
-    return (ntohl(in->sin_addr.s_addr) & 0xFF000000U) == 0x7F000000U;
-  }
-#ifdef AF_INET6
-  if (addr.ss_family == AF_INET6) {
-    const auto* in6 = reinterpret_cast<const sockaddr_in6*>(&addr);
-    return IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr);
-  }
-#endif
-  return false;
-}
-
-}  // namespace
 
 void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
                                                    internal::ResponseCompressionState& compressionState) {
@@ -71,15 +51,13 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
     case ZerocopyMode::Opportunistic:
       [[fallthrough]];
     default: {
-      sockaddr_storage local;
-      sockaddr_storage peer;
-      socklen_t len = sizeof(local);
-      const bool localOk = (::getsockname(cnxFd, reinterpret_cast<sockaddr*>(&local), &len) == 0);
-      len = sizeof(peer);
-      const bool peerOk = (::getpeername(cnxFd, reinterpret_cast<sockaddr*>(&peer), &len) == 0);
+      sockaddr_storage local{};
+      sockaddr_storage peer{};
+      const bool localOk = GetLocalAddress(cnxFd, local);
+      const bool peerOk = GetPeerAddress(cnxFd, peer);
 
       // In Opportunistic mode, it's auto-disabled for loopback-to-loopback connections.
-      const bool isLoopbackConn = localOk && peerOk && IsSockaddrLoopback(local) && IsSockaddrLoopback(peer);
+      const bool isLoopbackConn = localOk && peerOk && IsLoopback(local) && IsLoopback(peer);
 
       zerocopyRequested = !isLoopbackConn;
       break;
@@ -118,18 +96,18 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
   static constexpr std::size_t kSendfileChunk = 1 << 16;
 
   const std::size_t maxBytes = std::min(fileSend.remaining, kSendfileChunk);
-  off_t off = static_cast<off_t>(fileSend.offset);
+  off_t offset = static_cast<off_t>(fileSend.offset);
 
-  ssize_t bytes;
+  int64_t result;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
-    bytes = ::pread(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, static_cast<off_t>(fileSend.offset));
+    result = static_cast<int64_t>(::pread(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, offset));
   } else {
-    bytes = ::sendfile(clientFd, fileSend.file.fd(), &off, maxBytes);
+    result = Sendfile(clientFd, fileSend.file.fd(), offset, maxBytes);
   }
-  FileResult res{static_cast<std::size_t>(bytes), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
+  FileResult res{static_cast<std::size_t>(result), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
 
-  if (bytes == -1) [[unlikely]] {
+  if (result == -1) [[unlikely]] {
     res.bytesDone = 0;
     const int errnoVal = errno;
     static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");
@@ -163,9 +141,9 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
     }
   } else {
     // Successful transfer: update state based on the modified offset
-    if (bytes > 0) {
-      fileSend.offset = static_cast<std::size_t>(off);
-      fileSend.remaining -= static_cast<std::size_t>(bytes);
+    if (result > 0) {
+      fileSend.offset = static_cast<std::size_t>(offset);
+      fileSend.remaining -= static_cast<std::size_t>(result);
     } else {  // 0
       // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
       // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.

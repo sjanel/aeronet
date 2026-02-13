@@ -1,5 +1,4 @@
 #include <gtest/gtest.h>
-#include <sys/socket.h>
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +23,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -220,7 +220,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{10});
   // Try to finish the request; the server should already consider it timed out and reply with 408.
   static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
-  (void)::send(fd, rest.data(), rest.size(), MSG_NOSIGNAL);
+  SafeSend(fd, rest);
 
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_FALSE(resp.empty());

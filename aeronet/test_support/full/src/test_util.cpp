@@ -1,6 +1,5 @@
 #include "aeronet/test_util.hpp"
 
-#include <asm-generic/socket.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>  // NOLINT(misc-include-cleaner) used by timeval
@@ -32,6 +31,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -61,7 +61,7 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   bool alreadyLoggedError = false;
 
   for (std::size_t remaining = data.size(); remaining > 0;) {
-    const auto sent = ::send(fd, cursor, remaining, MSG_NOSIGNAL);
+    const auto sent = SafeSend(fd, cursor, remaining);
     if (sent == -1) {
       const auto err = errno;
       if (!alreadyLoggedError) {
@@ -571,6 +571,7 @@ void setRecvTimeout(int fd, SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
   // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
     throw_errno("Error from setRecvTimeout");
   }

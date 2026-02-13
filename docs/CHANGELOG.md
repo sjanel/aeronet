@@ -58,6 +58,8 @@ All notable changes to aeronet are documented in this file.
 - New compile time option `AERONET_ENABLE_ASYNC_HANDLERS` to enable asynchronous request handlers (enabled by default)
 - Fix test compilation when `AERONET_ENABLE_WEBSOCKET` is on but `AERONET_ENABLE_ZLIB` is off.
 - In scripted servers benchmarks, `all-except-python` (default) server selection now excludes `python` server by default to avoid skewing results (`all` and `python` are still available).
+- Experimental support for **C++20 modules** by creating a `aeronet` module interface file.
+- Refactored some system calls in `aeronet/sys` directory to prepare for future multi-platform support (currently Linux only).
 
 ## [1.0.0] - 2026-01-17
 
