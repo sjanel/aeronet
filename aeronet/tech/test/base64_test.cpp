@@ -14,13 +14,13 @@ namespace {
 
 [[nodiscard]] inline std::string B64Encode(std::span<const char> binData) {
   std::string ret;
-  ret.resize_and_overwrite(B64EncodedLen(binData.size()), [binData](char *out, std::size_t n) {
-    ::aeronet::B64Encode(binData, out, static_cast<const char *>(out) + n);
+  ret.resize_and_overwrite(B64EncodedLen(binData.size()), [binData](char* out, std::size_t n) {
+    ::aeronet::B64Encode(binData, out, static_cast<const char*>(out) + n);
     return n;
   });
   return ret;
 }
-std::string B64Encode(const char *) = delete;
+std::string B64Encode(const char*) = delete;
 
 }  // namespace
 

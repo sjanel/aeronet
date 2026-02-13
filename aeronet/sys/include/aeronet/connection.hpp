@@ -10,10 +10,10 @@ class Connection {
  public:
   Connection() noexcept = default;
 
-  explicit Connection(const Socket &socket);
+  explicit Connection(const Socket& socket);
 
   // Construct a Connection that takes ownership of an existing fd wrapped in BaseFd.
-  explicit Connection(BaseFd &&bd) noexcept;
+  explicit Connection(BaseFd&& bd) noexcept;
 
   [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
 
@@ -21,7 +21,7 @@ class Connection {
 
   void close() noexcept { _baseFd.close(); }
 
-  bool operator==(const Connection &) const noexcept = default;
+  bool operator==(const Connection&) const noexcept = default;
 
   // This operator int is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
   // from Fd received from the event loop.

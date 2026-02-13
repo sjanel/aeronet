@@ -30,7 +30,7 @@ class StaticFileConfig {
   // Optional CSS stylesheet for directory listings.
   [[nodiscard]] std::string_view directoryListingCss() const noexcept { return _staticFileStrings[2]; }
 
-  StaticFileConfig &withDefaultIndex(std::string_view indexFile) {
+  StaticFileConfig& withDefaultIndex(std::string_view indexFile) {
     _staticFileStrings.set(0, indexFile);
     return *this;
   }
@@ -40,12 +40,12 @@ class StaticFileConfig {
   ///  - the file extension is from unknown MIME type
   /// Default is "application/octet-stream".
   /// It cannot be empty.
-  StaticFileConfig &withDefaultContentType(std::string_view contentType) {
+  StaticFileConfig& withDefaultContentType(std::string_view contentType) {
     _staticFileStrings.set(1, contentType);
     return *this;
   }
 
-  StaticFileConfig &withDirectoryListingCss(std::string_view cssFile) {
+  StaticFileConfig& withDirectoryListingCss(std::string_view cssFile) {
     _staticFileStrings.set(2, cssFile);
     return *this;
   }
@@ -75,7 +75,7 @@ class StaticFileConfig {
   std::function<std::string_view(std::string_view)> contentTypeResolver;
 
   /// Optional callback to render directory index HTML.
-  std::function<std::string(const std::filesystem::path &directory, std::span<const std::filesystem::directory_entry>)>
+  std::function<std::string(const std::filesystem::path& directory, std::span<const std::filesystem::directory_entry>)>
       directoryIndexRenderer;
 
   /// guard against pathological directories (configurable)

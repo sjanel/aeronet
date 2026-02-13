@@ -20,7 +20,7 @@ MIMETypeIdx DetermineMIMETypeIdx(std::string_view path) {
   const auto dotPos = path.rfind('.');
 
   static constexpr std::size_t kMaximumKnownExtensionSize =
-      std::ranges::max_element(kMIMEMappings, [](const auto &lhs, const auto &rhs) {
+      std::ranges::max_element(kMIMEMappings, [](const auto& lhs, const auto& rhs) {
         return lhs.extension.size() < rhs.extension.size();
       })->extension.size();
 

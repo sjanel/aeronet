@@ -55,7 +55,7 @@ TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
   lifecycle.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   lifecycle.drainDeadlineEnabled = true;
 
-  auto &self = lifecycle;
+  auto& self = lifecycle;
 
   lifecycle = std::move(self);
 

@@ -9,10 +9,10 @@ class BaseFd {
 
   explicit BaseFd(int fd = kClosedFd) noexcept : _fd(fd) {}
 
-  BaseFd(const BaseFd &other) = delete;
-  BaseFd(BaseFd &&other) noexcept : _fd(other.release()) {}
-  BaseFd &operator=(const BaseFd &other) = delete;
-  BaseFd &operator=(BaseFd &&other) noexcept;
+  BaseFd(const BaseFd& other) = delete;
+  BaseFd(BaseFd&& other) noexcept : _fd(other.release()) {}
+  BaseFd& operator=(const BaseFd& other) = delete;
+  BaseFd& operator=(BaseFd&& other) noexcept;
 
   ~BaseFd() { close(); }
 
@@ -34,7 +34,7 @@ class BaseFd {
   void close() noexcept;
 
   // Equality comparison - simply compare the underlying fd integer.
-  bool operator==(const BaseFd &) const noexcept = default;
+  bool operator==(const BaseFd&) const noexcept = default;
 
  private:
   int _fd;

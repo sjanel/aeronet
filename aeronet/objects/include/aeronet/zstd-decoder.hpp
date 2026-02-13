@@ -11,10 +11,10 @@ class ZstdDecoderContext {
  public:
   ZstdDecoderContext() noexcept = default;
 
-  ZstdDecoderContext(const ZstdDecoderContext &) = delete;
-  ZstdDecoderContext &operator=(const ZstdDecoderContext &) = delete;
-  ZstdDecoderContext(ZstdDecoderContext &&rhs) noexcept;
-  ZstdDecoderContext &operator=(ZstdDecoderContext &&rhs) noexcept;
+  ZstdDecoderContext(const ZstdDecoderContext&) = delete;
+  ZstdDecoderContext& operator=(const ZstdDecoderContext&) = delete;
+  ZstdDecoderContext(ZstdDecoderContext&& rhs) noexcept;
+  ZstdDecoderContext& operator=(ZstdDecoderContext&& rhs) noexcept;
 
   ~ZstdDecoderContext();
 
@@ -22,12 +22,12 @@ class ZstdDecoderContext {
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   bool decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk, std::size_t maxDecompressedBytes,
-                       std::size_t decoderChunkSize, RawChars &out);
+                       std::size_t decoderChunkSize, RawChars& out);
 
   void init();
 
  private:
-  void *_pState{};
+  void* _pState{};
 };
 
 class ZstdDecoder {
@@ -36,9 +36,9 @@ class ZstdDecoder {
   // or if decompressed size would exceed maxDecompressedBytes. Uses an adaptive growth strategy
   // since the uncompressed size may be unknown (no content size header present in frame).
   bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                      RawChars &out);
+                      RawChars& out);
 
-  ZstdDecoderContext *makeContext() {
+  ZstdDecoderContext* makeContext() {
     _ctx.init();
     return &_ctx;
   }

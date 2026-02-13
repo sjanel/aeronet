@@ -56,8 +56,8 @@ TEST(MIMEMappings, SortedAndUnique) {
   // Ensure kMIMEMappings is sorted by extension and contains no duplicates
   std::size_t nbMappings = std::size(kMIMEMappings);
   for (std::size_t i = 1; i < nbMappings; ++i) {
-    const auto &prev = kMIMEMappings[i - 1].extension;
-    const auto &cur = kMIMEMappings[i].extension;
+    const auto& prev = kMIMEMappings[i - 1].extension;
+    const auto& cur = kMIMEMappings[i].extension;
     EXPECT_LT(prev, cur) << "Mappings not strictly increasing at index " << (i - 1);
   }
 }
