@@ -46,6 +46,7 @@ endif()
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
+option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
 # Features
@@ -122,6 +123,10 @@ endif()
 
 if(AERONET_BUILD_TESTS)
   add_subdirectory(tests)
+endif()
+
+if(AERONET_BUILD_MODULES)
+  add_subdirectory(modules)
 endif()
 
 if(AERONET_BUILD_BENCHMARKS)
