@@ -23,6 +23,7 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
@@ -35,13 +36,6 @@
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
-
-namespace {
-
-// non-empty body to trigger content-type / content-length header logic in HttpResponse (will not be sent)
-constexpr std::string_view kDummyBody = "a";
-
-}  // namespace
 
 HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
                                        Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
@@ -62,10 +56,10 @@ HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const Http
   opts.setPrepared();
   _fixedResponse._opts = opts;
   if (requestConnClose) {
-    _fixedResponse.headerAddLine(http::Connection, http::close);
+    _fixedResponse.headerAddLineUnchecked(http::Connection, http::close);
     _fixedResponse._opts.close(false);
   }
-  _fixedResponse.body(kDummyBody, http::ContentTypeApplicationOctetStream);  // default
+  _fixedResponse.headerAddLineUnchecked(http::ContentType, http::ContentTypeApplicationOctetStream);
 }
 
 void HttpResponseWriter::status(http::StatusCode code) {
@@ -117,7 +111,10 @@ void HttpResponseWriter::contentType(std::string_view ct) {
     log::warn("Streaming: cannot set content-type after headers sent");
     return;
   }
-  _fixedResponse.body(kDummyBody, ct);
+
+  std::string_view oldCT = _fixedResponse.headerValueOrEmpty(http::ContentType);
+  assert(!oldCT.empty());
+  _fixedResponse.overrideHeaderUnchecked(oldCT.data(), oldCT.data() + oldCT.size(), ct);
 }
 
 void HttpResponseWriter::contentLength(std::size_t len) {
@@ -144,11 +141,14 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Compute needed header size and reserve capacity in the fixed response buffer to have at most 1 allocation.
   std::size_t neededSize = 0UL;
 
-  if (_compressionActivated) {
+  const bool addContentEncoding = _compressionActivated && !_fixedResponse._opts.hasContentEncoding();
+  const bool addVary = _compressionActivated && _server->_config.compression.addVaryAcceptEncodingHeader;
+
+  if (addContentEncoding) {
     neededSize += HttpResponse::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_compressionFormat).size());
-    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
-      neededSize += HttpResponse::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
-    }
+  }
+  if (addVary) {
+    neededSize += HttpResponse::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
   }
   if (chunked()) {
     neededSize += HttpResponse::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
@@ -159,26 +159,19 @@ void HttpResponseWriter::ensureHeadersSent() {
   _fixedResponse._data.ensureAvailableCapacity(neededSize);
 
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
-  if (_compressionActivated) {
-    _fixedResponse.setHeader(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
-      _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
-    }
+  if (addContentEncoding) {
+    _fixedResponse.headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_compressionFormat));
+    _fixedResponse._opts.setHasContentEncoding(true);
+  }
+  if (addVary) {
+    _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
   }
 
-  // Content-length or Transfer-Encoding header
+  // Transfer-Encoding or Content-Length header depending on the case
   if (chunked()) {
-    char* insertPtr = _fixedResponse.getContentLengthHeaderLinePtr() + http::CRLF.size();
-    insertPtr = WriteHeader(insertPtr, http::TransferEncoding, http::chunked);
-    insertPtr = Append(http::DoubleCRLF, insertPtr);
-    const auto dataSize = static_cast<std::size_t>(insertPtr - _fixedResponse._data.data());
-    _fixedResponse._data.setSize(dataSize);
-    _fixedResponse.setBodyStartPos(dataSize);
+    _fixedResponse.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
   } else if (!_fixedResponse.hasBodyFile()) {
-    _fixedResponse.replaceHeaderValueNoRealloc(_fixedResponse.getContentLengthValuePtr(),
-                                               std::string_view(IntegralToCharVector(_declaredLength)));
-    // Remove the dummy body
-    _fixedResponse._data.setSize(_fixedResponse.bodyStartPos());
+    _fixedResponse.headerAddLineUnchecked(http::ContentLength, std::string_view(IntegralToCharVector(_declaredLength)));
   }
 
   ApplyResponseMiddleware(*_request, _fixedResponse, _routeResponseMiddleware,
@@ -273,11 +266,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
     RawChars chunkBuffer(totalSize);
 
-    to_lower_hex(data.size(), chunkBuffer.data());
-    std::memcpy(chunkBuffer.data() + nbDigitsHex, http::CRLF.data(), http::CRLF.size());
-    std::memcpy(chunkBuffer.data() + nbDigitsHex + http::CRLF.size(), data.data(), data.size());
-    std::memcpy(chunkBuffer.data() + nbDigitsHex + http::CRLF.size() + data.size(), http::CRLF.data(),
-                http::CRLF.size());
+    char* insertPtr = to_lower_hex(data.size(), chunkBuffer.data());
+    insertPtr = Append(http::CRLF, insertPtr);
+    insertPtr = Append(data, insertPtr);
+    insertPtr = Append(http::CRLF, insertPtr);
 
     chunkBuffer.setSize(totalSize);
 
@@ -443,19 +435,9 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return false;
   }
 
-  if (written > 0) {
-    compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
-  }
+  compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
 
   _compressionActivated = true;
-  // Set Content-Encoding prior to emitting headers.
-  // We can use headerAddLine instead of header because at this point the user has not set it.
-  if (_state != HttpResponseWriter::State::HeadersSent) {
-    _fixedResponse.headerAddLine(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-    if (_server->_config.compression.addVaryAcceptEncodingHeader) {
-      _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
-    }
-  }
 
   ensureHeadersSent();
 
@@ -484,7 +466,7 @@ bool HttpResponseWriter::tryPush(RawChars data, bool doNotWriteHexPrefix) {
     RawChars prefix(nbDigitsHex + http::CRLF.size());
 
     to_lower_hex(dataSize, prefix.data());
-    std::memcpy(prefix.data() + nbDigitsHex, http::CRLF.data(), http::CRLF.size());
+    Copy(http::CRLF, prefix.data() + nbDigitsHex);
     prefix.setSize(nbDigitsHex + http::CRLF.size());
 
     // do not use append here to avoid exponential growth of the buffer

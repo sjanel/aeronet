@@ -6,6 +6,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"

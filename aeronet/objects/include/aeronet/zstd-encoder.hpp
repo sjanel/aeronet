@@ -58,6 +58,8 @@ class ZstdEncoder {
     return &_ctx;
   }
 
+  EncoderContext* context() { return &_ctx; }
+
  private:
   CompressionConfig::Zstd _cfg;
   ZstdEncoderContext _ctx;
