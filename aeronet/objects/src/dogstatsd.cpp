@@ -1,8 +1,5 @@
 #include "aeronet/dogstatsd.hpp"
 
-#include <sys/socket.h>
-#include <sys/un.h>
-
 #include <cassert>
 #include <cerrno>
 #include <charconv>
@@ -16,10 +13,9 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/base-fd.hpp"
-#include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/unix-socket.hpp"
 
 #ifndef NDEBUG
 #include <system_error>
@@ -61,7 +57,7 @@ constexpr void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, 
 }  // namespace
 
 DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
-  if (socketPath.size() >= sizeof(sockaddr_un{}.sun_path)) {
+  if (socketPath.size() >= kUnixSocketMaxPath) {
     throw std::invalid_argument("DogStatsD: socket path too long");
   }
   if (ns.size() >= 256UL) {
@@ -71,13 +67,10 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
     return;
   }
 
-  _fd = BaseFd(::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
-  if (!_fd) {
-    throw_errno("DogStatsD: socket creation failed");
-  }
+  _fd = UnixSocket(UnixSocket::Type::Datagram);
 
-  static_assert(sizeof(sockaddr_un{}.sun_path) <= std::numeric_limits<uint16_t>::max(),
-                "uint16_t is not large enough to hold sockaddr_un.sun_path");
+  static_assert(kUnixSocketMaxPath <= std::numeric_limits<uint16_t>::max(),
+                "uint16_t is not large enough to hold unix socket max path");
 
   _socketPathLength = static_cast<uint16_t>(socketPath.size());
 
@@ -132,7 +125,7 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
     data = Append(tags.fullString(), data);
   }
 
-  if (::send(_fd.fd(), _buf.data() + _buf.size(), dataSize, MSG_DONTWAIT | MSG_NOSIGNAL) == -1) {
+  if (_fd.send(_buf.data() + _buf.size(), dataSize) == -1) {
     const int serr = errno;
     static_assert(EAGAIN == EWOULDBLOCK, "EAGAIN and EWOULDBLOCK should have the same value");
     // If the socket would block (EAGAIN / EWOULDBLOCK), treat the metric as dropped
@@ -192,14 +185,9 @@ bool DogStatsD::tryReconnect() noexcept {
 int DogStatsD::connect() noexcept {
   std::string_view socketPath = this->socketPath();
 
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  *Append(socketPath, addr.sun_path) = '\0';
-  auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + socketPath.size() + 1);
-
   assert(_fd);
 
-  const int ret = ::connect(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen);
+  const int ret = _fd.connect(socketPath);
   if (ret == -1) {
     log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath, std::strerror(errno));
     _retryConnectionCounter = 1;

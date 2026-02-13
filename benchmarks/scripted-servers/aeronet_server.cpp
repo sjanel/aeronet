@@ -12,6 +12,7 @@
 #include <format>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -183,18 +184,13 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) mutable {
     std::string_view body = req.body();
-    auto resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
+    auto resp = req.makeResponse(http::StatusCodeOK);
 
-    while (!body.empty()) {
-      std::byte buffer[128];
-      static_assert(sizeof(buffer) >= kCompressionMinBytes);
-      const std::string_view chunk = body.substr(0, sizeof(buffer));
-      std::transform(chunk.begin(), chunk.end(), buffer,
-                     [](unsigned char ch) { return static_cast<std::byte>(static_cast<unsigned char>(ch + 1U)); });
-      resp.bodyAppend(std::span<const std::byte>(buffer, sizeof(buffer)));
-      body.remove_prefix(chunk.size());
-    }
+    auto buffer = std::make_unique<std::byte[]>(body.size());
+    std::transform(body.begin(), body.end(), buffer.get(),
+                   [](unsigned char ch) { return static_cast<std::byte>(ch + 1U); });
 
+    resp.body(std::move(buffer), body.size(), "application/octet-stream");
     return resp;
   });
 

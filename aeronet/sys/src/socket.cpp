@@ -1,6 +1,5 @@
 #include "aeronet/socket.hpp"
 
-#include <asm-generic/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -42,9 +41,11 @@ Socket::Socket(Type type, int protocol) : _baseFd(::socket(AF_INET, ComputeSocke
   const int fd = _baseFd.fd();
 
   static constexpr int enable = 1;
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_REUSEADDR
   if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
     throw_errno("setsockopt(SO_REUSEADDR) failed");
   }
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_REUSEPORT
   if (reusePort && ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
     throw_errno("setsockopt(SO_REUSEPORT) failed");
   }

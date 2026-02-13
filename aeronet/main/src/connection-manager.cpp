@@ -1,7 +1,3 @@
-#include <netinet/in.h>  //NOLINT(misc-include-cleaner) used by socket options
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-
 #include <algorithm>
 #include <cassert>
 #include <cerrno>
@@ -23,6 +19,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 
@@ -161,8 +158,7 @@ void SingleHttpServer::acceptNewConnections() {
     }
     int cnxFd = cnx.fd();
     if (_config.tcpNoDelay) {
-      static constexpr int kEnable = 1;
-      if (::setsockopt(cnxFd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) != 0) [[unlikely]] {
+      if (!SetTcpNoDelay(cnxFd)) [[unlikely]] {
         const auto err = errno;
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
@@ -434,14 +430,7 @@ void SingleHttpServer::handleWritableClient(int fd) {
   // If this connection was created for an upstream non-blocking connect, and connect is pending,
   // check SO_ERROR to determine whether connect completed successfully or failed.
   if (state.connectPending) {
-    int err = 0;
-    socklen_t len = sizeof(err);
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) [[unlikely]] {
-      log::error("getsockopt(SO_ERROR) failed for fd # {} errno={} ({})", fd, errno, std::strerror(errno));
-      // Treat as connect failure
-      err = errno;
-    }
+    const int err = GetSocketError(fd);
     state.connectPending = false;
     if (err != 0) {
       // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
