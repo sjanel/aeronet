@@ -45,4 +45,7 @@ endif()
 
 if(AERONET_ENABLE_OPENTELEMETRY)
 	aeronet_http_test(opentelemetry-e2e)
+	# Workaround for opentelemetry-cpp v1.25 proto generation: define the
+	# OPENTELEMETRY_PROTO_API macro that appears in generated .pb.h files.
+	target_compile_definitions(opentelemetry-e2e_test PRIVATE OPENTELEMETRY_PROTO_API=)
 endif()
