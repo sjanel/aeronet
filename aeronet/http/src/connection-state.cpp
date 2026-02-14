@@ -48,9 +48,8 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
     case ZerocopyMode::Enabled:
       zerocopyRequested = true;
       break;
-    case ZerocopyMode::Opportunistic:
-      [[fallthrough]];
     default: {
+      assert(config.zerocopyMode == ZerocopyMode::Opportunistic);
       sockaddr_storage local{};
       sockaddr_storage peer{};
       const bool localOk = GetLocalAddress(cnxFd, local);

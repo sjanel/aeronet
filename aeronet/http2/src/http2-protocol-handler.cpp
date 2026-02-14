@@ -376,7 +376,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     const bool isHead = (request.method() == http::Method::HEAD);
     HttpResponse resp = reply(request);
 
-    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pServerConfig);
+    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState);
 
     resp.finalizeForHttp2();
 
