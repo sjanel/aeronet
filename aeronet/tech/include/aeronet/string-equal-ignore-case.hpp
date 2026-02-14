@@ -44,23 +44,6 @@ constexpr bool CaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
   return lhsSize < rhsSize;
 }
 
-constexpr bool StartsWithCaseInsensitive(std::string_view value, std::string_view prefix) {
-  if (value.size() < prefix.size()) {
-    return false;
-  }
-
-  const char* pVal = value.data();
-  const char* pPre = prefix.data();
-  const char* end = pPre + prefix.size();
-
-  for (; pPre != end; ++pVal, ++pPre) {
-    if (tolower(*pVal) != tolower(*pPre)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 struct CaseInsensitiveHashFunc {
   static constexpr std::size_t operator()(std::string_view str) noexcept {
     // FNV-1a hash, case insensitive
