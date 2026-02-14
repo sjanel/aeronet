@@ -1574,6 +1574,7 @@ Empty segments (double slashes `//`) are not allowed.
 
 #### Escape sequences for literal special characters
 
+{% raw %}
 To use literal braces in path segments, escape them by doubling:
 
 - `{{` → literal `{`
@@ -1585,6 +1586,7 @@ Examples:
 - `/glob/{{{{}}/file.txt` matches the literal path `/glob/{{}/file.txt`
 
 This allows registering handlers for paths that contain these characters literally.
+{% endraw %}
 
 #### Wildcard semantics
 
