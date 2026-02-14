@@ -5,7 +5,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <span>
 #include <stdexcept>
@@ -282,9 +281,32 @@ EncoderContext* ResponseCompressionState::context([[maybe_unused]] Encoding enco
   throw std::invalid_argument("Unsupported encoding for makeContext");
 }
 
-void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
-                                    const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp) {
+namespace {
+
+constexpr std::string_view kCRLFVaryAcceptEncodingLine =
+    JoinStringView_v<http::CRLF, http::Vary, http::HeaderSep, http::AcceptEncoding>;
+
+constexpr std::string_view kCRLFContentLengthHeaderSep =
+    JoinStringView_v<http::CRLF, http::ContentLength, http::HeaderSep>;
+
+std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVaryHeaderLine, bool hasVaryHeader) {
+  if (!needVaryAcceptEncoding) {
+    return 0UL;
+  }
+  if (addVaryHeaderLine) {
+    return kCRLFVaryAcceptEncodingLine.size();
+  }
+  if (!hasVaryHeader) {
+    return http::AcceptEncoding.size();
+  }
+  return kVaryHeaderValueSep.size() + http::AcceptEncoding.size();
+}
+
+}  // namespace
+
+void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp) {
   const auto bodySz = resp.bodyInMemoryLength();
+  const auto& compressionConfig = *compressionState.pCompressionConfig;
 
   if (bodySz < compressionConfig.minBytes) {
     return;
@@ -299,38 +321,38 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     }
   }
 
-  // At this step, we will try the compression.
-
-  const std::string_view contentEncodingStr = GetEncodingStr(encoding);
-
   // Sanity check: Content-Type header must be present to consider compression.
   // Normally handled by HttpResponse automatically when user adds a body.
   assert(resp.hasHeader(http::ContentType));
 
-  const bool hasExternalPayload = resp.hasBodyCaptured();
-  const auto trailersLen = resp.trailersSize();
+  // At this step, we will try the compression.
+  // We have two cases - either the body is in the main buffer, or it is captured.
+
+  // We will only commit compression if the configured compression ratio is satisfied.
+  const std::size_t maxCompressedBytes = compressionConfig.maxCompressedBytes(bodySz);
+  const std::string_view contentEncodingStr = GetEncodingStr(encoding);
+
+  const bool hasBodyCaptured = resp.hasBodyCaptured();
+  const auto trailersSz = resp.trailersSize();
 
   const char* pData = resp._data.data();
   const VaryResult varyResult =
       compressionConfig.addVaryAcceptEncodingHeader
           ? VaryContainsAcceptEncoding(resp, pData)
           : VaryResult{.valueFirst = kVaryAcceptEncodingNotNeeded, .valueLast = kVaryAcceptEncodingNotNeeded};
+  const bool hasVaryHeader = varyResult.valueFirst != varyResult.valueLast;
   const bool needVaryAcceptEncoding = !varyResult.notNeeded();
   const bool addVaryHeaderLine = varyResult.absent();
-  const std::size_t upperVaryAppendLen =
-      (needVaryAcceptEncoding && !addVaryHeaderLine) ? (http::AcceptEncoding.size() + kVaryHeaderValueSep.size()) : 0UL;
+  const std::size_t additionalVaryLen =
+      ComputeAdditionalVaryLength(needVaryAcceptEncoding, addVaryHeaderLine, hasVaryHeader);
   const std::size_t contentEncodingHeaderLineSz =
       HttpResponse::HeaderSize(http::ContentEncoding.size(), contentEncodingStr.size());
 
-  static constexpr std::string_view kVaryHeaderLine =
-      JoinStringView_v<http::CRLF, http::Vary, http::HeaderSep, http::AcceptEncoding>;
-
-  const std::size_t varyHeaderLineSz = addVaryHeaderLine ? kVaryHeaderLine.size() : 0UL;
-
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
   const auto nCharsBodySz = nchars(bodySz);
-  const std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
-  const std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
+  const auto nCharsMaxCompressedSize = nchars(maxCompressedBytes);
+  std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
+  std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
 
   const std::size_t oldDataSz = resp._data.size();
 
@@ -340,130 +362,130 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   //   - temp compressed output (capped by maxCompressedBytes + 1)
   //   - final compressed output (capped by maxCompressedBytes)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
-  const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
-                                   upperContentLengthLineLen + http::DoubleCRLF.size();
+  const auto contentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
+  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsMaxCompressedSize);
 
-  // We will only commit compression if the configured compression ratio is satisfied.
-  const std::size_t maxCompressedBytes = compressionConfig.maxCompressedBytes(bodySz);
-  const std::size_t tmpAreaStartPos =
-      std::max(oldDataSz + upperVaryAppendLen, contentTypeLinePos + upperTailLen + upperVaryAppendLen);
-  const std::size_t upperFinalSize =
-      contentTypeLinePos + upperTailLen + maxCompressedBytes + trailersLen + upperVaryAppendLen;
-  const std::size_t upperTempEnd = tmpAreaStartPos + maxCompressedBytes + trailersLen;
+  static_assert(
+      HttpResponse::HeaderSize(http::ContentEncoding.size(), 1U) >= std::numeric_limits<std::size_t>::digits10 + 1,
+      "headersShift cannot be negative for below logic");
+
+  const std::size_t headersShift =
+      additionalVaryLen + contentEncodingHeaderLineSz + upperContentLengthLineLen - contentLengthLineLen;
+  const std::size_t capturedTrailerGrowth = hasBodyCaptured ? trailersSz : 0UL;
+  const auto neededCapacity = oldDataSz + maxCompressedBytes + headersShift + capturedTrailerGrowth;
 
   // unique reallocation
-  resp._data.reserve(std::max(upperFinalSize, upperTempEnd));
+  resp._data.reserve(neededCapacity);
 
-  char* pTmpCompressed = resp._data.data() + tmpAreaStartPos;
+  // Note: we are before the finalization of the HttpResponse here, so there is no Transfer-Encoding: chunked case to
+  // worry about (with tail \r\n0\r\n[trailers]\r\n). The trailers are directly after the body if they exist (not even a
+  // CRLF splits the body and the first trailer line).
+  char* pCompBody = resp._data.data() + oldDataSz + headersShift;
+  const auto availableCompCapa = resp._data.capacity() - oldDataSz - headersShift;
   const std::size_t compressedSize =
-      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxCompressedBytes, pTmpCompressed);
+      compressionState.encodeFull(encoding, resp.bodyInMemory(), availableCompCapa, pCompBody);
 
   if (compressedSize == 0) {
     // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
+    // TODO: increase telemetry counter?
     return;
   }
 
-  // If the trailers view are internal resp._data, it may be overwritten when we move back the new body + headers to
-  // their final position. So we copy them to a temporary buffer before starting compression.
-  const char* pTrailers = nullptr;
-  if (trailersLen != 0) {
-    pTrailers = resp.trailersFlatView().data();
-    if (hasExternalPayload) {
-      char* const pTmpTrailers = resp._data.data() + (tmpAreaStartPos + maxCompressedBytes);
-      std::memcpy(pTmpTrailers, pTrailers, trailersLen);
-      pTrailers = pTmpTrailers;
-    }
-  }
+  // Compression succeeded at this point, we can start to move parts to their final position.
+  // We will move the HttpResponse parts from backwards to avoid overwriting data, in this order:
+  // 1) trailers
+  // 2) compressed body (only if inlined, for captured bodies the compressed body is already in its final position)
+  // 3) Double CRLF (before the compressed body)
+  // 4) new Content-Length header line (with padding if needed)
+  // 5) Content-Type header line (moved)
+  // 6) new Content-Encoding header line (added)
+  // 7) new Vary header line or value update (added or updated if needed)
+  //
+  //  For inline bodies:
+  //   [headers][content-type][content-length][CRLF][uncompressed body][trailers][<headersShift>][compressed body]
+  //  For captured bodies:
+  //   [headers][content-type][content-length][CRLF][<headersShift>][compressed body]
+  //   [uncompressed body][trailers]
 
-  // Apply Vary: Accept-Encoding addition only once we know compression is committed.
-  // IMPORTANT: This can shift the whole response buffer, so the temporary compressed bytes must
-  // live strictly beyond (oldDataSz + potential insertion length).
-  if (needVaryAcceptEncoding) {
-    if (addVaryHeaderLine) {
-      // Handled later by inserting a new header line next to Content-Type.
+  // Copies trailers to their final position.
+  // For captured bodies (and trailers), we can use memcpy because the buffers do not overlap.
+  if (trailersSz != 0) {
+    const char* pTrailers = resp.trailersFlatView().data();
+    char* pDest;
+    if (hasBodyCaptured) {
+      pDest = resp._data.data() + oldDataSz + headersShift + compressedSize;
+      std::memcpy(pDest, pTrailers, trailersSz);
     } else {
-      // Merge into existing Vary value.
-      char* const base = resp._data.data();
-      const auto insertPos = varyResult.valueLast;
-      assert(insertPos != kNoVaryHeader && insertPos != kVaryAcceptEncodingNotNeeded);
-
-      const bool hasValue = varyResult.valueFirst != varyResult.valueLast;
-
-      const std::size_t extraLen = (hasValue ? kVaryHeaderValueSep.size() : 0UL) + http::AcceptEncoding.size();
-
-      // Insert at insertPos (end of Vary value).
-      char* const moveSrc = base + insertPos;
-      const std::size_t tailLen = resp._data.size() - insertPos;
-      std::memmove(moveSrc + extraLen, moveSrc, tailLen);
-      char* out = moveSrc;
-      if (hasValue) {
-        out = Append(kVaryHeaderValueSep, out);
-      }
-      Copy(http::AcceptEncoding, out);
-      resp._data.addSize(extraLen);
-      resp.adjustBodyStart(static_cast<int64_t>(extraLen));
+      pDest = resp._data.data() + (pTrailers - resp._data.data()) + headersShift + compressedSize - bodySz;
+      std::memmove(pDest, pTrailers, trailersSz);
     }
   }
 
-  // Recompute tail offsets after the optional Vary merge above (it can shift Content-Type/Length positions).
-  const std::size_t contentTypeLinePos2 =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - resp._data.data());
-  const std::size_t contentLengthLinePos2 =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - resp._data.data());
+  // Buffer layout after trailers move to their final position:
+  //  For inline bodies:
+  //   [headers][content-type][content-length][CRLF][???][trailers][???][compressed body]
+  //  For captured bodies:
+  //   [headers][content-type][content-length][CRLF][<headersShift>][compressed body][trailers]
+  //   [uncompressed body]
 
-  const std::size_t contentTypeLineLen2 = contentLengthLinePos2 - contentTypeLinePos2;
+  const auto newBodyStartPos = resp.bodyStartPos() + headersShift;
+  if (!hasBodyCaptured) {
+    // Move body to its final position (after the reserved tail and after the potential headers inserted for Vary and
+    // Content-Encoding).
+    std::memcpy(resp._data.data() + newBodyStartPos, pCompBody, compressedSize);
+    // Update body start position to the new location.
+    resp.setBodyStartPos(newBodyStartPos);
+  }
 
-  const uint32_t nbCharsCompressedSize = nchars(compressedSize);
-  const std::size_t newContentLengthLineLen =
-      HttpResponse::HeaderSize(http::ContentLength.size(), nbCharsCompressedSize);
-  const std::size_t newTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen2 +
-                                 newContentLengthLineLen + http::DoubleCRLF.size();
+  // At this point, compressed body and trailers (if exist) are in their final position, but headers are not updated yet
+  // (Content-Length, new headers for Content-Encoding and potentially Vary) and not moved yet to their final position.
 
-  const std::size_t newContentTypeLinePos = contentTypeLinePos2 + varyHeaderLineSz + contentEncodingHeaderLineSz;
-  const std::size_t newContentLengthLinePos = newContentTypeLinePos + contentTypeLineLen2;
-  const std::size_t newBodyStartPos = contentTypeLinePos2 + newTailLen;
+  // Buffer layout after compressed body move to final position (only for inline bodies, for captured bodies the
+  // compressed body is already in its final position):
+  //  [headers][content-type][content-length][CRLF][<headersShift>][compressed body][trailers]
 
-  // Move existing Content-Type line away from the insertion zone
-  std::memmove(resp._data.data() + newContentTypeLinePos, resp._data.data() + contentTypeLinePos2, contentTypeLineLen2);
+  // Write DoubleCRLF before the compressed body.
+  char* out = resp._data.data() + newBodyStartPos - http::DoubleCRLF.size();
+  Copy(http::DoubleCRLF, out);
 
-  // Write the newly inserted headers
-  char* out = resp._data.data() + contentTypeLinePos2;
+  // Write new Content-Length, padded with spaces if the number of chars of the actual compressed size is smaller than
+  // the number of chars of the declared max compressed size (worst case).
+  [[maybe_unused]] const auto tcRes = std::to_chars(out - nCharsMaxCompressedSize, out, compressedSize);
+  assert(tcRes.ec == std::errc{});
+  std::fill(tcRes.ptr, out, ' ');  // pad with spaces if needed
+  out -= nCharsMaxCompressedSize;
+
+  // Write '\r\nContent-Length: ' just before the new Content-Length value.
+  Copy(kCRLFContentLengthHeaderSep, out - kCRLFContentLengthHeaderSep.size());
+  out -= kCRLFContentLengthHeaderSep.size();
+
+  // Write '\r\nContent-Type: XXXX' just before the Content-Length line.
+  std::memmove(out - contentTypeLineLen, resp._data.data() + contentTypeLinePos, contentTypeLineLen);
+  out -= contentTypeLineLen;
+
+  // Write new '\r\nContent-Encoding: XXXX' header.
+  WriteCRLFHeader(out - contentEncodingHeaderLineSz, http::ContentEncoding, contentEncodingStr);
+  out -= contentEncodingHeaderLineSz;
+
+  // Write '\r\nVary: Accept-Encoding' if needed.
   if (addVaryHeaderLine) {
-    out = Append(kVaryHeaderLine, out);
-  }
-  out = WriteCRLFHeader(out, http::ContentEncoding, contentEncodingStr);
-
-  // Write updated Content-Length and double CRLF after the moved Content-Type line
-  out = resp._data.data() + newContentLengthLinePos;
-
-  static constexpr std::string_view kContentLengthPrefix =
-      JoinStringView_v<http::CRLF, http::ContentLength, http::HeaderSep>;
-
-  out = Append(kContentLengthPrefix, out);
-  [[maybe_unused]] const auto tcRes = std::to_chars(out, out + nbCharsCompressedSize, compressedSize);
-  assert(tcRes.ec == std::errc{} && tcRes.ptr == out + nbCharsCompressedSize);
-  out += nbCharsCompressedSize;
-
-  out = Append(http::DoubleCRLF, out);
-  assert(std::cmp_equal(out - resp._data.data(), newBodyStartPos));
-
-  // Move compressed body to its final position.
-  char* newBodyStartPtr = resp._data.data() + newBodyStartPos;
-  std::memmove(newBodyStartPtr, pTmpCompressed, compressedSize);
-
-  // Move/copy trailers to final position without heap temps.
-  if (trailersLen != 0) {
-    char* newTrailerStartPtr = newBodyStartPtr + compressedSize;
-    if (hasExternalPayload) {
-      std::memcpy(newTrailerStartPtr, pTrailers, trailersLen);
-    } else {
-      std::memmove(newTrailerStartPtr, resp._data.data() + oldDataSz - trailersLen, trailersLen);
+    Copy(kCRLFVaryAcceptEncodingLine, out - kCRLFVaryAcceptEncodingLine.size());
+  } else if (needVaryAcceptEncoding) {
+    // We are in the case of an existing Vary header without Accept-Encoding, we will append ", Accept-Encoding" to it.
+    // The insertion point is guaranteed to be before the Content-Type line because of the heuristic in
+    // VaryContainsAcceptEncoding.
+    out = resp._data.data() + varyResult.valueLast;
+    const std::size_t tailLen = contentTypeLinePos - varyResult.valueLast;
+    std::memmove(out + additionalVaryLen, out, tailLen);
+    if (varyResult.valueLast != varyResult.valueFirst) {
+      out = Append(kVaryHeaderValueSep, out);
     }
+    Copy(http::AcceptEncoding, out);
   }
 
+  // Finalize response metadata to reflect compression
   resp.setBodyStartPos(newBodyStartPos);
-  resp._data.setSize(newBodyStartPos + compressedSize + trailersLen);
+  resp._data.setSize(newBodyStartPos + compressedSize + trailersSz);
   resp._payloadVariant = {};
 }
 
