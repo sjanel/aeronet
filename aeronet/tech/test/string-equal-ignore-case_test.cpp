@@ -43,13 +43,6 @@ TEST(StringEqualIgnoreCase, StringViewVariants) {
   EXPECT_FALSE(CaseInsensitiveEqual("foo", "fooo"));
 }
 
-TEST(StringEqualIgnoreCase, StartsWith) {
-  EXPECT_TRUE(StartsWithCaseInsensitive("HelloWorld", "hello"));
-  EXPECT_TRUE(StartsWithCaseInsensitive("HELLO", "hello"));
-  EXPECT_FALSE(StartsWithCaseInsensitive("abc", "abcd"));
-  EXPECT_FALSE(StartsWithCaseInsensitive("test", "best"));
-}
-
 TEST(StringEqualIgnoreCase, HashConsistency) {
   CaseInsensitiveHashFunc hashFunc;
   const std::string_view str1 = "MiXeDCase";
@@ -83,12 +76,6 @@ bool ReferenceCaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
   return LowerCase(lhs) < LowerCase(rhs);
 }
 
-bool ReferenceStartsWithCaseInsensitive(std::string_view str, std::string_view prefix) {
-  if (prefix.size() > str.size()) {
-    return false;
-  }
-  return LowerCase(str.substr(0, prefix.size())) == LowerCase(prefix);
-}
 }  // namespace
 
 TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
@@ -141,7 +128,6 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
     }
 
     EXPECT_EQ(CaseInsensitiveEqual(s1, s2), ReferenceCaseInsensitiveEqual(s1, s2));
-    EXPECT_EQ(StartsWithCaseInsensitive(s1, s2), ReferenceStartsWithCaseInsensitive(s1, s2));
     // also cross-compare with different lengths occasionally
     if (iteration % 10 == 0) {
       std::string s3 = s1 + static_cast<char>(charDist(rng));
@@ -189,7 +175,6 @@ TEST(StringLessIgnoreCase, FuzzRandomAsciiLess) {
       rhs.push_back(ch);
     }
     EXPECT_EQ(CaseInsensitiveLess(lhs, rhs), ReferenceCaseInsensitiveLess(lhs, rhs));
-    EXPECT_EQ(StartsWithCaseInsensitive(lhs, rhs), ReferenceStartsWithCaseInsensitive(lhs, rhs));
   }
 }
 

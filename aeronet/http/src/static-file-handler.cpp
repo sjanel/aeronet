@@ -387,7 +387,7 @@ RangeSelection ParseRange(std::string_view raw, std::size_t fileSize) {
     return result;
   }
   static constexpr std::string_view kBytesEqual = "bytes=";
-  if (!StartsWithCaseInsensitive(raw, kBytesEqual)) {
+  if (!CaseInsensitiveEqual(raw.substr(0, kBytesEqual.size()), kBytesEqual)) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
