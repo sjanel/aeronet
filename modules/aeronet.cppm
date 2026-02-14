@@ -126,7 +126,6 @@ using aeronet::JoinStringViewWithSep;
 using aeronet::JoinStringViewWithSep_v;
 using aeronet::make_joined_string_view;
 using aeronet::SafeCast;
-using aeronet::StartsWithCaseInsensitive;
 using aeronet::StringToIntegral;
 
 // ── MIME utilities ─────────────────────────────────────────────────────────
