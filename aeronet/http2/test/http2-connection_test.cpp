@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <span>
@@ -665,9 +666,14 @@ TEST(Http2Connection, SendPing) {
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
   conn.onOutputWritten(conn.getPendingOutput().size());
 
-  std::array<std::byte, 8> opaqueData = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
-                                         std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
-  conn.sendPing(opaqueData, false);
+  PingFrame pingFrame;
+  pingFrame.isAck = false;
+  static constexpr std::byte opaqueData[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+                                             std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+
+  std::memcpy(pingFrame.opaqueData, opaqueData, sizeof(opaqueData));
+
+  conn.sendPing(pingFrame);
 
   EXPECT_TRUE(conn.hasPendingOutput());
 

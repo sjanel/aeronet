@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -12,7 +11,7 @@
 namespace aeronet::websocket {
 
 /// 4-byte masking key type.
-using MaskingKey = std::array<std::byte, kMaskingKeySize>;
+using MaskingKey = uint32_t;
 
 /// Parsed WebSocket frame header.
 /// Does not own the payload data - the payload is a view into the input buffer.
@@ -27,7 +26,7 @@ struct FrameHeader {
   bool rsv2{false};    // RSV2 bit (reserved)
   bool rsv3{false};    // RSV3 bit (reserved)
   uint64_t payloadLength{0};
-  std::array<std::byte, kMaskingKeySize> maskingKey{};
+  MaskingKey maskingKey{};
 };
 
 /// Result of parsing a WebSocket frame from raw bytes.
@@ -65,7 +64,7 @@ struct FrameParseResult {
 ///
 /// @param data       Payload data to mask/unmask (modified in place)
 /// @param maskingKey 4-byte masking key from frame header
-void ApplyMask(std::span<std::byte> data, std::span<const std::byte, kMaskingKeySize> maskingKey);
+void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey);
 
 /// Build a WebSocket frame and append it to an output buffer.
 ///
@@ -73,23 +72,23 @@ void ApplyMask(std::span<std::byte> data, std::span<const std::byte, kMaskingKey
 /// @param opcode      Frame opcode (Text, Binary, Close, Ping, Pong)
 /// @param payload     Payload data (empty allowed for control frames)
 /// @param fin         FIN bit (true for complete messages, false for fragments)
-/// @param mask        Whether to mask the payload (servers should NOT mask)
-/// @param maskingKey  Masking key (only used if mask=true, random 4 bytes)
+/// @param shouldMask  Whether to mask the payload (servers should NOT mask)
+/// @param maskingKey  Masking key (only used if shouldMask=true, random 4 bytes)
 /// @param rsv1        RSV1 bit (true when payload is compressed with permessage-deflate)
 ///
 /// Control frames (Close, Ping, Pong) must have payload <= 125 bytes and FIN=true.
-void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin = true, bool mask = false,
-                MaskingKey maskingKey = {}, bool rsv1 = false);
+void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin = true,
+                bool shouldMask = false, MaskingKey maskingKey = {}, bool rsv1 = false);
 
 /// Build a Close frame with an optional status code and reason.
 ///
 /// @param output     Output buffer to append the frame to
 /// @param code       Close status code (0 = no code)
 /// @param reason     Optional close reason (UTF-8 string, max ~123 bytes)
-/// @param mask       Whether to mask the payload
-/// @param maskingKey Masking key (only used if mask=true)
+/// @param shouldMask  Whether to mask the payload
+/// @param maskingKey  Masking key (only used if shouldMask=true)
 void BuildCloseFrame(RawBytes& output, CloseCode code = CloseCode::Normal, std::string_view reason = {},
-                     bool mask = false, MaskingKey maskingKey = {});
+                     bool shouldMask = false, MaskingKey maskingKey = {});
 
 /// Parse a Close frame payload to extract status code and reason.
 ///

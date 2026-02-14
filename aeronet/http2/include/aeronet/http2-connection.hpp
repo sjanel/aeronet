@@ -172,9 +172,7 @@ class Http2Connection {
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
   /// Send PING frame.
-  /// @param opaqueData 8 bytes of opaque data
-  /// @param isAck True if this is a PING response
-  void sendPing(std::span<const std::byte, 8> opaqueData, bool isAck = false);
+  void sendPing(PingFrame pingFrame);
 
   /// Send WINDOW_UPDATE frame.
   /// @param streamId Stream ID (0 for connection-level)

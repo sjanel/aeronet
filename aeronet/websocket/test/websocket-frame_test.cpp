@@ -37,6 +37,12 @@ template <typename Container>
 inline std::span<const std::byte> container_bytes(const Container &cont) noexcept {
   return std::span<const std::byte>(reinterpret_cast<const std::byte *>(cont.data()), cont.size());
 }
+
+// Helper to construct a MaskingKey from four bytes (LSB = first byte)
+inline MaskingKey MakeMask(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3) noexcept {
+  return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8) | (static_cast<MaskingKey>(b2) << 16) |
+         (static_cast<MaskingKey>(b3) << 24);
+}
 }  // namespace
 
 class WebSocketFrameTest : public ::testing::Test {
@@ -111,7 +117,7 @@ TEST_F(WebSocketFrameTest, BuildUnmaskedTextFrame) {
 
 TEST_F(WebSocketFrameTest, BuildMaskedTextFrame) {
   std::string_view payload = "Hi";
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, true, mask);
 
   ASSERT_GE(buffer.size(), 8);  // 2 header + 4 mask + 2 payload
@@ -223,7 +229,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameNoReason) {
 }
 
 TEST_F(WebSocketFrameTest, BuildMaskedCloseFrame) {
-  MaskingKey mask = {std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}, std::byte{0xDD}};
+  MaskingKey mask = MakeMask(0xAA, 0xBB, 0xCC, 0xDD);
   BuildCloseFrame(buffer, CloseCode::Normal, "", true, mask);
 
   auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
@@ -271,7 +277,7 @@ TEST_F(WebSocketFrameTest, ParseUnmaskedTextFrame) {
 }
 
 TEST_F(WebSocketFrameTest, ParseMaskedTextFrame) {
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
   std::string_view payload = "Hi";
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, true, mask);
 
@@ -376,7 +382,7 @@ TEST_F(WebSocketFrameTest, ParseIncompletePayload) {
 
 TEST_F(WebSocketFrameTest, ApplyMaskBasic) {
   std::array<std::byte, 4> data = {std::byte{'A'}, std::byte{'B'}, std::byte{'C'}, std::byte{'D'}};
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
 
   ApplyMask(data, mask);
 
@@ -390,7 +396,7 @@ TEST_F(WebSocketFrameTest, ApplyMaskReversible) {
   std::string original = "The quick brown fox";
   std::array<std::byte, 19> data;
   std::memcpy(data.data(), original.data(), 19);
-  MaskingKey mask = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF}, std::byte{0x01}};
+  MaskingKey mask = MakeMask(0xAB, 0xCD, 0xEF, 0x01);
 
   ApplyMask(data, mask);  // Mask
   ApplyMask(data, mask);  // Unmask
@@ -402,7 +408,7 @@ TEST_F(WebSocketFrameTest, ApplyMaskLargeData) {
   // Test 64-bit optimization path
   std::array<std::byte, 1024> data;
   std::ranges::fill(data, std::byte{0xFF});
-  MaskingKey mask = {std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+  MaskingKey mask = MakeMask(0x11, 0x22, 0x33, 0x44);
 
   std::array<std::byte, 1024> backup = data;
 
@@ -418,7 +424,7 @@ TEST_F(WebSocketFrameTest, ApplyMaskLargeData) {
 
 TEST_F(WebSocketFrameTest, ApplyMaskEmpty) {
   std::span<std::byte> empty;
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
 
   // Should not crash
   ApplyMask(empty, mask);
@@ -507,7 +513,7 @@ TEST_F(WebSocketFrameTest, RoundTripUnmaskedText) {
 
 TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
   std::string original = "Masked message";
-  MaskingKey mask = {std::byte{0x37}, std::byte{0xFA}, std::byte{0x21}, std::byte{0x3D}};
+  MaskingKey mask = MakeMask(0x37, 0xFA, 0x21, 0x3D);
   BuildFrame(buffer, Opcode::Text, sv_bytes(original), true, true, mask);
 
   // Make mutable copy for parsing (unmasking)
@@ -575,7 +581,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameReasonTruncated) {
 }
 
 TEST_F(WebSocketFrameTest, BuildCloseFrameMasked) {
-  MaskingKey mask = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF}, std::byte{0x12}};
+  MaskingKey mask = MakeMask(0xAB, 0xCD, 0xEF, 0x12);
   BuildCloseFrame(buffer, CloseCode::GoingAway, "bye", true, mask);
 
   auto data = buf_bytes(buffer);
@@ -637,7 +643,7 @@ TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
 
 TEST_F(WebSocketFrameTest, BuildMasked64BitLengthFrame) {
   std::vector<std::byte> largePayload(70000);
-  MaskingKey mask = {std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+  MaskingKey mask = MakeMask(0x11, 0x22, 0x33, 0x44);
 
   BuildFrame(buffer, Opcode::Binary, largePayload, true, true, mask);
 
@@ -700,7 +706,7 @@ TEST_F(WebSocketFrameTest, BuildFrameNonFinFragment) {
 }
 
 TEST_F(WebSocketFrameTest, BuildEmptyPayloadMasked) {
-  MaskingKey mask = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  MaskingKey mask = MakeMask(0x00, 0x00, 0x00, 0x00);
   std::span<const std::byte> emptyPayload;
   BuildFrame(buffer, Opcode::Text, emptyPayload, true, true, mask);
 
@@ -911,7 +917,7 @@ TEST_F(WebSocketFrameTest, ParsePingPayloadTooLarge) {
 TEST_F(WebSocketFrameTest, ParseClientRejectsServerMaskedFrame) {
   // Client receiving masked frame from server (invalid)
   std::string_view payload = "test";
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, true, mask);
 
   auto data = buf_bytes(buffer);
@@ -983,12 +989,12 @@ TEST_F(WebSocketFrameTest, ParseIncomplete64BitLength) {
 TEST_F(WebSocketFrameTest, ApplyMaskSmallData) {
   // Test with data < 8 bytes (uses byte-by-byte path)
   std::array<std::byte, 5> data = {std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
-  MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
 
   std::array<std::byte, 5> expected;
   for (std::size_t idx = 0; idx < 5; ++idx) {
-    expected[idx] =
-        std::byte{static_cast<uint8_t>(static_cast<uint8_t>(data[idx]) ^ static_cast<uint8_t>(mask[idx % 4]))};
+    const uint8_t mk = static_cast<uint8_t>((mask >> ((idx % 4) * 8)) & 0xFF);
+    expected[idx] = std::byte{static_cast<uint8_t>(static_cast<uint8_t>(data[idx]) ^ mk)};
   }
 
   ApplyMask(data, mask);
@@ -1002,7 +1008,7 @@ TEST_F(WebSocketFrameTest, ApplyMaskExactly8Bytes) {
   // Test with exactly 8 bytes (boundary condition for 64-bit optimization)
   std::array<std::byte, 8> data;
   std::ranges::fill(data, std::byte{0xAB});
-  MaskingKey mask = {std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+  MaskingKey mask = MakeMask(0x11, 0x22, 0x33, 0x44);
 
   std::array<std::byte, 8> original = data;
   ApplyMask(data, mask);
