@@ -310,10 +310,10 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   const bool hasExternalPayload = resp.hasBodyCaptured();
   const auto trailersLen = resp.trailersSize();
 
-  const char* const basePtr = resp._data.data();
+  const char* pData = resp._data.data();
   const VaryResult varyResult =
       compressionConfig.addVaryAcceptEncodingHeader
-          ? VaryContainsAcceptEncoding(resp, basePtr)
+          ? VaryContainsAcceptEncoding(resp, pData)
           : VaryResult{.valueFirst = kVaryAcceptEncodingNotNeeded, .valueLast = kVaryAcceptEncodingNotNeeded};
   const bool needVaryAcceptEncoding = !varyResult.notNeeded();
   const bool addVaryHeaderLine = varyResult.absent();
@@ -329,45 +329,38 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
 
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
   const auto nCharsBodySz = nchars(bodySz);
-  const std::size_t contentTypeLinePos =
-      static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - resp._data.data());
-  const std::size_t contentLengthLinePos =
-      static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - resp._data.data());
+  const std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
+  const std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
 
   const std::size_t oldDataSz = resp._data.size();
 
   // Reserve once (no realloc after we start reading internal body).
   // We reserve for:
   //   - worst-case tail growth (using current body digit count as upper bound)
-  //   - temp compressed output (capped by maxAllowedCompressed + 1)
-  //   - final compressed output (capped by maxAllowedCompressed)
+  //   - temp compressed output (capped by maxCompressedBytes + 1)
+  //   - final compressed output (capped by maxCompressedBytes)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
   const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
   const std::size_t upperTailLen = varyHeaderLineSz + contentEncodingHeaderLineSz + contentTypeLineLen +
                                    upperContentLengthLineLen + http::DoubleCRLF.size();
 
   // We will only commit compression if the configured compression ratio is satisfied.
-  const std::size_t maxAllowedCompressed = compressionConfig.maxCompressedBytes(bodySz);
-  assert(maxAllowedCompressed != 0);
-
+  const std::size_t maxCompressedBytes = compressionConfig.maxCompressedBytes(bodySz);
   const std::size_t tmpAreaStartPos =
       std::max(oldDataSz + upperVaryAppendLen, contentTypeLinePos + upperTailLen + upperVaryAppendLen);
   const std::size_t upperFinalSize =
-      contentTypeLinePos + upperTailLen + maxAllowedCompressed + trailersLen + upperVaryAppendLen;
-  const std::size_t upperTempEnd = tmpAreaStartPos + maxAllowedCompressed + trailersLen;
-  const std::size_t upperNeededEnd = std::max(upperFinalSize, upperTempEnd);
+      contentTypeLinePos + upperTailLen + maxCompressedBytes + trailersLen + upperVaryAppendLen;
+  const std::size_t upperTempEnd = tmpAreaStartPos + maxCompressedBytes + trailersLen;
 
-  assert(oldDataSz < upperNeededEnd);
-
-  resp._data.ensureAvailableCapacity(upperNeededEnd - oldDataSz);
+  // unique reallocation
+  resp._data.reserve(std::max(upperFinalSize, upperTempEnd));
 
   char* pTmpCompressed = resp._data.data() + tmpAreaStartPos;
   const std::size_t compressedSize =
-      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxAllowedCompressed, pTmpCompressed);
+      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxCompressedBytes, pTmpCompressed);
 
   if (compressedSize == 0) {
-    // compression failed or did not fit in maxAllowedCompressed
-    // abort compression, it's not worth it
+    // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
     return;
   }
 
@@ -377,7 +370,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   if (trailersLen != 0) {
     pTrailers = resp.trailersFlatView().data();
     if (hasExternalPayload) {
-      char* const pTmpTrailers = resp._data.data() + (tmpAreaStartPos + maxAllowedCompressed);
+      char* const pTmpTrailers = resp._data.data() + (tmpAreaStartPos + maxCompressedBytes);
       std::memcpy(pTmpTrailers, pTrailers, trailersLen);
       pTrailers = pTmpTrailers;
     }
