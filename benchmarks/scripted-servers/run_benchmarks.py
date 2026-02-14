@@ -124,6 +124,7 @@ class BenchmarkRunner:
 
         self.server_processes: Dict[str, ProcessHandle] = {}
         self.results_rps: Dict[Tuple[str, str], str] = {}
+        self.results_rps_raw: Dict[Tuple[str, str], str] = {}
         self.results_latency: Dict[Tuple[str, str], str] = {}
         self.results_latency_raw: Dict[Tuple[str, str], str] = {}
         self.results_transfer: Dict[Tuple[str, str], str] = {}
@@ -621,17 +622,35 @@ class BenchmarkRunner:
         metrics = self._parse_wrk_output(output)
         # Extract wrk error counters printed by lua scripts
         err_connect, err_read, err_write, err_timeout = self._extract_wrk_errors(output)
+        non2xx = int(metrics.get("non2xx") or 0)
         any_errs = (
-            (err_connect > 0) or (err_read > 0) or (err_write > 0) or (err_timeout > 0)
+            (err_connect > 0)
+            or (err_read > 0)
+            or (err_write > 0)
+            or (err_timeout > 0)
+            or (non2xx > 0)
         )
         if server == "aeronet" and any_errs:
             self._aeronet_errors_found = True
             print(
-                f"ERROR: Aeronet reported errors (connect/read/write/timeout) = "
-                f"{err_connect}/{err_read}/{err_write}/{err_timeout} for scenario '{scenario_name}'"
+                f"ERROR: Aeronet reported issues (connect/read/write/timeout/non2xx) = "
+                f"{err_connect}/{err_read}/{err_write}/{err_timeout}/{non2xx} for scenario '{scenario_name}'"
             )
 
-        success_requests, _ = self._extract_wrk_totals(output)
+        success_requests = int(metrics.get("total_requests") or 0)
+        total_errors = err_connect + err_read + err_write + err_timeout + non2xx
+        successful_rps = self._compute_success_rps(
+            raw_rps=str(metrics.get("rps", "-")),
+            total_requests=success_requests,
+            total_errors=total_errors,
+            measured_duration_seconds=metrics.get("duration_seconds"),
+        )
+        if successful_rps != metrics["rps"] and successful_rps != "-":
+            print(
+                "    Adjusted success RPS "
+                f"(errors + non-2xx removed): {successful_rps} (raw: {metrics['rps']})"
+            )
+
         adjusted_latency = self._compute_timeout_adjusted_latency(
             metrics["latency"], success_requests, err_timeout, self.wrk_timeout_seconds
         )
@@ -644,9 +663,10 @@ class BenchmarkRunner:
         self._store_result(
             server,
             scenario_name,
-            metrics["rps"],
+            successful_rps,
             adjusted_latency,
             metrics["transfer"],
+            rps_raw=metrics["rps"],
             latency_raw=metrics["latency"],
             timeout_errors=err_timeout,
         )
@@ -656,8 +676,15 @@ class BenchmarkRunner:
         )
         self._record_memory_usage(server, scenario_name)
 
-    def _parse_wrk_output(self, output: str) -> Dict[str, str]:
-        values = {"rps": "-", "latency": "-", "transfer": "-"}
+    def _parse_wrk_output(self, output: str) -> Dict[str, Any]:
+        values: Dict[str, Any] = {
+            "rps": "-",
+            "latency": "-",
+            "transfer": "-",
+            "non2xx": 0,
+            "total_requests": 0,
+            "duration_seconds": None,
+        }
         non2xx = 0
         for line in output.splitlines():
             line = line.strip()
@@ -666,6 +693,11 @@ class BenchmarkRunner:
                     non2xx = int(line.split(":", 1)[1])
                 except Exception:
                     non2xx = 1
+            elif "requests in" in line:
+                match = re.search(r"(\d+)\s+requests\s+in\s+([0-9]*\.?[0-9]+)s", line)
+                if match is not None:
+                    values["total_requests"] = int(match.group(1))
+                    values["duration_seconds"] = float(match.group(2))
             elif line.startswith("Requests/sec"):
                 values["rps"] = line.split(":", 1)[1].strip()
             elif line.startswith("Latency") and values["latency"] == "-":
@@ -674,9 +706,7 @@ class BenchmarkRunner:
                     values["latency"] = parts[1]
             elif line.startswith("Transfer/sec"):
                 values["transfer"] = line.split(":", 1)[1].strip()
-        if non2xx:
-            print(f"WARNING: wrk reported {non2xx} non-2xx responses; ignoring metrics")
-            return {"rps": "-", "latency": "-", "transfer": "-"}
+        values["non2xx"] = non2xx
         return values
 
     def _extract_wrk_errors(self, output: str) -> Tuple[int, int, int, int]:
@@ -722,11 +752,13 @@ class BenchmarkRunner:
         latency: str,
         transfer: str,
         *,
+        rps_raw: Optional[str] = None,
         latency_raw: Optional[str] = None,
         timeout_errors: Optional[int] = None,
     ) -> None:
         key = (server, scenario)
         self.results_rps[key] = rps
+        self.results_rps_raw[key] = rps if rps_raw is None else rps_raw
         self.results_latency[key] = latency
         self.results_latency_raw[key] = latency if latency_raw is None else latency_raw
         self.results_transfer[key] = transfer
@@ -775,15 +807,6 @@ class BenchmarkRunner:
             return f"{seconds * 1000.0:.2f}ms"
         return f"{seconds * 1_000_000.0:.2f}us"
 
-    @staticmethod
-    def _extract_wrk_totals(output: str) -> Tuple[int, Optional[float]]:
-        for line in output.splitlines():
-            text = line.strip()
-            match = re.search(r"(\d+)\s+requests\s+in\s+([0-9]*\.?[0-9]+)s", text)
-            if match is not None:
-                return int(match.group(1)), float(match.group(2))
-        return 0, None
-
     def _compute_timeout_adjusted_latency(
         self,
         raw_latency: str,
@@ -802,6 +825,18 @@ class BenchmarkRunner:
             return raw_latency
         adjusted_seconds = (raw_seconds * completed + timeout_seconds * timeout_errors) / total
         return self._format_latency_seconds(adjusted_seconds)
+
+    @staticmethod
+    def _compute_success_rps(
+        raw_rps: str,
+        total_requests: int,
+        total_errors: int,
+        measured_duration_seconds: Optional[float],
+    ) -> str:
+        if measured_duration_seconds is not None and measured_duration_seconds > 0.0:
+            successful = max(0, total_requests - max(0, total_errors))
+            return f"{successful / measured_duration_seconds:.2f}"
+        return raw_rps
 
     def _append_result_block(
         self, server: str, scenario: str, output: str, error: bool
@@ -894,6 +929,7 @@ class BenchmarkRunner:
         for scenario in self.scenarios_to_test:
             scenario_entry = {
                 "rps": {},
+                "rps_raw": {},
                 "latency": {},
                 "latency_raw": {},
                 "timeouts": {},
@@ -906,12 +942,15 @@ class BenchmarkRunner:
             for server in self.servers_to_test:
                 key = (server, scenario)
                 rps_val = self.results_rps.get(key)
+                rps_raw_val = self.results_rps_raw.get(key)
                 lat_val = self.results_latency.get(key)
                 lat_raw_val = self.results_latency_raw.get(key)
                 timeout_val = self.results_timeouts.get(key)
                 xfer_val = self.results_transfer.get(key)
                 if rps_val is not None:
                     scenario_entry["rps"][server] = rps_val
+                if rps_raw_val is not None:
+                    scenario_entry["rps_raw"][server] = rps_raw_val
                 if lat_val is not None:
                     scenario_entry["latency"][server] = lat_val
                 if lat_raw_val is not None:
@@ -1307,7 +1346,7 @@ class TablePrinter:
     def print_all(self) -> None:
         self._print_box(
             "BENCHMARK RESULTS COMPARISON",
-            "(Requests/sec - higher is better)",
+            "(Successful responses/sec - higher is better)",
             self.rps,
             higher_is_better=True,
         )
