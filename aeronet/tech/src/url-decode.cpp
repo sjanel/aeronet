@@ -1,6 +1,7 @@
 #include "aeronet/url-decode.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
@@ -10,7 +11,7 @@ namespace aeronet::url {
 char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInvalid) {
   char* out = first;
   for (; first < last; ++first) {
-    char ch = *first;
+    const char ch = *first;
     switch (ch) {
       case '+':
         *out++ = plusAs;
@@ -23,10 +24,10 @@ char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInval
           *out++ = '%';
           break;  // keep '%' literal and exit (drop trailing)? Best effort: just literal '%'
         }
-        char c1 = *++first;
-        char c2 = *++first;
-        int v1 = from_hex_digit(c1);
-        int v2 = from_hex_digit(c2);
+        const char c1 = *++first;
+        const char c2 = *++first;
+        const int8_t v1 = from_hex_digit(c1);
+        const int8_t v2 = from_hex_digit(c2);
         if (v1 < 0 || v2 < 0) {
           if (strictInvalid) {
             return nullptr;
@@ -36,7 +37,7 @@ char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInval
           *out++ = c2;
           break;
         }
-        *out++ = static_cast<char>((v1 << 4) | v2);
+        *out++ = static_cast<char>((static_cast<uint8_t>(v1) << 4) | static_cast<uint8_t>(v2));
         break;
       }
       default:
@@ -73,10 +74,10 @@ char* DecodeQueryParamsInPlace(char* first, char* last) {
     // --- Decode key ---
     {
       char* newEnd = url::DecodeInPlace(keyBegin, keyEnd, '+', /*strictInvalid*/ false);
-      auto decodedLen = static_cast<std::size_t>(newEnd - keyBegin);
-      auto origLen = static_cast<std::size_t>(keyEnd - keyBegin);
+      const auto decodedLen = static_cast<std::size_t>(newEnd - keyBegin);
+      const auto origLen = static_cast<std::size_t>(keyEnd - keyBegin);
       if (decodedLen < origLen) {
-        auto shift = origLen - decodedLen;
+        const auto shift = origLen - decodedLen;
         std::memmove(newEnd, keyEnd, static_cast<std::size_t>(last - keyEnd));
         last -= shift;
         // adjust valueBegin/valueEnd/pairEnd
@@ -90,10 +91,10 @@ char* DecodeQueryParamsInPlace(char* first, char* last) {
     // --- Decode value (if any) ---
     if (valueBegin < valueEnd) {
       char* newEnd = url::DecodeInPlace(valueBegin, valueEnd, /*plusAs*/ ' ', /*strictInvalid*/ false);
-      auto decodedLen = static_cast<std::size_t>(newEnd - valueBegin);
-      auto origLen = static_cast<std::size_t>(valueEnd - valueBegin);
+      const auto decodedLen = static_cast<std::size_t>(newEnd - valueBegin);
+      const auto origLen = static_cast<std::size_t>(valueEnd - valueBegin);
       if (decodedLen < origLen) {
-        auto shift = origLen - decodedLen;
+        const auto shift = origLen - decodedLen;
         std::memmove(newEnd, valueEnd, static_cast<std::size_t>(last - valueEnd));
         last -= shift;
         pairEnd -= shift;

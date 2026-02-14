@@ -14,7 +14,7 @@ namespace aeronet {
 ///  ',' -> "2c"
 ///  '?' -> "3f"
 constexpr char* to_lower_hex(unsigned char ch, char* buf) {
-  static constexpr const char* const kHexits = "0123456789abcdef";
+  static constexpr char kHexits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
   buf[0] = kHexits[ch >> 4U];
   buf[1] = kHexits[ch & 0x0F];
@@ -32,7 +32,7 @@ constexpr char* to_lower_hex(char ch, char* buf) { return to_lower_hex(static_ca
 ///  ',' -> "2C"
 ///  '?' -> "3F"
 constexpr char* to_upper_hex(unsigned char ch, char* buf) {
-  static constexpr const char* const kHexits = "0123456789ABCDEF";
+  static constexpr char kHexits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 
   buf[0] = kHexits[ch >> 4U];
   buf[1] = kHexits[ch & 0x0F];
@@ -43,17 +43,27 @@ constexpr char* to_upper_hex(unsigned char ch, char* buf) {
 constexpr char* to_upper_hex(char ch, char* buf) { return to_upper_hex(static_cast<unsigned char>(ch), buf); }
 
 /// Decode a single hexadecimal digit. Returns -1 if invalid.
-constexpr int from_hex_digit(char ch) {
-  if (ch >= '0' && ch <= '9') {
-    return ch - '0';
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    return 10 + (ch - 'A');
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    return 10 + (ch - 'a');
-  }
-  return -1;
+constexpr int8_t from_hex_digit(char ch) {
+  struct HexTable {
+    int8_t data[256];
+  };
+
+  static constexpr HexTable kHexTable = [] {
+    HexTable table;
+    for (signed char& val : table.data) {
+      val = -1;
+    }
+    for (std::size_t i = 0; i < 10; ++i) {
+      table.data['0' + i] = static_cast<int8_t>(i);
+    }
+    for (std::size_t i = 0; i < 6; ++i) {
+      table.data['A' + i] = static_cast<int8_t>(10 + i);
+      table.data['a' + i] = static_cast<int8_t>(10 + i);
+    }
+    return table;
+  }();
+
+  return kHexTable.data[static_cast<unsigned char>(ch)];
 }
 
 // -----------------------------------------------------------------------------

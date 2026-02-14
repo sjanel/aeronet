@@ -487,8 +487,7 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
   std::string resp = sendRaw(port, raw);
-  // Expect no 200 OK; either empty (waiting for more) or eventually 413/400 once completed; we at least assert not 200
-  ASSERT_FALSE(resp.contains("200 OK"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {

@@ -87,9 +87,9 @@ struct VaryResult {
 }
 
 inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, HeadersViewMap::iterator encodingHeaderIt,
-                                                 std::string_view src, RawChars& buf) {
+                                                 std::string_view src, std::size_t additionalCapacity, RawChars& buf) {
   const std::size_t decompressedSizeNbChars = nchars(src.size());
-  buf.ensureAvailableCapacity(decompressedSizeNbChars);
+  buf.ensureAvailableCapacity(decompressedSizeNbChars + additionalCapacity);
 
   // Set the new decompressed body AFTER reallocating the buffer above.
   std::string_view body = buf;
@@ -554,8 +554,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompre
   }
 
   // at this point, src points to the final decompressed data buffer (either tmpBuffer or bodyAndTrailersBuffer)
-
-  request._body = FinalizeDecompressedBody(headersMap, encodingHeaderIt, src, bodyAndTrailersBuffer);
+  request._body = FinalizeDecompressedBody(headersMap, encodingHeaderIt, src, 0UL, bodyAndTrailersBuffer);
 
   return {};
 }
@@ -609,6 +608,8 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompression
 
   std::string_view src;
 
+  const auto additionalCapacity = bodyAndTrailersBuffer.size();
+
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,
       [&src, compressedChunks, maxPlainBytes = decompressionConfig.maxDecompressedBytes,
@@ -634,7 +635,8 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompression
     return res;
   }
 
-  request._body = FinalizeDecompressedBody(headersMap, encodingHeaderIt, src, bodyAndTrailersBuffer);
+  request._body =
+      FinalizeDecompressedBody(headersMap, encodingHeaderIt, src, additionalCapacity, bodyAndTrailersBuffer);
 
   return {};
 }
