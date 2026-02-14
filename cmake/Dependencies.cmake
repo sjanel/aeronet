@@ -220,12 +220,6 @@ if(AERONET_ENABLE_OPENTELEMETRY)
 
   endif()
 
-  # Workaround for opentelemetry-cpp v1.25 proto generation: define the
-  # OPENTELEMETRY_PROTO_API macro that appears in generated .pb.h files.
-  # Since aeronet links to opentelemetry as PRIVATE, tests that include
-  # proto headers directly don't inherit the target compile definitions.
-  add_compile_definitions(OPENTELEMETRY_PROTO_API=)
-
 endif()
 
 # Make fetch content available
