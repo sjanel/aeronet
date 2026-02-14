@@ -182,15 +182,14 @@ int main(int argc, char* argv[]) {
   // aeronet automatically decompresses request body, then we add +1 to each byte
   // returns response that will be automatically compressed
   // ============================================================
-  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) mutable {
+  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) {
     std::string_view body = req.body();
-    auto resp = req.makeResponse(http::StatusCodeOK);
+    auto resp = req.makeResponse(http::ContentTypeApplicationOctetStream.size(), http::StatusCodeOK);
 
-    auto buffer = std::make_unique<std::byte[]>(body.size());
-    std::transform(body.begin(), body.end(), buffer.get(),
-                   [](unsigned char ch) { return static_cast<std::byte>(ch + 1U); });
+    auto buffer = std::make_unique_for_overwrite<std::byte[]>(body.size());
+    std::ranges::transform(body, buffer.get(), [](unsigned char ch) { return static_cast<std::byte>(ch + 1U); });
 
-    resp.body(std::move(buffer), body.size(), "application/octet-stream");
+    resp.body(std::move(buffer), body.size(), http::ContentTypeApplicationOctetStream);
     return resp;
   });
 
