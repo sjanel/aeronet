@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <numeric>
 #include <span>
 #include <string>
 #include <string_view>
@@ -528,9 +529,7 @@ TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
 
 TEST_F(WebSocketFrameTest, RoundTripBinary) {
   std::array<uint8_t, 256> original;
-  for (std::size_t idx = 0; idx < 256; ++idx) {
-    original[idx] = static_cast<uint8_t>(idx);
-  }
+  std::ranges::iota(original, 0);
 
   BuildFrame(buffer, Opcode::Binary, container_bytes(original));
 
