@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <span>
 
 #include "aeronet/http2-frame-types.hpp"
@@ -457,10 +458,14 @@ TEST(Http2Frame, ParsePingFrame) {
 
 TEST(Http2Frame, WritePingFrame) {
   RawBytes buffer;
-  std::array<std::byte, 8> opaqueData = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
-                                         std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+  PingFrame pingFrame;
+  pingFrame.isAck = true;
+  static constexpr std::byte opaqueData[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+                                             std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
 
-  WritePingFrame(buffer, opaqueData, true);
+  std::memcpy(pingFrame.opaqueData, opaqueData, sizeof(opaqueData));
+
+  WritePingFrame(buffer, pingFrame);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);

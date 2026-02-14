@@ -220,7 +220,7 @@ FrameParseResult ParsePingFrame(FrameHeader header, std::span<const std::byte> p
   }
 
   out.isAck = header.hasFlag(FrameFlags::PingAck);
-  std::memcpy(out.opaqueData.data(), payload.data(), 8);
+  std::memcpy(out.opaqueData, payload.data(), 8);
 
   return FrameParseResult::Ok;
 }
@@ -334,10 +334,10 @@ std::size_t WriteSettingsAckFrame(RawBytes& buffer) {
   return WriteFrame(buffer, FrameType::Settings, FrameFlags::SettingsAck, 0, 0);
 }
 
-std::size_t WritePingFrame(RawBytes& buffer, std::span<const std::byte, 8> opaqueData, bool isAck) {
-  uint8_t flags = isAck ? FrameFlags::PingAck : FrameFlags::None;
-  const auto ret = WriteFrame(buffer, FrameType::Ping, flags, 0, opaqueData.size());
-  buffer.unchecked_append(opaqueData);
+std::size_t WritePingFrame(RawBytes& buffer, PingFrame pingFrame) {
+  uint8_t flags = pingFrame.isAck ? FrameFlags::PingAck : FrameFlags::None;
+  const auto ret = WriteFrame(buffer, FrameType::Ping, flags, 0, sizeof(pingFrame.opaqueData));
+  buffer.unchecked_append(pingFrame.opaqueData, sizeof(pingFrame.opaqueData));
   return ret;
 }
 

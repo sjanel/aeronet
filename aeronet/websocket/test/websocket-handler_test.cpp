@@ -76,9 +76,16 @@ class WebSocketHandlerTest : public ::testing::Test {
   // Helper to build a masked frame (simulating client->server)
   static RawBytes BuildMaskedFrame(Opcode opcode, std::string_view payload, bool fin = true) {
     RawBytes frame;
-    MaskingKey mask = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+    MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
     BuildFrame(frame, opcode, sv_bytes(payload), fin, true, mask);
     return frame;
+  }
+
+  // Helper to construct a MaskingKey from four bytes (matching previous
+  // {std::byte, std::byte, std::byte, std::byte} ordering).
+  static MaskingKey MakeMask(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3) noexcept {
+    return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8) | (static_cast<MaskingKey>(b2) << 16) |
+           (static_cast<MaskingKey>(b3) << 24);
   }
 
   // Helper to build an unmasked frame (simulating server->client)

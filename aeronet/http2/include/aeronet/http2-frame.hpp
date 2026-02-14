@@ -1,6 +1,6 @@
 #pragma once
 
-#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -160,7 +160,7 @@ struct SettingsFrame {
 
 /// Parsed PING frame.
 struct PingFrame {
-  std::array<std::byte, 8> opaqueData;
+  std::byte opaqueData[8];
   bool isAck;
 };
 
@@ -260,7 +260,7 @@ std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> 
 std::size_t WriteSettingsAckFrame(RawBytes& buffer);
 
 /// Write a PING frame.
-std::size_t WritePingFrame(RawBytes& buffer, std::span<const std::byte, 8> opaqueData, bool isAck);
+std::size_t WritePingFrame(RawBytes& buffer, PingFrame pingFrame);
 
 /// Write a GOAWAY frame.
 std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode errorCode,
