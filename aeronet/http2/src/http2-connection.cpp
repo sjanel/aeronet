@@ -255,9 +255,7 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   }
 }
 
-void Http2Connection::sendPing(std::span<const std::byte, 8> opaqueData, bool isAck) {
-  WritePingFrame(_outputBuffer, opaqueData, isAck);
-}
+void Http2Connection::sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuffer, pingFrame); }
 
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
@@ -668,7 +666,8 @@ Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader head
 
   if (!frame.isAck) {
     // Send PING response
-    WritePingFrame(_outputBuffer, std::span<const std::byte, 8>(frame.opaqueData), true);
+    frame.isAck = true;
+    WritePingFrame(_outputBuffer, frame);
     return ProcessResult{ProcessResult::Action::OutputReady, ErrorCode::NoError, 0, {}};
   }
 
