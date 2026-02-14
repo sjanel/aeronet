@@ -54,11 +54,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http2-frame-types_test
-    test/http2-frame-types_test.cpp
-)
-
-AeronetAddUnitTest(
     ipow_test
     test/ipow_test.cpp
 )

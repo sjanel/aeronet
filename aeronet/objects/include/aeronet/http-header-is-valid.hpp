@@ -1,6 +1,6 @@
 #pragma once
 
-#include <array>
+#include <cstddef>
 #include <string_view>
 
 #include "aeronet/tchars.hpp"
@@ -11,17 +11,20 @@ constexpr bool IsValidHeaderName(std::string_view name) noexcept {
   if (name.empty()) {
     return false;
   }
+  struct AllowedTable {
+    bool data[256];
+  };
   static constexpr auto kNameAllowed = [] {
-    std::array<bool, 255> allowed{};
-    for (decltype(allowed)::size_type i = 0; i < allowed.size(); ++i) {
-      allowed[static_cast<unsigned char>(i)] = is_tchar(static_cast<char>(i));
+    AllowedTable allowed;
+    for (std::size_t i = 0; i < sizeof(allowed.data); ++i) {
+      allowed.data[static_cast<unsigned char>(i)] = is_tchar(static_cast<char>(i));
     }
     return allowed;
   }();
 
   // NOLINTNEXTLINE(readability-use-anyofallof)
   for (auto ch : name) {
-    if (!kNameAllowed[static_cast<unsigned char>(ch)]) {
+    if (!kNameAllowed.data[static_cast<unsigned char>(ch)]) {
       return false;
     }
   }
@@ -29,16 +32,19 @@ constexpr bool IsValidHeaderName(std::string_view name) noexcept {
 }
 
 constexpr bool IsValidHeaderValue(std::string_view value) noexcept {
+  struct AllowedTable {
+    bool data[256];
+  };
   static constexpr auto kValueAllowed = [] {
-    std::array<bool, 255> allowed{};
-    for (decltype(allowed)::size_type i = 0; i < allowed.size(); ++i) {
+    AllowedTable allowed;
+    for (std::size_t i = 0; i < sizeof(allowed.data); ++i) {
       const unsigned char ch = static_cast<unsigned char>(i);
       if (ch == '\r' || ch == '\n') {
-        allowed[ch] = false;
+        allowed.data[ch] = false;
       } else if (ch == '\t') {
-        allowed[ch] = true;
+        allowed.data[ch] = true;
       } else {
-        allowed[ch] = ch >= 0x20 && ch <= 0x7E;
+        allowed.data[ch] = ch >= 0x20 && ch <= 0x7E;
       }
     }
     return allowed;
@@ -46,7 +52,7 @@ constexpr bool IsValidHeaderValue(std::string_view value) noexcept {
 
   // NOLINTNEXTLINE(readability-use-anyofallof)
   for (auto ch : value) {
-    if (!kValueAllowed[static_cast<unsigned char>(ch)]) {
+    if (!kValueAllowed.data[static_cast<unsigned char>(ch)]) {
       return false;
     }
   }

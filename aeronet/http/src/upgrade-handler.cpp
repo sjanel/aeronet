@@ -7,7 +7,6 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
@@ -22,6 +21,10 @@
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-frame-types.hpp"
 #endif
 
 namespace aeronet {

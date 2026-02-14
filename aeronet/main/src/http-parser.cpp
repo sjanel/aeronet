@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <cstring>
@@ -103,21 +104,18 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     const auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
     std::size_t chunkSize = 0;
     for (auto it = first; it != sizeLineEnd; ++it) {
-      int digit = from_hex_digit(*it);
+      const int8_t digit = from_hex_digit(*it);
       if (digit < 0) {
-        chunkSize = _config.maxBodyBytes + 1;  // trigger payload too large / invalid
-        break;
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid chunk size");
+        return BodyDecodeStatus::Error;
       }
       chunkSize = (chunkSize << 4) | static_cast<std::size_t>(digit);
-      if (chunkSize > _config.maxBodyBytes) {
-        break;
+      if (_config.maxBodyBytes < chunkSize) {
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+        return BodyDecodeStatus::Error;
       }
     }
     pos = static_cast<std::size_t>(lineEnd - state.inBuffer.data()) + http::CRLF.size();
-    if (chunkSize > _config.maxBodyBytes) {
-      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
-      return BodyDecodeStatus::Error;
-    }
     if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
       return BodyDecodeStatus::NeedMore;
     }
@@ -135,23 +133,22 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       }
 
       // Check if trailers are present (not immediate CRLF)
-      if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) == 0) {
+      auto* trailerStart = state.inBuffer.data() + pos;
+      if (std::memcmp(trailerStart, http::CRLF.data(), http::CRLF.size()) == 0) {
         // No trailers, just the terminating CRLF
         pos += http::CRLF.size();
         break;
       }
 
       // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
-      auto* trailerStart = state.inBuffer.data() + pos;
       state.trailerStartPos = bodySize;  // Mark where trailers begin in the buffer
       std::size_t trailerEndPos = pos;   // Track end position for later
 
       // First pass: validate trailers and find the end position
       std::size_t tempPos = pos;
       while (true) {
-        auto lineEndIt =
-            std::search(state.inBuffer.begin() + tempPos, state.inBuffer.end(), http::CRLF.begin(), http::CRLF.end());
-        if (lineEndIt == state.inBuffer.end()) {
+        auto lineEndIt = std::search(state.inBuffer.begin() + tempPos, last, http::CRLF.begin(), http::CRLF.end());
+        if (lineEndIt == last) {
           return BodyDecodeStatus::NeedMore;
         }
 
@@ -218,11 +215,14 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       }
     } else {
       // Append chunk data to body buffer (original path)
-      bodyAndTrailers.append(state.inBuffer.data() + pos, std::min(chunkSize, state.inBuffer.size() - pos));
-      if (bodyAndTrailers.size() > _config.maxBodyBytes) {
+      const auto appendSz = std::min(chunkSize, state.inBuffer.size() - pos);
+
+      if (bodyAndTrailers.size() + appendSz > _config.maxBodyBytes) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
         return BodyDecodeStatus::Error;
       }
+
+      bodyAndTrailers.append(state.inBuffer.data() + pos, appendSz);
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
@@ -249,7 +249,11 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     // Restore trailers if present
     if (hasTrailers) {
       state.trailerStartPos = bodyAndTrailers.size();
-      bodyAndTrailers.append(_tmp.trailers);
+      // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
+      // In addition, a realloc here would mean that we should re-compute the request._body that is set in
+      // DecompressChunkedBody.
+      assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _tmp.trailers.size());
+      bodyAndTrailers.unchecked_append(_tmp.trailers);
     }
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
