@@ -66,17 +66,17 @@ TEST(CharHexConverter, ToHexEdgeValues) {
 
 TEST(CharHexConverter, FromHexDigitValidDigits) {
   for (char ch = '0'; ch <= '9'; ++ch) {
-    int val = from_hex_digit(ch);
+    auto val = from_hex_digit(ch);
     EXPECT_EQ(val, ch - '0') << "char=" << ch;
   }
 
   for (char ch = 'A'; ch <= 'F'; ++ch) {
-    int val = from_hex_digit(ch);
+    auto val = from_hex_digit(ch);
     EXPECT_EQ(val, 10 + (ch - 'A')) << "char=" << ch;
   }
 
   for (char ch = 'a'; ch <= 'f'; ++ch) {
-    int val = from_hex_digit(ch);
+    auto val = from_hex_digit(ch);
     EXPECT_EQ(val, 10 + (ch - 'a')) << "char=" << ch;
   }
 }
@@ -84,7 +84,7 @@ TEST(CharHexConverter, FromHexDigitValidDigits) {
 TEST(CharHexConverter, FromHexDigitInvalid) {
   static constexpr const char invalids[] = {'g', 'G', '/', ':', ' ', 'z', '\0'};
   for (char ch : invalids) {
-    int val = from_hex_digit(ch);
+    auto val = from_hex_digit(ch);
     EXPECT_EQ(val, -1) << "char=" << ch;
   }
 }
@@ -95,8 +95,8 @@ TEST(CharHexConverter, RoundTrip) {
     char buf[3] = {};
     to_lower_hex(static_cast<unsigned char>(i), buf);
     // decode high nibble
-    int hi = from_hex_digit(buf[0]);
-    int lo = from_hex_digit(buf[1]);
+    auto hi = from_hex_digit(buf[0]);
+    auto lo = from_hex_digit(buf[1]);
     EXPECT_GE(hi, 0);
     EXPECT_GE(lo, 0);
     int value = (hi << 4) | lo;
@@ -135,7 +135,7 @@ TEST(CharHexConverterSizeT, ToUpperHexAndRoundTrip) {
     // Reconstruct numeric value from hex digits using from_hex_digit
     std::size_t reconstructed = 0;
     for (char* ptr = buf; ptr < end; ++ptr) {
-      int dec = from_hex_digit(*ptr);
+      auto dec = from_hex_digit(*ptr);
       EXPECT_GE(dec, 0);
       reconstructed = (reconstructed << 4) | static_cast<std::size_t>(dec);
     }

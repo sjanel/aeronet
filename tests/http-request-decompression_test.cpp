@@ -569,8 +569,7 @@ TEST(HttpRequestDecompression, SingleCompressLargeBodyWithTrailers) {
 
 TEST(HttpRequestDecompression, DualCompressLargeBodyWithTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  static constexpr bool kCorruptDataOptions[]{false, true};
-  for (bool corruptData : kCorruptDataOptions) {
+  for (bool corruptData : {false, true}) {
     for (std::string_view first : kKnownEncodings) {
       for (std::string_view second : kKnownEncodings) {
         ExpectTrailers({first, second}, false, corruptData);
