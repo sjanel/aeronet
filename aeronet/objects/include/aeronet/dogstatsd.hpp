@@ -4,9 +4,9 @@
 #include <cstdint>
 #include <string_view>
 
-#include "aeronet/base-fd.hpp"
 #include "aeronet/dynamic-concatenated-strings.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/unix-socket.hpp"
 
 namespace aeronet {
 
@@ -69,7 +69,7 @@ class DogStatsD {
   static constexpr uint8_t kReconnectionThreshold = 50U;  // A very arbitrary number to avoid reconnecting too often
 
   RawChars32 _buf;
-  BaseFd _fd;
+  UnixSocket _fd;
   uint16_t _socketPathLength{0};
   uint8_t _retryConnectionCounter{kReconnectionThreshold};
 };

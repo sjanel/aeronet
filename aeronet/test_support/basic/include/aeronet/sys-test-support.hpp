@@ -1,13 +1,27 @@
 #pragma once
 
 #include <dlfcn.h>
-#include <linux/memfd.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
-#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+// Auto-define AERONET_WANT_SYS_OVERRIDES on Linux. This guards all
+// Linux-specific system call overrides (epoll, accept4, recvmsg, memfd, etc.)
+// that are not available on macOS or Windows.
+#ifndef AERONET_WANT_SYS_OVERRIDES
+#ifdef __linux__
+#define AERONET_WANT_SYS_OVERRIDES 1
+#else
+#define AERONET_WANT_SYS_OVERRIDES 0
+#endif
+#endif
+
+#if AERONET_WANT_SYS_OVERRIDES
+#include <linux/memfd.h>
+#include <sys/epoll.h>
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -289,6 +303,7 @@ struct FailAllAllocationsGuard {
   }
 };
 
+#if AERONET_WANT_SYS_OVERRIDES
 inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
   int retfd = static_cast<int>(::syscall(SYS_memfd_create, nameStr.c_str(), MFD_CLOEXEC));
@@ -297,6 +312,7 @@ inline int CreateMemfd(std::string_view name) {
   }
   return retfd;
 }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 template <typename Action>
 class ActionQueue {
@@ -445,6 +461,7 @@ inline ActionQueue<AcceptInstallActions> g_on_accept_install_actions;
 inline std::atomic<int> g_last_accepted_fd{-1};
 inline std::atomic<std::size_t> g_accept_count{0};
 
+#if AERONET_WANT_SYS_OVERRIDES
 // Epoll control action for MOD failures
 struct EpollCtlAction {
   int ret{0};  // return value (0 for success, -1 for failure)
@@ -490,6 +507,7 @@ inline void FailAllEpollCtlMod(int err) {
   g_epoll_ctl_mod_fail_errno = err;
   g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
 }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 #ifdef AERONET_ENABLE_OPENSSL
 // --- OpenSSL kTLS controls (tests only) ---
@@ -554,6 +572,7 @@ extern "C" BIO* SSL_get_wbio(const SSL* s) {  // NOLINT
 }
 #endif  // AERONET_ENABLE_OPENSSL
 
+#if AERONET_WANT_SYS_OVERRIDES
 inline void ResetEpollCtlModFail() {
   g_epoll_ctl_mod_fail.store(false, std::memory_order_release);
   g_epoll_ctl_mod_fail_errno = 0;
@@ -561,6 +580,7 @@ inline void ResetEpollCtlModFail() {
 }
 
 inline std::size_t GetEpollCtlModFailCount() { return g_epoll_ctl_mod_fail_count.load(std::memory_order_acquire); }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 inline void ResetSocketActions() {
   g_socket_actions.reset();
@@ -573,11 +593,13 @@ inline void ResetSocketActions() {
   g_on_accept_install_actions.reset();
   g_last_accepted_fd.store(-1, std::memory_order_release);
   g_accept_count.store(0, std::memory_order_release);
+#if AERONET_WANT_SYS_OVERRIDES
   g_epoll_ctl_actions.reset();
   g_epoll_ctl_add_actions.reset();
   g_epoll_create_actions.reset();
   g_epoll_wait_actions.reset();
   ResetEpollCtlModFail();
+#endif  // AERONET_WANT_SYS_OVERRIDES
 }
 
 inline void PushSocketAction(SyscallAction action) { g_socket_actions.push(action); }
@@ -587,22 +609,26 @@ inline void PushListenAction(SyscallAction action) { g_listen_actions.push(actio
 inline void PushAcceptAction(SyscallAction action) { g_accept_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
 inline void PushSendAction(std::pair<ssize_t, int> action) { g_send_actions.push(action); }
+#if AERONET_WANT_SYS_OVERRIDES
 inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
 inline void PushEpollCtlAddAction(EpollCtlAction action) { g_epoll_ctl_add_actions.push(action); }
 inline void PushEpollCreateAction(EpollCreateAction action) { g_epoll_create_actions.push(action); }
 inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.push(std::move(action)); }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 using SocketFn = int (*)(int, int, int);
 using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
 using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
 using ListenFn = int (*)(int, int);
 using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);
-using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
 using SendFn = ssize_t (*)(int, const void*, size_t, int);
+#if AERONET_WANT_SYS_OVERRIDES
+using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);
 using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
 using EpollCreateFn = int (*)(int);
 using EpollWaitFn = int (*)(int, struct epoll_event*, int, int);
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 inline SocketFn ResolveRealSocket() {
   static SocketFn fn = nullptr;
@@ -649,6 +675,7 @@ inline AcceptFn ResolveRealAccept() {
   return fn;
 }
 
+#if AERONET_WANT_SYS_OVERRIDES
 inline Accept4Fn ResolveRealAccept4() {
   static Accept4Fn fn = nullptr;
   if (fn != nullptr) {
@@ -657,6 +684,7 @@ inline Accept4Fn ResolveRealAccept4() {
   fn = aeronet::test::ResolveNext<Accept4Fn>("accept4");
   return fn;
 }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 inline GetsocknameFn ResolveRealGetsockname() {
   static GetsocknameFn fn = nullptr;
@@ -676,6 +704,7 @@ inline SendFn ResolveRealSend() {
   return fn;
 }
 
+#if AERONET_WANT_SYS_OVERRIDES
 inline EpollCtlFn ResolveRealEpollCtl() {
   static EpollCtlFn fn = nullptr;
   if (fn != nullptr) {
@@ -759,6 +788,7 @@ epoll_event inline MakeEvent(int fd, uint32_t mask) {
   ev.data.fd = fd;
   return ev;
 }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 }  // namespace aeronet::test
 
@@ -1150,6 +1180,7 @@ extern "C" __attribute__((no_sanitize("address"))) int accept(int sockfd, struct
   return fd;
 }
 
+#if AERONET_WANT_SYS_OVERRIDES
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int accept4(int sockfd, struct sockaddr* addr, socklen_t* addrlen,
                                                                int flags) {
@@ -1184,6 +1215,7 @@ extern "C" __attribute__((no_sanitize("address"))) int accept4(int sockfd, struc
   }
   return fd;
 }
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const struct sockaddr* addr,
@@ -1232,6 +1264,7 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, cons
   return real(sockfd, buf, len, flags);
 }
 
+#if AERONET_WANT_SYS_OVERRIDES
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int epoll_ctl(int epfd, int op, int fd, struct epoll_event* event) {
   if (op == EPOLL_CTL_ADD) {
@@ -1298,8 +1331,6 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, stru
   return real(epfd, events, maxevents, timeout);
 }
 
-#ifdef __linux__
-
 namespace aeronet::test {
 inline KeyedActionQueue<int, IoAction> g_recvmsg_actions;
 }
@@ -1361,6 +1392,6 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t recvmsg(int fd, struc
   }
   return real(fd, msg, flags);
 }
-#endif
+#endif  // AERONET_WANT_SYS_OVERRIDES
 
 #endif

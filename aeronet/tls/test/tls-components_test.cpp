@@ -1,4 +1,3 @@
-#include <fcntl.h>
 #include <gtest/gtest.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -28,6 +27,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
@@ -233,12 +233,6 @@ bool PerformHandshake(SslTestPair& pair) {
   const int clientRc = ::SSL_connect(pair.clientSsl.get());
   serverThread.join();
   return (serverRc == 1) && (clientRc == 1);
-}
-
-void SetNonBlocking(int fd) {
-  const int flags = ::fcntl(fd, F_GETFL, 0);
-  ASSERT_GE(flags, 0);
-  ASSERT_GE(::fcntl(fd, F_SETFL, flags | O_NONBLOCK), 0);
 }
 
 }  // namespace
