@@ -5,14 +5,13 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/template-constants.hpp"
 
 namespace aeronet::internal {
 
 void PrefinalizeHttpResponse(const HttpRequest& request, HttpResponse& response, bool isHead,
-                             ResponseCompressionState& compressionState, const HttpServerConfig& serverConfig) {
+                             ResponseCompressionState& compressionState) {
   if (isHead) {
     return;
   }
@@ -24,7 +23,7 @@ void PrefinalizeHttpResponse(const HttpRequest& request, HttpResponse& response,
   const Encoding encoding = request.responsePossibleEncoding();
 
   if (response.hasBodyInMemory() && encoding != Encoding::none) {
-    HttpCodec::TryCompressResponse(compressionState, serverConfig.compression, encoding, response);
+    HttpCodec::TryCompressResponse(compressionState, encoding, response);
   }
 }
 

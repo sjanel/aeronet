@@ -49,6 +49,7 @@ All notable changes to aeronet are documented in this file.
 - **Reuse** codec contexts in automatic compression / decompression for better performance.
 - `HttpResponse::bodyAppend` now reserves memory exponentially to reduce the number of reallocations when appending large bodies in multiple calls.
 - **`HttpResponse::body()` capture overloads now require rvalue references**: `body(std::string&&, ...)` and `body(std::vector<std::byte>&&, ...)`. Passing an lvalue `std::string` (e.g. `resp.body(myString)`) now selects the inline `std::string_view` overload. This should not break existing code and would avoid silent copies when the caller passed an lvalue string / vector to the body capture overloads.
+- Automatic compression process has been optimized, especially for captured payloads which are now compressed in-place without memory moves.
 
 ### Other
 

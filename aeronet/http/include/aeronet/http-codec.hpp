@@ -85,8 +85,7 @@ struct RequestDecompressionResult {
 
 class HttpCodec {
  public:
-  static void TryCompressResponse(ResponseCompressionState& compressionState,
-                                  const CompressionConfig& compressionConfig, Encoding encoding, HttpResponse& resp);
+  static void TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,

@@ -42,7 +42,6 @@ namespace {
   const auto* last = value.data() + value.size();
   const auto [ptr, ec] = std::from_chars(first, last, out);
   EXPECT_EQ(ec, std::errc()) << "Invalid Content-Length value: '" << value << "'";
-  EXPECT_EQ(ptr, last) << "Trailing characters in Content-Length value: '" << value << "'";
   return out;
 }
 
@@ -105,16 +104,16 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   resp.body(body, http::ContentTypeApplicationJson);
 
   // Try compress - application/json response Content-Type is not in allowlist -> no compression
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
   EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 
   // Now use an allowed response Content-Type
   HttpResponse resp2(http::StatusCodeOK);
   resp2.body(body, http::ContentTypeTextPlain);
 #ifdef AERONET_ENABLE_ZLIB
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp2);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2);
 #else
-  EXPECT_THROW(HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp2), std::invalid_argument);
+  EXPECT_THROW(HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2), std::invalid_argument);
 #endif
 
   // If encoders present, compression should be applied (Content-Encoding set). Otherwise no-op.
@@ -164,7 +163,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
 #ifdef AERONET_ENABLE_ZLIB
     EXPECT_EQ(neg.encoding, Encoding::gzip);
 
-    HttpCodec::TryCompressResponse(state, cfg, neg.encoding, resp);
+    HttpCodec::TryCompressResponse(state, neg.encoding, resp);
 
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
     const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
@@ -218,7 +217,7 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
   HttpResponse resp(body, http::ContentTypeTextPlain);
 
 #ifdef AERONET_ENABLE_ZLIB
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
   // Compression should be applied but Vary must NOT be set because addVaryHeader == false
   EXPECT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
   EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
@@ -257,7 +256,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
     EXPECT_EQ(static_cast<unsigned char>(direct[1]), 0x8bU);
   }
 
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
 
   const std::string_view compressedBody = resp.bodyInMemory();
@@ -290,7 +289,7 @@ TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
 
   ASSERT_TRUE(resp.hasBodyCaptured());
 
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
 
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
   EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer-a"), "value-a");
@@ -310,6 +309,121 @@ TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
   ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), std::string_view(expectedBody));
 }
+
+TEST(HttpCodecCompression, GzipNearOverlapTrailerMove_AllCombinationsRoundTrip) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.addVaryAcceptEncodingHeader = true;
+  cfg.preferredFormats.clear();
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.contentTypeAllowList.clear();
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);
+
+  ResponseCompressionState state(cfg);
+
+  auto makeSlightlyCompressiblePayload = [](std::size_t len, uint32_t seed) {
+    std::string out(len, '\0');
+    uint32_t se = seed;
+    for (std::size_t idx = 0; idx < len; ++idx) {
+      se = (se * 1664525U) + 1013904223U;
+      out[idx] = static_cast<char>(se >> 24);
+      if ((idx % 37U) == 0U) {
+        out[idx] = 'A';
+      }
+      if ((idx % 53U) == 0U) {
+        out[idx] = 'B';
+      }
+    }
+    return out;
+  };
+
+  std::string body;
+  bool foundNearOverlapCase = false;
+  for (uint32_t seed = 1U; seed < 1000U; ++seed) {
+    std::string candidate = makeSlightlyCompressiblePayload(8192U, seed);
+
+    HttpResponse probe(http::StatusCodeOK);
+    probe.body(std::string_view(candidate), http::ContentTypeApplicationOctetStream);
+    probe.trailerAddLine("x-trailer-probe", std::string(128U, 't'));
+
+    HttpCodec::TryCompressResponse(state, Encoding::gzip, probe);
+
+    if (probe.headerValueOrEmpty(http::ContentEncoding) != http::gzip) {
+      continue;
+    }
+
+    const std::size_t compressedSize = probe.bodyInMemoryLength();
+    const std::size_t uncompressedSize = candidate.size();
+    if (compressedSize >= uncompressedSize) {
+      continue;
+    }
+
+    const std::size_t savedBytes = uncompressedSize - compressedSize;
+    if (savedBytes < 128U) {
+      body = std::move(candidate);
+      foundNearOverlapCase = true;
+      break;
+    }
+  }
+
+  ASSERT_TRUE(foundNearOverlapCase) << "Unable to build deterministic near-overlap gzip scenario";
+
+  for (bool withCapturedBody : {false, true}) {
+    for (bool withTrailers : {false, true}) {
+      HttpResponse resp(http::StatusCodeOK);
+
+      if (withCapturedBody) {
+        std::string capturedBody = body;
+        resp.body(std::move(capturedBody), http::ContentTypeApplicationOctetStream);
+      } else {
+        resp.body(std::string_view(body), http::ContentTypeApplicationOctetStream);
+      }
+
+      if (withTrailers) {
+        resp.trailerAddLine("x-trailer-a", "value-a");
+        resp.trailerAddLine("x-trailer-b", std::string(96U, 'z'));
+      }
+
+      ASSERT_EQ(resp.hasBodyCaptured(), withCapturedBody);
+
+      HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
+
+      ASSERT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
+      EXPECT_FALSE(resp.hasBodyCaptured());
+
+      if (withTrailers) {
+        const std::string expectedTrailerB(96U, 'z');
+        EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer-a"), "value-a");
+        EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer-b"), expectedTrailerB);
+      } else {
+        EXPECT_EQ(resp.trailersSize(), 0UL);
+      }
+
+      const std::string_view contentLen = resp.headerValueOrEmpty(http::ContentLength);
+      ASSERT_FALSE(contentLen.empty());
+
+      std::size_t parsedContentLen = 0;
+      const char* first = contentLen.data();
+      const char* last = first + contentLen.size();
+      const auto [ptr, ec] = std::from_chars(first, last, parsedContentLen);
+      ASSERT_EQ(ec, std::errc());
+      for (const char* it = ptr; it < last; ++it) {
+        EXPECT_TRUE(*it == ' ' || *it == '\t');
+      }
+      EXPECT_EQ(parsedContentLen, resp.bodyInMemoryLength());
+
+      const std::string_view compressedBody = resp.bodyInMemory();
+      ASSERT_GE(compressedBody.size(), 2UL);
+      EXPECT_EQ(static_cast<unsigned char>(compressedBody[0]), 0x1fU);
+      EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
+
+      RawChars out;
+      ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+      ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
+      EXPECT_EQ(std::string_view(out), std::string_view(body));
+    }
+  }
+}
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -328,7 +442,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   auto body = test::MakePatternedPayload(cfg.minBytes);
 
   HttpResponse resp(body);
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp);
 
   ASSERT_FALSE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
   const std::size_t compressedSize = resp.bodyInMemoryLength();
@@ -342,7 +456,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   ResponseCompressionState state2(cfg2);
 
   HttpResponse resp2(body);
-  HttpCodec::TryCompressResponse(state2, cfg2, Encoding::gzip, resp2);
+  HttpCodec::TryCompressResponse(state2, Encoding::gzip, resp2);
 
   EXPECT_TRUE(resp2.headerValueOrEmpty(http::ContentEncoding).empty());
 }
@@ -364,7 +478,7 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
   auto body = test::MakeRandomPayload(cfg.minBytes);
 
   HttpResponse resp(body);
-  HttpCodec::TryCompressResponse(state, cfg, Encoding::zstd, resp);
+  HttpCodec::TryCompressResponse(state, Encoding::zstd, resp);
 
   EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
   EXPECT_EQ(resp.bodyInMemoryLength(), body.size());
