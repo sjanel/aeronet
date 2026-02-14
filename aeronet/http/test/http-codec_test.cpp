@@ -270,6 +270,46 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }
+
+TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.addVaryAcceptEncodingHeader = true;
+  cfg.preferredFormats.clear();
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.contentTypeAllowList.clear();
+
+  ResponseCompressionState state(cfg);
+
+  const std::string expectedBody(32UL * 1024UL, 'A');
+  std::string captured = expectedBody;
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::move(captured), http::ContentTypeTextPlain);
+  resp.trailerAddLine("x-trailer-a", "value-a");
+
+  ASSERT_TRUE(resp.hasBodyCaptured());
+
+  HttpCodec::TryCompressResponse(state, cfg, Encoding::gzip, resp);
+
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
+  EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer-a"), "value-a");
+  EXPECT_FALSE(resp.hasBodyCaptured());
+
+  const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+  ASSERT_FALSE(contentLen.empty());
+  EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
+
+  const std::string_view compressedBody = resp.bodyInMemory();
+  ASSERT_GE(compressedBody.size(), 2UL);
+  EXPECT_EQ(static_cast<unsigned char>(compressedBody[0]), 0x1fU);
+  EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
+
+  RawChars out;
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
+  EXPECT_EQ(std::string_view(out), std::string_view(expectedBody));
+}
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
