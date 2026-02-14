@@ -797,10 +797,14 @@ TEST(Http2Core, PingRequestProducesPingAck) {
   auto initialOut = conn.getPendingOutput();
   conn.onOutputWritten(initialOut.size());
 
-  std::array<std::byte, 8> opaque = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
-                                     std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+  PingFrame pingFrame;
+  pingFrame.isAck = false;
+  static constexpr std::byte opaqueData[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+                                             std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+
+  std::memcpy(pingFrame.opaqueData, opaqueData, sizeof(opaqueData));
   RawBytes ping;
-  WritePingFrame(ping, opaque, false);
+  WritePingFrame(ping, pingFrame);
 
   auto res = conn.processInput(AsSpan(ping));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
@@ -821,12 +825,10 @@ TEST(Http2Core, PingOnNonZeroStreamIsProtocolError) {
   auto preface = MakePreface();
   (void)conn.processInput(preface);
 
-  std::array<std::byte, 8> opaque = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-                                     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
   RawBytes ping;
   // Build a ping frame but override stream id by writing header manually.
   // Easiest: write a valid PING then mutate the stream id bytes.
-  WritePingFrame(ping, opaque, false);
+  WritePingFrame(ping, PingFrame{});
   ping[5] = std::byte{0x00};
   ping[6] = std::byte{0x00};
   ping[7] = std::byte{0x00};
