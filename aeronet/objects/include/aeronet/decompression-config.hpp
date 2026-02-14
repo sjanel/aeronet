@@ -17,7 +17,7 @@ struct DecompressionConfig {
 // Content-Encoding remain compressed and are delivered verbatim to handlers (pass-through).
 // No 415 is generated solely due to compression; application code may inspect/decode manually.
 // Default: enabled if any decoder is compiled in; disabled otherwise.
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
+#ifdef AERONET_HAS_ANY_CODEC
   bool enable{true};
 #else
   bool enable{false};
