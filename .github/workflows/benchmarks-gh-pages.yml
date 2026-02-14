@@ -139,6 +139,13 @@ jobs:
           fi
 
           echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
+
+          # CI-defaults: allow overriding via workflow/env if needed
+          BENCH_WRK_TIMEOUT=${BENCH_WRK_TIMEOUT:-5s}
+          BODY_CODEC_MAX_PAYLOAD_KB=${BODY_CODEC_MAX_PAYLOAD_KB:-4096}
+          export BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB
+          echo "Using BENCH_WRK_TIMEOUT=$BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB=$BODY_CODEC_MAX_PAYLOAD_KB"
+
           ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN"
 
       - name: Render HTML for Pages

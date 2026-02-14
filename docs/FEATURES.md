@@ -1590,7 +1590,7 @@ This allows registering handlers for paths that contain these characters literal
 
 #### Wildcard semantics
 
-The asterisk `*` is allowed in a URL and is considered as a literal character unless it is equal to the entire final segment of the patternm, in which case it acts as a **wildcard** matching any remaining path suffix.
+The asterisk `*` is allowed in a URL and is considered as a literal character unless it is equal to the entire final segment of the pattern, in which case it acts as a **wildcard** matching any remaining path suffix.
 
 - Exact registrations take precedence over wildcard matches (e.g. `/a/b` wins over `/a/*` for `/a/b`).
 - Asterisks can be part of a parameter fragment (e.g. `/files/{name*}` matches `/files/report2024` with `name*` = `report2024`).
