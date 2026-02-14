@@ -87,16 +87,14 @@ struct CompressionConfig {
 
   // Automatic compression at the finalization of the HttpResponse is applied if and only if:
   //   compressedSize <= uncompressedSize * maxCompressRatio
-  // This settings will be used to set a maximum compressed size when trying to apply automatic compression.
-  // If the encoder produces compressed data larger than this threshold, compression will be aborted.
+  // This setting will be used to set a maximum compressed size when trying to apply automatic compression.
+  // If the encoder is about to compress data larger than this threshold, compression will be aborted.
   // This is to avoid cases where compression can actually increase the size of the response, which can happen for very
-  // small buffers and/or incompressible data. This is ignored for streaming compressions, because it's not possible to
-  // know the compressed size beforehand.
+  // small buffers and/or incompressible data. This is ignored for streaming compressions.
   //
-  // Example: 0.75 requires at least 25% savings. This value represents the maximum
-  // allowed compressed/uncompressed ratio (i.e. compressedSize/uncompressedSize).
+  // Example: 0.6 requires at least 40% savings.
   // Should be in the range (0.0, 1.0), exclusive.
-  float maxCompressRatio{0.5};
+  float maxCompressRatio{0.6F};
 
   // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
   // For streaming handlers responses (unknown size), compression begins once cumulative bytes reach threshold.

@@ -24,6 +24,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
@@ -70,7 +71,6 @@ struct VaryResult {
     const std::string_view value = hdr.value;
     for (http::HeaderValueReverseTokensIterator<','> it(value); it.hasNext();) {
       const std::string_view token = it.next();
-      assert(!token.empty() && "Malformed Vary header value");
       if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
         res.valueFirst = kVaryAcceptEncodingNotNeeded;
         return res;
@@ -80,8 +80,7 @@ struct VaryResult {
     res.valueFirst = static_cast<std::size_t>(value.data() - base);
     res.valueLast = static_cast<std::size_t>(res.valueFirst + value.size());
 
-    // HttpResponse's public API cannot create multiple headers with the same name,
-    // so we can stop here.
+    // Heuristic - we suppose that there will not be multiple Vary headers in the response.
     break;
   }
 
@@ -300,6 +299,8 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
     }
   }
 
+  // At this step, we will try the compression.
+
   const std::string_view contentEncodingStr = GetEncodingStr(encoding);
 
   // Sanity check: Content-Type header must be present to consider compression.
@@ -404,10 +405,9 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
       std::memmove(moveSrc + extraLen, moveSrc, tailLen);
       char* out = moveSrc;
       if (hasValue) {
-        std::memcpy(out, kVaryHeaderValueSep.data(), kVaryHeaderValueSep.size());
-        out += kVaryHeaderValueSep.size();
+        out = Append(kVaryHeaderValueSep, out);
       }
-      std::memcpy(out, http::AcceptEncoding.data(), http::AcceptEncoding.size());
+      Copy(http::AcceptEncoding, out);
       resp._data.addSize(extraLen);
       resp.adjustBodyStart(static_cast<int64_t>(extraLen));
     }
@@ -437,8 +437,7 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   // Write the newly inserted headers
   char* out = resp._data.data() + contentTypeLinePos2;
   if (addVaryHeaderLine) {
-    std::memcpy(out, kVaryHeaderLine.data(), kVaryHeaderLine.size());
-    out += kVaryHeaderLine.size();
+    out = Append(kVaryHeaderLine, out);
   }
   out = WriteCRLFHeader(out, http::ContentEncoding, contentEncodingStr);
 
@@ -448,14 +447,12 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState,
   static constexpr std::string_view kContentLengthPrefix =
       JoinStringView_v<http::CRLF, http::ContentLength, http::HeaderSep>;
 
-  std::memcpy(out, kContentLengthPrefix.data(), kContentLengthPrefix.size());
-  out += kContentLengthPrefix.size();
+  out = Append(kContentLengthPrefix, out);
   [[maybe_unused]] const auto tcRes = std::to_chars(out, out + nbCharsCompressedSize, compressedSize);
   assert(tcRes.ec == std::errc{} && tcRes.ptr == out + nbCharsCompressedSize);
   out += nbCharsCompressedSize;
 
-  std::memcpy(out, http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  out += http::DoubleCRLF.size();
+  out = Append(http::DoubleCRLF, out);
   assert(std::cmp_equal(out - resp._data.data(), newBodyStartPos));
 
   // Move compressed body to its final position.
