@@ -976,6 +976,10 @@ void SingleHttpServer::eventLoop() {
     } else if (SignalHandler::IsStopRequested()) {
       beginDrain(SignalHandler::GetMaxDrainPeriod());
     }
+
+    // Also shrink per-thread scratch buffers used during decompression / header parsing.
+    _tmp.buf.shrink_to_fit();
+    _tmp.buf.clear();
   }
 }
 
