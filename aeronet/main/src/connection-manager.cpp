@@ -140,6 +140,15 @@ void SingleHttpServer::sweepIdleConnections() {
     }
 #endif
 
+    // Reclaim memory from oversized decompression buffers between keep-alive requests.
+    // bodyAndTrailersBuffer grows to accommodate decompressed request bodies (up to maxBodyBytes)
+    // and retains its capacity across keep-alive requests. For workloads with highly variable
+    // body sizes (e.g., 64 KB to 8 MB), this causes significant memory retention per connection.
+    // shrink_to_fit is called before clear (as in ConnectionState::reset) to only halve
+    // when utilization is < 25%, avoiding aggressive reallocation of live data.
+    state.bodyAndTrailersBuffer.shrink_to_fit();
+    state.bodyAndTrailersBuffer.clear();
+
     ++cnxIt;
   }
 
