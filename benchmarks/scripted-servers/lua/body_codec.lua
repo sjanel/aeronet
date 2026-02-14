@@ -12,6 +12,18 @@
 local request_encoding = "gzip"
 local accept_encoding = "gzip"
 
+local function read_positive_env_number(name)
+  local value = os.getenv(name)
+  if value == nil or value == "" then
+    return nil
+  end
+  local parsed = tonumber(value)
+  if parsed == nil or parsed <= 0 then
+    error(string.format("Invalid %s='%s' (must be a positive number)", name, tostring(value)))
+  end
+  return parsed
+end
+
 local function load_payloads()
   local source = debug.getinfo(1, "S").source
   local candidates = {}
@@ -34,6 +46,20 @@ local function load_payloads()
 end
 
 local gzip_payloads = load_payloads()
+
+local max_payload_kb = read_positive_env_number("BODY_CODEC_MAX_PAYLOAD_KB")
+local applied_max_payload_bytes = nil
+if max_payload_kb ~= nil then
+  applied_max_payload_bytes = math.floor(max_payload_kb * 1024)
+  local filtered = {}
+  for _, payload in ipairs(gzip_payloads) do
+    if payload.uncompressed <= applied_max_payload_bytes then
+      table.insert(filtered, payload)
+    end
+  end
+  gzip_payloads = filtered
+end
+
 local payload_count = #gzip_payloads
 local min_uncompressed = math.huge
 local max_uncompressed = 0
@@ -57,8 +83,7 @@ for _, payload in ipairs(gzip_payloads) do
   end
 end
 
--- Uncompressed payload is 64 KiB of iota bytes (0..255 repeated).
-local uncompressed_size = 64 * 1024
+-- Uncompressed payloads range from 64 KiB to 8 MiB of iota bytes (0..255 repeated).
 
 function init(args)
   for i, arg in ipairs(args) do
@@ -95,6 +120,9 @@ end
 
 function done(summary, latency, requests)
   print("-------- Body Codec Results --------")
+  if applied_max_payload_bytes ~= nil then
+    print(string.format("Applied BODY_CODEC_MAX_PAYLOAD_KB: %d", max_payload_kb))
+  end
   print(string.format("Payloads: %d", payload_count))
   print(string.format("Uncompressed size range: %d..%d", min_uncompressed, max_uncompressed))
   print(string.format("Compressed size range: %d..%d", min_compressed, max_compressed))

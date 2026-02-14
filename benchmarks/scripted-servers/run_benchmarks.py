@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -112,6 +113,10 @@ class BenchmarkRunner:
         self.connections = args.connections
         self.duration = args.duration
         self.warmup = args.warmup
+        self.wrk_timeout = args.wrk_timeout
+        self.wrk_timeout_seconds = self._duration_to_seconds(self.wrk_timeout)
+        if self.wrk_timeout_seconds is None:
+            raise BenchmarkError(f"Invalid wrk timeout value: {self.wrk_timeout}")
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -120,7 +125,9 @@ class BenchmarkRunner:
         self.server_processes: Dict[str, ProcessHandle] = {}
         self.results_rps: Dict[Tuple[str, str], str] = {}
         self.results_latency: Dict[Tuple[str, str], str] = {}
+        self.results_latency_raw: Dict[Tuple[str, str], str] = {}
         self.results_transfer: Dict[Tuple[str, str], str] = {}
+        self.results_timeouts: Dict[Tuple[str, str], int] = {}
         self.memory_usage: Dict[Tuple[str, str], MemoryStats] = {}
 
         self.servers_to_test = self._resolve_server_filter(args.server)
@@ -573,6 +580,7 @@ class BenchmarkRunner:
                 f"-t{self.threads}",
                 f"-c{self.connections}",
                 f"-d{self.warmup}",
+                f"--timeout={self.wrk_timeout}",
                 "-s",
                 str(lua_script),
                 url,
@@ -590,6 +598,7 @@ class BenchmarkRunner:
             f"-t{self.threads}",
             f"-c{self.connections}",
             f"-d{self.duration}",
+            f"--timeout={self.wrk_timeout}",
             "-s",
             str(lua_script),
             url,
@@ -605,7 +614,7 @@ class BenchmarkRunner:
                 f"ERROR: wrk failed for {server} / {scenario_name} (exit {exc.returncode})"
             )
             print(output)
-            self._store_result(server, scenario_name, "-", "-", "-")
+            self._store_result(server, scenario_name, "-", "-", "-", latency_raw="-", timeout_errors=0)
             self._append_result_block(server, scenario_name, output, error=True)
             self._record_memory_usage(server, scenario_name)
             return
@@ -621,12 +630,25 @@ class BenchmarkRunner:
                 f"ERROR: Aeronet reported errors (connect/read/write/timeout) = "
                 f"{err_connect}/{err_read}/{err_write}/{err_timeout} for scenario '{scenario_name}'"
             )
+
+        success_requests, _ = self._extract_wrk_totals(output)
+        adjusted_latency = self._compute_timeout_adjusted_latency(
+            metrics["latency"], success_requests, err_timeout, self.wrk_timeout_seconds
+        )
+        if adjusted_latency != metrics["latency"] and metrics["latency"] != "-":
+            print(
+                "    Adjusted latency (timeouts counted at wrk timeout "
+                f"{self.wrk_timeout}): {adjusted_latency} (raw: {metrics['latency']})"
+            )
+
         self._store_result(
             server,
             scenario_name,
             metrics["rps"],
-            metrics["latency"],
+            adjusted_latency,
             metrics["transfer"],
+            latency_raw=metrics["latency"],
+            timeout_errors=err_timeout,
         )
         print(output)
         self._append_result_block(
@@ -693,12 +715,93 @@ class BenchmarkRunner:
         return e_connect, e_read, e_write, e_timeout
 
     def _store_result(
-        self, server: str, scenario: str, rps: str, latency: str, transfer: str
+        self,
+        server: str,
+        scenario: str,
+        rps: str,
+        latency: str,
+        transfer: str,
+        *,
+        latency_raw: Optional[str] = None,
+        timeout_errors: Optional[int] = None,
     ) -> None:
         key = (server, scenario)
         self.results_rps[key] = rps
         self.results_latency[key] = latency
+        self.results_latency_raw[key] = latency if latency_raw is None else latency_raw
         self.results_transfer[key] = transfer
+        if timeout_errors is not None:
+            self.results_timeouts[key] = timeout_errors
+
+    @staticmethod
+    def _duration_to_seconds(value: str) -> Optional[float]:
+        text = str(value).strip()
+        match = re.match(r"^([0-9]*\.?[0-9]+)\s*(us|ms|s|m|h)?$", text)
+        if match is None:
+            return None
+        amount = float(match.group(1))
+        unit = (match.group(2) or "s").lower()
+        if unit == "us":
+            return amount / 1_000_000.0
+        if unit == "ms":
+            return amount / 1000.0
+        if unit == "s":
+            return amount
+        if unit == "m":
+            return amount * 60.0
+        if unit == "h":
+            return amount * 3600.0
+        return None
+
+    @staticmethod
+    def _latency_to_seconds(value: str) -> Optional[float]:
+        text = str(value).strip().lower()
+        match = re.match(r"^([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", text)
+        if match is None:
+            return None
+        amount = float(match.group(1))
+        unit = match.group(2)
+        if unit in {"us", "µs", "μs"}:
+            return amount / 1_000_000.0
+        if unit == "ms":
+            return amount / 1000.0
+        return amount
+
+    @staticmethod
+    def _format_latency_seconds(seconds: float) -> str:
+        if seconds >= 1.0:
+            return f"{seconds:.2f}s"
+        if seconds >= 0.001:
+            return f"{seconds * 1000.0:.2f}ms"
+        return f"{seconds * 1_000_000.0:.2f}us"
+
+    @staticmethod
+    def _extract_wrk_totals(output: str) -> Tuple[int, Optional[float]]:
+        for line in output.splitlines():
+            text = line.strip()
+            match = re.search(r"(\d+)\s+requests\s+in\s+([0-9]*\.?[0-9]+)s", text)
+            if match is not None:
+                return int(match.group(1)), float(match.group(2))
+        return 0, None
+
+    def _compute_timeout_adjusted_latency(
+        self,
+        raw_latency: str,
+        successful_requests: int,
+        timeout_errors: int,
+        timeout_seconds: float,
+    ) -> str:
+        if raw_latency == "-" or timeout_errors <= 0:
+            return raw_latency
+        raw_seconds = self._latency_to_seconds(raw_latency)
+        if raw_seconds is None:
+            return raw_latency
+        completed = max(0, successful_requests)
+        total = completed + timeout_errors
+        if total <= 0:
+            return raw_latency
+        adjusted_seconds = (raw_seconds * completed + timeout_seconds * timeout_errors) / total
+        return self._format_latency_seconds(adjusted_seconds)
 
     def _append_result_block(
         self, server: str, scenario: str, output: str, error: bool
@@ -728,6 +831,7 @@ class BenchmarkRunner:
             fp.write(f"Threads: {self.threads}\n")
             fp.write(f"Connections: {self.connections}\n")
             fp.write(f"Duration: {self.duration}\n")
+            fp.write(f"wrk timeout: {self.wrk_timeout}\n")
             fp.write(f"System: {sys_info}\n")
             if cpu_info:
                 fp.write(f"CPU: {cpu_info}\n")
@@ -781,13 +885,21 @@ class BenchmarkRunner:
             "threads": self.threads,
             "duration": self.duration,
             "warmup": self.warmup,
+            "wrk_timeout": self.wrk_timeout,
             "servers": self.servers_to_test,
             "scenarios": self.scenarios_to_test,
             "results": {},
         }
 
         for scenario in self.scenarios_to_test:
-            scenario_entry = {"rps": {}, "latency": {}, "transfer": {}, "winners": {}}
+            scenario_entry = {
+                "rps": {},
+                "latency": {},
+                "latency_raw": {},
+                "timeouts": {},
+                "transfer": {},
+                "winners": {},
+            }
             best_server = self._best_server_for_scenario(scenario)
             if best_server is not None:
                 scenario_entry["winners"]["rps"] = best_server
@@ -795,11 +907,17 @@ class BenchmarkRunner:
                 key = (server, scenario)
                 rps_val = self.results_rps.get(key)
                 lat_val = self.results_latency.get(key)
+                lat_raw_val = self.results_latency_raw.get(key)
+                timeout_val = self.results_timeouts.get(key)
                 xfer_val = self.results_transfer.get(key)
                 if rps_val is not None:
                     scenario_entry["rps"][server] = rps_val
                 if lat_val is not None:
                     scenario_entry["latency"][server] = lat_val
+                if lat_raw_val is not None:
+                    scenario_entry["latency_raw"][server] = lat_raw_val
+                if timeout_val is not None:
+                    scenario_entry["timeouts"][server] = timeout_val
                 if xfer_val is not None:
                     scenario_entry["transfer"][server] = xfer_val
                 # include memory stats if available
@@ -1195,7 +1313,7 @@ class TablePrinter:
         )
         self._print_box(
             "LATENCY COMPARISON",
-            "(Average - lower is better)",
+            "(Timeout-adjusted average - lower is better)",
             self.latency,
             higher_is_better=False,
         )
@@ -1298,6 +1416,7 @@ def parse_args() -> argparse.Namespace:
     default_connections = int(os.environ.get("BENCH_CONNECTIONS", 100))
     default_duration = os.environ.get("BENCH_DURATION", "30s")
     default_warmup = os.environ.get("BENCH_WARMUP", "5s")
+    default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "2s")
     default_output = os.environ.get("BENCH_OUTPUT", "./results")
     parser = argparse.ArgumentParser(
         description="Run wrk benchmarks across multiple servers"
@@ -1319,6 +1438,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmup", type=str, default=default_warmup, help="Warmup duration (e.g. 5s)"
+    )
+    parser.add_argument(
+        "--wrk-timeout",
+        type=str,
+        default=default_wrk_timeout,
+        help="Per-request wrk timeout used both by wrk and timeout-penalty latency adjustment (e.g. 2s)",
     )
     parser.add_argument(
         "--output",
