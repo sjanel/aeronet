@@ -6,10 +6,8 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <initializer_list>
-#include <limits>
 #include <new>
 #include <stdexcept>
 #include <system_error>
@@ -30,7 +28,7 @@ using namespace aeronet;
 
 TEST(EventLoopTest, BasicPollAndGrowth) {
   // Short timeout so poll returns quickly if something goes wrong
-  EventLoop loop(std::chrono::milliseconds(50), 0, 4);
+  EventLoop loop(std::chrono::milliseconds(50), 4);
 
   // Create a single pipe and ensure data written to the write end triggers the callback
   int fds[2];
@@ -105,7 +103,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
 }
 
 TEST(EventLoopTest, MoveConstructorAndAssignment) {
-  EventLoop loopA(std::chrono::milliseconds(10), 0, 8);
+  EventLoop loopA(std::chrono::milliseconds(10), 8);
   // Move-construct loopB from loopA
   EventLoop loopB(std::move(loopA));
   // loopB should have non-zero capacity and loopA should be in a valid but unspecified state
@@ -123,14 +121,14 @@ TEST(EventLoopTest, MoveConstructorAndAssignment) {
 }
 
 TEST(EventLoopTest, ConstructZeroCapacityShouldBePromoted) {
-  EventLoop loopA(std::chrono::milliseconds(10), 0, 0);
+  EventLoop loopA(std::chrono::milliseconds(10), 0);
 
-  loopA = EventLoop(std::chrono::milliseconds(10), 0, 128);
+  loopA = EventLoop(std::chrono::milliseconds(10), 128);
 }
 
 TEST(EventLoopTest, NoShrinkPolicy) {
   // create an EventLoop with small initial capacity
-  EventLoop loop(std::chrono::milliseconds(10), 0, 4);
+  EventLoop loop(std::chrono::milliseconds(10), 4);
 
   // Grow the loop by adding many fds and poll once
   const unsigned kExtra = 128;
@@ -170,8 +168,10 @@ TEST(EventLoopTest, NoShrinkPolicy) {
   }
 }
 
-TEST(EventLoopTest, InvalidEpollFlags) {
-  EXPECT_THROW(EventLoop({}, std::numeric_limits<int>::max(), 0), std::runtime_error);
+TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails_BadFlags) {
+  test::EventLoopHookGuard guard;
+  test::SetEpollCreateActions({test::EpollCreateFail(EINVAL)});
+  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
 }
 
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
@@ -209,7 +209,7 @@ TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
 
 TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+  EventLoop loop(std::chrono::milliseconds(5), 2);
   const auto initialCapacity = loop.capacity();
   std::vector<epoll_event> events;
   events.reserve(initialCapacity);
@@ -236,7 +236,7 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
 
 TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+  EventLoop loop(std::chrono::milliseconds(5), 2);
   const auto initialCapacity = loop.capacity();
   std::vector<epoll_event> events;
   events.reserve(initialCapacity);
@@ -253,7 +253,7 @@ TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
 
 TEST(EventLoopTest, ModFailures) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 0, 2);
+  EventLoop loop(std::chrono::milliseconds(5), 2);
 
   // simulate benign mod failure (EBADF)
   test::FailAllEpollCtlMod(EBADF);

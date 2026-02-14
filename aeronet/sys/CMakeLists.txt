@@ -69,6 +69,22 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    socket-ops_test
+    test/socket-ops_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    unix-socket_test
+    test/unix-socket_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     tcp-connector_test
     test/tcp-connector_test.cpp
     LIBRARIES

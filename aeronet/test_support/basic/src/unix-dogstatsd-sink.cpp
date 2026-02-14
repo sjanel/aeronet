@@ -2,7 +2,6 @@
 
 #include <poll.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -16,7 +15,7 @@
 #include <string>
 #include <utility>
 
-#include "aeronet/base-fd.hpp"
+#include "aeronet/unix-socket.hpp"
 
 namespace aeronet::test {
 
@@ -29,10 +28,7 @@ std::string MakeUniquePath() {
 }
 }  // namespace
 
-UnixDogstatsdSink::UnixDogstatsdSink() : _fd(::socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0)) {
-  if (!_fd) {
-    throw std::runtime_error("Failed to create unix datagram socket");
-  }
+UnixDogstatsdSink::UnixDogstatsdSink() : _fd(UnixSocket::Type::Datagram) {
   _path = MakeUniquePath();
   ::unlink(_path.c_str());
 
@@ -68,7 +64,7 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
     return {};
   }
   std::array<char, 512> buf;
-  const ssize_t bytes = ::recv(_fd.fd(), buf.data(), buf.size(), 0);
+  const auto bytes = ::recv(_fd.fd(), buf.data(), buf.size(), 0);
   if (bytes <= 0) {
     return {};
   }

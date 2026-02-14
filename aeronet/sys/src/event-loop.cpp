@@ -41,19 +41,19 @@ static_assert(EventEt == EPOLLET, "EventEt value mismatch");
 
 }  // namespace
 
-EventLoop::EventLoop(SysDuration pollTimeout, int epollFlags, uint32_t initialCapacity)
+EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
     : _nbAllocatedEvents(std::max(1U, initialCapacity)),
       _pollTimeoutMs(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count())),
-      _baseFd(::epoll_create1(epollFlags)),
+      _baseFd(::epoll_create1(EPOLL_CLOEXEC)),
       _pEvents(std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * sizeof(epoll_event))) {
   if (_pEvents == nullptr) {
     throw std::bad_alloc();
   }
   if (!_baseFd) {
     auto err = errno;
-    log::error("epoll_create1 failed (flags={}, errno={}, msg={})", epollFlags, err, std::strerror(err));
+    log::error("event loop creation failed (errno={}, msg={})", err, std::strerror(err));
     std::free(_pEvents);
-    throw std::runtime_error("epoll_create1 failed");
+    throw std::runtime_error("event loop creation failed");
   }
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");
