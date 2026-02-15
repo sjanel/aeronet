@@ -120,7 +120,7 @@ jobs:
           REF=${GITHUB_REF:-}
           WARMUP=5s
           THREADS=2
-          CONN=150
+          CONN=100
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
@@ -135,7 +135,7 @@ jobs:
             DUR=5s
             WARMUP=2s
             THREADS=1
-            CONN=100
+            CONN=50
           fi
 
           echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
