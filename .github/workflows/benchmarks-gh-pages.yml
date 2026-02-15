@@ -226,7 +226,7 @@ jobs:
           fi
 
       - name: Publish site snapshot to gh-pages
-        if: ${{ github.event_name != 'pull_request' && startsWith(matrix.compiler, 'gcc') }}
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           set -euo pipefail
           REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
