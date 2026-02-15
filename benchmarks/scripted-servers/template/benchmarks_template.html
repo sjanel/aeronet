@@ -67,6 +67,7 @@
 
       <section id="view-charts" class="view active">
         <div class="chart-controls" aria-label="Chart filters">
+          __CONN_SELECTOR__
           <label>Scenario
             <select id="scenario-filter">__SCENARIO_OPTIONS__</select>
           </label>
@@ -105,14 +106,17 @@
   </div>
 
   <script>
-    const payload = __PAYLOAD_JSON__;
-    const servers = payload.servers;
-    const units = payload.units || { latency: 'ms', transfer: 'MB' };
-    const scenarioLabels = payload.scenarios.map(s => s.name);
+    const allConfigs = __PAYLOAD_JSON__;
+    let currentConfigIdx = 0;
+    let payload = allConfigs[currentConfigIdx];
+    let servers = payload.servers;
+    let units = payload.units || { latency: 'ms', transfer: 'MB' };
+    let scenarioLabels = payload.scenarios.map(s => s.name);
     const palette = ['#2563eb', '#16a34a', '#f97316', '#a855f7', '#0ea5e9', '#f43f5e', '#22d3ee', '#fbbf24'];
     const chartsGrid = document.getElementById('charts-grid');
     const scenarioSelect = document.getElementById('scenario-filter');
     const metricSelect = document.getElementById('metric-filter');
+    const connSelect = document.getElementById('conn-filter');
 
     function datasetFor(metric) {
       return servers.map((server, idx) => ({
@@ -177,8 +181,6 @@
     }
 
     function baseOptions(metric, axisOptions, showLabels = true) {
-      // Always include formatter; control visibility via `display` so the
-      // formatter is present even when labels are toggled on later.
       const datalabelsConfig = {
         anchor: 'end',
         align: 'start',
@@ -190,7 +192,6 @@
         color: '#111',
         font: { weight: '600', size: 11 },
         formatter: (value, ctx) => {
-          // Show server name for single-scenario bars
           const label = ctx.dataset.label || '';
           return label;
         },
@@ -217,7 +218,6 @@
       };
     }
 
-    // Register datalabels plugin if available so we can show server names above bars
     if (typeof ChartDataLabels !== 'undefined') {
       try { Chart.register(ChartDataLabels); } catch (e) { /* ignore if already registered */ }
     }
@@ -232,7 +232,7 @@
           title: { display: true, text: 'Requests/sec' },
           ticks: { callback: value => formatValue(value, 'rps') },
         }
-      }, false) // Hide labels for "all scenarios"
+      }, false)
     });
 
     const latencyChart = new Chart(document.getElementById('chart-latency'), {
@@ -246,7 +246,7 @@
           title: { display: true, text: `Latency (${units.latency || 'ms'})` },
           ticks: { callback: value => formatValue(value, 'latency') },
         }
-      }, false) // Hide labels for "all scenarios"
+      }, false)
     });
 
     const transferChart = new Chart(document.getElementById('chart-transfer'), {
@@ -260,7 +260,7 @@
           title: { display: true, text: `Transfer (${units.transfer || 'MB'})` },
           ticks: { callback: value => formatValue(value, 'transfer') },
         }
-      }, false) // Hide labels for "all scenarios"
+      }, false)
     });
 
     const memoryRssChart = new Chart(document.getElementById('chart-memory-rss'), {
@@ -274,7 +274,7 @@
           title: { display: true, text: 'RSS (MB) (log scale)' },
           ticks: { callback: value => formatValue(value, 'memory') },
         }
-      }, false) // Hide labels for "all scenarios"
+      }, false)
     });
 
     const memoryPeakChart = new Chart(document.getElementById('chart-memory-peak'), {
@@ -288,7 +288,7 @@
           title: { display: true, text: 'Peak (MB) (log scale)' },
           ticks: { callback: value => formatValue(value, 'memory') },
         }
-      }, false) // Hide labels for "all scenarios"
+      }, false)
     });
 
     const chartEntries = [
@@ -299,27 +299,39 @@
       { metric: 'memory', chart: memoryPeakChart, card: document.querySelectorAll('.chart-card[data-metric="memory"]')[1] },
     ];
 
+    function switchConfig(idx) {
+      currentConfigIdx = idx;
+      payload = allConfigs[idx];
+      servers = payload.servers;
+      units = payload.units || { latency: 'ms', transfer: 'MB' };
+      scenarioLabels = payload.scenarios.map(s => s.name);
+
+      // Show/hide per-config table blocks
+      document.querySelectorAll('.conn-config-tables').forEach(el => {
+        el.style.display = el.dataset.connIdx == String(idx) ? 'block' : 'none';
+      });
+
+      refreshCharts();
+    }
+
     function refreshCharts() {
       const scenarioValue = scenarioSelect.value;
       const metricValue = metricSelect.value;
       const scenarioFocused = scenarioValue !== 'all';
       const metricFocused = metricValue !== 'all';
       const focused = scenarioFocused || metricFocused;
-      // When a metric is focused, show only that metric. When only a scenario
-      // is focused, show all charts (each limited to the selected scenario).
       const activeMetric = metricFocused ? metricValue : null;
-      const showLabels = scenarioFocused; // Only show labels when a specific scenario is selected
+      const showLabels = scenarioFocused;
       chartsGrid.classList.toggle('focused', focused);
       chartEntries.forEach(entry => {
         const showCard = activeMetric ? entry.metric === activeMetric : true;
         entry.card.classList.toggle('hidden', !showCard);
-        const nextData = buildChartData(entry.chart.config.type === 'bar' ? 
-          (entry.chart.canvas.id === 'chart-memory-rss' ? 'memory_rss' : 
-           entry.chart.canvas.id === 'chart-memory-peak' ? 'memory_peak' : 
-           entry.metric) : entry.metric, scenarioValue);
+        const chartMetric = entry.chart.canvas.id === 'chart-memory-rss' ? 'memory_rss'
+                          : entry.chart.canvas.id === 'chart-memory-peak' ? 'memory_peak'
+                          : entry.metric;
+        const nextData = buildChartData(chartMetric, scenarioValue);
         entry.chart.data.labels = nextData.labels;
         entry.chart.data.datasets = nextData.datasets;
-        // Update datalabels visibility
         if (entry.chart.options.plugins.datalabels) {
           entry.chart.options.plugins.datalabels.display = showLabels;
         }
@@ -329,8 +341,11 @@
 
     scenarioSelect.addEventListener('change', refreshCharts);
     metricSelect.addEventListener('change', refreshCharts);
+    if (connSelect) {
+      connSelect.addEventListener('change', () => switchConfig(parseInt(connSelect.value, 10)));
+    }
 
-    // Tab switching logic to show charts full-screen-like and table on demand.
+    // Tab switching logic
     const tabs = document.querySelectorAll('.tab');
     const views = document.querySelectorAll('.view');
     function activateTab(name) {
@@ -338,25 +353,21 @@
       views.forEach(v => {
         if (v.id === 'view-' + name) { v.classList.add('active'); v.removeAttribute('hidden'); } else { v.classList.remove('active'); v.setAttribute('hidden', ''); }
       });
-      // Update charts after layout change (avoid infinite resize loops)
       chartEntries.forEach(entry => entry.chart.update());
     }
     tabs.forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
     refreshCharts();
 
-    // Table tab switching logic
-    const tableTabs = document.querySelectorAll('.table-tab');
-    const tableContents = document.querySelectorAll('.table-content');
-    tableTabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        const tableId = 'table-' + tab.dataset.table;
-        tableTabs.forEach(t => t.classList.toggle('active', t.dataset.table === tab.dataset.table));
-        tableContents.forEach(content => {
-          if (content.id === tableId) {
-            content.style.display = 'block';
-          } else {
-            content.style.display = 'none';
-          }
+    // Table tab switching logic (per-config)
+    document.querySelectorAll('.conn-config-tables').forEach(container => {
+      const idx = container.dataset.connIdx;
+      container.querySelectorAll('.table-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tableId = 'table-' + tab.dataset.table + '-' + idx;
+          container.querySelectorAll('.table-tab').forEach(t => t.classList.toggle('active', t.dataset.table === tab.dataset.table));
+          container.querySelectorAll('.table-content').forEach(content => {
+            content.style.display = content.id === tableId ? 'block' : 'none';
+          });
         });
       });
     });
