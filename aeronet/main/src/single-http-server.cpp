@@ -254,7 +254,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                  _decompressionState, _telemetry, _tmp.buf);
+                                                                  _decompressionState, _telemetry, _sharedBuffers.buf);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -346,8 +346,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       break;  // need more bytes for at least the request line
     }
     const auto statusCode =
-        request.initTrySetHead(state.inBuffer, _tmp.buf, _config.maxHeaderBytes, _config.mergeUnknownRequestHeaders,
-                               _telemetry.createSpan("http.request"));
+        request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
+                               _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
     if (statusCode == HttpRequest::kStatusNeedMoreData) {
       break;
     }
@@ -415,7 +415,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
       // Create HTTP/2 protocol handler using unified dispatch
       state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                _decompressionState, _telemetry, _tmp.buf);
+                                                                _decompressionState, _telemetry, _sharedBuffers.buf);
       state.protocol = ProtocolType::Http2;
 
       // Queue the upgrade response
@@ -505,7 +505,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.waitingForBody = false;
         state.bodyLastActivity = {};
       }
-      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt)) {
+      const bool usePerConnectionBodyStorage = state.trailerStartPos != 0;
+      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
         break;
       }
       state.installAggregatedBodyBridge();
@@ -634,11 +635,17 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool usePerConnectionBodyStorage) {
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
+
+  usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerStartPos != 0;
+
+  RawChars& decompressedBuffer =
+      usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : _sharedBuffers.decompressedBody;
+
   const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_decompressionState, _config.decompression, request,
-                                                                   state.bodyAndTrailersBuffer, _tmp.buf);
+                                                                   decompressedBuffer, _sharedBuffers.buf);
 
   if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, true, res.message);
@@ -647,9 +654,9 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt) {
 
   // Parse trailers if present
   if (state.trailerStartPos != 0) {
-    auto* buf = state.bodyAndTrailersBuffer.data();
-    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, buf + state.trailerStartPos,
-                                                                  buf + state.bodyAndTrailersBuffer.size());
+    auto* buf = decompressedBuffer.data();
+    [[maybe_unused]] const bool isSuccess =
+        parseHeadersUnchecked(request._trailers, buf, buf + state.trailerStartPos, buf + decompressedBuffer.size());
     // trailers should have been validated in decodeChunkedBody
     assert(isSuccess);
   }
@@ -753,11 +760,21 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
   assert(handle);
 
   auto& asyncState = state.asyncState;
+  const std::string_view bodyView = state.request._body;
+  bool usesSharedDecompressedBody = false;
+  if (bodyReady && !bodyView.empty()) {
+    const char* sharedBeg = _sharedBuffers.decompressedBody.data();
+    const char* sharedEnd = sharedBeg + _sharedBuffers.decompressedBody.size();
+    const char* bodyBeg = bodyView.data();
+    const char* bodyEnd = bodyBeg + bodyView.size();
+    usesSharedDecompressedBody = sharedBeg <= bodyBeg && bodyEnd <= sharedEnd;
+  }
 
   asyncState.active = true;
   asyncState.handle = handle;
   asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
   asyncState.needsBody = !bodyReady;
+  asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
   asyncState.expectContinue = expectContinue;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
@@ -789,6 +806,9 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
     async.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
     async.handle.resume();
     if (async.awaitReason != ConnectionState::AsyncHandlerState::AwaitReason::None) {
+      if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
+        state.requestImmediateClose();
+      }
       return;
     }
   }
@@ -818,7 +838,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
 
     async.needsBody = false;
     async.consumedBytes = consumedBytes;
-    if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt)) {
+    if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt, true)) {
       state.asyncState.clear();
       return;
     }
@@ -838,6 +858,30 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
   if (async.pendingResponse.has_value()) {
     tryFlushPendingAsyncResponse(cnxIt);
   }
+}
+
+bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
+  auto& async = state.asyncState;
+  if (!async.usesSharedDecompressedBody) {
+    return true;
+  }
+
+  const std::string_view body = state.request._body;
+
+  // Async shared-body pinning expects request body to reference shared decompressed storage
+  assert(body.empty() || (_sharedBuffers.decompressedBody.data() <= body.data() &&
+                          body.data() + body.size() <=
+                              _sharedBuffers.decompressedBody.data() + _sharedBuffers.decompressedBody.size()));
+
+  state.bodyAndTrailersBuffer.assign(body.data(), body.size());
+  state.request._body = std::string_view(state.bodyAndTrailersBuffer.data(), body.size());
+
+  if (state.request._bodyAccessBridge != nullptr) {
+    state.bodyStreamContext.body = state.request._body;
+  }
+
+  async.usesSharedDecompressedBody = false;
+  return true;
 }
 
 void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
@@ -978,8 +1022,7 @@ void SingleHttpServer::eventLoop() {
     }
 
     // Also shrink per-thread scratch buffers used during decompression / header parsing.
-    _tmp.buf.shrink_to_fit();
-    _tmp.buf.clear();
+    _sharedBuffers.shrink_to_fit();
   }
 }
 
@@ -1300,7 +1343,7 @@ void SingleHttpServer::applyPendingUpdates() {
 void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work) {
   {
     std::scoped_lock lock(_updates.lock);
-    _updates.asyncCallbacks.push_back({connectionFd, handle, std::move(work)});
+    _updates.asyncCallbacks.emplace_back(connectionFd, handle, std::move(work));
     _updates.hasAsyncCallbacks.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
@@ -1312,7 +1355,7 @@ void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                            _decompressionState, _telemetry, _tmp.buf, true);
+                                                            _decompressionState, _telemetry, _sharedBuffers.buf, true);
   state.protocol = ProtocolType::Http2;
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation

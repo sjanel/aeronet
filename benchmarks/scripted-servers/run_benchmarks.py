@@ -505,6 +505,27 @@ class BenchmarkRunner:
         env = os.environ.copy()
         env["BENCH_PORT"] = str(port)
         env["BENCH_THREADS"] = str(self.threads)
+
+        # Optional server-specific profiler/runtime environment passthrough.
+        # This allows profiling wrappers to instrument only the server process
+        # (e.g. aeronet) without affecting wrk/python orchestrator processes.
+        server_key = server.upper()
+        profiler_vars = (
+            "LD_PRELOAD",
+            "HEAPPROFILE",
+            "HEAP_PROFILE_ALLOCATION_INTERVAL",
+            "HEAPPROFILESIGNAL",
+            "CPUPROFILE",
+            "CPUPROFILE_FREQUENCY",
+        )
+        for var_name in profiler_vars:
+            if var_name in env:
+                env.pop(var_name, None)
+            scoped_key = f"BENCH_{server_key}_{var_name}"
+            scoped_val = os.environ.get(scoped_key)
+            if scoped_val:
+                env[var_name] = scoped_val
+
         log_path = self.logs_dir / f"{server}.log"
         log_fp = log_path.open("w", encoding="utf-8", errors="replace")
         try:

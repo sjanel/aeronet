@@ -51,6 +51,7 @@ All notable changes to aeronet are documented in this file.
 - **`HttpResponse::body()` capture overloads now require rvalue references**: `body(std::string&&, ...)` and `body(std::vector<std::byte>&&, ...)`. Passing an lvalue `std::string` (e.g. `resp.body(myString)`) now selects the inline `std::string_view` overload. This should not break existing code and would avoid silent copies when the caller passed an lvalue string / vector to the body capture overloads.
 - Automatic compression process has been optimized, especially for captured payloads which are now compressed in-place without memory moves.
 - Invalid chunked transfer encoding length of queries now return `400 Bad Request` instead of `413 Payload Too Large`
+- Decrease memory usage in automatic compression / decompression by using only one shared buffer by server instead of by connection for non-async handlers.
 
 ### Other
 
