@@ -12,6 +12,8 @@
 #include <string_view>
 #include <thread>
 
+#include "aeronet/internal/shared-buffers.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #endif
@@ -38,7 +40,6 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
@@ -431,7 +432,7 @@ class SingleHttpServer {
   BodyDecodeStatus decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   BodyDecodeStatus decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
-  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt);
+  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool usePerConnectionBodyStorage);
   void finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                        const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
@@ -490,6 +491,8 @@ class SingleHttpServer {
   bool disableWritableInterest(ConnectionMapIt cnxIt);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;
+
   // Post an async callback to be processed in the event loop, then resume the coroutine.
   // Called from background threads via ConnectionState::asyncState.postCallback.
   void postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
@@ -549,11 +552,7 @@ class SingleHttpServer {
 
   internal::ConnectionStorage _connections;
 
-  struct TempBuffers {
-    RawChars buf;                 // can be used for any kind of temporary buffer
-    RawChars32 trailers;          // scratch buffer to preserve request trailers during decompression
-    vector<std::string_view> sv;  // scratch vector for chunked decoding
-  } _tmp;
+  internal::SharedBuffers _sharedBuffers;
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

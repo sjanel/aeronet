@@ -91,7 +91,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   }
 
   // For direct decompression, we collect chunk positions instead of copying data
-  _tmp.sv.clear();
+  _sharedBuffers.sv.clear();
   std::size_t totalCompressedSize = 0;
 
   while (true) {
@@ -204,7 +204,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     if (decompressCode == http::StatusCodeOK) {
       // Just record chunk position for later direct decompression
-      _tmp.sv.emplace_back(state.inBuffer.data() + pos, chunkSize);
+      _sharedBuffers.sv.emplace_back(state.inBuffer.data() + pos, chunkSize);
       totalCompressedSize += chunkSize;
 
       if (totalCompressedSize > _config.maxBodyBytes ||
@@ -231,16 +231,17 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     pos += http::CRLF.size();
   }
 
-  if (decompressCode == http::StatusCodeOK && !_tmp.sv.empty()) {
+  if (decompressCode == http::StatusCodeOK && !_sharedBuffers.sv.empty()) {
     // Perform direct decompression from inBuffer chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerStartPos = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     const bool hasTrailers = !bodyAndTrailers.empty();
 
-    _tmp.trailers.assign(bodyAndTrailers);
+    _sharedBuffers.trailers.assign(bodyAndTrailers);
 
-    const auto res = internal::HttpCodec::DecompressChunkedBody(
-        _decompressionState, _config.decompression, request, _tmp.sv, totalCompressedSize, bodyAndTrailers, _tmp.buf);
+    const auto res = internal::HttpCodec::DecompressChunkedBody(_decompressionState, _config.decompression, request,
+                                                                _sharedBuffers.sv, totalCompressedSize, bodyAndTrailers,
+                                                                _sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, true, res.message);
       return BodyDecodeStatus::Error;
@@ -252,8 +253,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
       // In addition, a realloc here would mean that we should re-compute the request._body that is set in
       // DecompressChunkedBody.
-      assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _tmp.trailers.size());
-      bodyAndTrailers.unchecked_append(_tmp.trailers);
+      assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _sharedBuffers.trailers.size());
+      bodyAndTrailers.unchecked_append(_sharedBuffers.trailers);
     }
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
@@ -280,7 +281,7 @@ bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* b
     const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
 
     // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _tmp.buf, bufferBeg, first,
+    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _sharedBuffers.buf, bufferBeg, first,
                                        _config.mergeUnknownRequestHeaders)) {
       return false;
     }
