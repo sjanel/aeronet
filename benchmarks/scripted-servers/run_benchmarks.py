@@ -1452,10 +1452,10 @@ class TablePrinter:
 def parse_args() -> argparse.Namespace:
     cpu_count = os.cpu_count() or 1
     default_threads = int(os.environ.get("BENCH_THREADS", max(1, cpu_count // 4)))
-    default_connections = int(os.environ.get("BENCH_CONNECTIONS", 100))
+    default_connections = int(os.environ.get("BENCH_CONNECTIONS", 50*default_threads))
     default_duration = os.environ.get("BENCH_DURATION", "30s")
     default_warmup = os.environ.get("BENCH_WARMUP", "5s")
-    default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "2s")
+    default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "5s")
     default_output = os.environ.get("BENCH_OUTPUT", "./results")
     parser = argparse.ArgumentParser(
         description="Run wrk benchmarks across multiple servers"
@@ -1463,6 +1463,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--threads", type=int, default=default_threads, help="Number of wrk threads"
     )
+
+    # Low number of connections -> Measure latency more accurately, but may not fully saturate high-performance servers
+    # High number of connections -> Better for measuring max throughput, but may cause more timeouts and less accurate latency measurements
     parser.add_argument(
         "--connections",
         type=int,
