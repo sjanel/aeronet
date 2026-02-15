@@ -106,7 +106,10 @@ int main(int argc, char* argv[]) {
       std::ranges::transform(body, out, [](char ch) { return toupper(ch); });
       return n;
     });
-    return out;
+    crow::response res(200);
+    res.add_header("Content-Type", "application/octet-stream");
+    res.body = std::move(out);
+    return res;
   });
 
   // ============================================================
