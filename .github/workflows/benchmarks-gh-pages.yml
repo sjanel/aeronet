@@ -20,13 +20,26 @@ permissions:
   contents: write
 
 jobs:
-  sync:
-    name: Benchmarks and Pages Sync
+  # ------------------------------------------------------------------ #
+  # Bench: two parallel runs with different wrk connection counts.      #
+  # Both use GCC; low connections measures latency accurately, high     #
+  # connections stresses max throughput.                                 #
+  # ------------------------------------------------------------------ #
+  bench:
+    name: Bench (${{ matrix.conn_label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-13, clang-21]
+        include:
+          # Low connections: 10/thread - accurate latency, moderate throughput
+          - compiler: gcc-13
+            conn_label: low
+            connections_per_thread: 10
+          # High connections: 50/thread - higher throughput, higher latency
+          - compiler: gcc-13
+            conn_label: high
+            connections_per_thread: 50
     steps:
       - name: Checkout current main
         uses: actions/checkout@v6
@@ -40,7 +53,7 @@ jobs:
           pip install uvicorn starlette
 
       - name: Install GCC toolchain
-        if: ${{ startsWith(matrix.compiler, 'gcc') }}
+        if: ${{ startsWith(matrix.compiler, 'gcc') }}        
         run: sudo apt-get install -y ${{ matrix.compiler }}
 
       - name: Install Clang/LLVM toolchain
@@ -54,7 +67,7 @@ jobs:
             sudo ./llvm.sh "$version"
             sudo apt-get install -y "lld-$version"
 
-      - name: Derive CC/CXX environment
+      - name: Set compiler environment
         run: |
           compiler="${{ matrix.compiler }}"
           echo "CC=$compiler" >> $GITHUB_ENV
@@ -69,20 +82,6 @@ jobs:
       - name: Show compiler version
         run: |
           $CXX --version
-          
-      - name: Configure git identity for runner
-        run: |
-          # Ensure commits performed by this workflow have an author identity
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Assemble site content from main
-        run: |
-          rm -rf /tmp/site
-          mkdir -p /tmp/site
-          rsync -a docs/ /tmp/site/docs/
-          rsync -a resources/ /tmp/site/resources/
-          cp README.md /tmp/site/index.md
 
       - name: Configure benchmark build
         run: |
@@ -114,13 +113,14 @@ jobs:
           # Defaults:
           #  - pull_request / non-main push => 5s, 1 thread (fast)
           #  - push to main => 30s, 2 threads
-          #  - schedule or workflow_dispatch => use workflow input `bench_duration` (or default 90s), 2 threads
+          #  - schedule or workflow_dispatch => use workflow input (or default 90s), 2 threads
 
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
           THREADS=2
-          CONN=100
+          CPT=${{ matrix.connections_per_thread }}
+          CONN=$((THREADS * CPT))
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
@@ -135,37 +135,95 @@ jobs:
             DUR=5s
             WARMUP=2s
             THREADS=1
-            CONN=50
+            CONN=$((THREADS * CPT))
           fi
 
-          echo "Event: $EVENT_NAME ref: $REF -> running for $DUR with $THREADS threads"
+          echo "Event: $EVENT_NAME ref: $REF -> $DUR, $THREADS threads, $CONN connections ($CPT/thread)"
 
-          # CI-defaults: allow overriding via workflow/env if needed
-          BENCH_WRK_TIMEOUT=${BENCH_WRK_TIMEOUT:-5s}
+          BENCH_WRK_TIMEOUT=${BENCH_WRK_TIMEOUT:-10s}
           BODY_CODEC_MAX_PAYLOAD_KB=${BODY_CODEC_MAX_PAYLOAD_KB:-4096}
           export BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB
           echo "Using BENCH_WRK_TIMEOUT=$BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB=$BODY_CODEC_MAX_PAYLOAD_KB"
 
           ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN"
 
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-results-${{ matrix.conn_label }}
+          path: build-pages/benchmarks/scripted-servers/results/benchmark_latest.json
+          retention-days: 3
+
+      - name: Upload badge (high-connections run only)
+        if: matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-badge
+          path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ #
+  # Publish: aggregate both benchmark results and deploy to gh-pages.   #
+  # ------------------------------------------------------------------ #
+  publish:
+    name: Publish Pages
+    runs-on: ubuntu-latest
+    needs: bench
+    if: always() && !cancelled()
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for runner
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Assemble site content from main
+        run: |
+          rm -rf /tmp/site
+          mkdir -p /tmp/site
+          rsync -a docs/ /tmp/site/docs/
+          rsync -a resources/ /tmp/site/resources/
+          cp README.md /tmp/site/index.md
+
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/bench-artifacts
+
       - name: Render HTML for Pages
         run: |
           rm -fr /tmp/site/benchmarks
           mkdir -p /tmp/site/benchmarks
-          benchmarks/scripted-servers/render_benchmarks_html.py \
-            --input build-pages/benchmarks/scripted-servers/results/benchmark_latest.json \
-            --output /tmp/site/benchmarks/index.html
 
-          # Copy JSON so badge and raw data are available on Pages
-          cp build-pages/benchmarks/scripted-servers/results/benchmark_latest.json /tmp/site/benchmarks/benchmark_latest.json
-          if [[ -f build-pages/benchmarks/scripted-servers/results/benchmark_badge.json ]]; then
-            cp build-pages/benchmarks/scripted-servers/results/benchmark_badge.json /tmp/site/benchmarks/benchmark_badge.json
+          # Collect all result JSONs found across matrix runs
+          INPUTS=()
+          for label in low high; do
+            json="/tmp/bench-artifacts/bench-results-${label}/benchmark_latest.json"
+            if [[ -f "$json" ]]; then
+              INPUTS+=("--input" "$json")
+              # Also copy each JSON for raw access
+              cp "$json" "/tmp/site/benchmarks/benchmark_${label}.json"
+            fi
+          done
+
+          if [[ ${#INPUTS[@]} -eq 0 ]]; then
+            echo "WARNING: No benchmark results found; skipping render"
+            exit 0
           fi
 
-      - name: Prepare repo URL
-        if: ${{ github.event_name != 'pull_request' && startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          echo "REPO=https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" >> $GITHUB_ENV
+          benchmarks/scripted-servers/render_benchmarks_html.py \
+            "${INPUTS[@]}" \
+            --output /tmp/site/benchmarks/index.html
+
+          # Copy badge if available
+          if [[ -f /tmp/bench-artifacts/bench-badge/benchmark_badge.json ]]; then
+            cp /tmp/bench-artifacts/bench-badge/benchmark_badge.json /tmp/site/benchmarks/benchmark_badge.json
+          fi
 
       - name: Publish site snapshot to gh-pages
         if: ${{ github.event_name != 'pull_request' && startsWith(matrix.compiler, 'gcc') }}

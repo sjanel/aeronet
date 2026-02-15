@@ -39,9 +39,19 @@ func main() {
 	staticDir = getStaticDir()
 	routeCount = getRouteCount()
 
-	// Limit Go scheduler and OS threads to the requested count
+	// Limit Go scheduler parallelism to the requested count.
+	// GOMAXPROCS only limits goroutine parallelism; Go's runtime creates
+	// additional OS threads for sysmon, GC workers, and goroutines blocked in
+	// syscalls (e.g. file I/O). These typically add 3-5 threads on top of
+	// GOMAXPROCS. We intentionally do not hard-cap runtime threads because too
+	// small limits can trigger fatal "thread exhaustion" under load.
 	if numThreads > 0 {
-		runtime.GOMAXPROCS(numThreads)
+		// reserve ~2 slot for sysmon + GC/netpoller
+		procs := numThreads - 2
+		if procs < 1 {
+			procs = 1
+		}
+		runtime.GOMAXPROCS(procs)
 	}
 
 	// Build a deterministic router: literal route map + top-level handler
@@ -152,41 +162,22 @@ func handleHeaders(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUppercase(w http.ResponseWriter, r *http.Request) {
-	// Preserve content type
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusInternalServerError)
+		return
+	}
+
+	for i := range data {
+		b := data[i]
+		if 'a' <= b && b <= 'z' {
+			data[i] = b - ('a' - 'A')
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
-
-	// If the client sent a Content-Length, we can copy it to the response
-	// because uppercasing doesn't change length.
-	if cl := r.Header.Get("Content-Length"); cl != "" {
-		w.Header().Set("Content-Length", cl)
-	}
-
-	// Stream-transform in chunks, uppercase in-place to avoid full allocation
-	buf := make([]byte, 32*1024) // 32KB buffer
-	for {
-		n, err := r.Body.Read(buf)
-		if n > 0 {
-			// uppercase in-place (works for ASCII; for full Unicode you'd need rune handling)
-			for i := 0; i < n; i++ {
-				b := buf[i]
-				if 'a' <= b && b <= 'z' {
-					buf[i] = b - ('a' - 'A')
-				}
-			}
-			// write only the bytes read
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			// read error
-			http.Error(w, "Failed to read body", http.StatusInternalServerError)
-			return
-		}
-	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 func handleBodyCodec(w http.ResponseWriter, r *http.Request) {

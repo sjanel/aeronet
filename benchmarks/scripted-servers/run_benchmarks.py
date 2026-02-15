@@ -918,6 +918,7 @@ class BenchmarkRunner:
 
         summary = {
             "threads": self.threads,
+            "connections": self.connections,
             "duration": self.duration,
             "warmup": self.warmup,
             "wrk_timeout": self.wrk_timeout,
@@ -1455,7 +1456,7 @@ def parse_args() -> argparse.Namespace:
     default_connections = int(os.environ.get("BENCH_CONNECTIONS", 50*default_threads))
     default_duration = os.environ.get("BENCH_DURATION", "30s")
     default_warmup = os.environ.get("BENCH_WARMUP", "5s")
-    default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "5s")
+    default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "10s")
     default_output = os.environ.get("BENCH_OUTPUT", "./results")
     parser = argparse.ArgumentParser(
         description="Run wrk benchmarks across multiple servers"
