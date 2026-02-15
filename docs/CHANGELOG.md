@@ -64,6 +64,7 @@ All notable changes to aeronet are documented in this file.
 - Refactored some system calls in `aeronet/sys` directory to prepare for future multi-platform support (currently Linux only).
 - Fixed benchmarks to take timeouts into account
 - Increased default `CompressionConfig::maxCompressRatio` from `0.5` to `0.6` to be more permissive with compression ratio (while still protecting against compression bombs). You can of course still configure it to a lower value if you want to be more strict.
+- Decreased benchmarks default number of connections to **50** per thread (instead of **100**) to reduce timeouts and get more accurate latency measurements in high concurrency scenarios.
 
 ## [1.0.0] - 2026-01-17
 
