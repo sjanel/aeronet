@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -868,6 +869,74 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.ends_with("\r\n\r\n1234567890")) << response;
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
+  std::atomic_bool allowResume{false};
+  std::atomic_bool callbackStarted{false};
+
+  ts.resetRouterAndGet().setPath(
+      http::Method::POST, "/async-delayed-compressed", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+        (void)co_await req.deferWork([&]() {
+          callbackStarted.store(true, std::memory_order_release);
+          const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+          while (!allowResume.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+          }
+          return 0;
+        });
+
+        co_return req.makeResponse(std::string(req.body()));
+      });
+
+  ts.router().setPath(http::Method::POST, "/overwrite-shared-decompressed",
+                      [](const HttpRequest& req) { return req.makeResponse(std::string(req.body())); });
+
+  const std::string payloadA(256UL * 1024, 'A');
+  const std::string payloadB(256UL * 1024, 'B');
+
+  RawChars compressedA = test::Compress(Encoding::gzip, payloadA);
+  RawChars compressedB = test::Compress(Encoding::gzip, payloadB);
+
+  test::RequestOptions reqA;
+  reqA.method = "POST";
+  reqA.target = "/async-delayed-compressed";
+  reqA.connection = "close";
+  reqA.headers.emplace_back("Content-Encoding", "gzip");
+  reqA.headers.emplace_back("Content-Type", "application/octet-stream");
+  reqA.body.assign(compressedA.begin(), compressedA.end());
+
+  test::ClientConnection clientA(ts.port());
+  const std::string rawReqA = test::buildRequest(reqA);
+  test::sendAll(clientA.fd(), rawReqA);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while (!callbackStarted.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  ASSERT_TRUE(callbackStarted.load(std::memory_order_acquire));
+
+  test::RequestOptions reqB;
+  reqB.method = "POST";
+  reqB.target = "/overwrite-shared-decompressed";
+  reqB.connection = "close";
+  reqB.headers.emplace_back("Content-Encoding", "gzip");
+  reqB.headers.emplace_back("Content-Type", "application/octet-stream");
+  reqB.body.assign(compressedB.begin(), compressedB.end());
+
+  const std::string responseB = test::requestOrThrow(ts.port(), reqB);
+  const auto parsedB = test::parseResponseOrThrow(responseB);
+  EXPECT_EQ(parsedB.statusCode, http::StatusCodeOK) << responseB;
+  EXPECT_EQ(parsedB.body, payloadB);
+
+  allowResume.store(true, std::memory_order_release);
+
+  const std::string responseA = test::recvUntilClosed(clientA.fd());
+  const auto parsedA = test::parseResponseOrThrow(responseA);
+  EXPECT_EQ(parsedA.statusCode, http::StatusCodeOK) << responseA;
+  EXPECT_EQ(parsedA.body, payloadA);
+}
+#endif
 
 #endif
 

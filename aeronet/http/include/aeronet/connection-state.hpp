@@ -115,6 +115,8 @@ struct ConnectionState {
   // Returns true if we should flush file now
   bool attachFilePayload(FilePayload filePayload);
 
+  void reclaimMemoryFromOversizedBuffers();
+
   struct AggregatedBodyStreamContext {
     std::string_view body;
     std::size_t offset{0};
@@ -210,6 +212,7 @@ struct ConnectionState {
     AwaitReason awaitReason{AwaitReason::None};
     bool active{false};
     bool needsBody{false};
+    bool usesSharedDecompressedBody{false};
     bool isChunked{false};
     bool expectContinue{false};
     std::size_t consumedBytes{0};

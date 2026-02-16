@@ -306,6 +306,36 @@ bool ConnectionState::attachFilePayload(FilePayload filePayload) {
   return false;
 }
 
+void ConnectionState::reclaimMemoryFromOversizedBuffers() {
+  // Reclaim memory from oversized buffers between keep-alive requests.
+  // These buffers grow via ensureAvailableCapacityExponential during I/O but never shrink
+  // on their own — capacity is retained across requests on long-lived connections.
+  // shrink_to_fit halves capacity when utilization is < 25%, avoiding aggressive reallocation
+  // of live data while progressively reclaiming unused memory.
+
+  // bodyAndTrailersBuffer: grows to accommodate decompressed request bodies (up to maxBodyBytes).
+  // Safe to clear — body data has been consumed by the handler.
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  if (!asyncState.active) {
+    bodyAndTrailersBuffer.shrink_to_fit();
+    bodyAndTrailersBuffer.clear();
+  }
+#else
+  bodyAndTrailersBuffer.shrink_to_fit();
+  bodyAndTrailersBuffer.clear();
+#endif
+
+  // inBuffer: grows during transportRead to hold pipelined/accumulated request data.
+  // Cannot clear — may contain a partial next request. shrink_to_fit alone is safe.
+  inBuffer.shrink_to_fit();
+
+  // outBuffer: grows when TCP writes can't keep up and responses queue.
+  // Only shrink when fully flushed (empty) to avoid interfering with pending writes.
+  if (outBuffer.empty()) {
+    outBuffer.shrink_to_fit();
+  }
+}
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void ConnectionState::AsyncHandlerState::clear() {
   if (handle) {

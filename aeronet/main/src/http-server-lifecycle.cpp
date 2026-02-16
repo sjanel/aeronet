@@ -164,7 +164,7 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _lifecycle(std::move(other._lifecycle)),
       _router(std::move(other._router)),
       _connections(std::move(other._connections)),
-      _tmp(std::move(other._tmp)),
+      _sharedBuffers(std::move(other._sharedBuffers)),
       _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
       _lifecycleTracker(std::move(other._lifecycleTracker))
@@ -201,7 +201,7 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _lifecycle = std::move(other._lifecycle);
     _router = std::move(other._router);
     _connections = std::move(other._connections);
-    _tmp = std::move(other._tmp);
+    _sharedBuffers = std::move(other._sharedBuffers);
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
