@@ -399,9 +399,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
-    // Check for HTTP/2 cleartext upgrade (h2c) - only if HTTP/2 is enabled and not already TLS
+    // Check for HTTP/2 cleartext upgrade (h2c) - only on plaintext listeners
 #ifdef AERONET_ENABLE_HTTP2
-    if (_config.http2.enable && !state.tlsEstablished &&
+    if (_config.http2.enable && !_config.tls.enabled &&
         upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::Http2) {
       const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
       if (!upgradeValidation.valid) {

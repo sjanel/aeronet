@@ -10,6 +10,7 @@ All notable changes to aeronet are documented in this file.
 - Correctly format the `HttpResponse` when using **HEAD** method with **trailers** (previously erroneously kept the full payload).
 - **HEAD** responses with trailers now correctly omit the body as per RFC 7230 Section 4.3.2, and do not switch to chunked encoding.
 - `Accept-Encoding` header parsing is now closer to RFC 7231 Section 5.3.4 when duplicate encodings with different `q` values are present and picks the highest `q` value.
+- `h2c` (HTTP/2 cleartext) connections now properly handle the HTTP/1.1 Upgrade mechanism and switch to HTTP/2 after the initial request.
 
 ### Breaking Changes
 
