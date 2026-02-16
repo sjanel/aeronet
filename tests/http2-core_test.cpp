@@ -13,6 +13,11 @@
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
@@ -20,6 +25,9 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-http-server.hpp"
+#include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -269,6 +277,122 @@ class Http2Loopback {
 // ============================
 // Handshake / settings
 // ============================
+
+TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
+  HttpServerConfig cfg;
+  cfg.http2.enable = true;
+  cfg.http2.withEnableH2c(true).withEnableH2cUpgrade(true);
+  test::TestServer h2ts(std::move(cfg));
+
+  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade",
+                                   [](const HttpRequest&) { return HttpResponse("should-not-be-used-after-upgrade"); });
+
+  for (bool enableHttp2 : {false, true}) {
+    h2ts.postConfigUpdate([enableHttp2](HttpServerConfig& config) { config.http2.enable = enableHttp2; });
+    for (bool enableH2c : {false, true}) {
+      h2ts.postConfigUpdate([enableH2c](HttpServerConfig& config) { config.http2.withEnableH2c(enableH2c); });
+
+      for (bool upgradeFail : {false, true}) {
+        test::ClientConnection client(h2ts.port());
+        ASSERT_NE(client.fd(), -1);
+        std::string rawReq = "GET /h2c-upgrade HTTP/1.1\r\n";
+        rawReq += "Host: localhost\r\n";
+        if (!upgradeFail) {
+          rawReq += "Connection: Upgrade, HTTP2-Settings\r\n";
+        }
+        rawReq += "Upgrade: h2c\r\n";
+        rawReq += "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n";
+        rawReq += "\r\n";
+        test::sendAll(client.fd(), rawReq);
+
+        const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000}, 71UL);
+        const auto parsed = test::parseResponseOrThrow(response);
+
+        if (!enableHttp2) {
+          EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+          continue;
+        }
+        if (upgradeFail) {
+          EXPECT_EQ(parsed.statusCode, http::StatusCodeBadRequest);
+          continue;
+        }
+
+        EXPECT_EQ(parsed.statusCode, http::StatusCodeSwitchingProtocols) << response;
+
+        const auto itUpgrade = parsed.headers.find("upgrade");
+        ASSERT_NE(itUpgrade, parsed.headers.end()) << response;
+        EXPECT_EQ(test::toLower(itUpgrade->second), "h2c") << response;
+
+        const auto itConnection = parsed.headers.find("connection");
+        ASSERT_NE(itConnection, parsed.headers.end()) << response;
+        EXPECT_EQ(test::toLower(itConnection->second), "upgrade") << response;
+      }
+    }
+  }
+}
+
+TEST(Http2Core, H2cPriorKnowledgeInvalidPrefaceFallsBackToHttp1) {
+  HttpServerConfig cfg;
+  cfg.http2.enable = true;
+  cfg.http2.withEnableH2c(true);
+
+  test::TestServer h2ts(std::move(cfg));
+  ASSERT_TRUE(h2ts.server.config().http2.enable);
+  ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
+
+  test::ClientConnection client(h2ts.port());
+  ASSERT_NE(client.fd(), -1);
+
+  std::string invalidPreface{http2::kConnectionPreface};
+  invalidPreface.back() = 'X';
+  test::sendAll(client.fd(), invalidPreface);
+
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000});
+  const auto parsed = test::parseResponseOrThrow(response);
+
+  EXPECT_NE(parsed.statusCode, http::StatusCodeSwitchingProtocols) << response;
+  EXPECT_TRUE(parsed.statusCode == http::StatusCodeBadRequest ||
+              parsed.statusCode == http::StatusCodeHTTPVersionNotSupported ||
+              parsed.statusCode == http::StatusCodeNotImplemented)
+      << response;
+}
+
+TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
+  HttpServerConfig cfg;
+  cfg.http2.enable = true;
+  cfg.http2.withEnableH2c(true);
+
+  test::TestServer h2ts(std::move(cfg));
+  ASSERT_TRUE(h2ts.server.config().http2.enable);
+  ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
+
+  test::ClientConnection client(h2ts.port());
+  ASSERT_NE(client.fd(), -1);
+
+  auto preface = MakePreface();
+  Http2Config clientCfg;
+  RawBytes settings = BuildSettingsFrame(clientCfg);
+
+  std::string raw;
+  raw.reserve(preface.size() + settings.size());
+  for (auto byteVal : preface) {
+    raw.push_back(static_cast<char>(byteVal));
+  }
+  for (auto byteVal : AsSpan(settings)) {
+    raw.push_back(static_cast<char>(byteVal));
+  }
+  test::sendAll(client.fd(), raw);
+
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000}, FrameHeader::kSize);
+  ASSERT_FALSE(response.empty());
+  EXPECT_FALSE(response.starts_with("HTTP/1.1")) << response;
+
+  std::span<const std::byte> responseBytes(reinterpret_cast<const std::byte*>(response.data()), response.size());
+  const auto frames = ParseFrames(responseBytes);
+  ASSERT_FALSE(frames.empty());
+  EXPECT_EQ(frames[0].header.type, FrameType::Settings);
+  EXPECT_EQ(frames[0].header.streamId, 0U);
+}
 
 TEST(Http2Core, LoopbackHandshakeOpensConnection) {
   Http2Config clientCfg;
