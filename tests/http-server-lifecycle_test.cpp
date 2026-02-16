@@ -148,12 +148,13 @@ TEST(HttpServerMove, SingleHttpServerMove) {
   test::WaitForServer(moved);
 
   std::string resp = test::simpleGet(port, "/x");
-  stop.store(true);
 
   ASSERT_TRUE(resp.contains("MOVED"));
 
   // Attempting to moved from a running server should throw
   EXPECT_THROW(SingleHttpServer(std::move(moved)), std::logic_error);
+
+  stop.store(true);
 }
 
 // Disabled by default: demonstrates the hazard when a handler captures `this` and is not re-registered
