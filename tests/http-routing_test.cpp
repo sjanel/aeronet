@@ -103,6 +103,44 @@ TEST(HttpRouting, BasicPathDispatch) {
   EXPECT_TRUE(resp4.contains("POST!"));
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+TEST(HttpRouting, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
+  HttpServerConfig cfg;
+  cfg.http2.enable = true;
+  cfg.http2.withEnableH2c(true).withEnableH2cUpgrade(true);
+  test::TestServer h2ts(std::move(cfg));
+  ASSERT_TRUE(h2ts.server.config().http2.enable);
+  ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
+  ASSERT_TRUE(h2ts.server.config().http2.enableH2cUpgrade);
+
+  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade",
+                                   [](const HttpRequest&) { return HttpResponse("should-not-be-used-after-upgrade"); });
+
+  test::ClientConnection client(h2ts.port());
+  ASSERT_NE(client.fd(), -1);
+  const std::string rawReq =
+      "GET /h2c-upgrade HTTP/1.1\r\n"
+      "Host: localhost\r\n"
+      "Connection: Upgrade, HTTP2-Settings\r\n"
+      "Upgrade: h2c\r\n"
+      "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"
+      "\r\n";
+  test::sendAll(client.fd(), rawReq);
+
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{300});
+  const auto parsed = test::parseResponseOrThrow(response);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeSwitchingProtocols) << response;
+
+  const auto itUpgrade = parsed.headers.find("upgrade");
+  ASSERT_NE(itUpgrade, parsed.headers.end()) << response;
+  EXPECT_EQ(test::toLower(itUpgrade->second), "h2c") << response;
+
+  const auto itConnection = parsed.headers.find("connection");
+  ASSERT_NE(itConnection, parsed.headers.end()) << response;
+  EXPECT_EQ(test::toLower(itConnection->second), "upgrade") << response;
+}
+#endif
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(HttpRouting, AsyncHandlerDispatch) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route", [](HttpRequest& req) -> RequestTask<HttpResponse> {
