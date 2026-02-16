@@ -4,6 +4,8 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-16
+
 ### Bug fixes
 
 - Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
