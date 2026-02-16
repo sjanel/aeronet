@@ -60,6 +60,7 @@ option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PRO
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJECT_IS_TOP_LEVEL})
 # WebSocket is ON by default, but you can disable it if you don't need WebSocket support
 # and wish to reduce binary size and compilation time.
 option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support (no library dependency)" ON)

@@ -151,6 +151,12 @@ using aeronet::WebSocketEndpoint;
 using aeronet::WebSocketHandlerFactory;
 #endif
 
+// ── JSON serialization (when glaze enabled) ────────────────────────────────
+
+#ifdef AERONET_ENABLE_GLAZE
+using aeronet::SerializeToJson;
+#endif
+
 // ── http:: sub-namespace — protocol enums, methods, status codes ───────────
 
 namespace http {

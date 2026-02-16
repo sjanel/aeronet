@@ -222,6 +222,18 @@ if(AERONET_ENABLE_OPENTELEMETRY)
 
 endif()
 
+if(AERONET_ENABLE_GLAZE)
+  aeronet_find_or_declare(
+    NAME glaze
+    CONFIG
+    TARGETS glaze::glaze
+    DECLARE
+      URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.0.2.tar.gz
+      URL_HASH SHA256=febbec555648b310c2a1975ca750939cd00c4801dede8362fcf84cab7b3ae46f
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+endif()
+
 # Make fetch content available
 if(AeronetFetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${AeronetFetchContentPackagesToMakeAvailable}")
