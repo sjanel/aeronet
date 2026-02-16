@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -18,6 +19,15 @@
 using namespace std::chrono_literals;
 using namespace aeronet;
 
+// Ignore SIGPIPE to prevent the test from being killed when writing to closed sockets
+// (which can happen during the epoll failure simulation). SIGPIPE is raised when trying
+// to write to a socket whose read end has been closed. Without this, test crashes are
+// intermittent and hard to reproduce.
+static const int kSigpipeIgnored = []() {
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
+  return 0;
+}();
+
 class HttpConnectDefaultConfig : public ::testing::Test {
  public:
   test::TestServer ts{HttpServerConfig{}};
@@ -33,6 +43,7 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 // peer.tunnelOutBuffer and schedule the peer for writable events so data is
 // eventually forwarded.
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
+  (void)kSigpipeIgnored;  // Ensure SIGPIPE is ignored during this test
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
   auto [sock, port] = test::startEchoServer();
   // Build CONNECT request to our upstream
