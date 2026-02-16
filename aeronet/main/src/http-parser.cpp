@@ -2,6 +2,7 @@
 #include <cassert>
 #include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <string_view>
