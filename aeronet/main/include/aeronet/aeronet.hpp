@@ -91,3 +91,7 @@
 // Stats / metrics surface
 #include "aeronet/server-stats.hpp"  // IWYU pragma: export
 #include "aeronet/version.hpp"       // IWYU pragma: export
+
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/json-serializer.hpp"  // IWYU pragma: export
+#endif

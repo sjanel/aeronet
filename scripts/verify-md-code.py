@@ -209,6 +209,7 @@ def locate_dependency_include_dirs(build_dir: Path) -> List[str]:
         build_dir / "_deps" / "opentelemetry_cpp-src" / "ext" / "include",
         build_dir / "generated" / "third_party" / "opentelemetry-proto",
         build_dir / "_deps" / "zstd-src" / "lib",
+        build_dir / "_deps" / "glaze-src" / "include",
     ]
     for candidate in candidates:
         if candidate.is_dir():

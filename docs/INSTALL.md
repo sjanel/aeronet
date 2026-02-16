@@ -7,7 +7,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 ## Toolchain & Platform
 
 | Component | Minimum / Tested | Notes |
-|-----------|------------------|-------|
+| --------- | ---------------- | ----- |
 | OS | Linux (x86_64) | epoll required; no Windows/macOS support |
 | CMake | 3.28+ | Enforced at configure time |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
@@ -15,18 +15,20 @@ This document centralizes how to build, install, and consume **aeronet**.
 | GCC | 13.x | GCC 12 may lack some C++23 pieces |
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
+| glaze (opt) | 7.0.2+ | JSON serialization support (`AERONET_ENABLE_GLAZE`) |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
 ## CMake Options
 
 | Option | Default* | Purpose |
-|--------|----------|---------|
+| ------ | -------- | ------- |
 | `AERONET_BUILD_EXAMPLES` | ON* | Build example programs |
 | `AERONET_BUILD_TESTS` | ON* | Build unit tests (needs GTest) |
 | `AERONET_BUILD_SHARED` | OFF | Build shared instead of static libs |
 | `AERONET_INSTALL` | ON* | Enable install + package config export |
 | `AERONET_ENABLE_SPDLOG` | ON* | Enable spdlog logging integration |
 | `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
+| `AERONET_ENABLE_GLAZE` | ON* | Enable glaze-based JSON serialization helpers |
 | `AERONET_ENABLE_OPENTELEMETRY` | ON* | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
 | `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
@@ -67,6 +69,13 @@ Plain HTTP only (no TLS / extra codecs):
 ```bash
 cmake -S . -B build-plain -DCMAKE_BUILD_TYPE=Release
 cmake --build build-plain -j
+```
+
+Enable glaze JSON support explicitly:
+
+```bash
+cmake -S . -B build-glaze -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_GLAZE=ON
+cmake --build build-glaze -j
 ```
 
 Shared libraries (HTTP only):
@@ -158,7 +167,7 @@ Linking in CMake after `find_package(aeronet CONFIG)` works the same (Conan gene
 Available Conan options map:
 
 | Conan Option | Effect | Maps to CMake |
-|--------------|--------|---------------|
+| ------------ | ------ | ------------- |
   | `shared` | Build shared libs | `AERONET_BUILD_SHARED` |
   | `with_openssl` | TLS support | `AERONET_ENABLE_OPENSSL` |
   | `with_spdlog` | Logging integration | `AERONET_ENABLE_SPDLOG` |
@@ -166,6 +175,7 @@ Available Conan options map:
   | `with_zstd` | zstd support | `AERONET_ENABLE_ZSTD` |
   | `with_br` | brotli support (conan option name in recipe) | `AERONET_ENABLE_BROTLI` |
   | `with_opentelemetry` | Enable OpenTelemetry instrumentation (pulls opentelemetry-cpp & protobuf) | `AERONET_ENABLE_OPENTELEMETRY` |
+  | `with_glaze` | Enable glaze JSON support | `AERONET_ENABLE_GLAZE` |
 
 ### vcpkg (Overlay Port)
 

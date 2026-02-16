@@ -196,3 +196,7 @@ add_custom_target(run-aeronet-bench-json
 # Scripted server benchmarks (wrk-based external load testing)
 # These are standalone HTTP servers meant to be tested with wrk/lua scripts
 add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benchmarks/scripted-servers)
+
+# TechEmpower Framework Benchmarks
+# Separate builds for official TechEmpower submission
+add_subdirectory(${AERONET_BENCH_ROOT}/techempower/aeronet ${CMAKE_BINARY_DIR}/benchmarks/techempower/aeronet)
