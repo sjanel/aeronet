@@ -34,6 +34,10 @@
     "opentelemetry": {
       "description": "Enable OpenTelemetry with OTLP HTTP support",
       "dependencies": ["opentelemetry-cpp", "protobuf"]
+    },
+    "glaze": {
+      "description": "Enable glaze JSON serialization support",
+      "dependencies": ["glaze"]
     }
   }
 }

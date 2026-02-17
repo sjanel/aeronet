@@ -9,6 +9,11 @@ target_include_directories(aeronet_tech
         $<INSTALL_INTERFACE:include>
 )
 
+if(AERONET_ENABLE_GLAZE)
+    target_link_libraries(aeronet_tech PUBLIC glaze::glaze)
+    target_compile_definitions(aeronet_tech PUBLIC AERONET_ENABLE_GLAZE)
+endif()
+
 AeronetAddUnitTest(
     base64_test
     test/base64_test.cpp
@@ -164,3 +169,12 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_basic_test_support
 )
+
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        json-serializer_test
+        test/json-serializer_test.cpp
+        LIBRARIES
+        aeronet_tech
+    )
+endif()
