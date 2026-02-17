@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
@@ -38,14 +39,14 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/router.hpp"
+#include "aeronet/safe-cast.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/tracing/tracer.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
 #endif
-#include "aeronet/router.hpp"
-#include "aeronet/safe-cast.hpp"
-#include "aeronet/string-trim.hpp"
-#include "aeronet/timedef.hpp"
-#include "aeronet/tracing/tracer.hpp"
 
 namespace aeronet::http2 {
 
@@ -519,25 +520,11 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
   auto* pFilePayload = response.filePayloadPtr();
 
-  // finalize headers
+  // finalize Date header
   WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
 
-  // Inject server-managed headers into the response object so they flow through
-  // the same encoding path as other response headers.
+  const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pServerConfig->globalHeaders;
 
-  if (!response._opts.isPrepared()) {
-    // TODO: perf - avoid memmove of the whole body by appending reserved headers here.
-    for (std::string_view headerKeyVal : _pServerConfig->globalHeaders) {
-      const auto colonPos = headerKeyVal.find(':');
-      assert(colonPos != std::string_view::npos);
-      const std::string_view key = headerKeyVal.substr(0, colonPos);
-
-      response.setHeader(key, TrimOws(headerKeyVal.substr(colonPos + 1)), HttpResponse::OnlyIfNew::Yes);
-    }
-  }
-
-  // IMPORTANT: take views only after mutating headers, since setHeader() may reallocate
-  // internal buffers that also store body/trailers.
   const auto trailersView = response.trailers();
   const bool hasTrailers = !isHeadMethod && (trailersView.begin() != trailersView.end());
   const bool hasFile = !isHeadMethod && pFilePayload != nullptr;
@@ -552,8 +539,8 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   const bool endStreamOnData = hasBody && !hasTrailers;
 
   // Send HEADERS frame (response headers)
-  auto err = _connection.sendHeaders(streamId, response.status(), HeadersView(response.headersFlatViewWithDate()),
-                                     endStreamOnHeaders);
+  ErrorCode err = _connection.sendHeaders(streamId, response.status(), HeadersView(response.headersFlatViewWithDate()),
+                                          endStreamOnHeaders, pGlobalHeaders);
 
   if (err != ErrorCode::NoError) {
     return err;
