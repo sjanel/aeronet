@@ -9,6 +9,19 @@ target_include_directories(aeronet_tech
         $<INSTALL_INTERFACE:include>
 )
 
+# Link amc library (required for amc/vector.hpp and amc/fixedcapacityvector.hpp)
+if(TARGET amc::amc)
+    target_link_libraries(aeronet_tech PUBLIC amc::amc)
+else()
+    # Fallback: amc was fetched but doesn't export amc::amc target
+    # Manually add include directory from amadeusamc FetchContent
+    if(amadeusamc_SOURCE_DIR)
+        target_include_directories(aeronet_tech PUBLIC
+            $<BUILD_INTERFACE:${amadeusamc_SOURCE_DIR}/src>
+        )
+    endif()
+endif()
+
 if(AERONET_ENABLE_GLAZE)
     target_link_libraries(aeronet_tech PUBLIC glaze::glaze)
     target_compile_definitions(aeronet_tech PUBLIC AERONET_ENABLE_GLAZE)
