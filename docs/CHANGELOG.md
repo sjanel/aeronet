@@ -4,9 +4,13 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Improvements
+
+- Removed memmove overhead in HTTP/2 body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
+
 ## [1.1.0] - 2026-02-16
 
-### Bug fixes
+### 1.1.0 Bug fixes
 
 - Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
 - Correctly format the `HttpResponse` when using **HEAD** method with **trailers** (previously erroneously kept the full payload).
@@ -14,7 +18,7 @@ All notable changes to aeronet are documented in this file.
 - `Accept-Encoding` header parsing is now closer to RFC 7231 Section 5.3.4 when duplicate encodings with different `q` values are present and picks the highest `q` value.
 - `h2c` (HTTP/2 cleartext) connections now properly handle the HTTP/1.1 Upgrade mechanism and switch to HTTP/2 after the initial request.
 
-### Breaking Changes
+### 1.1.0 Breaking Changes
 
 - Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
 - Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
@@ -25,7 +29,7 @@ All notable changes to aeronet are documented in this file.
 - Previously indicated as **undefined behavior**, setting `Content-Type` and `Content-Length` is now prohibited using the `header` and `headerAddLine` methods.
   You should use the dedicated (already existing) `contentType()` and `contentLength()` methods instead for streaming handlers, and set `content-type` along with the body for normal handlers, otherwise `std::invalid_argument` is thrown.
 
-### New Features
+### 1.1.0 New Features
 
 - **Direct compression**: Inline response bodies created via `HttpRequest::makeResponse()` can now be compressed at `body()` / `bodyAppend()` call time, before finalization. This is controlled by `DirectCompressionMode` (`Auto`, `Off`, `On`) and configured via `CompressionConfig::defaultDirectCompressionMode`. See [Direct Compression](FEATURES.md#direct-compression-inline-body-streaming-compression) for details.
 - `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
@@ -36,7 +40,7 @@ All notable changes to aeronet are documented in this file.
 - `HttpRequest` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`, `headerRemoveLine(key)`, `headerRemoveValue(key, value)`.
 - Router paths now accepts asterisk as non terminal segments which are matched as a literal (e.g. `/files/*/metadata`).
 
-### Improvements
+### 1.1.0 Improvements
 
 - All Header values stored in `HttpResponse` and `HttpResponseWriter` are now **trimmed** of leading/trailing whitespace on set.
 - `DogStatsD` is now able to **reconnect automatically** if the UDS socket becomes unavailable. The client is also more efficient.
@@ -56,7 +60,7 @@ All notable changes to aeronet are documented in this file.
 - Invalid chunked transfer encoding length of queries now return `400 Bad Request` instead of `413 Payload Too Large`
 - Decrease memory usage in automatic compression / decompression by using only one shared buffer by server instead of by connection for non-async handlers.
 
-### Other
+### 1.1.0 Other
 
 - Support of ARM64 (aarch64) architecture in CI builds and tests.
 - Added [Crow](https://github.com/CrowCpp/Crow) to benchmark comparisons in CI.
