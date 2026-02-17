@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -175,7 +176,7 @@ void Http2Connection::pruneClosedStreams() {
 // ============================
 
 ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                       bool endStream) {
+                                       bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
   auto [it, inserted] = _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize);
   if (inserted) {
     // Created new stream
@@ -195,7 +196,7 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
   }
 
   // Encode headers
-  encodeHeaders(streamId, statusCode, headersView, endStream, true);
+  encodeHeaders(streamId, statusCode, headersView, endStream, pGlobalHeaders);
 
   return ErrorCode::NoError;
 }
@@ -791,7 +792,7 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // ============================
 
 void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                    bool endStream, bool endHeaders) {
+                                    bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
   _outputBuffer.ensureAvailableCapacityExponential(FrameHeader::kSize + 512);  // Reserve some space
 
   // Make the header block be written after the frame header
@@ -808,13 +809,26 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   for (const auto& [name, value] : headersView) {
     _hpackEncoder.encode(_outputBuffer, name, value);
   }
+  if (pGlobalHeaders != nullptr) {
+    for (std::string_view headerKeyVal : *pGlobalHeaders) {
+      const auto colonPos = headerKeyVal.find(':');
+      assert(colonPos != std::string_view::npos);
+      const std::string_view name = headerKeyVal.substr(0, colonPos);
+      // Skip if already present in request-specific headers
+      if (std::ranges::any_of(headersView, [name](const auto& header) { return header.name == name; })) {
+        continue;
+      }
+      _hpackEncoder.encode(_outputBuffer, name, headerKeyVal.substr(colonPos + http::HeaderSep.size()));
+    }
+  }
 
   const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - oldSize);
   const auto outputSizeBeforeHeaders = oldSize - FrameHeader::kSize;
 
   // Check if we need to split into CONTINUATION frames
   if (headerBlockSize <= _peerSettings.maxFrameSize) {
-    const auto flags = ComputeHeaderFrameFlags(endStream, endHeaders);
+    static constexpr bool kEndHeaders = true;  // All headers fit in one HEADERS frame, so END_HEADERS is always true
+    const auto flags = ComputeHeaderFrameFlags(endStream, kEndHeaders);
     // Write the HEADERS frame header directly into the reserved gap.
     // We must NOT use setSize() to shrink + WriteFrame() + addSize() here, because
     // with AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS, setSize() poisons the bytes being
@@ -868,7 +882,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     const bool isLast = (offset + chunkSize >= remainingHeaderBlockSize);
     const auto chunkSpan = remainingHeaderBlock.subspan(offset, chunkSize);
 
-    WriteContinuationFrame(_outputBuffer, streamId, chunkSpan, isLast && endHeaders);
+    WriteContinuationFrame(_outputBuffer, streamId, chunkSpan, isLast);
 
     offset += chunkSize;
   }

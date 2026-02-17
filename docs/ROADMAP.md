@@ -37,7 +37,6 @@
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
-- Reduce memmove overhead in HTTP/2 body handling (see TODOs in http2-protocol-handler.cpp).
 
 ## Long-term / Nice-to-have
 
