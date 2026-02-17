@@ -76,18 +76,19 @@ jobs:
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_ENABLE_ASAN=ON \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
-            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
+            -DAERONET_ENABLE_ASAN=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
+            -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
+            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }}
+            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -164,15 +165,16 @@ jobs:
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
-            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
+            -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }}
+            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -199,6 +201,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     env:
       BUILD_DIR: build-coverage
     steps:
@@ -227,13 +230,14 @@ jobs:
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
             -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_GLAZE=ON \
             -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
             -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
             -DCMAKE_C_COMPILER=clang-21 \
@@ -519,15 +523,16 @@ jobs:
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -DAERONET_ENABLE_GLAZE=ON \
             -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_WEBSOCKET=ON
 
         shell: alpine.sh {0}
 

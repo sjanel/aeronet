@@ -7,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
@@ -157,7 +158,7 @@ class Http2Connection {
   /// @param endStream True to set END_STREAM flag
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                      bool endStream);
+                                      bool endStream, const ConcatenatedHeaders* pGlobalHeaders = nullptr);
 
   /// Send DATA frame.
   /// @param streamId Stream ID
@@ -264,7 +265,7 @@ class Http2Connection {
   // ============================
 
   void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
-                     bool endHeaders);
+                     const ConcatenatedHeaders* pGlobalHeaders = nullptr);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` if decoding fails, `NoError` otherwise.
