@@ -35,6 +35,7 @@ class AeronetConan(ConanFile):
         "with_zlib": [True, False],
         "with_zstd": [True, False],
         "with_opentelemetry": [True, False],
+        "with_glaze": [True, False],
     }
     default_options = {
         "shared": False,
@@ -45,6 +46,7 @@ class AeronetConan(ConanFile):
         "with_zlib": False,
         "with_zstd": False,
         "with_opentelemetry": False,
+        "with_glaze": False,
     }
     exports_sources = (
         "CMakeLists.txt",
@@ -75,6 +77,9 @@ class AeronetConan(ConanFile):
         tc.variables["AERONET_ENABLE_ZSTD"] = "ON" if self.options.with_zstd else "OFF"
         tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = (
             "ON" if self.options.with_opentelemetry else "OFF"
+        )
+        tc.variables["AERONET_ENABLE_GLAZE"] = (
+            "ON" if self.options.with_glaze else "OFF"
         )
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
@@ -112,6 +117,8 @@ class AeronetConan(ConanFile):
             # the heavy gRPC dependency transitively. Keep protobuf since
             # some opentelemetry pieces and generated protos may need it.
             self.requires("protobuf/[~5.27]")
+        if self.options.with_glaze:
+            self.requires("glaze/7.0.2")
 
     def package(self):
         cm = CMake(self)
@@ -154,3 +161,5 @@ class AeronetConan(ConanFile):
             # the Conan package_info references the protobuf requirement so Conan
             # doesn't treat it as unused when creating the package.
             self.cpp_info.requires.append("protobuf::protobuf")
+        if self.options.with_glaze:
+            self.cpp_info.requires.append("glaze::glaze")

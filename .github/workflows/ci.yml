@@ -365,16 +365,18 @@ jobs:
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_BUILD_MODULES=ON \
             -DAERONET_ENABLE_ASAN=OFF \
-            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_GLAZE=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
+            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
+
 
       - name: Build examples
         run: |
