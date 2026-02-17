@@ -92,7 +92,7 @@ class HttpResponseTest : public ::testing::Test {
 
   HttpResponse makePrepared(const PreparedOptions& opts) {
     HttpResponse resp;
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     resp._opts = HttpResponse::Options(compressionState, opts.expectedEncoding);
 #endif
     resp._opts.setPrepared();
@@ -112,7 +112,7 @@ class HttpResponseTest : public ::testing::Test {
   }
 
   static void FinalizeCompressedBody([[maybe_unused]] HttpResponse& resp) {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (IsAutomaticDirectCompression(resp)) {
       resp.finalizeInlineBody();
     }
@@ -120,7 +120,7 @@ class HttpResponseTest : public ::testing::Test {
   }
 
   static bool IsAutomaticDirectCompression([[maybe_unused]] const HttpResponse& resp) {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     return resp._opts.isAutomaticDirectCompression();
 #else
     return false;

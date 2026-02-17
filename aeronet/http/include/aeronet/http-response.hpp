@@ -904,7 +904,7 @@ class HttpResponse {
         replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
       }
     } else {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         // during streaming compression, if the output buffer is too small,
         // encoders do NOT fail — they keep compressed data in their internal state and wait for more output space.
@@ -1104,7 +1104,7 @@ class HttpResponse {
 
     Options() noexcept = default;
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding);
 #endif
 
@@ -1182,14 +1182,14 @@ class HttpResponse {
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 
     [[nodiscard]] constexpr bool directCompressionPossible() const noexcept {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       return _pickedEncoding != Encoding::none && _directCompressionMode != DirectCompressionMode::Off;
 #else
       return false;
 #endif
     }
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     [[nodiscard]] bool directCompressionPossible(std::size_t bodySize,
                                                  std::string_view contentType = {}) const noexcept;
 #endif
@@ -1198,7 +1198,7 @@ class HttpResponse {
     friend class HttpResponse;
     friend class internal::HttpCodec;
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     internal::ResponseCompressionState* _pCompressionState{nullptr};
 #endif
 
@@ -1315,7 +1315,7 @@ class HttpResponse {
 
   void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // Returns the number of written bytes
   std::size_t appendEncodedInlineOrThrow(bool init, std::string_view data, std::size_t capacity);
 

@@ -11,10 +11,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 
@@ -43,7 +45,9 @@ class UnixSocketTest : public ::testing::Test {
 };
 
 TEST_F(UnixSocketTest, InvalidUnixSocketTypeThrows) {
-  EXPECT_THROW(UnixSocket(static_cast<UnixSocket::Type>(-1)), std::invalid_argument);
+  EXPECT_THROW(
+      UnixSocket(static_cast<UnixSocket::Type>(std::numeric_limits<std::underlying_type_t<UnixSocket::Type>>::max())),
+      std::invalid_argument);
 }
 
 TEST_F(UnixSocketTest, ConstructorDatagramSucceeds) {

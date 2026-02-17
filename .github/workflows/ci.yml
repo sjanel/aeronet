@@ -369,16 +369,16 @@ jobs:
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_BUILD_MODULES=ON \
             -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
             -DAERONET_ENABLE_HTTP2=ON \
             -DAERONET_ENABLE_BROTLI=ON \
             -DAERONET_ENABLE_GLAZE=ON \
             -DAERONET_ENABLE_ZLIB=ON \
             -DAERONET_ENABLE_ZSTD=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
 
 
@@ -511,7 +511,7 @@ jobs:
           
           apk update
           apk add --no-cache build-base cmake ninja git bash python3 linux-headers \
-            openssl-dev zlib-dev zstd-dev brotli-dev curl-dev protobuf-dev musl-dev
+            openssl-dev curl-dev protobuf-dev musl-dev
         shell: alpine.sh --root {0}
 
       - name: Configure with cmake
