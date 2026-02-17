@@ -106,30 +106,27 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
     }
 
     // Parse the control message to find zerocopy completion info
-    for (cmsghdr* cm = CMSG_FIRSTHDR(&msg); cm != nullptr; cm = CMSG_NXTHDR(&msg, cm)) {
-      if (cm->cmsg_level != SOL_IP || cm->cmsg_type != IP_RECVERR) {
-        // Also check for IPv6
-        if (cm->cmsg_level != SOL_IPV6 || cm->cmsg_type != IPV6_RECVERR) {
-          continue;
+    cmsghdr* cm = CMSG_FIRSTHDR(&msg);
+    while (cm != nullptr) {
+      if ((cm->cmsg_level == SOL_IP && cm->cmsg_type == IP_RECVERR) ||
+          (cm->cmsg_level == SOL_IPV6 && cm->cmsg_type == IPV6_RECVERR)) {
+        auto* serr = reinterpret_cast<sock_extended_err*>(CMSG_DATA(cm));
+
+        if (serr->ee_origin == SO_EE_ORIGIN_ZEROCOPY) {
+          // Update completion tracking
+          // serr->ee_info is the sequence number of the first completed send
+          // serr->ee_data is the sequence number of the last completed send
+          state.seqLo = serr->ee_data + 1;
+          ++completions;
+
+          // serr->ee_code indicates whether the kernel actually used zerocopy:
+          // SO_EE_CODE_ZEROCOPY_COPIED: kernel fell back to copying (still valid completion)
+          // 0: true zerocopy was used
+          // Either way, the buffer can now be reused.
         }
       }
 
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-      auto* serr = reinterpret_cast<sock_extended_err*>(CMSG_DATA(cm));
-      if (serr->ee_origin != SO_EE_ORIGIN_ZEROCOPY) {
-        continue;
-      }
-
-      // Update completion tracking
-      // serr->ee_info is the sequence number of the first completed send
-      // serr->ee_data is the sequence number of the last completed send
-      state.seqLo = serr->ee_data + 1;
-      ++completions;
-
-      // serr->ee_code indicates whether the kernel actually used zerocopy:
-      // SO_EE_CODE_ZEROCOPY_COPIED: kernel fell back to copying (still valid completion)
-      // 0: true zerocopy was used
-      // Either way, the buffer can now be reused.
+      cm = CMSG_NXTHDR(&msg, cm);
     }
   }
 

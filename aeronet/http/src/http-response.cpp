@@ -327,7 +327,7 @@ constexpr void SetBodyEnsureNoTrailers(std::size_t trailerLen) {
   }
 }
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 constexpr std::string_view kVaryHeaderValueSep = ", ";
 
 bool VaryContainsAcceptEncodingToken(std::string_view value) {
@@ -449,7 +449,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
 
     std::size_t neededNewSize = newContentTypeHeaderSize + newContentLengthHeaderSize;
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     const bool hadDirectCompression = _opts.isAutomaticDirectCompression();
     // We do NOT use direct compression for captured bodies - they will be compressed at finalization if needed.
     // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see docs/FEATURES.md).
@@ -508,13 +508,13 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
 
     // only reserve body size if not captured (so inline) and not head
     if (setInlineBody) {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (tryCompression) {
         neededNewSize += _opts._pCompressionState->pCompressionConfig->maxCompressedBytes(newBodySize);
       } else {
 #endif
         neededNewSize += newBodySize;
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       }
 #endif
     }
@@ -522,7 +522,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
     char* insertPtr;
     if (!hadBody) {
       _data.ensureAvailableCapacityExponential(neededNewSize);
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       adjustEncodingHeaders();
 #endif
       insertPtr = WriteHeader(_data.data() + bodyStartPos() - http::CRLF.size(), http::ContentType, contentTypeValue);
@@ -535,7 +535,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
       if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLenInlined) {
         _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLenInlined);
       }
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       // tell adjustEncodingHeaders that body is empty to avoid moving memory around
       setBodyStartPos(bodyStart);
       _data.setSize(bodyStart);
@@ -558,7 +558,7 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 
   const auto bodySz = internalBodyAndTrailersLen();
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   if (_opts.isAutomaticDirectCompression()) {
     assert(!newBody.empty());
 
@@ -610,7 +610,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
     const uint8_t nCharsOldBodyLen = nchars(oldBodyLen);
     int64_t neededCapacity = static_cast<int64_t>(nbCharsNewBodyLen) - static_cast<int64_t>(nCharsOldBodyLen);
     if (!capturedBody) {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         neededCapacity +=
             static_cast<int64_t>(_opts._pCompressionState->pCompressionConfig->maxCompressedBytes(body.size()));
@@ -642,7 +642,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
       setHeadSize(newBodyLen);
     } else if (capturedBody) {
       _payloadVariant.append(body);
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     } else if (_opts.isAutomaticDirectCompression()) {
       _data.addSize(appendEncodedInlineOrThrow(false, body, _data.availableCapacity()));
 #endif
@@ -951,7 +951,7 @@ void HttpResponse::finalizeForHttp2() {
     first = std::search(first + http::HeaderSep.size(), last, http::CRLF.begin(), http::CRLF.end()) + http::CRLF.size();
   }
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // If the response has trailers, the finalization of the body was made at the first added trailer in trailerAddLine.
   if (_opts.isAutomaticDirectCompression() && trailersSize() == 0) {
     finalizeInlineBody();
@@ -1030,7 +1030,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
     }
     neededCapacity += TransferEncodingHeaderSizeDiff(nchars(bodyInMemoryLength()));
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (_opts.isAutomaticDirectCompression()) {
       finalizeInlineBody(neededCapacity);
     }
@@ -1057,7 +1057,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
   return *this;
 }
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
 HttpResponse::Options::Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding)
     : _pCompressionState(&compressionState),
@@ -1130,7 +1130,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
   char* headersInsertPtr = nullptr;
 
   if ((bodySz == 0
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
        && !_opts.isAutomaticDirectCompression()
 #endif
            ) ||
@@ -1199,14 +1199,14 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
     // body > 0 && !isHeadMethod && !hasFileBody()
     bool moveBodyInline = hasBodyCaptured() && bodySz + trailersSize() <= minCapturedBodySize;
     if (trailersSize() == 0) {
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         finalizeInlineBody(static_cast<int64_t>(totalNewHeadersSize));
         bodySz = bodyInlinedSize();
       } else {
 #endif
         _data.ensureAvailableCapacity((moveBodyInline ? bodySz : 0) + totalNewHeadersSize);
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       }
 #endif
       char* oldBodyStart = _data.data() + bodyStartPos();
@@ -1454,7 +1454,7 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
   Copy(newValue, first);
 }
 
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
 std::size_t HttpResponse::appendEncodedInlineOrThrow(bool init, std::string_view data, std::size_t capacity) {
   assert(_opts._pCompressionState != nullptr);
