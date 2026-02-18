@@ -219,8 +219,6 @@ def locate_dependency_include_dirs(build_dir: Path) -> List[str]:
 
 def read_defines() -> List[str]:
     version_file = Path("VERSION")
-    if not version_file.is_file():
-        return []
     version = version_file.read_text().strip()
     if not version:
         return []

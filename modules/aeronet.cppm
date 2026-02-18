@@ -82,6 +82,7 @@ using aeronet::SignalHandler;
 
 using aeronet::brotliEnabled;
 using aeronet::fullVersionStringView;
+using aeronet::fullVersionWithRuntime;
 using aeronet::http2Enabled;
 using aeronet::MajorMinorVersion;
 using aeronet::openSslEnabled;

@@ -8,6 +8,9 @@ target_sources(aeronet_module
             aeronet.cppm
 )
 
+# Apply the same project properties (compile definitions, warnings, etc.) as all other targets
+AeronetSetProjectProperties(aeronet_module)
+
 target_compile_features(aeronet_module PUBLIC cxx_std_23)
 
 # Explicitly set include directories for angle bracket includes

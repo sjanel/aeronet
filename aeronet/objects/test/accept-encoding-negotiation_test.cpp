@@ -12,6 +12,7 @@
 namespace aeronet {
 
 namespace {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
   CompressionConfig cfg;
   for (auto enc : prefs) {
@@ -21,9 +22,12 @@ EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
   return EncodingSelector(cfg);
 }
 
-constexpr auto kDefaultEncodingGzipEnabled = aeronet::zlibEnabled() ? aeronet::Encoding::gzip : aeronet::Encoding::none;
 constexpr auto kDefaultEncodingDeflateEnabled =
     aeronet::zlibEnabled() ? aeronet::Encoding::deflate : aeronet::Encoding::none;
+
+#endif
+
+constexpr auto kDefaultEncodingGzipEnabled = aeronet::zlibEnabled() ? aeronet::Encoding::gzip : aeronet::Encoding::none;
 
 }  // namespace
 
@@ -59,25 +63,25 @@ TEST(AcceptEncodingNegotiationTest, IgnoreUnsupportedWithWildcard) {
 }
 
 TEST(AcceptEncodingNegotiationTest, InvalidQValues) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc, deflate").encoding,
-              Encoding::deflate);  // invalid q for gzip treated as 0
-  } else {
-    EncodingSelector sel(CompressionConfig{});
-    // gzip unsupported -> ignored -> identity
-    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc").encoding, Encoding::none);
-  }
+#ifdef AERONET_ENABLE_ZLIB
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc, deflate").encoding,
+            Encoding::deflate);  // invalid q for gzip treated as 0
+#else
+  EncodingSelector sel(CompressionConfig{});
+  // gzip unsupported -> ignored -> identity
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc").encoding, Encoding::none);
+#endif
 }
 
 TEST(AcceptEncodingNegotiationTest, SpacesAndTabs) {
-  if constexpr (aeronet::zlibEnabled()) {
-    auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-    EXPECT_EQ(sel.negotiateAcceptEncoding(" gzip ; q=1 , deflate ; q=0.4").encoding, Encoding::gzip);
-  } else {
-    EncodingSelector sel(CompressionConfig{});
-    EXPECT_EQ(sel.negotiateAcceptEncoding(" gzip ; q=1 ").encoding, Encoding::none);
-  }
+#ifdef AERONET_ENABLE_ZLIB
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding(" gzip ; q=1 , deflate ; q=0.4").encoding, Encoding::gzip);
+#else
+  EncodingSelector sel(CompressionConfig{});
+  EXPECT_EQ(sel.negotiateAcceptEncoding(" gzip ; q=1 ").encoding, Encoding::none);
+#endif
 }
 
 // Additional comprehensive scenarios covering tie-breaks, wildcard, duplicates, and preference nuances.
