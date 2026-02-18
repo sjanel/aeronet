@@ -1004,6 +1004,7 @@ class HttpResponse {
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class internal::HttpCodec;
+  friend class StaticFileHandler;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif
@@ -1342,7 +1343,7 @@ class HttpResponse {
   // headersStartPos: the status line length, excluding CRLF.
   // bodyStartPos: position where the body starts (immediately after CRLFCRLF).
   // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]
-  std::uint64_t _posBitmap{0};
+  std::uint64_t _posBitmap;
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;
   // When HEAD is known (prepared options), body/trailer storage can be suppressed while preserving lengths.
