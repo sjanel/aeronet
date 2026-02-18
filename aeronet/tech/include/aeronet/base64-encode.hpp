@@ -7,7 +7,7 @@
 
 namespace aeronet {
 
-constexpr void B64Encode(std::span<const char> binData, char *out, const char *endOut) {
+constexpr void B64Encode(std::span<const char> binData, char* out, const char* endOut) {
   int bitsCollected{};
   uint32_t accumulator{};
 
@@ -42,7 +42,7 @@ template <std::size_t N>
 }
 
 template <std::size_t N>
-[[nodiscard]] constexpr auto B64Encode(const std::array<char, N> &binData) {
+[[nodiscard]] constexpr auto B64Encode(const std::array<char, N>& binData) {
   std::array<char, B64EncodedLen(N)> ret;
   B64Encode(binData, ret.data(), ret.data() + ret.size());
   return ret;

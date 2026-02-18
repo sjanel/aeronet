@@ -16,8 +16,8 @@ TEST(PendingUpdates, CopyAssignCopiesVectorsAndFlagsAndIsIndependent) {
   int cfgCalls = 0;
   int routerCalls = 0;
 
-  src.config.push_back([&cfgCalls](HttpServerConfig &) { ++cfgCalls; });
-  src.router.push_back([&routerCalls](Router &) { ++routerCalls; });
+  src.config.push_back([&cfgCalls](HttpServerConfig&) { ++cfgCalls; });
+  src.router.push_back([&routerCalls](Router&) { ++routerCalls; });
 
   src.hasConfig.store(true, std::memory_order_relaxed);
   src.hasRouter.store(true, std::memory_order_relaxed);
@@ -51,7 +51,7 @@ TEST(PendingUpdates, CopyAssignCopiesVectorsAndFlagsAndIsIndependent) {
   EXPECT_TRUE(dst.hasRouter.load(std::memory_order_relaxed));
 
   // self-assignment is safe
-  const auto &alias = dst;
+  const auto& alias = dst;
   dst = alias;
   EXPECT_EQ(dst.config.size(), 1U);
 }
@@ -62,8 +62,8 @@ TEST(PendingUpdates, CopyConstructCopiesVectorsAndFlags) {
   int cfgCalls = 0;
   int routerCalls = 0;
 
-  src.config.push_back([&cfgCalls](HttpServerConfig &) { ++cfgCalls; });
-  src.router.push_back([&routerCalls](Router &) { ++routerCalls; });
+  src.config.push_back([&cfgCalls](HttpServerConfig&) { ++cfgCalls; });
+  src.router.push_back([&routerCalls](Router&) { ++routerCalls; });
 
   src.hasConfig.store(true, std::memory_order_relaxed);
   src.hasRouter.store(true, std::memory_order_relaxed);
@@ -90,8 +90,8 @@ TEST(PendingUpdates, MoveConstructMovesVectorsAndClearsSourceFlags) {
   int cfgCalls = 0;
   int routerCalls = 0;
 
-  src.config.push_back([&cfgCalls](HttpServerConfig &) { ++cfgCalls; });
-  src.router.push_back([&routerCalls](Router &) { ++routerCalls; });
+  src.config.push_back([&cfgCalls](HttpServerConfig&) { ++cfgCalls; });
+  src.router.push_back([&routerCalls](Router&) { ++routerCalls; });
 
   src.hasConfig.store(true, std::memory_order_relaxed);
   src.hasRouter.store(true, std::memory_order_relaxed);
@@ -119,8 +119,8 @@ TEST(PendingUpdates, MoveAssignMovesVectorsAndClearsSourceFlags) {
   int cfgCalls = 0;
   int routerCalls = 0;
 
-  src.config.push_back([&cfgCalls](HttpServerConfig &) { ++cfgCalls; });
-  src.router.push_back([&routerCalls](Router &) { ++routerCalls; });
+  src.config.push_back([&cfgCalls](HttpServerConfig&) { ++cfgCalls; });
+  src.router.push_back([&routerCalls](Router&) { ++routerCalls; });
 
   src.hasConfig.store(true, std::memory_order_relaxed);
   src.hasRouter.store(true, std::memory_order_relaxed);
@@ -140,7 +140,7 @@ TEST(PendingUpdates, MoveAssignMovesVectorsAndClearsSourceFlags) {
   EXPECT_EQ(cfgCalls, 1);
   EXPECT_EQ(routerCalls, 1);
 
-  auto &alias = dst;
+  auto& alias = dst;
   dst = std::move(alias);  // self move-assignment is safe
   EXPECT_EQ(dst.config.size(), 1U);
 }

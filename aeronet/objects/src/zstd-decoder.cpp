@@ -15,18 +15,18 @@
 
 namespace aeronet {
 
-ZstdDecoderContext::ZstdDecoderContext(ZstdDecoderContext &&rhs) noexcept
+ZstdDecoderContext::ZstdDecoderContext(ZstdDecoderContext&& rhs) noexcept
     : _pState(std::exchange(rhs._pState, nullptr)) {}
 
-ZstdDecoderContext &ZstdDecoderContext::operator=(ZstdDecoderContext &&rhs) noexcept {
+ZstdDecoderContext& ZstdDecoderContext::operator=(ZstdDecoderContext&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
-    ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream *>(_pState));
+    ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(_pState));
     _pState = std::exchange(rhs._pState, nullptr);
   }
   return *this;
 }
 
-ZstdDecoderContext::~ZstdDecoderContext() { ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream *>(_pState)); }
+ZstdDecoderContext::~ZstdDecoderContext() { ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(_pState)); }
 
 void ZstdDecoderContext::init() {
   if (_pState == nullptr) {
@@ -34,9 +34,9 @@ void ZstdDecoderContext::init() {
     if (_pState == nullptr) [[unlikely]] {
       throw std::bad_alloc();
     }
-    ZSTD_initDStream(reinterpret_cast<ZSTD_DStream *>(_pState));
+    ZSTD_initDStream(reinterpret_cast<ZSTD_DStream*>(_pState));
   } else {  // Use ZSTD_DCtx_reset instead of free/create to reuse internal buffers
-    const auto ret = ZSTD_DCtx_reset(reinterpret_cast<ZSTD_DStream *>(_pState), ZSTD_reset_session_only);
+    const auto ret = ZSTD_DCtx_reset(reinterpret_cast<ZSTD_DStream*>(_pState), ZSTD_reset_session_only);
     if (ZSTD_isError(ret) != 0U) [[unlikely]] {
       throw std::runtime_error("Failed to reset Zstd decoder context");
     }
@@ -45,13 +45,13 @@ void ZstdDecoderContext::init() {
 
 bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk,
                                          std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                                         RawChars &out) {
+                                         RawChars& out) {
   if (chunk.empty()) {
     return true;
   }
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
-  auto *pState = reinterpret_cast<ZSTD_DStream *>(_pState);
+  auto* pState = reinterpret_cast<ZSTD_DStream*>(_pState);
 
   ZSTD_inBuffer in{chunk.data(), chunk.size(), 0};
   while (in.pos < in.size) {
@@ -76,7 +76,7 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]
 }
 
 bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                                 RawChars &out) {
+                                 RawChars& out) {
   const auto rSize = ZSTD_getFrameContentSize(input.data(), input.size());
   switch (rSize) {
     case ZSTD_CONTENTSIZE_ERROR:

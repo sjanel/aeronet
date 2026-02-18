@@ -19,7 +19,7 @@ namespace aeronet {
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
-    : _buf(static_cast<value_type *>(std::malloc(SafeCast<size_type>(capacity)))),
+    : _buf(static_cast<value_type*>(std::malloc(SafeCast<size_type>(capacity)))),
       _capacity(static_cast<size_type>(capacity)) {
   if (capacity != 0 && _buf == nullptr) [[unlikely]] {
     throw std::bad_alloc();
@@ -40,7 +40,7 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, uint64_t s
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase &rhs) : RawBytesBase(rhs.capacity()) {
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : RawBytesBase(rhs.capacity()) {
   _size = rhs.size();
   if (_size != 0) {
     std::memcpy(_buf, rhs.data(), _size);
@@ -48,13 +48,13 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase &rhs) : Raw
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(RawBytesBase &&rhs) noexcept
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(RawBytesBase&& rhs) noexcept
     : _buf(std::exchange(rhs._buf, nullptr)),
       _size(std::exchange(rhs._size, 0)),
       _capacity(std::exchange(rhs._capacity, 0)) {}
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(RawBytesBase &&rhs) noexcept {
+RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operator=(RawBytesBase&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
     std::free(_buf);
 
@@ -66,7 +66,7 @@ RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operat
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType> &RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase &rhs) {
+RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase& rhs) {
   if (this != &rhs) [[likely]] {
     reserve(rhs.size());
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
@@ -188,7 +188,7 @@ void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uin
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::swap(RawBytesBase &rhs) noexcept {
+void RawBytesBase<T, ViewType, SizeType>::swap(RawBytesBase& rhs) noexcept {
   using std::swap;
 
   swap(_buf, rhs._buf);
@@ -197,7 +197,7 @@ void RawBytesBase<T, ViewType, SizeType>::swap(RawBytesBase &rhs) noexcept {
 }
 
 template <class T, class ViewType, class SizeType>
-bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase &rhs) const noexcept {
+bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase& rhs) const noexcept {
   return (size() == rhs.size()) && (empty() || std::memcmp(data(), rhs.data(), size()) == 0);
 }
 

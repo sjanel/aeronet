@@ -76,7 +76,7 @@ TEST(ZStreamRAII, InvalidLevelThrows) {
   try {
     ZStreamRAII badLevelStream(ZStreamRAII::Variant::gzip, static_cast<int8_t>(127));
     SUCCEED();
-  } catch (const std::runtime_error &) {
+  } catch (const std::runtime_error&) {
     SUCCEED();
   }
 }
@@ -86,7 +86,7 @@ TEST(ZStreamRAII, InvalidVariant) {
   try {
     ZStreamRAII badVariantStream(static_cast<ZStreamRAII::Variant>(invalidVariant));
     FAIL() << "Expected std::invalid_argument to be triggered";
-  } catch (const std::invalid_argument &) {
+  } catch (const std::invalid_argument&) {
     SUCCEED();
   }
 }
@@ -101,7 +101,7 @@ TEST(ZStreamRAII, CopyAndMoveWorksOnUninitializedStreams) {
   ZStreamRAII empty3;
 
   // self move does nothing
-  auto &self = empty2;
+  auto& self = empty2;
   EXPECT_NO_THROW(empty2 = std::move(self));
 }
 
@@ -158,7 +158,7 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
 
   // Compress
   ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(payload.data()));
+  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(payload.data()));
   compressor.stream.avail_in = static_cast<uInt>(payload.size());
 
   std::vector<unsigned char> compressed;
@@ -180,7 +180,7 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
 
   // Decompress
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
-  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef *>(compressed.data());
+  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef*>(compressed.data());
   decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
 
   std::vector<char> decompressed;
@@ -192,8 +192,8 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
     const int ret = inflate(&decompressor.stream, Z_NO_FLUSH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t got = inbuf.size() - decompressor.stream.avail_out;
-    decompressed.insert(decompressed.end(), reinterpret_cast<char *>(inbuf.data()),
-                        reinterpret_cast<char *>(inbuf.data()) + got);
+    decompressed.insert(decompressed.end(), reinterpret_cast<char*>(inbuf.data()),
+                        reinterpret_cast<char*>(inbuf.data()) + got);
     if (ret == Z_STREAM_END) {
       break;
     }
@@ -208,7 +208,7 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
 
   // Compress with deflate
   ZStreamRAII compressor(ZStreamRAII::Variant::deflate, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(payload.data()));
+  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(payload.data()));
   compressor.stream.avail_in = static_cast<uInt>(payload.size());
 
   std::vector<unsigned char> compressed;
@@ -229,7 +229,7 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
 
   // Decompress with deflate
   ZStreamRAII decompressor(ZStreamRAII::Variant::deflate);
-  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef *>(compressed.data());
+  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef*>(compressed.data());
   decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
 
   std::vector<char> decompressed;
@@ -241,8 +241,8 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
     const int ret = inflate(&decompressor.stream, Z_NO_FLUSH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t got = inbuf.size() - decompressor.stream.avail_out;
-    decompressed.insert(decompressed.end(), reinterpret_cast<char *>(inbuf.data()),
-                        reinterpret_cast<char *>(inbuf.data()) + got);
+    decompressed.insert(decompressed.end(), reinterpret_cast<char*>(inbuf.data()),
+                        reinterpret_cast<char*>(inbuf.data()) + got);
     if (ret == Z_STREAM_END) {
       break;
     }
@@ -265,7 +265,7 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
   std::string largePayload = test::MakePatternedPayload(512UL * 1024);
 
   ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(largePayload.data()));
+  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(largePayload.data()));
   compressor.stream.avail_in = static_cast<uInt>(largePayload.size());
 
   std::vector<unsigned char> compressed;
@@ -286,7 +286,7 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
 
   // Decompress
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
-  decompressor.stream.next_in = reinterpret_cast<Bytef *>(compressed.data());
+  decompressor.stream.next_in = reinterpret_cast<Bytef*>(compressed.data());
   decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
 
   std::vector<unsigned char> decompressed;
@@ -315,7 +315,7 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
 
   // Start with gzip compression
   ZStreamRAII stream(ZStreamRAII::Variant::gzip, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
   stream.stream.avail_in = static_cast<uInt>(testData.size());
   stream.stream.next_out = outbuf.data();
   stream.stream.avail_out = static_cast<uInt>(outbuf.size());
@@ -325,7 +325,7 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
 
   // Switch to deflate - this should reuse the cached buffer
   stream.initCompress(ZStreamRAII::Variant::deflate, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
   stream.stream.avail_in = static_cast<uInt>(testData.size());
   stream.stream.next_out = outbuf.data();
   stream.stream.avail_out = static_cast<uInt>(outbuf.size());
@@ -335,7 +335,7 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
 
   // Switch back to gzip - again reusing the buffer
   stream.initCompress(ZStreamRAII::Variant::gzip, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef *>(testData.data());
+  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
   stream.stream.avail_in = static_cast<uInt>(testData.size());
   stream.stream.next_out = outbuf.data();
   stream.stream.avail_out = static_cast<uInt>(outbuf.size());

@@ -28,8 +28,8 @@ TEST(ConcatenatedStrings, DefaultConstructedEmpty) {
 TEST(ConcatenatedStrings, SetFromDefaultConstructed) {
   TestType def;
   TestType withInitialCapacity{4};
-  for (TestType *pInfo : {&def, &withInitialCapacity}) {
-    TestType &info = *pInfo;
+  for (TestType* pInfo : {&def, &withInitialCapacity}) {
+    TestType& info = *pInfo;
     info.set(0, "1");
     EXPECT_EQ(info[0], "1");
     EXPECT_EQ(info[1], "");
@@ -306,31 +306,31 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
 
   // First
   {
-    auto ptr = const_cast<char *>(cs[0].data());
+    auto ptr = const_cast<char*>(cs[0].data());
     (void)ptr;  // silence unused warnings in some builds
     auto tmp = cs.c_str(0);
     EXPECT_EQ(tmp, ptr);
     EXPECT_EQ(std::strlen(tmp), cs[0].size());
     EXPECT_EQ(tmp[cs[0].size()], '\0');
   }
-  const char orig0 = const_cast<char *>(cs[0].data())[cs[0].size()];
-  EXPECT_EQ(const_cast<char *>(cs[0].data())[cs[0].size()], orig0);
+  const char orig0 = const_cast<char*>(cs[0].data())[cs[0].size()];
+  EXPECT_EQ(const_cast<char*>(cs[0].data())[cs[0].size()], orig0);
 
   // Middle
   {
-    auto ptr = const_cast<char *>(cs[1].data());
+    auto ptr = const_cast<char*>(cs[1].data());
     (void)ptr;
     auto tmp = cs.c_str(1);
     EXPECT_EQ(tmp, ptr);
     EXPECT_EQ(std::strlen(tmp), cs[1].size());
     EXPECT_EQ(tmp[cs[1].size()], '\0');
   }
-  const char orig1 = const_cast<char *>(cs[1].data())[cs[1].size()];
-  EXPECT_EQ(const_cast<char *>(cs[1].data())[cs[1].size()], orig1);
+  const char orig1 = const_cast<char*>(cs[1].data())[cs[1].size()];
+  EXPECT_EQ(const_cast<char*>(cs[1].data())[cs[1].size()], orig1);
 
   // Last
   {
-    auto ptr = const_cast<char *>(cs[2].data());
+    auto ptr = const_cast<char*>(cs[2].data());
     (void)ptr;
     // end char for last initially is the trailing null appended by constructor
     auto tmp = cs.c_str(2);
@@ -338,14 +338,14 @@ TEST(ConcatenatedStrings, TmpNullTerminated_FirstMiddleLast) {
     EXPECT_EQ(std::strlen(tmp), cs[2].size());
     EXPECT_EQ(tmp[cs[2].size()], '\0');
   }
-  const char orig2 = const_cast<char *>(cs[2].data())[cs[2].size()];
-  EXPECT_EQ(const_cast<char *>(cs[2].data())[cs[2].size()], orig2);
+  const char orig2 = const_cast<char*>(cs[2].data())[cs[2].size()];
+  EXPECT_EQ(const_cast<char*>(cs[2].data())[cs[2].size()], orig2);
 }
 
 TEST(ConcatenatedStrings, TmpNullTerminated_Nested) {
   TestType cs({"A", "BB", "CCC"});
-  auto ptr0 = const_cast<char *>(cs[0].data());
-  auto ptr2 = const_cast<char *>(cs[2].data());
+  auto ptr0 = const_cast<char*>(cs[0].data());
+  auto ptr2 = const_cast<char*>(cs[2].data());
   const char o0 = ptr0[cs[0].size()];
   const char o2 = ptr2[cs[2].size()];
 
@@ -373,7 +373,7 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
   TestType cs({"alpha", "beta", "gamma"});
   for (int i = 0; i < 2000; ++i) {
     const uint32_t idx = static_cast<uint32_t>(i % 3);
-    auto ptr = const_cast<char *>(cs[idx].data());
+    auto ptr = const_cast<char*>(cs[idx].data());
     const char before = ptr[cs[idx].size()];
     {
       auto tmp = cs.c_str(idx);

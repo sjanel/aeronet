@@ -23,19 +23,19 @@ inline std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
 }
 
-inline std::span<const std::byte> sv_bytes(const char *ptr, std::size_t n) noexcept {
+inline std::span<const std::byte> sv_bytes(const char* ptr, std::size_t n) noexcept {
   return std::as_bytes(std::span<const char>(ptr, n));
 }
 
-inline std::span<const std::byte> buf_bytes(const RawBytes &buf) noexcept { return {buf.data(), buf.size()}; }
+inline std::span<const std::byte> buf_bytes(const RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
 
-inline std::span<const std::byte> buf_bytes_partial(const RawBytes &buf, std::size_t n) noexcept {
+inline std::span<const std::byte> buf_bytes_partial(const RawBytes& buf, std::size_t n) noexcept {
   return {buf.data(), n};
 }
 
 template <typename Container>
-inline std::span<const std::byte> container_bytes(const Container &cont) noexcept {
-  return std::span<const std::byte>(reinterpret_cast<const std::byte *>(cont.data()), cont.size());
+inline std::span<const std::byte> container_bytes(const Container& cont) noexcept {
+  return std::span<const std::byte>(reinterpret_cast<const std::byte*>(cont.data()), cont.size());
 }
 
 // Helper to construct a MaskingKey from four bytes (LSB = first byte)
@@ -106,13 +106,13 @@ TEST_F(WebSocketFrameTest, BuildUnmaskedTextFrame) {
 
   ASSERT_GE(buffer.size(), 7);  // 2 header + 5 payload
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   // Byte 0: FIN=1, RSV=000, opcode=0001
   EXPECT_EQ(ptr[0], 0x81);
   // Byte 1: MASK=0, length=5
   EXPECT_EQ(ptr[1], 0x05);
   // Payload
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(ptr + 2), 5), "Hello");
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(ptr + 2), 5), "Hello");
 }
 
 TEST_F(WebSocketFrameTest, BuildMaskedTextFrame) {
@@ -122,7 +122,7 @@ TEST_F(WebSocketFrameTest, BuildMaskedTextFrame) {
 
   ASSERT_GE(buffer.size(), 8);  // 2 header + 4 mask + 2 payload
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   // Byte 0: FIN=1, RSV=000, opcode=0001
   EXPECT_EQ(ptr[0], 0x81);
   // Byte 1: MASK=1, length=2
@@ -142,7 +142,7 @@ TEST_F(WebSocketFrameTest, BuildBinaryFrame) {
   BuildFrame(buffer, Opcode::Binary, container_bytes(payload));
 
   ASSERT_GE(buffer.size(), 5);
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x82);  // FIN=1, opcode=binary
   EXPECT_EQ(ptr[1], 0x03);
   EXPECT_EQ(ptr[2], 0xDE);
@@ -155,7 +155,7 @@ TEST_F(WebSocketFrameTest, BuildFragmentedFrame) {
   // First fragment: FIN=0
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), false);
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   // FIN=0
   EXPECT_EQ(ptr[0] & 0x80, 0x00);
   EXPECT_EQ(ptr[0] & 0x0F, static_cast<uint8_t>(Opcode::Text));
@@ -165,7 +165,7 @@ TEST_F(WebSocketFrameTest, BuildContinuationFrame) {
   std::string_view payload = "More";
   BuildFrame(buffer, Opcode::Continuation, sv_bytes(payload), true);
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x80);  // FIN=1, opcode=continuation
 }
 
@@ -173,7 +173,7 @@ TEST_F(WebSocketFrameTest, BuildPingFrame) {
   std::string_view payload = "ping";
   BuildFrame(buffer, Opcode::Ping, sv_bytes(payload));
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x89);  // FIN=1, opcode=ping
 }
 
@@ -181,7 +181,7 @@ TEST_F(WebSocketFrameTest, BuildPongFrame) {
   std::string_view payload = "pong";
   BuildFrame(buffer, Opcode::Pong, sv_bytes(payload));
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x8A);  // FIN=1, opcode=pong
 }
 
@@ -191,7 +191,7 @@ TEST_F(WebSocketFrameTest, Build16BitLengthFrame) {
   BuildFrame(buffer, Opcode::Binary, container_bytes(payload));
 
   ASSERT_GE(buffer.size(), 204);  // 4 header + 200 payload
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x82);  // FIN=1, opcode=binary
   EXPECT_EQ(ptr[1], 126);   // Extended 16-bit length marker
   // Length in big-endian
@@ -207,21 +207,21 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameWithCodeAndReason) {
   BuildCloseFrame(buffer, CloseCode::Normal, "Normal Closure");
 
   ASSERT_GE(buffer.size(), 18);  // 2 header + 2 code + 14 reason
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x88);  // FIN=1, opcode=close
   EXPECT_EQ(ptr[1], 16);    // 2 + 14
   // Status code in big-endian (1000)
   EXPECT_EQ(ptr[2], 0x03);
   EXPECT_EQ(ptr[3], 0xE8);
   // Reason
-  EXPECT_EQ(std::string_view(reinterpret_cast<const char *>(ptr + 4), 14), "Normal Closure");
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(ptr + 4), 14), "Normal Closure");
 }
 
 TEST_F(WebSocketFrameTest, BuildCloseFrameNoReason) {
   BuildCloseFrame(buffer, CloseCode::GoingAway, "");
 
   ASSERT_GE(buffer.size(), 4);  // 2 header + 2 code
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x88);
   EXPECT_EQ(ptr[1], 2);
   EXPECT_EQ(ptr[2], 0x03);
@@ -232,7 +232,7 @@ TEST_F(WebSocketFrameTest, BuildMaskedCloseFrame) {
   MaskingKey mask = MakeMask(0xAA, 0xBB, 0xCC, 0xDD);
   BuildCloseFrame(buffer, CloseCode::Normal, "", true, mask);
 
-  auto ptr = reinterpret_cast<const uint8_t *>(buffer.data());
+  auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   EXPECT_EQ(ptr[0], 0x88);
   EXPECT_EQ(ptr[1], 0x82);  // MASK=1, length=2
   // Masking key
@@ -507,7 +507,7 @@ TEST_F(WebSocketFrameTest, RoundTripUnmaskedText) {
   auto result = ParseFrame(data, 0, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
-  std::string_view parsed(reinterpret_cast<const char *>(result.payload.data()), result.payload.size());
+  std::string_view parsed(reinterpret_cast<const char*>(result.payload.data()), result.payload.size());
   EXPECT_EQ(parsed, original);
 }
 
@@ -529,7 +529,7 @@ TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
   std::vector<std::byte> payloadCopy(result.payload.begin(), result.payload.end());
   ApplyMask(payloadCopy, result.header.maskingKey);
 
-  std::string_view parsed(reinterpret_cast<const char *>(payloadCopy.data()), payloadCopy.size());
+  std::string_view parsed(reinterpret_cast<const char*>(payloadCopy.data()), payloadCopy.size());
   EXPECT_EQ(parsed, original);
 }
 

@@ -89,7 +89,7 @@ class StaticConcatenatedStrings {
 
     const std::size_t newSize = str.size();
     const size_type tailSize = _buf.size() - oldEndPos;
-    char *data = _buf.data();
+    char* data = _buf.data();
 
     if (oldSize < newSize) {
       const std::size_t delta = newSize - oldSize;
@@ -125,16 +125,16 @@ class StaticConcatenatedStrings {
     }
   }
 
-  [[nodiscard]] const char *c_str(size_type idx) const { return begPtr(idx); }
+  [[nodiscard]] const char* c_str(size_type idx) const { return begPtr(idx); }
 
   [[nodiscard]] std::string_view operator[](size_type idx) const { return {begPtr(idx), sizeAt(idx)}; }
 
-  bool operator==(const StaticConcatenatedStrings &) const noexcept = default;
+  bool operator==(const StaticConcatenatedStrings&) const noexcept = default;
 
   using trivially_relocatable = std::true_type;
 
  private:
-  const char *begPtr(size_type idx) const noexcept {
+  const char* begPtr(size_type idx) const noexcept {
     return _buf.data() + static_cast<std::ptrdiff_t>(
                              idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
   }

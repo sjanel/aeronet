@@ -59,17 +59,17 @@ struct TestAlloc {
   explicit TestAlloc(int id = 0) noexcept : id(id) {}
 
   template <typename U>
-  TestAlloc(const TestAlloc<U> &other) noexcept : id(other.id) {}
+  TestAlloc(const TestAlloc<U>& other) noexcept : id(other.id) {}
 
-  T *allocate(std::size_t sz) { return std::allocator<T>{}.allocate(sz); }
-  void deallocate(T *ptr, std::size_t sz) noexcept { std::allocator<T>{}.deallocate(ptr, sz); }
+  T* allocate(std::size_t sz) { return std::allocator<T>{}.allocate(sz); }
+  void deallocate(T* ptr, std::size_t sz) noexcept { std::allocator<T>{}.deallocate(ptr, sz); }
 
   template <typename U>
   struct rebind {
     using other = TestAlloc<U>;
   };
 
-  bool operator==(const TestAlloc &) const noexcept = default;
+  bool operator==(const TestAlloc&) const noexcept = default;
 
   int id;
 };
@@ -131,7 +131,7 @@ TEST(flat_hash_map, iteration_and_contents) {
   map1["b"] = 2;
   map1["c"] = 3;
   int sum = 0;
-  for (auto &kv : map1) {
+  for (auto& kv : map1) {
     sum += kv.second;
   }
   EXPECT_EQ(sum, 6);
@@ -191,7 +191,7 @@ TEST(flat_hash_map, insert_or_assign_semantics) {
 TEST(flat_hash_map, heterogeneous_cstring_lookup) {
   Map map1;
   map1["key"] = 42;
-  const char *ckey = "key";
+  const char* ckey = "key";
   auto it = map1.find(ckey);
   ASSERT_NE(it, map1.end());
   EXPECT_EQ(it->second, 42);
@@ -220,14 +220,14 @@ TEST(flat_hash_map, preserves_value_alignment) {
   }
 
   ASSERT_EQ(map.size(), 128U);
-  for (auto &entry : map) {
+  for (auto& entry : map) {
     auto addr = reinterpret_cast<std::uintptr_t>(&entry.second);
     EXPECT_EQ(addr % expectedAlignment, 0U) << "value storage is not properly aligned";
   }
 
   map.reserve(512);
   map.emplace(512, CacheLineAlignedValue{});
-  auto &value = map[1024];
+  auto& value = map[1024];
   auto addr = reinterpret_cast<std::uintptr_t>(&value);
   EXPECT_EQ(addr % expectedAlignment, 0U);
 }
@@ -262,7 +262,7 @@ TEST(flat_hash_map, try_emplace_constructs_mapped_from_multiple_args) {
 
 TEST(flat_hash_map, try_emplace_does_not_construct_mapped_when_key_exists) {
   struct CountsCtor {
-    explicit CountsCtor(int &counterRef, int value) noexcept : value(value) { ++counterRef; }
+    explicit CountsCtor(int& counterRef, int value) noexcept : value(value) { ++counterRef; }
     int value;
   };
 
@@ -284,10 +284,10 @@ TEST(flat_hash_map, try_emplace_does_not_construct_mapped_when_key_exists) {
 TEST(flat_hash_map, try_emplace_supports_move_only_mapped_type) {
   struct MoveOnly {
     explicit MoveOnly(int val) noexcept : value(val) {}
-    MoveOnly(const MoveOnly &) = delete;
-    MoveOnly &operator=(const MoveOnly &) = delete;
-    MoveOnly(MoveOnly &&) noexcept = default;
-    MoveOnly &operator=(MoveOnly &&) noexcept = default;
+    MoveOnly(const MoveOnly&) = delete;
+    MoveOnly& operator=(const MoveOnly&) = delete;
+    MoveOnly(MoveOnly&&) noexcept = default;
+    MoveOnly& operator=(MoveOnly&&) noexcept = default;
     int value;
   };
 
@@ -318,7 +318,7 @@ TEST(flat_hash_map, try_emplace_supports_heterogeneous_key_lookup_and_insert) {
   EXPECT_EQ(it->first, "alpha");
   EXPECT_EQ(it->second, 10);
 
-  const char *k2 = "alpha";
+  const char* k2 = "alpha";
   auto [it2, inserted2] = map.try_emplace(k2, 99);
   EXPECT_FALSE(inserted2);
   EXPECT_EQ(it2, it);
@@ -327,7 +327,7 @@ TEST(flat_hash_map, try_emplace_supports_heterogeneous_key_lookup_and_insert) {
 
 TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key_exists) {
   struct CountsCtor {
-    explicit CountsCtor(int &counterRef, int value) noexcept : value(value) { ++counterRef; }
+    explicit CountsCtor(int& counterRef, int value) noexcept : value(value) { ++counterRef; }
     int value;
   };
 
@@ -340,7 +340,7 @@ TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key
   EXPECT_EQ(ctorCount, 1);
   EXPECT_EQ(it->second.value, 7);
 
-  const char *sameKey = "k";
+  const char* sameKey = "k";
   auto [it2, inserted2] = map.try_emplace(sameKey, ctorCount, 123);
   EXPECT_FALSE(inserted2);
   EXPECT_EQ(it2, it);
@@ -350,7 +350,7 @@ TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key
 
 TEST(flat_hash_map, proper_iteration_during_erase) {
   std::vector<std::unique_ptr<int>> pointers;
-  aeronet::flat_hash_map<const int *, int> testMap;
+  aeronet::flat_hash_map<const int*, int> testMap;
 
   for (int iteration = 0; iteration < 1000; ++iteration) {
     // Insert some items in the map
@@ -360,7 +360,7 @@ TEST(flat_hash_map, proper_iteration_during_erase) {
     }
 
     // Process
-    std::vector<const int *> keys;
+    std::vector<const int*> keys;
     for (auto it = testMap.begin(); it != testMap.end();) {
       keys.push_back(it->first);
       if (--it->second == 0) {
@@ -389,7 +389,7 @@ TEST(flat_hash_map, fuzz_against_unordered_map) {
 
   auto assertEqualMaps = [&]() {
     ASSERT_EQ(map1.size(), reference.size());
-    for (const auto &entry : reference) {
+    for (const auto& entry : reference) {
       auto it = map1.find(entry.first);
       ASSERT_NE(it, map1.end());
       EXPECT_EQ(it->second, entry.second);
@@ -483,7 +483,7 @@ TEST(flat_hash_map, contains_heterogeneous_keys) {
   map1.emplace("alpha", 1);
   map1.emplace("beta", 2);
 
-  const char *ckey = "alpha";
+  const char* ckey = "alpha";
   std::string_view sv = "beta";
   EXPECT_TRUE(map1.contains(ckey));
   EXPECT_TRUE(map1.contains(sv));
@@ -549,13 +549,13 @@ TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
   KeyMap map;
 
   for (std::size_t currentSize = 0; currentSize < headers.size(); ++currentSize) {
-    const auto &[key, value] = headers[currentSize];
+    const auto& [key, value] = headers[currentSize];
     EXPECT_TRUE(map.try_emplace(key, value).second);
     EXPECT_EQ(map.size(), currentSize + 1U);
 
     // ensure all existing entries are still present after each insert
     for (std::size_t verifyIndex = 0; verifyIndex <= currentSize; ++verifyIndex) {
-      const auto &[vkey, vvalue] = headers[verifyIndex];
+      const auto& [vkey, vvalue] = headers[verifyIndex];
       auto it = map.find(vkey);
       ASSERT_NE(it, map.end());
       EXPECT_EQ(it->second, vvalue);
@@ -598,7 +598,7 @@ TEST(flat_hash_map, bracket_operator_default_constructs_values_once) {
   map["missing"].payload = 7;
   EXPECT_EQ(CountingValue::defaultConstructionCount, 1);
 
-  auto &ref = map["new_key"];
+  auto& ref = map["new_key"];
   EXPECT_EQ(CountingValue::defaultConstructionCount, 2);
   EXPECT_EQ(ref.payload, 0);
 }
@@ -679,7 +679,7 @@ TEST(flat_hash_map, rehash_handles_realloc_failure) {
       EXPECT_NE(it, map1.end());
       EXPECT_EQ(it->second, i);
     }
-  } catch (const std::bad_alloc &) {
+  } catch (const std::bad_alloc&) {
     SUCCEED();
   }
 }
@@ -705,7 +705,7 @@ TEST(flat_hash_map, insert_range_handles_malloc_failure) {
         EXPECT_EQ(it->second, i);
       }
     }
-  } catch (const std::bad_alloc &) {
+  } catch (const std::bad_alloc&) {
     // Ensure map is still usable
     map1.clear();
     SUCCEED();
@@ -742,17 +742,17 @@ TEST(flat_hash_map, insert_object_that_can_throw_and_malloc_failure_mix) {
     }
     try {
       map.emplace(i, MaybeThrow(i));
-    } catch (const std::bad_alloc &) {
+    } catch (const std::bad_alloc&) {
       // allocator returned null — container should remain valid
       continue;
-    } catch (const std::exception &) {
+    } catch (const std::exception&) {
       // constructor threw — container must remain valid
       continue;
     }
   }
 
   // Basic consistency: all stored elements are reachable and their values match key if present.
-  for (auto &kv : map) {
+  for (auto& kv : map) {
     EXPECT_EQ(kv.first, kv.second.val);
   }
 }
@@ -765,15 +765,15 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
     bool throw_on_copy;
     ThrowOnCopy() noexcept : val(0), throw_on_copy(false) {}
     explicit ThrowOnCopy(int val, bool bo = false) : val(val), throw_on_copy(bo) {}
-    ThrowOnCopy(const ThrowOnCopy &other) : val(other.val), throw_on_copy(other.throw_on_copy) {
+    ThrowOnCopy(const ThrowOnCopy& other) : val(other.val), throw_on_copy(other.throw_on_copy) {
       if (throw_on_copy) {
         throw std::runtime_error("copy failed");
       }
     }
 
-    ThrowOnCopy(ThrowOnCopy &&) noexcept = default;
+    ThrowOnCopy(ThrowOnCopy&&) noexcept = default;
 
-    ThrowOnCopy &operator=(const ThrowOnCopy &) = default;
+    ThrowOnCopy& operator=(const ThrowOnCopy&) = default;
   };
 
   aeronet::flat_hash_map<std::string, ThrowOnCopy> src;
@@ -817,7 +817,7 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_alloc_failure) {
     std::unique_ptr<MapType> copy;
     try {
       copy = std::make_unique<MapType>(src, alloc);
-    } catch (const std::bad_alloc &) {
+    } catch (const std::bad_alloc&) {
       // Ensure original source container remains valid and intact.
       EXPECT_EQ(src.size(), 100U);
       EXPECT_EQ(src.count("v0"), 1U);

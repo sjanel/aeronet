@@ -15,20 +15,20 @@ namespace internal {
 
 template <class T, bool isTriviallyDestructible = std::is_trivially_destructible_v<T>>
 struct Slot {
-  static constexpr std::size_t kStorageSize = sizeof(T *) < sizeof(T) ? sizeof(T) : sizeof(T *);
+  static constexpr std::size_t kStorageSize = sizeof(T*) < sizeof(T) ? sizeof(T) : sizeof(T*);
   static constexpr std::size_t kStorageAlign =
-      std::alignment_of_v<T> < std::alignment_of_v<T *> ? std::alignment_of_v<T *> : std::alignment_of_v<T>;
+      std::alignment_of_v<T> < std::alignment_of_v<T*> ? std::alignment_of_v<T*> : std::alignment_of_v<T>;
 
   template <class... Args>
-  explicit Slot(Args &&...args) {
+  explicit Slot(Args&&... args) {
     std::construct_at(ptr(), std::forward<Args>(args)...);
     isConstructed = true;
   }
 
-  Slot(const Slot &) = delete;
-  Slot(Slot &&) = delete;
-  Slot &operator=(const Slot &) = delete;
-  Slot &operator=(Slot &&) = delete;
+  Slot(const Slot&) = delete;
+  Slot(Slot&&) = delete;
+  Slot& operator=(const Slot&) = delete;
+  Slot& operator=(Slot&&) = delete;
 
   ~Slot() {
     if (isConstructed) {
@@ -36,21 +36,21 @@ struct Slot {
     }
   }
 
-  void setFree(Slot *next) noexcept {
+  void setFree(Slot* next) noexcept {
     if (isConstructed) {
       std::destroy_at(ptr());
       isConstructed = false;
     }
-    std::memcpy(&storage, &next, sizeof(Slot *));
+    std::memcpy(&storage, &next, sizeof(Slot*));
   }
 
-  Slot *nextFree() const noexcept {
-    Slot *next;
-    std::memcpy(&next, &storage, sizeof(Slot *));
+  Slot* nextFree() const noexcept {
+    Slot* next;
+    std::memcpy(&next, &storage, sizeof(Slot*));
     return next;
   }
 
-  T *ptr() noexcept { return std::launder(reinterpret_cast<T *>(storage)); }
+  T* ptr() noexcept { return std::launder(reinterpret_cast<T*>(storage)); }
 
   bool isConstructed = false;
   alignas(kStorageAlign) std::byte storage[kStorageSize];
@@ -58,24 +58,24 @@ struct Slot {
 
 template <class T>
 struct Slot<T, true> {
-  static constexpr std::size_t kStorageSize = sizeof(T *) < sizeof(T) ? sizeof(T) : sizeof(T *);
+  static constexpr std::size_t kStorageSize = sizeof(T*) < sizeof(T) ? sizeof(T) : sizeof(T*);
   static constexpr std::size_t kStorageAlign =
-      std::alignment_of_v<T> < std::alignment_of_v<T *> ? std::alignment_of_v<T *> : std::alignment_of_v<T>;
+      std::alignment_of_v<T> < std::alignment_of_v<T*> ? std::alignment_of_v<T*> : std::alignment_of_v<T>;
 
   template <class... Args>
-  explicit Slot(Args &&...args) {
+  explicit Slot(Args&&... args) {
     std::construct_at(ptr(), std::forward<Args>(args)...);
   }
 
-  void setFree(Slot *next) noexcept { std::memcpy(&storage, &next, sizeof(Slot *)); }
+  void setFree(Slot* next) noexcept { std::memcpy(&storage, &next, sizeof(Slot*)); }
 
-  Slot *nextFree() const noexcept {
-    Slot *next;
-    std::memcpy(&next, &storage, sizeof(Slot *));
+  Slot* nextFree() const noexcept {
+    Slot* next;
+    std::memcpy(&next, &storage, sizeof(Slot*));
     return next;
   }
 
-  T *ptr() noexcept { return std::launder(reinterpret_cast<T *>(storage)); }
+  T* ptr() noexcept { return std::launder(reinterpret_cast<T*>(storage)); }
 
   alignas(kStorageAlign) std::byte storage[kStorageSize];
 };
@@ -102,13 +102,13 @@ class ObjectPool {
   explicit ObjectPool(size_type initialCapacity) : _totalCapacity(initialCapacity) { addBlock(); }
 
   // Disable copy operations.
-  ObjectPool(const ObjectPool &) = delete;
-  ObjectPool &operator=(const ObjectPool &) = delete;
+  ObjectPool(const ObjectPool&) = delete;
+  ObjectPool& operator=(const ObjectPool&) = delete;
 
   // Move operations transfer ownership of the pool.
   // No object pointers are invalidated.
-  ObjectPool(ObjectPool &&other) noexcept;
-  ObjectPool &operator=(ObjectPool &&other) noexcept;
+  ObjectPool(ObjectPool&& other) noexcept;
+  ObjectPool& operator=(ObjectPool&& other) noexcept;
 
   ~ObjectPool() { reset(); }
 
@@ -123,21 +123,21 @@ class ObjectPool {
   // allocated before the constructor threw; that allocation is not rolled
   // back by this function.
   template <class... Args>
-  [[nodiscard]] T *allocateAndConstruct(Args &&...args);
+  [[nodiscard]] T* allocateAndConstruct(Args&&... args);
 
   // Destroys the object and releases its slot in the pool.
   // The given pointer MUST be non-null and MUST be a pointer previously
   // returned by allocateAndConstruct(). Calling this method with a null
   // pointer or calling it more than once for the same object is undefined
   // behavior.
-  void destroyAndRelease(T *obj) noexcept;
+  void destroyAndRelease(T* obj) noexcept;
 
   // Releases the object from the pool and returns it.
   // This method is only available when T is MoveConstructible. If T is not
   // move-constructible, calling code will not see this overload.
   // The given pointer MUST be non-null and MUST be a pointer previously
   // returned by allocateAndConstruct().
-  [[nodiscard]] T release(T *obj) noexcept
+  [[nodiscard]] T release(T* obj) noexcept
     requires std::is_move_constructible_v<T>;
 
   // Returns the current capacity (number of allocated slots) of the pool.
@@ -162,17 +162,17 @@ class ObjectPool {
   using Slot = internal::Slot<T, std::is_trivially_destructible_v<T>>;
 
   struct Block {
-    Block *_prevBlock;
+    Block* _prevBlock;
     size_type _blockSize;
   };
 
   static constexpr size_type kSlotAlign = static_cast<size_type>(std::alignment_of_v<Slot>);
   static constexpr size_type kMallocPadding = ((kSlotAlign - (sizeof(Block) % kSlotAlign)) % kSlotAlign);
 
-  static Slot *slotBegin(Block *block) noexcept {
-    return reinterpret_cast<Slot *>(reinterpret_cast<std::byte *>(block + 1) + kMallocPadding);
+  static Slot* slotBegin(Block* block) noexcept {
+    return reinterpret_cast<Slot*>(reinterpret_cast<std::byte*>(block + 1) + kMallocPadding);
   }
-  static Slot *slotEnd(Block *block) noexcept { return slotBegin(block) + block->_blockSize; }
+  static Slot* slotEnd(Block* block) noexcept { return slotBegin(block) + block->_blockSize; }
 
   void addBlock() {
     const size_type newBlockSize = _lastBlock == nullptr ? _totalCapacity : _lastBlock->_blockSize * kGrowthFactor;
@@ -182,7 +182,7 @@ class ObjectPool {
     // malloc itselfs returns memory aligned to max_align_t, which is
     // sufficient for our needs, but the Block header may have a size
     // that is not a multiple of Slot alignment.
-    Block *newBlock = static_cast<Block *>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockSize * sizeof(Slot))));
+    Block* newBlock = static_cast<Block*>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockSize * sizeof(Slot))));
     if (newBlock == nullptr) {
       throw std::bad_alloc();
     }
@@ -197,17 +197,17 @@ class ObjectPool {
     _nextSlot = slotBegin(newBlock);
   }
 
-  [[nodiscard]] static Slot *slotFromObject(T *object) noexcept {
+  [[nodiscard]] static Slot* slotFromObject(T* object) noexcept {
     static_assert(std::is_standard_layout_v<Slot>);
 
     static constexpr size_type kStorageOffset = offsetof(Slot, storage);
 
-    return reinterpret_cast<Slot *>(reinterpret_cast<std::byte *>(object) - kStorageOffset);
+    return reinterpret_cast<Slot*>(reinterpret_cast<std::byte*>(object) - kStorageOffset);
   }
 
-  Block *_lastBlock{nullptr};
-  Slot *_freeList{nullptr};
-  Slot *_nextSlot{nullptr};
+  Block* _lastBlock{nullptr};
+  Slot* _freeList{nullptr};
+  Slot* _nextSlot{nullptr};
   // totalCapacity tracks the total number of allocated slots in the pool
   // or the initial capacity if no blocks have been allocated yet.
   size_type _totalCapacity{kDefaultInitialCapacity};
@@ -215,7 +215,7 @@ class ObjectPool {
 };
 
 template <class T, class SizeType>
-ObjectPool<T, SizeType>::ObjectPool(ObjectPool &&other) noexcept
+ObjectPool<T, SizeType>::ObjectPool(ObjectPool&& other) noexcept
     : _lastBlock(std::exchange(other._lastBlock, nullptr)),
       _freeList(std::exchange(other._freeList, nullptr)),
       _nextSlot(std::exchange(other._nextSlot, nullptr)),
@@ -223,7 +223,7 @@ ObjectPool<T, SizeType>::ObjectPool(ObjectPool &&other) noexcept
       _liveCount(std::exchange(other._liveCount, 0)) {}
 
 template <class T, class SizeType>
-ObjectPool<T, SizeType> &ObjectPool<T, SizeType>::operator=(ObjectPool &&other) noexcept {
+ObjectPool<T, SizeType>& ObjectPool<T, SizeType>::operator=(ObjectPool&& other) noexcept {
   if (this != &other) {
     reset();
 
@@ -238,8 +238,8 @@ ObjectPool<T, SizeType> &ObjectPool<T, SizeType>::operator=(ObjectPool &&other) 
 
 template <class T, class SizeType>
 template <class... Args>
-T *ObjectPool<T, SizeType>::allocateAndConstruct(Args &&...args) {
-  Slot *slot;
+T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
+  Slot* slot;
   if (_freeList == nullptr) {
     if (_lastBlock == nullptr || _nextSlot == slotEnd(_lastBlock)) {
       addBlock();
@@ -266,8 +266,8 @@ T *ObjectPool<T, SizeType>::allocateAndConstruct(Args &&...args) {
 }
 
 template <class T, class SizeType>
-void ObjectPool<T, SizeType>::destroyAndRelease(T *obj) noexcept {
-  Slot *slot = slotFromObject(obj);
+void ObjectPool<T, SizeType>::destroyAndRelease(T* obj) noexcept {
+  Slot* slot = slotFromObject(obj);
 
   slot->setFree(_freeList);
   _freeList = slot;
@@ -275,10 +275,10 @@ void ObjectPool<T, SizeType>::destroyAndRelease(T *obj) noexcept {
 }
 
 template <class T, class SizeType>
-T ObjectPool<T, SizeType>::release(T *obj) noexcept
+T ObjectPool<T, SizeType>::release(T* obj) noexcept
   requires std::is_move_constructible_v<T>
 {
-  Slot *slot = slotFromObject(obj);
+  Slot* slot = slotFromObject(obj);
 
   T ret(std::move(*obj));
   slot->setFree(_freeList);
@@ -291,10 +291,10 @@ template <class T, class SizeType>
 void ObjectPool<T, SizeType>::clear() noexcept {
   _freeList = nullptr;
 
-  for (Block *block = _lastBlock; block != nullptr; block = block->_prevBlock) {
+  for (Block* block = _lastBlock; block != nullptr; block = block->_prevBlock) {
     const auto nbElems = block == _lastBlock ? static_cast<size_type>(_nextSlot - slotBegin(block)) : block->_blockSize;
     for (size_type pos = 0; pos < nbElems; ++pos) {
-      Slot *slot = slotBegin(block) + pos;
+      Slot* slot = slotBegin(block) + pos;
       slot->setFree(_freeList);
       _freeList = slot;
     }
@@ -304,8 +304,8 @@ void ObjectPool<T, SizeType>::clear() noexcept {
 
 template <class T, class SizeType>
 void ObjectPool<T, SizeType>::reset() noexcept {
-  for (Block *block = _lastBlock; block != nullptr;) {
-    Block *prev = block->_prevBlock;
+  for (Block* block = _lastBlock; block != nullptr;) {
+    Block* prev = block->_prevBlock;
     if constexpr (!std::is_trivially_destructible_v<T>) {
       if (block == _lastBlock) {
         std::destroy(slotBegin(block), _nextSlot);

@@ -23,10 +23,10 @@ class Header {
   // The value is trimmed.
   Header(std::string_view name, std::string_view value);
 
-  Header(const Header &rhs);
-  Header(Header &&) noexcept = default;
-  Header &operator=(const Header &rhs);
-  Header &operator=(Header &&) noexcept = default;
+  Header(const Header& rhs);
+  Header(Header&&) noexcept = default;
+  Header& operator=(const Header& rhs);
+  Header& operator=(Header&&) noexcept = default;
 
   ~Header() = default;
 
@@ -83,8 +83,8 @@ class HeaderValueReverseTokensIterator {
       return {};
     }
 
-    const char *pos = _last - 1;
-    const char *tokenEnd = _last;
+    const char* pos = _last - 1;
+    const char* tokenEnd = _last;
 
     bool inQuotes = false;
 
@@ -93,7 +93,7 @@ class HeaderValueReverseTokensIterator {
 
       if (ch == '"') {
         // Check if escaped (count backslashes before)
-        const char *prev = pos - 1;
+        const char* prev = pos - 1;
         size_t backslashes = 0;
         while (prev >= _first && *prev == '\\') {
           ++backslashes;
@@ -109,7 +109,7 @@ class HeaderValueReverseTokensIterator {
       --pos;
     }
 
-    const char *tokenBegin = pos + 1;
+    const char* tokenBegin = pos + 1;
 
     // Trim OWS inside token bounds (fast, bounded)
     while (tokenBegin < tokenEnd && IsHeaderWhitespace(*tokenBegin)) {
@@ -132,8 +132,8 @@ class HeaderValueReverseTokensIterator {
   }
 
  private:
-  const char *_first;
-  const char *_last;
+  const char* _first;
+  const char* _last;
   bool _emitLeadingEmpty;
 };
 

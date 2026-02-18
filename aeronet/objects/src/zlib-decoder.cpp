@@ -14,14 +14,14 @@
 namespace aeronet {
 
 bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                                         std::size_t decoderChunkSize, RawChars &out) {
+                                         std::size_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
     return true;
   }
 
-  auto &stream = _zs.stream;
+  auto& stream = _zs.stream;
 
-  stream.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(chunk.data()));
+  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
   stream.avail_in = static_cast<uInt>(chunk.size());
 
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
@@ -30,7 +30,7 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
     const bool forceEnd = decoderBufferManager.nextReserve();
 
     stream.avail_out = static_cast<uInt>(out.availableCapacity());
-    stream.next_out = reinterpret_cast<unsigned char *>(out.data() + out.size());
+    stream.next_out = reinterpret_cast<unsigned char*>(out.data() + out.size());
 
     const auto ret = inflate(&stream, Z_NO_FLUSH);
     out.setSize(out.capacity() - stream.avail_out);

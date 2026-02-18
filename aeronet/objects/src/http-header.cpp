@@ -28,14 +28,14 @@ Header::Header(std::string_view name, std::string_view value) : _nameLen(SafeCas
   WriteHeader(_data.get(), name, value);
 }
 
-Header::Header(const Header &rhs)
+Header::Header(const Header& rhs)
     : _data(std::make_unique<char[]>(HeaderSep.size() + rhs._nameLen + rhs._valueLen)),
       _nameLen(rhs._nameLen),
       _valueLen(rhs._valueLen) {
   std::memcpy(_data.get(), rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen);
 }
 
-Header &Header::operator=(const Header &rhs) {
+Header& Header::operator=(const Header& rhs) {
   if (this != &rhs) [[likely]] {
     const auto lhsTotalSize = HeaderSep.size() + _nameLen + _valueLen;
     const auto rhsTotalSize = HeaderSep.size() + rhs._nameLen + rhs._valueLen;
