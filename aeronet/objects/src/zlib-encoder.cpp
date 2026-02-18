@@ -1,13 +1,11 @@
 #include "aeronet/zlib-encoder.hpp"
 
-#include <zconf.h>
-#include <zlib.h>
-
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
@@ -17,13 +15,10 @@ int64_t ZlibEncoderContext::encodeChunk(std::string_view data, std::size_t avail
     return 0;
   }
 
-  _zs.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-  _zs.stream.avail_in = static_cast<uInt>(data.size());
+  ZSetInput(_zs.stream, data);
+  ZSetOutput(_zs.stream, buf, availableCapacity);
 
-  _zs.stream.next_out = reinterpret_cast<unsigned char*>(buf);
-  _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
-
-  const auto ret = deflate(&_zs.stream, Z_NO_FLUSH);
+  const auto ret = ZDeflate(_zs.stream, Z_NO_FLUSH);
   if (ret == Z_STREAM_ERROR) [[unlikely]] {
     return -1;
   }
@@ -37,17 +32,14 @@ int64_t ZlibEncoderContext::encodeChunk(std::string_view data, std::size_t avail
 }
 
 std::size_t ZlibEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
-  return deflateBound(const_cast<z_stream*>(&_zs.stream), static_cast<uLong>(uncompressedSize));
+  return ZDeflateBound(const_cast<zstream*>(&_zs.stream), uncompressedSize);
 }
 
 int64_t ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
-  _zs.stream.next_in = nullptr;
-  _zs.stream.avail_in = 0;
+  ZSetInput(_zs.stream, std::string_view{});
+  ZSetOutput(_zs.stream, buf, availableCapacity);
 
-  _zs.stream.next_out = reinterpret_cast<unsigned char*>(buf);
-  _zs.stream.avail_out = static_cast<decltype(_zs.stream.avail_out)>(availableCapacity);
-
-  const int ret = deflate(&_zs.stream, Z_FINISH);
+  const int ret = ZDeflate(_zs.stream, Z_FINISH);
   if (ret == Z_STREAM_ERROR) {
     return -1;
   }
@@ -74,13 +66,10 @@ std::size_t ZlibEncoder::encodeFull(ZStreamRAII::Variant variant, std::string_vi
 
   auto& zstream = _ctx._zs.stream;
 
-  zstream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-  zstream.avail_in = static_cast<uInt>(data.size());
+  ZSetInput(zstream, data);
+  ZSetOutput(zstream, buf, availableCapacity);
 
-  zstream.next_out = reinterpret_cast<unsigned char*>(buf);
-  zstream.avail_out = static_cast<decltype(zstream.avail_out)>(availableCapacity);
-
-  const auto rc = deflate(&zstream, Z_FINISH);
+  const auto rc = ZDeflate(zstream, Z_FINISH);
   std::size_t written = availableCapacity - zstream.avail_out;
   if (rc != Z_STREAM_END) {
     written = 0;

@@ -65,6 +65,10 @@ option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJ
 # and wish to reduce binary size and compilation time.
 option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support (no library dependency)" ON)
 
+# zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
+# You can disable it in favor of classic zlib by setting this option to OFF.
+option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)
+
 # If you do not use async handlers in the Router, you can disable them to reduce binary size, and slightly
 # reduce the memory footprint of aeronet.
 option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)

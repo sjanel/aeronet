@@ -101,17 +101,17 @@ class AeronetConan(ConanFile):
         # Prefer consuming dependency packages (portable builds) when features enabled.
         # If you intend to rely purely on system packages, you can remove these.
         if self.options.with_openssl:
-            self.requires("openssl/[~3.3]")
+            self.requires("openssl/[~3.6]")
         if self.options.with_spdlog:
-            self.requires("spdlog/[~1.15]")
+            self.requires("spdlog/[~1.17]")
         if self.options.with_br:
-            self.requires("brotli/[~1.1]")
+            self.requires("brotli/[~1.2]")
         if self.options.with_zlib:
-            self.requires("zlib/[~1.3]")
+            self.requires("zlib-ng/[~2.3]")
         if self.options.with_zstd:
             self.requires("zstd/[~1.5]")
         if self.options.with_opentelemetry:
-            self.requires("opentelemetry-cpp/[~1.22]")
+            self.requires("opentelemetry-cpp/[~1.24]")
             # We prefer OTLP HTTP exporter in the codebase (otel-tracer.cpp)
             # and do not currently use the gRPC exporter path. Avoid pulling
             # the heavy gRPC dependency transitively. Keep protobuf since
@@ -151,7 +151,7 @@ class AeronetConan(ConanFile):
         if self.options.with_spdlog:
             self.cpp_info.requires.append("spdlog::spdlog")
         if self.options.with_zlib:
-            self.cpp_info.requires.append("zlib::zlib")
+            self.cpp_info.requires.append("zlib-ng::zlib-ng")
         if self.options.with_zstd:
             self.cpp_info.requires.append("zstd::zstd")
         if self.options.with_opentelemetry:

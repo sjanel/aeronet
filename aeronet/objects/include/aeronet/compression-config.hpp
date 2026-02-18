@@ -10,7 +10,7 @@
 #include "encoding.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
-#include <zlib.h>
+#include "aeronet/zlib-gateway.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD

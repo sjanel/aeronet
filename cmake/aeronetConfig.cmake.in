@@ -13,8 +13,11 @@ set(AERONET_WITH_ZSTD "@AERONET_ENABLE_ZSTD@")
 set(AERONET_WITH_WEBSOCKET "@AERONET_ENABLE_WEBSOCKET@")
 
 if(AERONET_WITH_ZLIB)
-	if(NOT TARGET ZLIB::ZLIB)
-		find_dependency(ZLIB REQUIRED)
+	if(NOT TARGET ZLIBNG::ZLIBNG)
+		find_dependency(zlib-ng CONFIG REQUIRED)
+		if(TARGET zlib-ng::zlibstatic AND NOT TARGET ZLIBNG::ZLIBNG)
+			add_library(ZLIBNG::ZLIBNG ALIAS zlib-ng::zlibstatic)
+		endif()
 	endif()
 endif()
 

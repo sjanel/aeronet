@@ -18,6 +18,13 @@ from typing import List, Optional, Sequence, Tuple
 LANGUAGES = {"c", "cpp", "c++"}
 
 DEPENDENCY_LIBRARY_PATTERNS = [
+    # zlib: prefer zlib-ng when available; fallback to classic zlib
+    ("libz-ng*.a", "-lz-ng"),
+    ("libz-ng*.so*", "-lz-ng"),
+    ("libz.a", "-lz"),
+    ("libz.so*", "-lz"),
+    ("libzlib*.a", "-lz"),
+    ("libzlib*.so*", "-lz"),
     ("libzstd*.a", "-lzstd"),
     ("libbrotlienc*.a", "-lbrotlienc"),
     ("libbrotlidec*.a", "-lbrotlidec"),
@@ -62,7 +69,6 @@ DEPENDENCY_LIBRARY_PATTERNS = [
 SYSTEM_LINK_FLAGS = [
     "-lssl",
     "-lcrypto",
-    "-lz",
     "-lcurl",
     "-lprotobuf",
 ]
@@ -208,12 +214,29 @@ def locate_dependency_include_dirs(build_dir: Path) -> List[str]:
         / "include",
         build_dir / "_deps" / "opentelemetry_cpp-src" / "ext" / "include",
         build_dir / "generated" / "third_party" / "opentelemetry-proto",
+        build_dir / "_deps" / "zlib-ng-src" / "lib",
         build_dir / "_deps" / "zstd-src" / "lib",
         build_dir / "_deps" / "glaze-src" / "include",
     ]
     for candidate in candidates:
         if candidate.is_dir():
             include_dirs.append(str(candidate.resolve()))
+
+    # Also scan the _deps directory for any zlib or zlib-ng source/build folders
+    # and add common include/lib locations. This helps when FetchContent or
+    # packaged zlib-ng places headers in non-standard subfolders.
+    deps_dir = build_dir / "_deps"
+    if deps_dir.is_dir():
+        for entry in deps_dir.iterdir():
+            name = entry.name.lower()
+            if not name.startswith("zlib"):
+                continue
+            # prefer include/, then lib/, then the directory itself
+            for sub in ("include", "lib", ""):
+                candidate = entry / sub if sub else entry
+                if candidate.is_dir():
+                    include_dirs.append(str(candidate.resolve()))
+                    break
     return include_dirs
 
 
@@ -405,6 +428,23 @@ def resolve_fallback_libs(
                     found.append(str(candidate))
             if found:
                 break
+        # If not found, try some common alternate zlib-ng / zlib names
+        if not found and ("zlib" in name or "z" == name or "z-ng" in name):
+            # Prefer zlib-ng libraries first, then fall back to classic zlib
+            alt_patterns = [
+                "libz-ng*.a",
+                "libz-ng*.so*",
+                "libz*.a",
+                "libz*.so*",
+                "libzlib*.a",
+                "libzlib*.so*",
+            ]
+            for pat in alt_patterns:
+                for candidate in build_dir.rglob(pat):
+                    if candidate.is_file():
+                        found.append(str(candidate))
+                if found:
+                    break
         if found:
             # prefer the first match (sorted by rglob order); prefer .a so patterns already ordered
             resolved.append(found[0])

@@ -13,6 +13,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Other
 
+- Migrated from classic **zlib** to **zlib-ng** (native mode) for gzip/deflate compression and decompression. zlib-ng provides SIMD-optimized deflate/inflate with identical wire-format compatibility (RFC 1950/1951/1952). The migration covers the core encoder/decoder, WebSocket permessage-deflate, and scripted benchmark servers (C++ helpers and Rust `flate2` backend). The compile flag `AERONET_ENABLE_ZLIBNG` can be set to `OFF` to stay with classic zlib if needed, but zlib-ng is now the default and recommended option for better performance.
 - Bumped `zlib` dependency to version **1.3.2**.
 - Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
 - Bumped `clang-format` version to **21**.
