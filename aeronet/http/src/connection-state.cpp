@@ -93,9 +93,21 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
 }
 
 ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
-  static constexpr std::size_t kSendfileChunk = 1 << 16;
+  // Kernel sendfile(2): use a large chunk to minimize syscalls.  The kernel transfers
+  // directly from page-cache to socket buffer, so a large value just means fewer
+  // transitions to/from kernel mode.  Previously 64 KB — that forced ~400 syscalls for
+  // a 25 MB file and throttled loopback throughput to ~180 MB/s.
+  static constexpr std::size_t kSendfileChunk = 2UL << 20;  // 2 MiB
 
-  const std::size_t maxBytes = std::min(fileSend.remaining, kSendfileChunk);
+  // TLS (pread) path: we read into a user-space buffer that then gets encrypted and
+  // written via the transport.  A much smaller chunk avoids allocating a huge buffer
+  // and prevents deadlocks when the peer socket buffer is smaller than the chunk
+  // (common in unit tests with blocking socketpairs, but also in real deployments
+  // where TCP send-buffer may be ~128-256 KB).
+  static constexpr std::size_t kTlsReadChunk = 128UL << 10;  // 128 KiB
+
+  const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
+  const std::size_t maxBytes = std::min(fileSend.remaining, chunkLimit);
   off_t offset = static_cast<off_t>(fileSend.offset);
 
   int64_t result;
@@ -120,13 +132,22 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
           res.code = FileResult::Code::WouldBlock;
         }
         return res;
-      default:
+      default: {
         res.code = FileResult::Code::Error;
-        log::error("{} failed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
-                   tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+        // ECONNRESET / EPIPE / ECONNABORTED are normal peer-close events (client closed before
+        // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
+        const bool peerClose = (errnoVal == ECONNRESET || errnoVal == EPIPE || errnoVal == ECONNABORTED);
+        if (peerClose) {
+          log::debug("{} peer closed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+        } else {
+          log::error("{} failed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+        }
         requestImmediateClose();
         fileSend.active = false;
         return res;
+      }
     }
   }
   if (tlsFlow) {

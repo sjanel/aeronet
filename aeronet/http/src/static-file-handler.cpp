@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -27,13 +28,14 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/mime-mappings.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -181,7 +183,13 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
   body.append("</tbody>\n</table>\n");
   if (truncated) {
     body.append("<p id=\"truncated\">Listing truncated after ");
-    body.append(std::string_view(IntegralToCharVector(entries.size())));
+
+    const auto nbCharEntries = nchars(entries.size());
+    body.ensureAvailableCapacityExponential(static_cast<uint64_t>(nbCharEntries));
+    [[maybe_unused]] auto ptr =
+        std::to_chars(body.data() + body.size(), body.data() + body.capacity(), entries.size()).ptr;
+    assert(ptr == body.data() + body.size() + nbCharEntries);
+    body.addSize(nbCharEntries);
     body.append(" entries.</p>\n");
   }
   body.append("<footer>Served by aeronet</footer>\n</body>\n</html>\n");
@@ -267,7 +275,7 @@ struct DirectoryListingResult {
       // we have a container of limit + 1 elements, with the last one maybe unsorted.
       // We need to find the correct insert place of last element, and rotate the elements to keep the vector sorted.
       auto lb = std::ranges::lower_bound(result.entries.begin(), result.entries.end() - 1, result.entries.back(), comp);
-      // We need to rotate +1 (to the right) the range [lb, end)]
+      // We need to rotate +1 (to the right) the range [lb, end)] - that's a rotate!
       std::rotate(lb, result.entries.end() - 1, result.entries.end());
       result.entries.pop_back();
 
@@ -292,17 +300,17 @@ struct DirectoryListingResult {
 // Helper to append a Last-Modified header using a transient stack buffer. The HttpResponse copies
 // the header value synchronously, so using a local char buffer is safe and avoids an extra std::string.
 void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
-  std::array<char, RFC7231DateStrLen> buf;
-  auto* end = TimeToStringRFC7231(tp, buf.data());
-  assert(std::cmp_equal(end - buf.data(), RFC7231DateStrLen));
-  resp.headerAddLine(http::LastModified, std::string_view(buf.data(), end));
+  char buf[RFC7231DateStrLen];
+  auto* end = TimeToStringRFC7231(tp, buf);
+  assert(std::cmp_equal(end - buf, RFC7231DateStrLen));
+  resp.headerAddLine(http::LastModified, std::string_view(buf, end));
 }
 
 inline constexpr std::size_t kMaxHexChars = sizeof(std::uint64_t) * 2;
 inline constexpr std::size_t kMaxEtagSize = 1 + kMaxHexChars + 1 + kMaxHexChars + 1;
 
 struct EtagBuf {
-  std::array<char, kMaxEtagSize> buf;
+  char buf[kMaxEtagSize];
   std::uint8_t len{0};
 };
 
@@ -588,37 +596,25 @@ inline constexpr std::size_t kMaxRangeHeaderLen =
 struct RangeHeaderBuf {
   static_assert(kMaxRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
 
-  std::array<char, kMaxRangeHeaderLen> buf;
+  char buf[kMaxRangeHeaderLen];
   std::uint8_t len;
 };
 
 RangeHeaderBuf BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::uint64_t total) {
   RangeHeaderBuf result;
 
-  std::memcpy(result.buf.data(), kBytesPrefixStr.data(), kBytesPrefixStr.size());
-  result.len = static_cast<std::uint8_t>(kBytesPrefixStr.size());
+  auto* buf = Append(kBytesPrefixStr, result.buf);
 
-  {
-    const auto startBuf = IntegralToCharVector(start);
-    std::memcpy(result.buf.data() + result.len, startBuf.data(), startBuf.size());
-    result.len += static_cast<std::uint8_t>(startBuf.size());
-    result.buf[result.len] = '-';
-    ++result.len;
-  }
+  buf = std::to_chars(buf, buf + nchars(start), start).ptr;
+  *buf++ = '-';
 
-  {
-    const auto endBuf = IntegralToCharVector(start + length - 1);
-    std::memcpy(result.buf.data() + result.len, endBuf.data(), endBuf.size());
-    result.len += static_cast<std::uint8_t>(endBuf.size());
-    result.buf[result.len] = '/';
-    ++result.len;
-  }
+  buf = std::to_chars(buf, buf + nchars(start + length - 1), start + length - 1).ptr;
+  *buf++ = '/';
 
-  {
-    const auto totalBuf = IntegralToCharVector(total);
-    std::memcpy(result.buf.data() + result.len, totalBuf.data(), totalBuf.size());
-    result.len += static_cast<std::uint8_t>(totalBuf.size());
-  }
+  buf = std::to_chars(buf, buf + nchars(total), total).ptr;
+  assert(buf <= result.buf + kMaxRangeHeaderLen);
+  result.len = static_cast<std::uint8_t>(buf - result.buf);
+
   return result;
 }
 
@@ -629,18 +625,17 @@ inline constexpr std::size_t kMaxUnsatisfiedRangeHeaderLen =
 struct UnsatisfiedRangeHeaderBuf {
   static_assert(kMaxUnsatisfiedRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
 
-  std::array<char, kMaxUnsatisfiedRangeHeaderLen> buf;
+  char buf[kMaxUnsatisfiedRangeHeaderLen];
   std::uint8_t len;
 };
 
 UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   UnsatisfiedRangeHeaderBuf result;
-  std::memcpy(result.buf.data(), kUnsatisfiedRangePrefixStr.data(), kUnsatisfiedRangePrefixStr.size());
-  result.len = static_cast<std::uint8_t>(kUnsatisfiedRangePrefixStr.size());
+  auto* buf = Append(kUnsatisfiedRangePrefixStr, result.buf);
 
-  const auto totalBuf = IntegralToCharVector(total);
-  std::memcpy(result.buf.data() + result.len, totalBuf.data(), totalBuf.size());
-  result.len += static_cast<std::uint8_t>(totalBuf.size());
+  buf = std::to_chars(buf, buf + nchars(total), total).ptr;
+  assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
+  result.len = static_cast<std::uint8_t>(buf - result.buf);
 
   return result;
 }
@@ -661,7 +656,8 @@ StaticFileHandler::StaticFileHandler(std::filesystem::path rootDirectory, Static
   }
 }
 
-bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const {
+StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequest& request,
+                                                                  std::filesystem::path& resolvedPath) const {
   std::string_view rawPath = request.path();
   const bool requestedTrailingSlash = rawPath.back() == '/';
 
@@ -673,7 +669,7 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
     const auto segment = rawPath.substr(0, slashPos);
     if (!segment.empty() && segment != ".") {
       if (segment == "..") {
-        return false;
+        return ResolveResult::NotFound;
       }
       relative /= std::filesystem::path(segment);
     }
@@ -687,7 +683,7 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
   std::error_code ec;
   const auto status = std::filesystem::symlink_status(resolvedPath, ec);
   if (ec) {
-    return false;
+    return ResolveResult::NotFound;
   }
   if (std::filesystem::is_directory(status)) {
     if (!_config.defaultIndex().empty()) {
@@ -696,21 +692,23 @@ bool StaticFileHandler::resolveTarget(const HttpRequest& request, std::filesyste
       const auto indexStatus = std::filesystem::symlink_status(indexPath, indexEc);
       if (!indexEc && std::filesystem::is_regular_file(indexStatus)) {
         resolvedPath = std::move(indexPath);
-        return true;
+        return ResolveResult::RegularFile;
       }
     }
-    return _config.enableDirectoryIndex;
+    return _config.enableDirectoryIndex ? ResolveResult::Directory : ResolveResult::NotFound;
   }
 
-  return !requestedTrailingSlash;
+  return requestedTrailingSlash ? ResolveResult::NotFound : ResolveResult::RegularFile;
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
-  HttpResponse resp = request.makeResponse(32UL, http::StatusCodeNotFound);
+  HttpResponse resp(HttpResponse::Check::No);
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
-    resp.status(http::StatusCodeMethodNotAllowed);
-    resp.headerAddLine(http::Allow, "GET, HEAD");
+    static constexpr std::string_view kAllowedMethods = "GET, HEAD";
+    resp = HttpResponse(HttpResponse::HeaderSize(http::Allow.size(), kAllowedMethods.size()),
+                        http::StatusCodeMethodNotAllowed);
+    resp.headerAddLineUnchecked(http::Allow, kAllowedMethods);
     return resp;
   }
 
@@ -718,51 +716,64 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   const bool requestedTrailingSlash = requestPath.back() == '/';
 
   std::filesystem::path targetPath;
-  if (!resolveTarget(request, targetPath)) {
+  const auto resolveResult = resolveTarget(request, targetPath);
+  if (resolveResult == ResolveResult::NotFound) {
+    resp = HttpResponse(http::StatusCodeNotFound);
     return resp;
   }
 
-  std::error_code ec;
-  const auto status = std::filesystem::symlink_status(targetPath, ec);
-  if (ec) {
-    return resp;
-  }
-
-  if (std::filesystem::is_directory(status)) {
+  // resolveTarget already validated the target via symlink_status; no need to stat again.
+  if (resolveResult == ResolveResult::Directory) {
     if (!_config.enableDirectoryIndex) {
+      resp = HttpResponse(http::StatusCodeNotFound);
       return resp;
     }
 
+    static constexpr std::string_view kNoCache = "no-cache";
     if (!requestedTrailingSlash) {
+      static constexpr std::string_view kMovedPermanentlyBody = "Moved Permanently\n";
+
       const std::size_t appendSlash = requestedTrailingSlash ? 0UL : 1UL;
-      RawChars location(requestPath.size() + appendSlash);
-      location.unchecked_append(requestPath);
+      const std::size_t additionalSize =
+          HttpResponse::HeaderSize(http::Location.size(), requestPath.size() + appendSlash) +
+          HttpResponse::HeaderSize(http::CacheControl.size(), kNoCache.size()) +               // "no-cache"
+          HttpResponse::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
+
+      resp = HttpResponse(additionalSize, http::StatusCodeMovedPermanently);
+      resp.headerAddLineUnchecked(http::Location, requestPath);
       if (appendSlash != 0) {
-        location.unchecked_push_back('/');
+        resp.headerAppendValue(http::Location, "/", "");
       }
-      resp.status(http::StatusCodeMovedPermanently);
-      resp.location(location);
-      resp.headerAddLine(http::CacheControl, "no-cache");
-      resp.body("Moved Permanently\n");
+      resp.headerAddLineUnchecked(http::CacheControl, kNoCache);
+      resp.body(kMovedPermanentlyBody);
+
       return resp;
     }
 
     auto listing = CollectDirectoryListing(targetPath, _config);
     if (!listing.isValid) {
-      resp.status(http::StatusCodeInternalServerError);
+      resp = HttpResponse(http::StatusCodeInternalServerError);
       return resp;
     }
 
-    resp.status(http::StatusCodeOK);
-    resp.headerAddLine(http::CacheControl, "no-cache");
+    static constexpr std::size_t kHeadersAdditionalSize =
+        HttpResponse::HeaderSize(http::CacheControl.size(), kNoCache.size()) +
+        HttpResponse::HeaderSize(http::XDirectoryListingTruncated.size(), 1U);
+
+    resp = HttpResponse(kHeadersAdditionalSize + (128UL * listing.entries.size()), http::StatusCodeOK);
+    resp.headerAddLine(http::CacheControl, kNoCache);
     resp.headerAddLine(http::XDirectoryListingTruncated, listing.truncated ? "1" : "0");
 
     static constexpr std::string_view kContentType = "text/html; charset=utf-8";
     if (_config.directoryIndexRenderer) {
-      vector<std::filesystem::directory_entry> rawEntries(listing.entries.size());
+      const auto rawEntries =
+          std::make_unique_for_overwrite<std::filesystem::directory_entry[]>(listing.entries.size());
       std::transform(std::make_move_iterator(listing.entries.begin()), std::make_move_iterator(listing.entries.end()),
-                     rawEntries.begin(), [](DirectoryListingEntry&& entry) { return std::move(entry.entry); });
-      resp.body(_config.directoryIndexRenderer(targetPath, rawEntries), kContentType);
+                     rawEntries.get(), [](DirectoryListingEntry&& entry) { return std::move(entry.entry); });
+
+      resp.body(_config.directoryIndexRenderer(targetPath, std::span<const std::filesystem::directory_entry>(
+                                                               rawEntries.get(), listing.entries.size())),
+                kContentType);
     } else {
       resp.body(
           RenderDefaultDirectoryListing(requestPath, listing.entries, listing.truncated, _config.directoryListingCss()),
@@ -775,7 +786,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   File file(targetPath.c_str(), File::OpenMode::ReadOnly);
   if (!file) {
-    resp.body("Unable to open file\n");
+    resp = HttpResponse(http::StatusCodeNotFound, "Unable to open file\n");
     return resp;
   }
 
@@ -784,6 +795,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   const std::size_t fileSize = file.size();
   SysTimePoint lastModified = kInvalidTimePoint;
   if (_config.addLastModified || _config.enableConditional || _config.addEtag) {
+    std::error_code ec;
     const auto writeTime = std::filesystem::last_write_time(targetPath, ec);
     if (!ec) {
       lastModified = std::chrono::clock_cast<SysClock>(writeTime);
@@ -795,9 +807,17 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     MakeStrongEtag(fileSize, lastModified, etag);
   }
 
-  std::string_view etagView{etag.buf.data(), etag.len};
+  std::string_view etagView{etag.buf, etag.len};
 
-  resp.headerAddLine(http::AcceptRanges, "bytes");
+  static constexpr std::string_view kBytes = "bytes";
+
+  const bool useSmallFilesOptimization = fileSize <= _config.inlineFileThresholdBytes;
+
+  const std::size_t additionalCapacity = 96UL + (useSmallFilesOptimization ? HttpResponse::BodySize(fileSize) : 0UL);
+
+  resp = HttpResponse(additionalCapacity, http::StatusCodeNotFound);
+
+  resp.headerAddLine(http::AcceptRanges, kBytes);
   if (_config.addEtag && !etagView.empty()) {
     resp.headerAddLine(http::ETag, etagView);
   }
@@ -850,19 +870,16 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
             rangeSelection.state == RangeSelection::State::Unsatisfiable) {
           const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
           resp.status(http::StatusCodeRangeNotSatisfiable);
-          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
-          if (rangeSelection.state == RangeSelection::State::Invalid) {
-            resp.body("Invalid Range\n");
-          } else {
-            resp.body("Range Not Satisfiable\n");
-          }
+          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf, rangeHeader.len));
+          resp.body(rangeSelection.state == RangeSelection::State::Invalid ? "Invalid Range\n"
+                                                                           : "Range Not Satisfiable\n");
           return resp;
         }
         if (rangeSelection.state == RangeSelection::State::Valid) {
           const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
 
           resp.status(http::StatusCodePartialContent);
-          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf.data(), rangeHeader.len));
+          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf, rangeHeader.len));
           resp.file(std::move(file), rangeSelection.offset, rangeSelection.length, contentTypeForFile);
           return resp;
         }
@@ -871,7 +888,28 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   }
 
   resp.status(http::StatusCodeOK);
-  resp.file(std::move(file), contentTypeForFile);
+
+  // Small files: read into the response body (inline) so headers and body can be sent in a single write,
+  // avoiding Nagle/delayed-ACK interaction and reducing syscall count. Large files use sendfile() for zero-copy.
+  if (useSmallFilesOptimization) {
+    std::size_t actualBytesRead = File::kError;
+    resp.bodyInlineSet(
+        fileSize,
+        [&file, fileSize, &actualBytesRead](std::byte* buf) {
+          actualBytesRead = file.readAt(std::span<std::byte>(buf, fileSize), 0);
+          // Convert File::kError (SIZE_MAX) to 0 to signal bodyInlineSet that nothing was written
+          return actualBytesRead == File::kError ? 0UL : actualBytesRead;
+        },
+        contentTypeForFile);
+
+    if (actualBytesRead == File::kError || actualBytesRead != fileSize) {
+      resp.status(http::StatusCodeInternalServerError);
+      resp.body("File read error\n");
+      return resp;
+    }
+  } else {
+    resp.file(std::move(file), contentTypeForFile);
+  }
   return resp;
 }
 

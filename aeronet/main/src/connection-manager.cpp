@@ -424,7 +424,7 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
 void SingleHttpServer::handleWritableClient(int fd) {
   auto cnxIt = _connections.active.find(fd);
   if (cnxIt == _connections.active.end()) [[unlikely]] {
-    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
+    log::warn("handleWritableClient: fd # {} not found (stale epoll event or race)", fd);
     return;
   }
 
@@ -471,7 +471,7 @@ void SingleHttpServer::handleWritableClient(int fd) {
 void SingleHttpServer::handleReadableClient(int fd) {
   auto cnxIt = _connections.active.find(fd);
   if (cnxIt == _connections.active.end()) [[unlikely]] {
-    log::error("Received an invalid fd # {} from the event loop (or already removed?)", fd);
+    log::warn("handleReadableClient: fd # {} not found (stale epoll event or race)", fd);
     return;
   }
 
