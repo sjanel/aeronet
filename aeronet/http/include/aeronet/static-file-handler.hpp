@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 
 #include "aeronet/http-request.hpp"
@@ -18,7 +19,9 @@ class StaticFileHandler {
   [[nodiscard]] HttpResponse operator()(const HttpRequest& request) const;
 
  private:
-  [[nodiscard]] bool resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const;
+  enum class ResolveResult : uint8_t { NotFound, RegularFile, Directory };
+
+  [[nodiscard]] ResolveResult resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const;
 
   std::filesystem::path _root;
   StaticFileConfig _config;

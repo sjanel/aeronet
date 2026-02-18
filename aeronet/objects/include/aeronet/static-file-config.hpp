@@ -50,6 +50,11 @@ class StaticFileConfig {
     return *this;
   }
 
+  StaticFileConfig &withInlineFileThresholdBytes(std::size_t threshold) {
+    inlineFileThresholdBytes = threshold;
+    return *this;
+  }
+
   /// Whether byte-range requests are honored (RFC 7233 single range).
   bool enableRange{true};
 
@@ -77,6 +82,12 @@ class StaticFileConfig {
   /// Optional callback to render directory index HTML.
   std::function<std::string(const std::filesystem::path &directory, std::span<const std::filesystem::directory_entry>)>
       directoryIndexRenderer;
+
+  /// Files smaller than this threshold are read into the response body (inline) rather than being served via
+  /// the zero-copy transport path (sendfile in Linux).
+  /// Set to 0 to disable the optimization, or set to max to always read files into memory.
+  /// Default: 128 KiB.
+  std::size_t inlineFileThresholdBytes = 128UL * 1024;
 
   /// guard against pathological directories (configurable)
   std::size_t maxEntriesToList = 10000;
