@@ -57,14 +57,14 @@ Socket::Socket(Type type, int protocol) : _baseFd(::socket(AF_INET, ComputeSocke
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
-  if (::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == -1) {
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == -1) {
     log::warn("Socket fd # {} bind to port {} failed: {}", fd, port, std::strerror(errno));
     return false;
   }
   return true;
 }
 
-void Socket::bindAndListen(bool reusePort, bool tcpNoDelay, uint16_t &port) {
+void Socket::bindAndListen(bool reusePort, bool tcpNoDelay, uint16_t& port) {
   const int fd = _baseFd.fd();
 
   if (!tryBind(reusePort, tcpNoDelay, port)) {
@@ -76,7 +76,7 @@ void Socket::bindAndListen(bool reusePort, bool tcpNoDelay, uint16_t &port) {
   if (port == 0) {
     sockaddr_in actual{};
     socklen_t alen = sizeof(actual);
-    if (::getsockname(fd, reinterpret_cast<sockaddr *>(&actual), &alen) == -1) {
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&actual), &alen) == -1) {
       throw_errno("getsockname failed");
     }
     port = ntohs(actual.sin_port);

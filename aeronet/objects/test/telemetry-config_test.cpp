@@ -168,7 +168,7 @@ TEST(TelemetryConfigTest, HistogramBoundaries) {
   // Override new boundaries for the same instrument name logs a warning but does not throw
   EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{0.0, 1.0, 2.0}).validate());
   ASSERT_EQ(cfg.histogramBuckets().size(), 1UL);
-  const auto &buckets = cfg.histogramBuckets().begin()->second;
+  const auto& buckets = cfg.histogramBuckets().begin()->second;
   EXPECT_EQ(buckets.size(), 3UL);
   EXPECT_EQ(buckets[0], 0.0);
 }

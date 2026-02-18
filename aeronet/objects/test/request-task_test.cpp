@@ -178,7 +178,7 @@ TEST(RequestTaskExtras, MoveAssignmentDestroysPreviousFrame_Void) {
   RequestTask<void> source = make_void_ok();
   EXPECT_TRUE(source.valid());
 
-  auto &sourceRef = source;
+  auto& sourceRef = source;
 
   // should do nothing
   source = std::move(sourceRef);
@@ -218,7 +218,7 @@ TEST(RequestTask, MoveConstructor) {
   int val = t2.runSynchronously();
   EXPECT_EQ(val, 7);
 
-  auto &t2Bis = t2;
+  auto& t2Bis = t2;
   // self move construct should do nothing
   t2 = std::move(t2Bis);
   EXPECT_TRUE(t2.valid());

@@ -32,10 +32,10 @@ using SpanPtr = std::unique_ptr<Span>;
 struct SpanRAII {
   explicit SpanRAII(SpanPtr spanPtr) noexcept : span(std::move(spanPtr)) {}
 
-  SpanRAII(const SpanRAII &) = delete;
-  SpanRAII(SpanRAII &&) noexcept = default;
-  SpanRAII &operator=(const SpanRAII &) = delete;
-  SpanRAII &operator=(SpanRAII &&) noexcept = default;
+  SpanRAII(const SpanRAII&) = delete;
+  SpanRAII(SpanRAII&&) noexcept = default;
+  SpanRAII& operator=(const SpanRAII&) = delete;
+  SpanRAII& operator=(SpanRAII&&) noexcept = default;
 
   ~SpanRAII() {
     if (span) {
@@ -57,13 +57,13 @@ class TelemetryContext {
   TelemetryContext() noexcept;
 
   // Constructs a new telemetry context from configuration.
-  explicit TelemetryContext(const TelemetryConfig &cfg);
+  explicit TelemetryContext(const TelemetryConfig& cfg);
 
   // Non-copyable, movable
-  TelemetryContext(const TelemetryContext &) = delete;
-  TelemetryContext &operator=(const TelemetryContext &) = delete;
-  TelemetryContext(TelemetryContext &&) noexcept;
-  TelemetryContext &operator=(TelemetryContext &&) noexcept;
+  TelemetryContext(const TelemetryContext&) = delete;
+  TelemetryContext& operator=(const TelemetryContext&) = delete;
+  TelemetryContext(TelemetryContext&&) noexcept;
+  TelemetryContext& operator=(TelemetryContext&&) noexcept;
 
   ~TelemetryContext();
 
@@ -84,7 +84,7 @@ class TelemetryContext {
 
   // Access underlying DogStatsD client, or nullptr if not enabled.
   // You can use it to emit custom DogStatsD metrics.
-  [[nodiscard]] DogStatsD *dogstatsdClient() const noexcept;
+  [[nodiscard]] DogStatsD* dogstatsdClient() const noexcept;
 
  private:
   std::unique_ptr<TelemetryContextImpl> _impl;

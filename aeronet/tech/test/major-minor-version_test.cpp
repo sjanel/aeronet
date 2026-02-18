@@ -68,7 +68,7 @@ TEST(MajorMinorVersion, StrAndCompare) {
 TEST(MajorMinorVersion, WriteFull) {
   HttpVer vers{1, 1};
   char buf[HttpVer::kStrLen + 1] = {};
-  char *endPtr = vers.writeFull(buf);
+  char* endPtr = vers.writeFull(buf);
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(endPtr - buf)), "HTTP/1.1");
 
   HttpVer vers2{2, 0};
