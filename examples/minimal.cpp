@@ -14,12 +14,13 @@
 
 using namespace aeronet;
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   uint16_t port = 0;
   if (argc > 1) {
-    const auto [ptr, errc] = std::from_chars(argv[1], argv[1] + std::strlen(argv[1]), port);
-    if (errc != std::errc{} || ptr != argv[1] + std::strlen(argv[1])) {
-      std::cerr << "Invalid port number: " << argv[1] << "\n";
+    const std::string_view arg1(argv[1]);
+    const auto [ptr, errc] = std::from_chars(arg1.data(), arg1.data() + arg1.size(), port);
+    if (errc != std::errc{} || ptr != arg1.data() + arg1.size()) {
+      std::cerr << "Invalid port number: '" << argv[1] << "'\n";
       return EXIT_FAILURE;
     }
   }
@@ -30,21 +31,22 @@ int main(int argc, char **argv) {
   Router router;
 
   try {
-    router.setDefault([](const HttpRequest &req) {
-      HttpResponse resp(200);
+    router.setDefault([](const HttpRequest& req) {
+      HttpResponse resp = req.makeResponse(200);
       resp.bodyAppend("Hello from aeronet minimal server! You requested ");
       resp.bodyAppend(req.path());
       resp.bodyAppend("\nMethod: ");
       resp.bodyAppend(http::MethodToStr(req.method()));
-      resp.bodyAppend("\nVersion: ");
+      resp.bodyAppend("\nHTTP Version: ");
       resp.bodyAppend(std::string_view(req.version().str()));
       resp.bodyAppend("\nHeaders:\n");
-      for (const auto &[headerKey, headerValue] : req.headers()) {
+      for (const auto& [headerKey, headerValue] : req.headers()) {
         resp.bodyAppend(headerKey);
         resp.bodyAppend(": ");
         resp.bodyAppend(headerValue);
         resp.bodyAppend("\n");
       }
+      resp.bodyAppend("\nFull version info:\n");
       resp.bodyAppend(fullVersionWithRuntime());
       resp.bodyAppend("\n");
       return resp;
@@ -52,7 +54,7 @@ int main(int argc, char **argv) {
 
     SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
     server.run();  // blocking run, until Ctrl+C
-  } catch (const std::exception &e) {
+  } catch (const std::exception& e) {
     std::cerr << "Server encountered error: " << e.what() << '\n';
     return EXIT_FAILURE;
   }

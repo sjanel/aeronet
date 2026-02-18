@@ -40,9 +40,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
-#include <zlib.h>
-
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 #endif
 
@@ -114,7 +113,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
     // NOLINTNEXTLINE(readability-else-after-return)
   } else if (CaseInsensitiveEqual(alg, "gzip")) {
     ZlibEncoder encoder(cc.zlib.level);
-    buf.reserve(64UL + deflateBound(nullptr, input.size()));
+    buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
     const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, input, buf.capacity(), buf.data());
     if (written == 0) {
       throw std::runtime_error("gzip compression failed");
@@ -122,7 +121,7 @@ RawChars compress(std::string_view alg, std::string_view input) {
     buf.setSize(written);
   } else if (CaseInsensitiveEqual(alg, "deflate")) {
     ZlibEncoder encoder(cc.zlib.level);
-    buf.reserve(64UL + deflateBound(nullptr, input.size()));
+    buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
     const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::deflate, input, buf.capacity(), buf.data());
     if (written == 0) {
       throw std::runtime_error("deflate compression failed");

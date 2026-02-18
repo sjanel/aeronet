@@ -1,8 +1,5 @@
 #include "aeronet/zlib-stream-raii.hpp"
 
-#include <zconf.h>
-#include <zlib.h>
-
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +9,13 @@
 
 #include "aeronet/buffer-cache.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/zlib-gateway.hpp"
+
+#ifdef AERONET_ENABLE_ZLIBNG
+#include <zconf-ng.h>
+#else
+#include <zconf.h>
+#endif
 
 namespace aeronet {
 
@@ -28,11 +32,11 @@ namespace {
   }
 }
 
-voidpf ZAlloc(voidpf opaque, unsigned items, unsigned size) {
+void* ZAlloc(void* opaque, unsigned items, unsigned size) {
   return static_cast<internal::BufferCache*>(opaque)->allocate(static_cast<std::size_t>(items) * size);
 }
 
-void ZFree(voidpf opaque, voidpf address) noexcept { static_cast<internal::BufferCache*>(opaque)->deallocate(address); }
+void ZFree(void* opaque, void* address) noexcept { static_cast<internal::BufferCache*>(opaque)->deallocate(address); }
 
 }  // namespace
 
@@ -70,14 +74,14 @@ void ZStreamRAII::initCompress(Variant variant, int8_t level) {
   if (_variant == variant) {
     assert(_mode == Mode::compress);
     // Reuse existing deflate state by resetting it
-    const auto ret = deflateReset(&stream);
+    const auto ret = ZDeflateReset(stream);
     if (ret != Z_OK) [[unlikely]] {
       throw std::runtime_error("Error from deflateReset");
     }
 
     if (level != _level) {
       // Update compression level if different
-      const auto retLevel = deflateParams(&stream, level, Z_DEFAULT_STRATEGY);
+      const auto retLevel = ZDeflateParams(stream, level, Z_DEFAULT_STRATEGY);
       if (retLevel != Z_OK) [[unlikely]] {
         throw std::runtime_error("Error from deflateParams");
       }
@@ -88,7 +92,7 @@ void ZStreamRAII::initCompress(Variant variant, int8_t level) {
 
     initZcache();
 
-    const auto ret = deflateInit2(&stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
+    const auto ret = ZDeflateInit2(stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
     if (ret != Z_OK) [[unlikely]] {
       throw std::runtime_error("Error from deflateInit2");
     }
@@ -103,7 +107,7 @@ void ZStreamRAII::initDecompress(Variant variant) {
   if (_variant == Variant::uninitialized) {
     initZcache();
 
-    const auto ret = inflateInit2(&stream, ComputeWindowBits(variant));
+    const auto ret = ZInflateInit2(stream, ComputeWindowBits(variant));
     if (ret != Z_OK) [[unlikely]] {
       throw std::runtime_error("Error from inflateInit2");
     }
@@ -112,13 +116,13 @@ void ZStreamRAII::initDecompress(Variant variant) {
   } else if (_variant == variant) {
     assert(_mode == Mode::decompress);
     // Reuse existing inflate state by resetting it
-    const auto ret = inflateReset(&stream);
+    const auto ret = ZInflateReset(stream);
     if (ret != Z_OK) [[unlikely]] {
       throw std::runtime_error("Error from inflateReset");
     }
   } else {
     assert(_mode == Mode::decompress);
-    const auto ret = inflateReset2(&stream, ComputeWindowBits(variant));
+    const auto ret = ZInflateReset2(stream, ComputeWindowBits(variant));
     if (ret != Z_OK) [[unlikely]] {
       throw std::runtime_error("Error from inflateReset2");
     }
@@ -131,10 +135,10 @@ void ZStreamRAII::end() noexcept {
   auto ret = Z_OK;
   switch (_mode) {
     case Mode::decompress:
-      ret = inflateEnd(&stream);
+      ret = ZInflateEnd(stream);
       break;
     case Mode::compress:
-      ret = deflateEnd(&stream);
+      ret = ZDeflateEnd(stream);
       break;
     default:
       assert(_mode == Mode::uninitialized);
