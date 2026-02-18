@@ -203,7 +203,7 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
 
 }  // namespace
 
-HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType) {
+HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType) : _posBitmap() {
   contentType = CheckContentType(body.empty(), contentType);
   _data.reserve(kHttpResponseInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size());
   InitData(_data.data());
@@ -226,7 +226,7 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
 }
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code)
-    : _data(kHttpResponseInitialSize + additionalCapacity) {
+    : _data(kHttpResponseInitialSize + additionalCapacity), _posBitmap() {
   InitData(_data.data());
   status(code);
   setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
@@ -236,7 +236,8 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
 }
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-                           std::string_view body, std::string_view contentType, Check check) {
+                           std::string_view body, std::string_view contentType, Check check)
+    : _posBitmap() {
   contentType = CheckContentType(body.empty(), contentType);
   if (check == Check::Yes) {
     CheckConcatenatedHeaders(concatenatedHeaders);

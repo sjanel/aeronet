@@ -1,3 +1,7 @@
+// Enable syscall overrides for pread in small file inline path
+#define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+#define AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
+
 #include "aeronet/static-file-handler.hpp"
 
 #include <gtest/gtest.h>
@@ -133,15 +137,12 @@ TEST_F(StaticFileHandlerTest, Basic) {
   HttpResponse resp = handler(req);
 
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
-  EXPECT_EQ(resp.bodyInMemory(), "");  // Body is not set directly when using file responses
 
   EXPECT_EQ(resp.headerValueOrEmpty(http::AcceptRanges), "bytes");
-  // Other expected headers to be checked
 
-  const File* pFile = resp.file();
-  ASSERT_NE(pFile, nullptr);
-  EXPECT_EQ(pFile->size(), fileContent.size());
-  EXPECT_EQ(LoadAllContent(*pFile), fileContent);
+  // Small files are inlined into the response body (below sendfileThreshold)
+  EXPECT_EQ(resp.file(), nullptr);  // No FilePayload for inlined responses
+  EXPECT_EQ(resp.bodySize(), fileContent.size());
 
   // We expect the handler to set Content-Type (default) and Accept-Ranges
   EXPECT_FALSE(tmpFile.filePath().empty());
@@ -159,10 +160,8 @@ TEST_F(StaticFileHandlerTest, HeadRequests) {
 
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
-  EXPECT_EQ(resp.bodyInMemory(), "");
-  const File* pFile = resp.file();
-  ASSERT_NE(pFile, nullptr);
-  EXPECT_EQ(pFile->size(), fileContent.size());
+  // HEAD: small files are inlined, but HEAD response should still report the correct size
+  EXPECT_EQ(resp.bodySize(), fileContent.size());
 }
 
 TEST_F(StaticFileHandlerTest, MethodNotAllowed) {
@@ -202,9 +201,8 @@ TEST_F(StaticFileHandlerTest, DefaultIndexServedWhenDirectoryRequested) {
 
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
-  const File* servedFile = resp.file();
-  ASSERT_NE(servedFile, nullptr);
-  EXPECT_EQ(servedFile->size(), fileContent.size());
+  // Small files below sendfileThreshold are inlined
+  EXPECT_EQ(resp.bodySize(), fileContent.size());
 }
 
 TEST_F(StaticFileHandlerTest, DirectoryIndexDisabledReturnsNotFound) {
@@ -306,6 +304,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
   cfg.enableDirectoryIndex = true;
   cfg.showHiddenFiles = true;
   cfg.withDirectoryListingCss("body{color:red;}");
+  cfg.withInlineFileThresholdBytes(0);
 
   for (std::size_t maxEntriesToList = 0U; maxEntriesToList <= 5U; ++maxEntriesToList) {
     cfg.maxEntriesToList = maxEntriesToList;
@@ -928,6 +927,29 @@ TEST_F(StaticFileHandlerTest, FileReadSizeFails) {
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
+}
+
+TEST_F(StaticFileHandlerTest, SmallFileReadAtFailure) {
+  test::FileSyscallHookGuard guard;
+
+  // Create a small file that should be inlined (below sendfileThreshold)
+  std::string fileContent(1024, 'X');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  StaticFileConfig cfg;
+  cfg.inlineFileThresholdBytes = 128UL * 1024;  // 128KB threshold, file is 1KB
+  StaticFileHandler handler(tmpFile.dirPath(), cfg);
+
+  // Simulate pread() failure with EIO
+  test::SetPreadPathActions(tmpFile.filePath().string(), {{-1, EIO}});
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+
+  // Should return 500 Internal Server Error when file read fails
+  EXPECT_EQ(resp.status(), http::StatusCodeInternalServerError);
+  EXPECT_EQ(resp.bodyInMemory(), "File read error\n");
 }
 
 }  // namespace aeronet

@@ -7,6 +7,9 @@ benchmarks/scripted-servers/rust_server/target
 benchmarks/scripted-servers/certs
 benchmarks/scripted-servers/logs
 benchmarks/scripted-servers/go-bench-server
+benchmarks/scripted-servers/static/image.bin
+benchmarks/scripted-servers/static/medium.bin
+benchmarks/scripted-servers/static/large.bin
 **/*.class
 
 # IDE / editor
