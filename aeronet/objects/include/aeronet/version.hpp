@@ -1,11 +1,26 @@
 #pragma once
 
+#include <string>
 #include <string_view>
 
 #include "aeronet/static-string-view-helpers.hpp"
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/version.hpp>
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/opensslv.h>
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+#include <brotli/decode.h>
+
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+
+#include "aeronet/memory-utils.hpp"
+#include "aeronet/nchars.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZLIB
 #include <zlib.h>
@@ -55,6 +70,22 @@ constexpr std::string_view fullVersionStringView() {
   static constexpr std::string_view _sv_tls_section = "tls: disabled";
 #endif
 
+// Glaze section fragment (either version or disabled)
+#ifdef AERONET_ENABLE_GLAZE
+  static constexpr std::string_view _sv_glaze_prefix = "glaze: ";
+  static constexpr int _glaze_major = static_cast<int>(glz::version.major);
+  static constexpr int _glaze_minor = static_cast<int>(glz::version.minor);
+  static constexpr int _glaze_patch = static_cast<int>(glz::version.patch);
+  static constexpr auto _sv_glaze_major = IntToStringView<_glaze_major>::value;
+  static constexpr auto _sv_glaze_minor = IntToStringView<_glaze_minor>::value;
+  static constexpr auto _sv_glaze_patch = IntToStringView<_glaze_patch>::value;
+  using glaze_join_t = JoinStringView<_sv_glaze_prefix, _sv_glaze_major, CharToStringView_v<'.'>, _sv_glaze_minor,
+                                      CharToStringView_v<'.'>, _sv_glaze_patch>;
+  static constexpr std::string_view _sv_glaze_section = glaze_join_t::value;
+#else
+  static constexpr std::string_view _sv_glaze_section = "glaze: disabled";
+#endif
+
 // Logging section fragment
 #ifdef AERONET_ENABLE_SPDLOG
   static constexpr std::string_view _sv_logging_prefix = "logging: spdlog ";
@@ -66,12 +97,11 @@ constexpr std::string_view fullVersionStringView() {
       JoinStringView<_sv_logging_prefix, _sv_spdlog_major, _sv_dot, _sv_spdlog_minor, _sv_dot, _sv_spdlog_patch>;
   static constexpr std::string_view _sv_logging_section = logging_join_t::value;
 #else
-  static constexpr std::string_view _sv_logging_disabled = "logging: disabled";
-  static constexpr std::string_view _sv_logging_section = _sv_logging_disabled;
+  static constexpr std::string_view _sv_logging_section = "logging: in-house";
 #endif
 
   // Compression section fragment
-#ifdef AERONET_HAS_ANY_CODEC
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   static constexpr std::string_view _sv_compression_prefix = "compression: ";
 #ifdef AERONET_ENABLE_ZLIB
   static constexpr std::string_view _sv_zlib = "zlib ";
@@ -87,7 +117,7 @@ constexpr std::string_view fullVersionStringView() {
 #endif
 #ifdef AERONET_ENABLE_BROTLI
   // Brotli version detection is impossible at compile time.
-  static constexpr std::string_view _sv_brotli_full = "brotli (present)";
+  static constexpr std::string_view _sv_brotli_full = "brotli";
 #endif
 
   // Build a combined list with comma when both present
@@ -122,9 +152,48 @@ constexpr std::string_view fullVersionStringView() {
 #endif
 
   // Assemble multiline string (no trailing newline):
-  using full_version_join_t = JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_tls_section, _sv_newline,
-                                             _sv_logging_section, _sv_newline, _sv_compression_section>;
+  using full_version_join_t =
+      JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_glaze_section, _sv_newline, _sv_tls_section,
+                     _sv_newline, _sv_logging_section, _sv_newline, _sv_compression_section>;
   return full_version_join_t::value;
+}
+
+// Returns a string with the full version info including runtime-detected versions (currently only brotli if enabled).
+inline std::string fullVersionWithRuntime() {
+  std::string fullVersionStr;
+
+#ifdef AERONET_ENABLE_BROTLI
+  static constexpr std::string_view kBaseStr = fullVersionStringView();
+
+  static_assert(kBaseStr.ends_with("brotli"), "brotli should be last because we concatenate the runtime version");
+
+  const uint32_t fullVersion = BrotliDecoderVersion();
+  const uint32_t major = fullVersion >> 24;
+  const uint32_t minor = (fullVersion >> 12) & 0xFFF;
+  const uint32_t patch = fullVersion & 0xFFF;
+
+  // reserve enough space for the base string + brotli version
+  fullVersionStr.resize_and_overwrite(kBaseStr.size() + 3U + nchars(major) + nchars(minor) + nchars(patch),
+                                      [major, minor, patch](char* data, std::size_t sz) {
+                                        char* end = data + sz;
+
+                                        data = Append(kBaseStr, data);
+                                        *data++ = ' ';
+
+                                        data = std::to_chars(data, end, major).ptr;
+                                        *data++ = '.';
+                                        data = std::to_chars(data, end, minor).ptr;
+                                        *data++ = '.';
+                                        data = std::to_chars(data, end, patch).ptr;
+
+                                        return sz;
+                                      });
+
+#else
+  fullVersionStr.assign(fullVersionStringView());
+#endif
+
+  return fullVersionStr;
 }
 
 }  // namespace aeronet

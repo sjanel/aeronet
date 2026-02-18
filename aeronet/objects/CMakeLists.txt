@@ -218,7 +218,7 @@ AeronetAddUnitTest(
     aeronet-version_test
     test/aeronet-version_test.cpp
     LIBRARIES
-    aeronet_tech
+    aeronet_objects
 )
 
 if(AERONET_ENABLE_BROTLI)

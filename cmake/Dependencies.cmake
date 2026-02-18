@@ -81,7 +81,21 @@ endif()
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
 # compile definitions propagate correctly to aeronet library sources.
 if(AERONET_ENABLE_ZLIB)
-  find_package(ZLIB REQUIRED)
+  # Ensure zlib is built with -fPIC so it can be linked into shared libraries (e.g., drogon in benchmarks)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+
+  aeronet_find_or_declare(
+    NAME ZLIB
+    CONFIG
+    TARGETS ZLIB::ZLIBSTATIC
+    DECLARE
+      URL https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz
+      URL_HASH SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
 endif()
 
 if(AERONET_ENABLE_ZSTD)
@@ -105,6 +119,8 @@ if(AERONET_ENABLE_ZSTD)
 endif()
 
 if(AERONET_ENABLE_BROTLI)
+  # Brotli-specific configuration (applies only when fetched)
+  set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable brotli tests" FORCE)
 
   # Brotli does not reliably provide Debug libs on many systems,
   # so policy decides whether system packages are allowed.
@@ -120,10 +136,6 @@ if(AERONET_ENABLE_BROTLI)
       URL_HASH SHA256=816c96e8e8f193b40151dad7e8ff37b1221d019dbcb9c35cd3fadbfe6477dfec
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
-
-  # Brotli-specific configuration (applies only when fetched)
-  set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable brotli tests" FORCE)
-
 endif()
 
 if(AERONET_ENABLE_OPENTELEMETRY)
@@ -242,6 +254,12 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # We let FetchContent attempt population; if it fails to create the
   # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
+
+  # Create ZLIB::ZLIB alias for backward compatibility with zlib 1.3.2+
+  # When building static-only, zlib creates ZLIB::ZLIBSTATIC but not ZLIB::ZLIB
+  if(AERONET_ENABLE_ZLIB AND TARGET zlibstatic AND NOT TARGET ZLIB::ZLIB)
+    add_library(ZLIB::ZLIB ALIAS zlibstatic)
+  endif()
 
   # Restore BUILD_SHARED_LIBS if we overrode it for zstd.
   if(DEFINED _AERONET_PREV_BUILD_SHARED_LIBS)

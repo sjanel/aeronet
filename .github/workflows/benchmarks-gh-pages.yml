@@ -39,7 +39,7 @@ jobs:
           # High connections: 50/thread - higher throughput, higher latency
           - compiler: gcc-13
             conn_label: high
-            connections_per_thread: 50
+            connections_per_thread: 100
     steps:
       - name: Checkout current main
         uses: actions/checkout@v6

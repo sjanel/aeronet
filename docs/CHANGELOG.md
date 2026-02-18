@@ -8,6 +8,11 @@ All notable changes to aeronet are documented in this file.
 
 - Removed memmove overhead in HTTP/2 body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
 
+### Other
+
+- Bumped `zlib` dependency to version 1.3.2.
+- Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
+
 ## [1.1.0] - 2026-02-16
 
 ### 1.1.0 Bug fixes

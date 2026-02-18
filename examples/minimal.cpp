@@ -10,6 +10,8 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/version.hpp"
+
 using namespace aeronet;
 
 int main(int argc, char **argv) {
@@ -43,6 +45,8 @@ int main(int argc, char **argv) {
         resp.bodyAppend(headerValue);
         resp.bodyAppend("\n");
       }
+      resp.bodyAppend(fullVersionWithRuntime());
+      resp.bodyAppend("\n");
       return resp;
     });
 

@@ -1067,7 +1067,7 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t sendmsg(int fd, const
     if (ret >= 0) {
       // Real sendmsg(2) never returns more than the sum of iov lengths.
       std::size_t total = 0;
-      for (std::size_t idx = 0; idx < msg->msg_iovlen; ++idx) {
+      for (std::size_t idx = 0; std::cmp_less(idx, msg->msg_iovlen); ++idx) {
         total += msg->msg_iov[idx].iov_len;
       }
       ret = std::min<ssize_t>(ret, static_cast<ssize_t>(total));
