@@ -23,7 +23,7 @@
 #include "aeronet/nchars.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZLIB
-#include <zlib.h>
+#include "aeronet/zlib-gateway.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
@@ -104,8 +104,13 @@ constexpr std::string_view fullVersionStringView() {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   static constexpr std::string_view _sv_compression_prefix = "compression: ";
 #ifdef AERONET_ENABLE_ZLIB
+#ifdef AERONET_ENABLE_ZLIBNG
+  static constexpr std::string_view _sv_zlib = "zlib-ng ";
+  static constexpr std::string_view _sv_zlib_ver = ZLIBNG_VERSION;  // e.g. "2.2.4"
+#else
   static constexpr std::string_view _sv_zlib = "zlib ";
   static constexpr std::string_view _sv_zlib_ver = ZLIB_VERSION;  // e.g. "1.2.11"
+#endif
   using zlib_join_t = JoinStringView<_sv_zlib, _sv_zlib_ver>;
   static constexpr std::string_view _sv_zlib_full = zlib_join_t::value;
 #endif

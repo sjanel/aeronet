@@ -1,7 +1,5 @@
 #pragma once
 
-#include <zlib.h>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -14,6 +12,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+
+#include "aeronet/zlib-gateway.hpp"
 
 namespace bench {
 
@@ -109,48 +109,47 @@ inline bool ContainsTokenInsensitive(std::string_view haystack, std::string_view
 }
 
 inline std::optional<std::string> GzipCompress(std::string_view input, int level = Z_DEFAULT_COMPRESSION) {
-  z_stream stream{};
-  if (deflateInit2(&stream, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+  using namespace aeronet;
+  zstream stream{};
+  if (ZDeflateInit2(stream, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
     return std::nullopt;
   }
 
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
-  stream.avail_in = static_cast<uInt>(input.size());
+  ZSetInput(stream, input);
 
   std::string output;
-  output.resize(deflateBound(&stream, static_cast<uLong>(input.size())));
-  stream.next_out = reinterpret_cast<Bytef*>(output.data());
-  stream.avail_out = static_cast<uInt>(output.size());
+  output.resize(ZDeflateBound(&stream, input.size()));
 
-  int ret = deflate(&stream, Z_FINISH);
+  ZSetOutput(stream, output.data(), output.size());
+
+  int ret = ZDeflate(stream, Z_FINISH);
   if (ret != Z_STREAM_END) {
-    deflateEnd(&stream);
+    ZDeflateEnd(stream);
     return std::nullopt;
   }
 
   output.resize(stream.total_out);
-  deflateEnd(&stream);
+  ZDeflateEnd(stream);
   return output;
 }
 
 inline std::optional<std::string> GzipDecompress(std::string_view input) {
-  z_stream stream{};
-  if (inflateInit2(&stream, 15 + 16) != Z_OK) {
+  using namespace aeronet;
+  zstream stream{};
+  if (ZInflateInit2(stream, 15 + 16) != Z_OK) {
     return std::nullopt;
   }
 
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(input.data()));
-  stream.avail_in = static_cast<uInt>(input.size());
+  ZSetInput(stream, input);
 
   std::string output;
   std::array<char, 8192> buffer{};
   int ret = Z_OK;
   while (ret == Z_OK) {
-    stream.next_out = reinterpret_cast<Bytef*>(buffer.data());
-    stream.avail_out = static_cast<uInt>(buffer.size());
-    ret = inflate(&stream, Z_NO_FLUSH);
+    ZSetOutput(stream, buffer.data(), buffer.size());
+    ret = ZInflate(stream, Z_NO_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END) {
-      inflateEnd(&stream);
+      ZInflateEnd(stream);
       return std::nullopt;
     }
     const auto produced = buffer.size() - stream.avail_out;
@@ -159,7 +158,7 @@ inline std::optional<std::string> GzipDecompress(std::string_view input) {
     }
   }
 
-  inflateEnd(&stream);
+  ZInflateEnd(stream);
   return output;
 }
 

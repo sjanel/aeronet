@@ -1,14 +1,12 @@
 #include "aeronet/zlib-decoder.hpp"
 
-#include <zconf.h>
-#include <zlib.h>
-
 #include <cstddef>
 #include <string_view>
 
 #include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
@@ -21,18 +19,16 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
 
   auto& stream = _zs.stream;
 
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(chunk.data()));
-  stream.avail_in = static_cast<uInt>(chunk.size());
+  ZSetInput(stream, chunk);
 
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
   while (true) {
     const bool forceEnd = decoderBufferManager.nextReserve();
 
-    stream.avail_out = static_cast<uInt>(out.availableCapacity());
-    stream.next_out = reinterpret_cast<unsigned char*>(out.data() + out.size());
+    ZSetOutput(stream, out.data() + out.size(), out.availableCapacity());
 
-    const auto ret = inflate(&stream, Z_NO_FLUSH);
+    const auto ret = ZInflate(stream, Z_NO_FLUSH);
     out.setSize(out.capacity() - stream.avail_out);
     if (ret == Z_STREAM_END) {
       return stream.avail_in == 0;

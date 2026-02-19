@@ -1,8 +1,5 @@
 #include "aeronet/websocket-compress.hpp"
 
-#include <zconf.h>
-#include <zlib.h>
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +8,7 @@
 
 #include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
@@ -34,23 +32,21 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
   auto& stream = _zs.stream;
 
   if (resetContext) {
-    deflateReset(&stream);
+    ZDeflateReset(stream);
   }
 
-  stream.avail_in = static_cast<uInt>(input.size());
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(input.data()));
+  ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(input.data()), input.size()});
 
   const std::size_t startSize = output.size();
-  const auto chunkCapacity = deflateBound(&stream, static_cast<uLong>(input.size()));
+  const auto chunkCapacity = ZDeflateBound(&stream, input.size());
   do {
     output.ensureAvailableCapacityExponential(chunkCapacity);
 
     const auto availableCapacity = output.availableCapacity();
 
-    stream.avail_out = static_cast<uInt>(availableCapacity);
-    stream.next_out = reinterpret_cast<Bytef*>(output.data() + output.size());
+    ZSetOutput(stream, reinterpret_cast<char*>(output.data() + output.size()), availableCapacity);
 
-    const auto ret = deflate(&stream, Z_SYNC_FLUSH);
+    const auto ret = ZDeflate(stream, Z_SYNC_FLUSH);
     if (ret == Z_STREAM_ERROR) {
       return "deflate() failed with Z_STREAM_ERROR";
     }
@@ -80,11 +76,10 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
   auto& stream = _zs.stream;
 
   if (resetContext) {
-    inflateReset(&stream);
+    ZInflateReset(stream);
   }
 
-  stream.avail_in = static_cast<uInt>(input.size());
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(input.data()));
+  ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(input.data()), input.size()});
 
   // Use DecoderBufferManager to properly control max decompressed size
   DecoderBufferManager bufferManager(output, kDecompressChunkSize, maxDecompressedSize);
@@ -93,10 +88,9 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
   do {
     bool forceEnd = bufferManager.nextReserve();
 
-    stream.avail_out = static_cast<uInt>(output.availableCapacity());
-    stream.next_out = reinterpret_cast<Bytef*>(output.data() + output.size());
+    ZSetOutput(stream, reinterpret_cast<char*>(output.data() + output.size()), output.availableCapacity());
 
-    const auto ret = inflate(&stream, flush);
+    const auto ret = ZInflate(stream, flush);
     if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR) {
       return "inflate() failed";
     }
@@ -109,8 +103,9 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
 
     // We also need to append the trailing 0x00 0x00 0xff 0xff that was stripped per RFC 7692 §7.2.1
     if (stream.avail_in == 0 && flush == Z_NO_FLUSH) {
-      stream.avail_in = static_cast<uInt>(kDeflateTrailer.size());
-      stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(kDeflateTrailer.data()));
+      ZSetInput(stream,
+                std::string_view{reinterpret_cast<const char*>(kDeflateTrailer.data()), kDeflateTrailer.size()});
+
       flush = Z_FINISH;
     }
   } while (stream.avail_out == 0);

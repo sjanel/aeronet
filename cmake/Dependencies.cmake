@@ -80,7 +80,7 @@ endif()
 
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
 # compile definitions propagate correctly to aeronet library sources.
-if(AERONET_ENABLE_ZLIB)
+if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG)
   # Ensure zlib is built with -fPIC so it can be linked into shared libraries (e.g., drogon in benchmarks)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
   set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -94,6 +94,30 @@ if(AERONET_ENABLE_ZLIB)
     DECLARE
       URL https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz
       URL_HASH SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+endif()
+
+# Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
+# compile definitions propagate correctly to aeronet library sources.
+if(AERONET_ENABLE_ZLIB AND AERONET_ENABLE_ZLIBNG)
+  # Ensure zlib-ng is built with -fPIC so it can be linked into shared libraries (e.g., drogon in benchmarks)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
+  # Use zlib-ng native mode (not compat) for better performance and modern API
+  set(ZLIB_COMPAT OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(ZLIBNG_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+  set(WITH_GTEST OFF CACHE BOOL "" FORCE)
+  set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+  set(WITH_NEW_STRATEGIES ON CACHE BOOL "" FORCE)
+
+  aeronet_find_or_declare(
+    NAME zlib-ng
+    CONFIG
+    TARGETS zlib-ng::zlib
+    DECLARE
+      URL https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz
+      URL_HASH SHA256=f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
 endif()
@@ -255,10 +279,28 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
 
-  # Create ZLIB::ZLIB alias for backward compatibility with zlib 1.3.2+
-  # When building static-only, zlib creates ZLIB::ZLIBSTATIC but not ZLIB::ZLIB
-  if(AERONET_ENABLE_ZLIB AND TARGET zlibstatic AND NOT TARGET ZLIB::ZLIB)
-    add_library(ZLIB::ZLIB ALIAS zlibstatic)
+  # Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode).
+  # zlib-ng 2.3+ provides ALIAS targets (zlib-ng::zlib, zlib-ng::zlibstatic),
+  # and CMake disallows ALIAS-of-ALIAS. Use INTERFACE library instead.
+  # System packages expose zlib-ng::zlib / zlib-ng::zlibstatic.
+  # FetchContent with BUILD_SHARED_LIBS=ON creates only "zlib" (shared),
+  # otherwise both "zlib" and "zlibstatic" exist.
+  if(AERONET_ENABLE_ZLIB AND NOT TARGET ZLIBNG::ZLIBNG)
+    set(_zlib_target "")
+    if(TARGET zlib-ng::zlibstatic)
+      set(_zlib_target zlib-ng::zlibstatic)
+    elseif(TARGET zlib-ng::zlib)
+      set(_zlib_target zlib-ng::zlib)
+    elseif(TARGET zlibstatic)
+      set(_zlib_target zlibstatic)
+    elseif(TARGET zlib)
+      set(_zlib_target zlib)
+    endif()
+    
+    if(_zlib_target)
+      add_library(ZLIBNG::ZLIBNG INTERFACE IMPORTED GLOBAL)
+      target_link_libraries(ZLIBNG::ZLIBNG INTERFACE ${_zlib_target})
+    endif()
   endif()
 
   # Restore BUILD_SHARED_LIBS if we overrode it for zstd.

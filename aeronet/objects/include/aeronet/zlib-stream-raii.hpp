@@ -1,10 +1,9 @@
 #pragma once
 
-#include <zlib.h>
-
 #include <cstdint>
 
 #include "aeronet/buffer-cache.hpp"
+#include "aeronet/zlib-gateway.hpp"
 
 namespace aeronet {
 
@@ -41,7 +40,7 @@ struct ZStreamRAII {
 
   void end() noexcept;
 
-  z_stream stream;
+  zstream stream;
 
  private:
   void initZcache();
