@@ -992,7 +992,7 @@ Details merged into: [TLS Features](docs/FEATURES.md#tls-features)
 
 ## Acknowledgements
 
-Compression libraries (zlib, zstd, brotli), OpenSSL, Opentelemetry and spdlog provide the optional feature foundation; thanks to their maintainers & contributors.
+Compression libraries (zlib, zlib-ng, zstd, brotli), OpenSSL, Opentelemetry and spdlog provide the optional feature foundation; thanks to their maintainers & contributors.
 
 This project also includes code from the following open source projects:
 

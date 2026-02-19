@@ -1,5 +1,4 @@
 #include <gtest/gtest.h>
-#include <zlib.h>
 
 #include <algorithm>
 #include <array>
@@ -18,6 +17,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
@@ -44,7 +44,7 @@ const char* VariantName(ZStreamRAII::Variant variant) {
 void EncodeFull(ZlibEncoder& encoder, ZStreamRAII::Variant variant, std::string_view payload, RawChars& out,
                 std::size_t extraCapacity = 0) {
   out.clear();
-  out.reserve(deflateBound(nullptr, payload.size()) + extraCapacity);
+  out.reserve(ZDeflateBound(nullptr, payload.size()) + extraCapacity);
   const std::size_t written = encoder.encodeFull(variant, payload, out.capacity(), out.data());
   ASSERT_GT(written, 0UL);
   out.setSize(static_cast<RawChars::size_type>(written));
@@ -246,7 +246,7 @@ TEST_P(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   test::EndStream(*ctx, chunkOut);
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
-  extra.reserve(deflateBound(nullptr, std::string_view{"More data"}.size()));
+  extra.reserve(ZDeflateBound(nullptr, std::string_view{"More data"}.size()));
   EXPECT_LT(ctx->encodeChunk("More data", extra.capacity(), extra.data()), 0);
 }
 

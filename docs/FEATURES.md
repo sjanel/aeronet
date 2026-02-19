@@ -78,7 +78,7 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
 - [x] Outbound trailer headers (buffered via HttpResponse::trailerAddLine, streaming via HttpResponseWriter::trailerAddLine)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
-- [x] Compression (gzip & deflate) (phase 1: zlib) – streaming + buffered with threshold & q-values
+- [x] Compression (gzip, deflate, br, zstd) (zlib / zlib-ng, native mode, brotli, zstd) – streaming + buffered with threshold & q-values
 - [x] Large-body optimization (zero-copy capture for large fixed responses)
 - [x] Identity rejection -> 406 Not Acceptable when `identity;q=0` and no acceptable encoding
 
@@ -426,14 +426,14 @@ resp.bodyStatic(kLargeStaticBytes);
 
 ## Compression & Negotiation
 
-Supported (build‑flag gated): gzip, deflate (zlib), zstd, brotli.
+Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
 
 ### Outbound Response Compression
 
 - Parses `Accept-Encoding` with q-values; highest client q wins; server preference only breaks ties.
 - Threshold (`CompressionConfig::minBytes`) defers activation; streaming path buffers until threshold.
 - Default server preference (tie‑break list) when not overridden:
-  - zlib only: `gzip, deflate`
+  - zlib / zlib-ng only: `gzip, deflate`
   - zlib + zstd: `zstd, gzip, deflate`
   - brotli + zstd + zlib: `br, zstd, gzip, deflate`
 - Per-response opt‑out: user `Content-Encoding` prevents auto compression.
@@ -598,7 +598,8 @@ HttpServerConfig cfg; cfg.withCompression(c);
 
 Implemented capabilities:
 
-- Formats: `gzip` & `deflate` (zlib), `zstd`, `br` (brotli) – each behind its own feature flag: `AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`.
+- Formats: `gzip` & `deflate` (zlib), `zstd`, `br` (brotli1) – each behind its own feature flag: `AERONET_ENABLE_ZLIB`, `AERONET_ENABLE_ZSTD`, `AERONET_ENABLE_BROTLI`.
+- **aeronet** supports 2 implementations of `zlib` compression - the classic `zlib` library and the newer `zlib-ng` fork. The choice is controlled by the `AERONET_ENABLE_ZLIBNG` build flag, which is `ON` by default, as in general case `zlib-ng` is faster than `zlib`.
 - Enabling a format flag activates BOTH outbound response compression and inbound request body decompression for that format (symmetry keeps configuration minimal).
 - Default server preference order (tie-break among equal effective q-values) when nothing specified in `CompressionConfig::preferredFormats` is: `gzip, deflate` if only zlib enabled; `zstd, gzip, deflate` if zstd also enabled; `br, zstd, gzip, deflate` if brotli enabled (brotli first due to typical superior ratio).
 - Negotiation: Parses `Accept-Encoding` with q-values; chooses format with highest q (server preference breaks ties). Falls back to identity if none acceptable.

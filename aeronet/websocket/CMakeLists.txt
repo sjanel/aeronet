@@ -13,9 +13,15 @@ target_link_libraries(aeronet_websocket
 )
 
 if(AERONET_ENABLE_ZLIB)
-    target_link_libraries(aeronet_websocket
-        PRIVATE ZLIB::ZLIB
-    )
+    if (AERONET_ENABLE_ZLIBNG)
+        target_link_libraries(aeronet_websocket
+            PUBLIC ZLIBNG::ZLIBNG
+        )
+    else()
+        target_link_libraries(aeronet_websocket
+            PUBLIC ZLIB::ZLIB
+        )
+    endif()
 endif()
 
 target_include_directories(aeronet_websocket

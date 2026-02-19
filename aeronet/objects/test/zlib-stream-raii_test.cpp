@@ -1,8 +1,6 @@
 #include "aeronet/zlib-stream-raii.hpp"
 
 #include <gtest/gtest.h>
-#include <zconf.h>
-#include <zlib.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +14,7 @@
 
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/zlib-gateway.hpp"
 
 namespace aeronet {
 
@@ -158,8 +157,8 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
 
   // Compress
   ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(payload.data()));
-  compressor.stream.avail_in = static_cast<uInt>(payload.size());
+
+  ZSetInput(compressor.stream, payload);
 
   std::vector<unsigned char> compressed;
   compressed.reserve(payload.size() / 2);
@@ -167,9 +166,8 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
   std::vector<unsigned char> outbuf(kChunk);
 
   while (true) {
-    compressor.stream.next_out = outbuf.data();
-    compressor.stream.avail_out = static_cast<uInt>(outbuf.size());
-    const int ret = deflate(&compressor.stream, Z_FINISH);
+    ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
+    const int ret = ZDeflate(compressor.stream, Z_FINISH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t produced = outbuf.size() - compressor.stream.avail_out;
     compressed.insert(compressed.end(), outbuf.data(), outbuf.data() + produced);
@@ -180,16 +178,14 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
 
   // Decompress
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
-  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef*>(compressed.data());
-  decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
+  ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
   std::vector<char> decompressed;
   std::vector<unsigned char> inbuf(kChunk);
 
   do {
-    decompressor.stream.next_out = inbuf.data();
-    decompressor.stream.avail_out = static_cast<uInt>(inbuf.size());
-    const int ret = inflate(&decompressor.stream, Z_NO_FLUSH);
+    ZSetOutput(decompressor.stream, reinterpret_cast<char*>(inbuf.data()), inbuf.size());
+    const int ret = ZInflate(decompressor.stream, Z_NO_FLUSH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t got = inbuf.size() - decompressor.stream.avail_out;
     decompressed.insert(decompressed.end(), reinterpret_cast<char*>(inbuf.data()),
@@ -208,17 +204,15 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
 
   // Compress with deflate
   ZStreamRAII compressor(ZStreamRAII::Variant::deflate, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(payload.data()));
-  compressor.stream.avail_in = static_cast<uInt>(payload.size());
+  ZSetInput(compressor.stream, payload);
 
   std::vector<unsigned char> compressed;
   static constexpr std::size_t kChunk = 4096;
   std::vector<unsigned char> outbuf(kChunk);
 
   while (true) {
-    compressor.stream.next_out = outbuf.data();
-    compressor.stream.avail_out = static_cast<uInt>(outbuf.size());
-    const int ret = deflate(&compressor.stream, Z_FINISH);
+    ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
+    const int ret = ZDeflate(compressor.stream, Z_FINISH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t produced = outbuf.size() - compressor.stream.avail_out;
     compressed.insert(compressed.end(), outbuf.data(), outbuf.data() + produced);
@@ -229,16 +223,14 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
 
   // Decompress with deflate
   ZStreamRAII decompressor(ZStreamRAII::Variant::deflate);
-  decompressor.stream.next_in = compressed.empty() ? nullptr : reinterpret_cast<Bytef*>(compressed.data());
-  decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
+  ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
   std::vector<char> decompressed;
   std::vector<unsigned char> inbuf(kChunk);
 
   do {
-    decompressor.stream.next_out = inbuf.data();
-    decompressor.stream.avail_out = static_cast<uInt>(inbuf.size());
-    const int ret = inflate(&decompressor.stream, Z_NO_FLUSH);
+    ZSetOutput(decompressor.stream, reinterpret_cast<char*>(inbuf.data()), inbuf.size());
+    const int ret = ZInflate(decompressor.stream, Z_NO_FLUSH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t got = inbuf.size() - decompressor.stream.avail_out;
     decompressed.insert(decompressed.end(), reinterpret_cast<char*>(inbuf.data()),
@@ -265,17 +257,15 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
   std::string largePayload = test::MakePatternedPayload(512UL * 1024);
 
   ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
-  compressor.stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(largePayload.data()));
-  compressor.stream.avail_in = static_cast<uInt>(largePayload.size());
+  ZSetInput(compressor.stream, largePayload);
 
   std::vector<unsigned char> compressed;
   static constexpr std::size_t kChunk = 65536;
   std::vector<unsigned char> outbuf(kChunk);
 
   while (true) {
-    compressor.stream.next_out = outbuf.data();
-    compressor.stream.avail_out = static_cast<uInt>(outbuf.size());
-    const int ret = deflate(&compressor.stream, Z_FINISH);
+    ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
+    const int ret = ZDeflate(compressor.stream, Z_FINISH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t produced = outbuf.size() - compressor.stream.avail_out;
     compressed.insert(compressed.end(), outbuf.data(), outbuf.data() + produced);
@@ -286,14 +276,12 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
 
   // Decompress
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
-  decompressor.stream.next_in = reinterpret_cast<Bytef*>(compressed.data());
-  decompressor.stream.avail_in = static_cast<uInt>(compressed.size());
+  ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
   std::vector<unsigned char> decompressed;
   while (true) {
-    decompressor.stream.next_out = outbuf.data();
-    decompressor.stream.avail_out = static_cast<uInt>(outbuf.size());
-    const int ret = inflate(&decompressor.stream, Z_NO_FLUSH);
+    ZSetOutput(decompressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
+    const int ret = ZInflate(decompressor.stream, Z_NO_FLUSH);
     ASSERT_NE(ret, Z_STREAM_ERROR);
     const std::size_t got = outbuf.size() - decompressor.stream.avail_out;
     decompressed.insert(decompressed.end(), outbuf.data(), outbuf.data() + got);
@@ -315,32 +303,26 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
 
   // Start with gzip compression
   ZStreamRAII stream(ZStreamRAII::Variant::gzip, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
-  stream.stream.avail_in = static_cast<uInt>(testData.size());
-  stream.stream.next_out = outbuf.data();
-  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+  ZSetInput(stream.stream, testData);
+  ZSetOutput(stream.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
 
-  int ret = deflate(&stream.stream, Z_FINISH);
+  int ret = ZDeflate(stream.stream, Z_FINISH);
   ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
 
   // Switch to deflate - this should reuse the cached buffer
   stream.initCompress(ZStreamRAII::Variant::deflate, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
-  stream.stream.avail_in = static_cast<uInt>(testData.size());
-  stream.stream.next_out = outbuf.data();
-  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+  ZSetInput(stream.stream, testData);
+  ZSetOutput(stream.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
 
-  ret = deflate(&stream.stream, Z_FINISH);
+  ret = ZDeflate(stream.stream, Z_FINISH);
   ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
 
   // Switch back to gzip - again reusing the buffer
   stream.initCompress(ZStreamRAII::Variant::gzip, 6);
-  stream.stream.next_in = reinterpret_cast<Bytef*>(testData.data());
-  stream.stream.avail_in = static_cast<uInt>(testData.size());
-  stream.stream.next_out = outbuf.data();
-  stream.stream.avail_out = static_cast<uInt>(outbuf.size());
+  ZSetInput(stream.stream, testData);
+  ZSetOutput(stream.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
 
-  ret = deflate(&stream.stream, Z_FINISH);
+  ret = ZDeflate(stream.stream, Z_FINISH);
   ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
 
   // If we got here without crashes or ASAN errors, buffer reuse is working correctly

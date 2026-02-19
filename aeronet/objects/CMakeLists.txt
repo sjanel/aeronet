@@ -32,9 +32,15 @@ target_link_libraries(aeronet_objects
 )
 
 if(AERONET_ENABLE_ZLIB)
-    target_link_libraries(aeronet_objects
-        PRIVATE ZLIB::ZLIB
-    )
+    if (AERONET_ENABLE_ZLIBNG)
+        target_link_libraries(aeronet_objects
+            PUBLIC ZLIBNG::ZLIBNG
+        )
+    else()
+        target_link_libraries(aeronet_objects
+            PUBLIC ZLIB::ZLIB
+        )
+    endif()
 endif()
 
 if(AERONET_ENABLE_ZSTD)
