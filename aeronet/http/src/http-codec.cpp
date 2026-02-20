@@ -305,20 +305,20 @@ std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVar
 
 }  // namespace
 
-void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp) {
+bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp) {
   const auto bodySz = resp.bodyInMemoryLength();
   const auto& compressionConfig = *compressionState.pCompressionConfig;
 
   if (bodySz < compressionConfig.minBytes) {
-    return;
+    return false;
   }
   if (resp.hasContentEncoding()) {
-    return;
+    return false;
   }
   if (!compressionConfig.contentTypeAllowList.empty()) {
     const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
-      return;
+      return false;
     }
   }
 
@@ -352,8 +352,8 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
   const auto nCharsBodySz = nchars(bodySz);
   const auto nCharsMaxCompressedSize = nchars(maxCompressedBytes);
-  std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
-  std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
+  const std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
+  const std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
 
   const std::size_t oldDataSz = resp._data.size();
 
@@ -382,14 +382,13 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
   // worry about (with tail \r\n0\r\n[trailers]\r\n). The trailers are directly after the body if they exist (not even a
   // CRLF splits the body and the first trailer line).
   char* pCompBody = resp._data.data() + oldDataSz + headersShift;
-  const auto availableCompCapa = resp._data.capacity() - oldDataSz - headersShift;
   const std::size_t compressedSize =
-      compressionState.encodeFull(encoding, resp.bodyInMemory(), availableCompCapa, pCompBody);
+      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxCompressedBytes, pCompBody);
 
   if (compressedSize == 0) {
     // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
     // TODO: increase telemetry counter?
-    return;
+    return false;
   }
 
   // Compression succeeded at this point, we can start to move parts to their final position.
@@ -488,6 +487,8 @@ void HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
   resp.setBodyStartPos(newBodyStartPos);
   resp._data.setSize(newBodyStartPos + compressedSize + trailersSz);
   resp._payloadVariant = {};
+
+  return true;
 }
 
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,

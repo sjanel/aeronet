@@ -14,7 +14,6 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
@@ -79,6 +78,26 @@ std::string MakePatternedPayload(std::size_t size) {
     return size;
   });
   return payload;
+}
+
+RawChars MakeRandomPayload(std::size_t size) {
+  RawChars payload(size);
+  std::mt19937_64 rng{123456789ULL};
+  std::uniform_int_distribution<char> dist(std::numeric_limits<char>::min(), std::numeric_limits<char>::max());
+  for (std::size_t i = 0; i < size; ++i) {
+    payload[i] = dist(rng);
+  }
+  payload.setSize(size);
+  return payload;
+}
+
+RawChars MakeMixedPayload(std::size_t randomSize, std::size_t patternSize) {
+  RawChars random = MakeRandomPayload(randomSize);
+  std::string pattern = MakePatternedPayload(patternSize);
+  RawChars mixed(random.size() + pattern.size());
+  mixed.unchecked_append(random.data(), random.size());
+  mixed.unchecked_append(pattern.data(), pattern.size());
+  return mixed;
 }
 
 RawChars Compress(Encoding encoding, std::string_view payload) {
@@ -183,17 +202,6 @@ RawChars Decompress(Encoding encoding, std::string_view compressed) {
       throw std::invalid_argument("Unsupported encoding");
   }
   return decompressed;
-}
-
-RawBytes MakeRandomPayload(std::size_t size) {
-  RawBytes payload(size);
-  std::mt19937_64 rng{123456789ULL};
-  std::uniform_int_distribution<int> dist(0, 255);
-  for (std::size_t i = 0; i < size; ++i) {
-    payload[i] = static_cast<std::byte>(dist(rng));
-  }
-  payload.setSize(size);
-  return payload;
 }
 
 void CorruptData(std::string_view encoding, RawChars& data) {

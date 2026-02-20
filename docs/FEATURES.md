@@ -430,7 +430,7 @@ Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
 
 ### Outbound Response Compression
 
-- Parses `Accept-Encoding` with q-values; highest client q wins; server preference only breaks ties.
+- Parses `Accept-Encoding` with q-values; the highest client q-value wins; server preference is used only to break ties.
 - Threshold (`CompressionConfig::minBytes`) defers activation; streaming path buffers until threshold.
 - Default server preference (tie‑break list) when not overridden:
   - zlib / zlib-ng only: `gzip, deflate`
@@ -438,20 +438,19 @@ Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
   - brotli + zstd + zlib: `br, zstd, gzip, deflate`
 - Per-response opt‑out: user `Content-Encoding` prevents auto compression.
 - Adds `Vary: Accept-Encoding` automatically (configurable) when compression applied.
-- Identity rejection: forbidding `identity` with no acceptable alternative ⇒ `406 Not Acceptable`.
-- Encoder streaming API: `EncoderContext::encodeChunk()` returns `int64_t` where `-1` signals error and `0` is a valid
-  successful write with no output; `maxCompressedBytes()` is only for sizing `encodeChunk()` output buffers.
-  Use `maxFinalizationBytes()` to size buffers for `end()` calls. `end()` may need multiple calls; loop until it
-  returns `0` (finished) or `<0` (error).
-  Tests: [aeronet/objects/test/brotli-encoder-decoder_test.cpp](aeronet/objects/test/brotli-encoder-decoder_test.cpp),
-  [aeronet/objects/test/zlib-encoder-decoder_test.cpp](aeronet/objects/test/zlib-encoder-decoder_test.cpp),
-  [aeronet/objects/test/zstd-encoder-decoder_test.cpp](aeronet/objects/test/zstd-encoder-decoder_test.cpp).
+- If identity is explicitly disallowed and no supported encoding is acceptable, a `406 Not Acceptable` response is returned.
+- `encodeChunk()` writes up to the provided output capacity and returns:
+  - `-1` on error
+  - `0` on success with no output produced
+  - `>0` number of bytes written
+- `maxCompressedBytes()` provides an upper bound for sizing output buffers during chunk encoding.
+- `end()` may require multiple invocations; call repeatedly until it returns `0` (finished) or `<0` (error).
 
 #### Direct Compression (Inline Body Streaming Compression)
 
-Responses created via `HttpRequest::makeResponse()` gain a second, earlier compression layer called **direct
+Responses created via `HttpRequest::makeResponse()` gain an earlier compression layer called **direct
 compression**: the body is compressed inline as `body()` / `bodyAppend()` calls are made, *before* finalization.
-This eliminates the need for a separate compression pass at finalization time (TryCompressResponse) for eligible
+This eliminates the need for a compression pass at finalization time (`TryCompressResponse`) for eligible
 inline bodies, reducing latency and memory copies.
 
 **Two-layer compression model:**

@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Bug fixes
+
+- Strictly respect `CompressionConfig.maxCompressRatio` in automatic compression even when HttpResponse allocated buffer has more room than the maximum compressed body size.
+
 ### Improvements
 
 - Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).

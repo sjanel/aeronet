@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include "aeronet/encoding.hpp"
-#include "aeronet/raw-bytes.hpp"
+#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -30,12 +30,14 @@ constexpr bool HasZstdMagic(std::string_view body) {
 
 std::string MakePatternedPayload(std::size_t size);
 
+// Create a random payload of given size so that it's very difficult to compress.
+RawChars MakeRandomPayload(std::size_t size);
+
+RawChars MakeMixedPayload(std::size_t randomSize, std::size_t patternSize);
+
 RawChars Compress(Encoding encoding, std::string_view payload);
 
 RawChars Decompress(Encoding encoding, std::string_view compressed);
-
-// Create a random payload of given size so that it's very difficult to compress.
-RawBytes MakeRandomPayload(std::size_t size);
 
 // Corrupt the compressed data in-place for the given encoding.
 void CorruptData(std::string_view encoding, RawChars& data);
@@ -45,6 +47,21 @@ int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
 void EndStream(EncoderContext& ctx, RawChars& out);
 
 RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split);
+
+inline auto SupportedEncodings() {
+  FixedCapacityVector<Encoding, kNbContentEncodings> encs;
+#ifdef AERONET_ENABLE_ZLIB
+  encs.push_back(Encoding::gzip);
+  encs.push_back(Encoding::deflate);
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+  encs.push_back(Encoding::br);
+#endif
+#ifdef AERONET_ENABLE_ZSTD
+  encs.push_back(Encoding::zstd);
+#endif
+  return encs;
+}
 
 }  // namespace test
 }  // namespace aeronet

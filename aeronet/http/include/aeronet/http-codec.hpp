@@ -85,7 +85,11 @@ struct RequestDecompressionResult {
 
 class HttpCodec {
  public:
-  static void TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp);
+  // Try to compress the response body with the given encoding. Returns true if compression was applied, false if not
+  // (either because the encoding is not supported, or because compression failed or did not meet config thresholds). On
+  // true return, the response is modified in-place with the compressed body and appropriate headers. On false return,
+  // the response is left unmodified.
+  static bool TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
