@@ -145,7 +145,7 @@ void ZStreamRAII::end() noexcept {
       return;  // nothing to clean up
   }
   if (ret != Z_OK) [[unlikely]] {
-    log::error("zlib: end returned {} (ignored)", ret);
+    log::debug("zlib: end returned {} (ignored)", ret);
   }
   _variant = Variant::uninitialized;
   _mode = Mode::uninitialized;
