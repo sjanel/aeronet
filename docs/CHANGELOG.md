@@ -14,6 +14,7 @@ All notable changes to aeronet are documented in this file.
 - Improved `StaticFileHandler` performance
   - **Small file optimization**: files smaller than a configurable threshold (default 128 KiB) are now read into memory and served as inline bodies instead of using the zero-copy transport path (e.g. `sendfile` on Linux). This can significantly reduce latency for small files by avoiding the overhead of setting up zero-copy transfers, while still benefiting from zero-copy for larger files.
   - Other optimizations in directory listing, file metadata retrieval, `sendfile` chunk size optimization.
+- Optimized automatic compression for large bodies by starting a streaming compression with a small initial chunk size and exponentially increasing it, which allows to start sending compressed data to the client sooner and reduce latency, while still being efficient for large payloads.
 
 ### Other
 
