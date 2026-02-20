@@ -1,0 +1,48 @@
+name: Verify external aeronet Dockerfile
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-extern-dockerfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git
+
+      - name: Clone FrameworkBenchmarks
+        run: |
+          git clone --depth 1 https://github.com/TechEmpower/FrameworkBenchmarks.git
+
+      - name: Show Dockerfile path
+        run: |
+          echo "Dockerfile path: FrameworkBenchmarks/frameworks/C++/aeronet/aeronet.dockerfile"
+          ls -l FrameworkBenchmarks/frameworks || true
+
+      - name: Determine AERONET_GIT_TAG
+        run: |
+          echo "Determining AERONET_GIT_TAG..."
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "AERONET_GIT_TAG=${{ github.event.pull_request.head.ref }}" >> $GITHUB_ENV
+          else
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              echo "AERONET_GIT_TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+            else
+              # Use branch name for non-tag refs (refs/heads/<branch>)
+              echo "AERONET_GIT_TAG=${GITHUB_REF#refs/heads/}" >> $GITHUB_ENV
+            fi
+          fi
+          echo "AERONET_GIT_TAG set to $(cat $GITHUB_ENV | grep AERONET_GIT_TAG | cut -d= -f2)"
+
+      - name: Build aeronet Dockerfile from FrameworkBenchmarks
+        # Build context must be the FrameworkBenchmarks repo to resolve relative paths used by the Dockerfile
+        working-directory: FrameworkBenchmarks/frameworks/C++/aeronet
+        run: |
+          docker build --no-cache -f aeronet.dockerfile -t aeronet-from-tfb --build-arg AERONET_GIT_TAG=$AERONET_GIT_TAG .

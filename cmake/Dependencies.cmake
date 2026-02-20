@@ -303,6 +303,16 @@ if(AeronetFetchContentPackagesToMakeAvailable)
     endif()
   endif()
 
+  # Create ZLIB::ZLIB interface library for standard zlib.
+  # When zlib is fetched from source, it provides ZLIB::ZLIBSTATIC.
+  # System packages typically provide ZLIB::ZLIB.
+  if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG AND NOT TARGET ZLIB::ZLIB)
+    if(TARGET ZLIB::ZLIBSTATIC)
+      add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
+      target_link_libraries(ZLIB::ZLIB INTERFACE ZLIB::ZLIBSTATIC)
+    endif()
+  endif()
+
   # Restore BUILD_SHARED_LIBS if we overrode it for zstd.
   if(DEFINED _AERONET_PREV_BUILD_SHARED_LIBS)
     set(BUILD_SHARED_LIBS ${_AERONET_PREV_BUILD_SHARED_LIBS} CACHE BOOL "Restore previous value" FORCE)
