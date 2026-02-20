@@ -13,7 +13,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoder.hpp"
-#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
@@ -277,7 +276,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
 
 TEST_P(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterations) {
   // Incompressible payload to force encoder to iterate and grow output as needed.
-  const RawBytes payload = test::MakeRandomPayload(64UL * 1024);
+  const auto payload = test::MakeRandomPayload(64UL * 1024);
 
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   static constexpr std::size_t kChunkSize = 8UL;
@@ -290,8 +289,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
   RawChars compressed;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(
-        *ctx, std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()), chunkOut);
+    const auto written = test::EncodeChunk(*ctx, payload, chunkOut);
     ASSERT_GE(written, 0);
     if (written > 0) {
       compressed.append(chunkOut);

@@ -30,9 +30,16 @@ struct CompressionConfig {
     return static_cast<std::size_t>(std::ceil(static_cast<double>(uncompressedBytes) * maxCompressRatio));
   }
 
-  // Preferred order of formats to negotiate (first supported & accepted wins).
-  // If empty, defaults to enumeration order of Encoding.
-  // Duplicates are not allowed, and it should contain a maximum of one of each encoding.
+  // Server-side preference order used to break ties during
+  // Accept-Encoding negotiation.
+  //
+  // The client q-value always takes precedence. When multiple
+  // encodings share the same effective q-value, this list
+  // determines the winner (first match wins).
+  //
+  // If empty, the default enumeration order of Encoding is used.
+  //
+  // Each encoding may appear at most once.
   FixedCapacityVector<Encoding, kNbContentEncodings - 1U> preferredFormats;
 
   // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
@@ -85,29 +92,43 @@ struct CompressionConfig {
   // HttpResponse::setDirectCompressionMode.
   DirectCompressionMode defaultDirectCompressionMode{DirectCompressionMode::Auto};
 
-  // Automatic compression at the finalization of the HttpResponse is applied if and only if:
-  //   compressedSize <= uncompressedSize * maxCompressRatio
-  // This setting will be used to set a maximum compressed size when trying to apply automatic compression.
-  // If the encoder is about to compress data larger than this threshold, compression will be aborted.
-  // This is to avoid cases where compression can actually increase the size of the response, which can happen for very
-  // small buffers and/or incompressible data. This is ignored for streaming compressions.
+  // Maximum allowed compressed size ratio relative to the
+  // uncompressed body size.
   //
-  // Example: 0.6 requires at least 40% savings.
-  // Should be in the range (0.0, 1.0), exclusive.
+  // Automatic compression is applied only if:
+  //
+  //   compressedSize <= uncompressedSize * maxCompressRatio
+  //
+  // If compression would exceed this bound, the operation is
+  // aborted and the response remains unmodified.
+  //
+  // This prevents size expansion on small or incompressible
+  // payloads.
+  //
+  // Must be in the range (0.0, 1.0).
+  //
+  // Example: 0.6 requires at least 40% size reduction.
   float maxCompressRatio{0.6F};
 
-  // Only responses whose (uncompressed) size is >= this threshold are considered for compression.
-  // For streaming handlers responses (unknown size), compression begins once cumulative bytes reach threshold.
-  // For direct automatic compression, only responses whose first body chunk size is >= this threshold are considered
-  // for compression. You can set this threshold to std::numeric_limits<std::size_t>::max() to effectively disable
-  // automatic compression as all responses will be considered smaller than the threshold.
+  // Minimum uncompressed body size required before compression is considered.
+  //
+  // • For finalized (non-streaming) responses, compression is attempted only if total body size >= minBytes.
+  //
+  // • For streaming handlers responses (HttpResponseWriter) with unknown total size,
+  //   compression activates once cumulative bytes reach this threshold.
+  //
+  // • For direct compression, the first inline body chunk must satisfy this threshold (unless
+  //   DirectCompressionMode::On).
+  //
+  // Set to std::numeric_limits<std::size_t>::max() to effectively disable automatic compression.
   std::size_t minBytes{1024U};
 
-  // List of content-types eligible for response body compression.
-  // If empty, any content type will be eligible for compression.
-  // If the server mixes compressible and non-compressible content types (for instance, jpeg is non-compressible, but
-  // json usually is), it is recommended to set this allowlist to avoid wasting CPU cycles trying to compress already
-  // small or incompressible responses.
+  // Optional allow-list of content types eligible for compression.
+  //
+  // If empty, all content types are considered eligible.
+  //
+  // It is recommended to restrict this list when serving a mix of compressible (e.g., JSON, HTML) and non-compressible
+  // content (e.g., JPEG, MP4) to avoid unnecessary CPU usage.
   ConcatenatedStrings32 contentTypeAllowList;
 };
 

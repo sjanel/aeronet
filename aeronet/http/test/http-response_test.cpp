@@ -28,7 +28,6 @@
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -47,25 +46,6 @@
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
-
-namespace {
-
-auto SupportedEncodings() {
-  FixedCapacityVector<Encoding, kNbContentEncodings> encs;
-#ifdef AERONET_ENABLE_ZLIB
-  encs.push_back(Encoding::gzip);
-  encs.push_back(Encoding::deflate);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  encs.push_back(Encoding::br);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  encs.push_back(Encoding::zstd);
-#endif
-  return encs;
-}
-
-}  // namespace
 
 class HttpResponseTest : public ::testing::Test {
  protected:
@@ -2487,7 +2467,7 @@ TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
   const std::string body(1024, 'A');  // Compressible content
   for (std::string_view varyContent : kVaryContents) {
     for (bool addVary : {false, true}) {
-      for (Encoding enc : SupportedEncodings()) {
+      for (Encoding enc : test::SupportedEncodings()) {
         HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc})
                                 .directCompressionMode(DirectCompressionMode::Auto);
 
@@ -2534,7 +2514,7 @@ TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
 // Test compressed body with bytes span
 TEST_F(HttpResponseTest, Body_BytesSpan_CompressesBody) {
   const std::vector<std::byte> body(1024, std::byte{'B'});
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::span<const std::byte>(body));
@@ -2549,7 +2529,7 @@ TEST_F(HttpResponseTest, Body_BytesSpan_CompressesBody) {
 }
 
 TEST_F(HttpResponseTest, Body_CString_CompressesBody) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     std::string body(1024, 'a');
@@ -2563,7 +2543,7 @@ TEST_F(HttpResponseTest, Body_CString_CompressesBody) {
 }
 
 TEST_F(HttpResponseTest, BodyAppend_Accepted_CompressesBody) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     const std::string body(1024, 'C');
@@ -2580,7 +2560,7 @@ TEST_F(HttpResponseTest, BodyAppend_Accepted_CompressesBody) {
 
 // Test Vary: Accept-Encoding for bodyAppend when enabled
 TEST_F(HttpResponseTest, BodyAppend_Accepted_VaryEnabled_AddsHeader) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
 
     const std::string body(1024, 'C');
@@ -2608,7 +2588,7 @@ TEST_F(HttpResponseTest, BodyAppend_NoCompressionState_NoCompression) {
 
 // Test bodyAppend without encoding continues compression stream
 TEST_F(HttpResponseTest, BodyAppend_ContinuesStreamingCompression) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     std::string data(16384, 'A');
@@ -2638,7 +2618,7 @@ TEST_F(HttpResponseTest, BodyAppend_ContinuesStreamingCompression) {
 TEST_F(HttpResponseTest, Body_BelowMinBytes_NoDirectCompression) {
   cfg.minBytes = 2048;
   const std::string body(1024, 'A');  // Below 2048 threshold
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(body, http::ContentTypeTextPlain);
@@ -2654,7 +2634,7 @@ TEST_F(HttpResponseTest, Body_BelowMinBytes_NoDirectCompression) {
 TEST_F(HttpResponseTest, Body_OnMode_BypassesMinBytes) {
   cfg.minBytes = 2048;
   const std::string body(256, 'B');  // Well below 2048 threshold
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::On);
 
@@ -2670,7 +2650,7 @@ TEST_F(HttpResponseTest, Body_OnMode_BypassesMinBytes) {
 // Test DirectCompressionMode::Off disables even with large body
 TEST_F(HttpResponseTest, Body_OffMode_NoCompression) {
   const std::string body(4096, 'C');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::Off);
 
@@ -2687,7 +2667,7 @@ TEST_F(HttpResponseTest, Body_OffMode_NoCompression) {
 TEST_F(HttpResponseTest, Body_ResetMultipleTimes_ReinitiatesCompression) {
   const std::string body1(2048, 'X');
   const std::string body2(4096, 'Y');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     // First body set
@@ -2711,7 +2691,7 @@ TEST_F(HttpResponseTest, Body_ResetMultipleTimes_ReinitiatesCompression) {
 TEST_F(HttpResponseTest, Body_SetThenClear_RemovesEncodingHeaders) {
   const std::string body(2048, 'A');
   for (bool addVary : {false, true}) {
-    for (Encoding enc : SupportedEncodings()) {
+    for (Encoding enc : test::SupportedEncodings()) {
       HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
 
       resp.body(body, http::ContentTypeTextPlain);
@@ -2738,7 +2718,7 @@ TEST_F(HttpResponseTest, Body_CompressedThenSmall_RemovesEncodingHeaders) {
   const std::string largeBody(2048, 'L');
   const std::string smallBody = "tiny";
   for (bool addVary : {false, true}) {
-    for (Encoding enc : SupportedEncodings()) {
+    for (Encoding enc : test::SupportedEncodings()) {
       HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
 
       resp.body(std::string_view{largeBody}, http::ContentTypeTextPlain);
@@ -2764,7 +2744,7 @@ TEST_F(HttpResponseTest, Body_CompressedThenSmall_RemovesEncodingHeaders) {
 TEST_F(HttpResponseTest, BodyAppend_AfterBody_ContinuesStreaming) {
   const std::string body1(2048, 'A');
   const std::string body2(1024, 'B');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string_view{body1}, http::ContentTypeTextPlain);
@@ -2790,7 +2770,7 @@ TEST_F(HttpResponseTest, BodyAppend_MultipleChunks_StreamingCompression) {
   std::string ccc(1024, 'C');
   std::string ddd(1024, 'D');
   std::string expected = aaa + bbb + ccc + ddd;  // Expect all chunks concatenated in decompressed output
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.bodyAppend(aaa, http::ContentTypeTextPlain);
@@ -2812,7 +2792,7 @@ TEST_F(HttpResponseTest, BodyAppend_MultipleChunks_StreamingCompression) {
 // Test: body() after bodyAppend() resets and re-initiates compression
 TEST_F(HttpResponseTest, Body_AfterBodyAppend_ResetsCompression) {
   const std::string newBody(3000, 'Z');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.bodyAppend(std::string(2048, 'X'), http::ContentTypeTextPlain);
@@ -2834,7 +2814,7 @@ TEST_F(HttpResponseTest, BodyInlineAppend_DuringStreamingCompression) {
   const std::string appendData(512, 'A');
   const std::string expected = initialBody + appendData;
 
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
@@ -2859,7 +2839,7 @@ TEST_F(HttpResponseTest, BodyInlineAppend_DuringStreamingCompression) {
 TEST_F(HttpResponseTest, BodyInlineAppend_BytesWriter_DuringStreamingCompression) {
   const std::string initialBody(1500, 'M');
   const std::vector<std::byte> appendBytes(256, std::byte{'N'});
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
@@ -2880,7 +2860,7 @@ TEST_F(HttpResponseTest, BodyInlineAppend_BytesWriter_DuringStreamingCompression
 // Test: bodyInlineAppend writes zero bytes during streaming compression
 TEST_F(HttpResponseTest, BodyInlineAppend_ZeroWritten_DuringStreamingCompression) {
   const std::string initialBody(2048, 'Q');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
@@ -2901,7 +2881,7 @@ TEST_F(HttpResponseTest, BodyInlineAppend_ZeroWritten_DuringStreamingCompression
 // Test: User-provided Content-Encoding header prevents direct compression
 TEST_F(HttpResponseTest, Body_UserContentEncoding_PreventsDirectCompression) {
   const std::string body(4096, 'D');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.headerAddLine(http::ContentEncoding, "identity");
@@ -2915,7 +2895,7 @@ TEST_F(HttpResponseTest, Body_UserContentEncoding_PreventsDirectCompression) {
 
 // Test: encoding headers are not duplicated on body reset
 TEST_F(HttpResponseTest, Body_ResetDoesNotDuplicateContentEncoding) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
 
     // Set body 3 times
@@ -2951,7 +2931,7 @@ TEST_F(HttpResponseTest, BodyInlineSet_AfterDirectCompression_ClearsState) {
   const std::string body(2048, 'A');
   const std::string newBody = "A";
   for (bool bodyInlineSetBytes : {false, true}) {
-    for (Encoding enc : SupportedEncodings()) {
+    for (Encoding enc : test::SupportedEncodings()) {
       HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
       resp.body(body, http::ContentTypeTextPlain);
@@ -2977,7 +2957,7 @@ TEST_F(HttpResponseTest, BodyInlineSet_AfterDirectCompression_ClearsState) {
 
 // Test: captured body (moved string) does NOT use direct compression
 TEST_F(HttpResponseTest, Body_CapturedString_NoDirectCompression) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string(4096, 'C'));
@@ -2993,7 +2973,7 @@ TEST_F(HttpResponseTest, File_NoDirectCompression) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string(2048, 'F'));
 
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     File fl(tmp.filePath().string());
     ASSERT_TRUE(fl);
@@ -3007,7 +2987,7 @@ TEST_F(HttpResponseTest, File_NoDirectCompression) {
 
 // Test: Vary header correctly managed alongside existing Vary header
 TEST_F(HttpResponseTest, Body_ExistingVaryHeader_Appends) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
 
     resp.headerAddLine(http::Vary, "Origin");
@@ -3028,7 +3008,7 @@ TEST_F(HttpResponseTest, Body_ContentTypeNotInAllowList_NoCompression) {
   cfg.contentTypeAllowList.append("application/json");
 
   const std::string body(2048, 'I');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     // image/png is not in the allowlist
@@ -3046,7 +3026,7 @@ TEST_F(HttpResponseTest, Body_ContentTypeInAllowList_CompressesBody) {
   cfg.contentTypeAllowList.append("application/json");
 
   const std::string body(2048, '{');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(body, "application/json");
@@ -3063,7 +3043,7 @@ TEST_F(HttpResponseTest, Body_OnMode_BypassesContentTypeAllowList) {
   cfg.contentTypeAllowList.append("text/html");
 
   const std::string body(2048, 'P');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::On);
 
@@ -3079,7 +3059,7 @@ TEST_F(HttpResponseTest, Body_OnMode_BypassesContentTypeAllowList) {
 // Test: head method does not trigger compression (no body sent)
 TEST_F(HttpResponseTest, Body_HeadMethod_NoDirectCompression) {
   const std::string body(2048, 'H');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.head = true, .expectedEncoding = enc});
 
     resp.body(body, http::ContentTypeTextPlain);
@@ -3093,7 +3073,7 @@ TEST_F(HttpResponseTest, Body_HeadMethod_NoDirectCompression) {
 TEST_F(HttpResponseTest, BodyAppend_LargeDataRoundTrip) {
   cfg.minBytes = 256;
 
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     std::string expected;
@@ -3121,7 +3101,7 @@ TEST_F(HttpResponseTest, BodyAppend_LargeDataRoundTrip) {
 TEST_F(HttpResponseTest, Body_Reset_ContentTypeUpdated) {
   const std::string bodyA(2048, 'A');
   const std::string bodyB(2048, 'B');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::string_view{bodyA}, "text/html");
@@ -3137,7 +3117,7 @@ TEST_F(HttpResponseTest, Body_Reset_ContentTypeUpdated) {
 
 // Test: bodyAppend with content type update during streaming compression
 TEST_F(HttpResponseTest, BodyAppend_ContentTypeUpdate_DuringStreaming) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.bodyAppend(std::string(2048, 'A'), http::ContentTypeTextPlain);
@@ -3155,7 +3135,7 @@ TEST_F(HttpResponseTest, BodyAppend_ContentTypeUpdate_DuringStreaming) {
 // Test: trailerAddLine finalizes inline body when direct compression is active
 TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
   const std::string body(2048, 'T');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(body, http::ContentTypeTextPlain);
@@ -3175,7 +3155,7 @@ TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
 
 // Test: defaultDirectCompressionMode from CompressionConfig is respected
 TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     cfg.defaultDirectCompressionMode = DirectCompressionMode::Off;
     HttpResponse resp1 = makePrepared(PreparedOptions{.expectedEncoding = enc});
     EXPECT_EQ(resp1.directCompressionMode(), DirectCompressionMode::Off);
@@ -3193,7 +3173,7 @@ TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
 // Test: switching directCompressionMode at runtime before setting body
 TEST_F(HttpResponseTest, SwitchMode_BeforeBody) {
   const std::string body(4096, 'S');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     EXPECT_EQ(resp.directCompressionMode(), DirectCompressionMode::Auto);
 
@@ -3216,7 +3196,7 @@ TEST_F(HttpResponseTest, SwitchMode_BeforeBody) {
 // Test: rvalue chaining of directCompressionMode
 TEST_F(HttpResponseTest, DirectCompressionMode_RvalueChaining) {
   const std::string body(256, 'R');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     auto resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::On);
 
@@ -3228,7 +3208,7 @@ TEST_F(HttpResponseTest, DirectCompressionMode_RvalueChaining) {
 // Test: finalize for HTTP/1.1 with direct compression updates Content-Length
 TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
   const std::string body(4096, 'F');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(body, http::ContentTypeTextPlain);
@@ -3257,7 +3237,7 @@ TEST_F(HttpResponseTest, Body_CompressedEmptyCompressedCycle) {
   const std::string body1(2048, '1');
   const std::string body2(3000, '2');
   for (bool addVary : {false, true}) {
-    for (Encoding enc : SupportedEncodings()) {
+    for (Encoding enc : test::SupportedEncodings()) {
       HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
 
       // Step 1: Set compressed body
@@ -3292,7 +3272,7 @@ TEST_F(HttpResponseTest, Body_CompressedEmptyCompressedCycle) {
 // Test: many rapid body resets don't corrupt state
 TEST_F(HttpResponseTest, Body_ManyRapidResets) {
   const std::string finalBody(2048, 'Z');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     for (int ii = 0; ii < 10; ++ii) {
@@ -3315,7 +3295,7 @@ TEST_F(HttpResponseTest, Body_ManyRapidResets) {
 TEST_F(HttpResponseTest, Body_ResetWithCustomHeaders_HeadersPreserved) {
   const std::string bodyA(2048, 'A');
   const std::string bodyB(2048, 'B');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.headerAddLine("X-Custom", "value1");
@@ -3335,7 +3315,7 @@ TEST_F(HttpResponseTest, Body_ResetWithCustomHeaders_HeadersPreserved) {
 // Test: CString body with direct compression
 TEST_F(HttpResponseTest, Body_CString_DirectCompression) {
   std::string body(2048, 'S');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(body.c_str());
@@ -3351,7 +3331,7 @@ TEST_F(HttpResponseTest, Body_CString_DirectCompression) {
 // Test: bytes span body with direct compression and round-trip
 TEST_F(HttpResponseTest, Body_BytesSpan_DirectCompressionRoundTrip) {
   std::vector<std::byte> body(2048, std::byte{'D'});
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
     resp.body(std::span<const std::byte>(body));
@@ -4153,7 +4133,7 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionFinalization) {
   const std::string body(4096, 'C');
   for (bool addVary : {false, true}) {
     for (bool addTrailers : {false, true}) {
-      for (Encoding enc : SupportedEncodings()) {
+      for (Encoding enc : test::SupportedEncodings()) {
         HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = addVary, .expectedEncoding = enc});
         resp.directCompressionMode(DirectCompressionMode::On);  // Force direct compression
 
@@ -4207,7 +4187,7 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionWithCustomHeaders) {
   // Test that custom headers (when mixed case) are also lowercased during HTTP/2 finalization
   // while compression is being finalized
   const std::string body(2048, 'D');
-  for (Encoding enc : SupportedEncodings()) {
+  for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::On);
 
