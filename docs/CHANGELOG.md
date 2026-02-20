@@ -7,6 +7,8 @@ All notable changes to aeronet are documented in this file.
 ### Bug fixes
 
 - Strictly respect `CompressionConfig.maxCompressRatio` in automatic compression even when HttpResponse allocated buffer has more room than the maximum compressed body size.
+- Do not consider `ENOBUFS` (*No buffer space available*) as a fatal error for **Zerocopy** responses, and fallback to non-zerocopy path instead (e.g. for small files or when the kernel runs out of resources).
+- **Fix data corruption with Zerocopy mode under sustained load** (Kubernetes / virtual network devices). Drain the kernel error queue (completion notifications) before each `MSG_ZEROCOPY` send to prevent resource exhaustion and pinned page accumulation that caused intermittent data corruption with large payloads. Also fix `ENOBUFS` handling for TLS+kTLS zerocopy path.
 
 ### Improvements
 
@@ -15,6 +17,7 @@ All notable changes to aeronet are documented in this file.
   - **Small file optimization**: files smaller than a configurable threshold (default 128 KiB) are now read into memory and served as inline bodies instead of using the zero-copy transport path (e.g. `sendfile` on Linux). This can significantly reduce latency for small files by avoiding the overhead of setting up zero-copy transfers, while still benefiting from zero-copy for larger files.
   - Other optimizations in directory listing, file metadata retrieval, `sendfile` chunk size optimization.
 - Optimized automatic compression for large bodies by starting a streaming compression with a small initial chunk size and exponentially increasing it, which allows to start sending compressed data to the client sooner and reduce latency, while still being efficient for large payloads.
+- Add `ZerocopyMode::Forced` — like `Enabled` but bypasses the minimum payload size threshold (useful for stress testing zerocopy on localhost).
 
 ### Other
 

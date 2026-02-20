@@ -83,7 +83,6 @@ TEST(ZeroCopyTest, PollZerocopyCompletionsReturnsZeroWhenNoPending) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = false;
 
   // Should return 0 when no completions pending
   EXPECT_EQ(PollZeroCopyCompletions(sv[0], state), 0U);
@@ -93,17 +92,16 @@ TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
   ZeroCopyState state;
 
   // Initially no pending completions
-  EXPECT_TRUE(AllZerocopyCompleted(state));
+  EXPECT_FALSE(state.pendingCompletions());
 
   // With pending completions but same seqLo/seqHi
-  state.pendingCompletions = true;
   state.seqLo = 5;
   state.seqHi = 5;
-  EXPECT_TRUE(AllZerocopyCompleted(state));
+  EXPECT_FALSE(state.pendingCompletions());
 
   // With pending completions and different seq numbers
   state.seqHi = 10;
-  EXPECT_FALSE(AllZerocopyCompleted(state));
+  EXPECT_TRUE(state.pendingCompletions());
 }
 
 #ifdef __linux__
@@ -544,7 +542,6 @@ TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 0;
   state.seqHi = 10;
 
@@ -553,7 +550,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
 }
 
 TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
@@ -563,7 +560,6 @@ TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 1;
   state.seqHi = 5;
 
@@ -572,7 +568,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
 }
 
 TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
@@ -582,7 +578,6 @@ TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 0;
   state.seqHi = 43;
 
@@ -592,7 +587,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 1U);
   EXPECT_EQ(state.seqLo, 43U);
-  EXPECT_FALSE(state.pendingCompletions);
+  EXPECT_FALSE(state.pendingCompletions());
 }
 
 TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
@@ -602,7 +597,6 @@ TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 0;
   state.seqHi = 43;
 
@@ -615,7 +609,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 1U);
   EXPECT_EQ(state.seqLo, 43U);
-  EXPECT_FALSE(state.pendingCompletions);
+  EXPECT_FALSE(state.pendingCompletions());
 }
 
 TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
@@ -625,7 +619,6 @@ TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 7;
   state.seqHi = 10;
 
@@ -637,7 +630,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 7U);
 }
 
@@ -648,7 +641,6 @@ TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 2;
   state.seqHi = 5;
 
@@ -660,7 +652,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 2U);
 }
 
@@ -671,7 +663,6 @@ TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 4;
   state.seqHi = 10;
 
@@ -683,7 +674,7 @@ TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 4U);
 }
 
@@ -694,7 +685,6 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
   BaseFd guard1(sv[1]);
 
   ZeroCopyState state;
-  state.pendingCompletions = true;
   state.seqLo = 9;
   state.seqHi = 20;
 
@@ -706,8 +696,80 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
   EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions);
+  EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 9U);
+}
+
+TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  // Set up large socket buffers
+  int sndbuf = 256 * 1024;
+  int rcvbuf = 256 * 1024;
+  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+
+  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
+  const std::string largeData(payloadSize, 'N');
+
+  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // This is a transient condition — the transport must fall through to regular write.
+  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
+
+  auto result = transport.write(largeData);
+  // Should succeed via regular write fallback, NOT return Error.
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  // Read back the data to verify it was sent via regular write
+  std::string recvBuf(payloadSize, '\0');
+  std::size_t totalRecv = 0;
+  while (totalRecv < payloadSize) {
+    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
+    totalRecv += static_cast<std::size_t>(rc);
+  }
+  EXPECT_EQ(recvBuf, largeData);
+}
+
+TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+
+  const std::string head(4, 'H');
+  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
+  const std::size_t payloadSize = head.size() + body.size();
+
+  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // This is a transient condition — the transport must fall through to regular writev.
+  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
+
+  auto result = transport.write(head, body);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  // Read back the data to verify it was sent via regular writev
+  std::string recvBuf(payloadSize, '\0');
+  std::size_t totalRecv = 0;
+  while (totalRecv < payloadSize) {
+    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
+    totalRecv += static_cast<std::size_t>(rc);
+  }
+  EXPECT_EQ(recvBuf, head + body);
 }
 
 #endif  // __linux__
