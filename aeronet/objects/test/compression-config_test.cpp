@@ -23,6 +23,13 @@ TEST(CompressionConfigTest, MinBytesZeroThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(CompressionConfigTest, InitialCompressionBufferLimitZeroThrows) {
+  CompressionConfig config;
+  config.initialCompressionBufferLimit = 0;
+
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
   CompressionConfig config;
   config.preferredFormats.push_back(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));

@@ -110,6 +110,26 @@ struct CompressionConfig {
   // Example: 0.6 requires at least 40% size reduction.
   float maxCompressRatio{0.6F};
 
+  // Maximum size of the initial output buffer used for automatic compression.
+  //
+  // If the configured compression limit is less than or equal to this value,
+  // compression is executed in a single-pass allocation.
+  //
+  // Otherwise, compression begins with this initial buffer size and proceeds
+  // in streaming mode. The output buffer grows exponentially, up to the
+  // configured maximum compressed size. If that limit is reached before
+  // compression completes, the operation is aborted and the response is
+  // left unmodified.
+  //
+  // This setting allows tuning the balance between:
+  //
+  //   • upfront memory reservation,
+  //   • reallocation frequency during streaming compression,
+  //   • and overall compression latency for large responses.
+  //
+  // Default: 32 KiB. Must be strictly positive.
+  std::uint32_t initialCompressionBufferLimit{32U << 10};
+
   // Minimum uncompressed body size required before compression is considered.
   //
   // • For finalized (non-streaming) responses, compression is attempted only if total body size >= minBytes.
