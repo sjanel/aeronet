@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include <glaze/glaze.hpp>
+#include <glaze/glaze.hpp>  // IWYU pragma: export
 #include <string>
 
 // Test structures for serialization

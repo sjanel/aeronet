@@ -2,7 +2,7 @@
 
 #ifdef AERONET_ENABLE_GLAZE
 
-#include <glaze/glaze.hpp>
+#include <glaze/glaze.hpp>  // IWYU pragma: export
 #include <string>
 
 namespace aeronet {

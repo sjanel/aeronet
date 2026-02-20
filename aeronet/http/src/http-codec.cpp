@@ -5,6 +5,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -306,8 +307,8 @@ std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVar
 }  // namespace
 
 bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp) {
-  const auto bodySz = resp.bodyInMemoryLength();
-  const auto& compressionConfig = *compressionState.pCompressionConfig;
+  const std::size_t bodySz = resp.bodyInMemoryLength();
+  const CompressionConfig& compressionConfig = *compressionState.pCompressionConfig;
 
   if (bodySz < compressionConfig.minBytes) {
     return false;
@@ -373,22 +374,107 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
   const std::size_t headersShift =
       additionalVaryLen + contentEncodingHeaderLineSz + upperContentLengthLineLen - contentLengthLineLen;
   const std::size_t capturedTrailerGrowth = hasBodyCaptured ? trailersSz : 0UL;
-  const auto neededCapacity = oldDataSz + maxCompressedBytes + headersShift + capturedTrailerGrowth;
 
-  // unique reallocation
-  resp._data.reserve(neededCapacity);
+  const auto initialCompressionBufferLimit = compressionConfig.initialCompressionBufferLimit;
+  const std::size_t initialCompressedBytes = std::min<std::size_t>(maxCompressedBytes, initialCompressionBufferLimit);
+  const std::size_t initialNeededCapacity = oldDataSz + initialCompressedBytes + headersShift + capturedTrailerGrowth;
+
+  resp._data.reserve(initialNeededCapacity);
 
   // Note: we are before the finalization of the HttpResponse here, so there is no Transfer-Encoding: chunked case to
   // worry about (with tail \r\n0\r\n[trailers]\r\n). The trailers are directly after the body if they exist (not even a
   // CRLF splits the body and the first trailer line).
-  char* pCompBody = resp._data.data() + oldDataSz + headersShift;
-  const std::size_t compressedSize =
-      compressionState.encodeFull(encoding, resp.bodyInMemory(), maxCompressedBytes, pCompBody);
+  const std::size_t bodyCompStartPos = oldDataSz + headersShift;
+  char* pCompBody = resp._data.data() + bodyCompStartPos;
 
-  if (compressedSize == 0) {
-    // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
-    // TODO: increase telemetry counter?
-    return false;
+  std::string_view body = resp.bodyInMemory();
+
+  std::size_t compressedSize;
+  if (maxCompressedBytes <= initialCompressionBufferLimit) {
+    // For very small max compressed size, we can just try to compress directly to the final position without streaming.
+    compressedSize = compressionState.encodeFull(encoding, body, maxCompressedBytes, pCompBody);
+    if (compressedSize == 0) {
+      // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
+      // TODO: increase telemetry counter?
+      return false;
+    }
+  } else {
+    std::size_t availableCompCapa = std::min<std::size_t>(maxCompressedBytes, resp._data.capacity() - bodyCompStartPos);
+    const std::size_t maxCapacity = initialNeededCapacity + (maxCompressedBytes - initialCompressedBytes);
+
+    // For larger max compressed size, we will do streaming compression with flushes, to avoid compressing more than
+    // needed in case the compression ratio is not satisfied.
+    EncoderContext* encoder = compressionState.makeContext(encoding);
+    compressedSize = 0;
+
+    const auto ensureEnoughCapacity = [&resp, &compressedSize, &availableCompCapa, &pCompBody, &body, hasBodyCaptured,
+                                       bodyCompStartPos, capturedTrailerGrowth, maxCapacity, maxCompressedBytes]() {
+      if (compressedSize == availableCompCapa) {
+        if (resp._data.capacity() == maxCapacity) {
+          // We cannot compress within the max compressed size limit - abort compression and leave the response
+          // unmodified.
+          return false;
+        }
+        const std::size_t newAvailable = std::min(maxCompressedBytes, availableCompCapa * 2UL);
+        const std::size_t newTotalCapacity = bodyCompStartPos + newAvailable + capturedTrailerGrowth;
+
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+        // Temporarily extend size to cover compressed output so reallocUp preserves it.
+        const auto oldDataSz = resp._data.size();
+        resp._data.setSize(bodyCompStartPos + compressedSize);
+#endif
+        resp._data.reserve(newTotalCapacity);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+        resp._data.setSize(oldDataSz);
+#endif
+
+        availableCompCapa = newAvailable;
+        pCompBody = resp._data.data() + bodyCompStartPos;
+        if (!hasBodyCaptured) {
+          body = resp.bodyInMemory();
+        }
+      }
+      return true;
+    };
+
+    // Compress body in chunks, with flushes in between, to be able to stop as soon as we exceed maxCompressedBytes
+    // without allocating too much memory at once for large bodies.
+    for (std::size_t offsetBody = 0; offsetBody < bodySz;) {
+      if (!ensureEnoughCapacity()) {
+        return false;
+      }
+
+      const std::size_t chunkSize = std::min<std::size_t>(bodySz - offsetBody, initialCompressionBufferLimit);
+      const int64_t written = encoder->encodeChunk(body.substr(offsetBody, chunkSize),
+                                                   availableCompCapa - compressedSize, pCompBody + compressedSize);
+      if (written < 0) {
+        // compression failed - abort compression and leave the response unmodified
+        return false;
+      }
+      // TODO: abort compression if compression ratio of first chunk is catastrophic?
+      // Pre-sizing based on historical compression ratio per route?
+      compressedSize += static_cast<std::size_t>(written);
+      assert(compressedSize <= maxCompressedBytes);
+      offsetBody += chunkSize;
+    }
+
+    // finalization flush(es)
+    while (true) {
+      if (!ensureEnoughCapacity()) {
+        return false;
+      }
+      const int64_t written = encoder->end(availableCompCapa - compressedSize, pCompBody + compressedSize);
+      if (written < 0) {
+        // compression failed - abort compression and leave the response unmodified
+        return false;
+      }
+      if (written == 0) {
+        // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
+        break;
+      }
+      compressedSize += static_cast<std::size_t>(written);
+      assert(compressedSize <= maxCompressedBytes);
+    }
   }
 
   // Compression succeeded at this point, we can start to move parts to their final position.
@@ -413,7 +499,7 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
     const char* pTrailers = resp.trailersFlatView().data();
     char* pDest;
     if (hasBodyCaptured) {
-      pDest = resp._data.data() + oldDataSz + headersShift + compressedSize;
+      pDest = resp._data.data() + bodyCompStartPos + compressedSize;
       std::memcpy(pDest, pTrailers, trailersSz);
     } else {
       pDest = resp._data.data() + (pTrailers - resp._data.data()) + headersShift + compressedSize - bodySz;

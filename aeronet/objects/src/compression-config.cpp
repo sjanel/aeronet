@@ -22,6 +22,9 @@ void CompressionConfig::validate() const {
   if (maxCompressRatio <= 0.0 || maxCompressRatio >= 1.0) {
     throw std::invalid_argument("Invalid maxCompressRatio, should be > 0.0 and < 1.0");
   }
+  if (initialCompressionBufferLimit == 0) {
+    throw std::invalid_argument("initialCompressionBufferLimit must be greater than 0");
+  }
   if (minBytes < 1U) {
     throw std::invalid_argument("minBytes must be at least 1");
   }
