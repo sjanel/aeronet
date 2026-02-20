@@ -710,6 +710,78 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
   EXPECT_EQ(state.seqLo, 9U);
 }
 
+TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  // Set up large socket buffers
+  int sndbuf = 256 * 1024;
+  int rcvbuf = 256 * 1024;
+  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+
+  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
+  const std::string largeData(payloadSize, 'N');
+
+  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // This is a transient condition — the transport must fall through to regular write.
+  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
+
+  auto result = transport.write(largeData);
+  // Should succeed via regular write fallback, NOT return Error.
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  // Read back the data to verify it was sent via regular write
+  std::string recvBuf(payloadSize, '\0');
+  std::size_t totalRecv = 0;
+  while (totalRecv < payloadSize) {
+    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
+    totalRecv += static_cast<std::size_t>(rc);
+  }
+  EXPECT_EQ(recvBuf, largeData);
+}
+
+TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+
+  const std::string head(4, 'H');
+  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
+  const std::size_t payloadSize = head.size() + body.size();
+
+  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // This is a transient condition — the transport must fall through to regular writev.
+  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
+
+  auto result = transport.write(head, body);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  // Read back the data to verify it was sent via regular writev
+  std::string recvBuf(payloadSize, '\0');
+  std::size_t totalRecv = 0;
+  while (totalRecv < payloadSize) {
+    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
+    totalRecv += static_cast<std::size_t>(rc);
+  }
+  EXPECT_EQ(recvBuf, head + body);
+}
+
 #endif  // __linux__
 
 }  // namespace aeronet

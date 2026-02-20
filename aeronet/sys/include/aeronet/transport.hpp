@@ -67,6 +67,14 @@ class ITransport {
   }
 
   [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
+
+  /// Check if there are any outstanding zerocopy sends waiting for completion.
+  /// Subclasses with MSG_ZEROCOPY support override this to check their ZeroCopyState.
+  [[nodiscard]] virtual bool hasZerocopyPending() const noexcept { return false; }
+
+  /// Poll for zerocopy completion notifications from the kernel error queue.
+  /// Returns the number of completions processed.
+  virtual std::size_t pollZerocopyCompletions() noexcept { return 0; }
 };
 
 // Plain transport directly operates on a non-blocking fd.
@@ -88,14 +96,14 @@ class PlainTransport final : public ITransport {
   /// Poll for zerocopy completion notifications from the kernel error queue.
   /// This is non-blocking and should be called periodically when there are pending
   /// zerocopy sends. Returns the number of completions processed.
-  std::size_t pollZerocopyCompletions() noexcept;
+  std::size_t pollZerocopyCompletions() noexcept override;
 
   /// Disable zerocopy for this transport (useful when buffer lifetimes are not stable,
   /// e.g. CONNECT tunneling that reuses read buffers).
   void disableZerocopy() noexcept;
 
   /// Check if there are any outstanding zerocopy sends waiting for completion.
-  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions; }
+  [[nodiscard]] bool hasZerocopyPending() const noexcept override { return _zerocopyState.pendingCompletions; }
 
  private:
   /// Internal write implementation with optional zerocopy support.
@@ -103,6 +111,7 @@ class PlainTransport final : public ITransport {
 
   int _fd;
   ZeroCopyState _zerocopyState{};
+  bool _forcedZerocopy{false};
 };
 
 }  // namespace aeronet

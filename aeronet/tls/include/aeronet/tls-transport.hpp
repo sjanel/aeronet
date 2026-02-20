@@ -49,13 +49,13 @@ class TlsTransport final : public ITransport {
 
   /// Poll for zerocopy completion notifications from the kernel error queue.
   /// Returns the number of completions processed.
-  std::size_t pollZerocopyCompletions() noexcept;
+  std::size_t pollZerocopyCompletions() noexcept override;
 
   /// Disable zerocopy for this transport.
   void disableZerocopy() noexcept;
 
   /// Check if there are any outstanding zerocopy sends waiting for completion.
-  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions; }
+  [[nodiscard]] bool hasZerocopyPending() const noexcept override { return _zerocopyState.pendingCompletions; }
 
   /// Store the underlying socket fd for zerocopy operations.
   /// Called after SSL_set_fd to cache the fd for direct socket I/O when kTLS is active.
