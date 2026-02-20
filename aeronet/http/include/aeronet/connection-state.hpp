@@ -14,6 +14,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"
@@ -117,6 +118,15 @@ struct ConnectionState {
 
   void reclaimMemoryFromOversizedBuffers();
 
+  /// Hold the given buffer alive until all pending MSG_ZEROCOPY sends complete.
+  /// MSG_ZEROCOPY pins user-space pages and the kernel DMA's from them asynchronously;
+  /// freeing the buffer before the completion notification arrives causes data corruption.
+  /// If no zerocopy sends are pending, the buffer is released immediately (goes out of scope).
+  void holdBufferIfZerocopyPending(HttpResponseData buf);
+
+  /// Poll the kernel error queue and release held zerocopy buffers whose sends have completed.
+  void releaseCompletedZerocopyBuffers();
+
   struct AggregatedBodyStreamContext {
     std::string_view body;
     std::size_t offset{0};
@@ -132,7 +142,12 @@ struct ConnectionState {
   // per-connection request object reused across dispatches
   HttpRequest request;
   AggregatedBodyStreamContext bodyStreamContext;
-  HttpResponseData outBuffer;             // pending outbound data not yet written
+  // pending outbound data not yet written
+  HttpResponseData outBuffer;
+  // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals
+  // completion via the error queue. Without this, the allocator can reuse the freed
+  // pages while the kernel is still DMA-ing from them, causing data corruption.
+  vector<HttpResponseData> zerocopyPendingBuffers;
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).

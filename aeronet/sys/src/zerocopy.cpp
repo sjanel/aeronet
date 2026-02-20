@@ -33,7 +33,7 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
 }
 
 ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexcept {
-  assert(state.enabled);
+  assert(state.enabled());
 
   // Use sendmsg with MSG_ZEROCOPY for large payloads
   // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
@@ -46,9 +46,11 @@ ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexce
 
   const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
-    // Track the pending completion - kernel will notify via error queue
-    state.pendingCompletions = true;
-    // Note: seqHi is incremented by the kernel internally; we just need to poll completions
+    // Track the pending completion - kernel will notify via error queue.
+    // The kernel assigns monotonically increasing sequence numbers starting from 0;
+    // seqHi tracks the next expected sequence so PollZeroCopyCompletions can determine
+    // when all outstanding sends have completed.
+    ++state.seqHi;
   }
 
   return sent;
@@ -58,9 +60,9 @@ ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondB
   // Use sendmsg with MSG_ZEROCOPY for large payloads
   // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  iovec iov[2]{{const_cast<char*>(firstBuf.data()), firstBuf.size()},
-               // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-               {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
+  iovec iov[]{{const_cast<char*>(firstBuf.data()), firstBuf.size()},
+              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
 
   msghdr msg{};
   msg.msg_iov = iov;
@@ -68,16 +70,14 @@ ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondB
 
   const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
-    // Track the pending completion - kernel will notify via error queue
-    state.pendingCompletions = true;
-    // Note: seqHi is incremented by the kernel internally; we just need to poll completions
+    ++state.seqHi;
   }
 
   return sent;
 }
 
 std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
-  if (!state.pendingCompletions) {
+  if (!state.pendingCompletions()) {
     return 0;
   }
 
@@ -128,11 +128,6 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
 
       cm = CMSG_NXTHDR(&msg, cm);
     }
-  }
-
-  // Check if all outstanding sends have completed
-  if (state.seqLo >= state.seqHi) {
-    state.pendingCompletions = false;
   }
 
   return completions;

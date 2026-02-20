@@ -302,6 +302,13 @@ TEST(HttpServerConfigTest, ZerocopyModeEnabled) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(HttpServerConfigTest, ZerocopyModeForced) {
+  HttpServerConfig config;
+  config.withZerocopyMode(ZerocopyMode::Forced);
+  EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Forced);
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(HttpServerConfigTest, ZerocopyModeBuilderChaining) {
   // Verify builder pattern chaining works correctly
   HttpServerConfig config =

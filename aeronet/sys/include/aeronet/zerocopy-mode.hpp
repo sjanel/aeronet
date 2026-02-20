@@ -31,7 +31,11 @@ enum class ZerocopyMode : std::uint8_t {
 
   // Enables zerocopy even if connection is on loopback - logs a warning if zerocopy cannot be activated.
   // It will still not be used for payloads below the threshold.
-  Enabled
+  Enabled,
+
+  // Like Enabled, but bypasses the minimum payload size threshold.
+  // Useful for stress-testing zerocopy on localhost with any payload size.
+  Forced
 };
 
 }  // namespace aeronet
