@@ -20,6 +20,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-request.hpp"
@@ -306,20 +307,21 @@ std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVar
 
 }  // namespace
 
-bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp) {
+CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding,
+                                                      HttpResponse& resp) {
   const std::size_t bodySz = resp.bodyInMemoryLength();
   const CompressionConfig& compressionConfig = *compressionState.pCompressionConfig;
 
   if (bodySz < compressionConfig.minBytes) {
-    return false;
+    return CompressResponseResult::uncompressed;
   }
   if (resp.hasContentEncoding()) {
-    return false;
+    return CompressResponseResult::uncompressed;
   }
   if (!compressionConfig.contentTypeAllowList.empty()) {
     const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
-      return false;
+      return CompressResponseResult::uncompressed;
     }
   }
 
@@ -396,7 +398,7 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
     if (compressedSize == 0) {
       // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
       // TODO: increase telemetry counter?
-      return false;
+      return CompressResponseResult::exceedsMaxRatio;
     }
   } else {
     std::size_t availableCompCapa = std::min<std::size_t>(maxCompressedBytes, resp._data.capacity() - bodyCompStartPos);
@@ -441,7 +443,7 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
     // without allocating too much memory at once for large bodies.
     for (std::size_t offsetBody = 0; offsetBody < bodySz;) {
       if (!ensureEnoughCapacity()) {
-        return false;
+        return CompressResponseResult::exceedsMaxRatio;
       }
 
       const std::size_t chunkSize = std::min<std::size_t>(bodySz - offsetBody, initialCompressionBufferLimit);
@@ -449,7 +451,7 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
                                                    availableCompCapa - compressedSize, pCompBody + compressedSize);
       if (written < 0) {
         // compression failed - abort compression and leave the response unmodified
-        return false;
+        return CompressResponseResult::error;
       }
       // TODO: abort compression if compression ratio of first chunk is catastrophic?
       // Pre-sizing based on historical compression ratio per route?
@@ -461,12 +463,12 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
     // finalization flush(es)
     while (true) {
       if (!ensureEnoughCapacity()) {
-        return false;
+        return CompressResponseResult::exceedsMaxRatio;
       }
       const int64_t written = encoder->end(availableCompCapa - compressedSize, pCompBody + compressedSize);
       if (written < 0) {
         // compression failed - abort compression and leave the response unmodified
-        return false;
+        return CompressResponseResult::error;
       }
       if (written == 0) {
         // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
@@ -574,7 +576,7 @@ bool HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, 
   resp._data.setSize(newBodyStartPos + compressedSize + trailersSz);
   resp._payloadVariant = {};
 
-  return true;
+  return CompressResponseResult::compressed;
 }
 
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,

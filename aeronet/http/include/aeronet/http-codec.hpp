@@ -10,6 +10,7 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -78,18 +79,14 @@ struct ResponseCompressionState {
 #endif
 };
 
-struct RequestDecompressionResult {
-  http::StatusCode status{http::StatusCodeOK};
-  const char* message = nullptr;
-};
-
 class HttpCodec {
  public:
   // Try to compress the response body with the given encoding. Returns true if compression was applied, false if not
   // (either because the encoding is not supported, or because compression failed or did not meet config thresholds). On
   // true return, the response is modified in-place with the compressed body and appropriate headers. On false return,
   // the response is left unmodified.
-  static bool TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding, HttpResponse& resp);
+  static CompressResponseResult TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding,
+                                                    HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
