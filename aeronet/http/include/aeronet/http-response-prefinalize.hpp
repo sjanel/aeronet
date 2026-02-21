@@ -5,6 +5,10 @@ namespace aeronet {
 class HttpRequest;
 class HttpResponse;
 
+namespace tracing {
+class TelemetryContext;
+}
+
 namespace internal {
 struct ResponseCompressionState;
 
@@ -13,7 +17,7 @@ struct ResponseCompressionState;
 /// - injects default 404 body when missing (for non-HEAD)
 /// - applies in-memory response compression based on Accept-Encoding (for non-HEAD)
 void PrefinalizeHttpResponse(const HttpRequest& request, HttpResponse& response, bool isHead,
-                             ResponseCompressionState& compressionState);
+                             ResponseCompressionState& compressionState, tracing::TelemetryContext& telemetryContext);
 
 }  // namespace internal
 }  // namespace aeronet

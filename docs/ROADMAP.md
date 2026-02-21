@@ -30,6 +30,8 @@
 - **Performance improvements**:
   - `TCP_CORK` / `TCP_NOPUSH` for response header/body coalescing
   - Further hot-path cache locality optimization
+- Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
+  - Support tags/labels for metrics
 
 ### Performance improvement ideas
 
@@ -37,6 +39,7 @@
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
+- `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
 ## Long-term / Nice-to-have
 

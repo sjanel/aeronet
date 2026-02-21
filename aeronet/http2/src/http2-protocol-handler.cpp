@@ -370,21 +370,18 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     return;
   }
 
-  ErrorCode err;
+  ErrorCode err = ErrorCode::NoError;
 
   // Dispatch to the callback provided by SingleHttpServer
   try {
     const bool isHead = (request.method() == http::Method::HEAD);
     HttpResponse resp = reply(request);
 
-    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState);
+    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
 
     resp.finalizeForHttp2();
 
     err = sendResponse(streamId, std::move(resp), isHead);
-    if (err != ErrorCode::NoError) [[unlikely]] {
-      log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
-    }
   } catch (const std::exception& ex) {
     log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
     err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, ex.what()),
@@ -393,6 +390,9 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     log::error("HTTP/2 unknown exception on stream {}", streamId);
     err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Unknown error"),
                        /*isHeadMethod=*/false);
+  }
+  if (err != ErrorCode::NoError) [[unlikely]] {
+    log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
   }
 
   // Clean up stream request
