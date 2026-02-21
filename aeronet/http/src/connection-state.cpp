@@ -47,6 +47,8 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
       zerocopyRequested = false;
       break;
     case ZerocopyMode::Enabled:
+      [[fallthrough]];
+    case ZerocopyMode::Forced:
       zerocopyRequested = true;
       break;
     default: {
@@ -279,6 +281,10 @@ void ConnectionState::reset() {
   request.shrinkAndMaybeClear();
 
   shrinkAndClear(outBuffer);
+  // Release any buffers held for zerocopy lifetime — the fd is about to be closed
+  // (or already closed), so the kernel will release page references regardless.
+  zerocopyPendingBuffers.clear();
+  zerocopyPendingBuffers.shrink_to_fit();
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
   transport.reset();
@@ -355,6 +361,33 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // Only shrink when fully flushed (empty) to avoid interfering with pending writes.
   if (outBuffer.empty()) {
     outBuffer.shrink_to_fit();
+  }
+
+  // zerocopyPendingBuffers: release completed entries and reclaim capacity.
+  releaseCompletedZerocopyBuffers();
+  if (zerocopyPendingBuffers.empty()) {
+    zerocopyPendingBuffers.shrink_to_fit();
+  }
+}
+
+void ConnectionState::holdBufferIfZerocopyPending(HttpResponseData buf) {
+  if (transport && transport->hasZerocopyPending()) {
+    zerocopyPendingBuffers.push_back(std::move(buf));
+  }
+}
+
+void ConnectionState::releaseCompletedZerocopyBuffers() {
+  if (zerocopyPendingBuffers.empty()) {
+    return;
+  }
+  if (transport) {
+    transport->pollZerocopyCompletions();
+    if (!transport->hasZerocopyPending()) {
+      zerocopyPendingBuffers.clear();
+    }
+  } else {
+    // Transport gone (connection closing) — safe to release all held buffers.
+    zerocopyPendingBuffers.clear();
   }
 }
 

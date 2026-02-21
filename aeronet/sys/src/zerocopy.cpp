@@ -46,9 +46,12 @@ ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexce
 
   const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
-    // Track the pending completion - kernel will notify via error queue
+    // Track the pending completion - kernel will notify via error queue.
+    // The kernel assigns monotonically increasing sequence numbers starting from 0;
+    // seqHi tracks the next expected sequence so PollZeroCopyCompletions can determine
+    // when all outstanding sends have completed.
     state.pendingCompletions = true;
-    // Note: seqHi is incremented by the kernel internally; we just need to poll completions
+    ++state.seqHi;
   }
 
   return sent;
@@ -68,9 +71,8 @@ ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondB
 
   const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
-    // Track the pending completion - kernel will notify via error queue
     state.pendingCompletions = true;
-    // Note: seqHi is incremented by the kernel internally; we just need to poll completions
+    ++state.seqHi;
   }
 
   return sent;

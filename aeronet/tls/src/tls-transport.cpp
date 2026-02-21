@@ -213,6 +213,11 @@ void TlsTransport::disableZerocopy() noexcept {
 ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
+  // Drain pending completion notifications before issuing a new zerocopy send.
+  // This prevents the kernel error queue from growing unbounded, avoids ENOBUFS,
+  // and releases pinned pages promptly — critical for virtual devices (veth in K8s).
+  PollZeroCopyCompletions(_fd, _zerocopyState);
+
   // Use zerocopy sendmsg for large payloads when kTLS is active.
   // The kernel handles encryption, so we can DMA directly from user pages.
   const auto nbWritten = ZerocopySend(_fd, data, _zerocopyState);
@@ -229,6 +234,9 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     // Fall through to regular send
   } else if (errno == EAGAIN) {
     ret.want = TransportHint::WriteReady;
+  } else if (errno == ENOBUFS) {
+    // Kernel cannot pin more pages for zerocopy — fall through to SSL_write path.
+    // This is a transient condition, not a fatal error.
   } else {
     ret.want = TransportHint::Error;
   }

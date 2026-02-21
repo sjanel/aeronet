@@ -16,11 +16,12 @@ namespace aeronet {
 
 static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
 
-PlainTransport::PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled) : _fd(fd) {
+PlainTransport::PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled)
+    : _fd(fd), _forcedZerocopy(zerocopyMode == ZerocopyMode::Forced) {
   if (isZerocopyEnabled && zerocopyMode != ZerocopyMode::Disabled) {
     const auto result = EnableZeroCopy(_fd);
     _zerocopyState.enabled = result == ZeroCopyEnableResult::Enabled;
-    if (!_zerocopyState.enabled && zerocopyMode == ZerocopyMode::Enabled) {
+    if (!_zerocopyState.enabled && (zerocopyMode == ZerocopyMode::Enabled || zerocopyMode == ZerocopyMode::Forced)) {
       log::warn("Failed to enable MSG_ZEROCOPY on fd # {}", fd);
     }
   }
@@ -45,7 +46,11 @@ ITransport::TransportResult PlainTransport::writeInternal(std::string_view data)
   TransportResult ret{0, TransportHint::None};
 
   // Try zerocopy for large payloads if enabled
-  if (_zerocopyState.enabled && data.size() >= kZeroCopyMinPayloadSize) {
+  if (_zerocopyState.enabled && (_forcedZerocopy || data.size() >= kZeroCopyMinPayloadSize)) {
+    // Drain pending completion notifications before issuing a new zerocopy send.
+    // This prevents the kernel error queue from growing unbounded, avoids ENOBUFS,
+    // and releases pinned pages promptly — critical for virtual devices (veth in K8s).
+    PollZeroCopyCompletions(_fd, _zerocopyState);
     const auto nbWritten = ZerocopySend(_fd, data, _zerocopyState);
     if (nbWritten >= 0) {
       ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
@@ -57,6 +62,9 @@ ITransport::TransportResult PlainTransport::writeInternal(std::string_view data)
     } else if (errno == EAGAIN) {
       ret.want = TransportHint::WriteReady;
       return ret;
+    } else if (errno == ENOBUFS) {
+      // Kernel cannot pin more pages for zerocopy — fall through to regular write path.
+      // This is a transient condition, not a fatal error.
     } else {
       ret.want = TransportHint::Error;
       return ret;
@@ -109,7 +117,10 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
   const std::size_t totalSize = firstBuf.size() + secondBuf.size();
 
   // Try zerocopy for large payloads if enabled
-  if (_zerocopyState.enabled && totalSize >= kZeroCopyMinPayloadSize) {
+  if (_zerocopyState.enabled && (_forcedZerocopy || totalSize >= kZeroCopyMinPayloadSize)) {
+    // Drain pending completion notifications before issuing a new zerocopy send.
+    PollZeroCopyCompletions(_fd, _zerocopyState);
+
     const auto nbWritten = ZerocopySend(_fd, firstBuf, secondBuf, _zerocopyState);
     if (nbWritten >= 0) {
       ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
@@ -121,6 +132,9 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
     } else if (errno == EAGAIN) {
       ret.want = TransportHint::WriteReady;
       return ret;
+    } else if (errno == ENOBUFS) {
+      // Kernel cannot pin more pages for zerocopy — fall through to regular write path.
+      // This is a transient condition, not a fatal error.
     } else {
       ret.want = TransportHint::Error;
       return ret;
