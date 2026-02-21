@@ -76,6 +76,8 @@ struct HttpServerConfig {
   // to avoid accidentally merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
 
+  // Zero copy mode for outbound responses.
+  // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel).
   ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
 
   enum class TraceMethodPolicy : std::uint8_t {

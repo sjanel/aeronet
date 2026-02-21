@@ -21,6 +21,10 @@ enum class TransportHint : uint8_t {
 // TODO: check if we cannot simply make a unique Transport non virtual class with internal variants.
 class ITransport {
  public:
+  ITransport() noexcept = default;
+
+  explicit ITransport(int fd) : _fd(fd) {}
+
   virtual ~ITransport() = default;
 
   struct TransportResult {
@@ -67,6 +71,24 @@ class ITransport {
   }
 
   [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
+
+  /// Poll for zerocopy completion notifications from the kernel error queue.
+  /// Returns the number of completions processed.
+  std::size_t pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }
+
+  /// Check if zerocopy is enabled on this transport.
+  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _zerocopyState.enabled(); }
+
+  /// Check if there are any outstanding zerocopy sends waiting for completion.
+  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions(); }
+
+  /// Disable zerocopy for this transport (useful when buffer lifetimes are not stable,
+  /// e.g. CONNECT tunneling that reuses read buffers).
+  void disableZerocopy() noexcept { _zerocopyState.setEnabled(false); }
+
+ protected:
+  ZeroCopyState _zerocopyState{};
+  int _fd{-1};
 };
 
 // Plain transport directly operates on a non-blocking fd.
@@ -82,27 +104,8 @@ class PlainTransport final : public ITransport {
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
 
-  /// Check if zerocopy is enabled on this transport.
-  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _zerocopyState.enabled; }
-
-  /// Poll for zerocopy completion notifications from the kernel error queue.
-  /// This is non-blocking and should be called periodically when there are pending
-  /// zerocopy sends. Returns the number of completions processed.
-  std::size_t pollZerocopyCompletions() noexcept;
-
-  /// Disable zerocopy for this transport (useful when buffer lifetimes are not stable,
-  /// e.g. CONNECT tunneling that reuses read buffers).
-  void disableZerocopy() noexcept;
-
-  /// Check if there are any outstanding zerocopy sends waiting for completion.
-  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions; }
-
  private:
-  /// Internal write implementation with optional zerocopy support.
-  TransportResult writeInternal(std::string_view data);
-
-  int _fd;
-  ZeroCopyState _zerocopyState{};
+  bool _forcedZerocopy{false};
 };
 
 }  // namespace aeronet

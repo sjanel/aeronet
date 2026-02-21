@@ -47,6 +47,8 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
       zerocopyRequested = false;
       break;
     case ZerocopyMode::Enabled:
+      [[fallthrough]];
+    case ZerocopyMode::Forced:
       zerocopyRequested = true;
       break;
     default: {
@@ -95,12 +97,12 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
 ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
   // Kernel sendfile(2): use a large chunk to minimize syscalls.  The kernel transfers
   // directly from page-cache to socket buffer, so a large value just means fewer
-  // transitions to/from kernel mode.  Previously 64 KB — that forced ~400 syscalls for
-  // a 25 MB file and throttled loopback throughput to ~180 MB/s.
+  // transitions to/from kernel mode. A too small value would cause excessive syscalls and reduce throughput, especially
+  // for large files.
   static constexpr std::size_t kSendfileChunk = 2UL << 20;  // 2 MiB
 
   // TLS (pread) path: we read into a user-space buffer that then gets encrypted and
-  // written via the transport.  A much smaller chunk avoids allocating a huge buffer
+  // written via the transport. A much smaller chunk avoids allocating a huge buffer
   // and prevents deadlocks when the peer socket buffer is smaller than the chunk
   // (common in unit tests with blocking socketpairs, but also in real deployments
   // where TCP send-buffer may be ~128-256 KB).
@@ -279,6 +281,10 @@ void ConnectionState::reset() {
   request.shrinkAndMaybeClear();
 
   shrinkAndClear(outBuffer);
+  // Release any buffers held for zerocopy lifetime — the fd is about to be closed
+  // (or already closed), so the kernel will release page references regardless.
+  zerocopyPendingBuffers.clear();
+  zerocopyPendingBuffers.shrink_to_fit();
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
   transport.reset();
@@ -352,9 +358,28 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   inBuffer.shrink_to_fit();
 
   // outBuffer: grows when TCP writes can't keep up and responses queue.
-  // Only shrink when fully flushed (empty) to avoid interfering with pending writes.
-  if (outBuffer.empty()) {
-    outBuffer.shrink_to_fit();
+  outBuffer.shrink_to_fit();
+
+  // zerocopyPendingBuffers: release completed entries and reclaim capacity.
+  releaseCompletedZerocopyBuffers();
+  zerocopyPendingBuffers.shrink_to_fit();
+}
+
+void ConnectionState::holdBufferIfZerocopyPending(HttpResponseData buf) {
+  assert(transport != nullptr);
+  if (transport->hasZerocopyPending()) {
+    zerocopyPendingBuffers.push_back(std::move(buf));
+  }
+}
+
+void ConnectionState::releaseCompletedZerocopyBuffers() {
+  if (zerocopyPendingBuffers.empty()) {
+    return;
+  }
+  assert(transport != nullptr);
+  transport->pollZerocopyCompletions();
+  if (!transport->hasZerocopyPending()) {
+    zerocopyPendingBuffers.clear();
   }
 }
 

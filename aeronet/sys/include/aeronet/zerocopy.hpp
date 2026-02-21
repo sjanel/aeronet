@@ -37,12 +37,16 @@ enum class ZerocopySendResult : std::uint8_t {
 // Tracks in-flight zerocopy buffers waiting for completion notification.
 // The kernel delivers completion via the socket error queue with SO_EE_ORIGIN_ZEROCOPY.
 struct ZeroCopyState {
+  [[nodiscard]] bool pendingCompletions() const noexcept { return seqLo < seqHi; }
+
+  [[nodiscard]] bool enabled() const noexcept { return seqLo != ~0U; }
+
+  void setEnabled(bool enabled) noexcept { seqLo = static_cast<uint32_t>(enabled) - 1U; }
+
   // Sequence number range tracking completions from the kernel error queue.
   // lo..hi defines the range of outstanding zerocopy sends.
-  std::uint32_t seqLo{0};
+  std::uint32_t seqLo{~0U};
   std::uint32_t seqHi{0};
-  bool enabled{false};
-  bool pendingCompletions{false};  // true if there are in-flight zerocopy buffers
 };
 
 #ifdef __linux__
@@ -88,12 +92,6 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept;
 /// @return Number of completions processed (may be 0 if none ready)
 std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept;
 
-/// Check if all outstanding zerocopy sends have completed.
-/// Returns true if no buffers are waiting for kernel completion notification.
-[[nodiscard]] inline bool AllZerocopyCompleted(const ZeroCopyState& state) noexcept {
-  return !state.pendingCompletions || (state.seqLo == state.seqHi);
-}
-
 #else
 // Non-Linux stubs - zerocopy is Linux-specific
 
@@ -117,8 +115,6 @@ inline ZeroCopyEnableResult EnableZeroCopy([[maybe_unused]] int fd) noexcept {
 inline std::size_t PollZeroCopyCompletions([[maybe_unused]] int fd, [[maybe_unused]] ZeroCopyState& state) noexcept {
   return 0;
 }
-
-[[nodiscard]] inline bool AllZerocopyCompleted([[maybe_unused]] const ZeroCopyState& state) noexcept { return true; }
 
 #endif
 

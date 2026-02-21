@@ -85,7 +85,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // MSG_ZEROCOPY for large payloads (DMA from user pages to NIC).
   // If zerocopy write fails with an unsupported operation (EOPNOTSUPP), we
   // disable zerocopy and fall back to SSL_write for this and future calls.
-  if (_zerocopyState.enabled && data.size() >= kZeroCopyMinPayloadSize) {
+  if (_zerocopyState.enabled() && data.size() >= kZeroCopyMinPayloadSize) {
     ret = writeZerocopy(data);
     if (ret.want != TransportHint::None || ret.bytesProcessed > 0) {
       return ret;
@@ -199,19 +199,17 @@ KtlsEnableResult TlsTransport::enableKtlsSend() {
 
 bool TlsTransport::enableZerocopy() noexcept {
   const auto result = EnableZeroCopy(_fd);
-  _zerocopyState.enabled = result == ZeroCopyEnableResult::Enabled;
-  return _zerocopyState.enabled;
-}
-
-std::size_t TlsTransport::pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }
-
-void TlsTransport::disableZerocopy() noexcept {
-  _zerocopyState.enabled = false;
-  _zerocopyState.pendingCompletions = false;
+  _zerocopyState.setEnabled(result == ZeroCopyEnableResult::Enabled);
+  return _zerocopyState.enabled();
 }
 
 ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
+
+  // Drain pending completion notifications before issuing a new zerocopy send.
+  // This prevents the kernel error queue from growing unbounded, avoids ENOBUFS,
+  // and releases pinned pages promptly — critical for virtual devices (veth in K8s).
+  pollZerocopyCompletions();
 
   // Use zerocopy sendmsg for large payloads when kTLS is active.
   // The kernel handles encryption, so we can DMA directly from user pages.
@@ -229,6 +227,9 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     // Fall through to regular send
   } else if (errno == EAGAIN) {
     ret.want = TransportHint::WriteReady;
+  } else if (errno == ENOBUFS) {
+    // Kernel cannot pin more pages for zerocopy — fall through to SSL_write path.
+    // This is a transient condition, not a fatal error.
   } else {
     ret.want = TransportHint::Error;
   }
