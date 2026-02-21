@@ -166,7 +166,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   const bool isHead = (request.method() == http::Method::HEAD);
   internal::PrefinalizeHttpResponse(request, resp, isHead, _compressionState);
 
-  bool keepAlive =
+  const bool keepAlive =
       request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
 
   const auto respStatusCode = resp.status();
@@ -194,6 +194,9 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
 
 void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
   ConnectionState& state = *cnxIt->second;
+
+  // Release zerocopy buffers whose kernel completions have arrived.
+  state.releaseCompletedZerocopyBuffers();
 
   // Extract file payload early so we can move the File once and avoid double-moves
   // when the response writes immediately.
@@ -224,6 +227,11 @@ void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
         if (written == bufferedSz) {
           _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
           _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+          // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
+          // asynchronously. We must keep the buffer alive until the kernel signals
+          // completion via the error queue, otherwise the allocator can reuse the
+          // freed pages while the kernel is still transmitting — causing data corruption.
+          state.holdBufferIfZerocopyPending(std::move(httpResponseData));
           if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
             flushFilePayload(cnxIt);
           }
@@ -263,6 +271,10 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
   ConnectionState& state = *cnxIt->second;
+
+  // Release zerocopy buffers whose kernel completions have arrived.
+  state.releaseCompletedZerocopyBuffers();
+
   const int fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
@@ -283,6 +295,8 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
       case TransportHint::None:
         if (written > 0) {
           if (written == state.outBuffer.remainingSize()) {
+            // Hold buffer for zerocopy lifetime before clearing (see queueData comment).
+            state.holdBufferIfZerocopyPending(std::move(state.outBuffer));
             state.outBuffer.clear();
             break;
           }
