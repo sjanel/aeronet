@@ -17,16 +17,21 @@
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-response-prefinalize.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/unix-dogstatsd-sink.hpp"
 
 namespace aeronet {
 
@@ -49,6 +54,7 @@ RawChars BuildRaw(std::string_view method, std::string_view target, std::string_
   }
   return str;
 }
+
 }  // namespace
 
 class HttpRequestTest : public ::testing::Test {
@@ -104,6 +110,10 @@ class HttpRequestTest : public ::testing::Test {
     bridge.hasMore = [](const HttpRequest&, void*) -> bool { return false; };
     req._bodyAccessBridge = &bridge;
   }
+
+  void setResponsePossibleEncoding(Encoding encoding) { req._responsePossibleEncoding = encoding; }
+
+  void setCompressionState(internal::ResponseCompressionState* state) { req._pCompressionState = state; }
 
   // Test helpers that require friend access to HttpRequest private members
   struct FakeSpan : public tracing::Span {
@@ -213,6 +223,30 @@ TEST_F(HttpRequestTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
   auto chunk = req.readBody(0);
   EXPECT_TRUE(chunk.empty());
 }
+
+TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
+  for (Encoding encoding : test::SupportedEncodings()) {
+    test::UnixDogstatsdSink sink;
+    TelemetryConfig tcfg;
+    tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
+    tracing::TelemetryContext telemetryContext(tcfg);
+
+    compressionConfig.minBytes = 1U;
+    compressionConfig.maxCompressRatio = 0.01F;
+    compressionState = internal::ResponseCompressionState(compressionConfig);
+    setCompressionState(&compressionState);
+    setResponsePossibleEncoding(encoding);
+
+    HttpResponse resp(http::StatusCodeOK);
+    auto body = test::MakeRandomPayload(2 << 10);
+    resp.body(body, http::ContentTypeTextPlain);
+
+    internal::PrefinalizeHttpResponse(req, resp, false, compressionState, telemetryContext);
+
+    EXPECT_EQ(sink.recvMessage(), "svc.aeronet.http_responses.compression.exceeds_max_ratio_total:1|c");
+  }
+}
+
 TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
   // Aggregate accessor: null context -> empty body
   using AggFnRaw = std::string_view (*)(HttpRequest&, void*);
