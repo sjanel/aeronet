@@ -31,6 +31,8 @@ bool IsZeroCopyEnabled(int fd) noexcept {
   return optVal != 0;
 }
 
+constexpr uint32_t kZeroCopyMinPayloadSize = 1024;  // Minimum size for zerocopy sends in tests
+
 }  // namespace
 
 TEST(ZeroCopyTest, EnableZerocopyOnTcpSocket) {
@@ -82,14 +84,14 @@ TEST(ZeroCopyTest, PollZerocopyCompletionsReturnsZeroWhenNoPending) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0UL);
 
   // Should return 0 when no completions pending
   EXPECT_EQ(PollZeroCopyCompletions(sv[0], state), 0U);
 }
 
 TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
-  ZeroCopyState state;
+  ZeroCopyState state(0UL);
 
   // Initially no pending completions
   EXPECT_FALSE(state.pendingCompletions());
@@ -152,7 +154,7 @@ TEST(PlainTransportZeroCopy, EnableZerocopyOnTransport) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  PlainTransport transport(sv[0], ZerocopyMode::Opportunistic, false);
+  PlainTransport transport(sv[0], ZerocopyMode::Opportunistic, kZeroCopyMinPayloadSize);
 
   // Initially zerocopy should not be enabled
   EXPECT_FALSE(transport.isZerocopyEnabled());
@@ -172,7 +174,7 @@ TEST(PlainTransportZeroCopy, WriteStillWorksWithZerocopyEnabled) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   // Write should still work regardless
   const std::string testData = "Hello, zerocopy world!";
@@ -202,10 +204,11 @@ TEST(PlainTransportZeroCopy, LargeWriteWorksWithZerocopyEnabled) {
 
   // Ensure the constructor's setsockopt(SO_ZEROCOPY, ...) is treated as successful
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
   // Create a payload larger than the zerocopy threshold
-  const std::string largeData(kZeroCopyMinPayloadSize + 1024, 'Z');
+  const std::string largeData(minBytesForZerocopy + 1024, 'Z');
   auto result = transport.write(largeData);
   EXPECT_EQ(result.bytesProcessed, largeData.size());
   EXPECT_EQ(result.want, TransportHint::None);
@@ -228,7 +231,8 @@ TEST(PlainTransportZeroCopy, TwoBufWriteStillWorksWithZerocopyEnabled) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
   // Two-buffer write (scatter-gather) should still work
   const std::string head = "HEAD:";
@@ -250,7 +254,8 @@ TEST(PlainTransportZeroCopy, DisableZerocopyWorks) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
   // then disable zerocopy
   transport.disableZerocopy();
@@ -275,7 +280,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendSuccessPathWithMockedSendmsg) {
   ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   // Create large payload to trigger zerocopy path
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
@@ -300,7 +305,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendEAGAINReturnsWriteReady) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'Y');
@@ -327,7 +332,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendEINTRFallsBackToRegularWrite) {
   ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'Z');
@@ -359,7 +364,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendOtherErrorReturnsError) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'E');
@@ -380,7 +385,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendPartialWriteReturnsPartialBytes) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'P');
@@ -403,7 +408,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufSuccessPathWithMockedSendmsg) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::string head(4, 'H');
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
@@ -426,7 +431,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEAGAINReturnsWriteReady) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::string head(4, 'H');
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
@@ -447,7 +452,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEINTRFallsBackToWritev) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::string head(4, 'H');
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
@@ -479,7 +484,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufOtherErrorReturnsError) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
 
   const std::string head(4, 'H');
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
@@ -500,10 +505,11 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufPartialWriteReturnsPartialBytes) 
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  const uint32_t minBytesForZerocopy = 1024;
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
   const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
+  const std::string body(minBytesForZerocopy + 64, 'B');
   const std::size_t payloadSize = head.size() + body.size();
 
   // Mock sendmsg to return partial write (only half the data)
@@ -528,7 +534,8 @@ TEST(PlainTransportZeroCopy, ConstructorWarnsWhenEnableFails) {
     test::PushSetsockoptAction({-1, ENOPROTOOPT});
 
     // Construct transport requesting zerocopy enabled; constructor should attempt to enable
-    PlainTransport transport(sv[0], zerocopyMode, true);
+    const uint32_t minBytesForZerocopy = 1024;
+    PlainTransport transport(sv[0], zerocopyMode, minBytesForZerocopy);
 
     // Zerocopy should not be enabled due to the simulated failure
     EXPECT_FALSE(transport.isZerocopyEnabled());
@@ -541,7 +548,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 0;
   state.seqHi = 10;
 
@@ -559,7 +566,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 1;
   state.seqHi = 5;
 
@@ -577,7 +584,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 0;
   state.seqHi = 43;
 
@@ -596,7 +603,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 0;
   state.seqHi = 43;
 
@@ -618,7 +625,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 7;
   state.seqHi = 10;
 
@@ -640,7 +647,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 2;
   state.seqHi = 5;
 
@@ -662,7 +669,7 @@ TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 4;
   state.seqHi = 10;
 
@@ -684,7 +691,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
   BaseFd guard0(sv[0]);
   BaseFd guard1(sv[1]);
 
-  ZeroCopyState state;
+  ZeroCopyState state(0U);
   state.seqLo = 9;
   state.seqHi = 20;
 
@@ -713,9 +720,10 @@ TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
   ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  const uint32_t minBytesForZerocopy = 1024;
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
+  const std::size_t payloadSize = minBytesForZerocopy + 1024;
   const std::string largeData(payloadSize, 'N');
 
   // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
@@ -746,10 +754,11 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
   BaseFd guard1(sv[1]);
 
   test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, true);
+  const uint32_t minBytesForZerocopy = 1024;
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
 
   const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
+  const std::string body(minBytesForZerocopy + 64, 'B');
   const std::size_t payloadSize = head.size() + body.size();
 
   // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).

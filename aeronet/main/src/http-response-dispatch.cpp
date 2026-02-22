@@ -26,6 +26,7 @@
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
 #endif
@@ -117,8 +118,11 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   // be reused. Using assert to document this invariant.
   assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
 
-  // Set upstream transport to plain (no TLS)
-  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd, _config.zerocopyMode, false);
+  // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel
+  // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
+  // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
+  // reused for the next read, causing data corruption.
+  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0);
 
   // If the connector indicated the connect is still in progress on this
   // non-blocking socket, mark state so the event loop's writable handler
@@ -139,6 +143,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   upIt->second->peerFd = cnxIt->first.fd();
   upIt->second->connectPending = cres.connectPending;
 
+  // Disable zerocopy on the client-side transport as well for the same buffer lifetime reason.
   if (auto* clientPlain = dynamic_cast<PlainTransport*>(cnxIt->second->transport.get())) {
     clientPlain->disableZerocopy();
   }

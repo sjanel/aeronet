@@ -5,6 +5,7 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/log.hpp"
@@ -15,12 +16,12 @@ namespace aeronet {
 
 static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
 
-PlainTransport::PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled)
-    : ITransport(fd), _forcedZerocopy(zerocopyMode == ZerocopyMode::Forced) {
-  if (isZerocopyEnabled && zerocopyMode != ZerocopyMode::Disabled) {
+PlainTransport::PlainTransport(int fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
+    : ITransport(fd, minBytesForZerocopy) {
+  if (zerocopyMode != ZerocopyMode::Disabled) {
     const auto result = EnableZeroCopy(_fd);
     _zerocopyState.setEnabled(result == ZeroCopyEnableResult::Enabled);
-    if (!_zerocopyState.enabled() && (zerocopyMode == ZerocopyMode::Enabled || zerocopyMode == ZerocopyMode::Forced)) {
+    if (!_zerocopyState.enabled() && zerocopyMode == ZerocopyMode::Enabled) {
       log::warn("Failed to enable MSG_ZEROCOPY on fd # {}", fd);
     }
   }
@@ -45,7 +46,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
   // Try zerocopy for large payloads if enabled
-  if (_zerocopyState.enabled() && (_forcedZerocopy || data.size() >= kZeroCopyMinPayloadSize)) {
+  if (_zerocopyState.enabled() && data.size() >= _minBytesForZerocopy) {
     // Drain pending completion notifications before issuing a new zerocopy send.
     // This prevents the kernel error queue from growing unbounded, avoids ENOBUFS,
     // and releases pinned pages promptly — critical for virtual devices (veth in K8s).
@@ -110,7 +111,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
   const std::size_t totalSize = firstBuf.size() + secondBuf.size();
 
   // Try zerocopy for large payloads if enabled
-  if (_zerocopyState.enabled() && (_forcedZerocopy || totalSize >= kZeroCopyMinPayloadSize)) {
+  if (_zerocopyState.enabled() && totalSize >= _minBytesForZerocopy) {
     // Drain pending completion notifications before issuing a new zerocopy send.
     pollZerocopyCompletions();
 

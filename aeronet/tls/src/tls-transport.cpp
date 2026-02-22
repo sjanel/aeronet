@@ -85,7 +85,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // MSG_ZEROCOPY for large payloads (DMA from user pages to NIC).
   // If zerocopy write fails with an unsupported operation (EOPNOTSUPP), we
   // disable zerocopy and fall back to SSL_write for this and future calls.
-  if (_zerocopyState.enabled() && data.size() >= kZeroCopyMinPayloadSize) {
+  if (_zerocopyState.enabled() && data.size() >= _minBytesForZerocopy) {
     ret = writeZerocopy(data);
     if (ret.want != TransportHint::None || ret.bytesProcessed > 0) {
       return ret;
