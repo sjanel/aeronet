@@ -80,6 +80,11 @@ HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOu
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withZerocopyMinBytes(std::uint32_t zerocopyMinBytes) {
+  this->zerocopyMinBytes = zerocopyMinBytes;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withMaxRequestsPerConnection(uint32_t maxRequests) {
   this->maxRequestsPerConnection = maxRequests;
   return *this;

@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include "aeronet/zerocopy-mode.hpp"
+
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 
@@ -57,19 +59,22 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string_view simpleHello = "hello-tunnel";
   test::sendAll(fd, simpleHello, std::chrono::milliseconds{10000});
   auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, simpleHello.size());
-  EXPECT_TRUE(echoedHello.contains(simpleHello));
+  EXPECT_EQ(echoedHello, simpleHello);
 
 // Send payload that upstream will partially echo
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   // We need a much smaller payload here otherwise the tests takes too long with additional memory checks
   std::string payload(1024UL * 1024, 'a');
 #else
-  std::string payload(16UL * 1024 * 1024, 'a');
+  std::string payload(16UL << 20, 'a');
 #endif
   test::sendAll(fd, payload, std::chrono::milliseconds{10000});
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
   auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, payload.size());
+  EXPECT_TRUE(echoed.starts_with("aaaaaaaaaaaaaaaaaa"));
+  EXPECT_TRUE(echoed.ends_with("aaaaaaaaaaaaaaaaaa"));
+  EXPECT_EQ(echoed.size(), payload.size());
   EXPECT_TRUE(echoed.contains(payload));
 
   // now simulate some epoll mod failures, server should be able to recover from these

@@ -76,10 +76,6 @@ struct HttpServerConfig {
   // to avoid accidentally merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
 
-  // Zero copy mode for outbound responses.
-  // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel).
-  ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
-
   enum class TraceMethodPolicy : std::uint8_t {
     Disabled,
     // Allow on both plaintext and TLS
@@ -96,6 +92,31 @@ struct HttpServerConfig {
   // Not yet supported by HttpResponseWriter (streaming mode), as we send headers before knowing trailer names.
   // Note that this setting only applies to HTTP/1.1 responses that use transfer encoding (ignored in HTTP/2).
   bool addTrailerHeader{true};
+
+  // Zero copy mode for outbound responses.
+  // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel).
+  ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
+
+  // Minimum response payload size (in bytes) for which to use zerocopy when enabled.
+  // Smaller responses are sent via regular `send` to avoid the overhead of pinning and
+  // DMA-mapping user pages. Has effect only when 'zerocopyMode' is not Disabled.
+  //
+  // Expected gains by payload size (rough guidance):
+  // - < ~1 KB:        Slower — overhead dominates; net loss of ~10–30%.
+  // - 1 KB – 10 KB:   Roughly neutral to marginal gain; barely worth it.
+  // - 10 KB – 100 KB: Small gains, ~5–15% throughput improvement.
+  // - 100 KB – 1 MB:  More meaningful gains, ~10–25%.
+  // - > 1 MB:         Best case scenario; gains of 20–40%+ on CPU cycles spent copying.
+  //
+  // Recommended minimum payload threshold:
+  // - ~10 KB: rough minimum to break even; ~100 KB+ to see meaningful benefit.
+  // - Benchmarks vary by NIC capabilities (scatter/gather, IOMMU), CPU/cache, and whether
+  //   the NIC supports true zerocopy DMA (no bounce buffers). Willem de Bruijn's results
+  //   suggested a crossover around ~10 KB for TCP on modern hardware; in production, some
+  //   guidance recommends not expecting guaranteed wins below ~1 MB.
+  //
+  // Linux kernel docs suggest ~10KB as a minimum; we use 128KB as a reasonable default with expected gains.
+  std::uint32_t zerocopyMinBytes{128U << 10};
 
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
@@ -285,6 +306,9 @@ struct HttpServerConfig {
 
   // Adjust per-connection outbound queue cap
   HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
+
+  // Adjust min payload size for zerocopy responses (when enabled).
+  HttpServerConfig& withZerocopyMinBytes(std::uint32_t zerocopyMinBytes);
 
   // Adjust request-per-connection cap
   HttpServerConfig& withMaxRequestsPerConnection(uint32_t maxRequests);

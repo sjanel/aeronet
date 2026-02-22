@@ -22,6 +22,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
@@ -183,6 +184,11 @@ void SingleHttpServer::acceptNewConnections() {
 
     state.initializeStateNewConnection(_config, cnxFd, _compressionState);
 
+    ZerocopyMode zerocopyMode = _config.zerocopyMode;
+    if (!state.zerocopyRequested) {
+      zerocopyMode = ZerocopyMode::Disabled;
+    }
+
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {
       // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
@@ -259,14 +265,14 @@ void SingleHttpServer::acceptNewConnections() {
       // trying to write everything. This is crucial for non-blocking I/O performance.
       SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
       ::SSL_set_accept_state(sslPtr.get());
-      state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
+      state.transport = std::make_unique<TlsTransport>(std::move(sslPtr), _config.zerocopyMinBytes);
       state.tlsInfo.handshakeStart = std::chrono::steady_clock::now();
       ++_tls.handshakesInFlight;
     } else {
-      state.transport = std::make_unique<PlainTransport>(cnxFd, _config.zerocopyMode, state.zerocopyRequested);
+      state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
     }
 #else
-    state.transport = std::make_unique<PlainTransport>(cnxFd, _config.zerocopyMode, state.zerocopyRequested);
+    state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
 #endif
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;

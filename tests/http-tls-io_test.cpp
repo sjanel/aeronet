@@ -595,7 +595,7 @@ TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
   });
 
   // Response slightly above zerocopy threshold
-  std::string body(aeronet::kZeroCopyMinPayloadSize + 1024, 'Z');
+  std::string body(ts.server.server.config().zerocopyMinBytes + 1024, 'Z');
   ts.setDefault([&body](const HttpRequest&) { return HttpResponse(body); });
 
   test::TlsClient client(ts.port());
