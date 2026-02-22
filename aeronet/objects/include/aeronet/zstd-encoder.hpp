@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 
 namespace aeronet {
@@ -26,9 +27,9 @@ class ZstdEncoderContext final : public EncoderContext {
 
   [[nodiscard]] std::size_t endChunkSize() const override { return ZSTD_CStreamOutSize(); }
 
-  int64_t encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+  EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
 
-  int64_t end(std::size_t availableCapacity, char* buf) noexcept override;
+  EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Reuses internal allocations if already initialized.
@@ -51,7 +52,7 @@ class ZstdEncoder {
 
   explicit ZstdEncoder(CompressionConfig::Zstd cfg) : _cfg(cfg) {}
 
-  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
+  EncoderResult encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
   EncoderContext* makeContext() {
     _ctx.init(_cfg.compressionLevel, _cfg.windowLog);

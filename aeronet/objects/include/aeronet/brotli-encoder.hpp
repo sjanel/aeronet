@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/object-array-pool.hpp"
 
@@ -57,9 +58,9 @@ class BrotliEncoderContext final : public EncoderContext {
 
   [[nodiscard]] std::size_t endChunkSize() const override { return 128UL; }
 
-  int64_t encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+  EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
 
-  int64_t end(std::size_t availableCapacity, char* buf) noexcept override;
+  EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Since Brotli has no public reset API, a new state is created each time.
@@ -91,7 +92,7 @@ class BrotliEncoder {
 
   ~BrotliEncoder() = default;
 
-  std::size_t encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const;
+  EncoderResult encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 
   EncoderContext* makeContext() {
     _ctx.init(_quality, _window);

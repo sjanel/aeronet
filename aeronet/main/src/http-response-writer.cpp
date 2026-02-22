@@ -247,14 +247,14 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     // CRLF size will be needed for chunked framing.
     RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(data.size()) +
                               (chunked() ? http::CRLF.size() : 0UL));
-    const auto written = _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity(), compressedBuffer.data());
-    if (written < 0) [[unlikely]] {
+    const auto result = _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity(), compressedBuffer.data());
+    if (result.hasError()) [[unlikely]] {
       _state = HttpResponseWriter::State::Failed;
-      log::error("Streaming: encoder encodeChunk() failed fd # {}", _fd);
       return false;
     }
+    const auto written = result.written();
     if (written > 0) {
-      compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
+      compressedBuffer.setSize(written);
       return tryPush(std::move(compressedBuffer));
     }
     return true;
@@ -338,16 +338,16 @@ void HttpResponseWriter::end() {
     RawChars last;
     while (true) {
       last.ensureAvailableCapacityExponential(endChunkSize + (chunked() ? http::CRLF.size() : 0UL));
-      const auto written = _activeEncoderCtx->end(last.availableCapacity(), last.data() + last.size());
-      if (written < 0) [[unlikely]] {
+      const auto result = _activeEncoderCtx->end(last.availableCapacity(), last.data() + last.size());
+      if (result.hasError()) [[unlikely]] {
         _state = HttpResponseWriter::State::Failed;
-        log::error("Streaming: encoder end() failed fd # {}", _fd);
         return;
       }
+      const auto written = result.written();
       if (written == 0) {
         break;
       }
-      last.addSize(static_cast<RawChars::size_type>(written));
+      last.addSize(written);
     }
     if (!tryPush(std::move(last))) {
       return;
@@ -427,15 +427,16 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
 
   RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(_preCompressBuffer.size()) +
                             additionalChunkedCapacity);
-  const auto written =
+  const auto result =
       _activeEncoderCtx->encodeChunk(_preCompressBuffer, compressedBuffer.capacity(), compressedBuffer.data());
-  if (written < 0) [[unlikely]] {
+  if (result.hasError()) [[unlikely]] {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: encoder encodeChunk() failed fd # {}", _fd);
     return false;
   }
 
-  compressedBuffer.setSize(static_cast<RawChars::size_type>(written));
+  const auto written = result.written();
+
+  compressedBuffer.setSize(written);
 
   _compressionActivated = true;
 

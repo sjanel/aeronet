@@ -621,7 +621,6 @@ TEST_F(WebSocketCompressEdgeCasesTest, CompressedDataWithoutTrailer) {
 
 TEST_F(WebSocketCompressEdgeCasesTest, VerySmallCompressedData) {
   // Test with compressed data smaller than 4 bytes (trailer size)
-  // This covers the branch where compressedSize < kDeflateTrailer.size()
   WebSocketCompressor compressor(6);
   RawBytes output;
 

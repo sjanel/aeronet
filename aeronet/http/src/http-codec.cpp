@@ -5,7 +5,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -198,6 +197,14 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
   return false;
 }
 
+constexpr CompressResponseResult ConvertEncoderResultErrorToCompressResponseResult(EncoderResult encoderResult) {
+  assert(encoderResult.hasError());
+  if (encoderResult.error() == EncoderResult::Error::NotEnoughCapacity) {
+    return CompressResponseResult::exceedsMaxRatio;
+  }
+  return CompressResponseResult::error;
+}
+
 }  // namespace
 
 ResponseCompressionState::ResponseCompressionState(const CompressionConfig& cfg)
@@ -218,10 +225,10 @@ ResponseCompressionState::ResponseCompressionState(const CompressionConfig& cfg)
 {
 }
 
-std::size_t ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encoding,
-                                                 [[maybe_unused]] std::string_view data,
-                                                 [[maybe_unused]] std::size_t availableCapacity,
-                                                 [[maybe_unused]] char* buf) {
+EncoderResult ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encoding,
+                                                   [[maybe_unused]] std::string_view data,
+                                                   [[maybe_unused]] std::size_t availableCapacity,
+                                                   [[maybe_unused]] char* buf) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.encodeFull(data, availableCapacity, buf);
@@ -394,12 +401,12 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   std::size_t compressedSize;
   if (maxCompressedBytes <= initialCompressionBufferLimit) {
     // For very small max compressed size, we can just try to compress directly to the final position without streaming.
-    compressedSize = compressionState.encodeFull(encoding, body, maxCompressedBytes, pCompBody);
-    if (compressedSize == 0) {
+    const auto result = compressionState.encodeFull(encoding, body, maxCompressedBytes, pCompBody);
+    if (result.hasError()) {
       // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
-      // TODO: increase telemetry counter?
-      return CompressResponseResult::exceedsMaxRatio;
+      return ConvertEncoderResultErrorToCompressResponseResult(result);
     }
+    compressedSize = result.written();
   } else {
     std::size_t availableCompCapa = std::min<std::size_t>(maxCompressedBytes, resp._data.capacity() - bodyCompStartPos);
     const std::size_t maxCapacity = initialNeededCapacity + (maxCompressedBytes - initialCompressedBytes);
@@ -447,15 +454,14 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
       }
 
       const std::size_t chunkSize = std::min<std::size_t>(bodySz - offsetBody, initialCompressionBufferLimit);
-      const int64_t written = encoder->encodeChunk(body.substr(offsetBody, chunkSize),
-                                                   availableCompCapa - compressedSize, pCompBody + compressedSize);
-      if (written < 0) {
-        // compression failed - abort compression and leave the response unmodified
-        return CompressResponseResult::error;
+      const auto result = encoder->encodeChunk(body.substr(offsetBody, chunkSize), availableCompCapa - compressedSize,
+                                               pCompBody + compressedSize);
+      if (result.hasError()) {
+        return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
       // TODO: abort compression if compression ratio of first chunk is catastrophic?
       // Pre-sizing based on historical compression ratio per route?
-      compressedSize += static_cast<std::size_t>(written);
+      compressedSize += result.written();
       assert(compressedSize <= maxCompressedBytes);
       offsetBody += chunkSize;
     }
@@ -465,16 +471,15 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
       if (!ensureEnoughCapacity()) {
         return CompressResponseResult::exceedsMaxRatio;
       }
-      const int64_t written = encoder->end(availableCompCapa - compressedSize, pCompBody + compressedSize);
-      if (written < 0) {
-        // compression failed - abort compression and leave the response unmodified
-        return CompressResponseResult::error;
+      const auto result = encoder->end(availableCompCapa - compressedSize, pCompBody + compressedSize);
+      if (result.hasError()) {
+        return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
-      if (written == 0) {
+      if (result.written() == 0) {
         // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
         break;
       }
-      compressedSize += static_cast<std::size_t>(written);
+      compressedSize += result.written();
       assert(compressedSize <= maxCompressedBytes);
     }
   }

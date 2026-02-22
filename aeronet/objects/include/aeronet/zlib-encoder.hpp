@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
@@ -24,13 +25,13 @@ class ZlibEncoderContext final : public EncoderContext {
 
   [[nodiscard]] std::size_t endChunkSize() const override { return 64UL; }
 
-  int64_t encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+  EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Reuses internal zlib state if already initialized.
   void init(int8_t level, ZStreamRAII::Variant variant) { _zs.initCompress(variant, level); }
 
-  int64_t end(std::size_t availableCapacity, char* buf) noexcept override;
+  EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 
  private:
   friend class ZlibEncoder;
@@ -44,7 +45,8 @@ class ZlibEncoder {
 
   explicit ZlibEncoder(int8_t level) : _level(level) {}
 
-  std::size_t encodeFull(ZStreamRAII::Variant variant, std::string_view data, std::size_t availableCapacity, char* buf);
+  EncoderResult encodeFull(ZStreamRAII::Variant variant, std::string_view data, std::size_t availableCapacity,
+                           char* buf);
 
   EncoderContext* makeContext(ZStreamRAII::Variant variant) {
     _ctx.init(_level, variant);

@@ -146,10 +146,9 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   RawChars buf;
   ZlibEncoder encoder(compressionCfg.zlib.level);
   RawChars compressed(64UL + plain.size());
-  const std::size_t written =
-      encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
-  ASSERT_GT(written, 0UL);
-  compressed.setSize(static_cast<std::size_t>(written));
+  const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
+  ASSERT_FALSE(result.hasError());
+  compressed.setSize(result.written());
   const std::string compressedBody(compressed.data(), compressed.size());
 
   TlsHttp2Client client(ts.port());
