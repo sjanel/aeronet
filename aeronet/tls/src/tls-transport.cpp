@@ -223,7 +223,7 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     log::debug("MSG_ZEROCOPY not supported on kTLS socket fd # {}", _fd);
     // Disable zerocopy for this transport and fall through to SSL_write
     disableZerocopy();
-  } else if (errno == EINTR) {
+  } else if (errno == EINTR) {  // NOLINT(bugprone-branch-clone)
     // Fall through to regular send
   } else if (errno == EAGAIN) {
     ret.want = TransportHint::WriteReady;

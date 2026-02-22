@@ -15,6 +15,7 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/header-write.hpp"
@@ -557,7 +558,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   out -= contentTypeLineLen;
 
   // Write new '\r\nContent-Encoding: XXXX' header.
-  WriteCRLFHeader(out - contentEncodingHeaderLineSz, http::ContentEncoding, contentEncodingStr);
+  WriteCRLFHeader(http::ContentEncoding, contentEncodingStr, out - contentEncodingHeaderLineSz);
   out -= contentEncodingHeaderLineSz;
 
   // Write '\r\nVary: Accept-Encoding' if needed.

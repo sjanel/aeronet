@@ -231,7 +231,7 @@ void CorruptData(std::string_view encoding, RawChars& data) {
 
 EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
   out.clear();
-  out.reserve(ctx.maxCompressedBytes(data.size()));
+  out.reserve(ctx.minEncodeChunkCapacity(data.size()));
   const auto result = ctx.encodeChunk(data, out.capacity(), out.data());
   if (!result.hasError()) {
     out.setSize(result.written());
@@ -263,13 +263,14 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
 
-    // Reserve maximum possible compressed size for this chunk
-    compressed.ensureAvailableCapacityExponential(ctx.maxCompressedBytes(chunk.size()));
+    // Reserve minimum possible compressed size for this chunk
+    compressed.ensureAvailableCapacityExponential(ctx.minEncodeChunkCapacity(chunk.size()));
 
     const auto result = ctx.encodeChunk(chunk, compressed.availableCapacity(), compressed.data() + compressed.size());
 
     if (result.hasError()) {
       // Still failed, give up
+      throw std::runtime_error("Encoding chunk failed");
       return {};
     }
 

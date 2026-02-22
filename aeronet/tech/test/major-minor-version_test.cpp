@@ -76,6 +76,12 @@ TEST(MajorMinorVersion, WriteFull) {
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(endPtr - buf)), "HTTP/2.0");
 }
 
+TEST(MajorMinorVersion, Str) {
+  HttpVer vers{1, 3};
+  const auto strArr = vers.str();
+  EXPECT_EQ(std::string_view(strArr.data(), strArr.size()), "HTTP/1.3");
+}
+
 TEST(MajorMinorVersion, InvalidVersion) {
   HttpVer vers{};
   EXPECT_FALSE(vers.isValid());
