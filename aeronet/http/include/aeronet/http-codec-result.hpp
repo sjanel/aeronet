@@ -12,11 +12,11 @@ struct RequestDecompressionResult {
 };
 
 enum class CompressResponseResult : std::uint8_t {
-  uncompressed,     // response was not compressed (either because encoding not supported or config thresholds not met)
-  compressed,       // response was compressed and modified in-place
-  exceedsMaxRatio,  // response was compressed but did not meet the compression ratio requirement in config - response
+  Uncompressed,     // response was not compressed (either because encoding not supported or config thresholds not met)
+  Compressed,       // response was compressed and modified in-place
+  ExceedsMaxRatio,  // response was compressed but did not meet the compression ratio requirement in config - response
                     // is left unmodified
-  error             // compression was attempted but failed (e.g. encoder error)
+  Error             // compression was attempted but failed (e.g. encoder error)
 };
 
 }  // namespace aeronet::internal

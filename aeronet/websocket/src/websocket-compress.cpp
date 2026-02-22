@@ -57,7 +57,7 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
 
   // Remove the trailing 0x00 0x00 0xff 0xff per RFC 7692 §7.2.1
   const std::size_t compressedSize = output.size() - startSize;
-  if (compressedSize >= kDeflateTrailer.size()) {
+  if (compressedSize >= kDeflateTrailer.size()) [[likely]] {
     const auto* tail = reinterpret_cast<const uint8_t*>(output.data() + output.size() - kDeflateTrailer.size());
     if (std::memcmp(tail, kDeflateTrailer.data(), kDeflateTrailer.size()) == 0) {
       output.setSize(output.size() - kDeflateTrailer.size());
