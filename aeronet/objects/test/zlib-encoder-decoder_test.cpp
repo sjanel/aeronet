@@ -44,9 +44,9 @@ void EncodeFull(ZlibEncoder& encoder, ZStreamRAII::Variant variant, std::string_
                 std::size_t extraCapacity = 0) {
   out.clear();
   out.reserve(ZDeflateBound(nullptr, payload.size()) + extraCapacity);
-  const std::size_t written = encoder.encodeFull(variant, payload, out.capacity(), out.data());
-  ASSERT_GT(written, 0UL);
-  out.setSize(static_cast<RawChars::size_type>(written));
+  const auto result = encoder.encodeFull(variant, payload, out.capacity(), out.data());
+  ASSERT_FALSE(result.hasError());
+  out.setSize(result.written());
 }
 
 void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t extraCapacity = 0) {
@@ -73,9 +73,9 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
     const std::string_view chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, chunk, chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, chunk, chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -160,9 +160,9 @@ TEST_P(ZlibEncoderDecoderTest, MoveConstructor) {
   RawChars produced;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(ctx1, "some-data", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(ctx1, "some-data", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -175,9 +175,9 @@ TEST_P(ZlibEncoderDecoderTest, MoveConstructor) {
   produced.clear();
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(ctx2, "more-data", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(ctx2, "more-data", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -238,15 +238,15 @@ TEST_P(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   // Produce some initial data.
 
   RawChars chunkOut;
-  const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
-  ASSERT_GE(written, 0);
+  const auto result = test::EncodeChunk(*ctx, "Test data", chunkOut);
+  ASSERT_FALSE(result.hasError());
 
   // Finalize the stream.
   test::EndStream(*ctx, chunkOut);
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(ZDeflateBound(nullptr, std::string_view{"More data"}.size()));
-  EXPECT_LT(ctx->encodeChunk("More data", extra.capacity(), extra.data()), 0);
+  EXPECT_TRUE(ctx->encodeChunk("More data", extra.capacity(), extra.data()).hasError());
 }
 
 TEST_P(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
@@ -260,9 +260,9 @@ TEST_P(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   RawChars compressed;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -289,9 +289,9 @@ TEST_P(ZlibEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
   RawChars compressed;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, payload, chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -341,18 +341,18 @@ TEST_P(ZlibEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->maxCompressedBytes(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  const auto written = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
-  ASSERT_GE(written, 0);
-  EXPECT_LE(static_cast<std::size_t>(written), maxChunk);
+  const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  ASSERT_FALSE(result.hasError());
+  EXPECT_LE(static_cast<std::size_t>(result.written()), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
   while (true) {
-    const auto tailWritten = ctx->end(tailOut.capacity(), tailOut.data());
-    ASSERT_GE(tailWritten, 0);
-    if (tailWritten == 0) {
+    const auto tailResult = ctx->end(tailOut.capacity(), tailOut.data());
+    ASSERT_FALSE(tailResult.hasError());
+    if (tailResult.written() == 0) {
       break;
     }
-    EXPECT_LE(static_cast<std::size_t>(tailWritten), tailOut.capacity());
+    EXPECT_LE(tailResult.written(), tailOut.capacity());
   }
 }
 
@@ -363,7 +363,7 @@ TEST_P(ZlibEncoderDecoderTest, ZlibEndWithoutEnoughBufferShouldFail) {
 
   // Provide a too-small buffer to end()
   const auto tailWritten = ctx->end(0UL, nullptr);
-  EXPECT_EQ(tailWritten, -1);
+  EXPECT_TRUE(tailWritten.hasError());
 }
 
 TEST_P(ZlibEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
@@ -383,9 +383,9 @@ TEST_P(ZlibEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
   RawChars streaming;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, payload, chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       streaming.append(chunkOut);
     }
   }
@@ -417,9 +417,9 @@ TEST_P(ZlibEncoderDecoderTest, MultipleStreamingSessionsReuseBuffer) {
     RawChars compressed;
     {
       RawChars chunkOut;
-      const auto written = test::EncodeChunk(*ctx, payload, chunkOut);
-      ASSERT_GE(written, 0);
-      if (written > 0) {
+      const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
+      ASSERT_FALSE(result.hasError());
+      if (result.written() > 0) {
         compressed.append(chunkOut);
       }
     }
@@ -439,8 +439,8 @@ TEST_P(ZlibEncoderDecoderTest, ContextAssignmentThrowsWhenSessionActive) {
   auto ctx = encoder.makeContext(GetParam());
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, "data", chunkOut);
-    ASSERT_GE(written, 0);
+    const auto result = test::EncodeChunk(*ctx, "data", chunkOut);
+    ASSERT_FALSE(result.hasError());
   }
 
   // The context is in use - operations that require it to not be active should throw
@@ -456,9 +456,9 @@ TEST_P(ZlibEncoderDecoderTest, VariantSwitchingDuringSession) {
   RawChars compressed1;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx1, "test", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx1, "test", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed1.append(chunkOut);
     }
   }
@@ -469,9 +469,9 @@ TEST_P(ZlibEncoderDecoderTest, VariantSwitchingDuringSession) {
   RawChars compressed2;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx2, "test", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx2, "test", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed2.append(chunkOut);
     }
   }
@@ -552,9 +552,12 @@ TEST(ZlibEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   char tiny[1];
   const auto result = ctx->encodeChunk(large, sizeof(tiny), tiny);
 
-  // Zlib gracefully accepts the small buffer and returns 0 (empty output).
-  // The check for "availIn != 0" that would return -1 is unreachable in practice.
-  EXPECT_LE(result, 0);
+  if (!result.hasError()) {
+    // If zlib has not reported an error at encodeChunk time, it should report an error at end() time since the stream
+    // can't be finalized with pending input.
+    const auto endResult = ctx->end(sizeof(tiny) - result.written(), tiny);
+    EXPECT_TRUE(endResult.hasError());
+  }
 }
 
 }  // namespace aeronet

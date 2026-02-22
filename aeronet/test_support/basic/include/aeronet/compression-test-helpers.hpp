@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <string>
 #include <string_view>
 
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -42,7 +42,7 @@ RawChars Decompress(Encoding encoding, std::string_view compressed);
 // Corrupt the compressed data in-place for the given encoding.
 void CorruptData(std::string_view encoding, RawChars& data);
 
-int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
+EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
 
 void EndStream(EncoderContext& ctx, RawChars& out);
 

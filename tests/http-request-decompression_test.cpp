@@ -114,39 +114,39 @@ RawChars compress(std::string_view alg, std::string_view input) {
   } else if (CaseInsensitiveEqual(alg, "gzip")) {
     ZlibEncoder encoder(cc.zlib.level);
     buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
-    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, input, buf.capacity(), buf.data());
-    if (written == 0) {
+    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, input, buf.capacity(), buf.data());
+    if (result.hasError()) {
       throw std::runtime_error("gzip compression failed");
     }
-    buf.setSize(written);
+    buf.setSize(result.written());
   } else if (CaseInsensitiveEqual(alg, "deflate")) {
     ZlibEncoder encoder(cc.zlib.level);
     buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
-    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::deflate, input, buf.capacity(), buf.data());
-    if (written == 0) {
+    const auto result = encoder.encodeFull(ZStreamRAII::Variant::deflate, input, buf.capacity(), buf.data());
+    if (result.hasError()) {
       throw std::runtime_error("deflate compression failed");
     }
-    buf.setSize(written);
+    buf.setSize(result.written());
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   } else if (CaseInsensitiveEqual(alg, "zstd")) {
     ZstdEncoder encoder(cc.zstd);
     buf.reserve(ZSTD_compressBound(input.size()));
-    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
-    if (written == 0) {
+    const auto result = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (result.hasError()) {
       throw std::runtime_error("zstd compression failed");
     }
-    buf.setSize(written);
+    buf.setSize(result.written());
 #endif
 #ifdef AERONET_ENABLE_BROTLI
   } else if (CaseInsensitiveEqual(alg, "br")) {
     BrotliEncoder encoder(cc.brotli);
     buf.reserve(BrotliEncoderMaxCompressedSize(input.size()));
-    const std::size_t written = encoder.encodeFull(input, buf.capacity(), buf.data());
-    if (written == 0) {
+    const auto result = encoder.encodeFull(input, buf.capacity(), buf.data());
+    if (result.hasError()) {
       throw std::runtime_error("brotli compression failed");
     }
-    buf.setSize(written);
+    buf.setSize(result.written());
 #endif
   } else {
     // Unsupported algorithm, do not compress

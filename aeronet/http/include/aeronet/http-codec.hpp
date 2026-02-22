@@ -7,6 +7,7 @@
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
@@ -54,7 +55,7 @@ struct ResponseCompressionState {
 
   explicit ResponseCompressionState(const CompressionConfig& cfg);
 
-  std::size_t encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
+  EncoderResult encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
   // Initializes a new internally-owned encoder context and returns a pointer to it (reused across calls).
   EncoderContext* makeContext(Encoding encoding);

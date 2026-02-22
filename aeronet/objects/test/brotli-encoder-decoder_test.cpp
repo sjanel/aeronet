@@ -42,9 +42,9 @@ std::vector<std::string> SamplePayloads() {
 void EncodeFull(BrotliEncoder& encoder, std::string_view payload, RawChars& out, std::size_t extraCapacity = 0) {
   out.clear();
   out.reserve(BrotliEncoderMaxCompressedSize(payload.size()) + extraCapacity);
-  const std::size_t written = encoder.encodeFull(payload, out.capacity(), out.data());
-  ASSERT_GT(written, 0UL);
-  out.setSize(static_cast<RawChars::size_type>(written));
+  const auto result = encoder.encodeFull(payload, out.capacity(), out.data());
+  ASSERT_FALSE(result.hasError());
+  out.setSize(result.written());
 }
 
 void ExpectOneShotRoundTrip(BrotliEncoder& encoder, std::string_view payload) {
@@ -109,9 +109,9 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
   RawChars produced;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(ctx1, "some-data", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(ctx1, "some-data", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -128,9 +128,9 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
   produced.clear();
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(ctx2, "more-data", chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(ctx2, "more-data", chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -149,8 +149,8 @@ TEST(BrotliEncoderDecoderTest, BrotliEndWithoutEnoughBufferShouldFail) {
   auto ctx = encoder.makeContext();
 
   // Provide a too-small buffer to end()
-  const auto tailWritten = ctx->end(0UL, nullptr);
-  EXPECT_EQ(tailWritten, -1);
+  const auto result = ctx->end(0UL, nullptr);
+  EXPECT_TRUE(result.hasError());
 }
 
 TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
@@ -161,15 +161,15 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   // Produce some initial data.
 
   RawChars chunkOut;
-  const auto written = test::EncodeChunk(*ctx, "Test data", chunkOut);
-  ASSERT_GE(written, 0);
+  const auto result = test::EncodeChunk(*ctx, "Test data", chunkOut);
+  ASSERT_FALSE(result.hasError());
 
   // Finalize the stream.
   test::EndStream(*ctx, chunkOut);
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(BrotliEncoderMaxCompressedSize(std::string_view{"More data"}.size()));
-  EXPECT_LT(ctx->encodeChunk("More data", extra.capacity(), extra.data()), 0);
+  EXPECT_TRUE(ctx->encodeChunk("More data", extra.capacity(), extra.data()).hasError());
 
   // self move does nothing
   auto& self = encoder;
@@ -199,18 +199,18 @@ TEST(BrotliEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->maxCompressedBytes(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  const auto written = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
-  ASSERT_GE(written, 0);
-  EXPECT_LE(static_cast<std::size_t>(written), maxChunk);
+  const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  ASSERT_FALSE(result.hasError());
+  EXPECT_LE(result.written(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
   while (true) {
-    const auto tailWritten = ctx->end(tailOut.capacity(), tailOut.data());
-    ASSERT_GE(tailWritten, 0);
-    if (tailWritten == 0) {
+    const auto tailResult = ctx->end(tailOut.capacity(), tailOut.data());
+    ASSERT_FALSE(tailResult.hasError());
+    if (tailResult.written() == 0) {
       break;
     }
-    EXPECT_LE(static_cast<std::size_t>(tailWritten), tailOut.capacity());
+    EXPECT_LE(tailResult.written(), tailOut.capacity());
   }
 }
 
@@ -282,9 +282,9 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
       const auto chunk = remaining.substr(0, take);
       remaining.remove_prefix(take);
       RawChars chunkOut;
-      const auto written = test::EncodeChunk(*ctx, chunk, chunkOut);
-      ASSERT_GE(written, 0);
-      if (written > 0) {
+      const auto result = test::EncodeChunk(*ctx, chunk, chunkOut);
+      ASSERT_FALSE(result.hasError());
+      if (result.written() > 0) {
         streamingCompressed.append(chunkOut);
       }
     }
@@ -321,9 +321,9 @@ TEST(BrotliEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
   RawChars compressed;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -350,9 +350,9 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
   RawChars compressed;
   {
     RawChars chunkOut;
-    const auto written = test::EncodeChunk(*ctx, payload, chunkOut);
-    ASSERT_GE(written, 0);
-    if (written > 0) {
+    const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
+    ASSERT_FALSE(result.hasError());
+    if (result.written() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -400,9 +400,15 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   char tiny[1];
   const auto result = ctx->encodeChunk(large, sizeof(tiny), tiny);
 
-  // Brotli gracefully accepts the small buffer and returns 0 (empty output).
-  // The check for "availIn != 0" that would return -1 is unreachable in practice.
-  EXPECT_LE(result, 0);
+  if (!result.hasError()) {
+    // If brotli has not reported an error at encodeChunk time, it should report an error at end() time since the stream
+    // can't be finalized with pending input.
+    const auto endResult1 = ctx->end(sizeof(tiny) - result.written(), tiny);
+    if (!endResult1.hasError()) {
+      const auto endResult2 = ctx->end(sizeof(tiny) - result.written() - endResult1.written(), tiny);
+      EXPECT_TRUE(endResult2.hasError());
+    }
+  }
 }
 
 }  // namespace aeronet

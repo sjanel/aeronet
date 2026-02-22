@@ -285,7 +285,9 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   {
     RawChars direct(64UL);
     direct.reserve(64ULL + body.size());
-    const std::size_t written = state.encodeFull(Encoding::gzip, body, direct.capacity(), direct.data());
+    const auto result = state.encodeFull(Encoding::gzip, body, direct.capacity(), direct.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     ASSERT_GT(written, 0UL);
     direct.setSize(static_cast<RawChars::size_type>(written));
     ASSERT_GE(direct.size(), 2UL);
@@ -819,8 +821,10 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(plain.size());
   {
-    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
-                                                   compressedOut.capacity(), compressedOut.data());
+    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
+                                           compressedOut.capacity(), compressedOut.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     ASSERT_GT(written, 0UL);
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
@@ -881,35 +885,43 @@ TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder
 #ifdef AERONET_ENABLE_ZLIB
   {
     RawChars out(64 + plain.size());
-    const std::size_t written = state.encodeFull(Encoding::gzip, plain, out.capacity(), out.data());
+    const auto result = state.encodeFull(Encoding::gzip, plain, out.capacity(), out.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     EXPECT_GT(written, 0UL);
     // too small capacity
-    EXPECT_EQ(state.encodeFull(Encoding::gzip, plain, 1UL, out.data()), 0UL);
+    EXPECT_TRUE(state.encodeFull(Encoding::gzip, plain, 1UL, out.data()).hasError());
   }
 
   {
     RawChars out(64 + plain.size());
-    const std::size_t written = state.encodeFull(Encoding::deflate, plain, out.capacity(), out.data());
+    const auto result = state.encodeFull(Encoding::deflate, plain, out.capacity(), out.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     EXPECT_GT(written, 0UL);
-    EXPECT_EQ(state.encodeFull(Encoding::deflate, plain, 1UL, out.data()), 0UL);
+    EXPECT_TRUE(state.encodeFull(Encoding::deflate, plain, 1UL, out.data()).hasError());
   }
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
   {
     RawChars out(64 + plain.size());
-    const std::size_t written = state.encodeFull(Encoding::zstd, plain, out.capacity(), out.data());
+    const auto result = state.encodeFull(Encoding::zstd, plain, out.capacity(), out.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     EXPECT_GT(written, 0UL);
-    EXPECT_EQ(state.encodeFull(Encoding::zstd, plain, 1UL, out.data()), 0UL);
+    EXPECT_TRUE(state.encodeFull(Encoding::zstd, plain, 1UL, out.data()).hasError());
   }
 #endif
 
 #ifdef AERONET_ENABLE_BROTLI
   {
     RawChars out(64 + plain.size());
-    const std::size_t written = state.encodeFull(Encoding::br, plain, out.capacity(), out.data());
+    const auto result = state.encodeFull(Encoding::br, plain, out.capacity(), out.data());
+    ASSERT_FALSE(result.hasError());
+    const std::size_t written = result.written();
     EXPECT_GT(written, 0UL);
-    EXPECT_EQ(state.encodeFull(Encoding::br, plain, 1UL, out.data()), 0UL);
+    EXPECT_TRUE(state.encodeFull(Encoding::br, plain, 1UL, out.data()).hasError());
   }
 #endif
 
@@ -937,15 +949,16 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::gzip);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->maxCompressedBytes(plain.size()));
-    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
-    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      const auto result = ctx->end(producedFinal.capacity(), producedFinal.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       EXPECT_GE(tailWritten, 0);
     } while (tailWritten > 0);
-    EXPECT_GE(written, 0);
   }
 
   {
@@ -953,9 +966,11 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     ASSERT_NE(ctx, nullptr);
     // End the stream without payload: call must succeed without throwing.
     RawChars tail(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(tail.capacity(), tail.data());
+      const auto result = ctx->end(tail.capacity(), tail.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       ASSERT_GE(tailWritten, 0);
     } while (tailWritten > 0);
     SUCCEED();
@@ -965,24 +980,27 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->maxCompressedBytes(plain.size()));
-    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
-    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
     RawChars producedFinal(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      const auto result = ctx->end(producedFinal.capacity(), producedFinal.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       EXPECT_GE(tailWritten, 0);
     } while (tailWritten > 0);
-    EXPECT_GE(written, 0);
+    EXPECT_GE(result.written(), 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
     RawChars tail(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(tail.capacity(), tail.data());
+      const auto result = ctx->end(tail.capacity(), tail.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       ASSERT_GE(tailWritten, 0);
     } while (tailWritten > 0);
     SUCCEED();
@@ -994,24 +1012,27 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->maxCompressedBytes(plain.size()));
-    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
-    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      const auto result = ctx->end(producedFinal.capacity(), producedFinal.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       EXPECT_GE(tailWritten, 0);
     } while (tailWritten > 0);
-    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
     RawChars tail(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(tail.capacity(), tail.data());
+      const auto result = ctx->end(tail.capacity(), tail.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       ASSERT_GE(tailWritten, 0);
     } while (tailWritten > 0);
     SUCCEED();
@@ -1023,24 +1044,27 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->maxCompressedBytes(plain.size()));
-    const auto written = ctx->encodeChunk(plain, produced.capacity(), produced.data());
-    EXPECT_EQ(ctx->encodeChunk({}, produced.capacity(), produced.data()), 0);
+    const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(producedFinal.capacity(), producedFinal.data());
+      const auto result = ctx->end(producedFinal.capacity(), producedFinal.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       EXPECT_GE(tailWritten, 0);
     } while (tailWritten > 0);
-    EXPECT_GE(written, 0);
   }
 
   {
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
     RawChars tail(ctx->endChunkSize());
-    int64_t tailWritten = 0;
+    std::size_t tailWritten = 0;
     do {
-      tailWritten = ctx->end(tail.capacity(), tail.data());
+      const auto result = ctx->end(tail.capacity(), tail.data());
+      ASSERT_FALSE(result.hasError());
+      tailWritten = result.written();
       ASSERT_GE(tailWritten, 0);
     } while (tailWritten > 0);
     SUCCEED();
@@ -1076,8 +1100,10 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(64UL + plain.size());
   {
-    const std::size_t written = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
-                                                   compressedOut.capacity(), compressedOut.data());
+    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
+                                           compressedOut.capacity(), compressedOut.data());
+    ASSERT_FALSE(result.hasError());
+    const auto written = result.written();
     ASSERT_GT(written, 0UL);
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
