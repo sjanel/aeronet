@@ -511,7 +511,10 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
     if (setInlineBody) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (tryCompression) {
-        neededNewSize += _opts._pCompressionState->pCompressionConfig->maxCompressedBytes(newBodySize);
+        auto& compressionState = *_opts._pCompressionState;
+        auto& encoderCtx = *compressionState.makeContext(_opts._pickedEncoding);
+
+        neededNewSize += encoderCtx.minEncodeChunkCapacity(newBodySize);
       } else {
 #endif
         neededNewSize += newBodySize;
@@ -565,7 +568,7 @@ void HttpResponse::setBodyInternal(std::string_view newBody) {
 
     _data.setSize(bodyStartPos());
 
-    const auto written = appendEncodedInlineOrThrow(true, newBody, _data.availableCapacity());
+    const auto written = appendEncodedInlineOrThrow(newBody);
 
     _data.setSize(_data.size() + written);
     return;
@@ -613,8 +616,9 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
     if (!capturedBody) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
-        neededCapacity +=
-            static_cast<int64_t>(_opts._pCompressionState->pCompressionConfig->maxCompressedBytes(body.size()));
+        auto& compressionState = *_opts._pCompressionState;
+        auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
+        neededCapacity += static_cast<int64_t>(encoderCtx.minEncodeChunkCapacity(body.size()));
       } else {
         neededCapacity += static_cast<int64_t>(body.size());
       }
@@ -645,7 +649,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
       _payloadVariant.append(body);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     } else if (_opts.isAutomaticDirectCompression()) {
-      _data.addSize(appendEncodedInlineOrThrow(false, body, _data.availableCapacity()));
+      _data.addSize(appendEncodedInlineOrThrow(body));
 #endif
     } else {
       _data.unchecked_append(body);
@@ -1457,13 +1461,12 @@ void HttpResponse::replaceHeaderValueNoRealloc(char* first, std::string_view new
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
-std::size_t HttpResponse::appendEncodedInlineOrThrow(bool init, std::string_view data, std::size_t capacity) {
+std::size_t HttpResponse::appendEncodedInlineOrThrow(std::string_view data) {
   assert(_opts._pCompressionState != nullptr);
   auto& compressionState = *_opts._pCompressionState;
-  auto& encoderCtx =
-      init ? *compressionState.makeContext(_opts._pickedEncoding) : *compressionState.context(_opts._pickedEncoding);
-
-  const auto result = encoderCtx.encodeChunk(data, capacity, _data.data() + _data.size());
+  auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
+  assert(encoderCtx.minEncodeChunkCapacity(data.size()) <= _data.availableCapacity());
+  const auto result = encoderCtx.encodeChunk(data, _data.availableCapacity(), _data.data() + _data.size());
 
   if (result.hasError()) [[unlikely]] {
     // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
