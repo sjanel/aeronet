@@ -19,6 +19,7 @@ All notable changes to aeronet are documented in this file.
 - Optimized automatic compression for large bodies by starting a streaming compression with a small initial chunk size and exponentially increasing it, which allows to start sending compressed data to the client sooner and reduce latency, while still being efficient for large payloads.
 - Add `ZerocopyMode::Forced` — like `Enabled` but bypasses the minimum payload size threshold (useful for stress testing zerocopy on localhost).
 - Added some telemetry counters for automatic `HttpResponse` compression (`aeronet.http_responses.compression.*`).
+- Improve Brotli one-shot compression performance by reusing encoder state across calls.
 
 ### Other
 

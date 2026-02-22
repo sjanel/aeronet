@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -11,6 +10,7 @@
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
@@ -107,44 +107,44 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
 #ifdef AERONET_ENABLE_ZLIB
     case Encoding::gzip: {
       ZlibEncoder encoder(3);
-      const auto written =
+      const auto result =
           encoder.encodeFull(ZStreamRAII::Variant::gzip, payload, compressed.capacity(), compressed.data());
-      if (written == 0) {
+      if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
-      compressed.setSize(static_cast<RawChars::size_type>(written));
+      compressed.setSize(result.written());
       break;
     }
     case Encoding::deflate: {
       ZlibEncoder encoder(3);
-      const auto written =
+      const auto result =
           encoder.encodeFull(ZStreamRAII::Variant::deflate, payload, compressed.capacity(), compressed.data());
-      if (written == 0) {
+      if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
-      compressed.setSize(static_cast<RawChars::size_type>(written));
+      compressed.setSize(result.written());
       break;
     }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
     case Encoding::zstd: {
       ZstdEncoder encoder(CompressionConfig::Zstd{});
-      const auto written = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
-      if (written == 0) {
+      const auto result = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
+      if (result.hasError()) {
         throw std::runtime_error("ZstdEncoder error");
       }
-      compressed.setSize(static_cast<RawChars::size_type>(written));
+      compressed.setSize(result.written());
       break;
     }
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     case Encoding::br: {
       BrotliEncoder encoder(CompressionConfig::Brotli{});
-      const auto written = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
-      if (written == 0) {
+      const auto result = encoder.encodeFull(payload, compressed.capacity(), compressed.data());
+      if (result.hasError()) {
         throw std::runtime_error("BrotliEncoder error");
       }
-      compressed.setSize(static_cast<RawChars::size_type>(written));
+      compressed.setSize(result.written());
       break;
     }
 #endif
@@ -229,28 +229,28 @@ void CorruptData(std::string_view encoding, RawChars& data) {
   }
 }
 
-int64_t EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
+EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
   out.clear();
   out.reserve(ctx.maxCompressedBytes(data.size()));
-  const auto written = ctx.encodeChunk(data, out.capacity(), out.data());
-  if (written > 0) {
-    out.setSize(static_cast<RawChars::size_type>(written));
+  const auto result = ctx.encodeChunk(data, out.capacity(), out.data());
+  if (!result.hasError()) {
+    out.setSize(result.written());
   }
-  return written;
+  return result;
 }
 
 void EndStream(EncoderContext& ctx, RawChars& out) {
   while (true) {
     out.ensureAvailableCapacityExponential(ctx.endChunkSize());
-    const auto written = ctx.end(out.availableCapacity(), out.data() + out.size());
-    if (written < 0) {
+    const auto result = ctx.end(out.availableCapacity(), out.data() + out.size());
+    if (result.hasError()) {
       out.clear();
       break;
     }
-    if (written == 0) {
+    if (result.written() == 0) {
       break;
     }
-    out.addSize(static_cast<RawChars::size_type>(written));
+    out.addSize(result.written());
   }
 }
 
@@ -266,14 +266,14 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
     // Reserve maximum possible compressed size for this chunk
     compressed.ensureAvailableCapacityExponential(ctx.maxCompressedBytes(chunk.size()));
 
-    int64_t written = ctx.encodeChunk(chunk, compressed.availableCapacity(), compressed.data() + compressed.size());
+    const auto result = ctx.encodeChunk(chunk, compressed.availableCapacity(), compressed.data() + compressed.size());
 
-    if (written < 0) {
+    if (result.hasError()) {
       // Still failed, give up
       return {};
     }
 
-    compressed.addSize(static_cast<RawChars::size_type>(written));
+    compressed.addSize(result.written());
   }
 
   test::EndStream(ctx, compressed);

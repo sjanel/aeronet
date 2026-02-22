@@ -1463,15 +1463,15 @@ std::size_t HttpResponse::appendEncodedInlineOrThrow(bool init, std::string_view
   auto& encoderCtx =
       init ? *compressionState.makeContext(_opts._pickedEncoding) : *compressionState.context(_opts._pickedEncoding);
 
-  const int64_t written = encoderCtx.encodeChunk(data, capacity, _data.data() + _data.size());
+  const auto result = encoderCtx.encodeChunk(data, capacity, _data.data() + _data.size());
 
-  if (written == -1) [[unlikely]] {
+  if (result.hasError()) [[unlikely]] {
     // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
     // encoder error)
     throw std::runtime_error("HttpResponse::appendEncodedInlineOrThrow compression failed");
   }
 
-  return static_cast<std::size_t>(written);
+  return result.written();
 }
 
 void HttpResponse::finalizeInlineBody(int64_t additionalCapacity) {
@@ -1487,17 +1487,18 @@ void HttpResponse::finalizeInlineBody(int64_t additionalCapacity) {
         additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
     _data.ensureAvailableCapacityExponential(neededCapacity);
 
-    const int64_t written = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
-    if (written < 0) [[unlikely]] {
+    const auto result = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
+    if (result.hasError()) [[unlikely]] {
       throw std::runtime_error("Failed to finalize compressed response body");
     }
 
+    const auto written = result.written();
     if (written == 0) {
       break;
     }
 
-    _data.addSize(static_cast<std::size_t>(written));
-    oldBodyLen += static_cast<std::size_t>(written);
+    _data.addSize(written);
+    oldBodyLen += written;
 
     const auto newBodyLenCharVec = IntegralToCharVector(oldBodyLen);
     // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
