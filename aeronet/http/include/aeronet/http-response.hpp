@@ -1329,8 +1329,8 @@ class HttpResponse {
   // Returns a pointer to the position where the body should be written (immediately after the CRLFCRLF sequence).
   char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize) {
     char* insertPtr =
-        WriteHeaderCRLF(_data.data() + bodyStartPos() - http::CRLF.size(), http::ContentType, contentType);
-    insertPtr = WriteHeader(insertPtr, http::ContentLength, bodySize);
+        WriteHeaderCRLF(http::ContentType, contentType, _data.data() + bodyStartPos() - http::CRLF.size());
+    insertPtr = WriteHeader(http::ContentLength, bodySize, insertPtr);
     insertPtr = Append(http::DoubleCRLF, insertPtr);
 
     const auto bodyStart = static_cast<std::uint64_t>(insertPtr - _data.data());

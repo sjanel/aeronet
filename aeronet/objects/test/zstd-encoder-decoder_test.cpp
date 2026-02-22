@@ -63,6 +63,7 @@ void ExpectStreamingRoundTrip(std::string_view payload, std::size_t split) {
   CompressionConfig cfg;
   ZstdEncoder encoder(cfg.zstd);
   const auto compressed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, split);
+  ASSERT_FALSE(compressed.empty());
   ZstdDecoder decoder;
   RawChars decompressed;
   ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
@@ -214,7 +215,7 @@ TEST(ZstdEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   auto ctx = encoder.makeContext();
   const std::string payload = test::MakePatternedPayload(1024);
 
-  const auto maxChunk = ctx->maxCompressedBytes(payload.size());
+  const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
   const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());

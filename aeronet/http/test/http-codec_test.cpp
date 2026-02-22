@@ -948,7 +948,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::gzip);
     ASSERT_NE(ctx, nullptr);
-    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
     const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
@@ -979,7 +979,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
-    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
     const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
     RawChars producedFinal(ctx->endChunkSize());
     std::size_t tailWritten = 0;
@@ -1011,7 +1011,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
-    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
     const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
@@ -1043,7 +1043,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   {
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
-    RawChars produced(ctx->maxCompressedBytes(plain.size()));
+    RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
     const auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());

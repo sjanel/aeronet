@@ -2,8 +2,9 @@
 
 #include <array>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
+
+#include "aeronet/memory-utils.hpp"
 
 namespace aeronet {
 
@@ -55,10 +56,7 @@ class MajorMinorVersion {
 
   // Write the full version string (e.g. "HTTP/1.1") to out.
   // Returns pointer to one past the last written character.
-  constexpr char* writeFull(char* out) const {
-    std::memcpy(out, kPrefix.data(), kPrefix.size());
-    return writeMajorMinor(out + kPrefix.size());
-  }
+  constexpr char* writeFull(char* out) const { return writeMajorMinor(Append(kPrefix, out)); }
 
   // Write just the "X.Y" part of the version to out.
   // Returns pointer to one past the last written character.

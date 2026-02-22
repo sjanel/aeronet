@@ -25,7 +25,7 @@ Header::Header(std::string_view name, std::string_view value) : _nameLen(SafeCas
   }
   _data = std::make_unique<char[]>(HeaderSep.size() + name.size() + value.size());
 
-  WriteHeader(_data.get(), name, value);
+  WriteHeader(name, value, _data.get());
 }
 
 Header::Header(const Header& rhs)

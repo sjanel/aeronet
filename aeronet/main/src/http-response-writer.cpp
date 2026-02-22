@@ -245,9 +245,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   if (_activeEncoderCtx != nullptr && _compressionFormat != Encoding::none) {
     // CRLF size will be needed for chunked framing.
-    RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(data.size()) +
-                              (chunked() ? http::CRLF.size() : 0UL));
-    const auto result = _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity(), compressedBuffer.data());
+    const auto additionalCapacity = chunked() ? http::CRLF.size() : 0UL;
+    RawChars compressedBuffer(_activeEncoderCtx->minEncodeChunkCapacity(data.size()) + additionalCapacity);
+    const auto result =
+        _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity() - additionalCapacity, compressedBuffer.data());
     if (result.hasError()) [[unlikely]] {
       _state = HttpResponseWriter::State::Failed;
       return false;
@@ -310,7 +311,7 @@ void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view 
     _trailers.ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
   }
 
-  WriteHeaderCRLF(_trailers.data() + _trailers.size(), name, value);
+  WriteHeaderCRLF(name, value, _trailers.data() + _trailers.size());
 
   _trailers.addSize(lineSize);
 }
@@ -425,10 +426,10 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   // Threshold reached exactly or exceeded: activate encoder.
   _activeEncoderCtx = _server->_compressionState.makeContext(_compressionFormat);
 
-  RawChars compressedBuffer(_activeEncoderCtx->maxCompressedBytes(_preCompressBuffer.size()) +
+  RawChars compressedBuffer(_activeEncoderCtx->minEncodeChunkCapacity(_preCompressBuffer.size()) +
                             additionalChunkedCapacity);
-  const auto result =
-      _activeEncoderCtx->encodeChunk(_preCompressBuffer, compressedBuffer.capacity(), compressedBuffer.data());
+  const auto result = _activeEncoderCtx->encodeChunk(
+      _preCompressBuffer, compressedBuffer.capacity() - additionalChunkedCapacity, compressedBuffer.data());
   if (result.hasError()) [[unlikely]] {
     _state = HttpResponseWriter::State::Failed;
     return false;
