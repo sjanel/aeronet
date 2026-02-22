@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <cstdint>
 #include <new>
 #include <string_view>
 #include <utility>
@@ -41,60 +40,69 @@ void ZstdEncoderContext::init(int level, int windowLog) {
   _endDone = false;
 }
 
-int64_t ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
-  if (data.empty()) {
-    return 0;
+namespace {
+
+inline EncoderResult ZstdConvertError(ZSTD_ErrorCode code) {
+  if (code == ZSTD_error_dstSize_tooSmall) {
+    return EncoderResult(EncoderResult::Error::NotEnoughCapacity);
   }
+  return EncoderResult(EncoderResult::Error::CompressionError);
+}
+
+}  // namespace
+
+EncoderResult ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+  assert(!data.empty());
 
   ZSTD_inBuffer inBuf{data.data(), data.size(), 0};
   ZSTD_outBuffer outBuf{buf, availableCapacity, 0};
   const std::size_t ret = ZSTD_compressStream2(_ctx.get(), &outBuf, &inBuf, ZSTD_e_continue);
   if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-    return -1;
+    return ZstdConvertError(ZSTD_getErrorCode(ret));
   }
 
   if (inBuf.pos != inBuf.size) [[unlikely]] {
-    return -1;
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  return static_cast<int64_t>(outBuf.pos);
+  return EncoderResult(outBuf.pos);
 }
 
 std::size_t ZstdEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
   return std::max(ZSTD_compressBound(uncompressedSize), ZSTD_CStreamOutSize());
 }
 
-int64_t ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
+EncoderResult ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
   if (_endDone) {
-    return 0;
+    return EncoderResult(0);
   }
 
   ZSTD_inBuffer inBuf{nullptr, 0, 0};
   ZSTD_outBuffer outBuf{buf, availableCapacity, 0};
   const std::size_t ret = ZSTD_compressStream2(_ctx.get(), &outBuf, &inBuf, ZSTD_e_end);
-  if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-    return -1;
+  if (ZSTD_isError(ret) != 0U) {
+    return ZstdConvertError(ZSTD_getErrorCode(ret));
   }
 
   if (ret == 0) {
     _endDone = true;
-    return static_cast<int64_t>(outBuf.pos);
+    return EncoderResult(outBuf.pos);
   }
 
   if (outBuf.pos == 0) [[unlikely]] {
-    return -1;
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  return static_cast<int64_t>(outBuf.pos);
+  return EncoderResult(outBuf.pos);
 }
 
-std::size_t ZstdEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {
+EncoderResult ZstdEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {
   _ctx.init(_cfg.compressionLevel, _cfg.windowLog);
   std::size_t written = ZSTD_compress2(_ctx._ctx.get(), buf, availableCapacity, data.data(), data.size());
   if (ZSTD_isError(written) != 0U) {
-    written = 0;
+    return ZstdConvertError(ZSTD_getErrorCode(written));
   }
-  return written;
+  return EncoderResult(written);
 }
 
 }  // namespace aeronet

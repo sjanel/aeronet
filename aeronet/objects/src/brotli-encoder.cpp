@@ -10,6 +10,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/encoder-result.hpp"
+
 namespace aeronet {
 
 void* BrotliScratch::Alloc(void* opaque, size_t size) {
@@ -49,10 +51,8 @@ void BrotliEncoderContext::init(int quality, int window) {
   assert(res == BROTLI_TRUE);
 }
 
-int64_t BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
-  if (data.empty()) {
-    return 0;
-  }
+EncoderResult BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+  assert(!data.empty());
 
   const uint8_t* nextIn = reinterpret_cast<const uint8_t*>(data.data());
   std::size_t availIn = data.size();
@@ -62,44 +62,45 @@ int64_t BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t ava
 
   if (BrotliEncoderCompressStream(_state.get(), BROTLI_OPERATION_PROCESS, &availIn, &nextIn, &availOut, &nextOut,
                                   nullptr) == BROTLI_FALSE) [[unlikely]] {
-    return -1;  // immediate error
+    // TODO: Is there a way to get more information about the failure?
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
   if (availIn != 0) [[unlikely]] {
     // Brotli refused to consume all input → fatal
-    return -1;
+    // TODO: is this check really necessary?
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  return static_cast<int64_t>(availableCapacity - availOut);
+  return EncoderResult(availableCapacity - availOut);
 }
 
 std::size_t BrotliEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
   return BrotliEncoderMaxCompressedSize(uncompressedSize);
 }
 
-int64_t BrotliEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
+EncoderResult BrotliEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
   const uint8_t* nextIn = nullptr;
   std::size_t availIn = 0;
 
   auto* nextOut = reinterpret_cast<uint8_t*>(buf);
   std::size_t availOut = availableCapacity;
-  const std::size_t beforeOut = availOut;
 
   if (BrotliEncoderCompressStream(_state.get(), BROTLI_OPERATION_FINISH, &availIn, &nextIn, &availOut, &nextOut,
                                   nullptr) == BROTLI_FALSE) [[unlikely]] {
-    return -1;
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  const std::size_t writtenNow = beforeOut - availOut;
+  const std::size_t writtenNow = availableCapacity - availOut;
   if (BrotliEncoderIsFinished(_state.get()) == BROTLI_TRUE) {
-    return static_cast<int64_t>(writtenNow);
+    return EncoderResult(writtenNow);
   }
 
   if (writtenNow == 0) [[unlikely]] {
-    return -1;
+    return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  return static_cast<int64_t>(writtenNow);
+  return EncoderResult(writtenNow);
 }
 
 BrotliEncoder::BrotliEncoder(BrotliEncoder&& rhs) noexcept
@@ -120,14 +121,28 @@ BrotliEncoder& BrotliEncoder::operator=(BrotliEncoder&& rhs) noexcept {
   return *this;
 }
 
-std::size_t BrotliEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) const {
-  uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
-  if (BrotliEncoderCompress(_quality, _window, BROTLI_MODE_GENERIC, data.size(),
-                            reinterpret_cast<const uint8_t*>(data.data()), &availableCapacity, dst) == BROTLI_FALSE) {
-    availableCapacity = 0U;
+EncoderResult BrotliEncoder::encodeFull(std::string_view data, std::size_t availableCapacity, char* buf) {
+  _ctx.init(_quality, _window);
+
+  const uint8_t* nextIn = reinterpret_cast<const uint8_t*>(data.data());
+  std::size_t availIn = data.size();
+
+  uint8_t* nextOut = reinterpret_cast<uint8_t*>(buf);
+  std::size_t availOut = availableCapacity;
+
+  if (BrotliEncoderCompressStream(_ctx._state.get(), BROTLI_OPERATION_FINISH, &availIn, &nextIn, &availOut, &nextOut,
+                                  nullptr) == BROTLI_FALSE) [[unlikely]] {
+    // In case of not enough capacity, Brotli does not return an error here, we need to check availOut to determine if
+    // it was successful or not.
+    return EncoderResult(EncoderResult::Error::CompressionError);
+  }
+  if (BrotliEncoderIsFinished(_ctx._state.get()) == BROTLI_FALSE) [[unlikely]] {
+    // If the encoder is not finished, it means it did not fit in the available capacity. Brotli does not return an
+    // error in this case, so we need to check this condition explicitly.
+    return EncoderResult(EncoderResult::Error::NotEnoughCapacity);
   }
 
-  return availableCapacity;
+  return EncoderResult(availableCapacity - availOut);
 }
 
 }  // namespace aeronet
