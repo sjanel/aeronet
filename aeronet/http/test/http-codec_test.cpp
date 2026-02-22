@@ -19,6 +19,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -189,7 +190,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
           const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
           EXPECT_EQ(neg.encoding, enc);
 
-          ASSERT_TRUE(HttpCodec::TryCompressResponse(state, neg.encoding, resp));
+          ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::compressed);
 
           auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
 
@@ -545,8 +546,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
     const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
     EXPECT_EQ(neg.encoding, enc);
 
-    bool compressed = HttpCodec::TryCompressResponse(state, neg.encoding, resp);
-    ASSERT_FALSE(compressed);
+    ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::exceedsMaxRatio);
     // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
     // be empty.
     EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
@@ -593,8 +593,8 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
               const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
               EXPECT_EQ(neg.encoding, enc);
 
-              bool compressed = HttpCodec::TryCompressResponse(state, neg.encoding, resp);
-              if (!compressed) {
+              const CompressResponseResult result = HttpCodec::TryCompressResponse(state, neg.encoding, resp);
+              if (result != CompressResponseResult::compressed) {
                 // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
                 // be empty.
                 EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));

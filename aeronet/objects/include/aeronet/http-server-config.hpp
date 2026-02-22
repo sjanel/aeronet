@@ -101,11 +101,11 @@ struct HttpServerConfig {
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
   // A low value limits resource usage but may increase latency due to more frequent connection establishment.
   // Default: 100,000 requests.
-  uint32_t maxRequestsPerConnection{100000};
+  std::uint32_t maxRequestsPerConnection{100000};
 
   // Maximum number of closed ConnectionState objects to cache for reuse to reduce allocations.
   // When the limit is reached, closed connections are fully destroyed. Default: 10.
-  uint32_t maxCachedConnections{10};
+  std::uint32_t maxCachedConnections{10};
 
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
   // sent). Once exceeded the server proactively closes the connection.
