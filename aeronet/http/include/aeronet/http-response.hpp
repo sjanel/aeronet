@@ -908,7 +908,7 @@ class HttpResponse {
       if (_opts.isAutomaticDirectCompression()) {
         // during streaming compression, if the output buffer is too small,
         // encoders do NOT fail — they keep compressed data in their internal state and wait for more output space.
-        written = appendEncodedInlineOrThrow(false, std::string_view(first, first + written), maxLen);
+        written = appendEncodedInlineOrThrow(std::string_view(first, first + written));
       }
 #endif
       if (isHead()) {
@@ -1318,7 +1318,7 @@ class HttpResponse {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // Returns the number of written bytes
-  std::size_t appendEncodedInlineOrThrow(bool init, std::string_view data, std::size_t capacity);
+  std::size_t appendEncodedInlineOrThrow(std::string_view data);
 
   void finalizeInlineBody(int64_t additionalCapacity = 0);
 #endif

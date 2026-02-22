@@ -190,7 +190,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
           const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
           EXPECT_EQ(neg.encoding, enc);
 
-          ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::compressed);
+          ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::Compressed);
 
           auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
 
@@ -548,7 +548,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
     const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
     EXPECT_EQ(neg.encoding, enc);
 
-    ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::exceedsMaxRatio);
+    ASSERT_EQ(HttpCodec::TryCompressResponse(state, neg.encoding, resp), CompressResponseResult::ExceedsMaxRatio);
     // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
     // be empty.
     EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
@@ -596,7 +596,7 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
               EXPECT_EQ(neg.encoding, enc);
 
               const CompressResponseResult result = HttpCodec::TryCompressResponse(state, neg.encoding, resp);
-              if (result != CompressResponseResult::compressed) {
+              if (result != CompressResponseResult::Compressed) {
                 // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
                 // be empty.
                 EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));

@@ -18,6 +18,7 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
+#include "aeronet/websocket-handler.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/websocket-compress.hpp"
@@ -71,6 +72,26 @@ struct ExtensionParam {
 constexpr std::string_view kSemicolonSpace = "; ";
 
 }  // namespace
+
+void DeflateConfig::validate() const {
+#ifndef AERONET_ENABLE_ZLIB
+  if (enabled) {
+    throw std::invalid_argument("DeflateConfig: Compression enabled but AERONET_ENABLE_ZLIB is not defined");
+  }
+#endif
+  if (compressionLevel < 0 || compressionLevel > 9) {
+    throw std::invalid_argument("DeflateConfig: compressionLevel must be between 0 and 9");
+  }
+  if (serverMaxWindowBits < 8 || serverMaxWindowBits > 15) {
+    throw std::invalid_argument("DeflateConfig: serverMaxWindowBits must be between 8 and 15");
+  }
+  if (clientMaxWindowBits < 8 || clientMaxWindowBits > 15) {
+    throw std::invalid_argument("DeflateConfig: clientMaxWindowBits must be between 8 and 15");
+  }
+  if (minCompressSize < 16U) {
+    throw std::invalid_argument("DeflateConfig: minCompressSize must be at least 16 bytes");
+  }
+}
 
 std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extensionOffer,
                                                          const DeflateConfig& serverConfig) {

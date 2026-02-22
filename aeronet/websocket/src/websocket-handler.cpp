@@ -22,6 +22,7 @@ namespace aeronet::websocket {
 WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
                                    std::optional<DeflateNegotiatedParams> deflateParams)
     : _config(std::move(config)), _callbacks(std::move(callbacks)) {
+  _config.validate();
   if (deflateParams.has_value()) {
     _deflateContext = std::make_unique<DeflateContext>(*deflateParams, _config.deflateConfig, _config.isServerSide);
   }

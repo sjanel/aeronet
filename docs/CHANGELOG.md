@@ -22,6 +22,7 @@ All notable changes to aeronet are documented in this file.
 - Improve Brotli one-shot compression performance by reusing encoder state across calls.
 - Do not over allocate memory in `HttpResponseWriter` automatic compression by chunks for `brotli` and `zstd` encoders.
 - Reuse `zstd` contexts for one-shot decompressions for better performance.
+- Added `WebSocketDeflate` configuration validation to fail early if the provided parameters are invalid (e.g. `windowBits` out of range) instead of silently ignoring them and causing unexpected behavior.
 
 ### Other
 

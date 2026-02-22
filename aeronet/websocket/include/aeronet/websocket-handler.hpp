@@ -22,6 +22,8 @@ namespace websocket {
 
 /// Configuration options for WebSocket connections.
 struct WebSocketConfig {
+  void validate() const { deflateConfig.validate(); }
+
   /// Maximum size of a single message (after reassembly from fragments).
   /// Set to 0 for unlimited (use with caution).
   std::size_t maxMessageSize{kDefaultMaxMessageSize};
