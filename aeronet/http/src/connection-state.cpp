@@ -47,21 +47,16 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
       zerocopyRequested = false;
       break;
     case ZerocopyMode::Enabled:
-      [[fallthrough]];
-    case ZerocopyMode::Forced:
       zerocopyRequested = true;
       break;
     default: {
       assert(config.zerocopyMode == ZerocopyMode::Opportunistic);
-      sockaddr_storage local{};
       sockaddr_storage peer{};
-      const bool localOk = GetLocalAddress(cnxFd, local);
+      // Disable zerocopy for loopback peers; we don't bother checking the local
+      // address since a server bound to a non-loopback IP while the peer is on
+      // loopback is not a realistic scenario worth optimizing for.
       const bool peerOk = GetPeerAddress(cnxFd, peer);
-
-      // In Opportunistic mode, it's auto-disabled for loopback-to-loopback connections.
-      const bool isLoopbackConn = localOk && peerOk && IsLoopback(local) && IsLoopback(peer);
-
-      zerocopyRequested = !isLoopbackConn;
+      zerocopyRequested = peerOk && !IsLoopback(peer);
       break;
     }
   }

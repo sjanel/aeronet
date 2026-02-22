@@ -421,10 +421,14 @@ TEST(TlsContextTest, MissingCertificateFilesThrow) {
   EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
 }
 
+namespace {
+constexpr uint32_t kMinBytesForZerocopy = 1024;
+}
+
 TEST(TlsTransportTest, ReadWriteAndRetryHints) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   auto zeroWrite = transport.write(std::string_view{});
   EXPECT_EQ(zeroWrite.bytesProcessed, 0U);
@@ -467,7 +471,7 @@ TEST(TlsTransportTest, HandshakeSyscallWriteFatalSetsError) {
   writeState.errnoValue = EBADF;
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
   pair.serverFd.close();
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
   ERR_clear_error();
   errno = EBADF;
   auto res = transport.write("X");
@@ -488,7 +492,7 @@ TEST(TlsTransportTest, ReadReportsReadReadyOnSslSyscallEagain) {
   writeState.writeResult = 0;
 
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   char buf[8];
   auto res = transport.read(buf, sizeof(buf));
@@ -507,7 +511,7 @@ TEST(TlsTransportTest, ReadReportsReadReadyOnSslSyscallEagain) {
   w2.errnoValue = 0;
   w2.retryWrite = true;
   AttachControlledBios(pair2.serverSsl.get(), r2, w2);
-  TlsTransport transport2(std::move(pair2.serverSsl));
+  TlsTransport transport2(std::move(pair2.serverSsl), kMinBytesForZerocopy);
   char buf2[8];
   ERR_clear_error();
   errno = 0;
@@ -528,7 +532,7 @@ TEST(TlsTransportLogTest, SslSyscallEagainShouldReturnReadReady) {
   ControlledBioState writeState{};
   writeState.writeResult = 0;
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   ERR_clear_error();
   errno = 0;
@@ -575,7 +579,7 @@ TEST(TlsTransportWriteHintTest, ReadReportsWriteReadyWhenWantWrite) {
   writeState.retryWrite = true;
 
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   char buf[8];
   ERR_clear_error();
@@ -588,7 +592,7 @@ TEST(TlsTransportTest, SyscallDuringReadWithErrnoZeroRetried) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
   ControlledBioState readState{};
   readState.errnoValue = 0;
   ControlledBioState writeState{};
@@ -607,7 +611,7 @@ TEST(TlsTransportTest, SyscallDuringReadFatalSetsErrorHint) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
   ControlledBioState readState{};
   readState.errnoValue = EBADF;
   ControlledBioState writeState{};
@@ -626,7 +630,7 @@ TEST(TlsTransportTest, SyscallDuringWriteWithErrnoZeroRetried) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
   ControlledBioState readState{};
   readState.errnoValue = 0;
   ControlledBioState writeState{};
@@ -644,7 +648,7 @@ TEST(TlsTransportTest, SyscallDuringWriteFatalSetsErrorHint) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
   ControlledBioState readState{};
   readState.errnoValue = EBADF;
   ControlledBioState writeState{};
@@ -662,7 +666,7 @@ TEST(TlsTransportTest, SuccessfulReadReturnsData) {
   // Covers the early-return success path in TlsTransport::read (line 45)
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // Client writes data that server will read
   const std::string payload = "Hello from client";
@@ -778,7 +782,7 @@ TEST(TlsHandshakeTest, PeerSubjectNonEmptyAfterHandshake) {
 TEST(TlsTransportTest, KtlsSendAlreadyAttemptedReturnsFailed) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // First attempt
   const auto result1 = transport.enableKtlsSend();
@@ -812,7 +816,7 @@ TEST(TlsContextTest, SniCertificateWithWildcardPatternWorks) {
 TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
   // Covers the null check in TlsTransport::shutdown (line 147)
   TlsTransport::SslPtr nullSsl{nullptr, &::SSL_free};
-  TlsTransport transport(std::move(nullSsl));
+  TlsTransport transport(std::move(nullSsl), kMinBytesForZerocopy);
 
   // Should return early without crashing
   transport.shutdown();
@@ -821,7 +825,7 @@ TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
 TEST(TlsTransportTest, HandshakeDoneFalseInitially) {
   // Verify handshakeDone() returns false before handshake is complete
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   EXPECT_FALSE(transport.handshakeDone());
 }
@@ -830,7 +834,7 @@ TEST(TlsTransportTest, WriteEmptyDataReturnsZero) {
   // Covers the empty data early return path in write (line 108)
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   auto result = transport.write("");
   EXPECT_EQ(result.bytesProcessed, 0U);
@@ -842,7 +846,7 @@ TEST(TlsTransportTest, ReadAfterPeerCloseReturnsZero) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
 
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // Client initiates shutdown - send close_notify
   ::SSL_shutdown(pair.clientSsl.get());
@@ -1030,7 +1034,7 @@ TEST(TlsContextTest, SessionTicketsStoreCreatedWithoutStaticKeys) {
 TEST(TlsTransportTest, ZerocopyNotEnabledByDefault) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_FALSE(transport.hasZerocopyPending());
@@ -1039,7 +1043,7 @@ TEST(TlsTransportTest, ZerocopyNotEnabledByDefault) {
 TEST(TlsTransportTest, ZerocopyRequiresKtlsSend) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // Set fd (in real use, this is done after SSL_set_fd)
   transport.setUnderlyingFd(pair.serverFd.fd());
@@ -1053,7 +1057,7 @@ TEST(TlsTransportTest, ZerocopyRequiresKtlsSend) {
 TEST(TlsTransportTest, ZerocopyWithoutFdReturnsFalse) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // Even if kTLS were enabled, without fd set, enableZerocopy should fail
   EXPECT_FALSE(transport.enableZerocopy());
@@ -1063,7 +1067,7 @@ TEST(TlsTransportTest, ZerocopyWithoutFdReturnsFalse) {
 TEST(TlsTransportTest, SetUnderlyingFdStoresFd) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   transport.setUnderlyingFd(42);
   EXPECT_EQ(transport.underlyingFd(), 42);
@@ -1072,7 +1076,7 @@ TEST(TlsTransportTest, SetUnderlyingFdStoresFd) {
 TEST(TlsTransportTest, DisableZerocopyClearsState) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // disableZerocopy should work even if it was never enabled
   transport.disableZerocopy();
@@ -1083,7 +1087,7 @@ TEST(TlsTransportTest, DisableZerocopyClearsState) {
 TEST(TlsTransportTest, PollZerocopyCompletionsNoFdReturnsZero) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   // Without fd set, poll should return 0
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
@@ -1092,7 +1096,7 @@ TEST(TlsTransportTest, PollZerocopyCompletionsNoFdReturnsZero) {
 TEST(TlsTransportTest, PollZerocopyCompletionsWithFdNoCompletions) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
 
   transport.setUnderlyingFd(pair.serverFd.fd());
 

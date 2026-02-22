@@ -23,7 +23,7 @@ class ITransport {
  public:
   ITransport() noexcept = default;
 
-  explicit ITransport(int fd) : _fd(fd) {}
+  ITransport(int fd, std::uint32_t minBytesForZerocopy) : _minBytesForZerocopy(minBytesForZerocopy), _fd(fd) {}
 
   virtual ~ITransport() = default;
 
@@ -88,6 +88,7 @@ class ITransport {
 
  protected:
   ZeroCopyState _zerocopyState{};
+  std::uint32_t _minBytesForZerocopy{~0U};
   int _fd{-1};
 };
 
@@ -95,7 +96,7 @@ class ITransport {
 // Supports optional MSG_ZEROCOPY for large payloads on Linux.
 class PlainTransport final : public ITransport {
  public:
-  PlainTransport(int fd, ZerocopyMode zerocopyMode, bool isZerocopyEnabled);
+  PlainTransport(int fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy);
 
   TransportResult read(char* buf, std::size_t len) override;
 
@@ -103,9 +104,6 @@ class PlainTransport final : public ITransport {
 
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
-
- private:
-  bool _forcedZerocopy{false};
 };
 
 }  // namespace aeronet
