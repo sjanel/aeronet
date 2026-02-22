@@ -764,7 +764,8 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 
 TEST(ZerocopyMode, ForcedModeSmallPayload) {
   HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Forced);
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(0);
 
   test::TestServer localTs(cfg);
 
@@ -786,7 +787,8 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
   // Stress test: repeated requests with large payloads to exercise zerocopy + backpressure.
   // Reproduces data corruption seen under sustained zerocopy with virtual network devices (K8s).
   HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Forced);
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(0);
 
   test::TestServer localTs(cfg);
 
@@ -875,7 +877,8 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   // Stress test with varying payload sizes exercising both zerocopy and regular write paths.
   // Forces zerocopy even for small payloads to stress the zerocopy completion mechanism.
   HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Forced);
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(0);
 
   test::TestServer localTs(cfg);
 
@@ -906,7 +909,8 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
   // Stress test over a single keep-alive connection with many large responses.
   // This exercises the flushOutbound / outBuffer append paths with zerocopy.
   HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Forced);
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(0);
   cfg.withKeepAliveMode(true);
   cfg.withMaxRequestsPerConnection(10000);
 

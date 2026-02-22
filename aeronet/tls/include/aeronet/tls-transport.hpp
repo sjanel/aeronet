@@ -17,7 +17,8 @@ class TlsTransport final : public ITransport {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
-  explicit TlsTransport(SslPtr sslPtr) : _ssl(std::move(sslPtr)) {}
+  TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
+      : ITransport(-1, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
 
   TransportResult read(char* buf, std::size_t len) override;
 

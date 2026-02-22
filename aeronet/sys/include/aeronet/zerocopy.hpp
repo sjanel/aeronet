@@ -14,11 +14,6 @@
 
 namespace aeronet {
 
-// Minimum payload size threshold for MSG_ZEROCOPY.
-// Below this threshold, the overhead of page pinning exceeds the benefit.
-// Linux kernel docs suggest ~10-32KB; we use 16KB as a reasonable default.
-inline constexpr std::size_t kZeroCopyMinPayloadSize = 16UL * 1024;
-
 // Result of enabling zerocopy on a socket.
 enum class ZeroCopyEnableResult : std::uint8_t {
   Enabled,       // SO_ZEROCOPY successfully set

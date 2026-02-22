@@ -46,6 +46,7 @@ int main(int argc, char* argv[]) {
   config.compression.addVaryAcceptEncodingHeader = true;
   config.compression.minBytes = kCompressionMinBytes;  // Compress responses larger than 16 bytes
   config.compression.preferredFormats = {Encoding::gzip};
+  config.zerocopyMode = ZerocopyMode::Disabled;  // because we're benchmarking on localhost
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {
