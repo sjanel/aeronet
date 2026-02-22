@@ -7,7 +7,6 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <exception>
 #include <memory>
 #include <span>
@@ -36,6 +35,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -182,12 +182,11 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   for (const auto& [name, value] : headers) {
     std::string_view storedName(buf, name.size());
 
-    std::memcpy(buf, name.data(), name.size());
-    buf += name.size();
+    buf = Append(name, buf);
 
     std::string_view storedValue(buf, value.size());
-    std::memcpy(buf, value.data(), value.size());
-    buf += value.size();
+
+    buf = Append(value, buf);
 
     assert(!name.empty());
     if (name[0] == ':') {
@@ -521,7 +520,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   auto* pFilePayload = response.filePayloadPtr();
 
   // finalize Date header
-  WriteCRLFDateHeader(response._data.data() + response.headersStartPos(), SysClock::now());
+  WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
 
   const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pServerConfig->globalHeaders;
 

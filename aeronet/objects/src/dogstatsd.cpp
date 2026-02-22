@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/unix-socket.hpp"
 
@@ -45,13 +46,6 @@ constexpr std::string_view FormatInteger(std::integral auto value, char* buffer)
   const auto [ptr, ec] = std::to_chars(buffer, buffer + kMaxIntegerStrBufferSize, value);
   assert(ec == std::errc{});
   return {buffer, ptr};
-}
-
-constexpr void Copy(std::string_view sv, char* dst) noexcept { std::memcpy(dst, sv.data(), sv.size()); }
-
-[[nodiscard]] constexpr char* Append(std::string_view sv, char* dst) {
-  Copy(sv, dst);
-  return dst + sv.size();
 }
 
 }  // namespace

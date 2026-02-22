@@ -24,8 +24,8 @@ EncoderResult ZlibEncoderContext::encodeChunk(std::string_view data, std::size_t
   return EncoderResult(availableCapacity - _zs.stream.avail_out);
 }
 
-std::size_t ZlibEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
-  return ZDeflateBound(const_cast<zstream*>(&_zs.stream), uncompressedSize);
+std::size_t ZlibEncoderContext::minEncodeChunkCapacity(std::size_t chunkSize) const {
+  return ZDeflateBound(const_cast<zstream*>(&_zs.stream), chunkSize);
 }
 
 EncoderResult ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {

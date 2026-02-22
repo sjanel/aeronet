@@ -62,21 +62,21 @@ EncoderResult BrotliEncoderContext::encodeChunk(std::string_view data, std::size
 
   if (BrotliEncoderCompressStream(_state.get(), BROTLI_OPERATION_PROCESS, &availIn, &nextIn, &availOut, &nextOut,
                                   nullptr) == BROTLI_FALSE) [[unlikely]] {
-    // TODO: Is there a way to get more information about the failure?
     return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  if (availIn != 0) [[unlikely]] {
-    // Brotli refused to consume all input → fatal
-    // TODO: is this check really necessary?
-    return EncoderResult(EncoderResult::Error::CompressionError);
-  }
+  // BROTLI_OPERATION_PROCESS always fully consumes input into internal buffers regardless of output space — it only
+  // needs availOut > 0 to not stall, but even that is a soft requirement for input consumption specifically. This would
+  // indicate a bug in minEncodeChunkCapacity() if it ever happens.
+  assert(availIn == 0);
 
   return EncoderResult(availableCapacity - availOut);
 }
 
-std::size_t BrotliEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
-  return BrotliEncoderMaxCompressedSize(uncompressedSize);
+std::size_t BrotliEncoderContext::minEncodeChunkCapacity(std::size_t chunkSize) const {
+  // heuristic - But what is important is that we return non-zero value here.
+  // In any case, brotli will catch-up in the end() process.
+  return BrotliEncoderMaxCompressedSize(chunkSize >> 2U);
 }
 
 EncoderResult BrotliEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {

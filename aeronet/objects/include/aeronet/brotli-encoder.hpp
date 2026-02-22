@@ -54,7 +54,7 @@ class BrotliEncoderContext final : public EncoderContext {
 
   ~BrotliEncoderContext() override = default;
 
-  [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedSize) const override;
+  [[nodiscard]] std::size_t minEncodeChunkCapacity(std::size_t chunkSize) const override;
 
   [[nodiscard]] std::size_t endChunkSize() const override { return 128UL; }
 

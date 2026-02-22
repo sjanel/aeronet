@@ -1,7 +1,7 @@
 #include "aeronet/upgrade-handler.hpp"
 
 #include <cctype>
-#include <cstring>
+#include <cstddef>
 #include <string_view>
 
 #include "aeronet/header-write.hpp"
@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
@@ -34,10 +35,10 @@ namespace {
 #ifdef AERONET_ENABLE_WEBSOCKET
 
 // Helper to write a header line to RawChars
-void AppendHeaderCRLF(RawChars& buf, std::string_view name, std::string_view value) {
+void AppendHeaderCRLF(std::string_view name, std::string_view value, RawChars& buf) {
   const auto headerSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
   buf.ensureAvailableCapacityExponential(headerSize);
-  WriteHeaderCRLF(buf.data() + buf.size(), name, value);
+  WriteHeaderCRLF(name, value, buf.data() + buf.size());
   buf.addSize(headerSize);
 }
 
@@ -262,14 +263,15 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
   response.unchecked_append(kSwitchingProtocolsHttp11HeaderLine);
 
   // Headers
-  AppendHeaderCRLF(response, http::Upgrade, websocket::UpgradeValue);
-  AppendHeaderCRLF(response, http::Connection, http::Upgrade);
+  AppendHeaderCRLF(http::Upgrade, websocket::UpgradeValue, response);
+  AppendHeaderCRLF(http::Connection, http::Upgrade, response);
   AppendHeaderCRLF(
-      response, websocket::SecWebSocketAccept,
-      std::string_view(validationResult.secWebSocketAccept.data(), validationResult.secWebSocketAccept.size()));
+      websocket::SecWebSocketAccept,
+      std::string_view(validationResult.secWebSocketAccept.data(), validationResult.secWebSocketAccept.size()),
+      response);
 
   if (!validationResult.selectedProtocol.empty()) {
-    AppendHeaderCRLF(response, websocket::SecWebSocketProtocol, validationResult.selectedProtocol);
+    AppendHeaderCRLF(websocket::SecWebSocketProtocol, validationResult.selectedProtocol, response);
   }
 
   // Include negotiated extensions
@@ -279,13 +281,13 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
                                                 valueSize + http::CRLF.size() + http::CRLF.size());
 
     char* insertPtr = response.data() + response.size();
-    std::memcpy(insertPtr, websocket::SecWebSocketExtensions.data(), websocket::SecWebSocketExtensions.size());
-    std::memcpy(insertPtr + websocket::SecWebSocketExtensions.size(), http::HeaderSep.data(), http::HeaderSep.size());
+    insertPtr = Append(websocket::SecWebSocketExtensions, insertPtr);
+    Copy(http::HeaderSep, insertPtr);
     response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
 
     websocket::BuildDeflateResponse(*validationResult.deflateParams, response);
 
-    std::memcpy(response.data() + response.size(), http::CRLF.data(), http::CRLF.size());
+    Copy(http::CRLF, response.data() + response.size());
     response.addSize(http::CRLF.size());
   }
 

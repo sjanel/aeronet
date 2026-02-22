@@ -5,13 +5,13 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <span>
 #include <utility>
 
 #include "aeronet/http-header.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -438,7 +438,7 @@ HpackDynamicEntry::HpackDynamicEntry(std::string_view name, std::string_view val
       _nameLength(SafeCast<uint32_t>(name.size())),
       _valueLength(SafeCast<uint32_t>(value.size())) {
   tolower_n(name.data(), name.size(), _data.get());
-  std::memcpy(_data.get() + name.size(), value.data(), value.size());
+  Copy(value, _data.get() + name.size());
 }
 
 std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStaticTable; }
@@ -815,10 +815,10 @@ http::HeaderView HpackDecoder::lookupIndex(std::size_t index) const {
 
 const char* HpackDecoder::storeHeader(http::HeaderView header) {
   char* headerPtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.name.size()));
-  std::memcpy(headerPtr, header.name.data(), header.name.size());
+  Copy(header.name, headerPtr);
 
   char* valuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.value.size()));
-  std::memcpy(valuePtr, header.value.data(), header.value.size());
+  Copy(header.value, valuePtr);
 
   auto [it, inserted] =
       _decodedHeadersMap.try_emplace(std::string_view(headerPtr, header.name.size()), valuePtr, header.value.size());
@@ -836,9 +836,9 @@ const char* HpackDecoder::storeHeader(http::HeaderView header) {
 
     const std::size_t newValueLen = existingValue.size() + 1UL + header.value.size();
     char* newValuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
-    std::memcpy(newValuePtr, existingValue.data(), existingValue.size());
+    Copy(existingValue, newValuePtr);
     newValuePtr[existingValue.size()] = mergeSep;
-    std::memcpy(newValuePtr + existingValue.size() + 1UL, header.value.data(), header.value.size());
+    Copy(header.value, newValuePtr + existingValue.size() + 1UL);
     it->second = std::string_view(newValuePtr, newValueLen);
   }
 

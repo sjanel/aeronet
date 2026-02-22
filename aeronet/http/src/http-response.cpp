@@ -86,7 +86,7 @@ constexpr void InitData(char* data) {
   // In debug, this allows for easier inspection of the response data before finalization.
   // In release, it's not needed because the final HTTP version and date will be written at finalization step.
   http::HTTP_1_1.writeFull(data);
-  WriteCRLFDateHeader(data + kStatusLineMinLenWithoutCRLF, SysClock::now());
+  WriteCRLFDateHeader(SysClock::now(), data + kStatusLineMinLenWithoutCRLF);
 #endif
 }
 
@@ -214,9 +214,9 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
     Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
-    char* insertPtr = WriteCRLFHeader(_data.data() + kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF,
-                                      http::ContentType, contentType);
-    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, body.size());
+    char* insertPtr = WriteCRLFHeader(http::ContentType, contentType,
+                                      _data.data() + kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF);
+    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
     insertPtr = Append(http::DoubleCRLF, insertPtr);
     const auto bodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
     setBodyStartPos(bodyStartPos);
@@ -257,8 +257,8 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   if (body.empty()) {
     bodyStartPos += http::CRLF.size();
   } else {
-    char* insertPtr = WriteCRLFHeader(_data.data() + bodyStartPos - http::CRLF.size(), http::ContentType, contentType);
-    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, body.size());
+    char* insertPtr = WriteCRLFHeader(http::ContentType, contentType, _data.data() + bodyStartPos - http::CRLF.size());
+    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
     bodyStartPos = static_cast<std::uint64_t>(insertPtr + http::DoubleCRLF.size() - _data.data());
     Copy(body, insertPtr + http::DoubleCRLF.size());
   }
@@ -526,7 +526,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       adjustEncodingHeaders();
 #endif
-      insertPtr = WriteHeader(_data.data() + bodyStartPos() - http::CRLF.size(), http::ContentType, contentTypeValue);
+      insertPtr = WriteHeader(http::ContentType, contentTypeValue, _data.data() + bodyStartPos() - http::CRLF.size());
     } else {
       const auto bodyStart = bodyStartPos();
       const auto oldContentTypeAndLengthSize =
@@ -544,7 +544,7 @@ void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t
 #endif
       insertPtr = Append(contentTypeValue, getContentTypeValuePtr());
     }
-    insertPtr = WriteCRLFHeader(insertPtr, http::ContentLength, std::string_view(newBodyLenCharVec));
+    insertPtr = WriteCRLFHeader(http::ContentLength, std::string_view(newBodyLenCharVec), insertPtr);
     insertPtr = Append(http::DoubleCRLF, insertPtr);
     const auto newBodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
     setBodyStartPos(newBodyStartPos);
@@ -754,7 +754,7 @@ void HttpResponse::headerAddLineUnchecked(std::string_view key, std::string_view
   const auto bodySz = bodyLength();
 
   if (bodySz == 0) {
-    std::memcpy(insertPtr + headerLineSize, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+    Copy(http::DoubleCRLF, insertPtr + headerLineSize);
   } else {
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
@@ -762,7 +762,7 @@ void HttpResponse::headerAddLineUnchecked(std::string_view key, std::string_view
     insertPtr = getContentTypeHeaderLinePtr();
     std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
   }
-  WriteCRLFHeader(insertPtr, key, value);
+  WriteCRLFHeader(key, value, insertPtr);
   _data.addSize(headerLineSize);
 
   adjustBodyStart(static_cast<int64_t>(headerLineSize));
@@ -1054,7 +1054,7 @@ HttpResponse& HttpResponse::trailerAddLine(std::string_view name, std::string_vi
 
   _opts._trailerLen = newTrailerLen;
 
-  WriteHeaderCRLF(insertPtr, name, value);
+  WriteHeaderCRLF(name, value, insertPtr);
   return *this;
 }
 
@@ -1194,7 +1194,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
       _data.ensureAvailableCapacity(totalNewHeadersSize);
       headersInsertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
       // Copy \r\n\r\n to its final place
-      std::memcpy(headersInsertPtr + totalNewHeadersSize, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+      Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
     }
   } else {
     // body > 0 && !isHeadMethod && !hasFileBody()
@@ -1215,7 +1215,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
       if (moveBodyInline) {
         if (totalNewHeadersSize != 0) {
           // Copy \r\n\r\n to its final place
-          std::memcpy(headersInsertPtr + totalNewHeadersSize, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+          Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
         }
         const auto bodyAndTrailersView = _payloadVariant.view();
         Copy(bodyAndTrailersView, oldBodyStart + totalNewHeadersSize);
@@ -1230,7 +1230,7 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
         }
 
         // Copy \r\n\r\n to its final place
-        std::memcpy(headersInsertPtr + totalNewHeadersSize, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+        Copy(http::DoubleCRLF, headersInsertPtr + totalNewHeadersSize);
       }
     } else {
       // RFC 7230 §4.1.2: Trailers require chunked transfer encoding.
@@ -1401,12 +1401,12 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
   }
 
   if (addConnectionHeader) {
-    headersInsertPtr = WriteCRLFHeader(headersInsertPtr, http::Connection, connectionValue);
+    headersInsertPtr = WriteCRLFHeader(http::Connection, connectionValue, headersInsertPtr);
   }
 
   _data.addSize(totalNewHeadersSize);
 
-  WriteCRLFDateHeader(_data.data() + headersStartPos(), tp);
+  WriteCRLFDateHeader(tp, _data.data() + headersStartPos());
 
   assert(!_payloadVariant.isSizeOnly());
 

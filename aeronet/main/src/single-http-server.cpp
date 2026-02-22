@@ -1209,11 +1209,11 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
 
               RawChars buf(kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size());
-
-              std::memcpy(buf.data(), kHttpResponseLinePrefix.data(), kHttpResponseLinePrefix.size());
-              std::memcpy(write3(buf.data() + kHttpResponseLinePrefix.size(), status), http::DoubleCRLF.data(),
-                          http::DoubleCRLF.size());
               buf.setSize(buf.capacity());
+
+              char* insertPtr = Append(kHttpResponseLinePrefix, buf.data());
+              insertPtr = write3(insertPtr, status);
+              Copy(http::DoubleCRLF, insertPtr);
 
               queueData(cnxIt, HttpResponseData(std::move(buf)));
               break;

@@ -196,7 +196,7 @@ TEST(BrotliEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   auto ctx = encoder.makeContext();
   const std::string payload = test::MakePatternedPayload(1024);
 
-  const auto maxChunk = ctx->maxCompressedBytes(payload.size());
+  const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
   const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
