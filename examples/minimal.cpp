@@ -1,6 +1,7 @@
 #include <aeronet/aeronet.hpp>
 #include <charconv>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -38,7 +39,9 @@ int main(int argc, char** argv) {
       resp.bodyAppend("\nMethod: ");
       resp.bodyAppend(http::MethodToStr(req.method()));
       resp.bodyAppend("\nHTTP Version: ");
-      resp.bodyAppend(std::string_view(req.version().str()));
+      resp.bodyInlineAppend(http::Version::kStrLen, [version = req.version()](char* buf) {
+        return static_cast<std::size_t>(version.writeFull(buf) - buf);
+      });
       resp.bodyAppend("\nHeaders:\n");
       for (const auto& [headerKey, headerValue] : req.headers()) {
         resp.bodyAppend(headerKey);

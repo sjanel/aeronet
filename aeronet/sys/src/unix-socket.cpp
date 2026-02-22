@@ -6,12 +6,12 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
+#include "aeronet/memory-utils.hpp"
 
 #ifdef __linux__
 // Linux supports SOCK_NONBLOCK | SOCK_CLOEXEC atomically at socket creation.
@@ -55,8 +55,7 @@ UnixSocket::UnixSocket(Type type) {
 int UnixSocket::connect(std::string_view path) noexcept {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
-  std::memcpy(addr.sun_path, path.data(), path.size());
-  addr.sun_path[path.size()] = '\0';
+  *Append(path, addr.sun_path) = '\0';
   const auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
   return ::connect(_baseFd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen);
 }

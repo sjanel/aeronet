@@ -60,7 +60,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
       return ret;
     }
     // On error, check if retryable
-    if (errno == EINTR) {
+    if (errno == EINTR) {  // NOLINT(bugprone-branch-clone)
       // Fall through to regular write loop
     } else if (errno == ENOBUFS) {
       // Kernel cannot pin more pages for zerocopy — fall through to regular write path.
@@ -100,6 +100,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
 ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Use writev for scatter-gather I/O - single syscall for both buffers.
   // This avoids extra memcpy and allows optimal TCP segmentation.
+  // NOLINTNEXTLINE(misc-include-cleaner)
   iovec iov[]{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
               {const_cast<char*>(firstBuf.data()), firstBuf.size()},
               // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
@@ -119,7 +120,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
       return ret;
     }
     // On error, check if retryable
-    if (errno == EINTR) {
+    if (errno == EINTR) {  // NOLINT(bugprone-branch-clone)
       // Fall through to regular write loop
     } else if (errno == EAGAIN) {
       ret.want = TransportHint::WriteReady;

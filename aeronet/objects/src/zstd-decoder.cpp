@@ -77,8 +77,8 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]
 
 bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
                                  RawChars& out) {
-  const auto rSize = ZSTD_getFrameContentSize(input.data(), input.size());
-  switch (rSize) {
+  const auto decompressedSize = ZSTD_getFrameContentSize(input.data(), input.size());
+  switch (decompressedSize) {
     case ZSTD_CONTENTSIZE_ERROR:
       log::debug("ZSTD_getFrameContentSize returned ZSTD_CONTENTSIZE_ERROR");
       return false;
@@ -86,19 +86,14 @@ bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompre
       _ctx.init();
       return _ctx.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
     default: {
-      if (maxDecompressedBytes < rSize) {
+      if (maxDecompressedBytes < decompressedSize) {
         return false;
       }
 
-      out.ensureAvailableCapacityExponential(static_cast<uint64_t>(rSize));
-      const std::size_t ret = ZSTD_decompress(out.data() + out.size(), rSize, input.data(), input.size());
-      if (ZSTD_isError(ret) != 0U) [[unlikely]] {
-        log::debug("ZSTD_decompress failed with error {}", ZSTD_getErrorName(ret));
-        return false;
-      }
+      out.ensureAvailableCapacityExponential(static_cast<uint64_t>(decompressedSize));
 
-      out.addSize(rSize);
-      return true;
+      _ctx.init();
+      return _ctx.decompressChunk(input, true, decompressedSize, decoderChunkSize, out);
     }
   }
 }

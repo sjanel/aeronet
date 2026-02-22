@@ -20,6 +20,8 @@ All notable changes to aeronet are documented in this file.
 - Add `ZerocopyMode::Forced` — like `Enabled` but bypasses the minimum payload size threshold (useful for stress testing zerocopy on localhost).
 - Added some telemetry counters for automatic `HttpResponse` compression (`aeronet.http_responses.compression.*`).
 - Improve Brotli one-shot compression performance by reusing encoder state across calls.
+- Do not over allocate memory in `HttpResponseWriter` automatic compression by chunks for `brotli` and `zstd` encoders.
+- Reuse `zstd` contexts for one-shot decompressions for better performance.
 
 ### Other
 

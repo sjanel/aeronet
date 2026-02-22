@@ -21,15 +21,15 @@ class ZlibEncoderContext final : public EncoderContext {
 
   ~ZlibEncoderContext() override = default;
 
-  [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedSize) const override;
-
-  [[nodiscard]] std::size_t endChunkSize() const override { return 64UL; }
+  [[nodiscard]] std::size_t minEncodeChunkCapacity(std::size_t chunkSize) const override;
 
   EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
 
   /// Initialize (or reinitialize) the compression context with given parameters.
   /// Reuses internal zlib state if already initialized.
   void init(int8_t level, ZStreamRAII::Variant variant) { _zs.initCompress(variant, level); }
+
+  [[nodiscard]] std::size_t endChunkSize() const override { return 64UL; }
 
   EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 

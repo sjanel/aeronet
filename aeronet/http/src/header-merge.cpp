@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -72,7 +73,7 @@ bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::st
   }
 
   // Step 3 - finally copy tmp into the gap and insert separator
-  std::memcpy(firstValueLast + szSep, tmp.data(), tmp.size());
+  Copy(tmp, firstValueLast + szSep);
   *firstValueLast = mergeSep;
 
   it->second = std::string_view(firstValueFirst, firstValueLast + szToMove);

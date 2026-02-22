@@ -1,11 +1,15 @@
 #include "aeronet/zstd-encoder.hpp"
 
-#include <algorithm>
+#include <zstd.h>
+#include <zstd_errors.h>
+
 #include <cassert>
 #include <cstddef>
 #include <new>
 #include <string_view>
 #include <utility>
+
+#include "aeronet/encoder-result.hpp"
 
 namespace aeronet {
 
@@ -61,15 +65,13 @@ EncoderResult ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t
     return ZstdConvertError(ZSTD_getErrorCode(ret));
   }
 
-  if (inBuf.pos != inBuf.size) [[unlikely]] {
-    return EncoderResult(EncoderResult::Error::CompressionError);
-  }
+  assert(inBuf.pos == inBuf.size);  // guaranteed by zstd contract (minEncodeChunkCapacity() should ensure this)
 
   return EncoderResult(outBuf.pos);
 }
 
-std::size_t ZstdEncoderContext::maxCompressedBytes(std::size_t uncompressedSize) const {
-  return std::max(ZSTD_compressBound(uncompressedSize), ZSTD_CStreamOutSize());
+std::size_t ZstdEncoderContext::minEncodeChunkCapacity([[maybe_unused]] std::size_t chunkSize) const {
+  return ZSTD_CStreamOutSize();
 }
 
 EncoderResult ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {

@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -254,7 +255,7 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
           val.addSize(data.size());
           char* base = val.data();
           std::memmove(base + pos + data.size(), base + pos, oldSize - pos);
-          std::memcpy(base + pos, data.data(), data.size());
+          Copy(data, base + pos);
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           const auto* beg = reinterpret_cast<const char*>(val.first.get());
           RawChars buf(val.second + data.size());
