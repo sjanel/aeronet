@@ -30,16 +30,16 @@ void PrefinalizeHttpResponse(const HttpRequest& request, HttpResponse& response,
     CompressResponseResult result = HttpCodec::TryCompressResponse(compressionState, encoding, response);
 
     switch (result) {
-      case internal::CompressResponseResult::uncompressed:
+      case internal::CompressResponseResult::Uncompressed:
         break;
-      case internal::CompressResponseResult::compressed:
+      case internal::CompressResponseResult::Compressed:
         telemetryContext.counterAdd("aeronet.http_responses.compression.total", 1);
         break;
-      case internal::CompressResponseResult::exceedsMaxRatio:
+      case internal::CompressResponseResult::ExceedsMaxRatio:
         telemetryContext.counterAdd("aeronet.http_responses.compression.exceeds_max_ratio_total", 1);
         break;
       default:
-        assert(result == internal::CompressResponseResult::error);
+        assert(result == internal::CompressResponseResult::Error);
         telemetryContext.counterAdd("aeronet.http_responses.compression.errors_total", 1);
         break;
     }

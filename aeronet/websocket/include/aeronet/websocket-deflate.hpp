@@ -15,6 +15,8 @@ namespace aeronet::websocket {
 
 /// Configuration for permessage-deflate extension (RFC 7692).
 struct DeflateConfig {
+  void validate() const;
+
   /// Whether to enable permessage-deflate compression (RFC 7692).
   /// If true and the client offers permessage-deflate, it will be negotiated.
 #ifdef AERONET_ENABLE_ZLIB

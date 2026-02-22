@@ -335,11 +335,13 @@ void HttpResponseWriter::end() {
 
   if (_compressionActivated) {
     const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
+    const std::size_t additionalCapacity = chunked() ? http::CRLF.size() : 0UL;
     // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
     RawChars last;
     while (true) {
-      last.ensureAvailableCapacityExponential(endChunkSize + (chunked() ? http::CRLF.size() : 0UL));
-      const auto result = _activeEncoderCtx->end(last.availableCapacity(), last.data() + last.size());
+      last.ensureAvailableCapacityExponential(endChunkSize + additionalCapacity);
+      const auto result =
+          _activeEncoderCtx->end(last.availableCapacity() - additionalCapacity, last.data() + last.size());
       if (result.hasError()) [[unlikely]] {
         _state = HttpResponseWriter::State::Failed;
         return;

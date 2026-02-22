@@ -7,9 +7,9 @@
 #include <cstring>
 #include <optional>
 #include <span>
-#include <string>
 #include <string_view>
 
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -24,6 +24,52 @@ std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
 std::span<const std::byte> buf_bytes(const RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
 #endif
 }  // namespace
+
+TEST(WebSocketDeflateTest, DeflateConfigValidation) {
+  DeflateConfig config;
+
+#ifdef AERONET_ENABLE_ZLIB
+  // By default, config should be valid
+  EXPECT_TRUE(config.enabled);
+  EXPECT_NO_THROW(config.validate());
+#else
+  EXPECT_FALSE(config.enabled);
+  // If zlib is not enabled, validation should not throw regardless of config values
+  EXPECT_NO_THROW(config.validate());
+  config.enabled = true;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+#endif
+
+  // Valid config should not throw
+  EXPECT_NO_THROW(config.validate());
+
+  config.serverMaxWindowBits = 7;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.serverMaxWindowBits = 19;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.serverMaxWindowBits = 15;
+  EXPECT_NO_THROW(config.validate());
+
+  config.clientMaxWindowBits = 3;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.clientMaxWindowBits = 16;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.clientMaxWindowBits = 15;
+  EXPECT_NO_THROW(config.validate());
+
+  config.compressionLevel = -1;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.compressionLevel = 10;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.compressionLevel = 5;
+  EXPECT_NO_THROW(config.validate());
+
+  config.minCompressSize = 0;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.minCompressSize = 512UL;
+  EXPECT_NO_THROW(config.validate());
+}
+
 // ============================================================================
 // ParseDeflateOffer tests
 // ============================================================================
@@ -364,7 +410,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_RoundTrip) {
   DeflateConfig config;
   DeflateContext ctx(params, config, true);
 
-  const std::string original = "Hello, WebSocket world! This is a test message that should be compressed.";
+  std::string_view original = "Hello, WebSocket world! This is a test message that should be compressed.";
   auto inputSpan = sv_bytes(original);
 
   // Compress
@@ -388,10 +434,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_LargeData) {
   DeflateContext ctx(params, config, true);
 
   // Create a large repetitive string (compresses well)
-  std::string original(10000, 'A');
-  for (std::size_t ii = 0; ii < original.size(); ii += 100) {
-    original[ii] = static_cast<char>('A' + (ii % 26));
-  }
+  auto original = test::MakePatternedPayload(10000UL);
 
   auto inputSpan = sv_bytes(original);
 
@@ -445,7 +488,7 @@ TEST(WebSocketDeflateTest, DecompressSizeLimit) {
   DeflateContext ctx(params, config, true);
 
   // Create a large string that compresses well
-  std::string original(10000, 'A');
+  auto original = test::MakePatternedPayload(10000UL);
   auto inputSpan = sv_bytes(original);
 
   // Compress
@@ -466,7 +509,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_ClientSide) {
   // Create client-side context
   DeflateContext ctx(params, config, false);
 
-  const std::string original = "Client-side compression test message.";
+  std::string_view original = "Client-side compression test message.";
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
@@ -487,8 +530,8 @@ TEST(WebSocketDeflateTest, CompressDecompress_WithNoContextTakeover) {
   DeflateContext ctx(params, config, true);
 
   // Compress multiple messages - each should work independently due to no_context_takeover
-  const std::string msg1 = "First message for testing.";
-  const std::string msg2 = "Second message for testing.";
+  std::string_view msg1 = "First message for testing.";
+  std::string_view msg2 = "Second message for testing.";
 
   auto input1 = sv_bytes(msg1);
   auto input2 = sv_bytes(msg2);
@@ -514,7 +557,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
   DeflateConfig config;
   DeflateContext ctx(params, config, true);
 
-  const std::string original = "Test with reduced window bits setting.";
+  std::string_view original = "Test with reduced window bits setting.";
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
@@ -533,7 +576,7 @@ TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {
   config.compressionLevel = 9;  // Maximum compression
   DeflateContext ctx(params, config, true);
 
-  const std::string original = "Test with high compression level for maximum ratio.";
+  std::string_view original = "Test with high compression level for maximum ratio.";
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
@@ -562,7 +605,7 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   DeflateConfig config;
   DeflateContext ctx(params, config, true);
 
-  const std::string original = "Test message for unlimited decompression.";
+  std::string_view original = "Test message for unlimited decompression.";
   auto inputSpan = sv_bytes(original);
 
   RawBytes compressed;
