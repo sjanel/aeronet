@@ -158,9 +158,9 @@ struct ConnectionState {
   // file descriptor of the other side (upstream or client).
   int peerFd{-1};
   uint32_t requestsServed{0};
-  // Position where trailer headers start in bodyAndTrailersBuffer (0 if no trailers).
-  // Trailers occupy [trailerStartPos, bodyAndTrailersBuffer.size()).
-  std::size_t trailerStartPos{0};
+  // Length of trailer headers in bodyAndTrailersBuffer (0 if no trailers).
+  // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
+  uint32_t trailerLen{0};
 
   TLSInfo tlsInfo;
 

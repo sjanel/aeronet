@@ -505,7 +505,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
         state.waitingForBody = false;
         state.bodyLastActivity = {};
       }
-      const bool usePerConnectionBodyStorage = state.trailerStartPos != 0;
+      const bool usePerConnectionBodyStorage = state.trailerLen != 0;
       if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
         break;
       }
@@ -639,7 +639,7 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool us
   ConnectionState& state = *cnxIt->second;
   HttpRequest& request = state.request;
 
-  usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerStartPos != 0;
+  usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerLen != 0;
 
   RawChars& decompressedBuffer =
       usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : _sharedBuffers.decompressedBody;
@@ -653,10 +653,10 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool us
   }
 
   // Parse trailers if present
-  if (state.trailerStartPos != 0) {
+  if (state.trailerLen != 0) {
     auto* buf = decompressedBuffer.data();
-    [[maybe_unused]] const bool isSuccess =
-        parseHeadersUnchecked(request._trailers, buf, buf + state.trailerStartPos, buf + decompressedBuffer.size());
+    auto* end = buf + decompressedBuffer.size();
+    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, end - state.trailerLen, end);
     // trailers should have been validated in decodeChunkedBody
     assert(isSuccess);
   }
@@ -962,7 +962,6 @@ void SingleHttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     _lifecycle.exchangeStopping();
   } else if (!events.empty()) {
-    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
     for (auto event : events) {
       const int fd = event.fd;
       if (fd == _listenSocket.fd()) {
@@ -987,6 +986,7 @@ void SingleHttpServer::eventLoop() {
         }
       }
     }
+    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
   } else {
     // timeout / EINTR (treated as timeout). Retry pending writes to handle edge-triggered epoll timing issues.
     // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
