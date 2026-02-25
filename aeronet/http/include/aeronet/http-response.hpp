@@ -482,18 +482,14 @@ class HttpResponse {
   // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
   // The header name and value must be valid per HTTP specifications.
   // As for 'headerAddLine()', do not insert any reserved header.
-  HttpResponse& header(std::string_view key, std::string_view value) & {
-    setHeader(key, value, OnlyIfNew::No);
-    return *this;
-  }
+  HttpResponse& header(std::string_view key, std::string_view value) &;
 
   // RValue overload of header(key, value).
   HttpResponse&& header(std::string_view key, std::string_view value) && { return std::move(header(key, value)); }
 
   // Convenient overload setting a header to a numeric value.
   HttpResponse& header(std::string_view key, std::integral auto value) & {
-    setHeader(key, std::string_view(IntegralToCharVector(value)), OnlyIfNew::No);
-    return *this;
+    return header(key, std::string_view(IntegralToCharVector(value)));
   }
 
   // Convenient overload setting a header to a numeric value.
@@ -1064,11 +1060,6 @@ class HttpResponse {
   [[nodiscard]] constexpr std::size_t internalBodyAndTrailersLen() const noexcept {
     return _data.size() - bodyStartPos();
   }
-
-  enum class OnlyIfNew : std::uint8_t { No, Yes };
-
-  // Return true if a new header was added or replaced.
-  bool setHeader(std::string_view key, std::string_view value, OnlyIfNew onlyIfNew = OnlyIfNew::No);
 
   void setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context);
 
