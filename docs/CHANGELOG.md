@@ -31,6 +31,7 @@ All notable changes to aeronet are documented in this file.
 - Bumped `zlib` dependency to version **1.3.2**.
 - Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
 - Bumped `clang-format` version to **21**.
+- Fix: Resolve race in TLS handshake handling that caused a flaky test
 
 ## [1.1.0] - 2026-02-16
 
