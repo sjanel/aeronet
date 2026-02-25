@@ -143,6 +143,12 @@ void TlsTransport::shutdown() noexcept {
   if (rc == 0) {  // Need second invocation to try completing bidirectional shutdown.
     ::SSL_shutdown(ssl);
   }
+  // Clear any errors left on the per-thread OpenSSL error queue by the shutdown.
+  // Without this, stale errors can pollute subsequent SSL_read_ex/SSL_write_ex calls
+  // on other SSL connections sharing the same thread (the error queue is per-thread,
+  // not per-SSL object), causing ERR_peek_error() checks to misclassify transient
+  // conditions as fatal errors.
+  ::ERR_clear_error();
 }
 
 void TlsTransport::logErrorIfAny() const noexcept {
