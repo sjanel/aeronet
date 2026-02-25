@@ -321,15 +321,7 @@ void SingleHttpServer::acceptNewConnections() {
       }
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
-        // If TLS handshake still pending, treat a transport Error as transient and retry later.
         if (want == TransportHint::Error) [[unlikely]] {
-#ifdef AERONET_ENABLE_OPENSSL
-          if (pCnx->transport && !pCnx->transport->handshakeDone()) {
-            log::debug("Transient transport error during TLS handshake on fd # {}; will retry", cnxFd);
-            // Yield and let event loop drive readiness notifications; do not close yet.
-            break;
-          }  // Emit richer diagnostics to aid debugging TLS handshake / transport failures.
-#endif
           log::error("Closing connection fd # {} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
                      static_cast<int>(want), errno, std::strerror(errno));
 #ifdef AERONET_ENABLE_OPENSSL
