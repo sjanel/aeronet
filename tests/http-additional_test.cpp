@@ -29,6 +29,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -1326,7 +1327,7 @@ TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
   const int serverFd = FindServerSideFdForClientOrThrow(clientFd, 1s);
 
   // Make the RDHUP event consistent: half-close client write end so server read observes EOF.
-  ASSERT_EQ(0, ::shutdown(clientFd, SHUT_WR));
+  ASSERT_TRUE(ShutdownWrite(clientFd));
 
   // Inject EPOLLRDHUP WITHOUT EPOLLIN. The server should still drive the read path and close.
   test::PushEpollWaitAction(test::WaitReturn(1, {test::MakeEvent(serverFd, EPOLLRDHUP)}));
@@ -1345,7 +1346,7 @@ TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
 
   const int serverFd = FindServerSideFdForClientOrThrow(clientFd, 1s);
 
-  ASSERT_EQ(0, ::shutdown(clientFd, SHUT_WR));
+  ASSERT_TRUE(ShutdownWrite(clientFd));
 
   // Inject EPOLLHUP WITHOUT EPOLLIN.
   test::PushEpollWaitAction(test::WaitReturn(1, {test::MakeEvent(serverFd, EPOLLHUP)}));

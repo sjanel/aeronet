@@ -14,6 +14,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -68,6 +69,9 @@ struct ConnectionState {
 
   ITransport::TransportResult transportWrite(std::string_view data);
   ITransport::TransportResult transportWrite(const HttpResponseData& httpResponseData);
+
+  // Return true if success, false if fatal error.
+  bool tunnelTransportWrite(int fd);
 
   // Result of a kernel sendfile operation performed on this connection's fileSend state.
   struct FileResult {
@@ -149,6 +153,9 @@ struct ConnectionState {
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
   int peerFd{-1};
+  // HTTP/2 CONNECT tunnel: when non-zero, this upstream connection is paired with a specific
+  // HTTP/2 stream on the peer (HTTP/2 client) connection. Zero for HTTP/1.1 tunnels.
+  uint32_t peerStreamId{0};
   uint32_t requestsServed{0};
   // Length of trailer headers in bodyAndTrailersBuffer (0 if no trailers).
   // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
@@ -166,6 +173,8 @@ struct ConnectionState {
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};
+  bool shutdownWritePending{false};  // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
+  bool eofReceived{false};           // true when transportRead returned 0 (EOF)
 
   // Current protocol type. Http11 by default, changes after successful upgrade.
   ProtocolType protocol{ProtocolType::Http11};
@@ -204,6 +213,10 @@ struct ConnectionState {
   // nullptr when using default HTTP/1.1 processing (most connections).
   // When set, the server routes data through this handler instead of HTTP parsing.
   std::unique_ptr<IProtocolHandler> protocolHandler;
+
+  // CONNECT tunnel bridge for HTTP/2 connections.
+  // Owned here so the bridge outlives the protocol handler.
+  std::unique_ptr<ITunnelBridge> tunnelBridge;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   struct AsyncHandlerState {

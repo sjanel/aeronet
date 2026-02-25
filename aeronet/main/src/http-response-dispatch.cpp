@@ -5,14 +5,12 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <span>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -23,10 +21,8 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
-#include "aeronet/tcp-connector.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
 #endif
@@ -89,70 +85,31 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
     return LoopAction::Break;
   }
 
-  // Use helper to resolve and initiate a non-blocking connect. The helper
-  // returns a ConnectResult with an owned BaseFd and flags indicating
-  // whether the connect is pending or failed.
-  char* data = cnxIt->second->inBuffer.data();
-  ConnectResult cres = ConnectTCP(std::span<char>(data + (host.data() - data), host.size()),
-                                  std::span<char>(data + (portStr.data() - data), portStr.size()));
-  if (cres.failure) {
-    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to resolve CONNECT target");
-    return LoopAction::Break;
-  }
-
-  int upstreamFd = cres.cnx.fd();
-  // Register upstream in event loop for edge-triggered reads and writes so we can detect
-  // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-  if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
-    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Failed to register upstream fd");
-    return LoopAction::Break;
-  }
-
-  // Insert upstream connection state. Inserting may rehash and invalidate the
-  // caller's iterator; save the client's fd and re-resolve the client iterator
-  // after emplacing.
+  // Save client fd — setupTunnelConnection may rehash the connection map.
   const int clientFd = cnxIt->first.fd();
-  auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
-  // Note: Duplicate fd for a newly connected upstream socket indicates a library bug - the kernel
-  // assigns unique fds for each socket(), and we remove closed connections before their fd can
-  // be reused. Using assert to document this invariant.
-  assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
 
-  // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel
-  // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
-  // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
-  // reused for the next read, causing data corruption.
-  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0);
+  const int upstreamFd = setupTunnelConnection(clientFd, host, portStr);
+  if (upstreamFd == -1) {
+    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
+    return LoopAction::Break;
+  }
 
-  // If the connector indicated the connect is still in progress on this
-  // non-blocking socket, mark state so the event loop's writable handler
-  // can check SO_ERROR and surface failures. Use the connector's flag
-  // rather than relying on errno here (errno may have been overwritten).
-
-  // Reply 200 Connection Established to client
-  // Since cnxIt is passed by reference we will update it here so the caller need not re-find.
-  // Note: The client connection cannot vanish during upstream insertion - map rehash only relocates
-  // existing entries, it never removes them. We use assert to document this invariant.
+  // Re-find client iterator after potential map rehash inside setupTunnelConnection.
   cnxIt = _connections.active.find(clientFd);
   assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during map rehash");
 
   finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
-  // Enter tunneling mode: link peer fds
+  // Enter tunneling mode: link client → upstream (upstream → client is set by setupTunnelConnection).
   cnxIt->second->peerFd = upstreamFd;
-  upIt->second->peerFd = cnxIt->first.fd();
-  upIt->second->connectPending = cres.connectPending;
 
-  // Disable zerocopy on the client-side transport as well for the same buffer lifetime reason.
+  // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
   if (auto* clientPlain = dynamic_cast<PlainTransport*>(cnxIt->second->transport.get())) {
     clientPlain->disableZerocopy();
   }
 
-  // From now on, both connections bypass HTTP parsing; we simply proxy bytes. We'll rely on handleReadableClient
-  // to read from each side and forward to the other by writing into the peer's transport directly.
-  // Erase any partially parsed buffers for the client (we already replied)
+  // From now on, both connections bypass HTTP parsing; we simply proxy bytes.
   cnxIt->second->inBuffer.clear();
-  upIt->second->inBuffer.clear();
   return LoopAction::Continue;
 }
 
@@ -323,15 +280,17 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   else if (state.outBuffer.empty() && state.waitingWritable &&
            (state.tlsEstablished || state.transport->handshakeDone())) {
-    if (disableWritableInterest(cnxIt)) {
-      if (state.isAnyCloseRequested()) {
-        return;
+    if (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) {
+      if (disableWritableInterest(cnxIt)) {
+        if (state.isAnyCloseRequested()) {
+          return;
+        }
       }
     }
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
-  if (state.outBuffer.empty() && !state.isSendingFile()) {
+  if (state.outBuffer.empty() && !state.isSendingFile() && (!state.isTunneling() || state.tunnelOrFileBuffer.empty())) {
     bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
       if (!state.waitingWritable) {

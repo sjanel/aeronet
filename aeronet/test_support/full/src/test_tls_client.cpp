@@ -84,6 +84,9 @@ bool TlsClient::writeAll(std::string_view data) {
       continue;
     }
     // Fatal error
+    char errBuf[256];
+    ERR_error_string_n(ERR_get_error(), errBuf, sizeof(errBuf));
+    log::error("SSL_write fatal error: {}, err={}", errBuf, err);
     return false;
   }
   return true;

@@ -79,4 +79,20 @@ int64_t SafeSend(int fd, const void* data, std::size_t len) noexcept {
 #endif
 }
 
+bool ShutdownWrite(int fd) noexcept {
+#ifdef _WIN32
+  return ::shutdown(fd, 1 /* SD_SEND */) == 0;
+#else
+  return ::shutdown(fd, SHUT_WR) == 0;
+#endif
+}
+
+bool ShutdownReadWrite(int fd) noexcept {
+#ifdef _WIN32
+  return ::shutdown(fd, 2 /* SD_BOTH */) == 0;
+#else
+  return ::shutdown(fd, SHUT_RDWR) == 0;
+#endif
+}
+
 }  // namespace aeronet

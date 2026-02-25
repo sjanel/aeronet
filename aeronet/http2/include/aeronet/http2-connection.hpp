@@ -233,6 +233,11 @@ class Http2Connection {
   /// Set callback for GOAWAY received.
   void setOnGoAway(GoAwayCb callback) { _onGoAway = std::move(callback); }
 
+  /// Set callback for WINDOW_UPDATE received.
+  void setOnWindowUpdate(std::function<void(uint32_t streamId, uint32_t increment)> callback) {
+    _onWindowUpdate = std::move(callback);
+  }
+
  private:
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
 
@@ -322,6 +327,7 @@ class Http2Connection {
   OnStreamCb _onStreamReset;
   StreamEventCallback _onStreamClosed;
   GoAwayCb _onGoAway;
+  std::function<void(uint32_t streamId, uint32_t increment)> _onWindowUpdate;
 
   ConnectionState _state{ConnectionState::AwaitingPreface};
 

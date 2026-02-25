@@ -89,6 +89,28 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
   return res;
 }
 
+bool ConnectionState::tunnelTransportWrite(int fd) {
+  const auto [written, want] = transportWrite(tunnelOrFileBuffer);
+  if (want == TransportHint::Error) [[unlikely]] {
+    // Fatal error writing tunnel data: close this connection
+    return false;
+  }
+  tunnelOrFileBuffer.erase_front(written);
+  // If still has data, keep EPOLLOUT registered
+  if (!tunnelOrFileBuffer.empty()) {
+    return true;
+  }
+  if (shutdownWritePending) {
+    if (!ShutdownWrite(fd)) {
+      log::warn("Failed to shutdown write for fd # {}", fd);
+      return false;
+    }
+    shutdownWritePending = false;
+  }
+  // Tunnel buffer drained: fall through to normal flushOutbound handling
+  return true;
+}
+
 ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
   // Kernel sendfile(2): use a large chunk to minimize syscalls.  The kernel transfers
   // directly from page-cache to socket buffer, so a large value just means fewer
@@ -305,6 +327,7 @@ void ConnectionState::reset() {
 
   // Reset protocol handler (e.g., WebSocket, HTTP/2)
   protocolHandler.reset();
+  tunnelBridge.reset();
   protocol = ProtocolType::Http11;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

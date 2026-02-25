@@ -16,6 +16,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/tunnel-bridge.hpp"
 
 namespace aeronet {
 
@@ -85,6 +86,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void initiateClose() override { _connection.initiateGoAway(ErrorCode::NoError); }
 
   void onTransportClosing() override {
+    // Close all active tunnel upstream connections before clearing state.
+    for (const auto& [streamId, upstreamFd] : _tunnelStreams) {
+      _tunnelBridge->closeTunnel(upstreamFd);
+    }
+    _tunnelStreams.clear();
+    _tunnelUpstreams.clear();
+
     _streamRequests.clear();
     _pendingFileSends.clear();
 
@@ -102,6 +110,34 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   /// Get the underlying HTTP/2 connection for advanced usage.
   [[nodiscard]] Http2Connection& connection() noexcept { return _connection; }
+
+  /// Install a tunnel bridge for CONNECT tunnel management.
+  /// The bridge must outlive this handler (typically owned by ConnectionState).
+  void setTunnelBridge(ITunnelBridge* bridge) noexcept { _tunnelBridge = bridge; }
+
+  /// Inject data received from an upstream tunnel fd into the corresponding HTTP/2 stream.
+  /// Called by the server when an upstream fd becomes readable.
+  /// @return ErrorCode::NoError on success, or an error if the stream is gone.
+  [[nodiscard]] ErrorCode injectTunnelData(uint32_t streamId, std::span<const std::byte> data);
+
+  /// Notify the handler that a tunnel upstream fd was closed externally (e.g., upstream EOF).
+  /// Sends an empty DATA frame with END_STREAM to gracefully close the tunnel stream.
+  void closeTunnelByUpstreamFd(int upstreamFd);
+
+  /// Notify the handler that the async connect for a tunnel stream's upstream fd failed.
+  /// Sends RST_STREAM with CONNECT_ERROR on the stream.
+  void tunnelConnectFailed(uint32_t streamId);
+
+  /// Check if a given stream is a CONNECT tunnel.
+  [[nodiscard]] bool isTunnelStream(uint32_t streamId) const noexcept;
+
+  using TunnelStreamsMap = flat_hash_map<uint32_t, int>;
+  using TunnelUpstreamsMap = flat_hash_map<int, uint32_t>;
+
+  /// Drain all tunnel upstream fds and clear internal tunnel maps.
+  /// Returns the list of upstream fds that must be closed by the caller.
+  /// Used during connection teardown to avoid recursive closeConnection calls.
+  [[nodiscard]] TunnelUpstreamsMap drainTunnelUpstreamFds();
 
  private:
   /// Per-stream request state during aggregation.
@@ -135,6 +171,12 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Dispatch a completed request to the dispatcher and send response.
   void dispatchRequest(StreamRequestsMap::iterator it);
 
+  /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
+  void handleConnectRequest(uint32_t streamId, HttpRequest& request);
+
+  /// Clean up tunnel state for a given stream.
+  void cleanupTunnel(uint32_t streamId);
+
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
   // to the appropriate handler (sync, async, or streaming).
@@ -159,6 +201,12 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   internal::RequestDecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
+
+  // CONNECT tunnel state: maps stream IDs to upstream fds (and reverse).
+  TunnelStreamsMap _tunnelStreams;      // streamId → upstreamFd
+  TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
+
+  ITunnelBridge* _tunnelBridge{nullptr};
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.
