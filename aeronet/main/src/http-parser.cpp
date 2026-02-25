@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <iterator>
 #include <string_view>
 #include <system_error>
 
@@ -93,7 +92,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   }
 
   // For direct decompression, we collect chunk positions instead of copying data
-  _sharedBuffers.sv.clear();
+  auto& compressedChunks = _sharedBuffers.sv;
+  compressedChunks.clear();
   std::size_t totalCompressedSize = 0;
 
   while (true) {
@@ -161,7 +161,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         auto* lineLast = lineEndIt;
 
         // Detect blank line (end of trailers)
-        if (lineStart == lineLast || (std::distance(lineStart, lineLast) == 1 && *lineStart == '\r')) {
+        if (lineStart == lineLast) {
           trailerEndPos = static_cast<std::size_t>(lineEndIt - state.inBuffer.data()) + http::CRLF.size();
           break;
         }
@@ -203,7 +203,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     if (decompressCode == http::StatusCodeOK) {
       // Just record chunk position for later direct decompression
-      _sharedBuffers.sv.emplace_back(state.inBuffer.data() + pos, chunkSize);
+      compressedChunks.emplace_back(state.inBuffer.data() + pos, chunkSize);
       totalCompressedSize += chunkSize;
 
       if (totalCompressedSize > _config.maxBodyBytes ||
@@ -225,21 +225,20 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
-      return BodyDecodeStatus::NeedMore;
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed chunk CRLF");
+      return BodyDecodeStatus::Error;
     }
     pos += http::CRLF.size();
   }
 
-  if (decompressCode == http::StatusCodeOK && !_sharedBuffers.sv.empty()) {
+  if (totalCompressedSize != 0) {
     // Perform direct decompression from inBuffer chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
-    const bool hasTrailers = !bodyAndTrailers.empty();
-
     _sharedBuffers.trailers.assign(bodyAndTrailers);
 
     const auto res = internal::HttpCodec::DecompressChunkedBody(_decompressionState, _config.decompression, request,
-                                                                _sharedBuffers.sv, totalCompressedSize, bodyAndTrailers,
+                                                                compressedChunks, totalCompressedSize, bodyAndTrailers,
                                                                 _sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, true, res.message);
@@ -247,13 +246,11 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     }
 
     // Restore trailers if present
-    if (hasTrailers) {
-      // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
-      // In addition, a realloc here would mean that we should re-compute the request._body that is set in
-      // DecompressChunkedBody.
-      assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _sharedBuffers.trailers.size());
-      bodyAndTrailers.unchecked_append(_sharedBuffers.trailers);
-    }
+    // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
+    // In addition, a realloc here would mean that we should re-compute the request._body that is set in
+    // DecompressChunkedBody.
+    assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _sharedBuffers.trailers.size());
+    bodyAndTrailers.unchecked_append(_sharedBuffers.trailers);
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
   } else {
@@ -271,9 +268,7 @@ bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* b
   while (first < last) {
     // Find line end
     char* lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
-    if (lineEnd == last) {
-      break;  // No more lines
-    }
+    assert(lineEnd != last);
 
     // No check is made on header line format here
     const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
