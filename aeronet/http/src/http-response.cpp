@@ -417,19 +417,17 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
 
 }  // namespace
 
-bool HttpResponse::setHeader(std::string_view newKey, std::string_view newValue, OnlyIfNew onlyIfNew) {
-  const auto [first, last] = HeadersLinearSearch(headersFlatView(), newKey);
+HttpResponse& HttpResponse::header(std::string_view key, std::string_view value) & {
+  const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
-    headerAddLine(newKey, newValue);
-    return true;
+    headerAddLine(key, value);
+    return *this;
   }
-  if (onlyIfNew == OnlyIfNew::Yes) {
-    return false;
-  }
-  CheckContentTypeLengthEncoding(newKey, hasBody());
 
-  overrideHeaderUnchecked(first, last, newValue);
-  return true;
+  CheckContentTypeLengthEncoding(key, hasBody());
+
+  overrideHeaderUnchecked(first, last, value);
+  return *this;
 }
 
 void HttpResponse::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context) {
