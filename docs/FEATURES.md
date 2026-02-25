@@ -886,7 +886,7 @@ router.setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
 });
 ```
 
-**Memory optimization**: Trailers are stored in the same connection buffer as the body data (`bodyAndTrailersBuffer`), with a `trailerStartPos` marker indicating where trailer data begins. This avoids additional allocations and maintains zero-copy string_view semantics.
+**Memory optimization**: Trailers are stored in the same connection buffer as the body data (`bodyAndTrailersBuffer`), with a `trailerLen` marker indicating the length of trailer data at the end of the buffer. This avoids additional allocations and maintains zero-copy string_view semantics.
 
 ### Decoding Chunked (RFC 7230 §4.1.3)
 
@@ -918,7 +918,7 @@ aeronet's chunked decoder implements the full decoding algorithm specified in §
 ### Implementation Notes
 
 - **State machine**: Chunked decoding is implemented as part of the main HTTP parser state machine in `http-parser.cpp`
-- **Buffer management**: Chunk data is appended to `bodyAndTrailersBuffer` as chunks are decoded; trailer text is appended after the final chunk with `trailerStartPos` marking the boundary
+- **Buffer management**: Chunk data is appended to `bodyAndTrailersBuffer` as chunks are decoded; trailer text is appended after the final chunk with `trailerLen` marking the length of the trailer data at the end of the buffer
 - **Zero-copy trailers**: Trailer name/value pairs are stored as `string_view` references into `bodyAndTrailersBuffer`, avoiding string copies
 - **Whitespace trimming**: Trailer values have leading/trailing whitespace (OWS per RFC 7230 §3.2) automatically trimmed
 - **Case-insensitive trailer lookup**: Trailer map uses the same case-insensitive hash/equality comparator as regular headers

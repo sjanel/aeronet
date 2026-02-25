@@ -288,7 +288,7 @@ void ConnectionState::reset() {
   bodyLastActivity = {};
   peerFd = -1;
   requestsServed = 0;
-  trailerStartPos = 0;
+  trailerLen = 0;
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;
