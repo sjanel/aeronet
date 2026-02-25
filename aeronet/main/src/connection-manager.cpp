@@ -560,7 +560,10 @@ void SingleHttpServer::handleReadableClient(int fd) {
 #ifdef AERONET_ENABLE_OPENSSL
       if (_config.tls.enabled && !cnx.tlsEstablished && _tls.ctxHolder &&
           dynamic_cast<TlsTransport*>(cnx.transport.get()) != nullptr && !cnx.tlsHandshakeEventEmitted) {
-        FailTlsHandshakeOnce(cnx, _tls.metrics, _callbacks.tlsHandshake, fd, kTlsHandshakeFailureReasonEof);
+        std::string_view reason = cnx.tlsHandshakeObserver.alpnStrictMismatch
+                                      ? kTlsHandshakeFailureReasonAlpnStrictMismatch
+                                      : kTlsHandshakeFailureReasonEof;
+        FailTlsHandshakeOnce(cnx, _tls.metrics, _callbacks.tlsHandshake, fd, reason);
       }
 #endif
       cnx.requestImmediateClose();

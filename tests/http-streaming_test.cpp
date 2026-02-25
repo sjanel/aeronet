@@ -1415,4 +1415,56 @@ TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
   std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << "Expected 400 Bad Request for empty Content-Encoding, got: " << resp;
 }
+
+TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
+
+  ts.router().setPath(http::Method::POST, "/chunked-malformed-crlf",
+                      [](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
+  // Send chunked request with malformed CRLF after chunk data
+  std::string req =
+      "POST /chunked-malformed-crlf HTTP/1.1\r\n"
+      "Host: test\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Connection: close\r\n\r\n"
+      "3\r\nabc\n\n"  // Malformed CRLF here
+      "0\r\n\r\n";
+  test::sendAll(fd, req);
+
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << "Expected 400 Bad Request for malformed CRLF, got: " << resp;
+}
+
+TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.enableKeepAlive = false;
+    cfg.maxBodyBytes = 5;              // Very small max body
+    cfg.decompression.enable = false;  // Disable decompression to hit the specific branch
+  });
+
+  ts.router().setPath(http::Method::POST, "/chunked-too-large",
+                      [](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  test::ClientConnection cnx(port);
+  int fd = cnx.fd();
+
+  // Send chunked request with body larger than maxBodyBytes
+  std::string req =
+      "POST /chunked-too-large HTTP/1.1\r\n"
+      "Host: test\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "Connection: close\r\n\r\n"
+      "3\r\n123\r\n"
+      "3\r\n456\r\n"
+      "0\r\n\r\n";
+  test::sendAll(fd, req);
+
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 413")) << "Expected 413 Payload Too Large, got: " << resp;
+}
+
 #endif
