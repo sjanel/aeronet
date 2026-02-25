@@ -35,7 +35,7 @@
 
 ### Performance improvement ideas
 
-- Use kernel helpers where appropriate: `sendfile`, `TCP_CORK` / `TCP_NOPUSH` to coalesce.
+- Use kernel helpers where appropriate: `TCP_CORK` / `TCP_NOPUSH` to coalesce.
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).

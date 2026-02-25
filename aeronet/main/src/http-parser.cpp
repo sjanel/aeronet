@@ -21,6 +21,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/single-http-server.hpp"
 
 namespace aeronet {
@@ -82,7 +83,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   std::size_t pos = request.headSpanSize();
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
   bodyAndTrailers.clear();
-  state.trailerStartPos = 0;
+  state.trailerLen = 0;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
   const http::StatusCode decompressCode = internal::HttpCodec::WillDecompress(_config.decompression, request.headers());
@@ -125,9 +126,6 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
       // Trailers are terminated by a blank line (CRLF).
 
-      // Store body size before appending trailers to the same buffer
-      const std::size_t bodySize = decompressCode == http::StatusCodeOK ? 0 : bodyAndTrailers.size();
-
       // First, check if we have at least the immediate terminating CRLF
       if (state.inBuffer.size() < pos + http::CRLF.size()) {
         return BodyDecodeStatus::NeedMore;
@@ -142,8 +140,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       }
 
       // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
-      state.trailerStartPos = bodySize;  // Mark where trailers begin in the buffer
-      std::size_t trailerEndPos = pos;   // Track end position for later
+      std::size_t trailerEndPos = pos;  // Track end position for later
 
       // First pass: validate trailers and find the end position
       std::size_t tempPos = pos;
@@ -186,12 +183,13 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       }
 
       // Copy all trailer data at once to avoid reallocation during parsing
-      std::size_t trailerDataSize = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
-      bodyAndTrailers.append(trailerStart, trailerDataSize);
+      const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
+      bodyAndTrailers.append(trailerStart, trailerLen);
+      state.trailerLen = SafeCast<uint32_t>(trailerLen);
 
       // Second pass: parse trailers from copied data in bodyAndTrailers
-      char* trailerDataBeg = bodyAndTrailers.data() + state.trailerStartPos;
       char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
+      char* trailerDataBeg = trailerDataEnd - trailerLen;
 
       if (!parseHeadersUnchecked(request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid trailer headers");
@@ -234,7 +232,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
   if (decompressCode == http::StatusCodeOK && !_sharedBuffers.sv.empty()) {
     // Perform direct decompression from inBuffer chunks to bodyAndTrailersBuffer
-    // Save trailers if present (they were appended to bodyAndTrailers with trailerStartPos = 0)
+    // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     const bool hasTrailers = !bodyAndTrailers.empty();
 
@@ -250,7 +248,6 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     // Restore trailers if present
     if (hasTrailers) {
-      state.trailerStartPos = bodyAndTrailers.size();
       // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
       // In addition, a realloc here would mean that we should re-compute the request._body that is set in
       // DecompressChunkedBody.
@@ -260,8 +257,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
   } else {
-    // Body is everything before trailerStartPos (or entire buffer if no trailers)
-    std::size_t bodyLen = (state.trailerStartPos > 0) ? state.trailerStartPos : bodyAndTrailers.size();
+    // Body is everything before trailers
+    std::size_t bodyLen = bodyAndTrailers.size() - state.trailerLen;
     request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
   }
 
