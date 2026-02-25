@@ -232,12 +232,19 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   }
 
   // Write frame (may need to split if larger than max frame size)
-  std::size_t offset = 0;
-  while (offset < data.size()) {
-    std::size_t chunkSize = std::min(data.size() - offset, static_cast<std::size_t>(_peerSettings.maxFrameSize));
-    bool isLast = (offset + chunkSize >= data.size());
-    WriteDataFrame(_outputBuffer, streamId, data.subspan(offset, chunkSize), isLast && endStream);
-    offset += chunkSize;
+  if (data.empty()) {
+    // Empty DATA frame (valid in HTTP/2), used e.g. to signal END_STREAM without payload.
+    if (endStream) {
+      WriteDataFrame(_outputBuffer, streamId, {}, true);
+    }
+  } else {
+    for (std::size_t offset = 0; offset < data.size();) {
+      const std::size_t chunkSize =
+          std::min(data.size() - offset, static_cast<std::size_t>(_peerSettings.maxFrameSize));
+      const bool isLast = (offset + chunkSize >= data.size());
+      WriteDataFrame(_outputBuffer, streamId, data.subspan(offset, chunkSize), isLast && endStream);
+      offset += chunkSize;
+    }
   }
 
   return ErrorCode::NoError;
@@ -246,7 +253,7 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
 void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
 
-  auto it = _streams.find(streamId);
+  const auto it = _streams.find(streamId);
   if (it != _streams.end()) {
     it->second.onSendRstStream();
     it->second.setErrorCode(errorCode);
@@ -731,6 +738,10 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
         return streamError(header.streamId, err, "Stream window overflow");
       }
     }
+  }
+
+  if (_onWindowUpdate) {
+    _onWindowUpdate(header.streamId, frame.windowSizeIncrement);
   }
 
   return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};

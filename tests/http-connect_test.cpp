@@ -8,8 +8,6 @@
 #include <thread>
 #include <vector>
 
-#include "aeronet/zerocopy-mode.hpp"
-
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 

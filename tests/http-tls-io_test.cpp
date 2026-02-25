@@ -36,7 +36,6 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 #include "aeronet/zerocopy-mode.hpp"
-#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/test_server_http2_tls_fixture.hpp"
