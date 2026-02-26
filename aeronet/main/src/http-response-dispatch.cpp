@@ -76,7 +76,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   const std::string_view target = request.path();
   const auto colonPos = target.find(':');
   if (colonPos == std::string_view::npos) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed CONNECT target");
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
     return LoopAction::Break;
   }
   const std::string_view host(target.begin(), target.begin() + static_cast<size_t>(colonPos));
@@ -85,7 +85,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   // Enforce CONNECT allowlist if present
   const auto& connectAllowList = _config.connectAllowlist();
   if (!connectAllowList.empty() && !connectAllowList.containsCI(host)) {
-    emitSimpleError(cnxIt, http::StatusCodeForbidden, true, "CONNECT target not allowed");
+    emitSimpleError(cnxIt, http::StatusCodeForbidden, "CONNECT target not allowed");
     return LoopAction::Break;
   }
 
@@ -96,7 +96,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   ConnectResult cres = ConnectTCP(std::span<char>(data + (host.data() - data), host.size()),
                                   std::span<char>(data + (portStr.data() - data), portStr.size()));
   if (cres.failure) {
-    emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Unable to resolve CONNECT target");
+    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to resolve CONNECT target");
     return LoopAction::Break;
   }
 
@@ -104,7 +104,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   // Register upstream in event loop for edge-triggered reads and writes so we can detect
   // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
   if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
-    emitSimpleError(cnxIt, http::StatusCodeBadGateway, true, "Failed to register upstream fd");
+    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Failed to register upstream fd");
     return LoopAction::Break;
   }
 
@@ -223,7 +223,7 @@ void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
     const auto [written, want] = state.transportWrite(httpResponseData);
     switch (want) {
       case TransportHint::Error:
-        state.requestImmediateClose();
+        state.requestDrainAndClose();
         return;
       case TransportHint::ReadReady:
         [[fallthrough]];
@@ -257,7 +257,7 @@ void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
   _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
   _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, remainingSize);
   if (remainingSize > _config.maxOutboundBufferBytes) {
-    state.requestImmediateClose();
+    state.requestDrainAndClose();
   }
   if (!state.waitingWritable) {
     enableWritableInterest(cnxIt);
@@ -290,7 +290,7 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
       case TransportHint::Error: {
         auto savedErr = errno;
         log::error("send/transportWrite failed fd # {} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
-        state.requestImmediateClose();
+        state.requestDrainAndClose();
         state.outBuffer.clear();
         break;
       }
@@ -356,7 +356,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
     const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
 
     if (want == TransportHint::Error) [[unlikely]] {
-      state.requestImmediateClose();
+      state.requestDrainAndClose();
       state.fileSend.active = false;
       state.tunnelOrFileBuffer.clear();
       return false;

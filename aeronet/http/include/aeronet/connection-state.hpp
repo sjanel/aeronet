@@ -47,7 +47,6 @@ struct ConnectionState {
   void initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
                                     internal::ResponseCompressionState& compressionState);
 
-  [[nodiscard]] bool isImmediateCloseRequested() const noexcept { return closeMode == CloseMode::Immediate; }
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
@@ -57,13 +56,6 @@ struct ConnectionState {
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
     return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile();
   }
-
-  [[nodiscard]] bool canCloseImmediately() const noexcept {
-    return isImmediateCloseRequested() || canCloseConnectionForDrain();
-  }
-
-  // Request to close immediately (abort outstanding buffered writes).
-  void requestImmediateClose() { closeMode = CloseMode::Immediate; }
 
   // Request to close after draining currently buffered writes (graceful half-close semantics).
   void requestDrainAndClose() {
@@ -149,7 +141,7 @@ struct ConnectionState {
   // pages while the kernel is still DMA-ing from them, causing data corruption.
   vector<HttpResponseData> zerocopyPendingBuffers;
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
-  std::chrono::steady_clock::time_point lastActivity{std::chrono::steady_clock::now()};
+  std::chrono::steady_clock::time_point lastActivity;
   // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
   // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
   std::chrono::steady_clock::time_point headerStartTp;     // default epoch value means no header timing active
@@ -165,7 +157,7 @@ struct ConnectionState {
   TLSInfo tlsInfo;
 
   // Connection close lifecycle.
-  enum class CloseMode : uint8_t { None, DrainThenClose, Immediate };
+  enum class CloseMode : uint8_t { None, DrainThenClose };
 
   CloseMode closeMode{CloseMode::None};
   bool waitingWritable{false};  // EPOLLOUT registered
