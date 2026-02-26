@@ -228,6 +228,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 TEST(MultiHttpServer, RapidStartStopCycles) {
   HttpServerConfig cfg;
   cfg.withReusePort();
+  cfg.withNbThreads(2U);
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
   MultiHttpServer multi(cfg);
   for (int statePos = 0; statePos < 100; ++statePos) {
