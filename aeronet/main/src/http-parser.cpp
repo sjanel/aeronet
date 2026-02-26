@@ -53,11 +53,11 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   std::size_t declaredContentLen = 0;
   auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
   if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid Content-Length");
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid Content-Length");
     return BodyDecodeStatus::Error;
   }
   if (_config.maxBodyBytes < declaredContentLen) {
-    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+    emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
     return BodyDecodeStatus::Error;
   }
   if (expectContinue && declaredContentLen > 0) {
@@ -87,7 +87,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
   const http::StatusCode decompressCode = internal::HttpCodec::WillDecompress(_config.decompression, request.headers());
   if (decompressCode == http::StatusCodeBadRequest) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed Content-Encoding");
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed Content-Encoding");
     return BodyDecodeStatus::Error;
   }
 
@@ -108,12 +108,12 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     for (auto it = first; it != sizeLineEnd; ++it) {
       const int8_t digit = from_hex_digit(*it);
       if (digit < 0) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid chunk size");
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
         return BodyDecodeStatus::Error;
       }
       chunkSize = (chunkSize << 4) | static_cast<std::size_t>(digit);
       if (_config.maxBodyBytes < chunkSize) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true, {});
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
         return BodyDecodeStatus::Error;
       }
     }
@@ -153,7 +153,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         // Check total trailer size limit
         const std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
         if (trailerSize > _config.maxHeaderBytes) {
-          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, true);
+          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
           return BodyDecodeStatus::Error;
         }
 
@@ -169,13 +169,13 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         // Parse trailer field: name:value
         auto* colonPtr = std::find(lineStart, lineLast, ':');
         if (colonPtr == lineLast) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed trailer header");
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer header");
           return BodyDecodeStatus::Error;
         }
 
         // Check forbidden headers
         if (http::IsForbiddenTrailerHeader(std::string_view(lineStart, colonPtr))) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Forbidden trailer header");
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
           return BodyDecodeStatus::Error;
         }
 
@@ -192,7 +192,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       char* trailerDataBeg = trailerDataEnd - trailerLen;
 
       if (!parseHeadersUnchecked(request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Invalid trailer headers");
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
         return BodyDecodeStatus::Error;
       }
 
@@ -209,7 +209,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       if (totalCompressedSize > _config.maxBodyBytes ||
           (_config.decompression.maxCompressedBytes != 0 &&
            totalCompressedSize > _config.decompression.maxCompressedBytes)) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }
     } else {
@@ -217,7 +217,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       const auto appendSz = std::min(chunkSize, state.inBuffer.size() - pos);
 
       if (bodyAndTrailers.size() + appendSz > _config.maxBodyBytes) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, true);
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }
 
@@ -225,7 +225,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     }
     pos += chunkSize;
     if (std::memcmp(state.inBuffer.data() + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Malformed chunk CRLF");
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk CRLF");
       return BodyDecodeStatus::Error;
     }
     pos += http::CRLF.size();
@@ -241,7 +241,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
                                                                 compressedChunks, totalCompressedSize, bodyAndTrailers,
                                                                 _sharedBuffers.buf);
     if (res.message != nullptr) {
-      emitSimpleError(cnxIt, res.status, true, res.message);
+      emitSimpleError(cnxIt, res.status, res.message);
       return BodyDecodeStatus::Error;
     }
 

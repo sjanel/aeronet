@@ -323,7 +323,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
       case ProtocolProcessResult::Action::CloseImmediate:
         // Protocol error - close immediately
         log::warn("Protocol handler reported error");
-        state.requestImmediateClose();
+        state.requestDrainAndClose();
         return true;
     }
   }
@@ -353,13 +353,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     }
 
     if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(cnxIt, statusCode, true, {});
+      emitSimpleError(cnxIt, statusCode, {});
 
       // We break unconditionally; the connection
       // will be torn down after any queued error bytes are flushed. No partial recovery is
       // attempted for a malformed / protocol-violating start line or headers.
       break;
     }
+
+    request._reqStart = state.lastActivity;
 
     // A full request head (and body, if present) will now be processed; reset headerStart to signal
     // that the header timeout should track the next pending request only.
@@ -368,17 +370,17 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
     if (optTransferEncoding) {
       if (request.version() == http::HTTP_1_0) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, "Transfer-Encoding not allowed in HTTP/1.0");
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Transfer-Encoding not allowed in HTTP/1.0");
         break;
       }
       if (CaseInsensitiveEqual(*optTransferEncoding, http::chunked)) {
         isChunked = true;
       } else {
-        emitSimpleError(cnxIt, http::StatusCodeNotImplemented, true, "Unsupported Transfer-Encoding");
+        emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
         break;
       }
       if (request.headerValue(http::ContentLength)) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true,
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest,
                         "Content-Length and Transfer-Encoding cannot be used together");
         break;
       }
@@ -389,7 +391,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
-      emitSimpleError(cnxIt, http::StatusCodeNotAcceptable, true, "No acceptable content-coding available");
+      emitSimpleError(cnxIt, http::StatusCodeNotAcceptable, "No acceptable content-coding available");
       continue;
     }
 
@@ -406,7 +408,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
       if (!upgradeValidation.valid) {
         // If h2c upgrade validation failed, respond with error
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.errorMessage);
         break;
       }
       // Generate and send 101 Switching Protocols response
@@ -480,7 +482,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       }
       // If upgrade validation failed but route has WebSocket endpoint, return 400
       if (upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, true, upgradeValidation.errorMessage);
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.errorMessage);
         break;
       }
       // Otherwise, fall through to normal request handling (if there's a regular handler)
@@ -513,7 +515,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
     } else {
       if (_config.bodyReadTimeout.count() > 0) {
         state.waitingForBody = true;
-        state.bodyLastActivity = std::chrono::steady_clock::now();
+        state.bodyLastActivity = state.lastActivity;
       }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       if (routingResult.asyncRequestHandler() == nullptr) {
@@ -648,7 +650,7 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool us
                                                                    decompressedBuffer, _sharedBuffers.buf);
 
   if (res.message != nullptr) {
-    emitSimpleError(cnxIt, res.status, true, res.message);
+    emitSimpleError(cnxIt, res.status, res.message);
     return false;
   }
 
@@ -750,7 +752,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
                               false, _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     } else {
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, kMessage);
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
     }
 
     return false;
@@ -807,7 +809,7 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
     async.handle.resume();
     if (async.awaitReason != ConnectionState::AsyncHandlerState::AwaitReason::None) {
       if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
-        state.requestImmediateClose();
+        state.requestDrainAndClose();
       }
       return;
     }
@@ -945,7 +947,8 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::Stat
   metrics.reusedConnection = reusedConnection;
   metrics.method = request.method();
   metrics.path = request.path();
-  metrics.duration = std::chrono::steady_clock::now() - request.reqStart();
+  metrics.duration = _connections.now - request.reqStart();
+
   _callbacks.metrics(metrics);
 }
 
@@ -955,6 +958,10 @@ void SingleHttpServer::eventLoop() {
 
   // Poll for events
   const auto events = _eventLoop.poll();
+
+  // Update cached now time
+  const auto now = std::chrono::steady_clock::now();
+  _connections.now = now;
 
   bool maintenanceTick = false;
 
@@ -976,13 +983,25 @@ void SingleHttpServer::eventLoop() {
         maintenanceTick = true;
       } else {
         const auto bmp = event.eventBmp;
+        const auto cnxIt = _connections.active.find(fd);
+        if (cnxIt == _connections.active.end()) [[unlikely]] {
+          log::warn("fd # {} not found (stale epoll event or race)", fd);
+          continue;
+        }
+
+        cnxIt->second->lastActivity = now;
+
+        CloseStatus closeStatus = CloseStatus::Keep;
         if ((bmp & EventOut) != 0) {
-          handleWritableClient(fd);
+          closeStatus = handleWritableClient(cnxIt);
         }
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
         if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
-          handleReadableClient(fd);
+          closeStatus = std::max(handleReadableClient(cnxIt), closeStatus);
+        }
+        if (closeStatus == CloseStatus::Close) {
+          closeConnection(cnxIt);
         }
       }
     }
@@ -1011,7 +1030,7 @@ void SingleHttpServer::eventLoop() {
         log::info("Server stopped");
       }
     } else if (_lifecycle.isDraining()) {
-      if (_lifecycle.hasDeadline() && std::chrono::steady_clock::now() >= _lifecycle.deadline()) {
+      if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
         log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
         closeAllConnections();
         _lifecycle.reset();
@@ -1118,8 +1137,7 @@ ServerStats SingleHttpServer::stats() const {
   return statsOut;
 }
 
-void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate,
-                                       std::string_view body) {
+void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, std::string_view body) {
   queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
   if (_callbacks.parserErr) {
@@ -1133,11 +1151,7 @@ void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode s
     }
   }
 
-  if (immediate) {
-    cnxIt->second->requestImmediateClose();
-  } else {
-    cnxIt->second->requestDrainAndClose();
-  }
+  cnxIt->second->requestDrainAndClose();
 
   cnxIt->second->request.end(statusCode);
 }
@@ -1179,21 +1193,21 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
     }
     if (!_callbacks.expectation) {
       // No handler and not 100-continue -> RFC says respond 417
-      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
+      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, {});
       return true;
     }
     try {
       auto expectationResult = _callbacks.expectation(request, token);
       switch (expectationResult.kind) {
         case ExpectationResultKind::Reject:
-          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, true, {});
+          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, {});
           return true;
         case ExpectationResultKind::Interim: {
           // Emit an interim response immediately. Common case: 102 "Processing"
           const auto status = expectationResult.interimStatus;
           // Validate that the handler returned an informational 1xx status.
           if (status < 100U || status >= 200U) {
-            emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, "Invalid interim status (must be 1xx)");
+            emitSimpleError(cnxIt, http::StatusCodeInternalServerError, "Invalid interim status (must be 1xx)");
             return true;
           }
 
@@ -1233,11 +1247,11 @@ bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_vie
       }
     } catch (const std::exception& ex) {
       log::error("Exception in ExpectationHandler: {}", ex.what());
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, {});
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, {});
       return true;
     } catch (...) {
       log::error("Unknown exception in ExpectationHandler");
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, true, {});
+      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, {});
       return true;
     }
   }
