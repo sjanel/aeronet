@@ -68,7 +68,7 @@ ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize
   const auto result = transport->read(inBuffer.data() + inBuffer.size(), inBuffer.availableCapacity());
   inBuffer.addSize(result.bytesProcessed);
   if (headerStartTp.time_since_epoch().count() == 0) {
-    headerStartTp = std::chrono::steady_clock::now();
+    headerStartTp = lastActivity;
   }
   return result;
 }
@@ -141,7 +141,7 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
           log::error("{} failed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
                      tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
         }
-        requestImmediateClose();
+        requestDrainAndClose();
         fileSend.active = false;
         return res;
       }
@@ -242,7 +242,7 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHands
     // isKtlsSendEnabled() can be queried later without re-checking the BIO.
     const auto application = MaybeEnableKtlsSend(tlsTr->enableKtlsSend(), fd, ktlsMode, metrics);
     if (application == KtlsApplication::CloseConnection) {
-      requestImmediateClose();
+      requestDrainAndClose();
     }
 
     // When kTLS send is enabled, we can use MSG_ZEROCOPY for large payloads.
@@ -283,7 +283,7 @@ void ConnectionState::reset() {
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
   transport.reset();
-  lastActivity = std::chrono::steady_clock::now();
+  lastActivity = {};
   headerStartTp = {};
   bodyLastActivity = {};
   peerFd = -1;

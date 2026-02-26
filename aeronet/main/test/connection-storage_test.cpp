@@ -87,10 +87,10 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesExpired) {
   ASSERT_TRUE(ok3);
 
   // Set different last activity times
-  const auto now = std::chrono::steady_clock::now();
-  it1->second->lastActivity = now - std::chrono::hours{2};    // old, should be swept
-  it2->second->lastActivity = now - std::chrono::hours{2};    // old, should be swept
-  it3->second->lastActivity = now - std::chrono::minutes{5};  // recent, should stay
+  storage.now = std::chrono::steady_clock::now();
+  it1->second->lastActivity = storage.now - std::chrono::hours{2};    // old, should be swept
+  it2->second->lastActivity = storage.now - std::chrono::hours{2};    // old, should be swept
+  it3->second->lastActivity = storage.now - std::chrono::minutes{5};  // recent, should stay
 
   // Recycle all connections (adds them to cache)
   RecycleConnection(storage, 10, it1);
@@ -100,7 +100,7 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesExpired) {
   EXPECT_EQ(storage.nbCachedConnections(), 3U);
 
   // Sweep with 1 hour timeout - should remove first two
-  storage.sweepCachedConnections(now, std::chrono::hours{1});
+  storage.sweepCachedConnections(std::chrono::hours{1});
 
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
 }
@@ -111,15 +111,15 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesAll) {
   auto [it1, ok1] = storage.emplace(Connection(BaseFd(200)));
   ASSERT_TRUE(ok1);
 
-  const auto now = std::chrono::steady_clock::now();
-  it1->second->lastActivity = now - std::chrono::hours{3};
+  storage.now = std::chrono::steady_clock::now();
+  it1->second->lastActivity = storage.now - std::chrono::hours{3};
 
   RecycleConnection(storage, 10, it1);
 
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
 
   // Sweep with 1 hour timeout
-  storage.sweepCachedConnections(now, std::chrono::hours{1});
+  storage.sweepCachedConnections(std::chrono::hours{1});
 
   EXPECT_EQ(storage.nbCachedConnections(), 0U);
 }

@@ -186,8 +186,6 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
 
-  _reqStart = std::chrono::steady_clock::now();
-
   char* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
   if (lineLast == last) {
     return kStatusNeedMoreData;

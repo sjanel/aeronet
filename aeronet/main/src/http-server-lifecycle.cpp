@@ -376,8 +376,7 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   }
 
   const bool hasDeadline = maxWait.count() > 0;
-  const auto deadline =
-      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
+  const auto deadline = hasDeadline ? _connections.now + maxWait : std::chrono::steady_clock::time_point{};
 
   if (_lifecycle.isDraining()) {
     if (hasDeadline) {

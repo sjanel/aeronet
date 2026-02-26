@@ -71,13 +71,13 @@ TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
   EXPECT_TRUE(state.canCloseConnectionForDrain());
 }
 
-TEST(ConnectionState, RequestDrainAndCloseHasLowPriority) {
+TEST(ConnectionState, RequestDrainAndCloseIsIdempotent) {
   ConnectionState state;
 
-  state.closeMode = ConnectionState::CloseMode::Immediate;
+  state.closeMode = ConnectionState::CloseMode::DrainThenClose;
 
   state.requestDrainAndClose();
-  EXPECT_EQ(state.closeMode, ConnectionState::CloseMode::Immediate);
+  EXPECT_EQ(state.closeMode, ConnectionState::CloseMode::DrainThenClose);
 }
 
 TEST(ConnectionStateSendfileTest, TransportFileInvalidFd) {
@@ -643,6 +643,7 @@ TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
   EXPECT_EQ(state.headerStartTp.time_since_epoch().count(), 0);
 
   // First read sets headerStartTp
+  state.lastActivity = std::chrono::steady_clock::now();  // simulate activity to update timestamp
   auto r1 = state.transportRead(16U);
   EXPECT_EQ(r1.want, TransportHint::None);
   EXPECT_EQ(r1.bytesProcessed, 1U);
@@ -706,7 +707,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   EXPECT_TRUE(state.tlsEstablished);  // remains true; handshake not re-checked
 }
 
-TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersImmediateCloseAndClearsActive) {
+TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
@@ -729,7 +730,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersImmediateCloseAndClearsAc
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Error);
   EXPECT_EQ(res.bytesDone, 0U);
   EXPECT_FALSE(state.fileSend.active);
-  EXPECT_TRUE(state.isImmediateCloseRequested());
+  EXPECT_TRUE(state.isAnyCloseRequested());
 }
 
 TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {
