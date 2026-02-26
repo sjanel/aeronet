@@ -169,8 +169,7 @@ class WebSocketHandler final : public IProtocolHandler {
     if (_closeState != CloseState::CloseSent) {
       return false;
     }
-    auto now = std::chrono::steady_clock::now();
-    return (now - _closeInitiatedAt) > _config.closeTimeout;
+    return (std::chrono::steady_clock::now() - _closeInitiatedAt) > _config.closeTimeout;
   }
 
   /// Force close the connection after timeout (call after hasCloseTimedOut() returns true).

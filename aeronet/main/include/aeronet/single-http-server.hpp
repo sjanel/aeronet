@@ -412,8 +412,12 @@ class SingleHttpServer {
   void applyPendingUpdates();
   void acceptNewConnections();
 
-  void handleWritableClient(int fd);
-  void handleReadableClient(int fd);
+  enum class CloseStatus : uint8_t { Keep, Close };
+
+  // Returns true if connection has been closed, false otherwise.
+  CloseStatus handleWritableClient(ConnectionMapIt cnxIt);
+  // Returns true if connection has been closed, false otherwise.
+  CloseStatus handleReadableClient(ConnectionMapIt cnxIt);
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
@@ -444,9 +448,8 @@ class SingleHttpServer {
                           bool reusedConnection) const;
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
-  // If immediate=true the connection will be closed without waiting for buffered writes to drain.
-  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, bool immediate = false,
-                       std::string_view body = {});
+  // The connection will be closed after draining buffered writes.
+  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
   void flushOutbound(ConnectionMapIt cnxIt);
@@ -472,7 +475,7 @@ class SingleHttpServer {
   // HTTP/1.1-specific CONNECT handling (TCP tunnel setup).
   LoopAction processConnectMethod(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
-  void handleInTunneling(ConnectionMapIt cnxIt);
+  CloseStatus handleInTunneling(ConnectionMapIt cnxIt);
 
   void closeListener() noexcept;
   void closeAllConnections();

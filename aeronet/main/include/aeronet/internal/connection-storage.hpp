@@ -67,7 +67,7 @@ class ConnectionStorage {
 
   auto emplace(Connection&& cnx) { return active.emplace(std::move(cnx), getNewConnectionState()); }
 
-  void sweepCachedConnections(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::duration timeout) {
+  void sweepCachedConnections(std::chrono::steady_clock::duration timeout) {
     const auto deadline = now - timeout;
     auto it = _cachedConnections.begin();
     for (; it != _cachedConnections.end() && (*it)->lastActivity < deadline; ++it) {
@@ -80,18 +80,21 @@ class ConnectionStorage {
 
   ConnectionMap active;
 
+  std::chrono::steady_clock::time_point now;
+
  private:
   ConnectionState* getNewConnectionState() {
-    if (!_cachedConnections.empty()) {
-      // Reuse a cached ConnectionState object
-      ConnectionState* statePtr = _cachedConnections.back();
+    ConnectionState* statePtr;
+    if (_cachedConnections.empty()) {
+      statePtr = _connectionStatePool.allocateAndConstruct();
+      statePtr->request._ownerState = statePtr;
+    } else {
+      statePtr = _cachedConnections.back();
       _cachedConnections.pop_back();
       statePtr->reset();
-      return statePtr;
     }
-    auto* pObj = _connectionStatePool.allocateAndConstruct();
-    pObj->request._ownerState = pObj;
-    return pObj;
+    statePtr->lastActivity = now;
+    return statePtr;
   }
 
   ObjectPool<ConnectionState> _connectionStatePool;
