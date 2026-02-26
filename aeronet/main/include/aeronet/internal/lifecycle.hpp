@@ -38,9 +38,17 @@ struct Lifecycle {
   ~Lifecycle() = default;
 
   void reset() noexcept {
-    drainDeadline = {};
-    state.store(State::Idle, std::memory_order_relaxed);
-    drainDeadlineEnabled = false;
+    // Use CAS to ensure only one thread transitions to Idle and writes the non-atomic fields.
+    // This avoids a data race when both SingleHttpServer::stop() and the event-loop thread call reset()
+    // concurrently (e.g. during rapid stop cycles in multi-server mode).
+    State expected = state.load(std::memory_order_relaxed);
+    while (expected != State::Idle) {
+      if (state.compare_exchange_weak(expected, State::Idle, std::memory_order_relaxed)) {
+        drainDeadline = {};
+        drainDeadlineEnabled = false;
+        return;
+      }
+    }
   }
 
   void enterRunning() noexcept {

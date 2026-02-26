@@ -362,10 +362,18 @@ void SingleHttpServer::stop() noexcept {
   if (_lifecycle.exchangeStopping() == internal::Lifecycle::State::Running) {
     log::debug("Stopping server");
 
-    // Stop internal handle if start() was used (non-blocking API)
+    // Stop internal handle if start() was used (non-blocking API).
+    // This joins the background thread, after which the thread has already called _lifecycle.reset().
     _internalHandle.stop();
 
-    _lifecycle.reset();
+    // In multi-server mode the background thread is NOT owned by _internalHandle — it is managed
+    // by MultiHttpServer::AsyncHandle and will be joined later.  The thread calls
+    // _lifecycle.reset() on exit, so calling reset() here would race on non-atomic Lifecycle
+    // fields (drainDeadline, drainDeadlineEnabled).  Only reset when we are sure the thread has
+    // already finished (i.e. single-server mode where _internalHandle.stop() joined it).
+    if (!isInMultiHttpServer()) {
+      _lifecycle.reset();
+    }
     log::debug("Stopped server");
   }
 }
