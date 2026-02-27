@@ -285,13 +285,7 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
   if (!_impl || !_impl->_tracer) {
     return nullptr;
   }
-
-  try {
-    return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));
-  } catch (const std::exception& ex) {
-    log::error("Failed to create span '{}': {}", name, ex.what());
-    return nullptr;
-  }
+  return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));
 }
 
 void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const noexcept {

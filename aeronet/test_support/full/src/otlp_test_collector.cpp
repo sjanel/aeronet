@@ -25,6 +25,7 @@
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -141,7 +142,7 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
 OtlpTestCollector::~OtlpTestCollector() {
   _stop.store(true);
   if (_listen) {
-    ::shutdown(_listen.fd(), SHUT_RDWR);
+    ShutdownReadWrite(_listen.fd());
     _listen.close();
   }
 }

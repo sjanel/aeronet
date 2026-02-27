@@ -86,6 +86,21 @@ void Http2ProtocolHandler::setupCallbacks() {
   _connection.setOnStreamClosed([this](uint32_t streamId) { onStreamClosed(streamId); });
 
   _connection.setOnStreamReset([this](uint32_t streamId, ErrorCode errorCode) { onStreamReset(streamId, errorCode); });
+
+  _connection.setOnWindowUpdate([this](uint32_t streamId, uint32_t /*increment*/) {
+    if (streamId == 0) {
+      // Connection-level window update: notify all tunnel streams
+      for (const auto& [id, upstreamFd] : _tunnelStreams) {
+        _tunnelBridge->onTunnelWindowUpdate(upstreamFd);
+      }
+    } else {
+      // Stream-level window update
+      auto it = _tunnelStreams.find(streamId);
+      if (it != _tunnelStreams.end()) {
+        _tunnelBridge->onTunnelWindowUpdate(it->second);
+      }
+    }
+  });
 }
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
@@ -116,8 +131,10 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
       log::error("HTTP/2 protocol error: {} ({})", result.errorMessage, ErrorCodeName(result.errorCode));
       break;
     case Http2Connection::ProcessResult::Action::GoAway:
-      [[fallthrough]];
-    case Http2Connection::ProcessResult::Action::Closed:
+      output.action = ProtocolProcessResult::Action::Close;
+      break;
+    default:
+      assert(result.action == Http2Connection::ProcessResult::Action::Closed);
       output.action = ProtocolProcessResult::Action::Close;
       break;
   }
@@ -171,12 +188,13 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
   // Pass 1 : compute total headers storage
-  std::size_t headersTotalLen = 0;
+  // +1 for :authority \r char for setupTunnelConnection
+  std::size_t headersTotalLen = 1U;
   for (const auto& [name, value] : headers) {
     headersTotalLen += name.size() + value.size();
   }
 
-  streamReq.headerStorage = std::make_unique<char[]>(headersTotalLen);
+  streamReq.headerStorage = std::make_unique_for_overwrite<char[]>(headersTotalLen);
 
   char* buf = streamReq.headerStorage.get();
   for (const auto& [name, value] : headers) {
@@ -198,6 +216,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
       } else if (storedName == ":authority") {
         req._pAuthority = storedValue.data();
         req._authorityLength = SafeCast<decltype(req._authorityLength)>(storedValue.size());
+        *buf++ = '\r';  // sentinel char for setupTunnelConnection
       } else if (storedName == ":path") {
         req._pPath = storedValue.data();
         req._pathLength = SafeCast<decltype(req._pathLength)>(storedValue.size());
@@ -223,12 +242,27 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   req._reqStart = std::chrono::steady_clock::now();
   req._responsePossibleEncoding = encoding;
 
-  if (endStream) {
+  // CONNECT requests must be dispatched immediately after headers regardless of endStream,
+  // because CONNECT has no request body — subsequent DATA frames carry tunnel payload.
+  if (endStream || req.method() == http::Method::CONNECT) {
     dispatchRequest(it);
   }
 }
 
 void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+  // Check if this is a CONNECT tunnel stream — forward data to upstream.
+  auto tunnelIt = _tunnelStreams.find(streamId);
+  if (tunnelIt != _tunnelStreams.end()) {
+    if (!data.empty()) {
+      _tunnelBridge->writeTunnel(tunnelIt->second, data);
+    }
+    if (endStream) {
+      // Client closed their end of the tunnel — half-close the upstream side.
+      _tunnelBridge->shutdownTunnelWrite(tunnelIt->second);
+    }
+    return;
+  }
+
   auto it = _streamRequests.find(streamId);
   if (it == _streamRequests.end()) [[unlikely]] {
     log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
@@ -261,12 +295,14 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
   _streamRequests.erase(streamId);
   _pendingFileSends.erase(streamId);
+  cleanupTunnel(streamId);
 }
 
 void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode) {
   log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
   _streamRequests.erase(streamId);
   _pendingFileSends.erase(streamId);
+  cleanupTunnel(streamId);
 }
 
 ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFileSend& pending,
@@ -369,6 +405,14 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     return;
   }
 
+  // CONNECT requests establish a per-stream TCP tunnel (RFC 7540 §8.3).
+  // Handle separately from normal request/response dispatch.
+  if (request.method() == http::Method::CONNECT) {
+    handleConnectRequest(streamId, request);
+    _streamRequests.erase(streamId);
+    return;
+  }
+
   ErrorCode err = ErrorCode::NoError;
 
   // Dispatch to the callback provided by SingleHttpServer
@@ -399,20 +443,13 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 }
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
-  // For CONNECT, HTTP/2 support is not yet implemented.
-  // Per RFC 7540 §8.3, CONNECT omits :scheme and :path, but tunneling requires bidirectional stream setup.
-  // For now, return 405 Method Not Allowed and recommend HTTP/1.1 CONNECT.
-  if (request.method() == http::Method::CONNECT) {
-    return {http::StatusCodeMethodNotAllowed, "CONNECT tunneling not yet implemented in HTTP/2"};
-  }
-
   auto routingResult = _pRouter->match(request.method(), request.path());
 
   // Determine active CORS policy for this route (if any)
   const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
-  // Per RFC 7540 §8.3, CONNECT is handled separately (see above) since it omits :path
+  // CONNECT is handled in dispatchRequest() before reply() is called
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
     const SpecialMethodConfig config{
         .tracePolicy = _pServerConfig->traceMethodPolicy,
@@ -514,6 +551,111 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   HttpResponse resp(http::StatusCodeNotFound);
   finalizeResponse(resp);
   return resp;
+}
+
+// ============================
+// CONNECT tunnel methods
+// ============================
+
+void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& request) {
+  // Per RFC 7540 §8.3, CONNECT uses :authority as the target (host:port).
+  const std::string_view target = request.authority();
+  const auto colonPos = target.rfind(':');
+  if (colonPos == std::string_view::npos || colonPos == 0 || colonPos == target.size() - 1) {
+    log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, target);
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"),
+                       /*isHeadMethod=*/false);
+    return;
+  }
+
+  const std::string_view host = target.substr(0, colonPos);
+  const std::string_view portStr = target.substr(colonPos + 1);
+
+  // this extra char is needed for setupTunnelConnection (should be added in onHeadersDecodedReceived when parsing
+  // :authority)
+  assert(*(portStr.data() + portStr.size()) == '\r');
+
+  // Enforce CONNECT allowlist if configured.
+  const auto& allowList = _pServerConfig->connectAllowlist();
+  if (!allowList.empty() && !allowList.containsCI(host)) {
+    log::info("HTTP/2 CONNECT stream {} target {} not in allowlist", streamId, target);
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeForbidden, "CONNECT target not allowed"),
+                       /*isHeadMethod=*/false);
+    return;
+  }
+
+  // Delegate TCP connection setup to the server (which owns the event loop).
+  const int upstreamFd = _tunnelBridge->setupTunnel(streamId, host, portStr);
+  if (upstreamFd < 0) {
+    log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, target);
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
+                       /*isHeadMethod=*/false);
+    return;
+  }
+
+  // Send 200 headers WITHOUT END_STREAM — the stream stays open for bidirectional DATA.
+  ErrorCode err = _connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, /*endStream=*/false);
+  if (err != ErrorCode::NoError) [[unlikely]] {
+    log::error("HTTP/2 CONNECT stream {} failed to send 200 headers: {}", streamId, ErrorCodeName(err));
+    _tunnelBridge->closeTunnel(upstreamFd);
+    return;
+  }
+
+  // Track the tunnel mapping.
+  _tunnelStreams[streamId] = upstreamFd;
+  _tunnelUpstreams[upstreamFd] = streamId;
+
+  log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, target);
+}
+
+void Http2ProtocolHandler::cleanupTunnel(uint32_t streamId) {
+  auto it = _tunnelStreams.find(streamId);
+  if (it == _tunnelStreams.end()) {
+    return;
+  }
+  const int upstreamFd = it->second;
+  _tunnelUpstreams.erase(upstreamFd);
+  _tunnelStreams.erase(it);
+
+  _tunnelBridge->closeTunnel(upstreamFd);
+}
+
+ErrorCode Http2ProtocolHandler::injectTunnelData(uint32_t streamId, std::span<const std::byte> data) {
+  return _connection.sendData(streamId, data, /*endStream=*/false);
+}
+
+void Http2ProtocolHandler::closeTunnelByUpstreamFd(int upstreamFd) {
+  auto it = _tunnelUpstreams.find(upstreamFd);
+  if (it == _tunnelUpstreams.end()) {
+    return;
+  }
+  const uint32_t streamId = it->second;
+  _tunnelStreams.erase(streamId);
+  _tunnelUpstreams.erase(it);
+
+  // Send empty DATA with END_STREAM to gracefully close the tunnel stream.
+  (void)_connection.sendData(streamId, {}, /*endStream=*/true);
+}
+
+void Http2ProtocolHandler::tunnelConnectFailed(uint32_t streamId) {
+  auto it = _tunnelStreams.find(streamId);
+  if (it != _tunnelStreams.end()) {
+    _tunnelUpstreams.erase(it->second);
+    _tunnelStreams.erase(it);
+  }
+  // Signal the tunnel failure per RFC 7540 §8.3 using CONNECT_ERROR.
+  _connection.sendRstStream(streamId, ErrorCode::ConnectError);
+}
+
+bool Http2ProtocolHandler::isTunnelStream(uint32_t streamId) const noexcept {
+  return _tunnelStreams.contains(streamId);
+}
+
+Http2ProtocolHandler::TunnelUpstreamsMap Http2ProtocolHandler::drainTunnelUpstreamFds() {
+  auto ret = std::move(_tunnelUpstreams);
+  _tunnelStreams.clear();
+  _tunnelUpstreams.clear();
+  return ret;
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 
 #include "aeronet/compression-test-helpers.hpp"

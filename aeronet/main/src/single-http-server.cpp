@@ -18,10 +18,6 @@
 #include <type_traits>
 #include <utility>
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#endif
-
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -41,13 +37,11 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/request-task.hpp"
-#endif
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
@@ -71,12 +65,20 @@
 #include "aeronet/websocket-upgrade.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+
+#include "aeronet/request-task.hpp"
+#endif
+
 #if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
 #include "aeronet/upgrade-handler.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
+#include "aeronet/tunnel-bridge.hpp"
 #endif
 #endif
 
@@ -255,6 +257,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                   _decompressionState, _telemetry, _sharedBuffers.buf);
+        installH2TunnelBridge(cnxIt->first.fd(), state);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -419,6 +422,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                 _decompressionState, _telemetry, _sharedBuffers.buf);
       state.protocol = ProtocolType::Http2;
+      installH2TunnelBridge(cnxIt->first.fd(), state);
 
       // Queue the upgrade response
       state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
@@ -1365,12 +1369,77 @@ void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
-void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
+
+/// Concrete ITunnelBridge implementation that delegates tunnel operations
+/// to SingleHttpServer via shared helpers. Captures the server reference
+/// and the client fd that owns the HTTP/2 connection.
+class H2TunnelBridge final : public ITunnelBridge {
+ public:
+  H2TunnelBridge(SingleHttpServer& server, int clientFd) noexcept : _server(server), _clientFd(clientFd) {}
+
+  int setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
+    return _server.setupH2Tunnel(_clientFd, streamId, host, port);
+  }
+
+  void writeTunnel(int upstreamFd, std::span<const std::byte> data) override {
+    auto upIt = _server._connections.active.find(upstreamFd);
+    if (upIt == _server._connections.active.end()) [[unlikely]] {
+      return;
+    }
+    if (!_server.forwardTunnelData(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size())))
+        [[unlikely]] {
+      _server.closeConnection(upIt);
+    }
+  }
+
+  void shutdownTunnelWrite(int upstreamFd) override {
+    auto upIt = _server._connections.active.find(upstreamFd);
+    if (upIt != _server._connections.active.end()) {
+      _server.shutdownTunnelPeerWrite(upIt);
+    }
+  }
+
+  void closeTunnel(int upstreamFd) override {
+    auto upIt = _server._connections.active.find(upstreamFd);
+    if (upIt == _server._connections.active.end()) {
+      return;
+    }
+    // Clear peerFd so closeConnection won't try to tear down the client HTTP/2 connection.
+    upIt->second->peerFd = -1;
+    upIt->second->peerStreamId = 0;
+    _server.closeConnection(upIt);
+  }
+
+  void onTunnelWindowUpdate(int upstreamFd) override {
+    auto upIt = _server._connections.active.find(upstreamFd);
+    if (upIt != _server._connections.active.end()) {
+      // If we have buffered data from upstream, try to inject it now that the window opened.
+      if (!upIt->second->inBuffer.empty()) {
+        _server.handleInH2Tunneling(upIt);
+      }
+    }
+  }
+
+ private:
+  SingleHttpServer& _server;
+  int _clientFd;
+};
+
+void SingleHttpServer::installH2TunnelBridge(int clientFd, ConnectionState& state) {
+  auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
+  state.tunnelBridge = std::make_unique<H2TunnelBridge>(*this, clientFd);
+  h2Handler->setTunnelBridge(state.tunnelBridge.get());
+}
+
+void SingleHttpServer::setupHttp2Connection(int clientFd, ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                             _decompressionState, _telemetry, _sharedBuffers.buf, true);
   state.protocol = ProtocolType::Http2;
+
+  // Install CONNECT tunnel bridge so the HTTP/2 handler can request TCP tunnel setup.
+  installH2TunnelBridge(clientFd, state);
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation
   // For TLS ALPN "h2", the server must send SETTINGS before the client sends any data
@@ -1379,6 +1448,95 @@ void SingleHttpServer::setupHttp2Connection(ConnectionState& state) {
     state.outBuffer.append(std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
     state.protocolHandler->onOutputWritten(pendingOutput.size());
   }
+}
+
+int SingleHttpServer::setupH2Tunnel(int clientFd, uint32_t streamId, std::string_view host, std::string_view port) {
+  const int upstreamFd = setupTunnelConnection(clientFd, host, port);
+  if (upstreamFd == -1) {
+    return -1;
+  }
+
+  // Additionally set the HTTP/2 stream id on the upstream state.
+  auto upIt = _connections.active.find(upstreamFd);
+  assert(upIt != _connections.active.end());
+  upIt->second->peerStreamId = streamId;
+
+  return upstreamFd;
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+
+  // Find the client HTTP/2 connection via peerFd.
+  auto peerIt = _connections.active.find(state.peerFd);
+  if (peerIt == _connections.active.end()) [[unlikely]] {
+    return CloseStatus::Close;
+  }
+
+  ConnectionState& peerState = *peerIt->second;
+  auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
+  if (h2Handler == nullptr) [[unlikely]] {
+    return CloseStatus::Close;
+  }
+
+  auto* stream = h2Handler->connection().getStream(state.peerStreamId);
+  if (stream == nullptr) {
+    return CloseStatus::Close;
+  }
+
+  bool hitEagain = false;
+  std::size_t bytesReadThisEvent = 0;
+
+  while (true) {
+    // Read from upstream in a loop (edge-triggered, must drain), but respect flow control.
+    // If inBuffer is already large, don't read more until we can inject it.
+    if (readTunnelData(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
+      return CloseStatus::Close;
+    }
+
+    if (state.inBuffer.empty()) {
+      return state.eofReceived ? CloseStatus::Close : CloseStatus::Keep;
+    }
+
+    // Determine how much we can inject based on HTTP/2 flow control windows.
+    int32_t streamWin = stream->sendWindow();
+    int32_t connWin = h2Handler->connection().connectionSendWindow();
+    int32_t win = std::min(streamWin, connWin);
+
+    if (win <= 0) {
+      // Wait for WINDOW_UPDATE. The windowUpdate callback will re-invoke this function.
+      return CloseStatus::Keep;
+    }
+
+    std::size_t injectSize = std::min(state.inBuffer.size(), static_cast<std::size_t>(win));
+
+    // Inject data as HTTP/2 DATA frame(s) on the tunnel stream.
+    const auto data = std::as_bytes(std::span<const char>(state.inBuffer.data(), injectSize));
+    const auto err = h2Handler->injectTunnelData(state.peerStreamId, data);
+    state.inBuffer.erase_front(injectSize);
+
+    if (err != http2::ErrorCode::NoError) [[unlikely]] {
+      log::warn("HTTP/2 CONNECT stream {} inject failed: {}", state.peerStreamId, http2::ErrorCodeName(err));
+      return CloseStatus::Close;
+    }
+
+    // Flush the HTTP/2 handler's output through the client connection.
+    if (h2Handler->hasPendingOutput()) {
+      auto pendingOutput = h2Handler->getPendingOutput();
+      peerState.outBuffer.append(
+          std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
+      h2Handler->onOutputWritten(pendingOutput.size());
+      flushOutbound(peerIt);
+    }
+
+    // If we hit EAGAIN, we are done for now.
+    if (hitEagain) {
+      break;
+    }
+    // If we didn't hit EAGAIN, but we injected some data, we can loop and read more.
+    // If we didn't inject anything (win <= 0), we would have returned above.
+  }
+  return CloseStatus::Keep;
 }
 #endif
 

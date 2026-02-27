@@ -6,12 +6,14 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -37,6 +39,7 @@
 #endif
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -70,6 +73,44 @@ struct DataEvent {
   return {};
 }
 }  // namespace
+
+/// Test mock for ITunnelBridge that delegates to std::function members.
+class MockTunnelBridge final : public ITunnelBridge {
+ public:
+  std::function<int(uint32_t, std::string_view, std::string_view)> onSetup;
+  std::function<void(int, std::span<const std::byte>)> onWrite;
+  std::function<void(int)> onShutdownWrite;
+  std::function<void(int)> onClose;
+  std::function<void(int)> onWindowUpdate;
+
+  int setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
+    return onSetup ? onSetup(streamId, host, port) : -1;
+  }
+
+  void writeTunnel(int upstreamFd, std::span<const std::byte> data) override {
+    if (onWrite) {
+      onWrite(upstreamFd, data);
+    }
+  }
+
+  void shutdownTunnelWrite(int upstreamFd) override {
+    if (onShutdownWrite) {
+      onShutdownWrite(upstreamFd);
+    }
+  }
+
+  void closeTunnel(int upstreamFd) override {
+    if (onClose) {
+      onClose(upstreamFd);
+    }
+  }
+
+  void onTunnelWindowUpdate(int upstreamFd) override {
+    if (onWindowUpdate) {
+      onWindowUpdate(upstreamFd);
+    }
+  }
+};
 
 class Http2ProtocolLoopback {
  public:
@@ -389,15 +430,131 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   EXPECT_TRUE(loop.clientData[0].endStream);
 }
 
-TEST(Http2ProtocolHandler, ConnectReturns405InHttp2) {
+TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   Router router;
   router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  // Per RFC 7540 §8.3, CONNECT establishes a tunnel, but aeronet does not yet implement tunneling in HTTP/2.
-  // Note: :scheme and :path are omitted in CONNECT, :authority contains the target.
+  // Install a tunnel bridge that should never be called.
+  bool setupCalled = false;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> int {
+    setupCalled = true;
+    return -1;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Target without port separator → 400.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+  EXPECT_FALSE(setupCalled);
+}
+
+TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return -1; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Target with empty port → 400.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+}
+
+TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return -1; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Target with empty host → 400.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", ":443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+}
+
+TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  std::array<std::string_view, 1> allowedHosts = {"allowed.example.com"};
+  loop.serverConfig.withConnectAllowlist(allowedHosts.begin(), allowedHosts.end());
+  loop.connect();
+
+  bool setupCalled = false;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> int {
+    setupCalled = true;
+    return 42;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Target not in allowlist → 403.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "blocked.example.com:443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "403");
+  EXPECT_FALSE(setupCalled);
+}
+
+TEST(Http2ProtocolHandler, ConnectSetupFailureReturns502) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Setup returns -1 → upstream connect failed → 502.
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return -1; };
+  loop.handler.setTunnelBridge(&bridge);
+
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
@@ -408,9 +565,524 @@ TEST(Http2ProtocolHandler, ConnectReturns405InHttp2) {
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "502");
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  int capturedStreamId = -1;
+  std::string capturedHost;
+  std::string capturedPort;
+  constexpr int kFakeUpstreamFd = 42;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t streamId, std::string_view host, std::string_view port) -> int {
+    capturedStreamId = static_cast<int>(streamId);
+    capturedHost = host;
+    capturedPort = port;
+    return kFakeUpstreamFd;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Send CONNECT without END_STREAM — the client wants to keep sending data.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // Verify the setup callback was called with the correct parameters.
+  EXPECT_EQ(capturedStreamId, 1);
+  EXPECT_EQ(capturedHost, "example.com");
+  EXPECT_EQ(capturedPort, "443");
+
+  // Verify the tunnel is now active.
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Verify the handler sent a 200 response without END_STREAM.
+  ASSERT_FALSE(loop.clientHeaders.empty());
   const auto& resp = loop.clientHeaders.back();
-  // CONNECT is not implemented in HTTP/2, so it returns 405 Method Not Allowed
-  EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
+  EXPECT_EQ(GetHeaderValue(resp, ":status"), "200");
+  EXPECT_FALSE(resp.endStream);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelForwardsDataClientToUpstream) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+  std::string writtenData;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  bridge.onWrite = [&](int upstreamFd, std::span<const std::byte> data) {
+    EXPECT_EQ(upstreamFd, kFakeUpstreamFd);
+    writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish the tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+
+  // Send DATA from client → should be forwarded to the upstream via the write callback.
+  const std::string_view tunnelPayload = "Hello, tunnel!";
+  ASSERT_EQ(
+      loop.client.sendData(1, std::as_bytes(std::span<const char>(tunnelPayload.data(), tunnelPayload.size())), false),
+      ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+
+  EXPECT_EQ(writtenData, "Hello, tunnel!");
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelInjectsDataUpstreamToClient) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish the tunnel on stream 1.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+
+  // Inject data from upstream → should appear as DATA frames to the client.
+  const std::string_view upstreamPayload = "Response from upstream";
+  auto err = loop.handler.injectTunnelData(
+      1, std::as_bytes(std::span<const char>(upstreamPayload.data(), upstreamPayload.size())));
+  EXPECT_EQ(err, ErrorCode::NoError);
+
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_EQ(loop.clientData.back().streamId, 1U);
+  EXPECT_EQ(loop.clientData.back().data, "Response from upstream");
+  EXPECT_FALSE(loop.clientData.back().endStream);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+
+  bool shutdownWriteCalled = false;
+  int shutdownWriteFd = -1;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  bridge.onShutdownWrite = [&](int upstreamFd) {
+    shutdownWriteCalled = true;
+    shutdownWriteFd = upstreamFd;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Send DATA with END_STREAM → client closes their end of the tunnel.
+  ASSERT_EQ(loop.client.sendData(1, {}, true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+
+  // The tunnel should be half-closed and the shutdownWrite callback should have been called.
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  EXPECT_TRUE(shutdownWriteCalled);
+  EXPECT_EQ(shutdownWriteFd, kFakeUpstreamFd);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Upstream fd closes → handler sends empty DATA with END_STREAM.
+  loop.handler.closeTunnelByUpstreamFd(kFakeUpstreamFd);
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+
+  loop.pumpServerToClient();
+
+  // Client should receive a DATA frame with END_STREAM.
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_EQ(loop.clientData.back().streamId, 1U);
+  EXPECT_TRUE(loop.clientData.back().endStream);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Async connect failed → handler sends RST_STREAM with CONNECT_ERROR.
+  loop.handler.tunnelConnectFailed(1);
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+
+  loop.pumpServerToClient();
+
+  // Client should receive RST_STREAM with CONNECT_ERROR.
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ConnectError);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+  bool closeCalled = false;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  bridge.onClose = [&](int) { closeCalled = true; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Client sends RST_STREAM on the tunnel stream.
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+
+  loop.pumpClientToServer();
+
+  // Tunnel should be cleaned up.
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+  EXPECT_TRUE(closeCalled);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+  std::string allWrittenData;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  bridge.onWrite = [&](int, std::span<const std::byte> data) {
+    allWrittenData.append(reinterpret_cast<const char*>(data.data()), data.size());
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // Client → Upstream: multiple data chunks.
+  for (int idx = 0; idx < 5; ++idx) {
+    std::string chunk = "chunk-" + std::to_string(idx);
+    ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(chunk.data(), chunk.size())), false),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+  }
+
+  EXPECT_EQ(allWrittenData, "chunk-0chunk-1chunk-2chunk-3chunk-4");
+
+  // Upstream → Client: multiple data injections.
+  for (int idx = 0; idx < 3; ++idx) {
+    std::string payload = "reply-" + std::to_string(idx);
+    auto err = loop.handler.injectTunnelData(1, std::as_bytes(std::span<const char>(payload.data(), payload.size())));
+    EXPECT_EQ(err, ErrorCode::NoError);
+  }
+  loop.pumpServerToClient();
+
+  // Verify all upstream→client data was received.
+  ASSERT_GE(loop.clientData.size(), 3U);
+  std::string allReceivedData;
+  for (const auto& ev : loop.clientData) {
+    allReceivedData += ev.data;
+  }
+  EXPECT_EQ(allReceivedData, "reply-0reply-1reply-2");
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+  std::string writtenData;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  bridge.onWrite = [&](int, std::span<const std::byte> data) {
+    writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish tunnel.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // Send a large data payload (exceeding typical flow control window).
+  // The default initial window size is 65535 bytes. We'll send data in chunks
+  // and pump regularly to handle flow control.
+  std::string largePayload(16384, 'X');
+  for (int idx = 0; idx < 4; ++idx) {
+    ASSERT_EQ(
+        loop.client.sendData(1, std::as_bytes(std::span<const char>(largePayload.data(), largePayload.size())), false),
+        ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();  // Allow WINDOW_UPDATE frames to flow back.
+    loop.pumpClientToServer();  // Process any buffered data after window update.
+  }
+
+  EXPECT_EQ(writtenData.size(), 65536U);
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  std::vector<int> closedFds;
+  constexpr int kFakeUpstreamFd1 = 42;
+  constexpr int kFakeUpstreamFd2 = 43;
+  int nextFd = kFakeUpstreamFd1;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> int {
+    int fd = nextFd++;
+    return fd;
+  };
+  bridge.onClose = [&](int fd) { closedFds.push_back(fd); };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish two tunnels on different streams.
+  RawChars conn1;
+  conn1.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn1.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn1), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  RawChars conn3;
+  conn3.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn3.append(MakeHttp1HeaderLine(":authority", "other.com:8080"));
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(conn3), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  EXPECT_TRUE(loop.handler.isTunnelStream(3));
+
+  // Simulate transport closing — all tunnels should be cleaned up.
+  loop.handler.onTransportClosing();
+
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+  EXPECT_FALSE(loop.handler.isTunnelStream(3));
+  EXPECT_EQ(closedFds.size(), 2U);
+  // Both fds should have been closed (order may vary with flat hash map iteration).
+  EXPECT_TRUE(std::ranges::find(closedFds, kFakeUpstreamFd1) != closedFds.end());
+  EXPECT_TRUE(std::ranges::find(closedFds, kFakeUpstreamFd2) != closedFds.end());
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd1 = 42;
+  constexpr int kFakeUpstreamFd2 = 43;
+  int nextFd = kFakeUpstreamFd1;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> int { return nextFd++; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish two tunnels.
+  RawChars conn1;
+  conn1.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn1.append(MakeHttp1HeaderLine(":authority", "a.com:80"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn1), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  RawChars conn3;
+  conn3.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn3.append(MakeHttp1HeaderLine(":authority", "b.com:80"));
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(conn3), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  EXPECT_TRUE(loop.handler.isTunnelStream(3));
+
+  // drainTunnelUpstreamFds should return all fds and clear internal state.
+  auto fds = loop.handler.drainTunnelUpstreamFds();
+
+  EXPECT_EQ(fds.size(), 2U);
+  EXPECT_TRUE(fds.contains(kFakeUpstreamFd1));
+  EXPECT_TRUE(fds.contains(kFakeUpstreamFd2));
+
+  // After drain, no tunnel streams should remain.
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+  EXPECT_FALSE(loop.handler.isTunnelStream(3));
+}
+
+TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
+  Router router;
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse(200, "world"); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr int kFakeUpstreamFd = 42;
+
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> int { return kFakeUpstreamFd; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Establish a tunnel on stream 1.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+
+  // Send a normal GET request on stream 3 (coexists with the tunnel on stream 1).
+  RawChars getHdrs;
+  getHdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  getHdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  getHdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  getHdrs.append(MakeHttp1HeaderLine(":path", "/hello"));
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCodeOK, HeadersView(getHdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // The GET response should be on stream 3 with body "world".
+  bool foundGetResp = false;
+  for (const auto& hdr : loop.clientHeaders) {
+    if (hdr.streamId == 3) {
+      EXPECT_EQ(GetHeaderValue(hdr, ":status"), "200");
+      foundGetResp = true;
+    }
+  }
+  EXPECT_TRUE(foundGetResp);
+
+  bool foundBody = false;
+  for (const auto& de : loop.clientData) {
+    if (de.streamId == 3) {
+      EXPECT_EQ(de.data, "world");
+      foundBody = true;
+    }
+  }
+  EXPECT_TRUE(foundBody);
+
+  // The tunnel on stream 1 should still be active.
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
 }
 
 TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {

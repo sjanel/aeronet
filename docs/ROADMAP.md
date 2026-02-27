@@ -2,13 +2,13 @@
 
 ## Recently completed
 
+- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.
 - `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
 - `MSG_ZEROCOPY` support for large payloads on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`. Threshold is 16KB. See [zerocopy.hpp](../aeronet/sys/include/aeronet/zerocopy.hpp). Now supports kTLS connections by bypassing OpenSSL's SSL_write and using sendmsg() directly on the kTLS socket.
 
 ## High priority
 
-- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Currently returns 405 Method Not Allowed. Full implementation requires per-stream tunnel state tracking, upstream TCP connections, and bidirectional DATA frame forwarding. Users needing CONNECT tunneling should use HTTP/1.1 instead, which has full support.
 - **HTTP/2 Performance Optimization & Testing** (h2load benchmarks):
   - Micro-benchmarks for stream multiplexing efficiency
   - h2load-based load testing scenarios (concurrent streams, various payload sizes)

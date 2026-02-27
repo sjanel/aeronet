@@ -102,6 +102,20 @@ TEST(BrotliDecoderTest, MallocConstructorFails) {
 
 #endif
 
+TEST(BrotliEncoderContext, MoveOperations) {
+  BrotliDecoderContext ctx1;
+
+  ctx1.init();
+  BrotliDecoderContext ctx2(std::move(ctx1));
+
+  BrotliDecoderContext ctx3;
+  ctx3.init();
+  ctx3 = std::move(ctx2);
+
+  auto& selfCtx = ctx3;
+  ctx3 = std::move(selfCtx);  // self move should do nothing
+}
+
 TEST(BrotliEncoderDecoderTest, MoveConstructor) {
   BrotliScratch scratch;
   BrotliEncoderContext ctx1(scratch);

@@ -246,6 +246,11 @@ std::pair<Socket, uint16_t> startEchoServer() {
   std::thread([fd = listenSock.fd()]() {
     BaseFd clientFd(::accept(fd, nullptr, nullptr));
     if (clientFd.fd() == -1) {
+      const int err = errno;
+      if (err == EBADF || err == EINVAL) {
+        // Socket was closed by the caller before or during accept
+        return;
+      }
       throw_errno("Error from ::accept");
     }
     char buf[1024];
