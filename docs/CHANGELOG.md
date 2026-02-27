@@ -6,6 +6,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Bug fixes
 
+- `Router`: Fix an assertion failure crash when a requested path shares a prefix with a registered path but diverges at a segment that does not match any registered child or wildcard.
 - Malformed CRLF at the end of a chunked body of an HTTP request now correctly returns HTTP error 400 instead of waiting for more data.
 - Prevent OpenSSL per-thread error-queue leakage: call `ERR_clear_error()` after `SSL_shutdown()` in `TlsTransport::shutdown()` to avoid stale errors from a closed connection being misclassified as fatal on subsequent `SSL_read_ex`/`SSL_write_ex` calls (fixes connection recycle/reuse issue).
 - Strictly respect `CompressionConfig.maxCompressRatio` in automatic compression even when HttpResponse allocated buffer has more room than the maximum compressed body size.
