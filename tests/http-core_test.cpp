@@ -846,6 +846,7 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
   std::vector<std::thread> threads;
   std::atomic<int> failures{0};
 
+  threads.reserve(kThreads);
   for (int th = 0; th < kThreads; ++th) {
     threads.emplace_back([&]() {
       test::RequestOptions opt;
@@ -883,7 +884,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   test::TestServer localTs(cfg);
 
   // Payloads of different sizes to exercise edge cases
-  const std::vector<std::size_t> sizes = {100, 1024, 8 * 1024, 16 * 1024, 64 * 1024, 256 * 1024, 1024 * 1024};
+  const std::vector<std::size_t> sizes = {100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
 
   for (std::size_t sz : sizes) {
     std::string payload(sz, static_cast<char>('a' + (sz % 26)));

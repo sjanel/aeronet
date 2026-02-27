@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
 #include <limits>

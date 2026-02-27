@@ -181,9 +181,6 @@ bool TlsHttp2Client::writeAll(std::span<const std::byte> data) {
 bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
 
-  std::vector<std::byte> pending;
-  std::size_t pendingOffset = 0;
-
   while (std::chrono::steady_clock::now() < deadline) {
     // Try to read data from TLS connection
     std::array<char, 16384> buffer{};
@@ -212,12 +209,13 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
       continue;
     }
 
-    pending.insert(pending.end(), reinterpret_cast<const std::byte*>(data.data()),
-                   reinterpret_cast<const std::byte*>(data.data() + data.size()));
+    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
 
     // Process through HTTP/2 connection
     for (;;) {
-      std::span<const std::byte> inputData(pending.data() + pendingOffset, pending.size() - pendingOffset);
+      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
+                                           _pendingInput.size() - _pendingOffset);
       if (inputData.empty()) {
         break;
       }
@@ -225,13 +223,14 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
       auto result = _http2Connection->processInput(inputData);
 
       if (result.bytesConsumed > 0) {
-        pendingOffset += result.bytesConsumed;
-        if (pendingOffset == pending.size()) {
-          pending.clear();
-          pendingOffset = 0;
-        } else if (pendingOffset > (64UL * 1024UL)) {
-          pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset));
-          pendingOffset = 0;
+        _pendingOffset += result.bytesConsumed;
+        if (_pendingOffset == _pendingInput.size()) {
+          _pendingInput.clear();
+          _pendingOffset = 0;
+        } else if (_pendingOffset > (64UL * 1024UL)) {
+          _pendingInput.erase(_pendingInput.begin(),
+                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
+          _pendingOffset = 0;
         }
       }
 
@@ -268,16 +267,18 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
   return _http2Connection->state() == http2::ConnectionState::Open;
 }
 
-bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::milliseconds timeout) {
+bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::milliseconds timeout, bool waitForComplete) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
-
-  std::vector<std::byte> pending;
-  std::size_t pendingOffset = 0;
 
   while (std::chrono::steady_clock::now() < deadline) {
     auto iter = _streamResponses.find(streamId);
-    if (iter != _streamResponses.end() && iter->second.complete) {
-      return true;
+    if (iter != _streamResponses.end()) {
+      if (waitForComplete && iter->second.complete) {
+        return true;
+      }
+      if (!waitForComplete && iter->second.headersReceived) {
+        return true;
+      }
     }
 
     // Read and process more frames
@@ -298,11 +299,12 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
       continue;
     }
 
-    pending.insert(pending.end(), reinterpret_cast<const std::byte*>(data.data()),
-                   reinterpret_cast<const std::byte*>(data.data() + data.size()));
+    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
 
     for (;;) {
-      std::span<const std::byte> inputData(pending.data() + pendingOffset, pending.size() - pendingOffset);
+      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
+                                           _pendingInput.size() - _pendingOffset);
       if (inputData.empty()) {
         break;
       }
@@ -310,13 +312,14 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
       auto result = _http2Connection->processInput(inputData);
 
       if (result.bytesConsumed > 0) {
-        pendingOffset += result.bytesConsumed;
-        if (pendingOffset == pending.size()) {
-          pending.clear();
-          pendingOffset = 0;
-        } else if (pendingOffset > (64UL * 1024UL)) {
-          pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset));
-          pendingOffset = 0;
+        _pendingOffset += result.bytesConsumed;
+        if (_pendingOffset == _pendingInput.size()) {
+          _pendingInput.clear();
+          _pendingOffset = 0;
+        } else if (_pendingOffset > (64UL * 1024UL)) {
+          _pendingInput.erase(_pendingInput.begin(),
+                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
+          _pendingOffset = 0;
         }
       }
 
@@ -346,7 +349,10 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
   }
 
   auto iter = _streamResponses.find(streamId);
-  return iter != _streamResponses.end() && iter->second.complete;
+  if (iter == _streamResponses.end()) {
+    return false;
+  }
+  return waitForComplete ? iter->second.complete : iter->second.headersReceived;
 }
 
 uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view path,
@@ -407,6 +413,162 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
   _streamResponses[streamId] = StreamResponse{};
 
   return streamId;
+}
+
+uint32_t TlsHttp2Client::connect(std::string_view authority,
+                                 const std::vector<std::pair<std::string, std::string>>& headers) {
+  if (!_connected) {
+    log::warn("HTTP/2 client not connected");
+    return 0;
+  }
+
+  uint32_t streamId = _nextStreamId;
+  _nextStreamId += 2;
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", authority));
+
+  for (const auto& [name, value] : headers) {
+    std::string lname = name;
+    std::ranges::transform(lname, lname.begin(), [](char ch) { return tolower(ch); });
+    hdrs.append(MakeHttp1HeaderLine(lname, value));
+  }
+
+  auto err = _http2Connection->sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), false);
+  if (err != http2::ErrorCode::NoError) {
+    log::error("Failed to send CONNECT HEADERS: {}", http2::ErrorCodeName(err));
+    return 0;
+  }
+
+  if (_http2Connection->hasPendingOutput()) {
+    auto output = _http2Connection->getPendingOutput();
+    if (!writeAll(output)) {
+      return 0;
+    }
+    _http2Connection->onOutputWritten(output.size());
+  }
+
+  _streamResponses[streamId] = StreamResponse{};
+
+  // Wait for 200 OK response
+  if (!waitForResponse(streamId, std::chrono::milliseconds{5000}, false)) {
+    log::error("Timeout waiting for CONNECT response on stream {}", streamId);
+    return 0;
+  }
+
+  auto iter = _streamResponses.find(streamId);
+  if (iter == _streamResponses.end() || iter->second.response.statusCode != 200) {
+    log::error("CONNECT failed with status {}", iter != _streamResponses.end() ? iter->second.response.statusCode : 0);
+    return 0;
+  }
+
+  return streamId;
+}
+
+bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+  if (!_connected) {
+    return false;
+  }
+
+  auto err = _http2Connection->sendData(streamId, data, endStream);
+  if (err != http2::ErrorCode::NoError) {
+    log::error("Failed to send tunnel DATA: {}", http2::ErrorCodeName(err));
+    return false;
+  }
+
+  if (_http2Connection->hasPendingOutput()) {
+    auto output = _http2Connection->getPendingOutput();
+    if (!writeAll(output)) {
+      return false;
+    }
+    _http2Connection->onOutputWritten(output.size());
+  }
+
+  return true;
+}
+
+std::vector<std::byte> TlsHttp2Client::receiveTunnelData(uint32_t streamId, std::chrono::milliseconds timeout) {
+  auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::vector<std::byte> result;
+
+  std::array<char, 32U << 10> buffer{};
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto iter = _streamResponses.find(streamId);
+    if (iter != _streamResponses.end() && !iter->second.response.body.empty()) {
+      auto& body = iter->second.response.body;
+      result.insert(result.end(), reinterpret_cast<const std::byte*>(body.data()),
+                    reinterpret_cast<const std::byte*>(body.data() + body.size()));
+      body.clear();  // Consume the data
+      return result;
+    }
+
+    if (iter != _streamResponses.end() && iter->second.complete) {
+      return result;  // Stream closed
+    }
+
+    // Read and process more frames
+    int fd = _tlsClient.fd();
+
+    struct pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+
+    int ret = ::poll(&pfd, 1, 100);
+    if (ret <= 0) {
+      continue;
+    }
+
+    auto data = _tlsClient.readSome(buffer);
+    if (data.empty()) {
+      continue;
+    }
+
+    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
+
+    for (;;) {
+      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
+                                           _pendingInput.size() - _pendingOffset);
+      if (inputData.empty()) {
+        break;
+      }
+
+      auto result_process = _http2Connection->processInput(inputData);
+
+      if (result_process.bytesConsumed > 0) {
+        _pendingOffset += result_process.bytesConsumed;
+        if (_pendingOffset == _pendingInput.size()) {
+          _pendingInput.clear();
+          _pendingOffset = 0;
+        } else if (_pendingOffset > (64UL * 1024UL)) {
+          _pendingInput.erase(_pendingInput.begin(),
+                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
+          _pendingOffset = 0;
+        }
+      }
+
+      if (_http2Connection->hasPendingOutput()) {
+        auto output = _http2Connection->getPendingOutput();
+        if (!writeAll(output)) {
+          break;
+        }
+        _http2Connection->onOutputWritten(output.size());
+      }
+
+      if (result_process.action == http2::Http2Connection::ProcessResult::Action::Error ||
+          result_process.action == http2::Http2Connection::ProcessResult::Action::Closed ||
+          result_process.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
+        break;
+      }
+
+      if (result_process.bytesConsumed == 0) {
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 }  // namespace aeronet::test

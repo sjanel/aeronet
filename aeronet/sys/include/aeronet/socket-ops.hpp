@@ -53,4 +53,12 @@ int64_t SafeSend(int fd, const void* data, std::size_t len) noexcept;
 // Convenience overload accepting a string_view.
 inline int64_t SafeSend(int fd, std::string_view data) noexcept { return SafeSend(fd, data.data(), data.size()); }
 
+// Shutdown the write half of a socket connection.
+// Returns true on success, false on error (errno is set).
+bool ShutdownWrite(int fd) noexcept;
+
+// Shutdown both read and write halves of a socket connection.
+// Returns true on success, false on error (errno is set).
+bool ShutdownReadWrite(int fd) noexcept;
+
 }  // namespace aeronet

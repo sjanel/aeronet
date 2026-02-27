@@ -51,7 +51,7 @@ Where to look: see the "Core parsing & connection handling" and router sections 
 - [x] Persistent connections (HTTP/1.1 default, HTTP/1.0 opt-in)
 - [x] HTTP/1.0 response version preserved (no silent upgrade)
 - [x] Connection: close handling
-- [x] CONNECT tunneling (proxy-style TCP CONNECT handling)
+- [x] CONNECT tunneling (proxy-style TCP CONNECT handling, HTTP/1.1 and HTTP/2)
 - [x] Backpressure / partial write buffering
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Keep-alive limits (maxRequestsPerConnection)
@@ -201,6 +201,24 @@ Notes and implementation details
   reason about.
 - Tests: Basic coverage added for successful echo tunneling and failure cases (DNS resolution failures and allowlist
   rejections). See `tests/http_connect_test.cpp`.
+
+#### HTTP/2 CONNECT tunneling (RFC 7540 §8.3)
+
+HTTP/2 CONNECT operates on a per-stream basis rather than hijacking the entire connection. Multiple tunnels can coexist
+alongside normal request/response streams on a single HTTP/2 connection.
+
+Behavior summary
+
+- On receiving a CONNECT request, the handler validates the `:authority` pseudo-header (must be `host:port`), checks
+  the connect allowlist, and delegates TCP connection setup to the server's event loop via a `TunnelCallbacks` interface.
+- On success, a `200` response is sent on the stream **without** `END_STREAM`. Subsequent `DATA` frames on the stream
+  carry tunneled bytes bidirectionally.
+- Client → upstream: `DATA` frames received on the tunnel stream are forwarded to the upstream fd via the write callback.
+- Upstream → client: when the upstream fd becomes readable, the server reads data and calls `injectTunnelData()` on the
+  handler, which encodes it as `DATA` frames on the tunnel stream.
+- Cleanup: when either side sends `END_STREAM` or `RST_STREAM`, the tunnel is torn down. If an async connect fails,
+  `RST_STREAM` with `CONNECT_ERROR` is sent per RFC 7540 §8.3.
+- When the HTTP/2 connection itself is closed, all tunnel upstream fds are drained and released.
 
 ## Performance / architecture
 

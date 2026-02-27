@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -20,6 +21,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/tcp-connector.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
@@ -27,6 +29,7 @@
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
+#include "aeronet/protocol-handler.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -96,6 +99,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // Keep-alive inactivity enforcement only if enabled.
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
     if (_config.enableKeepAlive && !state.isSendingFile() && now > state.lastActivity + _config.keepAliveTimeout) {
+      log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", cnxIt->first.fd());
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
       continue;
@@ -104,6 +108,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
     if (_config.headerReadTimeout.count() > 0 && state.headerStartTp.time_since_epoch().count() != 0 &&
         now > state.headerStartTp + _config.headerReadTimeout) {
+      log::debug("sweepIdleConnections: fd # {} closed for header read timeout", cnxIt->first.fd());
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
@@ -114,6 +119,7 @@ void SingleHttpServer::sweepIdleConnections() {
     if (_config.bodyReadTimeout.count() > 0 && state.waitingForBody &&
         state.bodyLastActivity.time_since_epoch().count() != 0 &&
         now > state.bodyLastActivity + _config.bodyReadTimeout) {
+      log::debug("sweepIdleConnections: fd # {} closed for body read timeout", cnxIt->first.fd());
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       cnxIt = closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
@@ -299,7 +305,7 @@ void SingleHttpServer::acceptNewConnections() {
 #ifdef AERONET_ENABLE_HTTP2
         // Check for HTTP/2 via ALPN negotiation ("h2")
         if (_config.http2.enable && pCnx->tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-          setupHttp2Connection(*pCnx);
+          setupHttp2Connection(cnxFd, *pCnx);
         }
 #endif
         if (pCnx->isAnyCloseRequested()) {
@@ -381,6 +387,7 @@ void SingleHttpServer::acceptNewConnections() {
 
 SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMapIt cnxIt) {
   const int cfd = cnxIt->first.fd();
+  log::debug("closeConnection called for fd # {}", cfd);
 
   // If this is a tunnel endpoint (CONNECT), ensure we tear down the peer too.
   // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing
@@ -389,7 +396,18 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
   if (peerFd != -1) {
     auto peerIt = _connections.active.find(peerFd);
     if (peerIt != _connections.active.end()) [[likely]] {
-      if (peerIt->second->peerFd == cfd) [[likely]] {
+#ifdef AERONET_ENABLE_HTTP2
+      if (cnxIt->second->peerStreamId != 0) {
+        // HTTP/2 tunnel upstream being closed: notify the peer's handler to send END_STREAM,
+        // but do NOT tear down the peer HTTP/2 connection (it may have other active streams).
+        if (peerIt->second->protocolHandler) {
+          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerIt->second->protocolHandler.get());
+          h2Handler->closeTunnelByUpstreamFd(cfd);
+          flushOutbound(peerIt);
+        }
+      } else
+#endif
+          if (peerIt->second->peerFd == cfd) [[likely]] {
         _eventLoop.del(peerFd);
 #ifdef AERONET_ENABLE_OPENSSL
         _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, peerIt,
@@ -404,28 +422,69 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
     }
   }
 
+#ifdef AERONET_ENABLE_HTTP2
+  // If this connection carries an HTTP/2 handler with active tunnel upstreams, collect their fds
+  // before releasing the connection, then close each one (without recursive peer teardown).
+  http2::Http2ProtocolHandler::TunnelUpstreamsMap tunnelUpstreamFds;
+  if (cnxIt->second->protocolHandler && cnxIt->second->protocolHandler->type() == ProtocolType::Http2) {
+    auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(cnxIt->second->protocolHandler.get());
+    tunnelUpstreamFds = h2Handler->drainTunnelUpstreamFds();
+  }
+#endif
+
   _eventLoop.del(cfd);
 #ifdef AERONET_ENABLE_OPENSSL
-  return _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, cnxIt,
-                                       _tls.handshakesInFlight);
+  auto result =
+      _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, cnxIt, _tls.handshakesInFlight);
 #else
-  return _connections.recycleOrRelease(_config.maxCachedConnections, cnxIt);
+  auto result = _connections.recycleOrRelease(_config.maxCachedConnections, cnxIt);
 #endif
+
+#ifdef AERONET_ENABLE_HTTP2
+  // Close tunnel upstream fds after the HTTP/2 connection has been released.
+  // Set peerFd = -1 on each to prevent them from trying to close the already-released peer.
+  for (const auto& [upFd, streamId] : tunnelUpstreamFds) {
+    auto upIt = _connections.active.find(upFd);
+    if (upIt != _connections.active.end()) {
+      upIt->second->peerFd = -1;
+      upIt->second->peerStreamId = 0;
+      _eventLoop.del(upFd);
+#ifdef AERONET_ENABLE_OPENSSL
+      _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, upIt, _tls.handshakesInFlight);
+#else
+      _connections.recycleOrRelease(_config.maxCachedConnections, upIt);
+#endif
+    }
+  }
+#endif
+
+  return result;
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionMapIt cnxIt) {
   ConnectionState& state = *cnxIt->second;
+
   // If this connection was created for an upstream non-blocking connect, and connect is pending,
   // check SO_ERROR to determine whether connect completed successfully or failed.
+  const int fd = cnxIt->first.fd();
   if (state.connectPending) {
-    const int fd = cnxIt->first.fd();
     const int err = GetSocketError(fd);
     state.connectPending = false;
     if (err != 0) {
-      // Upstream connect failed. Attempt to notify the client side (peerFd) with 502 and close both.
+      // Upstream connect failed. Attempt to notify the client side (peerFd) and close this upstream.
       const auto peerIt = _connections.active.find(state.peerFd);
       if (peerIt != _connections.active.end()) {
-        emitSimpleError(peerIt, http::StatusCodeBadGateway, "Upstream connect failed");
+#ifdef AERONET_ENABLE_HTTP2
+        if (state.peerStreamId != 0) {
+          // HTTP/2 tunnel upstream: RST_STREAM the tunnel stream
+          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerIt->second->protocolHandler.get());
+          h2Handler->tunnelConnectFailed(state.peerStreamId);
+          flushOutbound(peerIt);
+        } else
+#endif
+        {
+          emitSimpleError(peerIt, http::StatusCodeBadGateway, "Upstream connect failed");
+        }
       } else {
         log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
       }
@@ -434,18 +493,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionM
     // otherwise connect succeeded; continue to normal writable handling
   }
   // If tunneling, flush tunnelOutBuffer first
-  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty()) {
-    const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
-    if (want == TransportHint::Error) [[unlikely]] {
-      // Fatal error writing tunnel data: close this connection
-      return CloseStatus::Close;
-    }
-    state.tunnelOrFileBuffer.erase_front(written);
-    // If still has data, keep EPOLLOUT registered
-    if (!state.tunnelOrFileBuffer.empty()) {
-      return CloseStatus::Keep;
-    }
-    // Tunnel buffer drained: fall through to normal flushOutbound handling
+  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty() && !state.tunnelTransportWrite(fd)) {
+    // Fatal error writing tunnel data: close this connection
+    return CloseStatus::Close;
   }
   flushOutbound(cnxIt);
   return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
@@ -470,6 +520,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
 
   // If in tunneling mode, read raw bytes and forward to peer
   if (cnx.isTunneling()) {
+#ifdef AERONET_ENABLE_HTTP2
+    if (cnx.peerStreamId != 0) {
+      return handleInH2Tunneling(cnxIt);
+    }
+#endif
     return handleInTunneling(cnxIt);
   }
 
@@ -493,7 +548,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
 #ifdef AERONET_ENABLE_HTTP2
       // Check for HTTP/2 via ALPN negotiation ("h2")
       if (_config.http2.enable && cnx.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-        setupHttp2Connection(cnx);
+        setupHttp2Connection(fd, cnx);
       }
 #endif
 
@@ -575,59 +630,193 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
   return cnx.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
 }
 
-SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
+// ============================================================================
+// Shared CONNECT tunnel helpers (HTTP/1.1 + HTTP/2)
+// ============================================================================
+
+int SingleHttpServer::setupTunnelConnection(int clientFd, std::string_view host, std::string_view port) {
+  ConnectResult cres = ConnectTCP(std::span<char>(const_cast<char*>(host.data()), host.size()),
+                                  std::span<char>(const_cast<char*>(port.data()), port.size()));
+  if (cres.failure) {
+    return -1;
+  }
+
+  const int upstreamFd = cres.cnx.fd();
+
+  // Register upstream in event loop for edge-triggered reads and writes so we can detect
+  // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
+  if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
+    return -1;
+  }
+
+  // Insert upstream connection state. Inserting may rehash the map — callers must
+  // not hold iterators across this call. Duplicate fd for a newly connected socket
+  // indicates a library bug (the kernel assigns unique fds for each socket()).
+  auto [upIt, inserted] = _connections.emplace(std::move(cres.cnx));
+  assert(inserted && "Duplicate upstream fd indicates library bug - connection not properly removed");
+
+  // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel
+  // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
+  // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
+  // reused for the next read, causing data corruption.
+  upIt->second->transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0);
+  upIt->second->peerFd = clientFd;
+  upIt->second->connectPending = cres.connectPending;
+
+  return upstreamFd;
+}
+
+bool SingleHttpServer::forwardTunnelData(ConnectionMapIt targetIt, std::string_view data) {
+  ConnectionState& target = *targetIt->second;
+
+  // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
+  if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
+    target.tunnelOrFileBuffer.append(data);
+    if (!target.waitingWritable) {
+      enableWritableInterest(targetIt);
+    }
+    return true;
+  }
+
+  // Attempt direct write.
+  const auto [written, want] = target.transportWrite(data);
+  if (want == TransportHint::Error) [[unlikely]] {
+    return false;
+  }
+
+  // Buffer any unwritten remainder.
+  if (static_cast<std::size_t>(written) < data.size()) {
+    target.tunnelOrFileBuffer.append(data.data() + written, data.size() - written);
+    if (!target.waitingWritable) {
+      enableWritableInterest(targetIt);
+    }
+  }
+  return true;
+}
+
+bool SingleHttpServer::forwardTunnelData(ConnectionMapIt targetIt, RawChars& sourceBuffer) {
+  ConnectionState& target = *targetIt->second;
+
+  // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
+  // Use swap when the target buffer is empty to avoid a memcpy.
+  if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
+    if (target.tunnelOrFileBuffer.empty()) {
+      sourceBuffer.swap(target.tunnelOrFileBuffer);
+    } else {
+      target.tunnelOrFileBuffer.append(sourceBuffer);
+      sourceBuffer.clear();
+    }
+    if (!target.waitingWritable) {
+      enableWritableInterest(targetIt);
+    }
+    return true;
+  }
+
+  // Attempt direct write.
+  const auto [written, want] = target.transportWrite(std::string_view(sourceBuffer));
+  if (want == TransportHint::Error) [[unlikely]] {
+    return false;
+  }
+
+  // Buffer any unwritten remainder via swap when possible.
+  sourceBuffer.erase_front(written);
+  if (!sourceBuffer.empty()) {
+    if (target.tunnelOrFileBuffer.empty()) {
+      sourceBuffer.swap(target.tunnelOrFileBuffer);
+    } else {
+      target.tunnelOrFileBuffer.append(sourceBuffer);
+      sourceBuffer.clear();
+    }
+    if (!target.waitingWritable) {
+      enableWritableInterest(targetIt);
+    }
+  }
+  return true;
+}
+
+void SingleHttpServer::shutdownTunnelPeerWrite(ConnectionMapIt peerIt) {
+  ConnectionState& peer = *peerIt->second;
+  peer.shutdownWritePending = true;
+  if (peer.tunnelOrFileBuffer.empty()) {
+    if (!ShutdownWrite(peerIt->first.fd())) {
+      log::warn("Failed to shutdown write for peer fd # {}", peerIt->first.fd());
+      closeConnection(peerIt);
+    }
+    peer.shutdownWritePending = false;
+  }
+}
+
+// ============================================================================
+
+SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionMapIt cnxIt, std::size_t& bytesReadThisEvent,
+                                                               bool& hitEagain) {
   ConnectionState& state = *cnxIt->second;
-  std::size_t bytesReadThisEvent = 0;
-  while (true) {
-    const std::size_t chunk = _config.minReadChunkBytes;
-    const auto [bytesRead, want] = state.transportRead(chunk);
-    if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
+  while (!state.eofReceived && state.inBuffer.size() < _config.maxOutboundBufferBytes) {
+    const std::size_t chunkSize = _config.minReadChunkBytes;
+    const auto [bytesRead, want] = state.transportRead(chunkSize);
+    if (want == TransportHint::Error) {
       return CloseStatus::Close;
     }
+    if (bytesRead == 0 && want == TransportHint::None) {
+      state.eofReceived = true;
+      break;
+    }
     if (want != TransportHint::None) {
+      hitEagain = true;
       break;
     }
     bytesReadThisEvent += bytesRead;
-    if (bytesRead < chunk) {
+    if (bytesRead < chunkSize) {
+      hitEagain = true;
       break;
     }
     if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+      // Yield event loop to prevent starvation.
+      // We must re-arm EPOLLIN manually since we are edge-triggered and didn't hit EAGAIN.
+      state.waitingWritable =
+          _eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventIn | EventOut | EventRdHup | EventEt});
+      hitEagain = true;  // Treat as EAGAIN to yield the event loop
       break;
     }
   }
+  return CloseStatus::Keep;
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionMapIt cnxIt) {
+  ConnectionState& state = *cnxIt->second;
+  std::size_t bytesReadThisEvent = 0;
+  bool hitEagain = false;
+  if (readTunnelData(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
+    return CloseStatus::Close;
+  }
+
   if (state.inBuffer.empty()) {
+    if (state.eofReceived) {
+      auto peerIt = _connections.active.find(state.peerFd);
+      if (peerIt != _connections.active.end()) {
+        shutdownTunnelPeerWrite(peerIt);
+      }
+      // We don't close the connection immediately, we wait for the peer to close it
+      // or for the keep-alive timeout to trigger.
+      // But we can stop reading from this side.
+      (void)_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventOut | EventRdHup | EventEt});
+    }
     return CloseStatus::Keep;
   }
+
   auto peerIt = _connections.active.find(state.peerFd);
   if (peerIt == _connections.active.end()) [[unlikely]] {
     return CloseStatus::Close;
   }
-  ConnectionState& peer = *peerIt->second;
-  if (!peer.tunnelOrFileBuffer.empty() || peer.waitingWritable) {
-    peer.tunnelOrFileBuffer.append(state.inBuffer);
-    state.inBuffer.clear();
-    if (!peer.waitingWritable) {
-      enableWritableInterest(peerIt);
-    }
-    return CloseStatus::Keep;
-  }
-  const auto [written, want] = peer.transportWrite(state.inBuffer);
-  if (want == TransportHint::Error) [[unlikely]] {
+
+  if (!forwardTunnelData(peerIt, state.inBuffer)) [[unlikely]] {
     // Fatal transport error while forwarding to peer: close both sides.
     return CloseStatus::Close;
   }
-  state.inBuffer.erase_front(written);
-  if (!state.inBuffer.empty()) {
-    if (peer.tunnelOrFileBuffer.empty()) {
-      state.inBuffer.swap(peer.tunnelOrFileBuffer);
-    } else {
-      peer.tunnelOrFileBuffer.append(state.inBuffer);
-      state.inBuffer.clear();
-    }
 
-    if (!peer.waitingWritable) {
-      enableWritableInterest(peerIt);
-    }
+  if (state.eofReceived) {
+    shutdownTunnelPeerWrite(peerIt);
+    (void)_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventOut | EventRdHup | EventEt});
   }
   return CloseStatus::Keep;
 }
