@@ -850,10 +850,9 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
           }
         }
 
-        // unreachable TSR fallback
-        // If path == "/" and pRoute != nullptr, the exact-match branch (path == prefix) fires earlier
-        // Or the match is resolved in Router::match() using the literal map
-        assert(false);
+        // No matching child found — this path segment does not match any registered route.
+        // Return nullptr so the caller can fall back to the default handler (e.g. static files).
+        return nullptr;
       }
     } else if (path == prefix) {
       // Exact match - we should have reached the node containing the handler
