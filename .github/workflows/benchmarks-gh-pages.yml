@@ -85,7 +85,7 @@ jobs:
 
       - name: Configure benchmark build
         run: |
-          cmake -S . -B build-pages -G Ninja \
+          ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DAERONET_BUILD_TESTS=OFF \
             -DAERONET_BUILD_EXAMPLES=OFF \
