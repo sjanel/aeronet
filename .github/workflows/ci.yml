@@ -71,7 +71,7 @@ jobs:
 
       - name: Configure (CMake)
         run: |
-          cmake -S . -B build -G Ninja \
+          ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
@@ -158,7 +158,7 @@ jobs:
 
       - name: Configure (CMake)
         run: |
-          cmake -S . -B build -G Ninja \
+          ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
@@ -222,7 +222,7 @@ jobs:
 
       - name: Configure with Clang source-based coverage flags
         run: |
-          cmake -S . -B ${BUILD_DIR} -G Ninja \
+          ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
@@ -362,7 +362,7 @@ jobs:
 
       - name: Configure examples build
         run: |
-          cmake -S . -B ${BUILD_DIR} -G Ninja \
+          ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_BUILD_TESTS=OFF \
@@ -516,7 +516,7 @@ jobs:
 
       - name: Configure with cmake
         run: |
-          cmake -S . -B build-alpine -G Ninja \
+          ./scripts/retry.sh cmake -S . -B build-alpine -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
