@@ -20,7 +20,7 @@ jobs:
 
       - name: Clone FrameworkBenchmarks
         run: |
-          git clone --depth 1 https://github.com/TechEmpower/FrameworkBenchmarks.git
+          ./scripts/retry.sh git clone --depth 1 https://github.com/TechEmpower/FrameworkBenchmarks.git
 
       - name: Show Dockerfile path
         run: |
