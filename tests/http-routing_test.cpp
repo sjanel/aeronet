@@ -1432,6 +1432,25 @@ TEST(HttpRouting, DeferWorkUnhandledException) {
 
 #endif
 
+TEST(HttpRoutingCoverageImprovements, FallthroughMismatchPath) {
+  // Sets up routes to verify that a mismatched path sharing a prefix in the radix tree doesn't assert.
+  // Parametrized routes are used to force insertion into the Radix tree instead of the literal map.
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/api/{group}",
+                                 [](const HttpRequest&) { return HttpResponse(200); });
+  ts.router().setPath(http::Method::GET, "/app/{id}", [](const HttpRequest&) { return HttpResponse(200); });
+
+  // The radix tree now has a root prefix of "/ap".
+  // Requesting "/apX" will match the prefix, but will fail to find an 'X' child index,
+  // falling through to the segment default handler (hitting line 855: return nullptr).
+  auto resp1 = test::simpleGet(ts.port(), "/apX");
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 404")) << resp1;
+
+  // Requesting "/apiX" will match the "/ap" prefix, then 'i' index match for "i/" (child of "/api/{group}").
+  // But "iX" doesn't start with child prefix "i/", falling through to the same line 855.
+  auto resp2 = test::simpleGet(ts.port(), "/apiX");
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 404")) << resp2;
+}
+
 TEST(HttpRoutingCoverageImprovements, CatchAllRoute) {
   // Tests the /* catch-all path handling and IsWildcardStart with '*'
   ts.resetRouterAndGet().setPath(http::Method::GET, "/api/*",
