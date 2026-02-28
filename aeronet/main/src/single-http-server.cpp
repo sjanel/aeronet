@@ -47,6 +47,7 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -271,25 +272,45 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
 }
 
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
+  // Save the client fd before entering the loop. processInput() may call back
+  // into setupTunnelConnection() (HTTP/2 CONNECT), which emplaces a new entry
+  // into _connections.active and may trigger a rehash, invalidating cnxIt.
+  // We re-find cnxIt by fd after each processInput() call, matching the same
+  // pattern used by the HTTP/1.1 CONNECT path in http-response-dispatch.cpp.
+  const int clientFd = cnxIt->first.fd();
   ConnectionState& state = *cnxIt->second;
 
   auto& handler = *state.protocolHandler;
 
-  // Process input in a loop until no more bytes can be consumed
+  // Process input in a loop until no more bytes can be consumed.
   // This is important for HTTP/2 where the client may send multiple frames
-  // (e.g., connection preface + SETTINGS) in a single TCP packet
+  // (e.g., connection preface + SETTINGS) in a single TCP packet.
+  //
+  // Output batching: we accumulate all pending output from the handler into
+  // outBuffer (cheap memcpy) and defer the real socket flush until the loop
+  // ends. This is critical for TLS performance: combining many small HTTP/2
+  // frames into fewer SSL_write calls reduces per-TLS-record overhead and
+  // syscalls, particularly with few connections where the socket rarely blocks.
+  bool hasAccumulatedOutput = false;
+
   while (!state.inBuffer.empty()) {
     // Convert input buffer to span of bytes
     std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
                                          state.inBuffer.size());
 
-    // Process input through the protocol handler
+    // Process input through the protocol handler.
+    // NOTE: for HTTP/2 CONNECT this may call setupTunnelConnection() which
+    // emplaces into _connections.active and can rehash the map, invalidating
+    // cnxIt. Re-find it immediately afterward. state/handler references
+    // remain valid because the ConnectionState object itself is not moved.
     const auto result = handler.processInput(inputData, state);
+    cnxIt = _connections.active.find(clientFd);
+    assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during processInput");
 
     // Consume processed bytes from input buffer
     state.inBuffer.erase_front(result.bytesConsumed);
 
-    // Queue any pending output from the handler
+    // Queue any pending output from the handler into outBuffer (no socket I/O yet)
     if (handler.hasPendingOutput()) {
       auto pendingOutput = handler.getPendingOutput();
       assert(!pendingOutput.empty());
@@ -298,7 +319,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
           std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
       handler.onOutputWritten(pendingOutput.size());
 
-      flushOutbound(cnxIt);
+      hasAccumulatedOutput = true;
     }
 
     // Handle result
@@ -307,8 +328,11 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
         [[fallthrough]];
       case ProtocolProcessResult::Action::ResponseReady:
         // ResponseReady was already handled above via getPendingOutput
-        // If no bytes consumed, we need more data
+        // If no bytes consumed, we need more data — flush and return
         if (result.bytesConsumed == 0) {
+          if (hasAccumulatedOutput) {
+            flushOutbound(cnxIt);
+          }
           return state.isAnyCloseRequested();
         }
         break;
@@ -319,16 +343,27 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
         break;
 
       case ProtocolProcessResult::Action::Close:
-        // Protocol wants to close gracefully (e.g., close handshake complete)
+        // Protocol wants to close gracefully — flush GOAWAY etc. before closing
+        if (hasAccumulatedOutput) {
+          flushOutbound(cnxIt);
+        }
         state.requestDrainAndClose();
         return true;
 
       case ProtocolProcessResult::Action::CloseImmediate:
-        // Protocol error - close immediately
+        // Protocol error — flush any error frames then close immediately
+        if (hasAccumulatedOutput) {
+          flushOutbound(cnxIt);
+        }
         log::warn("Protocol handler reported error");
         state.requestDrainAndClose();
         return true;
     }
+  }
+
+  // Batch-flush all accumulated output frames in a single transport write.
+  if (hasAccumulatedOutput) {
+    flushOutbound(cnxIt);
   }
 
   return state.isAnyCloseRequested();
@@ -1431,7 +1466,7 @@ void SingleHttpServer::installH2TunnelBridge(int clientFd, ConnectionState& stat
   h2Handler->setTunnelBridge(state.tunnelBridge.get());
 }
 
-void SingleHttpServer::setupHttp2Connection(int clientFd, ConnectionState& state) {
+void SingleHttpServer::setupHttp2Connection(int clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
@@ -1440,6 +1475,16 @@ void SingleHttpServer::setupHttp2Connection(int clientFd, ConnectionState& state
 
   // Install CONNECT tunnel bridge so the HTTP/2 handler can request TCP tunnel setup.
   installH2TunnelBridge(clientFd, state);
+
+  if (tcpNoDelayMode == TcpNoDelayMode::Auto) {
+    // Disable Nagle's algorithm for HTTP/2 connections by default to reduce latency.
+    // The protocol handler may choose to re-enable it later if it determines it's beneficial.
+    if (!SetTcpNoDelay(clientFd)) [[unlikely]] {
+      const auto err = errno;
+      log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", clientFd, err, std::strerror(err));
+      _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
+    }
+  }
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation
   // For TLS ALPN "h2", the server must send SETTINGS before the client sends any data

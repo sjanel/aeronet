@@ -12,8 +12,6 @@
 #include <string_view>
 #include <thread>
 
-#include "aeronet/internal/shared-buffers.hpp"
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #endif
@@ -31,6 +29,7 @@
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/internal/pending-updates.hpp"
+#include "aeronet/internal/shared-buffers.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
@@ -43,6 +42,7 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -535,7 +535,7 @@ class SingleHttpServer {
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame),
   // installs CONNECT tunnel bridge, and flushes output.
-  void setupHttp2Connection(int clientFd, ConnectionState& state);
+  void setupHttp2Connection(int clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
 
   // Install CONNECT tunnel bridge on an existing HTTP/2 protocol handler.
   void installH2TunnelBridge(int clientFd, ConnectionState& state);

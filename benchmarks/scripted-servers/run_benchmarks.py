@@ -32,6 +32,20 @@ class Scenario:
     use_https: bool = False
 
 
+@dataclass(frozen=True)
+class H2Scenario:
+    """h2load-specific scenario configuration."""
+    name: str
+    endpoint: str
+    method: str = "GET"
+    body_file: Optional[str] = None       # File path for POST data (-d)
+    extra_headers: Sequence[str] = ()      # Additional -H flags
+    requires_restart: bool = False
+    requires_static: bool = False
+    connections: Optional[int] = None      # Override global -c for this scenario
+    streams: Optional[int] = None          # Override global -m for this scenario
+
+
 @dataclass
 class ProcessHandle:
     popen: subprocess.Popen
@@ -71,6 +85,12 @@ class BenchmarkRunner:
 
     SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "rust", "undertow", "go", "python"]
 
+    # Servers that support HTTP/2 benchmarks (pistache, crow & drogon lack H2 server support)
+    H2_SERVER_ORDER = ["aeronet", "rust", "undertow", "go", "python"]
+
+    # Servers that only support H2 over TLS (not h2c cleartext)
+    H2_TLS_ONLY_SERVERS: set = set()
+
     SCENARIOS: Dict[str, Scenario] = {
         "headers": Scenario("headers", "lua/headers_stress.lua", "/headers"),
         "body": Scenario("body", "lua/large_body.lua", "/uppercase"),
@@ -101,6 +121,42 @@ class BenchmarkRunner:
         ),
     }
 
+    # H2 scenario definitions for h2load benchmarks.
+    # Maps the same scenario names to h2load-friendly parameters.
+    H2_SCENARIOS: Dict[str, H2Scenario] = {
+        "headers": H2Scenario("headers", "/headers?count=10&size=64"),
+        "body": H2Scenario(
+            "body",
+            "/uppercase",
+            method="POST",
+            body_file="h2_body_1k.bin",
+        ),
+        "body-codec": H2Scenario(
+            "body-codec",
+            "/body-codec",
+            method="POST",
+            body_file="h2_body_1k.gz",
+            extra_headers=("Content-Encoding: gzip", "Accept-Encoding: gzip"),
+        ),
+        "static": H2Scenario("static", "/ping"),
+        "cpu": H2Scenario("cpu", "/compute?complexity=30&hash_iters=1000"),
+        "mixed": H2Scenario("mixed", "/ping"),  # multi-URI below
+        "files": H2Scenario(
+            "files", "/large.bin", requires_restart=True, requires_static=True,
+            connections=20, streams=1,  # 25MB per file; limit concurrency to avoid OOM/epoll crashes
+        ),
+        "routing": H2Scenario("routing", "/r500", requires_restart=True),
+    }
+
+    # URIs for the 'mixed' h2load scenario - distributed round-robin
+    H2_MIXED_ENDPOINTS = [
+        "/ping",
+        "/headers?count=5&size=32",
+        "/body?size=512",
+        "/compute?complexity=20&hash_iters=500",
+        "/json?items=5",
+    ]
+
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.script_dir = Path(__file__).resolve().parent
@@ -117,6 +173,11 @@ class BenchmarkRunner:
         self.wrk_timeout_seconds = self._duration_to_seconds(self.wrk_timeout)
         if self.wrk_timeout_seconds is None:
             raise BenchmarkError(f"Invalid wrk timeout value: {self.wrk_timeout}")
+
+        # HTTP/2 benchmark settings
+        self.protocol: str = getattr(args, "protocol", "http1")
+        self.h2_streams: int = getattr(args, "h2_streams", 10)
+
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -138,15 +199,14 @@ class BenchmarkRunner:
         self._aeronet_errors_found: bool = False
 
         self.needs_static = any(
-            self.SCENARIOS[s].requires_static
+            self.SCENARIOS.get(s, Scenario(s, "", "")).requires_static
+            or self.H2_SCENARIOS.get(s, H2Scenario(s, "")).requires_static
             for s in self.scenarios_to_test
-            if s in self.SCENARIOS
         )
         self.needs_tls = any(
-            self.SCENARIOS[s].requires_tls
+            self.SCENARIOS.get(s, Scenario(s, "", "")).requires_tls
             for s in self.scenarios_to_test
-            if s in self.SCENARIOS
-        )
+        ) or self.protocol == "h2-tls"
 
     # ------------------------- Setup helper methods ------------------------- #
 
@@ -171,7 +231,14 @@ class BenchmarkRunner:
         )
 
     def _find_build_dir(self) -> Path:
+        build_dir_env = os.environ.get("AERONET_BUILD_DIR")
+        if build_dir_env:
+            env_path = Path(build_dir_env).resolve()
+            if env_path.is_dir():
+                return env_path
+        
         candidates = [
+            self.script_dir / "../../build-pages/benchmarks/scripted-servers",
             self.script_dir / "../../build-release/benchmarks/scripted-servers",
             self.script_dir / "../../build/benchmarks/scripted-servers",
             self.script_dir / "../build-release/benchmarks/scripted-servers",
@@ -185,10 +252,20 @@ class BenchmarkRunner:
         return self.script_dir
 
     def _resolve_server_filter(self, server_arg: str) -> List[str]:
+        is_h2 = self.protocol in ("h2c", "h2-tls")
+        order = self.H2_SERVER_ORDER if is_h2 else self.SERVER_ORDER
+        if is_h2:
+            # Show which servers are excluded from H2 benchmarks
+            all_h1 = set(self.SERVER_ORDER) - set(self.H2_SERVER_ORDER)
+            if all_h1:
+                print(f"Note: {', '.join(sorted(all_h1))} excluded from H2 benchmarks (no HTTP/2 server support)")
         if server_arg.startswith("all"):
             available = []
-            for name in self.SERVER_ORDER:
+            for name in order:
                 if name == "python" and server_arg.endswith("-except-python"):
+                    continue
+                if is_h2 and self.protocol == "h2c" and name in self.H2_TLS_ONLY_SERVERS:
+                    print(f"Skipping {name} for h2c (TLS-only H2 support)")
                     continue
                 if self._server_available(name):
                     available.append(name)
@@ -206,7 +283,16 @@ class BenchmarkRunner:
         return names
 
     def _resolve_scenario_filter(self, scenario_arg: str) -> List[str]:
+        is_h2 = self.protocol in ("h2c", "h2-tls")
         if scenario_arg == "all":
+            if is_h2:
+                # For H2, skip 'tls' (inherent in h2-tls) and only include H2-mapped scenarios
+                return [
+                    s for s in [
+                        "headers", "body", "body-codec", "static", "cpu", "mixed",
+                        "files", "routing",
+                    ] if s in self.H2_SCENARIOS
+                ]
             return [
                 "headers",
                 "body",
@@ -227,7 +313,8 @@ class BenchmarkRunner:
         try:
             self._prepare_server_command(name, extra_args=None)
             return True
-        except BenchmarkError:
+        except BenchmarkError as exc:
+            print(f"Server '{name}' is not available: {exc}")
             return False
 
     # --------------------------- Build helpers ----------------------------- #
@@ -276,15 +363,23 @@ class BenchmarkRunner:
             raise BenchmarkError("go_server.go not found")
         if (not script_binary.is_file()) or (go_file.stat().st_mtime > script_binary.stat().st_mtime):
             print("Building Go server...")
-            subprocess.run(
-                [go_exe, "build", "-o", str(script_binary), str(go_file)],
-                cwd=go_file.parent,
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    [go_exe, "build", "-o", str(script_binary), str(go_file)],
+                    cwd=go_file.parent,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise BenchmarkError(
+                    f"Go server build failed (exit {exc.returncode}); "
+                    f"check go modules (try: go mod download)"
+                ) from exc
         return script_binary
 
     def _ensure_rust_server_built(self) -> Path:
-        cargo = shutil.which("cargo")
+        # Prefer rustup cargo over system cargo (handles newer lockfile formats)
+        rustup_cargo = Path.home() / ".cargo" / "bin" / "cargo"
+        cargo = str(rustup_cargo) if rustup_cargo.is_file() else shutil.which("cargo")
         if not cargo:
             raise BenchmarkError("Rust toolchain (cargo) not found")
         candidates = [
@@ -294,7 +389,23 @@ class BenchmarkRunner:
         for candidate in candidates:
             if (candidate / "Cargo.toml").is_file():
                 print("Building Rust server (release)...")
-                subprocess.run([cargo, "build", "--release"], cwd=candidate, check=True)
+                env = os.environ.copy()
+                # Ensure rustup bin dir is in PATH for rustc/rustup detection
+                rustup_bin = str(Path.home() / ".cargo" / "bin")
+                if rustup_bin not in env.get("PATH", ""):
+                    env["PATH"] = rustup_bin + ":" + env.get("PATH", "")
+                try:
+                    subprocess.run(
+                        [cargo, "build", "--release"],
+                        cwd=candidate,
+                        env=env,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    raise BenchmarkError(
+                        f"Rust server build failed (exit {exc.returncode}); "
+                        f"check your rustc version (need >= 1.82)"
+                    ) from exc
                 binary = candidate / "target" / "release" / "rust-bench-server"
                 if binary.is_file():
                     return binary
@@ -316,33 +427,33 @@ class BenchmarkRunner:
         if not source_file.is_file():
             raise BenchmarkError("UndertowBenchServer.java not found")
         jars = [
-            "undertow-core-2.3.20.Final.jar",
+            "undertow-core-2.3.23.Final.jar",
             "xnio-api-3.8.17.Final.jar",
             "xnio-nio-3.8.17.Final.jar",
-            "jboss-logging-3.6.1.Final.jar",
+            "jboss-logging-3.6.2.Final.jar",
             "wildfly-common-2.0.1.jar",
             "jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.14.0.jar",
-            "smallrye-common-cpu-2.14.0.jar",
-            "smallrye-common-expression-2.14.0.jar",
-            "smallrye-common-os-2.14.0.jar",
-            "smallrye-common-ref-2.14.0.jar",
-            "smallrye-common-constraint-2.14.0.jar",
+            "smallrye-common-net-2.16.0.jar",
+            "smallrye-common-cpu-2.16.0.jar",
+            "smallrye-common-expression-2.16.0.jar",
+            "smallrye-common-os-2.16.0.jar",
+            "smallrye-common-ref-2.16.0.jar",
+            "smallrye-common-constraint-2.16.0.jar",
         ]
         base_url = "https://repo1.maven.org/maven2"
         jar_urls = {
-            "undertow-core-2.3.20.Final.jar": f"{base_url}/io/undertow/undertow-core/2.3.20.Final/undertow-core-2.3.20.Final.jar",
+            "undertow-core-2.3.23.Final.jar": f"{base_url}/io/undertow/undertow-core/2.3.23.Final/undertow-core-2.3.23.Final.jar",
             "xnio-api-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-api/3.8.17.Final/xnio-api-3.8.17.Final.jar",
             "xnio-nio-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-nio/3.8.17.Final/xnio-nio-3.8.17.Final.jar",
-            "jboss-logging-3.6.1.Final.jar": f"{base_url}/org/jboss/logging/jboss-logging/3.6.1.Final/jboss-logging-3.6.1.Final.jar",
+            "jboss-logging-3.6.2.Final.jar": f"{base_url}/org/jboss/logging/jboss-logging/3.6.2.Final/jboss-logging-3.6.2.Final.jar",
             "wildfly-common-2.0.1.jar": f"{base_url}/org/wildfly/common/wildfly-common/2.0.1/wildfly-common-2.0.1.jar",
             "jboss-threads-3.9.2.jar": f"{base_url}/org/jboss/threads/jboss-threads/3.9.2/jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-net/2.14.0/smallrye-common-net-2.14.0.jar",
-            "smallrye-common-cpu-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-cpu/2.14.0/smallrye-common-cpu-2.14.0.jar",
-            "smallrye-common-expression-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-expression/2.14.0/smallrye-common-expression-2.14.0.jar",
-            "smallrye-common-os-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-os/2.14.0/smallrye-common-os-2.14.0.jar",
-            "smallrye-common-ref-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-ref/2.14.0/smallrye-common-ref-2.14.0.jar",
-            "smallrye-common-constraint-2.14.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-constraint/2.14.0/smallrye-common-constraint-2.14.0.jar",
+            "smallrye-common-net-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-net/2.16.0/smallrye-common-net-2.16.0.jar",
+            "smallrye-common-cpu-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-cpu/2.16.0/smallrye-common-cpu-2.16.0.jar",
+            "smallrye-common-expression-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-expression/2.16.0/smallrye-common-expression-2.16.0.jar",
+            "smallrye-common-os-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-os/2.16.0/smallrye-common-os-2.16.0.jar",
+            "smallrye-common-ref-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-ref/2.16.0/smallrye-common-ref-2.16.0.jar",
+            "smallrye-common-constraint-2.16.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-constraint/2.16.0/smallrye-common-constraint-2.16.0.jar",
         }
         for jar in jars:
             jar_path = undertow_dir / jar
@@ -358,11 +469,16 @@ class BenchmarkRunner:
             needs_recompile = any(source_mtime > class_file.stat().st_mtime for class_file in class_files)
         if needs_recompile:
             print("Compiling Undertow benchmark server...")
-            subprocess.run(
-                [javac, "-cp", classpath, "UndertowBenchServer.java"],
-                cwd=undertow_dir,
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    [javac, "-cp", classpath, "UndertowBenchServer.java"],
+                    cwd=undertow_dir,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise BenchmarkError(
+                    f"Undertow server compilation failed (exit {exc.returncode})"
+                ) from exc
         return undertow_dir, classpath
 
     def _find_python_server_script(self) -> Path:
@@ -388,14 +504,23 @@ class BenchmarkRunner:
     # --------------------------- Public workflow ---------------------------- #
 
     def run(self) -> None:
-        self._ensure_wrk_available()
+        is_h2 = self.protocol in ("h2c", "h2-tls")
+        if is_h2:
+            self._ensure_h2load_available()
+            self._prepare_h2load_body_files()
+        else:
+            self._ensure_wrk_available()
         self._write_result_header()
         self._prepare_resources_if_needed()
-        print("Starting benchmarks...\n")
+        tool = "h2load" if is_h2 else "wrk"
+        print(f"Starting benchmarks (protocol={self.protocol}, tool={tool})...\n")
         print(f"Results will be saved to: {self.result_file}\n")
         try:
             for server in self.servers_to_test:
-                self._run_server_suite(server)
+                if is_h2:
+                    self._run_server_suite_h2(server)
+                else:
+                    self._run_server_suite(server)
         finally:
             self._stop_all_servers()
         self._print_results_table()
@@ -559,16 +684,24 @@ class BenchmarkRunner:
         if proc.poll() is None:
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, OSError):
                 pass
             try:
-                proc.wait(timeout=2)
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, OSError):
                     pass
-                proc.wait(timeout=1)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Last resort: kill the process directly (not group)
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        print(f"WARNING: Could not stop {server} (PID {proc.pid}); process may be orphaned")
         if handle.log_fp:
             handle.log_fp.close()
 
@@ -696,6 +829,360 @@ class BenchmarkRunner:
             server, scenario_name, output, error=(server == "aeronet" and any_errs)
         )
         self._record_memory_usage(server, scenario_name)
+
+    # ---------------------- HTTP/2 h2load benchmark logic -------------------- #
+
+    def _ensure_h2load_available(self) -> None:
+        if not shutil.which("h2load"):
+            raise BenchmarkError(
+                "h2load not found in PATH. Install nghttp2-client: "
+                "apt install nghttp2-client / brew install nghttp2"
+            )
+
+    def _prepare_h2load_body_files(self) -> None:
+        """Create POST body files used by h2load scenarios."""
+        data_dir = self.script_dir / "h2_data"
+        data_dir.mkdir(exist_ok=True)
+        # 1KB binary body for /uppercase
+        body_1k = data_dir / "h2_body_1k.bin"
+        if not body_1k.is_file():
+            body_1k.write_bytes(os.urandom(1024))
+        # 1KB gzipped body for /body-codec
+        body_gz = data_dir / "h2_body_1k.gz"
+        if not body_gz.is_file():
+            import gzip as gzip_mod
+            body_gz.write_bytes(gzip_mod.compress(os.urandom(1024)))
+
+    def _run_server_suite_h2(self, server: str) -> None:
+        """Run all H2 scenarios for a single server using h2load."""
+        print("==========================================")
+        print(f"Testing: {server} [{self.protocol}]")
+        print("==========================================")
+        scenarios = [sc for sc in self.scenarios_to_test if sc in self.H2_SCENARIOS]
+        normal = [sc for sc in scenarios if not self.H2_SCENARIOS[sc].requires_restart]
+        special = [sc for sc in scenarios if self.H2_SCENARIOS[sc].requires_restart]
+
+        use_tls = self.protocol == "h2-tls"
+        scheme = "https" if use_tls else "http"
+        h2_args = ["--h2"]
+        if use_tls:
+            h2_args.append("--tls")
+            certs_dir = self.script_dir / "certs"
+            if certs_dir.is_dir():
+                cert = certs_dir / "server.crt"
+                key = certs_dir / "server.key"
+                if cert.is_file() and key.is_file():
+                    h2_args += ["--cert", str(cert), "--key", str(key)]
+
+        if normal:
+            if self._start_server(
+                server, extra_args=h2_args, scheme=scheme, insecure=use_tls
+            ):
+                # Warmup all normal scenarios
+                for scenario in normal:
+                    self._run_single_h2load(server, scenario, warmup_only=True)
+                # Real measurements
+                for scenario in normal:
+                    self._run_single_h2load(server, scenario)
+                self._stop_server(server)
+                time.sleep(1)
+
+        for scenario in special:
+            h2_meta = self.H2_SCENARIOS[scenario]
+            extra = list(h2_args)
+            extra += self._h2_scenario_server_args(server, scenario)
+            if h2_meta.requires_static:
+                self._ensure_test_static_files()
+            print(f"Starting {server} with extra args: {extra or ['(none)']}")
+            if self._start_server(
+                server, extra_args=extra, scheme=scheme, insecure=use_tls
+            ):
+                self._run_single_h2load(server, scenario)
+                self._stop_server(server)
+                time.sleep(1)
+
+    def _run_single_h2load(
+        self,
+        server: str,
+        scenario_name: str,
+        *,
+        warmup_only: bool = False,
+    ) -> None:
+        """Run a single scenario benchmark using h2load."""
+        h2_scenario = self.H2_SCENARIOS.get(scenario_name)
+        if h2_scenario is None:
+            print(f"WARNING: No H2 scenario mapping for '{scenario_name}'")
+            return
+
+        port = self.SERVER_PORTS[server]
+        use_tls = self.protocol == "h2-tls"
+        scheme = "https" if use_tls else "http"
+        base_url = f"{scheme}://127.0.0.1:{port}"
+
+        # Build URL list
+        if scenario_name == "mixed":
+            urls = [f"{base_url}{ep}" for ep in self.H2_MIXED_ENDPOINTS]
+        else:
+            urls = [f"{base_url}{h2_scenario.endpoint}"]
+
+        duration_seconds = self._duration_to_seconds(
+            self.warmup if warmup_only else self.duration
+        )
+        if duration_seconds is None:
+            duration_seconds = 5.0 if warmup_only else 30.0
+
+        # Per-scenario connection/stream overrides (e.g. files uses fewer to avoid OOM)
+        conns = h2_scenario.connections if h2_scenario.connections is not None else self.connections
+        streams = h2_scenario.streams if h2_scenario.streams is not None else self.h2_streams
+
+        # Build h2load command
+        cmd: List[str] = [
+            "h2load",
+            f"-c{conns}",
+            f"-t{self.threads}",
+            f"-m{streams}",
+            f"-D{duration_seconds:.0f}",
+            # Prevent indefinite hangs: kill stale connections after duration + margin
+            f"-T{duration_seconds + 10:.0f}s",
+        ]
+
+        # POST body file
+        if h2_scenario.body_file:
+            data_path = self.script_dir / "h2_data" / h2_scenario.body_file
+            if data_path.is_file():
+                cmd += ["-d", str(data_path)]
+
+        # Extra headers
+        for hdr in h2_scenario.extra_headers:
+            cmd += ["-H", hdr]
+
+        # TLS: negotiate h2 via ALPN
+        if use_tls:
+            cmd += ["--alpn-list=h2"]
+
+        cmd += urls
+
+        # Process-level timeout: h2load can hang forever if all connections stall
+        # during TLS handshake or if the remote server stops responding.
+        self._h2load_process_timeout = duration_seconds + 60
+
+        if warmup_only:
+            print(f">>> Warm-up (h2load): {server} / {scenario_name}")
+            try:
+                subprocess.run(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=self._h2load_process_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                print(f"    WARNING: h2load warm-up timed out for {server} / {scenario_name}")
+            return
+
+        print(f">>> Running (h2load): {server} / {scenario_name}")
+        print(f"    URL(s): {', '.join(urls)}")
+        print(f"    Cmd: {' '.join(cmd)}")
+
+        output, h2load_crashed = self._exec_h2load(cmd)
+        if h2load_crashed:
+            # h2load can crash (SIGABRT from libev epoll assertion) when servers
+            # drop connections under heavy TLS load.  Retry with progressively
+            # fewer connections so we still get usable numbers.
+            for divisor in (4, 16):
+                retry_conns = max(conns // divisor, 4)
+                if retry_conns >= conns:
+                    break
+                print(f"    Retrying with -c{retry_conns} (reduced from {conns})...")
+                retry_cmd = list(cmd)
+                for idx, tok in enumerate(retry_cmd):
+                    if tok.startswith("-c"):
+                        retry_cmd[idx] = f"-c{retry_conns}"
+                        break
+                retry_output, retry_crashed = self._exec_h2load(retry_cmd)
+                if not retry_crashed:
+                    output = retry_output
+                    h2load_crashed = False
+                    break
+                # Use whichever output has more successful requests
+                retry_metrics = self._parse_h2load_output(retry_output)
+                orig_metrics = self._parse_h2load_output(output)
+                if int(retry_metrics.get("succeeded", 0)) > int(orig_metrics.get("succeeded", 0)):
+                    output = retry_output
+
+        metrics = self._parse_h2load_output(output)
+        succeeded = int(metrics.get("succeeded", 0))
+
+        if h2load_crashed and succeeded == 0:
+            print(
+                f"ERROR: h2load failed for {server} / {scenario_name}"
+            )
+            print(output)
+            self._store_result(server, scenario_name, "-", "-", "-", latency_raw="-", timeout_errors=0)
+            self._append_result_block(server, scenario_name, output, error=True)
+            self._record_memory_usage(server, scenario_name)
+            return
+        if h2load_crashed:
+            print(f"WARNING: h2load crashed but produced partial results for {server} / {scenario_name}")
+
+        failed = int(metrics.get("failed", 0))
+        errored = int(metrics.get("errored", 0))
+        timeout = int(metrics.get("timeout", 0))
+        non2xx = int(metrics.get("non2xx", 0))
+        total_errors = failed + errored + timeout + non2xx
+
+        if server == "aeronet" and total_errors > 0:
+            self._aeronet_errors_found = True
+            print(
+                f"ERROR: Aeronet h2load issues (failed/errored/timeout/non2xx) = "
+                f"{failed}/{errored}/{timeout}/{non2xx} for '{scenario_name}'"
+            )
+
+        succeeded = int(metrics.get("succeeded", 0))
+        duration_s = metrics.get("duration_seconds")
+        if duration_s and duration_s > 0 and succeeded > 0:
+            success_rps = f"{succeeded / duration_s:.2f}"
+        else:
+            success_rps = metrics.get("rps", "-")
+
+        self._store_result(
+            server,
+            scenario_name,
+            success_rps,
+            metrics.get("latency", "-"),
+            metrics.get("transfer", "-"),
+            rps_raw=metrics.get("rps", "-"),
+            latency_raw=metrics.get("latency", "-"),
+            timeout_errors=timeout,
+        )
+        print(output)
+        self._append_result_block(
+            server, scenario_name, output, error=(server == "aeronet" and total_errors > 0)
+        )
+        self._record_memory_usage(server, scenario_name)
+
+    def _exec_h2load(self, cmd: List[str]) -> Tuple[str, bool]:
+        """Run h2load and return (output, crashed).
+
+        h2load can crash with SIGABRT (exit -6) due to a libev epoll assertion
+        when servers close connections under load.  We capture whatever output
+        was produced so callers can still extract partial metrics.
+        A process-level timeout prevents indefinite hangs when all connections
+        stall (e.g. during TLS handshake against a saturated server).
+        """
+        timeout = getattr(self, "_h2load_process_timeout", 120)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=timeout)
+            return result.stdout + (result.stderr or ""), False
+        except subprocess.TimeoutExpired as exc:
+            print(f"    WARNING: h2load process timed out after {timeout}s")
+            stdout = exc.stdout or b"" if isinstance(exc.stdout, bytes) else exc.stdout or ""
+            stderr = exc.stderr or b"" if isinstance(exc.stderr, bytes) else exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            return stdout + stderr, True
+        except subprocess.CalledProcessError as exc:
+            stdout = exc.stdout or b"" if isinstance(exc.stdout, bytes) else exc.stdout or ""
+            stderr = exc.stderr or b"" if isinstance(exc.stderr, bytes) else exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode("utf-8", errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            return stdout + stderr, True
+
+    def _parse_h2load_output(self, output: str) -> Dict[str, Any]:
+        """Parse h2load output into a metrics dictionary.
+
+        h2load output format:
+          finished in 10.01s, 12345.67 req/s, 56.78MB/s
+          requests: 123456 total, ... succeeded, N failed, N errored, N timeout
+          status codes: 123456 2xx, 0 3xx, 0 4xx, 0 5xx
+          traffic: 567.89MB ...
+          time for request:  123.45us  456.78us  234.56us  ...
+          req/s  :  1234.56  5678.90  2345.67  ...
+        """
+        values: Dict[str, Any] = {
+            "rps": "-",
+            "latency": "-",
+            "transfer": "-",
+            "duration_seconds": None,
+            "succeeded": 0,
+            "failed": 0,
+            "errored": 0,
+            "timeout": 0,
+            "non2xx": 0,
+            "total_requests": 0,
+        }
+
+        for line in output.splitlines():
+            line = line.strip()
+
+            # "finished in 10.01s, 12345.67 req/s, 56.78MB/s"
+            match = re.match(
+                r"finished\s+in\s+([0-9.]+)s?,\s+([0-9.]+)\s+req/s,\s+([0-9.]+\S+)/s",
+                line,
+            )
+            if match:
+                values["duration_seconds"] = float(match.group(1))
+                values["rps"] = match.group(2)
+                values["transfer"] = match.group(3) + "/s"
+                continue
+
+            # "requests: 123456 total, 123456 started, 123456 done, 123400 succeeded, 56 failed, 0 errored, 0 timeout"
+            if line.startswith("requests:"):
+                match = re.search(r"(\d+)\s+total", line)
+                if match:
+                    values["total_requests"] = int(match.group(1))
+                match = re.search(r"(\d+)\s+succeeded", line)
+                if match:
+                    values["succeeded"] = int(match.group(1))
+                match = re.search(r"(\d+)\s+failed", line)
+                if match:
+                    values["failed"] = int(match.group(1))
+                match = re.search(r"(\d+)\s+errored", line)
+                if match:
+                    values["errored"] = int(match.group(1))
+                match = re.search(r"(\d+)\s+timeout", line)
+                if match:
+                    values["timeout"] = int(match.group(1))
+                continue
+
+            # "status codes: 123456 2xx, 0 3xx, 12 4xx, 0 5xx"
+            if line.startswith("status codes:"):
+                twox = re.search(r"(\d+)\s+2xx", line)
+                threex = re.search(r"(\d+)\s+3xx", line)
+                fourx = re.search(r"(\d+)\s+4xx", line)
+                fivex = re.search(r"(\d+)\s+5xx", line)
+                twox_count = int(twox.group(1)) if twox else 0
+                non2xx = 0
+                for m in (threex, fourx, fivex):
+                    if m:
+                        non2xx += int(m.group(1))
+                values["non2xx"] = non2xx
+                continue
+
+            # "time for request:    123.45us    456.78us    234.56us ..."
+            # columns: min  max  mean  sd  +/- sd
+            if line.startswith("time for request:"):
+                parts = line.split()
+                # parts: ["time", "for", "request:", min, max, mean, sd, "+/-", "sd"]
+                if len(parts) >= 6:
+                    values["latency"] = parts[5]  # mean latency
+                continue
+
+        return values
+
+    def _h2_scenario_server_args(self, server: str, scenario: str) -> List[str]:
+        """Extra server args for special H2 scenarios."""
+        args: List[str] = []
+        h2_meta = self.H2_SCENARIOS.get(scenario)
+        if not h2_meta:
+            return args
+        static_dir = self.script_dir / "static"
+        if h2_meta.requires_static and static_dir.is_dir():
+            args += ["--static", str(static_dir)]
+        if scenario == "routing":
+            args += ["--routes", "1000"]
+        return args
 
     def _parse_wrk_output(self, output: str) -> Dict[str, Any]:
         values: Dict[str, Any] = {
@@ -880,13 +1367,18 @@ class BenchmarkRunner:
                 if line.startswith("model name"):
                     cpu_info = line.split(":", 1)[1].strip()
                     break
+        tool = "h2load" if self.protocol in ("h2c", "h2-tls") else "wrk"
         with self.result_file.open("w", encoding="utf-8") as fp:
             fp.write("HTTP Server Benchmark Results\n")
             fp.write("==============================\n")
             fp.write(f"Date: {time.ctime()}\n")
+            fp.write(f"Protocol: {self.protocol}\n")
+            fp.write(f"Tool: {tool}\n")
             fp.write(f"Threads: {self.threads}\n")
             fp.write(f"Connections: {self.connections}\n")
             fp.write(f"Duration: {self.duration}\n")
+            if self.protocol in ("h2c", "h2-tls"):
+                fp.write(f"H2 Streams/conn: {self.h2_streams}\n")
             fp.write(f"wrk timeout: {self.wrk_timeout}\n")
             fp.write(f"System: {sys_info}\n")
             if cpu_info:
@@ -938,6 +1430,8 @@ class BenchmarkRunner:
             return
 
         summary = {
+            "protocol": self.protocol,
+            "tool": "h2load" if self.protocol in ("h2c", "h2-tls") else "wrk",
             "threads": self.threads,
             "connections": self.connections,
             "duration": self.duration,
@@ -947,6 +1441,8 @@ class BenchmarkRunner:
             "scenarios": self.scenarios_to_test,
             "results": {},
         }
+        if self.protocol in ("h2c", "h2-tls"):
+            summary["h2_streams"] = self.h2_streams
 
         for scenario in self.scenarios_to_test:
             scenario_entry = {
@@ -1480,10 +1976,17 @@ def parse_args() -> argparse.Namespace:
     default_wrk_timeout = os.environ.get("BENCH_WRK_TIMEOUT", "10s")
     default_output = os.environ.get("BENCH_OUTPUT", "./results")
     parser = argparse.ArgumentParser(
-        description="Run wrk benchmarks across multiple servers"
+        description="Run wrk/h2load benchmarks across multiple servers"
     )
     parser.add_argument(
-        "--threads", type=int, default=default_threads, help="Number of wrk threads"
+        "--protocol",
+        type=str,
+        default="http1",
+        choices=["http1", "h2c", "h2-tls"],
+        help="Protocol to benchmark: http1 (wrk), h2c (h2load, cleartext), h2-tls (h2load, TLS)",
+    )
+    parser.add_argument(
+        "--threads", type=int, default=default_threads, help="Number of wrk/h2load threads"
     )
 
     # Low number of connections -> Measure latency more accurately, but may not fully saturate high-performance servers
@@ -1526,6 +2029,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="all",
         help="Comma-separated list of scenarios (headers,body,body-codec,static,cpu,mixed,files,routing,tls)",
+    )
+    parser.add_argument(
+        "--h2-streams",
+        type=int,
+        default=int(os.environ.get("BENCH_H2_STREAMS", "10")),
+        help="Max concurrent HTTP/2 streams per connection (h2load -m, default: 10)",
     )
     return parser.parse_args()
 

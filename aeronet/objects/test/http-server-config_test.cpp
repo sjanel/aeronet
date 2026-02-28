@@ -12,6 +12,7 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
@@ -304,12 +305,11 @@ TEST(HttpServerConfigTest, ZerocopyModeEnabled) {
 
 TEST(HttpServerConfigTest, ZerocopyModeBuilderChaining) {
   // Verify builder pattern chaining works correctly
-  HttpServerConfig config =
-      HttpServerConfig{}.withPort(8080).withZerocopyMode(ZerocopyMode::Enabled).withTcpNoDelay(true);
+  HttpServerConfig config = HttpServerConfig{}.withPort(8080).withZerocopyMode(ZerocopyMode::Enabled).withTcpNoDelay();
 
   EXPECT_EQ(config.port, 8080U);
   EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Enabled);
-  EXPECT_TRUE(config.tcpNoDelay);
+  EXPECT_EQ(config.tcpNoDelay, TcpNoDelayMode::Enabled);
   EXPECT_NO_THROW(config.validate());
 }
 

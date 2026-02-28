@@ -188,12 +188,16 @@ def _conn_label(summary: Dict[str, Any]) -> str:
     """Human-readable label for a connection-count configuration."""
     conns = summary.get("connections")
     threads = summary.get("threads")
+    protocol = summary.get("protocol", "http1")
+    prefix = ""
+    if protocol != "http1":
+        prefix = f"[{protocol}] "
     if conns is not None and threads:
         per_thread = conns // threads
-        return f"{conns} total ({per_thread}/thread)"
+        return f"{prefix}{conns} total ({per_thread}/thread)"
     if conns is not None:
-        return f"{conns} total"
-    return "default"
+        return f"{prefix}{conns} total"
+    return f"{prefix}default" if prefix else "default"
 
 
 def render_html(summaries: List[Dict[str, Any]]) -> str:
@@ -207,6 +211,8 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
     threads = first.get("threads")
     duration = first.get("duration")
     warmup = first.get("warmup")
+    protocol = first.get("protocol", "http1")
+    tool = first.get("tool", "wrk")
 
     # Build per-config payloads ------------------------------------------------
     configs: List[Dict[str, Any]] = []
@@ -276,11 +282,19 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 """)
     table_tabs_html = "\n".join(table_tabs_parts)
 
+    h2_streams = first.get("h2_streams")
+    protocol_display = protocol.upper().replace("H2C", "H2C (cleartext)").replace("H2-TLS", "H2 over TLS")
     meta_cards = f"""
 <div class="meta-cards">
+  <div><span>Protocol</span><strong>{_esc(protocol_display)}</strong></div>
+  <div><span>Tool</span><strong>{_esc(tool)}</strong></div>
   <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
-  <div><span>wrk duration</span><strong>{_esc(str(duration))}</strong></div>
-  <div><span>wrk warmup</span><strong>{_esc(str(warmup))}</strong></div>
+  <div><span>{_esc(tool)} duration</span><strong>{_esc(str(duration))}</strong></div>
+  <div><span>{_esc(tool)} warmup</span><strong>{_esc(str(warmup))}</strong></div>"""
+    if h2_streams is not None:
+        meta_cards += f"""
+  <div><span>H2 Streams/conn</span><strong>{h2_streams}</strong></div>"""
+    meta_cards += """
 </div>
 """
 
