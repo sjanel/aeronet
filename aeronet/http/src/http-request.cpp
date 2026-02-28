@@ -374,11 +374,19 @@ void HttpRequest::markAwaitingBody() const noexcept {
 }
 
 void HttpRequest::markAwaitingCallback() const noexcept {
+  if (_h2SuspendedFlag != nullptr) {
+    *_h2SuspendedFlag = true;
+    return;
+  }
   assert(_ownerState->asyncState.active);
   _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
 void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+  if (_h2PostCallback) {
+    _h2PostCallback(handle, std::move(work));
+    return;
+  }
   assert(_ownerState->asyncState.active);
   assert(_ownerState->asyncState.postCallback);
   _ownerState->asyncState.postCallback(handle, std::move(work));

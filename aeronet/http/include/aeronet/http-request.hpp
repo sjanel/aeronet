@@ -537,6 +537,12 @@ class HttpRequest {
 
   // Post a callback to be executed in the server's event loop, then resume the coroutine.
   void postCallback(std::coroutine_handle<> handle, std::function<void()> work) const;
+
+  // HTTP/2 async handler support: alternative callback mechanism for per-stream async tasks.
+  // When set, markAwaitingCallback() / postCallback() use these instead of _ownerState->asyncState.
+  using H2PostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+  H2PostCallbackFn _h2PostCallback;
+  bool* _h2SuspendedFlag{nullptr};
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;

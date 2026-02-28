@@ -52,6 +52,9 @@ class RequestTask {
   [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(_coro); }
   [[nodiscard]] bool done() const noexcept { return !_coro || _coro.done(); }
 
+  /// Returns the address of the internal coroutine handle (opaque pointer for identity comparison).
+  [[nodiscard]] void* coroutineAddress() const noexcept { return _coro ? _coro.address() : nullptr; }
+
   void resume() {
     if (_coro) {
       _coro.resume();
@@ -120,6 +123,9 @@ class RequestTask<void> {
 
   [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(_coro); }
   [[nodiscard]] bool done() const noexcept { return !_coro || _coro.done(); }
+
+  /// Returns the address of the internal coroutine handle (opaque pointer for identity comparison).
+  [[nodiscard]] void* coroutineAddress() const noexcept { return _coro ? _coro.address() : nullptr; }
 
   void resume() {
     if (_coro) {
