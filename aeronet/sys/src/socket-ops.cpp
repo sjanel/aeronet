@@ -35,6 +35,18 @@ bool SetTcpNoDelay(int fd) noexcept {
   return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) == 0;
 }
 
+bool SetTcpCork(int fd, bool enable) noexcept {
+#if defined(__linux__) && defined(TCP_CORK)
+  int val = enable ? 1 : 0;
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, sizeof(val)) == 0;
+#elif defined(__APPLE__) && defined(TCP_NOPUSH)
+  int val = enable ? 1 : 0;
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_NOPUSH, &val, sizeof(val)) == 0;
+#else
+  return false;
+#endif
+}
+
 int GetSocketError(int fd) noexcept {
   int err = 0;
   socklen_t len = sizeof(err);

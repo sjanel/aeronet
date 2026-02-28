@@ -26,6 +26,10 @@ bool SetCloseOnExec(int fd) noexcept;
 // Returns true on success.
 bool SetTcpNoDelay(int fd) noexcept;
 
+// Enable/disable TCP_CORK (Linux) or TCP_NOPUSH (macOS) to coalesce packets.
+// Returns true on success, false if unsupported.
+bool SetTcpCork(int fd, bool enable) noexcept;
+
 // Retrieve the pending socket error (SO_ERROR).
 // Returns the error code (0 means no error, >0 is errno).
 // On failure to query, returns the errno from getsockopt itself.

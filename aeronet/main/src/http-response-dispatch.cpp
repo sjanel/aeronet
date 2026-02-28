@@ -21,8 +21,10 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/vector.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
 #endif
@@ -156,6 +158,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
 }
 
 void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
+  corkConnection(cnxIt);
   ConnectionState& state = *cnxIt->second;
 
   // Release zerocopy buffers whose kernel completions have arrived.
@@ -231,6 +234,7 @@ void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
 }
 
 void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
+  corkConnection(cnxIt);
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
   ConnectionState& state = *cnxIt->second;
@@ -350,6 +354,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
 }
 
 void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
+  corkConnection(cnxIt);
   ConnectionState& state = *cnxIt->second;
 
   if (state.fileSend.headersPending) {

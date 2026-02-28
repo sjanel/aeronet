@@ -47,6 +47,7 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -1047,6 +1048,36 @@ void SingleHttpServer::eventLoop() {
     // Also shrink per-thread scratch buffers used during decompression / header parsing.
     _sharedBuffers.shrink_to_fit();
   }
+
+  uncorkAll();
+}
+
+void SingleHttpServer::corkConnection(ConnectionMapIt cnxIt) {
+  if (!_config.useTcpCork) {
+    return;
+  }
+  int fd = cnxIt->first.fd();
+  ConnectionState& state = *cnxIt->second;
+  if (!state.isCorked) {
+    if (SetTcpCork(fd, true)) {
+      state.isCorked = true;
+      _corkedConnections.push_back(fd);
+    }
+  }
+}
+
+void SingleHttpServer::uncorkAll() {
+  for (int fd : _corkedConnections) {
+    auto it = _connections.active.find(fd);
+    if (it != _connections.active.end()) {
+      ConnectionState& state = *it->second;
+      if (state.isCorked) {
+        SetTcpCork(fd, false);
+        state.isCorked = false;
+      }
+    }
+  }
+  _corkedConnections.clear();
 }
 
 void SingleHttpServer::updateMaintenanceTimer() {

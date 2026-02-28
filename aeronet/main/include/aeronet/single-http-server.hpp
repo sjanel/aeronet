@@ -549,6 +549,10 @@ class SingleHttpServer {
   CloseStatus handleInH2Tunneling(ConnectionMapIt cnxIt);
 #endif
 
+  // Track connections corked during the current event loop tick
+  void corkConnection(ConnectionMapIt cnxIt);
+  void uncorkAll();
+
   struct StatsInternal {
     uint64_t totalBytesQueued{0};
     uint64_t totalBytesWrittenImmediate{0};
@@ -588,6 +592,8 @@ class SingleHttpServer {
   internal::ConnectionStorage _connections;
 
   internal::SharedBuffers _sharedBuffers;
+
+  vector<int> _corkedConnections;
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;

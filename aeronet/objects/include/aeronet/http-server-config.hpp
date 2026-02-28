@@ -159,6 +159,12 @@ struct HttpServerConfig {
   // connection marked for closure after flushing what is already queued. Default: 4 MiB per connection.
   std::size_t maxOutboundBufferBytes{4 << 20};  // 4 MiB
 
+  // Enable/disable TCP_CORK (Linux) or TCP_NOPUSH (macOS) globally.
+  // When enabled, the server coalesces multiple writes (e.g. streaming chunks or file payloads)
+  // within a single event loop tick into larger TCP segments to reduce packet overhead.
+  // Default: true.
+  bool useTcpCork{true};
+
   // ===========================================
   // Event loop polling / responsiveness tuning
   // ===========================================
