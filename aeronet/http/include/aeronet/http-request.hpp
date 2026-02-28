@@ -541,6 +541,10 @@ class HttpRequest {
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
 
+  // Decodes the path in-place and sets _pPath and _pathLength. Returns false if the path is malformed (e.g. invalid
+  // percent-encoding).
+  bool decodePath(char* pathStart, char* pathEnd);
+
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
   struct BodyAccessBridge {
     using AggregateFn = std::string_view (*)(HttpRequest&, void* context);
