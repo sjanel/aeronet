@@ -21,6 +21,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -28,6 +31,10 @@ const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 var numThreads int
 var staticDir string
 var routeCount int
+var h2Enabled bool
+var tlsEnabled bool
+var certFile string
+var keyFile string
 
 // Pattern route matchers
 var userPostPattern = regexp.MustCompile(`^/users/([^/]+)/posts/([^/]+)$`)
@@ -38,6 +45,10 @@ func main() {
 	numThreads = getThreads()
 	staticDir = getStaticDir()
 	routeCount = getRouteCount()
+	h2Enabled = hasFlag("--h2")
+	tlsEnabled = hasFlag("--tls")
+	certFile = getFlagValue("--cert")
+	keyFile = getFlagValue("--key")
 
 	// Limit Go scheduler parallelism to the requested count.
 	// GOMAXPROCS only limits goroutine parallelism; Go's runtime creates
@@ -122,22 +133,48 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	// Wrap handler for h2c (HTTP/2 cleartext) if requested
+	var handler http.Handler = topHandler
+	if h2Enabled && !tlsEnabled {
+		h2s := &http2.Server{}
+		handler = h2c.NewHandler(topHandler, h2s)
+	}
+
 	server := &http.Server{
 		Addr:           fmt.Sprintf("127.0.0.1:%d", port),
-		Handler:        topHandler,
+		Handler:        handler,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		MaxHeaderBytes: 256 * 1024, // 256KB headers for stress tests
 	}
 
-	fmt.Printf("go benchmark server starting on port %d with %d threads\n", port, numThreads)
+	// For TLS with HTTP/2, configure TLS and use http2.ConfigureServer
+	if tlsEnabled && h2Enabled {
+		http2.ConfigureServer(server, &http2.Server{})
+	}
+
+	protocol := "http/1.1"
+	if h2Enabled {
+		if tlsEnabled {
+			protocol = "h2-tls"
+		} else {
+			protocol = "h2c"
+		}
+	}
+	fmt.Printf("go benchmark server starting on port %d with %d threads [%s]\n", port, numThreads, protocol)
 	if staticDir != "" {
 		fmt.Printf("Static files: %s\n", staticDir)
 	}
 	if routeCount > 0 {
 		fmt.Printf("Routes: %d literal + pattern routes\n", routeCount)
 	}
-	if err := server.ListenAndServe(); err != nil {
+	var err error
+	if tlsEnabled && certFile != "" && keyFile != "" {
+		err = server.ListenAndServeTLS(certFile, keyFile)
+	} else {
+		err = server.ListenAndServe()
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
@@ -279,7 +316,7 @@ func handleBody(w http.ResponseWriter, r *http.Request) {
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"server":"go","threads":%d,"status":"ok"}`, numThreads)
+	fmt.Fprintf(w, `{"server":"go","threads":%d,"h2":%t,"tls":%t,"status":"ok"}`, numThreads, h2Enabled, tlsEnabled)
 }
 
 func handleStatic(w http.ResponseWriter, r *http.Request) {
@@ -448,4 +485,22 @@ func computeHash(data string, iterations int) uint64 {
 		}
 	}
 	return hash
+}
+
+func hasFlag(flag string) bool {
+	for _, arg := range os.Args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func getFlagValue(flag string) string {
+	for i, arg := range os.Args {
+		if arg == flag && i+1 < len(os.Args) {
+			return os.Args[i+1]
+		}
+	}
+	return ""
 }

@@ -25,6 +25,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -76,8 +77,8 @@ struct MaxPerEventReadBytesScope {
 };
 
 struct TcpNoDelayScope {
-  explicit TcpNoDelayScope(bool enabled) : _previous(ts.server.config().tcpNoDelay) {
-    ts.postConfigUpdate([enabled](HttpServerConfig& cfg) { cfg.withTcpNoDelay(enabled); });
+  explicit TcpNoDelayScope(TcpNoDelayMode tcpNoDelayMode) : _previous(ts.server.config().tcpNoDelay) {
+    ts.postConfigUpdate([tcpNoDelayMode](HttpServerConfig& cfg) { cfg.withTcpNoDelayMode(tcpNoDelayMode); });
   }
   TcpNoDelayScope(const TcpNoDelayScope&) = delete;
   TcpNoDelayScope& operator=(const TcpNoDelayScope&) = delete;
@@ -85,11 +86,11 @@ struct TcpNoDelayScope {
   TcpNoDelayScope& operator=(TcpNoDelayScope&&) = delete;
 
   ~TcpNoDelayScope() {
-    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withTcpNoDelay(prev); });
+    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withTcpNoDelayMode(prev); });
   }
 
  private:
-  bool _previous;
+  TcpNoDelayMode _previous;
 };
 
 std::string httpGet(uint16_t port, std::string_view target) {
@@ -199,7 +200,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 }
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
-  TcpNoDelayScope scope(true);
+  TcpNoDelayScope scope(TcpNoDelayMode::Enabled);
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });
   std::string resp = httpGet(ts.port(), "/tcp");
   ASSERT_FALSE(resp.empty());

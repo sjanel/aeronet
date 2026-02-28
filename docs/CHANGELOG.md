@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `HttpServerConfig::tcpNoDelay` becomes an enum with `Auto` mode added instead of a simple boolean. The default value is `Auto` to activate `TCP_NODELAY` for HTTP/2 with TLS connections that benefit the most from it, while keeping it disabled for other connections. `HttpServerConfig::withTcpNoDelay()` stays unchanged.
+
 ### Bug fixes
 
 - `HTTP/2`: Fix `:path` header parsing to correctly extract query parameters mirroring HTTP/1.1 parsing behavior and perform in-place percent-decoding of both path and queries.
@@ -37,11 +41,12 @@ All notable changes to aeronet are documented in this file.
 
 ### Other
 
-- Migrated from classic **zlib** to **zlib-ng** (native mode) for gzip/deflate compression and decompression. zlib-ng provides SIMD-optimized deflate/inflate with identical wire-format compatibility (RFC 1950/1951/1952). The migration covers the core encoder/decoder, WebSocket permessage-deflate, and scripted benchmark servers (C++ helpers and Rust `flate2` backend). The compile flag `AERONET_ENABLE_ZLIBNG` can be set to `OFF` to stay with classic zlib if needed, but zlib-ng is now the default and recommended option for better performance.
+- Migrated from classic **zlib** to **zlib-ng** (native mode) for gzip/deflate compression and decompression. zlib-ng provides SIMD-optimized deflate/inflate with identical wire-format compatibility (RFC 1950/1951/1952). The migration covers the core encoder/decoder, **WebSocket** permessage-deflate, and scripted benchmark servers (C++ helpers and Rust `flate2` backend). The compile flag `AERONET_ENABLE_ZLIBNG` can be set to `OFF` to stay with classic zlib if needed, but zlib-ng is now the default and recommended option for better performance.
 - Bumped `zlib` dependency to version **1.3.2**.
 - Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
 - Bumped `clang-format` version to **21**.
-- Fix: Resolve race in TLS handshake handling that caused a flaky test
+- Fix: Resolve race in TLS handshake handling that caused a flaky test.
+- Addition of **HTTP/2** scripted benchmarks in the CI pipeline, with `h2load`.
 
 ## [1.1.0] - 2026-02-16
 
