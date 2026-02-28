@@ -202,6 +202,9 @@ FrameParseResult ParseSettingsFrame(FrameHeader header, std::span<const std::byt
   }
 
   std::size_t numEntries = payload.size() / 6;
+
+  // Security hardening: cap parsed entries to kMaxEntries to bound stack usage.
+  // Entries beyond the limit are silently ignored per RFC 9113 §6.5.2 (unknown settings).
   numEntries = std::min(numEntries, SettingsFrame::kMaxEntries);
 
   for (std::size_t idx = 0; idx < numEntries; ++idx) {

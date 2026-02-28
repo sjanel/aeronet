@@ -521,11 +521,20 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
     return ret;
   }
 
-  // Value requires continuation bytes
+  // Value requires continuation bytes.
+  // Security hardening: cap at 8 continuation bytes (enough for any valid uint64_t / HTTP/2 value).
+  // This prevents a malicious encoder from forcing excessive loop iterations with crafted
+  // continuation bytes before the original multiplier-overflow check would trigger.
+  static constexpr int kMaxContinuationBytes = 8;
   std::size_t pos = 1;
   uint64_t multiplier = 1;
+  int continuationCount = 0;
 
   while (pos < data.size()) {
+    if (++continuationCount > kMaxContinuationBytes) [[unlikely]] {
+      return ret;  // Invalid: integer encoding uses too many continuation bytes
+    }
+
     const uint8_t currByte = static_cast<uint8_t>(data[pos]);
     value += (currByte & 0x7F) * multiplier;
     multiplier *= 128;
