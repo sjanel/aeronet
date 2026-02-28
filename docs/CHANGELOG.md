@@ -33,6 +33,7 @@ All notable changes to aeronet are documented in this file.
 - Reuse `zstd` contexts for one-shot decompressions for better performance.
 - Added `WebSocketDeflate` configuration validation to fail early if the provided parameters are invalid (e.g. `windowBits` out of range) instead of silently ignoring them and causing unexpected behavior.
 - Less calls to `std::chrono::steady_clock::now()` in the main event loop for better performance
+- Security hardening for HTTP/2.
 
 ### Other
 

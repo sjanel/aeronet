@@ -306,6 +306,9 @@ class Http2Connection {
   uint32_t _lastLocalStreamId{0};
   uint32_t _goAwayLastStreamId{UINT32_MAX};
 
+  // Security hardening: counter for PRIORITY frames on non-existent streams (flood mitigation)
+  uint32_t _idlePriorityFrameCount{0};
+
   // Flow control
   int32_t _connectionSendWindow;
   int32_t _connectionRecvWindow;

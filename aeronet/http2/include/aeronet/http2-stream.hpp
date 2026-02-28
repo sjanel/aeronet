@@ -140,7 +140,9 @@ class Http2Stream {
   [[nodiscard]] ErrorCode increaseSendWindow(uint32_t increment) noexcept;
 
   /// Increase the receive window (when sending WINDOW_UPDATE).
-  void increaseRecvWindow(uint32_t increment) noexcept;
+  /// @param increment Window size increment
+  /// @return ErrorCode if overflow would occur (FlowControlError), NoError otherwise
+  [[nodiscard]] ErrorCode increaseRecvWindow(uint32_t increment) noexcept;
 
   /// Update the initial window size from SETTINGS.
   /// Adjusts the current send window by the delta.

@@ -2,6 +2,7 @@
 
 ## Recently completed
 
+- **Formal security review of HTTP/2 frame handling and state machines**: Comprehensive code audit of ~4700 lines across 11 files covering frame parsing, connection/stream state machines, HPACK codec, flow control, and CONNECT tunneling. Identified 5 actionable findings (CONTINUATION accumulation limit, stream recv-window overflow check, HPACK integer decode overflow tightening, SETTINGS silent truncation logging, priority flood mitigation). See commit history and inline comments for details.
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.
 - `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
@@ -17,7 +18,6 @@
 - **Security Hardening Audit**:
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
-  - Formal security review of HTTP/2 frame handling and state machines
   - Fuzzing harness integration (libFuzzer + AFL)
 
 ## Medium priority
