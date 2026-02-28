@@ -54,6 +54,35 @@ TEST(TlsHttp2Client, BasicGetRequest) {
   EXPECT_TRUE(response.body.contains("/test-path"));
 }
 
+TEST(TlsHttp2Client, RequestWithQueryParams) {
+  TlsHttp2TestServer ts;
+  ts.setDefault([](const HttpRequest& req) {
+    if (req.path() != "/hello") {
+      return HttpResponse(http::StatusCodeNotFound);
+    }
+    if (req.queryParamValueOrEmpty("a") != "1") {
+      return HttpResponse(418).body("Bad a");
+    }
+    if (req.queryParamValueOrEmpty("b") != "spaces  and/slash") {
+      return HttpResponse(418).body("Bad b");
+    }
+    return HttpResponse(200);
+  });
+
+  TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Note: TlsHttp2Client's `get(path)` takes a string, we can pass "/hello?a=1&b=spaces%20%20and%2Fslash"
+  // This verifies that HTTP/2 path and queries are percent-decoded correctly mirroring HTTP/1.1
+  auto response = client.get("/hello?a=1&b=spaces%20%20and%2Fslash");
+  EXPECT_EQ(response.statusCode, 200) << "Body: " << response.body;
+
+  // Also check that invalid percent-encoding is handled gracefully (e.g. not treated as literal % followed by chars,
+  // and doesn't cause server error)
+  auto badResponse = client.get("/hello%salut");
+  EXPECT_EQ(badResponse.statusCode, 400) << "Body: " << badResponse.body;
+}
+
 TEST(TlsHttp2Client, MultipleSequentialRequests) {
   TlsHttp2TestServer ts;
   int requestCount = 0;

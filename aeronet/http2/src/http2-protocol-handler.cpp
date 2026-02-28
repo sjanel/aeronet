@@ -218,8 +218,21 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
         req._authorityLength = SafeCast<decltype(req._authorityLength)>(storedValue.size());
         *buf++ = '\r';  // sentinel char for setupTunnelConnection
       } else if (storedName == ":path") {
-        req._pPath = storedValue.data();
-        req._pathLength = SafeCast<decltype(req._pathLength)>(storedValue.size());
+        // Split :path at '?' to separate path from query string, mirroring HTTP/1.1 parsing.
+        // The stored value lives in headerStorage which we own, so in-place decoding is safe.
+        char* pathStart = const_cast<char*>(storedValue.data());
+        char* pathEnd = pathStart + storedValue.size();
+
+        if (!req.decodePath(pathStart, pathEnd)) {
+          (void)sendResponse(
+              streamId,
+              HttpResponse(
+                  http::StatusCodeBadRequest,
+                  "Invalid :path header - unable to decode percent-encoded characters or path is not valid UTF-8"),
+              /*isHeadMethod=*/false);
+          _streamRequests.erase(streamId);
+          return;
+        }
       }
     } else {
       req._headers[storedName] = storedValue;

@@ -210,20 +210,10 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   // Path
   first = nextSep + 1;
   nextSep = std::find(first, lineLast, ' ');
-  char* questionMark = std::find(first, nextSep, '?');
-  if (questionMark != nextSep) {
-    const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, nextSep);
-    _pDecodedQueryParams = questionMark + 1;
-    _decodedQueryParamsLength = SafeCast<uint32_t>(paramsEnd - _pDecodedQueryParams);
-  } else {
-    _decodedQueryParamsLength = 0;
-  }
-  const char* pathLast = url::DecodeInPlace(first, questionMark);
-  if (pathLast == nullptr || first == pathLast) {
+
+  if (!decodePath(first, nextSep)) {
     return http::StatusCodeBadRequest;
   }
-  _pPath = first;
-  _pathLength = SafeCast<uint32_t>(pathLast - first);
 
   // Version
   first = nextSep + 1;
@@ -408,6 +398,24 @@ HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
   opts.headMethod(method() == http::Method::HEAD);
   opts.setPrepared();
   return opts;
+}
+
+bool HttpRequest::decodePath(char* pathStart, char* pathEnd) {
+  char* questionMark = std::find(pathStart, pathEnd, '?');
+  if (questionMark != pathEnd) {
+    const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, pathEnd);
+    _pDecodedQueryParams = questionMark + 1;
+    _decodedQueryParamsLength = SafeCast<uint32_t>(paramsEnd - _pDecodedQueryParams);
+  } else {
+    _decodedQueryParamsLength = 0;
+  }
+  const char* pathLast = url::DecodeInPlace(pathStart, questionMark);
+  if (pathLast == nullptr || pathStart == pathLast) {
+    return false;
+  }
+  _pPath = pathStart;
+  _pathLength = SafeCast<uint32_t>(pathLast - pathStart);
+  return true;
 }
 
 }  // namespace aeronet
