@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -26,18 +30,24 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/request-task.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
 
-namespace aeronet::http2 {
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/test_server_http2_tls_fixture.hpp"
+#include "aeronet/test_tls_http2_client.hpp"
+#endif
 
-namespace {
+namespace aeronet::http2 {
 
 // ============================
 // Small test helpers
 // ============================
+
+namespace {
 
 [[nodiscard]] std::span<const std::byte> AsSpan(const RawBytes& bytes) noexcept { return {bytes.data(), bytes.size()}; }
 
@@ -274,6 +284,8 @@ class Http2Loopback {
 [[nodiscard]] bool HasHeader(const HeaderEvent& ev, std::string_view name, std::string_view value) {
   return std::ranges::any_of(ev.headers, [&](const auto& kv) { return kv.first == name && kv.second == value; });
 }
+
+}  // namespace
 
 // ============================
 // Handshake / settings
@@ -1402,6 +1414,192 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
   EXPECT_TRUE(h2.serverData.back().endStream);
 }
 
-}  // namespace
+#ifdef AERONET_ENABLE_OPENSSL
+
+// Test deferWork(): basic async work execution returning a value in HTTP/2
+TEST(Http2Async, DeferWorkBasicReturnValue) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-basic", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // Run blocking work on background thread
+        int result = co_await req.deferWork([]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          return 42;
+        });
+        co_return HttpResponse(http::StatusCodeOK).body("result=" + std::to_string(result));
+      });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/defer-basic");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.find("result=42") != std::string::npos) << response.body;
+}
+
+// Test deferWork(): work returning a string in HTTP/2
+TEST(Http2Async, DeferWorkReturnsString) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
+                                        [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                          std::string result = co_await req.deferWork([]() -> std::string {
+                                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                            return "computed-value";
+                                          });
+                                          co_return HttpResponse(http::StatusCodeOK).body(result);
+                                        });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/defer-string");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.find("computed-value") != std::string::npos) << response.body;
+}
+
+// Test deferWork(): work returning an optional
+TEST(Http2Async, DeferWorkReturnsOptional) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-optional", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          return 123;
+        });
+        if (result) {
+          co_return HttpResponse(http::StatusCodeOK).body("found=" + std::to_string(*result));
+        }
+        co_return HttpResponse(http::StatusCodeNotFound).body("not found");
+      });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/defer-optional");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.find("found=123") != std::string::npos) << response.body;
+}
+
+// Test deferWork(): multiple sequential defers in same handler over HTTP/2
+TEST(Http2Async, DeferWorkMultipleSequential) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-multi", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        int first = co_await req.deferWork([]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          return 10;
+        });
+
+        int second = co_await req.deferWork([first]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          return first * 2;
+        });
+
+        co_return HttpResponse(http::StatusCodeOK).body("final=" + std::to_string(second));
+      });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/defer-multi");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.find("final=20") != std::string::npos) << response.body;
+}
+
+// Test deferWork(): multiple concurrent requests on a single connection over HTTP/2
+TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-concurrent", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // Sleep to ensure requests stack up before completing
+        int result = co_await req.deferWork([]() {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          return 1;
+        });
+        co_return HttpResponse(http::StatusCodeOK).body("ok=" + std::to_string(result));
+      });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Using raw TlsHttp2Client, send multiple requests concurrently to see that they all
+  // succeed and handle `deferWork` properly on a single HTTP/2 connection.
+  uint32_t stream1 = client.sendAsyncRequest("GET", "/defer-concurrent");
+  uint32_t stream2 = client.sendAsyncRequest("GET", "/defer-concurrent");
+  uint32_t stream3 = client.sendAsyncRequest("GET", "/defer-concurrent");
+
+  ASSERT_GT(stream1, 0);
+  ASSERT_GT(stream2, 0);
+  ASSERT_GT(stream3, 0);
+
+  auto res1 = client.waitAndGetResponse(stream1, std::chrono::milliseconds{1000});
+  auto res2 = client.waitAndGetResponse(stream2, std::chrono::milliseconds{1000});
+  auto res3 = client.waitAndGetResponse(stream3, std::chrono::milliseconds{1000});
+
+  ASSERT_TRUE(res1.has_value());
+  EXPECT_EQ(res1->statusCode, 200);
+  EXPECT_TRUE(res1->body.find("ok=1") != std::string::npos);
+
+  ASSERT_TRUE(res2.has_value());
+  EXPECT_EQ(res2->statusCode, 200);
+  EXPECT_TRUE(res2->body.find("ok=1") != std::string::npos);
+
+  ASSERT_TRUE(res3.has_value());
+  EXPECT_EQ(res3->statusCode, 200);
+  EXPECT_TRUE(res3->body.find("ok=1") != std::string::npos);
+}
+
+// Test deferWork(): exception (std::exception) thrown in work function
+TEST(Http2Async, DeferWorkThrowsStdException) {
+  test::TlsHttp2TestServer ts;
+  ts.server.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-throw", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        try {
+          (void)co_await req.deferWork([]() -> int { throw std::runtime_error("test exception"); });
+          co_return HttpResponse(http::StatusCodeOK).body("should not be reached");
+        } catch (const std::exception& e) {
+          co_return HttpResponse(http::StatusCodeInternalServerError).body(std::string("caught: ") + e.what());
+        }
+      });
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/defer-throw");
+  EXPECT_EQ(response.statusCode, 500);
+  EXPECT_TRUE(response.body.find("caught: test exception") != std::string::npos) << response.body;
+}
+
+// Test request middleware intercepting an async handler request, including CORS processing.
+TEST(Http2Async, MiddlewareInterruptsAsyncHandlerWithCors) {
+  test::TlsHttp2TestServer ts;
+
+  CorsPolicy policy;
+  policy.allowOrigin("https://example.com").allowMethods(http::Method::GET);
+
+  auto router = ts.server.resetRouterAndGet();
+  router
+      .setPath(http::Method::GET, "/protected",
+               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                 (void)req;
+                 // Should not be reached because middleware returns early.
+                 co_return HttpResponse(http::StatusCodeOK).body("async-handler-reached");
+               })
+      .before([](HttpRequest& req) -> MiddlewareResult {
+        (void)req;
+        return MiddlewareResult(HttpResponse(http::StatusCodeUnauthorized).body("interrupted-by-middleware"));
+      })
+      .cors(policy);
+
+  test::TlsHttp2Client client(ts.server.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/protected", {{"Origin", "https://example.com"}});
+  EXPECT_EQ(response.statusCode, 401);
+  EXPECT_TRUE(response.body.find("interrupted-by-middleware") != std::string::npos) << response.body;
+  EXPECT_EQ(response.header("access-control-allow-origin"), "https://example.com");
+}
+
+#endif  // AERONET_ENABLE_OPENSSL
 
 }  // namespace aeronet::http2

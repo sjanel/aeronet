@@ -34,13 +34,14 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/request-task.hpp"
-#endif
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/request-task.hpp"
+#endif
 
 namespace aeronet::http2 {
 namespace {

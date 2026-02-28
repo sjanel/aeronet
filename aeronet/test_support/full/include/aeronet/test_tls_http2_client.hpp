@@ -109,6 +109,15 @@ class TlsHttp2Client {
   [[nodiscard]] http2::Http2Connection& connection() noexcept { return *_http2Connection; }
   [[nodiscard]] const http2::Http2Connection& connection() const noexcept { return *_http2Connection; }
 
+  /// Build and send a request on a new stream asynchronously, returning the stream ID.
+  uint32_t sendAsyncRequest(std::string_view method, std::string_view path,
+                            const std::vector<std::pair<std::string, std::string>>& headers = {},
+                            std::string_view body = {});
+
+  /// Wait for a response on a specific stream.
+  std::optional<Response> waitAndGetResponse(uint32_t streamId,
+                                             std::chrono::milliseconds timeout = std::chrono::milliseconds{5000});
+
  private:
   /// Write data to TLS connection.
   bool writeAll(std::span<const std::byte> data);

@@ -1472,7 +1472,7 @@ router.setPath(http::Method::POST, "/process", [](HttpRequest& req) -> RequestTa
 - The coroutine resumes on the event loop thread, maintaining thread-safety for server state access.
 - The work function is moved into the background thread, so capture by value or use `std::move` for non-copyable types.
 - **Exception Handling**: If the work function throws an exception, it is captured and rethrown when the coroutine resumes, propagating normally through the coroutine.
-- **HTTP/2 Limitation**: `deferWork()` is currently only fully non-blocking for HTTP/1.1. HTTP/2 executes coroutines synchronously, so `deferWork()` will block the connection thread until the work completes. This is a known limitation; HTTP/2 async handler support is planned for future releases.
+- `deferWork()` is fully non-blocking for both HTTP/1.1 and HTTP/2. On HTTP/2, each stream owns its own async task; when a coroutine suspends (e.g., waiting for background work), other streams on the same connection continue to be processed without blocking.
 
 #### Implementation Details
 
@@ -2940,7 +2940,8 @@ server.run();
 Notes:
 
 - Pattern syntax, trailing-slash policy, and HEAD→GET fallback apply identically to both protocols.
-- `AsyncRequestHandler` and `StreamingHandler` are also supported for HTTP/2 (async handlers execute synchronously since HTTP/2 streams are already multiplexed).
+- `AsyncRequestHandler` (including `co_await req.deferWork(...)`) is fully supported for HTTP/2 with true per-stream async execution — suspended coroutines do not block other streams on the connection.
+- `StreamingHandler` support for HTTP/2 is not yet implemented (returns 501 Not Implemented).
 - All handler types registered in the Router work transparently for both HTTP/1.1 and HTTP/2.
 
 ### Http2Config
