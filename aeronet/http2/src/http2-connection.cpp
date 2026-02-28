@@ -290,7 +290,7 @@ void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
     if (stream != nullptr) {
       // increaseRecvWindow now returns ErrorCode; on the send side (our own
       // WINDOW_UPDATE) an overflow should not happen, but clamp defensively.
-      stream->increaseRecvWindow(increment);
+      (void)stream->increaseRecvWindow(increment);
     }
   }
 }

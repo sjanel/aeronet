@@ -18,6 +18,7 @@ All notable changes to aeronet are documented in this file.
 ### New features
 
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close.
+- **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2, just like HTTP/1.1. Previously, HTTP/2 async handlers were drained synchronously in a tight loop, blocking all other streams on the connection while a `deferWork` operation was in progress. Each HTTP/2 stream now owns its async task independently; when a coroutine suspends, other streams on the same connection continue to be processed.
 
 ### Improvements
 
