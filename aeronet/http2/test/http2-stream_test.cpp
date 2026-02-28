@@ -364,7 +364,7 @@ TEST(Http2Stream, IncreaseRecvWindow) {
   EXPECT_TRUE(stream.consumeRecvWindow(500));  // Window = 500
   ASSERT_EQ(stream.recvWindow(), 500);
 
-  stream.increaseRecvWindow(300);
+  (void)stream.increaseRecvWindow(300);
 
   EXPECT_EQ(stream.recvWindow(), 800);
 }

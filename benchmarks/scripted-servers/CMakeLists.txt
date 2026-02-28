@@ -143,11 +143,11 @@ if(EXISTS ${BODY_CODEC_PAYLOADS})
   configure_file(${BODY_CODEC_PAYLOADS} ${SCRIPTED_SERVERS_BUILD_DIR}/lua/body_codec_payloads.txt COPYONLY)
 endif()
 
-# Copy runner script
-configure_file(
+# Symlink runner script so source edits propagate without reconfiguring
+file(CREATE_LINK
   ${SCRIPTED_SERVERS_DIR}/run_benchmarks.py
   ${SCRIPTED_SERVERS_BUILD_DIR}/run_benchmarks.py
-  COPYONLY
+  SYMBOLIC
 )
 
 # Copy README
@@ -157,12 +157,7 @@ configure_file(
   COPYONLY
 )
 
-# Make runner executable
-file(CHMOD ${SCRIPTED_SERVERS_BUILD_DIR}/run_benchmarks.py
-  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-              GROUP_READ GROUP_EXECUTE
-              WORLD_READ WORLD_EXECUTE
-)
+# Source script must be executable (chmod +x run_benchmarks.py)
 
 # Add convenience target to run all scripted benchmarks
 add_custom_target(run-scripted-benchmarks

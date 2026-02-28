@@ -21,6 +21,10 @@ namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
 
+bool TlsTransport::hasPendingReadData() const noexcept {
+  return _handshakeDone && _ssl && ::SSL_has_pending(_ssl.get());
+}
+
 ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
   TransportResult ret{0, handshake(TransportHint::ReadReady)};
   if (ret.want != TransportHint::None) {

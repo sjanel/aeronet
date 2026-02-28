@@ -519,8 +519,12 @@ def generate_certificates(output_dir: Path) -> bool:
     ensure_dir(cert_dir)
     cert_path = cert_dir / "server.crt"
     key_path = cert_dir / "server.key"
+    p12_path = cert_dir / "server.p12"
     if cert_path.exists() and key_path.exists():
         log_info(f"Certificates already exist in {cert_dir}")
+        # Still generate PKCS12 if missing (needed by Undertow/Java)
+        if not p12_path.exists():
+            _generate_pkcs12(cert_path, key_path, p12_path)
         return True
     openssl = shutil.which("openssl")
     if not openssl:
@@ -560,8 +564,34 @@ def generate_certificates(output_dir: Path) -> bool:
         log_error(f"Failed to generate certificates: {exc}")
         return False
 
+    _generate_pkcs12(cert_path, key_path, p12_path)
     log_info(f"Certificates generated in {cert_dir}")
     return True
+
+
+def _generate_pkcs12(cert_path: Path, key_path: Path, p12_path: Path) -> None:
+    """Generate a PKCS12 keystore from PEM cert/key (needed by Java/Undertow)."""
+    openssl = shutil.which("openssl")
+    if not openssl:
+        log_error("openssl not found - cannot generate PKCS12 keystore")
+        return
+    try:
+        subprocess.run(
+            [
+                openssl, "pkcs12", "-export",
+                "-in", str(cert_path),
+                "-inkey", str(key_path),
+                "-out", str(p12_path),
+                "-passout", "pass:benchmark",
+                "-name", "benchmark",
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log_info(f"PKCS12 keystore generated: {p12_path}")
+    except subprocess.CalledProcessError as exc:
+        log_error(f"Failed to generate PKCS12 keystore: {exc}")
 
 
 def parse_args() -> argparse.Namespace:

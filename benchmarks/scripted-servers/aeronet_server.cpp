@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -34,6 +35,10 @@ constexpr std::size_t kCompressionMinBytes = 16UL;  // Compress responses larger
 }
 
 int main(int argc, char* argv[]) {
+  // Ignore SIGPIPE to prevent process termination when writing to closed sockets
+  // (e.g. when h2load abruptly closes TLS connections during benchmarks)
+  std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
+
   bench::BenchConfig benchCfg(8080, argc, argv);
 
   HttpServerConfig config;
@@ -55,6 +60,9 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     config.withTlsCertKey(benchCfg.certFile, benchCfg.keyFile);
+    if (benchCfg.h2Enabled) {
+      config.withTlsAlpnProtocols({"h2", "http/1.1"});
+    }
     std::cout << "TLS enabled with cert=" << benchCfg.certFile << " key=" << benchCfg.keyFile << "\n";
   }
 
@@ -198,10 +206,12 @@ int main(int argc, char* argv[]) {
   // Endpoint 8: /status - Health check
   // ============================================================
   router.setPath(http::Method::GET, "/status",
-                 [numThreads = benchCfg.numThreads, tlsEnabled = benchCfg.tlsEnabled](const HttpRequest& req) {
-                   return req.makeResponse(std::format(R"({{"server":"aeronet","threads":{},"tls":{},"status":"ok"}})",
-                                                       numThreads, tlsEnabled),
-                                           "application/json");
+                 [numThreads = benchCfg.numThreads, tlsEnabled = benchCfg.tlsEnabled,
+                  h2Enabled = benchCfg.h2Enabled](const HttpRequest& req) {
+                   return req.makeResponse(
+                       std::format(R"({{"server":"aeronet","threads":{},"tls":{},"h2":{},"status":"ok"}})", numThreads,
+                                   tlsEnabled, h2Enabled),
+                       "application/json");
                  });
 
   // ============================================================
@@ -263,6 +273,12 @@ int main(int argc, char* argv[]) {
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
             << " threads\n";
+#ifdef AERONET_ENABLE_HTTP2
+  std::cout << "HTTP/2 support: enabled (h2c=" << config.http2.enableH2c
+            << ", h2c-upgrade=" << config.http2.enableH2cUpgrade << ")\n";
+#else
+  std::cout << "HTTP/2 support: disabled (not compiled with AERONET_ENABLE_HTTP2)\n";
+#endif
 
   SignalHandler::Enable();
 

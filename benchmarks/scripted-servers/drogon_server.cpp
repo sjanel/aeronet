@@ -53,8 +53,13 @@ int main(int argc, char* argv[]) {
 
   auto& app = drogon::app();
 
-  // Configure Drogon
-  app.addListener("127.0.0.1", benchCfg.port);
+  // Configure Drogon - TLS only (drogon does not support HTTP/2 server-side)
+  if (benchCfg.tlsEnabled && !benchCfg.certFile.empty() && !benchCfg.keyFile.empty()) {
+    app.setSSLFiles(std::string(benchCfg.certFile), std::string(benchCfg.keyFile));
+    app.addListener("127.0.0.1", benchCfg.port, true /*useSSL*/);
+  } else {
+    app.addListener("127.0.0.1", benchCfg.port);
+  }
   app.setThreadNum(static_cast<std::size_t>(benchCfg.numThreads));
   app.setIdleConnectionTimeout(0);                      // No timeout for benchmarks
   app.setPipeliningRequestsNumber(1000000000);          // Allow many pipelined requests
@@ -269,12 +274,13 @@ int main(int argc, char* argv[]) {
   // ============================================================
   app.registerHandler(
       "/status",
-      [numThreads = benchCfg.numThreads](const drogon::HttpRequestPtr&,
-                                         std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+      [numThreads = benchCfg.numThreads, h2 = benchCfg.h2Enabled, tls = benchCfg.tlsEnabled](
+          const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-        resp->setBody(std::format(R"({{"server":"drogon","threads":{},"status":"ok"}})", numThreads));
+        resp->setBody(std::format(R"({{"server":"drogon","threads":{},"h2":{},"tls":{},"status":"ok"}})", numThreads,
+                                  h2 ? "true" : "false", tls ? "true" : "false"));
         callback(resp);
       },
       {drogon::Get});
@@ -344,8 +350,10 @@ int main(int argc, char* argv[]) {
                       },
                       {drogon::Get});
 
+  std::string_view protocol =
+      benchCfg.h2Enabled ? (benchCfg.tlsEnabled ? "h2-tls" : "h2c (unsupported, TLS-only)") : "http/1.1";
   std::cout << "drogon benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
-            << " threads\n";
+            << " threads [" << protocol << "]\n";
   if (!benchCfg.staticDir.empty()) {
     std::cout << "Static files: " << benchCfg.staticDir << "\n";
   }

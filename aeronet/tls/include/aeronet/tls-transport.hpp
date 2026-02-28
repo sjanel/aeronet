@@ -26,6 +26,13 @@ class TlsTransport final : public ITransport {
 
   [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
 
+  /// Check if OpenSSL has buffered decrypted data ready to deliver.
+  /// Critical for edge-triggered epoll: after SSL_read_ex, OpenSSL may have
+  /// read more ciphertext from the kernel than it returned as plaintext.
+  /// The kernel won't re-trigger EPOLLIN for data already consumed from the
+  /// socket buffer, so callers must poll this before returning to epoll_wait.
+  [[nodiscard]] bool hasPendingReadData() const noexcept override;
+
   // Perform best-effort bidirectional TLS shutdown (non-blocking). Safe to call multiple times.
   void shutdown() noexcept;
 

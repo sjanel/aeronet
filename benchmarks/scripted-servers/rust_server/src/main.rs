@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use hyper_util::rt::TokioIo;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,7 +21,7 @@ use std::{
     path::{Component, Path as StdPath, PathBuf},
     time::Duration,
 };
-use tokio::{fs, time::sleep};
+use tokio::{fs, net::TcpListener, time::sleep};
 
 /// CPU-bound Fibonacci computation
 fn fibonacci(n: u32) -> u64 {
@@ -89,11 +90,10 @@ async fn headers(Query(params): Query<HeadersParams>) -> Response {
     (StatusCode::OK, headers, body).into_response()
 }
 
-/// POST /uppercase - Echo request body back (force allocate a new string)
-async fn uppercase(body: String) -> String {
-    // Force a new allocation and some work so benchmarks are comparable:
-    // convert to upper-case which returns a new String
-    body.to_uppercase()
+/// POST /uppercase - Echo request body back with each byte incremented
+async fn uppercase(body: Bytes) -> Vec<u8> {
+    // Process raw bytes to avoid UTF-8 rejection for binary payloads.
+    body.iter().map(|b| b.wrapping_add(1)).collect()
 }
 
 #[derive(Deserialize)]
@@ -241,7 +241,9 @@ async fn body_codec(headers: HeaderMap, body: Bytes) -> Response {
 async fn status() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "server": "rust-axum",
-        "status": "ok"
+        "status": "ok",
+        "h2": std::env::var("BENCH_H2").unwrap_or_default() == "1",
+        "tls": std::env::var("BENCH_TLS").unwrap_or_default() == "1"
     }))
 }
 
@@ -298,6 +300,10 @@ async fn async_main(threads: usize) {
     let mut port_override = None;
     let mut static_dir: Option<PathBuf> = None;
     let mut route_count: usize = 0;
+    let mut h2_enabled = false;
+    let mut tls_enabled = false;
+    let mut cert_file: Option<String> = None;
+    let mut key_file: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -314,6 +320,22 @@ async fn async_main(threads: usize) {
                 route_count = args[i + 1].parse().unwrap_or(1000);
                 i += 2;
             }
+            "--h2" => {
+                h2_enabled = true;
+                i += 1;
+            }
+            "--tls" => {
+                tls_enabled = true;
+                i += 1;
+            }
+            "--cert" if i + 1 < args.len() => {
+                cert_file = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--key" if i + 1 < args.len() => {
+                key_file = Some(args[i + 1].clone());
+                i += 2;
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: {} [options]\n\
@@ -321,6 +343,10 @@ async fn async_main(threads: usize) {
                        --port N      Listen port (default: 8086, env: BENCH_PORT)\n  \
                        --static DIR  Static files directory\n  \
                        --routes N    Number of /r{{N}} routes\n  \
+                       --h2          Enable HTTP/2\n  \
+                       --tls         Enable TLS (requires --cert and --key)\n  \
+                       --cert FILE   TLS certificate file (PEM)\n  \
+                       --key FILE    TLS private key file (PEM)\n  \
                        --help        Show this help",
                     args[0]
                 );
@@ -328,6 +354,14 @@ async fn async_main(threads: usize) {
             }
             _ => i += 1,
         }
+    }
+
+    // Set env vars for status endpoint
+    if h2_enabled {
+        env::set_var("BENCH_H2", "1");
+    }
+    if tls_enabled {
+        env::set_var("BENCH_TLS", "1");
     }
 
     let port = port_override.unwrap_or(port);
@@ -364,7 +398,12 @@ async fn async_main(threads: usize) {
 
     let app = app.with_state(app_state);
 
-    println!("rust-axum benchmark server starting on port {} with {} threads", port, threads);
+    let protocol = if h2_enabled {
+        if tls_enabled { "h2-tls" } else { "h2c" }
+    } else {
+        "http/1.1"
+    };
+    println!("rust-axum benchmark server starting on port {} with {} threads [{}]", port, threads, protocol);
     if let Some(ref dir) = static_dir {
         println!("Static files: {:?}", dir);
     }
@@ -372,8 +411,37 @@ async fn async_main(threads: usize) {
         println!("Routes: {} literal + pattern routes", route_count);
     }
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    if tls_enabled {
+        // HTTP/2 over TLS using axum-server with rustls (binds its own listener)
+        let cert = cert_file.expect("--cert required for TLS");
+        let key = key_file.expect("--key required for TLS");
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+            .await
+            .expect("Failed to load TLS config");
+        axum_server::bind_rustls(addr, config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        let listener = TcpListener::bind(addr).await.unwrap();
+        if h2_enabled {
+            // HTTP/2 cleartext (h2c) using hyper directly
+            loop {
+                let (stream, _addr) = listener.accept().await.unwrap();
+                let io = TokioIo::new(stream);
+                let svc = app.clone();
+                tokio::spawn(async move {
+                    let hyper_service = hyper_util::service::TowerToHyperService::new(svc);
+                    let builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+                    if let Err(err) = builder.serve_connection(io, hyper_service).await {
+                        eprintln!("h2c connection error: {}", err);
+                    }
+                });
+            }
+        } else {
+            axum::serve(listener, app).await.unwrap();
+        }
+    }
 }
 
 async fn static_file(

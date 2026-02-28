@@ -33,25 +33,17 @@ TEST(Socket, Invalid) {
 TEST(Socket, TryBindReturnsFalseWhenPortIsTaken) {
   Socket first(Socket::Type::Stream);
   uint16_t port = 0;
-  first.bindAndListen(false, false, port);
+  first.bindAndListen(false, port);
   Socket second(Socket::Type::Stream);
-  EXPECT_FALSE(second.tryBind(false, false, port));
+  EXPECT_FALSE(second.tryBind(false, port));
   second.close();
   first.close();
-}
-
-TEST(Socket, TryBindReturnsFalseWhenPortIsTakenTcpNoDelay) {
-  Socket first(Socket::Type::Stream);
-  uint16_t port = 0;
-  first.bindAndListen(false, false, port);
-  Socket second(Socket::Type::Stream);
-  EXPECT_FALSE(second.tryBind(false, true, port));
 }
 
 TEST(Socket, BindAndListenUpdatesPort) {
   Socket sock(Socket::Type::Stream);
   uint16_t port = 0;
-  EXPECT_NO_THROW(sock.bindAndListen(false, false, port));
+  EXPECT_NO_THROW(sock.bindAndListen(false, port));
   EXPECT_NE(0, port);
   sock.close();
 }
@@ -59,9 +51,9 @@ TEST(Socket, BindAndListenUpdatesPort) {
 TEST(Socket, BindAndListenThrowsWhenPortInUse) {
   Socket first(Socket::Type::Stream);
   uint16_t port = 0;
-  first.bindAndListen(false, false, port);
+  first.bindAndListen(false, port);
   Socket second(Socket::Type::Stream);
-  EXPECT_THROW(second.bindAndListen(false, false, port), std::system_error);
+  EXPECT_THROW(second.bindAndListen(false, port), std::system_error);
   second.close();
   first.close();
 }
@@ -74,7 +66,7 @@ TEST(Socket, ConstructorThrowsWhenSocketCreationFails) {
 TEST(Socket, TryBindThrowsWhenSetsockoptReuseAddrFails) {
   Socket sock(Socket::Type::Stream);
   test::PushSetsockoptAction({-1, EACCES});  // EACCES: permission denied
-  EXPECT_THROW((void)sock.tryBind(false, false, 0), std::system_error);
+  EXPECT_THROW((void)sock.tryBind(false, 0), std::system_error);
   sock.close();
 }
 
@@ -83,16 +75,7 @@ TEST(Socket, TryBindThrowsWhenSetsockoptReusePortFails) {
   // First setsockopt succeeds (SO_REUSEADDR), second one (SO_REUSEPORT) fails
   test::PushSetsockoptAction({0, 0});        // SO_REUSEADDR succeeds
   test::PushSetsockoptAction({-1, EACCES});  // SO_REUSEPORT fails
-  EXPECT_THROW((void)sock.tryBind(true, false, 0), std::system_error);
-  sock.close();
-}
-
-TEST(Socket, TryBindThrowsWhenSetsockoptTcpNoDelayFails) {
-  Socket sock(Socket::Type::Stream);
-  // SO_REUSEADDR succeeds, SO_REUSEPORT skipped, TCP_NODELAY fails
-  test::PushSetsockoptAction({0, 0});        // SO_REUSEADDR succeeds
-  test::PushSetsockoptAction({-1, EACCES});  // TCP_NODELAY fails
-  EXPECT_THROW((void)sock.tryBind(false, true, 0), std::system_error);
+  EXPECT_THROW((void)sock.tryBind(true, 0), std::system_error);
   sock.close();
 }
 
@@ -102,7 +85,7 @@ TEST(Socket, BindAndListenThrowsWhenListenFails) {
   // Bind succeeds, but listen fails
   test::PushBindAction({0, 0});              // bind succeeds
   test::PushListenAction({-1, EADDRINUSE});  // listen fails
-  EXPECT_THROW(sock.bindAndListen(false, false, port), std::system_error);
+  EXPECT_THROW(sock.bindAndListen(false, port), std::system_error);
   sock.close();
 }
 
@@ -113,7 +96,7 @@ TEST(Socket, BindAndListenThrowsWhenGetsocknameFails) {
   test::PushBindAction({0, 0});               // bind succeeds
   test::PushListenAction({0, 0});             // listen succeeds
   test::PushGetsocknameAction({-1, EACCES});  // getsockname fails
-  EXPECT_THROW(sock.bindAndListen(false, false, port), std::system_error);
+  EXPECT_THROW(sock.bindAndListen(false, port), std::system_error);
   sock.close();
 }
 

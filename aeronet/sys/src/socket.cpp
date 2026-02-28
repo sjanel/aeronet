@@ -37,7 +37,7 @@ Socket::Socket(Type type, int protocol) : _baseFd(::socket(AF_INET, ComputeSocke
   log::debug("Socket fd # {} opened", _baseFd.fd());
 }
 
-[[nodiscard]] bool Socket::tryBind(bool reusePort, bool tcpNoDelay, uint16_t port) const {
+[[nodiscard]] bool Socket::tryBind(bool reusePort, uint16_t port) const {
   const int fd = _baseFd.fd();
 
   static constexpr int enable = 1;
@@ -48,9 +48,6 @@ Socket::Socket(Type type, int protocol) : _baseFd(::socket(AF_INET, ComputeSocke
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_REUSEPORT
   if (reusePort && ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) == -1) {
     throw_errno("setsockopt(SO_REUSEPORT) failed");
-  }
-  if (tcpNoDelay && ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) == -1) {
-    throw_errno("setsockopt(TCP_NODELAY) failed");
   }
 
   sockaddr_in addr{};
@@ -64,10 +61,10 @@ Socket::Socket(Type type, int protocol) : _baseFd(::socket(AF_INET, ComputeSocke
   return true;
 }
 
-void Socket::bindAndListen(bool reusePort, bool tcpNoDelay, uint16_t& port) {
+void Socket::bindAndListen(bool reusePort, uint16_t& port) {
   const int fd = _baseFd.fd();
 
-  if (!tryBind(reusePort, tcpNoDelay, port)) {
+  if (!tryBind(reusePort, port)) {
     throw_errno("bind failed");
   }
   if (::listen(fd, SOMAXCONN) == -1) {

@@ -5,6 +5,7 @@
 // Run: java -cp .:undertow-core.jar:xnio-api.jar:xnio-nio.jar UndertowBenchServer [port] [threads]
 
 import io.undertow.Undertow;
+import io.undertow.UndertowOptions;
 import io.undertow.io.Receiver;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
@@ -15,12 +16,14 @@ import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -28,6 +31,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 
 public class UndertowBenchServer {
   private static final String CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -40,6 +46,10 @@ public class UndertowBenchServer {
     int threads = getThreads(args);
     String staticDir = getStaticDir(args);
     int routeCount = getRouteCount(args);
+    boolean h2Enabled = hasFlag(args, "--h2");
+    boolean tlsEnabled = hasFlag(args, "--tls");
+    String certFile = getFlagValue(args, "--cert");
+    String keyFile = getFlagValue(args, "--key");
 
     PathHandler pathHandler =
         new PathHandler()
@@ -178,7 +188,8 @@ public class UndertowBenchServer {
             .addExactPath("/status", exchange -> {
               exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
               exchange.getResponseSender().send(
-                  String.format("{\"server\":\"undertow\",\"threads\":%d,\"status\":\"ok\"}", threads));
+                  String.format("{\"server\":\"undertow\",\"threads\":%d,\"h2\":%b,\"tls\":%b,\"status\":\"ok\"}",
+                      threads, h2Enabled, tlsEnabled));
             });
 
     // Endpoint 9: /* - Static file serving via Undertow ResourceHandler
@@ -231,14 +242,30 @@ public class UndertowBenchServer {
       }
     });
 
-    Undertow server = Undertow.builder()
-                          .addHttpListener(port, "127.0.0.1")
-                          .setIoThreads(threads)
-                          .setWorkerThreads(threads)
-                          .setHandler(pathHandler)
-                          .build();
+    Undertow.Builder builder =
+        Undertow.builder().setIoThreads(threads).setWorkerThreads(threads).setHandler(pathHandler);
 
-    System.out.println("undertow benchmark server starting on port " + port + " with " + threads + " threads");
+    if (h2Enabled) {
+      builder.setServerOption(UndertowOptions.ENABLE_HTTP2, true);
+    }
+
+    if (tlsEnabled && certFile != null && keyFile != null) {
+      try {
+        SSLContext sslContext = createSSLContext(certFile, keyFile);
+        builder.addHttpsListener(port, "127.0.0.1", sslContext);
+      } catch (Exception e) {
+        System.err.println("Failed to configure TLS: " + e.getMessage());
+        System.exit(1);
+      }
+    } else {
+      builder.addHttpListener(port, "127.0.0.1");
+    }
+
+    Undertow server = builder.build();
+
+    String protocol = h2Enabled ? (tlsEnabled ? "h2-tls" : "h2c") : "http/1.1";
+    System.out.println(
+        "undertow benchmark server starting on port " + port + " with " + threads + " threads [" + protocol + "]");
     if (staticDir != null && !staticDir.isEmpty()) {
       System.out.println("Static files: " + staticDir);
     }
@@ -301,6 +328,50 @@ public class UndertowBenchServer {
       }
     }
     return null;
+  }
+
+  private static boolean hasFlag(String[] args, String flag) {
+    for (String arg : args) {
+      if (flag.equals(arg)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static String getFlagValue(String[] args, String flag) {
+    for (int i = 0; i < args.length - 1; i++) {
+      if (flag.equals(args[i])) {
+        return args[i + 1];
+      }
+    }
+    return null;
+  }
+
+  private static SSLContext createSSLContext(String certPath, String keyPath) throws Exception {
+    // For benchmarks, use a PKCS12 keystore generated from the cert/key PEM files.
+    // The run_benchmarks.py harness will generate a .p12 file alongside the PEM files.
+    String p12Path = certPath.replace(".pem", ".p12").replace(".crt", ".p12");
+    if (!new File(p12Path).exists()) {
+      // Fall back: try same directory with bench.p12 name
+      p12Path = new File(certPath).getParent() + "/bench.p12";
+    }
+
+    char[] password = "benchmark".toCharArray();
+    KeyStore keyStore = KeyStore.getInstance("PKCS12");
+    try (FileInputStream fis = new FileInputStream(p12Path)) {
+      keyStore.load(fis, password);
+    }
+
+    KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    kmf.init(keyStore, password);
+
+    TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    tmf.init(keyStore);
+
+    SSLContext sslContext = SSLContext.getInstance("TLS");
+    sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+    return sslContext;
   }
 
   private static int getRouteCount(String[] args) {

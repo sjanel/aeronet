@@ -9,6 +9,7 @@
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
 [![clang-format](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/clang-format-check.yml)
 [![Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/)
+[![H2 Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fh2%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
 [![Release](https://img.shields.io/github/v/release/sjanel/aeronet?style=flat-square)](https://github.com/sjanel/aeronet/releases/latest)
 
 ## Why aeronet?
@@ -24,7 +25,7 @@
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1 based) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), [Crow](https://github.com/CrowCpp/Crow), a [Rust Axum server](https://docs.rs/axum/latest/axum/), [Undertow in Java](https://github.com/undertow-io/undertow), Go and Python), `aeronet`:
+`aeronet` is designed to be **very fast**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1) and [h2load](https://nghttp2.org/documentation/h2load-howto.html)-based benchmarks (HTTP/2) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), [Crow](https://github.com/CrowCpp/Crow), a [Rust Axum server](https://docs.rs/axum/latest/axum/), [Undertow in Java](https://github.com/undertow-io/undertow), Go and Python), `aeronet`:
 
 - Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
@@ -33,6 +34,7 @@
 You can inspect the latest benchmark tables generated on `main` from the CI **benchmarks** job and detailed methodology here:
 
 - [Latest CI benchmarks (CI workflow, benchmarks job)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml?query=branch%3Amain)
+- [Latest HTTP/2 benchmarks (h2load)](https://github.com/sjanel/aeronet/actions/workflows/benchmarks-h2.yml?query=branch%3Amain)
 - [Benchmark scenarios and methodology](benchmarks/scripted-servers/README.md)
 
 You can browse the latest rendered benchmark tables directly on GitHub Pages:
