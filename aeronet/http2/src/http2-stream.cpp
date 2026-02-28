@@ -171,7 +171,20 @@ ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
   return ErrorCode::NoError;
 }
 
-void Http2Stream::increaseRecvWindow(uint32_t increment) noexcept { _recvWindow += static_cast<int32_t>(increment); }
+ErrorCode Http2Stream::increaseRecvWindow(uint32_t increment) noexcept {
+  // Security hardening: check for overflow. RFC 9113 §6.9.1 mandates that a window
+  // size must never exceed 2^31-1 (kMaxWindowSize). Without this check, a bug or
+  // double-increment could silently overflow the int32_t window.
+  static constexpr int32_t kMaxWindowSize = std::numeric_limits<int32_t>::max();
+
+  int64_t newWindow = static_cast<int64_t>(_recvWindow) + static_cast<int64_t>(increment);
+  if (newWindow > kMaxWindowSize) [[unlikely]] {
+    return ErrorCode::FlowControlError;
+  }
+
+  _recvWindow = static_cast<int32_t>(newWindow);
+  return ErrorCode::NoError;
+}
 
 ErrorCode Http2Stream::updateInitialWindowSize(uint32_t newInitialWindowSize) noexcept {
   // RFC 9113 §6.9.2: When the value of SETTINGS_INITIAL_WINDOW_SIZE changes,

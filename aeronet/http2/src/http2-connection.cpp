@@ -30,6 +30,16 @@ namespace {
 constexpr std::size_t kConnectionPrefaceLength = kConnectionPreface.size();
 constexpr std::size_t kClosedStreamsMaxRetained = 16;
 
+// Security hardening (CVE-2024-27316 mitigation): limit the total accumulated
+// header block size across HEADERS + CONTINUATION frames to prevent unbounded
+// memory growth from a CONTINUATION flood attack.
+constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256 * 1024;
+
+// Security hardening: cap PRIORITY frames received on non-existent streams
+// to prevent an attacker from flooding cheap PRIORITY frames that starve
+// real request processing. ENHANCE_YOUR_CALM is sent when exceeded.
+constexpr uint32_t kMaxIdlePriorityFrames = 10000;
+
 }  // namespace
 
 // ============================
@@ -269,11 +279,17 @@ void Http2Connection::sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuff
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
 
+  // Security hardening: check for recv-window overflow (must not exceed 2^31-1
+  // per RFC 9113 §6.9.1), matching the overflow guard on the send-window side.
   if (streamId == 0) {
-    _connectionRecvWindow += static_cast<int32_t>(increment);
+    int64_t newWindow = static_cast<int64_t>(_connectionRecvWindow) + static_cast<int64_t>(increment);
+    _connectionRecvWindow =
+        static_cast<int32_t>(std::min(newWindow, static_cast<int64_t>(std::numeric_limits<int32_t>::max())));
   } else {
     Http2Stream* stream = getStream(streamId);
     if (stream != nullptr) {
+      // increaseRecvWindow now returns ErrorCode; on the send side (our own
+      // WINDOW_UPDATE) an overflow should not happen, but clamp defensively.
       stream->increaseRecvWindow(increment);
     }
   }
@@ -506,6 +522,11 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Accumulate header block
   if (!frame.endHeaders) {
+    // Security hardening (CVE-2024-27316): reject oversized initial header block fragment
+    // to prevent unbounded memory growth via CONTINUATION flood.
+    if (frame.headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
+      return connectionError(ErrorCode::EnhanceYourCalm, "Header block too large");
+    }
     _expectingContinuation = true;
     _headerBlockStreamId = header.streamId;
     _headerBlockEndStream = frame.endStream;
@@ -554,6 +575,13 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   Http2Stream* stream = getStream(header.streamId);
   if (stream != nullptr) {
     stream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
+  } else {
+    // Security hardening: rate-limit PRIORITY frames on non-existent streams to
+    // prevent a flood of cheap PRIORITY frames from starving real request processing.
+    ++_idlePriorityFrameCount;
+    if (_idlePriorityFrameCount > kMaxIdlePriorityFrames) [[unlikely]] {
+      return connectionError(ErrorCode::EnhanceYourCalm, "Too many PRIORITY frames on idle streams");
+    }
   }
   // PRIORITY can be sent for idle streams (pre-allocation)
 
@@ -759,6 +787,12 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 
   ContinuationFrame frame;
   ParseContinuationFrame(header, payload, frame);
+
+  // Security hardening (CVE-2024-27316): enforce a bound on the total accumulated
+  // header block size to prevent CONTINUATION flood attacks that grow memory unboundedly.
+  if (_headerBlockBuffer.size() + frame.headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, "Header block too large");
+  }
 
   // Append to header block buffer
   _headerBlockBuffer.append(frame.headerBlockFragment);

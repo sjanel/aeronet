@@ -151,7 +151,9 @@ struct RstStreamFrame {
 
 /// Parsed SETTINGS frame.
 struct SettingsFrame {
-  static constexpr std::size_t kMaxEntries = 6;  // RFC defines 6 standard settings
+  // Security hardening: use 16 instead of 6 to accommodate future RFC extensions
+  // and unknown settings that must be ignored per RFC 9113 §6.5.2, rather than silently dropped.
+  static constexpr std::size_t kMaxEntries = 16;
 
   SettingsEntry entries[kMaxEntries];
   std::size_t entryCount;
