@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -17,6 +18,15 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+
+#include "aeronet/cors-policy.hpp"
+#include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
+#include "aeronet/request-task.hpp"
+#endif
 
 namespace aeronet {
 
@@ -96,6 +106,11 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     _streamRequests.clear();
     _pendingFileSends.clear();
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // Destroy any in-flight async coroutines before clearing state.
+    _pendingAsyncTasks.clear();
+#endif
+
     // Detach callbacks to avoid generating new outbound frames while the transport is closing.
     _connection.setOnHeadersDecoded({});
     _connection.setOnData({});
@@ -138,6 +153,22 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Returns the list of upstream fds that must be closed by the caller.
   /// Used during connection teardown to avoid recursive closeConnection calls.
   [[nodiscard]] TunnelUpstreamsMap drainTunnelUpstreamFds();
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  /// Install a callback for posting deferred async work completion to the server's event loop.
+  /// The callback receives a coroutine handle and optional pre-resume work function.
+  /// Must be called before any async handlers are dispatched.
+  using AsyncPostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+  void setAsyncPostCallback(AsyncPostCallbackFn fn) noexcept { _asyncPostCallback = std::move(fn); }
+
+  /// Resume a pending async task identified by its coroutine handle.
+  /// Called by the server when an async callback fires for this connection.
+  /// @return true if a matching task was found and resumed, false otherwise.
+  bool resumeAsyncTaskByHandle(std::coroutine_handle<> handle);
+
+  /// Check if there are any pending async tasks.
+  [[nodiscard]] bool hasAsyncTasks() const noexcept { return !_pendingAsyncTasks.empty(); }
+#endif
 
  private:
   /// Per-stream request state during aggregation.
@@ -185,6 +216,33 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Send an HTTP response on a stream.
   ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  /// Per-stream async handler state for coroutines that suspend (e.g., co_await deferWork).
+  struct PendingAsyncTask {
+    RequestTask<HttpResponse> task;
+    StreamRequest streamRequest;  // Owns the HttpRequest and header storage
+    const CorsPolicy* pCorsPolicy{};
+    const ResponseMiddleware* responseMiddleware{};
+    std::size_t responseMiddlewareCount{0};
+    bool isHead{false};
+    bool suspended{false};  // Set to true when the coroutine suspends
+  };
+
+  using PendingAsyncTasksMap = flat_hash_map<uint32_t, PendingAsyncTask>;
+
+  /// Start an async handler for a stream. Returns true if the handler was started
+  /// asynchronously (response will be sent later), false if it completed synchronously
+  /// (response already sent).
+  bool startAsyncHandler(StreamRequestsMap::iterator it, const AsyncRequestHandler& handler,
+                         const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
+
+  /// Resume a pending async task's coroutine after suspension.
+  void resumeAsyncTask(uint32_t streamId);
+
+  /// Called when an async task completes: finalize and send the response.
+  void onAsyncTaskCompleted(uint32_t streamId);
+#endif
+
   Http2Connection _connection;
 
   Router* _pRouter;
@@ -207,6 +265,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
   ITunnelBridge* _tunnelBridge{nullptr};
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Pending async tasks per stream (coroutines that have suspended).
+  PendingAsyncTasksMap _pendingAsyncTasks;
+  // Callback to post async work completion to the server's event loop.
+  AsyncPostCallbackFn _asyncPostCallback;
+#endif
 };
 
 /// Factory function for creating HTTP/2 protocol handlers.

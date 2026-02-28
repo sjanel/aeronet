@@ -308,6 +308,9 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
   _streamRequests.erase(streamId);
   _pendingFileSends.erase(streamId);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  _pendingAsyncTasks.erase(streamId);
+#endif
   cleanupTunnel(streamId);
 }
 
@@ -315,6 +318,9 @@ void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode)
   log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
   _streamRequests.erase(streamId);
   _pendingFileSends.erase(streamId);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  _pendingAsyncTasks.erase(streamId);
+#endif
   cleanupTunnel(streamId);
 }
 
@@ -431,6 +437,45 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   // Dispatch to the callback provided by SingleHttpServer
   try {
     const bool isHead = (request.method() == http::Method::HEAD);
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // Check routing for async handlers before calling reply().
+    // If an async handler is found and suspends, we defer the response.
+    {
+      auto routingResult = _pRouter->match(request.method(), request.path());
+      if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
+        // Run request middleware before the async handler
+        auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
+
+        auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(), requestMiddlewareRange,
+                                                 *_pTelemetryContext, false, {});
+        if (globalResult.has_value()) {
+          const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+          if (pCorsPolicy != nullptr) {
+            (void)pCorsPolicy->applyToResponse(request, *globalResult);
+          }
+          internal::PrefinalizeHttpResponse(request, *globalResult, isHead, *_pCompressionState, *_pTelemetryContext);
+          globalResult->finalizeForHttp2();
+          err = sendResponse(streamId, std::move(*globalResult), isHead);
+          _streamRequests.erase(streamId);
+          if (err != ErrorCode::NoError) [[unlikely]] {
+            log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+          }
+          return;
+        }
+
+        request.finalizeBeforeHandlerCall(routingResult.pathParams);
+
+        if (startAsyncHandler(it, *asyncHandler, routingResult.pCorsPolicy, routingResult.responseMiddlewareRange)) {
+          // Async handler is running; response will be sent later when it completes.
+          return;
+        }
+        // startAsyncHandler returned false: handler completed synchronously, response already sent.
+        return;
+      }
+    }
+#endif
+
     HttpResponse resp = reply(request);
 
     internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
@@ -520,24 +565,13 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
-    // Async handlers: run the coroutine to completion synchronously
-    // HTTP/2 streams are independent and don't block each other
-    // TODO: make them really asynchronous
-    auto task = (*asyncHandler)(request);
-    if (task.valid()) {
-      auto handle = task.release();
-      while (!handle.done()) {
-        handle.resume();
-      }
-      auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(handle.address());
-      HttpResponse resp = std::move(typedHandle.promise().consume_result());
-      typedHandle.destroy();
-      finalizeResponse(resp);
-      return resp;
-    }
-    log::error("HTTP/2 async handler returned invalid task for path {}", request.path());
-    return {http::StatusCodeInternalServerError, "Async handler inactive"};
+  if (routingResult.asyncRequestHandler() != nullptr) {
+    // Async handlers are dispatched directly by dispatchRequest(), not through reply().
+    // If we reach here, it means dispatchRequest() didn't intercept it (shouldn't happen).
+    log::error("HTTP/2 async handler reached reply() unexpectedly for path {}", request.path());
+    HttpResponse resp(http::StatusCodeInternalServerError, "Internal routing error");
+    finalizeResponse(resp);
+    return resp;
   }
 #endif
 
@@ -740,6 +774,152 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
   return err;
 }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
+bool Http2ProtocolHandler::startAsyncHandler(StreamRequestsMap::iterator it, const AsyncRequestHandler& handler,
+                                             const CorsPolicy* pCorsPolicy,
+                                             std::span<const ResponseMiddleware> responseMiddleware) {
+  const uint32_t streamId = it->first;
+  HttpRequest& request = it->second.request;
+  const bool isHead = (request.method() == http::Method::HEAD);
+
+  auto task = handler(request);
+  if (!task.valid()) {
+    log::error("HTTP/2 async handler returned invalid task on stream {} for path {}", streamId, request.path());
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
+                       /*isHeadMethod=*/false);
+    _streamRequests.erase(streamId);
+    return false;
+  }
+
+  // Prepare the pending task entry. We move the StreamRequest out of _streamRequests
+  // so header string_views remain valid while the coroutine is suspended.
+  PendingAsyncTask pending;
+  pending.streamRequest = std::move(it->second);
+  pending.pCorsPolicy = pCorsPolicy;
+  pending.responseMiddleware = responseMiddleware.data();
+  pending.responseMiddlewareCount = responseMiddleware.size();
+  pending.isHead = isHead;
+  pending.suspended = false;
+  pending.task = std::move(task);
+
+  // Remove from _streamRequests — ownership is now in _pendingAsyncTasks
+  _streamRequests.erase(it);
+
+  // Install HTTP/2 async callback mechanism on the request
+  auto& pendingRef = (_pendingAsyncTasks[streamId] = std::move(pending));
+  pendingRef.streamRequest.request._h2SuspendedFlag = &pendingRef.suspended;
+  pendingRef.streamRequest.request._h2PostCallback = _asyncPostCallback;
+
+  // Resume the coroutine once (it starts suspended due to initial_suspend = suspend_always)
+  pendingRef.task.resume();
+
+  if (pendingRef.task.done()) {
+    // Coroutine completed immediately (synchronous fast path)
+    onAsyncTaskCompleted(streamId);
+    return false;
+  }
+
+  if (pendingRef.suspended) {
+    // Coroutine suspended on co_await (e.g., deferWork) — truly async.
+    // It will be resumed later via resumeAsyncTaskByHandle when the callback fires.
+    log::debug("HTTP/2 async handler suspended on stream {}", streamId);
+    return true;
+  }
+
+  // Coroutine suspended but not via our mechanism (e.g., a simple co_yield or custom awaitable).
+  // Resume in a loop as a fallback (preserves current behavior for non-deferWork awaitables).
+  while (!pendingRef.task.done()) {
+    pendingRef.suspended = false;
+    pendingRef.task.resume();
+    if (pendingRef.suspended && !pendingRef.task.done()) {
+      // Suspended via deferWork on a subsequent resume — go async
+      log::debug("HTTP/2 async handler suspended on stream {} after partial execution", streamId);
+      return true;
+    }
+  }
+
+  onAsyncTaskCompleted(streamId);
+  return false;
+}
+
+void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
+  auto it = _pendingAsyncTasks.find(streamId);
+  if (it == _pendingAsyncTasks.end()) {
+    return;
+  }
+
+  PendingAsyncTask& pending = it->second;
+  pending.suspended = false;
+
+  while (!pending.task.done()) {
+    pending.task.resume();
+    if (pending.suspended && !pending.task.done()) {
+      // Suspended again — wait for next callback
+      return;
+    }
+  }
+
+  onAsyncTaskCompleted(streamId);
+}
+
+void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
+  auto it = _pendingAsyncTasks.find(streamId);
+  if (it == _pendingAsyncTasks.end()) [[unlikely]] {
+    return;
+  }
+
+  PendingAsyncTask& pending = it->second;
+  HttpRequest& request = pending.streamRequest.request;
+  const bool isHead = pending.isHead;
+  ErrorCode err = ErrorCode::NoError;
+
+  try {
+    HttpResponse resp = pending.task.runSynchronously();
+
+    auto middlewareSpan =
+        std::span<const ResponseMiddleware>(pending.responseMiddleware, pending.responseMiddlewareCount);
+    ApplyResponseMiddleware(request, resp, middlewareSpan, _pRouter->globalResponseMiddleware(), *_pTelemetryContext,
+                            false, {});
+    if (pending.pCorsPolicy != nullptr) {
+      (void)pending.pCorsPolicy->applyToResponse(request, resp);
+    }
+
+    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
+    resp.finalizeForHttp2();
+
+    err = sendResponse(streamId, std::move(resp), isHead);
+  } catch (const std::exception& ex) {
+    log::error("HTTP/2 async handler exception on stream {}: {}", streamId, ex.what());
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, ex.what()),
+                       /*isHeadMethod=*/false);
+  } catch (...) {
+    log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
+    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Unknown error"),
+                       /*isHeadMethod=*/false);
+  }
+
+  if (err != ErrorCode::NoError) [[unlikely]] {
+    log::error("HTTP/2 failed to send async response on stream {}: {}", streamId, ErrorCodeName(err));
+  }
+
+  _pendingAsyncTasks.erase(it);
+}
+
+bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handle) {
+  const void* targetAddr = handle.address();
+  for (auto& [streamId, pending] : _pendingAsyncTasks) {
+    if (pending.task.coroutineAddress() == targetAddr) {
+      pending.suspended = false;
+      resumeAsyncTask(streamId);
+      return true;
+    }
+  }
+  return false;
+}
+
+#endif  // AERONET_ENABLE_ASYNC_HANDLERS
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
