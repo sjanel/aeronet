@@ -1,16 +1,16 @@
 #include "aeronet/connection-state.hpp"
 
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
 #include <utility>
 
@@ -35,7 +35,7 @@
 
 namespace aeronet {
 
-void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
+void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
                                                    internal::ResponseCompressionState& compressionState) {
   request.init(config, compressionState);
 
@@ -89,7 +89,7 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
   return res;
 }
 
-bool ConnectionState::tunnelTransportWrite(int fd) {
+bool ConnectionState::tunnelTransportWrite(NativeHandle fd) {
   const auto [written, want] = transportWrite(tunnelOrFileBuffer);
   if (want == TransportHint::Error) [[unlikely]] {
     // Fatal error writing tunnel data: close this connection
@@ -111,7 +111,7 @@ bool ConnectionState::tunnelTransportWrite(int fd) {
   return true;
 }
 
-ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
+ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd, bool tlsFlow) {
   // Kernel sendfile(2): use a large chunk to minimize syscalls.  The kernel transfers
   // directly from page-cache to socket buffer, so a large value just means fewer
   // transitions to/from kernel mode. A too small value would cause excessive syscalls and reduce throughput, especially
@@ -127,12 +127,30 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
 
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
   const std::size_t maxBytes = std::min(fileSend.remaining, chunkLimit);
+#ifdef AERONET_POSIX
   off_t offset = static_cast<off_t>(fileSend.offset);
+#else
+  int64_t offset = static_cast<int64_t>(fileSend.offset);
+#endif
 
   int64_t result;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
+#ifdef AERONET_POSIX
     result = static_cast<int64_t>(::pread(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, offset));
+#elifdef AERONET_WINDOWS
+    // Windows: use _pread equivalent via ReadFile with OVERLAPPED
+    OVERLAPPED ov{};
+    ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
+    ov.OffsetHigh = static_cast<DWORD>((offset >> 32) & 0xFFFFFFFF);
+    DWORD bytesRead = 0;
+    if (::ReadFile(reinterpret_cast<HANDLE>(::_get_osfhandle(fileSend.file.fd())), tunnelOrFileBuffer.data(),
+                   static_cast<DWORD>(maxBytes), &bytesRead, &ov)) {
+      result = static_cast<int64_t>(bytesRead);
+    } else {
+      result = -1;
+    }
+#endif
   } else {
     result = Sendfile(clientFd, fileSend.file.fd(), offset, maxBytes);
   }
@@ -140,7 +158,8 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
 
   if (result == -1) [[unlikely]] {
     res.bytesDone = 0;
-    const int errnoVal = errno;
+#ifdef AERONET_POSIX
+    const int errnoVal = LastSystemError();
     static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");
     switch (errnoVal) {
       case EWOULDBLOCK:
@@ -157,17 +176,31 @@ ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tl
         // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
         const bool peerClose = (errnoVal == ECONNRESET || errnoVal == EPIPE || errnoVal == ECONNABORTED);
         if (peerClose) {
-          log::debug("{} peer closed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+          log::debug("{} peer closed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         } else {
-          log::error("{} failed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+          log::error("{} failed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         }
         requestDrainAndClose();
         fileSend.active = false;
         return res;
       }
     }
+#elifdef AERONET_WINDOWS
+    const int errVal = static_cast<int>(::GetLastError());
+    if (errVal == WSAEWOULDBLOCK) {
+      res.enableWritable = true;
+      res.code = FileResult::Code::WouldBlock;
+      return res;
+    }
+    res.code = FileResult::Code::Error;
+    log::error("{} failed during {} sendfile fd # {} err={}", tlsFlow ? "ReadFile" : "TransmitFile",
+               tlsFlow ? "TLS" : "plain", clientFd, errVal);
+    requestDrainAndClose();
+    fileSend.active = false;
+    return res;
+#endif
   }
   if (tlsFlow) {
     tunnelOrFileBuffer.setSize(res.bytesDone);
@@ -243,7 +276,7 @@ void ConnectionState::installAggregatedBodyBridge() {
   request._bodyAccessContext = &bodyStreamContext;
 }
 #ifdef AERONET_ENABLE_OPENSSL
-bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb,
+bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb,
                                                           TlsMetricsInternal& metrics, const TLSConfig& cfg) {
   auto* tlsTr = dynamic_cast<TlsTransport*>(transport.get());
   if (tlsTr == nullptr) {
@@ -308,7 +341,7 @@ void ConnectionState::reset() {
   lastActivity = {};
   headerStartTp = {};
   bodyLastActivity = {};
-  peerFd = -1;
+  peerFd = kInvalidHandle;
   requestsServed = 0;
   trailerLen = 0;
   closeMode = CloseMode::None;

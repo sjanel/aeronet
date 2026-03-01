@@ -1,8 +1,14 @@
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <dirent.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <chrono>

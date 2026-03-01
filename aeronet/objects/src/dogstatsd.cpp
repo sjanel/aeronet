@@ -1,13 +1,11 @@
 #include "aeronet/dogstatsd.hpp"
 
 #include <cassert>
-#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -15,6 +13,7 @@
 
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/unix-socket.hpp"
 
@@ -82,7 +81,7 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
   // while others (ENOENT) mean the agent isn't present yet and should be
   // retried later.
   if (connect() == -1) {
-    const int serr = errno;
+    const int serr = LastSystemError();
     // Treat these as configuration / syntax / structural errors and throw.
     if (serr == ENOTDIR || serr == EISDIR || serr == ELOOP || serr == EINVAL || serr == ENOTSOCK || serr == EACCES ||
         serr == EPERM) {
@@ -120,15 +119,17 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
   }
 
   if (_fd.send(_buf.data() + _buf.size(), dataSize) == -1) {
-    const int serr = errno;
+    const int serr = LastSystemError();
+#ifdef AERONET_POSIX
     static_assert(EAGAIN == EWOULDBLOCK, "EAGAIN and EWOULDBLOCK should have the same value");
+#endif
     // If the socket would block (EAGAIN / EWOULDBLOCK), treat the metric as dropped
     // and do not mark the connection for immediate reconnect. Other errors indicate
     // a more serious problem with the socket and should trigger a reconnect attempt.
     if (serr == EAGAIN) {
       log::debug("DogStatsD: dropping metric of size {} due to EAGAIN/EWOULDBLOCK", dataSize);
     } else {
-      log::error("DogStatsD: unable to send message of size {} with error : {}", dataSize, std::strerror(serr));
+      log::error("DogStatsD: unable to send message of size {} with error: {}", dataSize, SystemErrorMessage(serr));
       _retryConnectionCounter = kReconnectionThreshold;  // mark as disconnected but retry immediately on next send
     }
   }
@@ -183,7 +184,8 @@ int DogStatsD::connect() noexcept {
 
   const int ret = _fd.connect(socketPath);
   if (ret == -1) {
-    log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath, std::strerror(errno));
+    log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
+               SystemErrorMessage(LastSystemError()));
     _retryConnectionCounter = 1;
   } else {
     _retryConnectionCounter = 0;

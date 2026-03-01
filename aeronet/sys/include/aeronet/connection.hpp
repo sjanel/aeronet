@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/socket.hpp"
 
 namespace aeronet {
@@ -15,7 +16,7 @@ class Connection {
   // Construct a Connection that takes ownership of an existing fd wrapped in BaseFd.
   explicit Connection(BaseFd&& bd) noexcept;
 
-  [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
+  [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 
   explicit operator bool() const noexcept { return static_cast<bool>(_baseFd); }
 
@@ -23,9 +24,9 @@ class Connection {
 
   bool operator==(const Connection&) const noexcept = default;
 
-  // This operator int is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
+  // This operator is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
   // from Fd received from the event loop.
-  operator int() const noexcept { return _baseFd.fd(); }
+  operator NativeHandle() const noexcept { return _baseFd.fd(); }
 
  private:
   BaseFd _baseFd;

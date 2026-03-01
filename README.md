@@ -13,8 +13,9 @@
 
 ## Why aeronet?
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux** focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
 
+- **Cross‑platform**: primary platform is Linux (epoll, io_uring); macOS (kqueue) and Windows (IOCP) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
@@ -845,6 +846,22 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Async run | SingleHttpServer::start() behavior | ✅ | `http-server-lifecycle_test.cpp` |
 | Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
 | Implemented | Trailers (outgoing chunked / trailing headers) | ✅ | See tests/http-trailers_test.cpp and http-response-writer.hpp |
+
+## Platform Support
+
+| Platform | Status | I/O backend | Notes |
+|----------|--------|-------------|-------|
+| **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile` |
+| **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+| **Windows** (x64, MSVC) | Supported | IOCP | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+| **Alpine Linux** (musl) | Supported | epoll | Tested in CI |
+
+Linux-only features (gracefully disabled on other platforms):
+
+- Kernel TLS (`kTLS`) and `sendfile(2)` for zero-copy file serving
+- `MSG_ZEROCOPY` for large payload sends
+- `eventfd` / `timerfd` for internal event loop signaling
+- DogStatsD via Unix domain sockets
 
 ## Build & Installation
 

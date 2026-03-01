@@ -1,6 +1,13 @@
 #include <gtest/gtest.h>
+
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#endif
 
 #include <algorithm>
 #include <charconv>
@@ -50,7 +57,7 @@ std::string BlockingFetch(uint16_t port, std::string_view verb, std::string_view
 
 std::string RequestVerb(auto port, std::string_view verb, std::string_view target) {
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  auto fd = sock.fd();
 
   std::string req(verb);
   req.push_back(' ');
@@ -63,7 +70,7 @@ std::string RequestVerb(auto port, std::string_view verb, std::string_view targe
 
 std::string RequestMethod(auto port, std::string_view method, std::string_view path, std::string_view body = {}) {
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
   if (!body.empty()) {
@@ -578,7 +585,7 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
   });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
   std::string req1 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
   auto r1 = test::recvWithTimeout(fd);
@@ -599,7 +606,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   std::string hreq = "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, hreq);
@@ -618,7 +625,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
 namespace {
 void raw(auto port, std::string_view verb, std::string& out) {
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req(verb);
   req += " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
@@ -627,7 +634,7 @@ void raw(auto port, std::string_view verb, std::string& out) {
 
 void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, std::string& out) {
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req(verb);
   req += " /len HTTP/1.1\r\nHost: x\r\n";
   req += extraHeaders;
@@ -785,7 +792,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
     writer.end();
   });
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
   std::string req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
   test::sendAll(fd, req);
 
@@ -848,7 +855,7 @@ TEST(HttpStreaming, CustomContentTypeAndEncoding) {
     writer.end();
   });
   test::ClientConnection cc(ts.port());
-  int fd = cc.fd();
+  auto fd = cc.fd();
   std::string req =
       "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
@@ -1088,15 +1095,19 @@ TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
 // This test attempts to trigger failure by rapidly closing/aborting the connection while the handler
 // tries to write large amounts of data that might exceed socket buffers.
 // Ignore SIGPIPE to prevent process termination on broken pipe
+#ifdef AERONET_POSIX
 static const int kSigpipeIgnored = []() {
   ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
   return 0;
 }();
+#endif
 
 // Test: ensureHeadersSent() enqueue failure (line 141)
 // Trigger failure when first sending headers by closing connection immediately
 TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   ts.router().setPath(http::Method::GET, "/ensure-headers-sent-fail",
                       [](const HttpRequest&, HttpResponseWriter& writer) {
                         writer.status(http::StatusCodeOK);
@@ -1106,18 +1117,20 @@ TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
                       });
 
   test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "GET /ensure-headers-sent-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
   // Close immediately to cause header enqueue to fail
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 // Test: emitLastChunk() enqueue failure (line 190)
 // Chunked response with trailer, close connection to fail last chunk
 TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   ts.router().setPath(http::Method::GET, "/last-chunk-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("chunk1");
@@ -1129,7 +1142,7 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
   });
 
   test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "GET /last-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
   // Read some data first
@@ -1137,14 +1150,16 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
   char buf[1024];
   ::recv(fd, buf, sizeof(buf), 0);
   // Close before last chunk
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 // Test: writeBody() fixed-length enqueue failure (line 233)
 // Non-chunked response with HEAD request (fixed length path), close to fail body write
 TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   ts.router().setPath(http::Method::HEAD, "/fixed-body-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(1000);
@@ -1157,17 +1172,19 @@ TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
   });
 
   test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "HEAD /fixed-body-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 // Enable compression, close connection to fail final compressed output
 TEST(HttpResponseWriterFailures, EndCompressionFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   // Enable compression in server config
   HttpServerConfig cfg;
   cfg.compression.minBytes = 16;
@@ -1182,7 +1199,7 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
   });
 
   test::ClientConnection sock(ts2.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "GET /compress-end-fail HTTP/1.1\r\nHost: test\r\nAccept-Encoding: gzip\r\n\r\n";
   test::sendAll(fd, req);
   // Read headers
@@ -1190,13 +1207,15 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
   char buf[512];
   ::recv(fd, buf, sizeof(buf), 0);
   // Close before final encoder output
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 // Small write below compression threshold, close to fail buffered flush
 TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   // Enable compression but write below threshold
   HttpServerConfig cfg;
   cfg.compression.minBytes = 100;  // High threshold
@@ -1212,7 +1231,7 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
                        });
 
   test::ClientConnection sock(ts3.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "GET /identity-buffered-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
   // Read headers
@@ -1220,13 +1239,15 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
   char buf[512];
   ::recv(fd, buf, sizeof(buf), 0);
   // Close before buffered flush
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 // This was covered by the original ContentLengthWhenFailed test
 TEST(HttpResponseWriterFailures, EmitChunkFailure) {
+#ifdef AERONET_POSIX
   (void)kSigpipeIgnored;
+#endif
   std::string largeData(10000, 'x');
   ts.router().setPath(http::Method::GET, "/emit-chunk-fail",
                       [largeData](const HttpRequest&, HttpResponseWriter& writer) {
@@ -1243,11 +1264,11 @@ TEST(HttpResponseWriterFailures, EmitChunkFailure) {
                       });
 
   test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
+  auto fd = sock.fd();
   std::string req = "GET /emit-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  close(fd);
+  aeronet::CloseNativeHandle(fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
@@ -1307,7 +1328,7 @@ TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
                       });
 
   test::ClientConnection client(ts.port());
-  const int fd = client.fd();
+  const auto fd = client.fd();
   std::string req = "GET /stream-make-response HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   const std::string resp = test::recvUntilClosed(fd);
@@ -1328,7 +1349,7 @@ TEST(HttpStreaming, ChunkedRequestWithExpect100Continue) {
                       [](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   // Send headers first with Expect: 100-continue
   std::string headers =
@@ -1370,7 +1391,7 @@ TEST(HttpStreaming, ChunkedRequestWithMalformedContentEncodingRejects400) {
                       [](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   // Send chunked request with malformed Content-Encoding (double comma = empty token)
   std::string req =
@@ -1399,7 +1420,7 @@ TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
                       [](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   // Send chunked request with empty Content-Encoding header value
   std::string req =
@@ -1423,7 +1444,7 @@ TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
                       [](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   // Send chunked request with malformed CRLF after chunk data
   std::string req =
@@ -1450,7 +1471,7 @@ TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
                       [](const HttpRequest& req) { return HttpResponse(req.body()); });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   // Send chunked request with body larger than maxBodyBytes
   std::string req =

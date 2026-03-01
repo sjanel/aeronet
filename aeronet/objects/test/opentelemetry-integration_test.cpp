@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
+
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -199,6 +204,7 @@ TEST(OpenTelemetryIntegration, Disabled) {
   EXPECT_EQ(span, nullptr);
 }
 
+#ifdef AERONET_POSIX
 TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
   test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
@@ -237,6 +243,7 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   EXPECT_TRUE(payload.contains("aeronet.test.histogram:4.25|h"));
   EXPECT_TRUE(payload.contains("aeronet.test.timing:15|ms"));
 }
+#endif  // AERONET_POSIX
 
 TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
   tracing::TelemetryContext telemetry;

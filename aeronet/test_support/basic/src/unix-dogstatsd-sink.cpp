@@ -1,13 +1,16 @@
 #include "aeronet/unix-dogstatsd-sink.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#endif
 
 #include <array>
 #include <atomic>
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -37,8 +40,8 @@ UnixDogstatsdSink::UnixDogstatsdSink() : _fd(UnixSocket::Type::Datagram) {
   std::strncpy(addr.sun_path, _path.c_str(), sizeof(addr.sun_path) - 1);
   const socklen_t addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + _path.size() + 1);
   if (::bind(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen) != 0) {
-    auto err = errno;
-    throw std::runtime_error(std::string("bind failed: ") + std::strerror(err));
+    auto err = LastSystemError();
+    throw std::runtime_error(std::string("bind failed: ") + SystemErrorMessage(err));
   }
 }
 

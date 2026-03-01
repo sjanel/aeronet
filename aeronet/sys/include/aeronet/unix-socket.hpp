@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/platform.hpp"
 
 namespace aeronet {
 
@@ -32,7 +33,7 @@ class UnixSocket {
   // Throws on failure.
   explicit UnixSocket(Type type);
 
-  [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
+  [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 
   explicit operator bool() const noexcept { return static_cast<bool>(_baseFd); }
 

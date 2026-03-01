@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/platform.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 
@@ -23,7 +24,7 @@ class ITransport {
  public:
   ITransport() noexcept = default;
 
-  ITransport(int fd, std::uint32_t minBytesForZerocopy) : _minBytesForZerocopy(minBytesForZerocopy), _fd(fd) {}
+  ITransport(NativeHandle fd, std::uint32_t minBytesForZerocopy) : _minBytesForZerocopy(minBytesForZerocopy), _fd(fd) {}
 
   virtual ~ITransport() = default;
 
@@ -89,14 +90,14 @@ class ITransport {
  protected:
   ZeroCopyState _zerocopyState{};
   std::uint32_t _minBytesForZerocopy{~0U};
-  int _fd{-1};
+  NativeHandle _fd{kInvalidHandle};
 };
 
 // Plain transport directly operates on a non-blocking fd.
 // Supports optional MSG_ZEROCOPY for large payloads on Linux.
 class PlainTransport final : public ITransport {
  public:
-  PlainTransport(int fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy);
+  PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy);
 
   TransportResult read(char* buf, std::size_t len) override;
 

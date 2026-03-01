@@ -1,7 +1,11 @@
 #include "aeronet/dogstatsd.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/un.h>
+#endif
 
 #include <cerrno>
 #include <chrono>

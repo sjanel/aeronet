@@ -1,25 +1,32 @@
 #pragma once
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/platform.hpp"
 
 namespace aeronet {
 
-// Simple RAII class wrapping a Event file descriptor
+// Simple RAII class wrapping a platform wakeup mechanism.
+// Linux  : eventfd (single fd, non-blocking, close-on-exec)
+// macOS  : pipe    (read end exposed as fd(), write end internal)
+// Windows: manual-reset event (CreateEventW)
 class EventFd {
  public:
-  // Create eventfd for wakeups (non-blocking, close-on-exec)
+  // Create the wakeup fd/handle.
   EventFd();
 
-  // send an event
+  // Send a wakeup event.
   void send() const noexcept;
 
-  // read an event
+  // Drain / read pending wakeup events.
   void read() const noexcept;
 
-  [[nodiscard]] int fd() const noexcept { return _baseFd.fd(); }
+  [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 
  private:
   BaseFd _baseFd;
+#ifdef AERONET_MACOS
+  BaseFd _writeFd;  // write end of the pipe
+#endif
 };
 
 }  // namespace aeronet

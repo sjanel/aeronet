@@ -5,6 +5,8 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/platform.hpp"
+
 namespace aeronet {
 
 /// Pure-virtual interface for CONNECT tunnel integration between the HTTP/2
@@ -22,21 +24,21 @@ class ITunnelBridge {
   virtual ~ITunnelBridge() = default;
 
   /// Set up a TCP connection to the given target host:port.
-  /// @return The upstream fd on success, -1 on failure.
-  [[nodiscard]] virtual int setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) = 0;
+  /// @return The upstream fd on success, kInvalidHandle on failure.
+  [[nodiscard]] virtual NativeHandle setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) = 0;
 
   /// Write data to an upstream tunnel fd. The server handles buffering and EPOLLOUT.
-  virtual void writeTunnel(int upstreamFd, std::span<const std::byte> data) = 0;
+  virtual void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) = 0;
 
   /// Half-close the upstream tunnel fd (shutdown write side).
-  virtual void shutdownTunnelWrite(int upstreamFd) = 0;
+  virtual void shutdownTunnelWrite(NativeHandle upstreamFd) = 0;
 
   /// Close and deregister an upstream tunnel fd.
-  virtual void closeTunnel(int upstreamFd) = 0;
+  virtual void closeTunnel(NativeHandle upstreamFd) = 0;
 
   /// Notify the server that a WINDOW_UPDATE was received for a tunnel stream,
   /// allowing the server to resume forwarding buffered upstream data.
-  virtual void onTunnelWindowUpdate(int upstreamFd) = 0;
+  virtual void onTunnelWindowUpdate(NativeHandle upstreamFd) = 0;
 };
 
 }  // namespace aeronet

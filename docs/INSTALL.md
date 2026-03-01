@@ -2,21 +2,25 @@
 
 This document centralizes how to build, install, and consume **aeronet**.
 
-> Linux‑only C++23 HTTP/1.1 server library (optional TLS). Tested with Clang 21 / GCC 13.
+> Cross-platform C++23 HTTP/1.1 server library (optional TLS). Tested on Linux, macOS, and Windows.
 
 ## Toolchain & Platform
 
 | Component | Minimum / Tested | Notes |
 | --------- | ---------------- | ----- |
-| OS | Linux (x86_64) | epoll required; no Windows/macOS support |
+| OS | Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64) | Linux is primary (epoll); macOS uses kqueue; Windows uses IOCP |
 | CMake | 3.28+ | Enforced at configure time |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
 | Clang | 21.x | Earlier might work, not guaranteed |
 | GCC | 13.x | GCC 12 may lack some C++23 pieces |
+| MSVC | 17.x (VS 2022) | Windows builds; C++23 `/std:c++latest` |
+| Apple Clang | Xcode 15+ | macOS builds |
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
 | glaze (opt) | 7.0.2+ | JSON serialization support (`AERONET_ENABLE_GLAZE`) |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
+
+> **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
 
 ## CMake Options
 
@@ -84,6 +88,25 @@ Shared libraries (HTTP only):
 ```bash
 cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_SHARED=ON
 cmake --build build-shared -j
+```
+
+### macOS
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DAERONET_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+### Windows (Visual Studio 2022)
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DAERONET_BUILD_TESTS=ON
+cmake --build build --config Release --parallel
+ctest --test-dir build --build-config Release --output-on-failure
 ```
 
 ## Install

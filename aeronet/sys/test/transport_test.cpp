@@ -1,8 +1,12 @@
 #include "aeronet/transport.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstring>

@@ -1,6 +1,8 @@
 #include "aeronet/temp-file.hpp"
 
+#ifdef AERONET_POSIX
 #include <unistd.h>
+#endif
 
 #include <array>
 #include <cerrno>
@@ -8,7 +10,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <random>
@@ -21,6 +22,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/platform.hpp"
 
 namespace aeronet::test {
 
@@ -118,7 +120,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
     int rc = ::unlink(_path.c_str());
     if (rc != 0) {
       int err = errno;
-      log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, std::strerror(err));
+      log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, SystemErrorMessage(err));
     }
     throw std::runtime_error("ScopedTempFile: write failed");
   }

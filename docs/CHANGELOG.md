@@ -14,6 +14,9 @@ All notable changes to aeronet are documented in this file.
 - Do not consider `ENOBUFS` (*No buffer space available*) as a fatal error for **Zerocopy** responses, and fallback to non-zerocopy path instead (e.g. for small files or when the kernel runs out of resources).
 - **Fix data corruption with Zerocopy mode under sustained load** (Kubernetes / virtual network devices). Drain the kernel error queue (completion notifications) before each `MSG_ZEROCOPY` send to prevent resource exhaustion and pinned page accumulation that caused intermittent data corruption with large payloads. Also fix `ENOBUFS` handling for TLS+kTLS zerocopy path.
 - Fix race condition in multi threaded HttpServer when calling `stop()`.
+- **macOS: Fix potential `SIGPIPE` crash**. Set `SO_NOSIGPIPE` on all sockets (listen, accept, unix domain) to prevent the process from being killed by SIGPIPE when a client disconnects during a write. Linux uses `MSG_NOSIGNAL` per-send instead.
+- **Windows: Fix `BaseFd` closing wrong handle type**. `EventFd` and `TimerFd` on Windows store Win32 kernel `HANDLE`s (Event, WaitableTimer), but `BaseFd::close()` was calling `closesocket()` which is incorrect for non-socket handles. Introduced `BaseFd::HandleKind` to discriminate between Winsock SOCKETs and generic Win32 HANDLEs, using `CloseHandle()` for the latter.
+- **Windows: Fix `TransmitFile` (sendfile) with wrong handle type**. The `inFd` parameter was a `SOCKET` but `TransmitFile` expects a file `HANDLE`. Now correctly converts CRT file descriptors to Win32 HANDLEs via `_get_osfhandle()`.
 
 ### New features
 
@@ -21,6 +24,16 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
+- **Cross-platform error abstraction** (`platform.hpp`):
+  - Renamed `LastSocketError()` → `LastSystemError()` for generality.
+  - Added `SystemErrorMessage(err)`: wraps `std::strerror` on POSIX; uses `FormatMessageA` on Windows for Winsock error codes (10 000+) that `std::strerror` cannot resolve.
+  - Added `ThrowSystemError(fmt, args...)` in `errno-throw.hpp`:  captures `LastSystemError()` and throws `std::system_error` with the correct error category per platform (`std::system_category()` on Windows, `std::generic_category()` on POSIX).
+  - Added portable error code constants (`namespace aeronet::error`): `kWouldBlock`, `kInterrupted`, `kInProgress`, `kAlready`, `kConnectionReset`, `kConnectionAborted`, `kBrokenPipe`, `kNoBufferSpace`, `kNotSupported`, `kTooManyFiles` — mapping POSIX errno values to their WSA\* equivalents on Windows.
+  - Replaced all raw `errno` / `WSAGetLastError()` usage across ~25 production source files with portable `LastSystemError()`, `SystemErrorMessage()`, and `error::k*` constants. Removed `#ifdef`-guarded errno/WSA split in `transport.cpp`, `connection.cpp`, `base-fd.cpp`, `socket-ops.cpp`.
+  - Cleaned up stale `<cerrno>` and `<cstring>` includes from files that no longer use them directly.
+- **macOS: Enable `SO_REUSEPORT`** for multi-threaded server configurations. Previously only enabled on Linux; macOS 12+ provides kernel-level load-balancing semantics, so this is now enabled on all POSIX platforms.
+- **macOS/POSIX: Factored `SetPipeNonBlockingCloExec` helper** in `socket-ops` to deduplicate pipe setup code in `EventFd` and `TimerFd`.
+- **`SetNoSigPipe` socket option abstraction** added to `socket-ops` — wraps `SO_NOSIGPIPE` on macOS, no-op on Linux/Windows. Applied to all socket creation paths (listen, accept, unix domain).
 - Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
 - Improved `StaticFileHandler` performance
   - **Small file optimization**: files smaller than a configurable threshold (default 128 KiB) are now read into memory and served as inline bodies instead of using the zero-copy transport path (e.g. `sendfile` on Linux). This can significantly reduce latency for small files by avoiding the overhead of setting up zero-copy transfers, while still benefiting from zero-copy for larger files.
@@ -42,6 +55,8 @@ All notable changes to aeronet are documented in this file.
 - Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
 - Bumped `clang-format` version to **21**.
 - Fix: Resolve race in TLS handshake handling that caused a flaky test
+- Added ARM64 (aarch64) CI job.
+- Removed stale `<cerrno>` / `<cstring>` includes from ~15 files that no longer reference `errno` / `strerror` directly.
 
 ## [1.1.0] - 2026-02-16
 

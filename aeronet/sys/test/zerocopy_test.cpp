@@ -1,8 +1,12 @@
 #include "aeronet/zerocopy.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
+#endif
 
 #include <cerrno>
 #include <cstddef>

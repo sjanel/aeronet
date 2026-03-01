@@ -10,6 +10,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
@@ -45,13 +46,13 @@ class CorsPolicy;
 #endif
 
 struct ConnectionState {
-  void initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
+  void initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
                                     internal::ResponseCompressionState& compressionState);
 
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
-  [[nodiscard]] bool isTunneling() const noexcept { return peerFd != -1; }
+  [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSend.active; }
 
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
@@ -71,7 +72,7 @@ struct ConnectionState {
   ITransport::TransportResult transportWrite(const HttpResponseData& httpResponseData);
 
   // Return true if success, false if fatal error.
-  bool tunnelTransportWrite(int fd);
+  bool tunnelTransportWrite(NativeHandle fd);
 
   // Result of a kernel sendfile operation performed on this connection's fileSend state.
   struct FileResult {
@@ -94,7 +95,7 @@ struct ConnectionState {
   //   Read up to `maxBytes` from the tracked file into `tunnelOrFileBuffer`. The method
   //   will not request EPOLL changes or log; it simply fills the buffer and returns a
   //   structured result so callers can decide on logging/closing/enabling writable interest.
-  FileResult transportFile(int clientFd, bool tlsFlow);
+  FileResult transportFile(NativeHandle clientFd, bool tlsFlow);
 
   // Helper to set up request body streaming bridges for aggregated body reading.
   void installAggregatedBodyBridge();
@@ -103,7 +104,7 @@ struct ConnectionState {
   // Finalize TLS handshake (if this transport is TLS) and emit the handshake event.
   // Returns true if a TLS transport was finalized (caller may perform transport-specific book-keeping).
   // zerocopyEnabled: if true and kTLS is active, enables MSG_ZEROCOPY on the kTLS socket.
-  bool finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
+  bool finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
                                            const TLSConfig& cfg);
 #endif
   // Reset the connection state usable for a new connection without freeing allocated buffers.
@@ -152,7 +153,7 @@ struct ConnectionState {
   std::chrono::steady_clock::time_point bodyLastActivity;  // timestamp of last body progress while waiting
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
-  int peerFd{-1};
+  NativeHandle peerFd{kInvalidHandle};
   // HTTP/2 CONNECT tunnel: when non-zero, this upstream connection is paired with a specific
   // HTTP/2 stream on the peer (HTTP/2 client) connection. Zero for HTTP/1.1 tunnels.
   uint32_t peerStreamId{0};

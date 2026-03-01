@@ -2,6 +2,9 @@
 
 Single consolidated reference for **aeronet** features.
 
+> **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (IOCP).
+> Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
+
 ## Index
 
 1. [HTTP/1.1 Feature Matrix](#http11-feature-matrix)
@@ -228,11 +231,11 @@ Behavior summary
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
-- [x] Outbound write buffering with EPOLLOUT-driven backpressure
+- [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, IOCP on Windows)
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [ ] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
-- [x] MSG_ZEROCOPY for large payload sends (Linux-only, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
+- [x] MSG_ZEROCOPY for large payload sends *(Linux-only)*, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
   Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:
   - `Disabled`: never attempt MSG_ZEROCOPY.
@@ -1155,7 +1158,7 @@ Lifecycle: parse request → build response → determine keep-alive eligibility
 | Idle | Listener closed, loop inactive | Default / after drain/stop |
 | Running | Event loop servicing connections | `run()` / `runUntil()` |
 | Draining | Listener closed; existing connections finish with `Connection: close` | `beginDrain()` or signal-driven auto-drain |
-| Stopping | Immediate teardown, pending connections closed | `stop()` or fatal epoll error |
+| Stopping | Immediate teardown, pending connections closed | `stop()` or fatal I/O error |
 
 Key API points:
 
@@ -1669,7 +1672,7 @@ router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
 
 ## Construction Model (RAII & Ephemeral Ports)
 
-`SingleHttpServer` binds, configures the listening socket and registers it with epoll inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
+`SingleHttpServer` binds, configures the listening socket and registers it with the platform I/O backend (epoll on Linux, kqueue on macOS, IOCP on Windows) inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
 
 Why RAII:
 
@@ -1731,7 +1734,7 @@ The library interprets this boolean slightly differently depending on whether yo
 
 - Single `SingleHttpServer`:
   - `reusePort = false` creates the listening socket without that reuse option.
-  - `reusePort = true` requests the kernel-level reuse option (platform dependent: SO_REUSEPORT/SO_REUSEADDR) when creating the listening socket for that server instance.
+  - `reusePort = true` requests the kernel-level reuse option (`SO_REUSEPORT` on Linux 3.9+ and macOS 12+, `SO_REUSEADDR` on Windows) when creating the listening socket for that server instance.
 
 - `MultiHttpServer` (multi-reactor wrapper):
   - `reusePort = false` (recommended for explicit ports): the first server binds the explicit port exclusively (no reuse option) temporarily to ensure the process obtains the port and avoid accidentally binding to an unrelated process. Once the exclusive bind succeeds, subsequent internal sibling servers created by `MultiHttpServer` will be started to reuse that resolved port internally for multi-reactor operation. This gives a safe default for explicit ports while still providing multi-reactor scaling inside the process.
@@ -1812,7 +1815,7 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | Negotiated cipher & version | ✅ | `HttpRequest::{tlsCipher,tlsVersion}` |
 | Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
 | Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
-| Kernel TLS (kTLS) sendfile | ✅ | Linux-only zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
+| Kernel TLS (kTLS) sendfile | ✅ | *(Linux-only)* zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
 | Handshake timeout | ✅ | `withTlsHandshakeTimeout(ms)` closes stalled handshakes |
 | Graceful TLS shutdown | ✅ | Best‑effort `SSL_shutdown` before close |
 | ALPN strict mismatch counter | ✅ | Per‑server stats |
@@ -1987,7 +1990,7 @@ Security & metrics integration:
 
 Runtime notes:
 
-- Handshake performed inside event loop with non-blocking BIO; epoll integration unchanged.
+- Handshake performed inside event loop with non-blocking BIO; integrates with the platform I/O backend.
 - Graceful shutdown attempts `SSL_shutdown` prior to socket close (best-effort, non-blocking).
 
 Testing guidance:
@@ -2125,7 +2128,7 @@ Key semantics:
 - HEAD requests suppress body bytes automatically (still compute/send Content-Length when known).
 - Keep-alive preserved if policy allows and no fatal condition occurred.
 - Zero-copy file responses: both `HttpResponse::file(...)` and `HttpResponseWriter::file(...)` accept an
-  `aeronet::File` descriptor and stream its contents with Linux `sendfile(2)` on plaintext sockets. When TLS is
+  `aeronet::File` descriptor and stream its contents with `sendfile(2)` *(Linux-only)* on plaintext sockets. When TLS is
   active, aeronet reuses the connection's tunnel buffer and feeds encrypted writes via `pread` + `SSL_write`, so no
   additional heap allocations are introduced beyond that shared buffer.
 - `file` automatically wires `Content-Length`, rejects trailers/body mutations, and honors HEAD semantics (headers
@@ -2133,7 +2136,7 @@ Key semantics:
 
 Backpressure & buffering:
 
-- Unified outbound queue for both fixed & streaming; immediate write path used when queue empty, else bytes accumulate and EPOLLOUT drives flushing.
+- Unified outbound queue for both fixed & streaming; immediate write path used when queue empty, else bytes accumulate and event-driven write-readiness notification drives flushing.
 - Exceeding `maxOutboundBufferBytes` marks connection to close after pending data flush (subsequent `write()` yields false).
 
 Limitations (current phase): no trailer support; compression integration limited to buffered activation decision; inbound streaming decompression not yet implemented.
@@ -2392,7 +2395,7 @@ Automatic (no handler code changes):
 
 **Metrics (counters):**
 
-- `aeronet.events.processed` – epoll events processed
+- `aeronet.events.processed` – I/O events processed (epoll/kqueue/IOCP)
 - `aeronet.connections.accepted` – new connections
 - `aeronet.bytes.read` – bytes read from clients
 - `aeronet.bytes.written` – bytes written to clients

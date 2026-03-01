@@ -1,8 +1,12 @@
 #include "aeronet/event-loop.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/epoll.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <chrono>

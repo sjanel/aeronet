@@ -1,10 +1,17 @@
 #include "aeronet/otlp_test_collector.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <cerrno>
 #include <charconv>
@@ -119,22 +126,27 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;  // ephemeral
   if (::bind(_listen.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    throw_errno("bind OTLP collector socket");
+    ThrowSystemError("bind OTLP collector socket");
   }
   if (::listen(_listen.fd(), 8) != 0) {
-    throw_errno("listen OTLP collector socket");
+    ThrowSystemError("listen OTLP collector socket");
   }
   sockaddr_in actual{};
   socklen_t len = sizeof(actual);
   if (::getsockname(_listen.fd(), reinterpret_cast<sockaddr*>(&actual), &len) != 0) {
-    throw_errno("getsockname for OTLP collector");
+    ThrowSystemError("getsockname for OTLP collector");
   }
   _port = ntohs(actual.sin_port);
 
+#ifdef AERONET_WINDOWS
+  u_long nonBlock = 1;
+  ::ioctlsocket(_listen.fd(), FIONBIO, &nonBlock);
+#else
   int flags = ::fcntl(_listen.fd(), F_GETFL, 0);
   if (flags >= 0) {
     ::fcntl(_listen.fd(), F_SETFL, flags | O_NONBLOCK);
   }
+#endif
 
   _thread = std::jthread([this] { run(); });
 }
@@ -163,7 +175,11 @@ bool OtlpTestCollector::acceptOnce() {
   pfd.fd = _listen.fd();
   pfd.events = POLLIN;  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   constexpr int kPollMs = 25;
+#ifdef AERONET_WINDOWS
+  const int ready = ::WSAPoll(&pfd, 1, kPollMs);
+#else
   const int ready = ::poll(&pfd, 1, kPollMs);  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
+#endif
   if (ready <= 0) {
     return false;
   }
@@ -186,14 +202,19 @@ void OtlpTestCollector::handleClient(int clientFd) {
       break;
     }
     if (received < 0) {
-      if (errno == EINTR) {
+      const auto recvErr = LastSystemError();
+#ifdef AERONET_WINDOWS
+      if (recvErr == WSAEWOULDBLOCK) {
+#else
+      if (recvErr == EINTR) {
         continue;
       }
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (recvErr == EAGAIN || recvErr == EWOULDBLOCK) {
+#endif
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
         continue;
       }
-      log::error("OTLP test collector recv failed: {}", std::strerror(errno));
+      log::error("OTLP test collector recv failed: {}", recvErr);
       return;
     }
     buffer.append(chunk, static_cast<std::size_t>(received));

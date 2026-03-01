@@ -1,10 +1,8 @@
 #include "aeronet/http-response-writer.hpp"
 
 #include <cassert>
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -30,6 +28,7 @@
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/stringconv.hpp"
@@ -37,8 +36,8 @@
 
 namespace aeronet {
 
-HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
-                                       Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
+HttpResponseWriter::HttpResponseWriter(SingleHttpServer& srv, NativeHandle fd, const HttpRequest& request,
+                                       bool requestConnClose, Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                                        std::span<const ResponseMiddleware> routeResponseMiddleware)
     : _server(&srv),
       _request(&request),
@@ -188,7 +187,8 @@ void HttpResponseWriter::ensureHeadersSent() {
                                                             nullptr, _server->config().minCapturedBodySize));
   if (cnxIt->second->isAnyCloseRequested()) {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed to enqueue headers fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
+               SystemErrorMessage(LastSystemError()));
     return;
   }
   _state = HttpResponseWriter::State::HeadersSent;
@@ -212,7 +212,8 @@ void HttpResponseWriter::emitLastChunk() {
 
   if (!enqueue(HttpResponseData(std::move(_trailers)))) [[unlikely]] {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed enqueuing last chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed enqueuing last chunk fd # {} err={} msg={}", _fd, LastSystemError(),
+               SystemErrorMessage(LastSystemError()));
   }
 }
 
@@ -485,7 +486,8 @@ bool HttpResponseWriter::tryPush(RawChars data, bool doNotWriteHexPrefix) {
 
   if (!enqueue(std::move(responseData))) [[unlikely]] {
     _state = HttpResponseWriter::State::Failed;
-    log::error("Streaming: failed enqueuing coalesced chunk fd # {} errno={} msg={}", _fd, errno, std::strerror(errno));
+    log::error("Streaming: failed enqueuing coalesced chunk fd # {} err={} msg={}", _fd, LastSystemError(),
+               SystemErrorMessage(LastSystemError()));
     return false;
   }
   _bytesWritten += dataSize;

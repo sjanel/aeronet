@@ -1,11 +1,16 @@
 #pragma once
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
+
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cerrno>

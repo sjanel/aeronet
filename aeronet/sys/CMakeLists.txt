@@ -8,11 +8,25 @@ target_link_libraries(aeronet_sys
     PUBLIC aeronet_tech
 )
 
+if(WIN32)
+    target_link_libraries(aeronet_sys PUBLIC ws2_32 mswsock)
+endif()
+
 target_include_directories(aeronet_sys
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+# errno-throw is portable (pure C++ exception test)
+AeronetAddUnitTest(
+    errno-throw_test
+    test/errno-throw_test.cpp
+)
+
+# The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
+# accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
 AeronetAddUnitTest(
     base-fd_test
@@ -29,12 +43,6 @@ AeronetAddUnitTest(
     aeronet_sys
     aeronet_basic_test_support
 )
-
-AeronetAddUnitTest(
-    errno-throw_test
-    test/errno-throw_test.cpp
-)
-
 
 AeronetAddUnitTest(
     event-fd_test
@@ -114,3 +122,5 @@ AeronetAddUnitTest(
     aeronet_sys
     aeronet_basic_test_support
 )
+
+endif()

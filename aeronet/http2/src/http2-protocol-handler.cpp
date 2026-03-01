@@ -598,8 +598,8 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& 
   }
 
   // Delegate TCP connection setup to the server (which owns the event loop).
-  const int upstreamFd = _tunnelBridge->setupTunnel(streamId, host, portStr);
-  if (upstreamFd < 0) {
+  const auto upstreamFd = _tunnelBridge->setupTunnel(streamId, host, portStr);
+  if (upstreamFd == kInvalidHandle) {
     log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, target);
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
                        /*isHeadMethod=*/false);
@@ -626,7 +626,7 @@ void Http2ProtocolHandler::cleanupTunnel(uint32_t streamId) {
   if (it == _tunnelStreams.end()) {
     return;
   }
-  const int upstreamFd = it->second;
+  const auto upstreamFd = it->second;
   _tunnelUpstreams.erase(upstreamFd);
   _tunnelStreams.erase(it);
 
@@ -637,7 +637,7 @@ ErrorCode Http2ProtocolHandler::injectTunnelData(uint32_t streamId, std::span<co
   return _connection.sendData(streamId, data, /*endStream=*/false);
 }
 
-void Http2ProtocolHandler::closeTunnelByUpstreamFd(int upstreamFd) {
+void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
   auto it = _tunnelUpstreams.find(upstreamFd);
   if (it == _tunnelUpstreams.end()) {
     return;

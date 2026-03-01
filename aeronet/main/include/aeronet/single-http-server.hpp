@@ -480,8 +480,8 @@ class SingleHttpServer {
 
   /// Create a TCP connection to target host:port, register it in the event loop,
   /// and insert an upstream ConnectionState linked to clientFd.
-  /// @return The upstream fd on success, -1 on failure.
-  int setupTunnelConnection(int clientFd, std::string_view host, std::string_view port);
+  /// @return The upstream fd on success, kInvalidHandle on failure.
+  NativeHandle setupTunnelConnection(NativeHandle clientFd, std::string_view host, std::string_view port);
 
   /// Forward data to a tunnel peer with write-buffering and EPOLLOUT arming.
   /// @return false on fatal transport error (caller should close the connection).
@@ -518,7 +518,7 @@ class SingleHttpServer {
 
   // Post an async callback to be processed in the event loop, then resume the coroutine.
   // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
+  void postAsyncCallback(NativeHandle connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
 
   bool dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
@@ -535,14 +535,14 @@ class SingleHttpServer {
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame),
   // installs CONNECT tunnel bridge, and flushes output.
-  void setupHttp2Connection(int clientFd, ConnectionState& state);
+  void setupHttp2Connection(NativeHandle clientFd, ConnectionState& state);
 
   // Install CONNECT tunnel bridge on an existing HTTP/2 protocol handler.
-  void installH2TunnelBridge(int clientFd, ConnectionState& state);
+  void installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state);
 
   // Set up a CONNECT tunnel upstream TCP connection for an HTTP/2 stream.
   // Delegates to setupTunnelConnection() and additionally sets peerStreamId.
-  int setupH2Tunnel(int clientFd, uint32_t streamId, std::string_view host, std::string_view port);
+  NativeHandle setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host, std::string_view port);
 
   // Handle readable events from an HTTP/2 CONNECT tunnel upstream.
   // Reads data and injects it as DATA frames into the HTTP/2 stream.

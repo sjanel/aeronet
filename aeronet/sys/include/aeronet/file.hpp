@@ -9,6 +9,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/mime-mappings.hpp"
+#include "aeronet/platform.hpp"
 
 namespace aeronet {
 
@@ -57,7 +58,7 @@ class File {
   // Returns the raw underlying file descriptor. Valid only when BaseFd is opened.
   // The caller does NOT take ownership of the descriptor; the File instance remains
   // responsible for closing it (unless you explicitly adopt the fd elsewhere first).
-  [[nodiscard]] int fd() const noexcept { return _fd.fd(); }
+  [[nodiscard]] NativeHandle fd() const noexcept { return _fd.fd(); }
 
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;

@@ -1,7 +1,11 @@
 #include "aeronet/multi-http-server.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <poll.h>
+#endif
 
 #include <algorithm>
 #include <atomic>

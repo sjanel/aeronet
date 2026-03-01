@@ -493,6 +493,120 @@ jobs:
           JOBS=$(( ((NUM_PROC + 1) / 2) ))
           scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md
 
+  macos:
+    name: macOS
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    runs-on: macos-14
+
+    env:
+      CMAKE_BUILD_TYPE: ${{ matrix.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          brew install ninja
+
+      - name: Show compiler version
+        run: |
+          clang++ --version
+
+      - name: Configure (CMake)
+        run: |
+          ./scripts/retry.sh cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=OFF \
+            -DAERONET_ENABLE_GLAZE=OFF \
+            -DAERONET_ENABLE_HTTP2=OFF \
+            -DAERONET_ENABLE_BROTLI=OFF \
+            -DAERONET_ENABLE_ZLIB=OFF \
+            -DAERONET_ENABLE_ZSTD=OFF \
+            -DAERONET_ENABLE_OPENSSL=OFF \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
+            -DAERONET_ENABLE_SPDLOG=OFF \
+            -DAERONET_ENABLE_WEBSOCKET=OFF
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Run unit tests
+        run: |
+          NUM_PROC=$(sysctl -n hw.ncpu)
+          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
+          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+
+      - name: Summary
+        run: |
+          echo "Compiler: Apple Clang" >> $GITHUB_STEP_SUMMARY
+          echo "Build type: ${CMAKE_BUILD_TYPE}" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
+          ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
+
+  windows:
+    name: Windows
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure (CMake)
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=${{ matrix.build }} `
+            -DAERONET_BUILD_TESTS=ON `
+            -DAERONET_BUILD_EXAMPLES=OFF `
+            -DAERONET_BUILD_BENCHMARKS=OFF `
+            -DAERONET_ENABLE_ASAN=OFF `
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF `
+            -DAERONET_ENABLE_CLANG_TIDY=OFF `
+            -DAERONET_ENABLE_ASYNC_HANDLERS=OFF `
+            -DAERONET_ENABLE_GLAZE=OFF `
+            -DAERONET_ENABLE_HTTP2=OFF `
+            -DAERONET_ENABLE_BROTLI=OFF `
+            -DAERONET_ENABLE_ZLIB=OFF `
+            -DAERONET_ENABLE_ZSTD=OFF `
+            -DAERONET_ENABLE_OPENSSL=OFF `
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF `
+            -DAERONET_ENABLE_SPDLOG=OFF `
+            -DAERONET_ENABLE_WEBSOCKET=OFF
+        shell: pwsh
+
+      - name: Build
+        run: |
+          cmake --build build --config ${{ matrix.build }} --parallel
+
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build --build-config ${{ matrix.build }} --output-on-failure --timeout 120
+        shell: pwsh
+
+      - name: Summary
+        run: |
+          echo "Compiler: MSVC" >> $env:GITHUB_STEP_SUMMARY
+          echo "Build type: ${{ matrix.build }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "Commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $env:GITHUB_STEP_SUMMARY
+          ctest --test-dir build --build-config ${{ matrix.build }} -N | ForEach-Object { "  $_" } >> $env:GITHUB_STEP_SUMMARY
+        shell: pwsh
+
   alpine-musl-debug:
     name: Alpine (musl) Debug build
     runs-on: ubuntu-latest
