@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "label": "aeronet peak rps",
+  "message": "122k req/s",
+  "color": "green",
+  "labelColor": "#0f172a",
+  "namedLogo": "speedtest",
+  "cacheSeconds": 3600
+}
