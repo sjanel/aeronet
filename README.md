@@ -15,15 +15,15 @@
 
 ## Why aeronet?
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux** and **macOS** focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
 
-- **Cross‑platform**: primary platform is Linux (epoll); macOS (kqueue) is supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
-- **Configurable**: extensive dynamic configuration with reasonable defaults (principle of least surprise), per path options and middleware helpers, run-time router / config updates
+- **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
+- **Cross‑platform**: primary platform is Linux (epoll); macOS (kqueue) and Windows (IOCP) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
 ### Performance at a glance
 
@@ -72,7 +72,7 @@ See the [full program](examples/minimal.cpp).
 
 ### Streaming response
 
-For a large, unknown size response body, reply with multiple body chunks using `HttpResponseWriter`, that will use HTTP chunked transfer encoding automatically:
+When the response body size is not known upfront, or when you want to transmit the response as several controlled-size network chunks rather than a single transmission, use `HttpResponseWriter`. It automatically applies HTTP chunked transfer encoding, so each `writeBody()` call maps to its own network chunk — unlike a normal handler where all `bodyAppend()` calls are buffered and sent as a single transmission at the end:
 
 ```cpp
 Router router;
@@ -81,7 +81,7 @@ router.setDefault([](const HttpRequest& req, HttpResponseWriter& writer){
   writer.header("X-Req-Path", req.path());
   writer.contentType("text/plain");
   for (int i = 0; i < 10; ++i) {
-    writer.writeBody(std::string(50,'x')); // write by chunks
+    writer.writeBody(std::string(50,'x')); // each call is its own network chunk
   }
   writer.end();
 });
@@ -857,6 +857,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 |----------|--------|-------------|-------|
 | **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile`. Tested on **Ubuntu** and **Alpine** in the CI. |
 | **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+| **Windows** (x64, MSVC) | Supported | IOCP | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
 
 Linux-only features (gracefully disabled on other platforms):
 
