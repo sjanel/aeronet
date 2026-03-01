@@ -2,6 +2,7 @@
 
 ## Recently completed
 
+- **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2. Each stream owns its async task independently; when a coroutine suspends, other streams on the same connection continue to make progress. Previously HTTP/2 drained coroutines synchronously, blocking all streams.
 - **Formal security review of HTTP/2 frame handling and state machines**: Comprehensive code audit of ~4700 lines across 11 files covering frame parsing, connection/stream state machines, HPACK codec, flow control, and CONNECT tunneling. Identified 5 actionable findings (CONTINUATION accumulation limit, stream recv-window overflow check, HPACK integer decode overflow tightening, SETTINGS silent truncation logging, priority flood mitigation). See commit history and inline comments for details.
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.

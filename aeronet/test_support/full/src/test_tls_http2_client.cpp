@@ -147,6 +147,32 @@ TlsHttp2Client::Response TlsHttp2Client::post(std::string_view path, std::string
   return request("POST", path, headers, body);
 }
 
+uint32_t TlsHttp2Client::sendAsyncRequest(std::string_view method, std::string_view path,
+                                          const std::vector<std::pair<std::string, std::string>>& headers,
+                                          std::string_view body) {
+  if (!_connected) {
+    log::warn("HTTP/2 client not connected");
+    return 0;
+  }
+  return sendRequest(method, path, headers, body);
+}
+
+std::optional<TlsHttp2Client::Response> TlsHttp2Client::waitAndGetResponse(uint32_t streamId,
+                                                                           std::chrono::milliseconds timeout) {
+  if (!waitForResponse(streamId, timeout)) {
+    log::error("Timeout waiting for response on stream {}", streamId);
+    return std::nullopt;
+  }
+
+  auto iter = _streamResponses.find(streamId);
+  if (iter == _streamResponses.end()) {
+    return std::nullopt;
+  }
+
+  // Copy or move the response. Since it might be multiple streams, we copy for safety or just return a copy.
+  return iter->second.response;
+}
+
 TlsHttp2Client::Response TlsHttp2Client::request(std::string_view method, std::string_view path,
                                                  const std::vector<std::pair<std::string, std::string>>& headers,
                                                  std::string_view body) {

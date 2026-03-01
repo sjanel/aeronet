@@ -563,6 +563,14 @@ class HttpRequest {
   const char* _pDecodedQueryParams{nullptr};
   const ConcatenatedHeaders* _pGlobalHeaders{nullptr};
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // HTTP/2 async handler support: alternative callback mechanism for per-stream async tasks.
+  // When set, markAwaitingCallback() / postCallback() use these instead of _ownerState->asyncState.
+  using H2PostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+  H2PostCallbackFn _h2PostCallback;
+  bool* _h2SuspendedFlag{nullptr};
+#endif
+
   HeadersViewMap _headers;
   HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
   flat_hash_map<std::string_view, std::string_view, CityHash> _pathParams;
