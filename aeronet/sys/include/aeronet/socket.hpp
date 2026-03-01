@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 
 #ifdef AERONET_MACOS
 #include <utility>

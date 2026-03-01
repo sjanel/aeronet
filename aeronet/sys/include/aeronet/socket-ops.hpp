@@ -14,6 +14,12 @@
 
 namespace aeronet {
 
+#ifdef AERONET_WINDOWS
+// Ensure Winsock (WSAStartup) has been called. Thread-safe, idempotent.
+// Must be called before any Winsock API (socket, getaddrinfo, etc.).
+void EnsureWinsockInitialized();
+#endif
+
 // Cross-platform socket operations.
 // All Linux / macOS / Windows specifics are hidden in the .cpp file.
 // These thin wrappers centralise system calls so that

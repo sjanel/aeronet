@@ -1125,8 +1125,11 @@ void SingleHttpServer::closeListener() noexcept {
 }
 
 void SingleHttpServer::closeAllConnections() {
-  for (auto it = _connections.active.begin(); it != _connections.active.end();) {
-    it = closeConnection(it);
+  // closeConnection can erase more elements than just the one being closed (e.g. tunnel upstreams).
+  // But we can safely iterate because there will be no rehash and the empty slots will simply by skipped with the
+  // increment.
+  for (auto cnxIt = _connections.active.begin(); cnxIt != _connections.active.end(); ++cnxIt) {
+    closeConnection(cnxIt);
   }
 }
 

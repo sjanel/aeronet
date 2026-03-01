@@ -82,7 +82,7 @@ void SingleHttpServer::sweepIdleConnections() {
   // needs a periodic check because a client might send a partial request line then stall; no
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   const auto now = _connections.now;
-  for (auto cnxIt = _connections.active.begin(); cnxIt != _connections.active.end();) {
+  for (auto cnxIt = _connections.active.begin(); cnxIt != _connections.active.end(); ++cnxIt) {
     ConnectionState& state = *cnxIt->second;
 
     // Retry pending file sends to handle potential missed EPOLLOUT edges.
@@ -92,7 +92,7 @@ void SingleHttpServer::sweepIdleConnections() {
 
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
-      cnxIt = closeConnection(cnxIt);
+      closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_drain");
       continue;
     }
@@ -101,7 +101,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
     if (_config.enableKeepAlive && !state.isSendingFile() && now > state.lastActivity + _config.keepAliveTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", cnxIt->first.fd());
-      cnxIt = closeConnection(cnxIt);
+      closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
       continue;
     }
@@ -111,7 +111,7 @@ void SingleHttpServer::sweepIdleConnections() {
         now > state.headerStartTp + _config.headerReadTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for header read timeout", cnxIt->first.fd());
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
-      cnxIt = closeConnection(cnxIt);
+      closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
       continue;
     }
@@ -122,7 +122,7 @@ void SingleHttpServer::sweepIdleConnections() {
         now > state.bodyLastActivity + _config.bodyReadTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for body read timeout", cnxIt->first.fd());
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
-      cnxIt = closeConnection(cnxIt);
+      closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
       continue;
     }
@@ -135,7 +135,7 @@ void SingleHttpServer::sweepIdleConnections() {
       if (now > state.tlsInfo.handshakeStart + _config.tls.handshakeTimeout) {
         FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxIt->first.fd(),
                              kTlsHandshakeFailureReasonHandshakeTimeout);
-        cnxIt = closeConnection(cnxIt);
+        closeConnection(cnxIt);
         _telemetry.counterAdd("aeronet.connections.closed_for_handshake_timeout");
         continue;
       }
@@ -143,8 +143,6 @@ void SingleHttpServer::sweepIdleConnections() {
 #endif
 
     state.reclaimMemoryFromOversizedBuffers();
-
-    ++cnxIt;
   }
 
   _telemetry.gauge("aeronet.connections.cached_count", static_cast<int64_t>(_connections.nbCachedConnections()));
@@ -310,7 +308,7 @@ void SingleHttpServer::acceptNewConnections() {
         }
 #endif
         if (pCnx->isAnyCloseRequested()) {
-          cnxIt = closeConnection(cnxIt);
+          closeConnection(cnxIt);
           pCnx = nullptr;
           break;
         }
@@ -393,7 +391,7 @@ void SingleHttpServer::acceptNewConnections() {
   }
 }
 
-SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMapIt cnxIt) {
+void SingleHttpServer::closeConnection(ConnectionMapIt cnxIt) {
   const auto cfd = cnxIt->first.fd();
   log::debug("closeConnection called for fd # {}", cfd);
 
@@ -442,10 +440,9 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
 
   _eventLoop.del(cfd);
 #ifdef AERONET_ENABLE_OPENSSL
-  auto result =
-      _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, cnxIt, _tls.handshakesInFlight);
+  _connections.recycleOrRelease(_config.maxCachedConnections, _config.tls.enabled, cnxIt, _tls.handshakesInFlight);
 #else
-  auto result = _connections.recycleOrRelease(_config.maxCachedConnections, cnxIt);
+  _connections.recycleOrRelease(_config.maxCachedConnections, cnxIt);
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -465,8 +462,6 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
     }
   }
 #endif
-
-  return result;
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionMapIt cnxIt) {

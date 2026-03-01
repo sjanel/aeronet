@@ -19,13 +19,12 @@ namespace aeronet::internal {
 namespace {
 
 // Helper to call recycleOrRelease with proper arguments based on TLS configuration
-ConnectionStorage::ConnectionMapIt RecycleConnection(ConnectionStorage& storage, uint32_t maxCached,
-                                                     ConnectionStorage::ConnectionMapIt it) {
+void RecycleConnection(ConnectionStorage& storage, uint32_t maxCached, ConnectionStorage::ConnectionMapIt it) {
 #ifdef AERONET_ENABLE_OPENSSL
   uint32_t handshakes = 0;
-  return storage.recycleOrRelease(maxCached, false, it, handshakes);
+  storage.recycleOrRelease(maxCached, false, it, handshakes);
 #else
-  return storage.recycleOrRelease(maxCached, it);
+  storage.recycleOrRelease(maxCached, it);
 #endif
 }
 

@@ -395,11 +395,25 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   _servers.resize(1UL);
 
-  // Copy firstServer for each additional thread - copy constructor inherits sharedTicketKeyStore
+#ifdef AERONET_MACOS
+  // macOS SO_REUSEPORT does not load balance loopback traffic — the kernel routes
+  // all connections to the most recently bound socket. Instead, share a single
+  // listen fd across all threads; each thread registers EVFILT_READ on the fd in
+  // its own kqueue. The kernel serialises accept() so only one thread wakes per
+  // connection, providing natural thundering-herd-free distribution.
+  const NativeHandle sharedListenFd = firstServer._listenSocket.fd();
+  while (_servers.size() < targetCount) {
+    auto& nextServer = _servers.emplace_back(firstServer, sharedListenFd);
+    nextServer._lifecycleTracker = _lifecycleTracker;
+  }
+#else
+  // Linux: each copy creates its own socket+bind via SO_REUSEPORT for true
+  // kernel-level load balancing with zero contention on accept().
   while (_servers.size() < targetCount) {
     auto& nextServer = _servers.emplace_back(firstServer);
     nextServer._lifecycleTracker = _lifecycleTracker;
   }
+#endif
 }
 
 vector<SingleHttpServer*> MultiHttpServer::collectServerPointers() {
