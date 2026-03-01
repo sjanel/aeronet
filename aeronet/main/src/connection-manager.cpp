@@ -611,7 +611,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
       // If we have not yet parsed the header (no DoubleCRLF found) or the buffer
       // already exceeds the configured header limit, treat this as header-field overflow.
       http::StatusCode code;
-      if (std::ranges::search(cnx.inBuffer, http::DoubleCRLF).empty() || cnx.inBuffer.size() > _config.maxHeaderBytes) {
+      if (cnx.inBuffer.size() > _config.maxHeaderBytes || std::ranges::search(cnx.inBuffer, http::DoubleCRLF).empty()) {
         code = http::StatusCodeRequestHeaderFieldsTooLarge;
       } else {
         code = http::StatusCodePayloadTooLarge;

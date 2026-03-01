@@ -29,6 +29,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -186,7 +187,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
 
-  char* lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+  char* lineLast = SearchCRLF(first, last);
   if (lineLast == last) {
     return kStatusNeedMoreData;
   }
@@ -235,7 +236,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
 
   _headers.clear();
   for (first = headersFirst; first < last; first = lineLast + http::CRLF.size()) {
-    lineLast = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    lineLast = SearchCRLF(first, last);
     if (lineLast == last) {
       // need more data - the headers are not complete yet
       return kStatusNeedMoreData;
