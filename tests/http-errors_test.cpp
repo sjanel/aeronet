@@ -192,7 +192,7 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   // The listen socket setup calls setsockopt for SO_REUSEADDR (and possibly SO_REUSEPORT)
   // so we need to let those succeed first. We'll use an approach where we start the server first,
   // then inject failures for subsequent setsockopt calls.
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(true); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
   // Now inject setsockopt failures for the next connection's TCP_NODELAY call
@@ -202,7 +202,7 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
 
   // Make a request - server should still serve despite TCP_NODELAY failure
   auto resp = test::simpleGet(ts.port(), "/nodelay-fail");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test eventLoop.add failure path
@@ -215,7 +215,7 @@ TEST(ConnectionManagerErrors, EventLoopAddFailure) {
 
   // First request should work normally
   auto resp1 = test::simpleGet(ts.port(), "/first");
-  EXPECT_TRUE(resp1.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200"));
 
   // Force the next epoll_ctl(ADD) (used by eventLoop.add for an accepted client fd) to fail.
   test::PushEpollCtlAddAction({-1, EIO});

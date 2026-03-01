@@ -24,11 +24,11 @@ class Socket {
   // Try to bind the socket to the given port with specified options.
   // Returns true on success, false on failure.
   // Throws std::system_error on setsockopt failure.
-  [[nodiscard]] bool tryBind(bool reusePort, bool tcpNoDelay, uint16_t port) const;
+  [[nodiscard]] bool tryBind(bool reusePort, uint16_t port) const;
 
   // Bind and start listening on the given port. If port is 0, an ephemeral port is chosen and updated in the argument.
   // Throws std::system_error on failure.
-  void bindAndListen(bool reusePort, bool tcpNoDelay, uint16_t& port);
+  void bindAndListen(bool reusePort, uint16_t& port);
 
   void close() noexcept { _baseFd.close(); }
 

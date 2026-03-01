@@ -22,6 +22,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-connector.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
@@ -160,7 +161,7 @@ void SingleHttpServer::acceptNewConnections() {
       break;
     }
     int cnxFd = cnx.fd();
-    if (_config.tcpNoDelay) {
+    if (_config.tcpNoDelay == TcpNoDelayMode::Enabled) {
       if (!SetTcpNoDelay(cnxFd)) [[unlikely]] {
         const auto err = errno;
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
@@ -305,7 +306,7 @@ void SingleHttpServer::acceptNewConnections() {
 #ifdef AERONET_ENABLE_HTTP2
         // Check for HTTP/2 via ALPN negotiation ("h2")
         if (_config.http2.enable && pCnx->tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-          setupHttp2Connection(cnxFd, *pCnx);
+          setupHttp2Connection(cnxFd, _config.tcpNoDelay, *pCnx);
         }
 #endif
         if (pCnx->isAnyCloseRequested()) {
@@ -368,7 +369,14 @@ void SingleHttpServer::acceptNewConnections() {
       bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
       _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
       if (bytesRead < chunkSize) {
-        break;
+        // For TLS transports: OpenSSL may hold already-decrypted data in its
+        // internal buffer that the kernel socket no longer signals via epoll
+        // (critical with EPOLLET).  Continue reading if the transport reports
+        // pending data — otherwise the server would stall until the peer sends
+        // more, causing severe throughput degradation with few connections.
+        if (!pCnx->transport->hasPendingReadData()) {
+          break;
+        }
       }
       if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
         break;  // reached fairness cap
@@ -548,7 +556,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
 #ifdef AERONET_ENABLE_HTTP2
       // Check for HTTP/2 via ALPN negotiation ("h2")
       if (_config.http2.enable && cnx.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-        setupHttp2Connection(fd, cnx);
+        setupHttp2Connection(fd, _config.tcpNoDelay, cnx);
       }
 #endif
 

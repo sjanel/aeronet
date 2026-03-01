@@ -33,12 +33,12 @@ constexpr std::size_t kClosedStreamsMaxRetained = 16;
 // Security hardening (CVE-2024-27316 mitigation): limit the total accumulated
 // header block size across HEADERS + CONTINUATION frames to prevent unbounded
 // memory growth from a CONTINUATION flood attack.
-constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256 * 1024;
+constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256UL * 1024;
 
 // Security hardening: cap PRIORITY frames received on non-existent streams
 // to prevent an attacker from flooding cheap PRIORITY frames that starve
 // real request processing. ENHANCE_YOUR_CALM is sent when exceeded.
-constexpr uint32_t kMaxIdlePriorityFrames = 10000;
+constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 
 }  // namespace
 
@@ -290,7 +290,7 @@ void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
     if (stream != nullptr) {
       // increaseRecvWindow now returns ErrorCode; on the send side (our own
       // WINDOW_UPDATE) an overflow should not happen, but clamp defensively.
-      stream->increaseRecvWindow(increment);
+      (void)stream->increaseRecvWindow(increment);
     }
   }
 }

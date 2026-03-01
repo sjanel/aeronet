@@ -128,6 +128,25 @@ set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmark
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
 set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
 
+# HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)
+if(AERONET_ENABLE_HTTP2)
+  set(AERONET_BENCH_INTERNAL_HPACK ${AERONET_BENCH_ROOT}/internal/hpack_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_H2_FRAME ${AERONET_BENCH_ROOT}/internal/http2_frame_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_H2_FLOW ${AERONET_BENCH_ROOT}/internal/http2_flow_control_bench.cpp)
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-hpack ${AERONET_BENCH_INTERNAL_HPACK})
+  target_link_libraries(aeronet-bench-internal-hpack PRIVATE aeronet_http2)
+  set_target_properties(aeronet-bench-internal-hpack PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-frame ${AERONET_BENCH_INTERNAL_H2_FRAME})
+  target_link_libraries(aeronet-bench-internal-http2-frame PRIVATE aeronet_http2)
+  set_target_properties(aeronet-bench-internal-http2-frame PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-flow-control ${AERONET_BENCH_INTERNAL_H2_FLOW})
+  target_link_libraries(aeronet-bench-internal-http2-flow-control PRIVATE aeronet_http2)
+  set_target_properties(aeronet-bench-internal-http2-flow-control PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
 AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
 
@@ -171,11 +190,31 @@ endif()
 set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 
 # Convenience run targets
-add_custom_target(run-aeronet-bench
+set(_AERONET_BENCH_DEPS
+  aeronet-bench-internal-request-parse
+  aeronet-bench-internal-string-equal-ignore-case
+  aeronet-bench-internal-router
+)
+set(_AERONET_BENCH_CMDS
   COMMAND aeronet-bench-internal-request-parse --benchmark_report_aggregates_only=true
   COMMAND aeronet-bench-internal-string-equal-ignore-case --benchmark_report_aggregates_only=true
   COMMAND aeronet-bench-internal-router --benchmark_report_aggregates_only=true
-  DEPENDS aeronet-bench-internal-request-parse aeronet-bench-internal-string-equal-ignore-case aeronet-bench-internal-router
+)
+if(AERONET_ENABLE_HTTP2)
+  list(APPEND _AERONET_BENCH_DEPS
+    aeronet-bench-internal-hpack
+    aeronet-bench-internal-http2-frame
+    aeronet-bench-internal-http2-flow-control
+  )
+  list(APPEND _AERONET_BENCH_CMDS
+    COMMAND aeronet-bench-internal-hpack --benchmark_report_aggregates_only=true
+    COMMAND aeronet-bench-internal-http2-frame --benchmark_report_aggregates_only=true
+    COMMAND aeronet-bench-internal-http2-flow-control --benchmark_report_aggregates_only=true
+  )
+endif()
+add_custom_target(run-aeronet-bench
+  ${_AERONET_BENCH_CMDS}
+  DEPENDS ${_AERONET_BENCH_DEPS}
   COMMENT "Running aeronet internal microbenchmarks")
 
 if(TARGET aeronet-bench-throughput)

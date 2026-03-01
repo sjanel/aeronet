@@ -179,7 +179,9 @@ async def body_codec(request: Request) -> Response:
 async def status(request: Request) -> Response:
     """Endpoint 8: /status - Health check"""
     threads = int(os.environ.get("BENCH_THREADS", str(num_threads)))
-    return JSONResponse({"server": "python", "threads": threads, "status": "ok"})
+    h2 = os.environ.get("BENCH_H2", "0") == "1"
+    tls = os.environ.get("BENCH_TLS", "0") == "1"
+    return JSONResponse({"server": "python", "threads": threads, "h2": h2, "tls": tls, "status": "ok"})
 
 
 async def route_handler(request: Request) -> Response:
@@ -273,6 +275,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--routes", type=int, default=None, help="Number of /r{N} routes"
     )
+    parser.add_argument("--h2", action="store_true", help="Enable HTTP/2")
+    parser.add_argument("--tls", action="store_true", help="Enable TLS")
+    parser.add_argument("--cert", type=str, default=None, help="TLS certificate file")
+    parser.add_argument("--key", type=str, default=None, help="TLS key file")
     args = parser.parse_args()
 
     port = args.port or get_port()
@@ -286,7 +292,13 @@ if __name__ == "__main__":
         print("ERROR: uvicorn not installed. Run: pip install uvicorn")
         exit(1)
 
-    print(f"python benchmark server starting on port {port} with {num_threads} workers")
+    h2_enabled = args.h2
+    tls_enabled = args.tls
+    cert_file = args.cert
+    key_file = args.key
+
+    protocol = "h2-tls" if h2_enabled and tls_enabled else "h2c" if h2_enabled else "http/1.1"
+    print(f"python benchmark server starting on port {port} with {num_threads} workers [{protocol}]")
     if static_dir:
         print(f"Static files: {static_dir}")
     print(f"Routes: {route_count} literal + pattern routes")
@@ -294,6 +306,10 @@ if __name__ == "__main__":
     # Set environment variables for worker processes and app configuration
     os.environ["BENCH_THREADS"] = str(num_threads)
     os.environ["BENCH_PORT"] = str(port)
+    if h2_enabled:
+        os.environ["BENCH_H2"] = "1"
+    if tls_enabled:
+        os.environ["BENCH_TLS"] = "1"
     if static_dir:
         os.environ["BENCH_STATIC_DIR"] = static_dir
     if route_count > 0:
@@ -335,7 +351,31 @@ if __name__ == "__main__":
     # If multiple workers are requested, run the uvicorn CLI with an import string
     # so worker mode works correctly. When uvicorn imports this module it will
     # pick up environment variables so routes are configured correctly.
-    if int(num_threads) > 1:
+    if h2_enabled:
+        # Use Hypercorn for HTTP/2 support (h2c and h2-TLS)
+        try:
+            import hypercorn  # noqa: F401
+        except ImportError:
+            print("ERROR: hypercorn not installed. Run: pip install hypercorn[h2]")
+            exit(1)
+
+        hypercorn_args = [
+            sys.executable,
+            "-m",
+            "hypercorn",
+            "python_server:app",
+            "--bind",
+            f"127.0.0.1:{port}",
+            "--workers",
+            str(num_threads),
+            "--log-level",
+            "warning",
+        ]
+        if tls_enabled and cert_file and key_file:
+            hypercorn_args.extend(["--certfile", cert_file, "--keyfile", key_file])
+        os.chdir(str(SCRIPT_DIR))
+        os.execvp(sys.executable, hypercorn_args)
+    elif int(num_threads) > 1:
         print("launching uvicorn CLI (will replace this process)")
         pythonpath = os.environ.get("PYTHONPATH", "")
         script_path = str(SCRIPT_DIR)
