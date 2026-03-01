@@ -72,6 +72,11 @@ class ITransport {
 
   [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
 
+  /// Check if the transport has internally buffered data ready to read.
+  /// For TLS, OpenSSL may hold decrypted data that the kernel socket no longer
+  /// signals via epoll (critical with edge-triggered mode).
+  [[nodiscard]] virtual bool hasPendingReadData() const noexcept { return false; }
+
   /// Poll for zerocopy completion notifications from the kernel error queue.
   /// Returns the number of completions processed.
   std::size_t pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }

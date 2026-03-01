@@ -269,7 +269,7 @@ void SingleHttpServer::initListener() {
   }
 #endif
 
-  _listenSocket.bindAndListen(_config.reusePort, _config.tcpNoDelay, _config.port);
+  _listenSocket.bindAndListen(_config.reusePort, _config.port);
 
   _eventLoop.addOrThrow(EventLoop::EventFd{_listenSocket.fd(), EventIn});
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});

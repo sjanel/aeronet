@@ -19,6 +19,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
@@ -56,7 +57,12 @@ HttpServerConfig& HttpServerConfig::withKeepAliveMode(bool on) {
 }
 
 HttpServerConfig& HttpServerConfig::withTcpNoDelay(bool on) {
-  this->tcpNoDelay = on;
+  this->tcpNoDelay = on ? TcpNoDelayMode::Enabled : TcpNoDelayMode::Disabled;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withTcpNoDelayMode(TcpNoDelayMode tcpNoDelayMode) {
+  this->tcpNoDelay = tcpNoDelayMode;
   return *this;
 }
 

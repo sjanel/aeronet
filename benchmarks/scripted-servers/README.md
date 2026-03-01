@@ -4,7 +4,10 @@ This directory contains standalone HTTP server executables and `wrk` benchmark s
 
 ## Overview
 
-Unlike Google Benchmark (which measures internal latencies), this setup uses **external load generators** to measure real-world throughput and latency under stress. The primary tool is [`wrk`](https://github.com/wg/wrk), a modern HTTP benchmarking tool with LuaJIT scripting support.
+Unlike Google Benchmark (which measures internal latencies), this setup uses **external load generators** to measure real-world throughput and latency under stress. The primary tools are:
+
+- [`wrk`](https://github.com/wg/wrk) — HTTP/1.1 benchmarking with LuaJIT scripting
+- [`h2load`](https://nghttp2.org/documentation/h2load-howto.html) — HTTP/2 benchmarking (part of nghttp2), supports both cleartext h2c and TLS h2
 
 ## What is wrk and LuaJIT?
 
@@ -64,6 +67,19 @@ git clone https://github.com/wg/wrk.git
 cd wrk
 make -j$(nproc)
 sudo cp wrk /usr/local/bin/
+```
+
+### Install h2load (for HTTP/2 benchmarks)
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install nghttp2-client
+
+# macOS
+brew install nghttp2
+
+# Verify
+h2load --version
 ```
 
 ### Python runtime
@@ -181,22 +197,59 @@ wrk -t4 -c100 -d30s -s lua/routing_stress.lua http://127.0.0.1:8080/r0
 
 ## Running the Full Benchmark Suite
 
+### HTTP/1.1 (wrk)
+
 Use the Python runner to benchmark all servers and scenarios:
 
 ```bash
 run_benchmarks.py
 ```
 
+### HTTP/2 (h2load)
+
+The same runner supports HTTP/2 benchmarking via h2load. Two protocol modes are available:
+
+- **h2c** — HTTP/2 over cleartext TCP (no TLS overhead)
+- **h2-tls** — HTTP/2 over TLS (production-realistic)
+
+```bash
+# h2c mode (cleartext HTTP/2)
+run_benchmarks.py --protocol h2c
+
+# h2-tls mode (HTTP/2 over TLS)
+run_benchmarks.py --protocol h2-tls
+
+# Control multiplexed streams per connection
+run_benchmarks.py --protocol h2c --h2-streams 10
+
+# Combine with server/scenario filters
+run_benchmarks.py --protocol h2c --server aeronet,go --scenario headers,mixed
+```
+
+**HTTP/2 framework support:**
+
+| Server | h2c | h2-tls | Notes |
+|--------|-----|--------|-------|
+| aeronet | Yes | Yes | Full HTTP/2 support |
+| rust | Yes | Yes | hyper-util auto-detect |
+| undertow | Yes | Yes | UndertowOptions.ENABLE_HTTP2 |
+| go | Yes | Yes | golang.org/x/net/http2/h2c |
+| python | Yes | Yes | Hypercorn replaces uvicorn |
+
+Pistache, Drogon and Crow are excluded from HTTP/2 benchmarks (no H2 support).
+
 ### Options
 
 ```bash
-run_benchmarks.py --threads 4        # Number of wrk threads (default: nproc/4)
-run_benchmarks.py --connections 100  # Number of wrk connections (default: 100)
+run_benchmarks.py --threads 4        # Number of wrk/h2load threads (default: nproc/4)
+run_benchmarks.py --connections 100  # Number of connections (default: 100)
 run_benchmarks.py --duration 30s     # Benchmark duration per scenario
 run_benchmarks.py --warmup 5s        # Warmup duration before each run
 run_benchmarks.py --server aeronet   # Only benchmark specific server(s)
 run_benchmarks.py --scenario headers # Only run specific scenario(s)
 run_benchmarks.py --output results/  # Output directory for result artifacts
+run_benchmarks.py --protocol http1   # Protocol: http1 (default), h2c, h2-tls
+run_benchmarks.py --h2-streams 10    # Multiplexed streams per h2 connection (default: 10)
 
 # Run multiple values (comma-separated)
 run_benchmarks.py --server aeronet,python --scenario headers,body,routing
@@ -424,8 +477,8 @@ Notes:
 
 ## Future Work
 
-- [ ] Add HTTP/2 scenarios (h2load)
-- [ ] Add TLS benchmarks
+- [x] Add HTTP/2 scenarios (h2load) — h2c and h2-tls modes via `--protocol`
+- [x] Add TLS benchmarks — h2-tls mode, self-signed certs generated at runtime
 - [ ] Integrate with CI for regression detection
 - [ ] WebSocket scenarios
 - [ ] Add streaming/chunked benchmark when comparable APIs exist across frameworks

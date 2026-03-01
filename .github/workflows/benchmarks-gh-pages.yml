@@ -15,6 +15,10 @@ on:
         description: 'Benchmark duration (e.g. 90s)'
         required: false
         default: '90s'
+      h2_protocol:
+        description: 'H2 protocol filter: h2c, h2-tls, or both'
+        required: false
+        default: 'both'
 
 permissions:
   contents: write
@@ -164,12 +168,147 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------ #
-  # Publish: aggregate both benchmark results and deploy to gh-pages.   #
+  # HTTP/2 bench: h2c/h2-tls × low/high connections via h2load.        #
+  # ------------------------------------------------------------------ #
+  bench-h2:
+    name: H2 Bench (${{ matrix.protocol }}, ${{ matrix.conn_label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - protocol: h2c
+            conn_label: low
+            connections_per_thread: 10
+          - protocol: h2c
+            conn_label: high
+            connections_per_thread: 100
+          - protocol: h2-tls
+            conn_label: low
+            connections_per_thread: 10
+          - protocol: h2-tls
+            conn_label: high
+            connections_per_thread: 100
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Filter protocol (workflow_dispatch)
+        id: filter
+        run: |
+          INPUT_PROTO="${{ github.event.inputs.h2_protocol || 'both' }}"
+          MATRIX_PROTO="${{ matrix.protocol }}"
+          if [[ "$INPUT_PROTO" != "both" ]] && [[ "$INPUT_PROTO" != "$MATRIX_PROTO" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          sudo apt update
+          sudo apt install -y nghttp2-client libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          pip install uvicorn starlette hypercorn[h2]
+          h2load --version
+
+      - name: Install GCC 13
+        if: steps.filter.outputs.skip != 'true'
+        run: sudo apt-get install -y gcc-13 g++-13
+
+      - name: Set compiler environment
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          echo "CC=gcc-13" >> $GITHUB_ENV
+          echo "CXX=g++-13" >> $GITHUB_ENV
+
+      - name: Configure build
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAERONET_BUILD_TESTS=OFF \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=ON \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
+
+      - name: Build
+        if: steps.filter.outputs.skip != 'true'
+        run: cmake --build build-pages --parallel
+
+      - name: Run H2 benchmarks
+        if: steps.filter.outputs.skip != 'true'
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        run: |
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          WARMUP=5s
+          THREADS=2
+          CPT=${{ matrix.connections_per_thread }}
+          CONN=$((THREADS * CPT))
+          H2_STREAMS=10
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+          else
+            DUR=5s
+            WARMUP=2s
+            THREADS=1
+            CONN=$((THREADS * CPT))
+          fi
+
+          echo "H2 bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS conn=$CONN streams=$H2_STREAMS"
+
+          ./run_benchmarks.py \
+            --protocol "${{ matrix.protocol }}" \
+            --duration "$DUR" \
+            --threads "$THREADS" \
+            --warmup "$WARMUP" \
+            --connections "$CONN" \
+            --h2-streams "$H2_STREAMS"
+
+      - name: Upload H2 results
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: h2-results-${{ matrix.protocol }}-${{ matrix.conn_label }}
+          path: build-pages/benchmarks/scripted-servers/results/benchmark_latest.json
+          retention-days: 3
+
+      - name: Upload H2 badge (h2-tls high-connections only)
+        if: steps.filter.outputs.skip != 'true' && matrix.protocol == 'h2-tls' && matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v6
+        with:
+          name: h2-bench-badge
+          path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ #
+  # Publish: aggregate all benchmark results and deploy to gh-pages.    #
   # ------------------------------------------------------------------ #
   publish:
     name: Publish Pages
     runs-on: ubuntu-latest
-    needs: bench
+    needs: [bench, bench-h2]
     if: always() && !cancelled()
     steps:
       - name: Checkout current main
@@ -198,31 +337,51 @@ jobs:
       - name: Render HTML for Pages
         run: |
           rm -fr /tmp/site/benchmarks
-          mkdir -p /tmp/site/benchmarks
+          mkdir -p /tmp/site/benchmarks /tmp/site/benchmarks/h2
 
-          # Collect all result JSONs found across matrix runs
+          # --- HTTP/1.1 results ---
           INPUTS=()
           for label in low high; do
             json="/tmp/bench-artifacts/bench-results-${label}/benchmark_latest.json"
             if [[ -f "$json" ]]; then
               INPUTS+=("--input" "$json")
-              # Also copy each JSON for raw access
               cp "$json" "/tmp/site/benchmarks/benchmark_${label}.json"
             fi
           done
 
-          if [[ ${#INPUTS[@]} -eq 0 ]]; then
-            echo "WARNING: No benchmark results found; skipping render"
-            exit 0
+          if [[ ${#INPUTS[@]} -gt 0 ]]; then
+            benchmarks/scripted-servers/render_benchmarks_html.py \
+              "${INPUTS[@]}" \
+              --output /tmp/site/benchmarks/index.html
+          else
+            echo "WARNING: No HTTP/1.1 benchmark results found; skipping render"
           fi
 
-          benchmarks/scripted-servers/render_benchmarks_html.py \
-            "${INPUTS[@]}" \
-            --output /tmp/site/benchmarks/index.html
-
-          # Copy badge if available
+          # Copy HTTP/1.1 badge if available
           if [[ -f /tmp/bench-artifacts/bench-badge/benchmark_badge.json ]]; then
             cp /tmp/bench-artifacts/bench-badge/benchmark_badge.json /tmp/site/benchmarks/benchmark_badge.json
+          fi
+
+          # --- HTTP/2 results ---
+          for proto in h2c h2-tls; do
+            H2_INPUTS=()
+            for label in low high; do
+              json="/tmp/bench-artifacts/h2-results-${proto}-${label}/benchmark_latest.json"
+              if [[ -f "$json" ]]; then
+                H2_INPUTS+=("--input" "$json")
+                cp "$json" "/tmp/site/benchmarks/h2/benchmark_${proto}_${label}.json"
+              fi
+            done
+            if [[ ${#H2_INPUTS[@]} -gt 0 ]]; then
+              benchmarks/scripted-servers/render_benchmarks_html.py \
+                "${H2_INPUTS[@]}" \
+                --output "/tmp/site/benchmarks/h2/benchmarks_${proto}.html"
+            fi
+          done
+
+          # Copy H2 badge if available
+          if [[ -f /tmp/bench-artifacts/h2-bench-badge/benchmark_badge.json ]]; then
+            cp /tmp/bench-artifacts/h2-bench-badge/benchmark_badge.json /tmp/site/benchmarks/h2/benchmark_badge.json
           fi
 
       - name: Publish site snapshot to gh-pages
