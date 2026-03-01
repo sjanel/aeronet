@@ -5,6 +5,8 @@
 #include <ctime>
 #include <string_view>
 
+#include "aeronet/platform.hpp"
+
 #ifdef __linux__
 // Ensure timespec is defined before including linux/errqueue.h
 #include <linux/errqueue.h>
@@ -90,24 +92,25 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept;
 #else
 // Non-Linux stubs - zerocopy is Linux-specific
 
-inline ZeroCopyEnableResult EnableZeroCopy([[maybe_unused]] int fd) noexcept {
+inline ZeroCopyEnableResult EnableZeroCopy([[maybe_unused]] NativeHandle fd) noexcept {
   return ZeroCopyEnableResult::NotSupported;
 }
 
-[[nodiscard]] inline bool IsZeroCopyEnabled([[maybe_unused]] int fd) noexcept { return false; }
+[[nodiscard]] inline bool IsZeroCopyEnabled([[maybe_unused]] NativeHandle fd) noexcept { return false; }
 
-[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] int fd, [[maybe_unused]] std::string_view data,
+[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] NativeHandle fd, [[maybe_unused]] std::string_view data,
                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return -1;
 }
 
-[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] int fd, [[maybe_unused]] std::string_view firstBuf,
+[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] NativeHandle fd, [[maybe_unused]] std::string_view firstBuf,
                                           [[maybe_unused]] std::string_view secondBuf,
                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return -1;
 }
 
-inline std::size_t PollZeroCopyCompletions([[maybe_unused]] int fd, [[maybe_unused]] ZeroCopyState& state) noexcept {
+inline std::size_t PollZeroCopyCompletions([[maybe_unused]] NativeHandle fd,
+                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return 0;
 }
 

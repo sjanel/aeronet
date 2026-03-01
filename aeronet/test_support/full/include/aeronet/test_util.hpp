@@ -11,6 +11,7 @@
 
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -23,7 +24,7 @@ class ClientConnection {
 
   explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
 
-  [[nodiscard]] int fd() const noexcept { return _socket.fd(); }
+  [[nodiscard]] NativeHandle fd() const noexcept { return _socket.fd(); }
 
  private:
   Socket _socket;
@@ -63,16 +64,16 @@ struct RequestOptions {
   std::size_t maxResponseBytes{1 << 20};                               // 1 MiB safety cap
 };
 
-void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
+void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
 
 // Reads until we have a complete HTTP response or timeout.
 // For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
 // For responses with Content-Length, continues until body is complete.
 // For Connection: close responses, reads until peer closes or timeout.
-std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout = 500ms,
+std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTimeout = 500ms,
                             std::size_t expectedReceivedBytes = 0);
 
-std::string recvUntilClosed(int fd);
+std::string recvUntilClosed(NativeHandle fd);
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
@@ -99,7 +100,7 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw);
 
 ParsedResponse parseResponseOrThrow(std::string_view raw);
 
-void setRecvTimeout(int fd, SysDuration timeout);
+void setRecvTimeout(NativeHandle fd, SysDuration timeout);
 
 std::string buildRequest(const RequestOptions& opt);
 
@@ -112,7 +113,7 @@ std::string requestOrThrow(uint16_t port, const RequestOptions& opt = {});
 
 bool AttemptConnect(uint16_t port);
 
-bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout);
+bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout);
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
 

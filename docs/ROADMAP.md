@@ -2,6 +2,7 @@
 
 ## Recently completed
 
+- **Cross-platform error abstraction & platform hardening**: Unified all raw `errno`/`WSAGetLastError()`/`strerror()` usage behind portable helpers in `platform.hpp` (`LastSystemError`, `SystemErrorMessage`, `ThrowSystemError`, and `error::k*` constants). Fixed several platform-specific correctness issues: `SO_NOSIGPIPE` on macOS, `BaseFd` handle-kind discrimination on Windows, `FormatMessageA` for Winsock error codes, `TransmitFile` parameter types, `SO_REUSEPORT` on macOS 12+. See changelog for details.
 - **Formal security review of HTTP/2 frame handling and state machines**: Comprehensive code audit of ~4700 lines across 11 files covering frame parsing, connection/stream state machines, HPACK codec, flow control, and CONNECT tunneling. Identified 5 actionable findings (CONTINUATION accumulation limit, stream recv-window overflow check, HPACK integer decode overflow tightening, SETTINGS silent truncation logging, priority flood mitigation). See commit history and inline comments for details.
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.
@@ -22,6 +23,8 @@
 
 ## Medium priority
 
+- **Windows IOCP event loop**: The IOCP backend is stub-quality (mod/del are no-ops, all events map to `EventIn`). Requires a fundamental architectural rethink — IOCP is completion-based whereas epoll/kqueue are readiness-based — before Windows can be a production platform.
+- **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 - **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
 - **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)

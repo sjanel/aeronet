@@ -6,15 +6,20 @@ function(aeronet_http_test NAME)
 endfunction()
 
 aeronet_http_test(compile-time-traits)
-aeronet_http_test(http-additional)
+
+# These integration tests use Linux-specific syscall overrides (epoll, sendfile/pread,
+# /proc/self/fd, MSG_PEEK|MSG_DONTWAIT) or dlsym/RTLD_NEXT.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  aeronet_http_test(http-additional)
+  aeronet_http_test(http-connect)
+  aeronet_http_test(http-errors)
+endif()
 
 # Compression tests
 if(AERONET_ENABLE_ZLIB OR AERONET_ENABLE_ZSTD OR AERONET_ENABLE_BROTLI)
   aeronet_http_test(http-compression)
 endif()
-aeronet_http_test(http-connect)
 aeronet_http_test(http-core)
-aeronet_http_test(http-errors)
 aeronet_http_test(http-options-trace)
 aeronet_http_test(http-query-parsing)
 aeronet_http_test(http-range)

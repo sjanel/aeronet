@@ -1,11 +1,9 @@
 #include <algorithm>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -61,7 +59,7 @@ inline void IncrementTlsFailureReason(TlsMetricsInternal& metrics, std::string_v
 }
 
 inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& metrics, const TlsHandshakeCallback& cb,
-                                 int fd, std::string_view reason, bool resumed = false,
+                                 NativeHandle fd, std::string_view reason, bool resumed = false,
                                  bool clientCertPresent = false) noexcept {
   if (state.tlsHandshakeEventEmitted) {
     return;
@@ -159,11 +157,11 @@ void SingleHttpServer::acceptNewConnections() {
       // no more waiting connections
       break;
     }
-    int cnxFd = cnx.fd();
+    auto cnxFd = cnx.fd();
     if (_config.tcpNoDelay) {
       if (!SetTcpNoDelay(cnxFd)) [[unlikely]] {
-        const auto err = errno;
-        log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", cnxFd, err, std::strerror(err));
+        const auto err = LastSystemError();
+        log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", cnxFd, err);
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
@@ -322,8 +320,8 @@ void SingleHttpServer::acceptNewConnections() {
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
         if (want == TransportHint::Error) [[unlikely]] {
-          log::error("Closing connection fd # {} bytesRead={} want={} errno={} ({})", cnxFd, bytesRead,
-                     static_cast<int>(want), errno, std::strerror(errno));
+          log::error("Closing connection fd # {} bytesRead={} want={} err={}", cnxFd, bytesRead, static_cast<int>(want),
+                     LastSystemError());
 #ifdef AERONET_ENABLE_OPENSSL
           if (_tls.ctxHolder) {
             auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
@@ -386,14 +384,14 @@ void SingleHttpServer::acceptNewConnections() {
 }
 
 SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMapIt cnxIt) {
-  const int cfd = cnxIt->first.fd();
+  const auto cfd = cnxIt->first.fd();
   log::debug("closeConnection called for fd # {}", cfd);
 
   // If this is a tunnel endpoint (CONNECT), ensure we tear down the peer too.
   // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing
   // spurious epoll_ctl failures and incorrect forwarding.
-  const int peerFd = cnxIt->second->peerFd;
-  if (peerFd != -1) {
+  const auto peerFd = cnxIt->second->peerFd;
+  if (peerFd != kInvalidHandle) {
     auto peerIt = _connections.active.find(peerFd);
     if (peerIt != _connections.active.end()) [[likely]] {
 #ifdef AERONET_ENABLE_HTTP2
@@ -446,7 +444,7 @@ SingleHttpServer::ConnectionMapIt SingleHttpServer::closeConnection(ConnectionMa
   for (const auto& [upFd, streamId] : tunnelUpstreamFds) {
     auto upIt = _connections.active.find(upFd);
     if (upIt != _connections.active.end()) {
-      upIt->second->peerFd = -1;
+      upIt->second->peerFd = kInvalidHandle;
       upIt->second->peerStreamId = 0;
       _eventLoop.del(upFd);
 #ifdef AERONET_ENABLE_OPENSSL
@@ -466,7 +464,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionM
 
   // If this connection was created for an upstream non-blocking connect, and connect is pending,
   // check SO_ERROR to determine whether connect completed successfully or failed.
-  const int fd = cnxIt->first.fd();
+  const auto fd = cnxIt->first.fd();
   if (state.connectPending) {
     const int err = GetSocketError(fd);
     state.connectPending = false;
@@ -529,7 +527,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
   }
 
   std::size_t bytesReadThisEvent = 0;
-  const int fd = cnxIt->first.fd();
+  const auto fd = cnxIt->first.fd();
   while (true) {
     std::size_t chunkSize = _config.minReadChunkBytes;
     if (_config.maxPerEventReadBytes != 0) {
@@ -634,19 +632,20 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionM
 // Shared CONNECT tunnel helpers (HTTP/1.1 + HTTP/2)
 // ============================================================================
 
-int SingleHttpServer::setupTunnelConnection(int clientFd, std::string_view host, std::string_view port) {
+NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std::string_view host,
+                                                     std::string_view port) {
   ConnectResult cres = ConnectTCP(std::span<char>(const_cast<char*>(host.data()), host.size()),
                                   std::span<char>(const_cast<char*>(port.data()), port.size()));
   if (cres.failure) {
-    return -1;
+    return kInvalidHandle;
   }
 
-  const int upstreamFd = cres.cnx.fd();
+  const auto upstreamFd = cres.cnx.fd();
 
   // Register upstream in event loop for edge-triggered reads and writes so we can detect
   // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
   if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
-    return -1;
+    return kInvalidHandle;
   }
 
   // Insert upstream connection state. Inserting may rehash the map — callers must

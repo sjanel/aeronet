@@ -156,7 +156,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
       // verify that no other process is using the port by attempting to bind once here.
       // If the port is already in use, this will throw.
       if (!Socket{Socket::Type::StreamNonBlock}.tryBind(cfg.reusePort, cfg.tcpNoDelay, cfg.port)) {
-        throw_errno("bind failed on this port - already in use");
+        ThrowSystemError("bind failed on this port - already in use");
       }
       // immediately close the socket again to free the port for the actual servers below.
     }

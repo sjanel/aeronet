@@ -5,12 +5,13 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/platform.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
 // Thin RAII wrapper over a platform event-notification mechanism
-// (epoll on Linux, kqueue on macOS).
+// (epoll on Linux, kqueue on macOS, IOCP stub on Windows).
 //
 // Design notes:
 //  * Inherits from BaseFd to reuse unified close()/logging + move semantics.
@@ -29,11 +30,13 @@ class EventLoop {
   static constexpr uint32_t kInitialCapacity = 64;
 
   struct EventFd {
-    EventFd(int fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
+    EventFd(NativeHandle fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
 
     EventBmp eventBmp;
-    int fd;
+    NativeHandle fd;
+#ifdef AERONET_POSIX
     uint32_t _padding;
+#endif
   };
 
   // Default constructor - creates an empty EventLoop.
@@ -68,9 +71,9 @@ class EventLoop {
   // Returns true on success, false on failure (logged).
   [[nodiscard]] bool mod(EventFd event) const;
 
-  // Delete fd from epoll monitoring.
+  // Delete fd from monitoring.
   // Log on error.
-  void del(int fd) const;
+  void del(NativeHandle fd) const;
 
   // Polls for ready events up to the poll timeout.
   //
@@ -80,11 +83,11 @@ class EventLoop {
   //  - On success: returns a non-empty span of ready events.
   //  - On timeout or when interrupted by a signal (EINTR): returns an empty span
   //    with non-null data() pointer.
-  //  - On unrecoverable epoll_wait failure (already logged): returns an empty span
+  //  - On unrecoverable poll failure (already logged): returns an empty span
   //    with nullptr data() pointer.
   [[nodiscard]] std::span<const EventFd> poll();
 
-  // Current allocated capacity (number of epoll_event slots available without reallocation).
+  // Current allocated capacity (number of event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
 
   // Update the poll timeout.

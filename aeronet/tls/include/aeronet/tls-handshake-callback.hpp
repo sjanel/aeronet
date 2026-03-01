@@ -4,12 +4,14 @@
 #include <functional>
 #include <string_view>
 
+#include "aeronet/platform.hpp"
+
 namespace aeronet {
 
 struct TlsHandshakeEvent {
   enum class Result : uint8_t { Succeeded, Failed, Rejected };
 
-  int fd{-1};
+  NativeHandle fd{kInvalidHandle};
 
   Result result{Result::Succeeded};
 

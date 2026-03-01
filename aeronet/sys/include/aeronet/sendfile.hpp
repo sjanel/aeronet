@@ -1,6 +1,10 @@
 #pragma once
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/types.h>  // off_t, ssize_t
+#endif
 
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +21,12 @@ namespace aeronet {
 // Linux  : wraps sendfile(2) with its native signature.
 // macOS  : wraps sendfile(2) with the macOS signature (arguments reversed,
 //          len is in/out).
-// Windows: not yet implemented – will use TransmitFile.
-int64_t Sendfile(int outFd, int inFd, off_t& offset, std::size_t count) noexcept;
+// Windows: uses TransmitFile.  `fileFd` is a CRT file descriptor (from
+//          _open / open) — it is converted internally via _get_osfhandle.
+#ifdef AERONET_POSIX
+int64_t Sendfile(NativeHandle outFd, NativeHandle inFd, off_t& offset, std::size_t count) noexcept;
+#elifdef AERONET_WINDOWS
+int64_t Sendfile(NativeHandle outFd, int fileFd, int64_t& offset, std::size_t count) noexcept;
+#endif
 
 }  // namespace aeronet

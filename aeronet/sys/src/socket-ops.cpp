@@ -1,56 +1,104 @@
 #include "aeronet/socket-ops.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_WINDOWS
+#include <ws2tcpip.h>
+#else
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#endif
 
-#include <cerrno>
 #include <cstddef>
-#include <cstdint>
-
-// POSIX headers needed on Linux and macOS.
-// Windows will need a separate implementation block later.
-#include <fcntl.h>
 
 namespace aeronet {
 
-bool SetNonBlocking(int fd) noexcept {
+bool SetNonBlocking(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  u_long mode = 1;
+  return ::ioctlsocket(fd, FIONBIO, &mode) == 0;
+#else
   const int flags = ::fcntl(fd, F_GETFL, 0);
   if (flags == -1) {
     return false;
   }
   return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
+#endif
 }
 
-bool SetCloseOnExec(int fd) noexcept {
+bool SetCloseOnExec(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  // Windows does not have a close-on-exec concept for sockets.
+  (void)fd;
+  return true;
+#else
   const int flags = ::fcntl(fd, F_GETFD, 0);
   if (flags == -1) {
     return false;
   }
   return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
+#endif
 }
 
-bool SetTcpNoDelay(int fd) noexcept {
+bool SetNoSigPipe(NativeHandle fd) noexcept {
+#ifdef AERONET_MACOS
   static constexpr int kEnable = 1;
-  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) == 0;
+  return ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &kEnable, sizeof(kEnable)) == 0;
+#else
+  // Linux uses MSG_NOSIGNAL per-send; Windows has no SIGPIPE concept.
+  (void)fd;
+  return true;
+#endif
 }
 
-int GetSocketError(int fd) noexcept {
+#ifdef AERONET_POSIX
+void SetPipeNonBlockingCloExec(int pipeRd, int pipeWr) noexcept {
+  for (int pfd : {pipeRd, pipeWr}) {
+    int flags = ::fcntl(pfd, F_GETFL, 0);
+    if (flags != -1) {
+      ::fcntl(pfd, F_SETFL, flags | O_NONBLOCK);
+    }
+    int fdFlags = ::fcntl(pfd, F_GETFD, 0);
+    if (fdFlags != -1) {
+      ::fcntl(pfd, F_SETFD, fdFlags | FD_CLOEXEC);
+    }
+  }
+}
+#endif
+
+bool SetTcpNoDelay(NativeHandle fd) noexcept {
+  static constexpr int kEnable = 1;
+#ifdef AERONET_WINDOWS
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&kEnable), sizeof(kEnable)) == 0;
+#else
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) == 0;
+#endif
+}
+
+int GetSocketError(NativeHandle fd) noexcept {
   int err = 0;
   socklen_t len = sizeof(err);
+#ifdef AERONET_WINDOWS
+  if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len) == -1) {
+    return LastSystemError();
+  }
+#else
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_ERROR
   if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == -1) {
-    return errno;
+    return LastSystemError();
   }
+#endif
   return err;
 }
 
-bool GetLocalAddress(int fd, sockaddr_storage& addr) noexcept {
+bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {
   socklen_t len = sizeof(addr);
   return ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0;
 }
 
-bool GetPeerAddress(int fd, sockaddr_storage& addr) noexcept {
+bool GetPeerAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {
   socklen_t len = sizeof(addr);
   return ::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0;
 }
@@ -68,28 +116,30 @@ bool IsLoopback(const sockaddr_storage& addr) noexcept {
   return false;
 }
 
-int64_t SafeSend(int fd, const void* data, std::size_t len) noexcept {
-#ifdef __linux__
+int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {
+#ifdef AERONET_LINUX
   return static_cast<int64_t>(::send(fd, data, len, MSG_NOSIGNAL));
-#elifdef __APPLE__
+#elifdef AERONET_MACOS
   // macOS uses SO_NOSIGPIPE socket option (set at socket creation) instead of MSG_NOSIGNAL.
   return static_cast<int64_t>(::send(fd, data, len, 0));
+#elifdef AERONET_WINDOWS
+  return static_cast<int64_t>(::send(fd, static_cast<const char*>(data), static_cast<int>(len), 0));
 #else
   return static_cast<int64_t>(::send(fd, data, len, 0));
 #endif
 }
 
-bool ShutdownWrite(int fd) noexcept {
-#ifdef _WIN32
-  return ::shutdown(fd, 1 /* SD_SEND */) == 0;
+bool ShutdownWrite(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  return ::shutdown(fd, SD_SEND) == 0;
 #else
   return ::shutdown(fd, SHUT_WR) == 0;
 #endif
 }
 
-bool ShutdownReadWrite(int fd) noexcept {
-#ifdef _WIN32
-  return ::shutdown(fd, 2 /* SD_BOTH */) == 0;
+bool ShutdownReadWrite(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  return ::shutdown(fd, SD_BOTH) == 0;
 #else
   return ::shutdown(fd, SHUT_RDWR) == 0;
 #endif

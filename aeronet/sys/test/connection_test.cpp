@@ -1,9 +1,15 @@
 #include "aeronet/connection.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>

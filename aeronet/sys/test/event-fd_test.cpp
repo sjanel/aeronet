@@ -1,8 +1,14 @@
 #include "aeronet/event-fd.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/eventfd.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>

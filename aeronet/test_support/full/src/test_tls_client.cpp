@@ -1,6 +1,8 @@
 #include "aeronet/test_tls_client.hpp"
 
+#ifdef AERONET_POSIX
 #include <fcntl.h>
+#endif
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -11,7 +13,12 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+#ifdef AERONET_POSIX
 #include <poll.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <cerrno>
 #include <chrono>
@@ -210,8 +217,12 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
   pfd.revents = 0;
 
   auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+#ifdef AERONET_WINDOWS
+  int ret = ::WSAPoll(&pfd, 1, static_cast<int>(timeoutMs));
+#else
   // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   int ret = ::poll(&pfd, 1, static_cast<int>(timeoutMs));
+#endif
 
   if (ret < 0) {
     // poll error
@@ -245,11 +256,13 @@ std::string TlsClient::get(std::string_view target, const std::vector<http::Head
 void TlsClient::init() {
   // Avoid test process termination when writing to a closed TLS socket.
   // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
+#ifdef AERONET_POSIX
   static const int kSigpipeIgnored = []() {
     ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
     return 0;
   }();
   (void)kSigpipeIgnored;
+#endif
 
   ::SSL_library_init();
   ::SSL_load_error_strings();
@@ -283,11 +296,16 @@ void TlsClient::init() {
   }
 
   // Set socket to non-blocking mode for poll()-based I/O
-  int fd = _cnx.fd();
+  auto fd = _cnx.fd();
+#ifdef AERONET_WINDOWS
+  u_long nonBlock = 1;
+  ::ioctlsocket(fd, FIONBIO, &nonBlock);
+#else
   int flags = ::fcntl(fd, F_GETFL, 0);
   if (flags >= 0) {
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   }
+#endif
 
   SSLUniquePtr localSsl(::SSL_new(localCtx.get()), ::SSL_free);
   if (!localSsl) {

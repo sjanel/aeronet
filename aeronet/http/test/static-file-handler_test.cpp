@@ -1,11 +1,18 @@
-// Enable syscall overrides for pread in small file inline path
+// Enable syscall overrides for pread in small file inline path (Linux only)
+#ifdef __linux__
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+#endif
 #define AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
 
 #include "aeronet/static-file-handler.hpp"
 
 #include <gtest/gtest.h>
+
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -413,6 +420,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFormatsOneMegabyteWithDecimal) {
   EXPECT_TRUE(body.contains("1.0 MiB"));
 }
 
+#ifdef AERONET_POSIX
 TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {
   const auto dirPath = tmpDir.dirPath() / "sealed";
   std::filesystem::create_directory(dirPath);
@@ -433,6 +441,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {
   EXPECT_EQ(resp.status(), http::StatusCodeInternalServerError);
   std::filesystem::permissions(dirPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
 }
+#endif
 
 TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
   const auto dirPath = tmpDir.dirPath() / "assets";
@@ -914,6 +923,7 @@ TEST_F(StaticFileHandlerTest, NoEtagWhenDisabledInConfig) {
   EXPECT_FALSE(resp.hasHeader(http::ETag));
 }
 
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 TEST_F(StaticFileHandlerTest, FileReadSizeFails) {
   test::FileSyscallHookGuard guard;
 
@@ -952,5 +962,6 @@ TEST_F(StaticFileHandlerTest, SmallFileReadAtFailure) {
   EXPECT_EQ(resp.status(), http::StatusCodeInternalServerError);
   EXPECT_EQ(resp.bodyInMemory(), "File read error\n");
 }
+#endif
 
 }  // namespace aeronet

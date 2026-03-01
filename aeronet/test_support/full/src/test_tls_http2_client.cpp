@@ -1,6 +1,11 @@
 #include "aeronet/test_tls_http2_client.hpp"
 
+#ifdef AERONET_POSIX
 #include <poll.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -190,8 +195,12 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
     pfd.fd = fd;
     pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
 
+#ifdef AERONET_WINDOWS
+    int ret = ::WSAPoll(&pfd, 1, 100);
+#else
     // NOLINTNEXTLINE(misc-include-cleaner)
     int ret = ::poll(&pfd, 1, 100);  // 100ms poll timeout
+#endif
     if (ret < 0) {
       return false;
     }
@@ -289,7 +298,11 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
     pfd.fd = fd;
     pfd.events = POLLIN;
 
+#ifdef AERONET_WINDOWS
+    int ret = ::WSAPoll(&pfd, 1, 100);
+#else
     int ret = ::poll(&pfd, 1, 100);
+#endif
     if (ret <= 0) {
       continue;
     }
@@ -514,7 +527,11 @@ std::vector<std::byte> TlsHttp2Client::receiveTunnelData(uint32_t streamId, std:
     pfd.fd = fd;
     pfd.events = POLLIN;
 
+#ifdef AERONET_WINDOWS
+    int ret = ::WSAPoll(&pfd, 1, 100);
+#else
     int ret = ::poll(&pfd, 1, 100);
+#endif
     if (ret <= 0) {
       continue;
     }

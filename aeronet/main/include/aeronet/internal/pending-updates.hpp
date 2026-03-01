@@ -8,6 +8,7 @@
 #include <coroutine>
 #endif
 
+#include "aeronet/platform.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -31,7 +32,7 @@ struct PendingUpdates {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Async callback posted from background threads to resume coroutines.
   struct AsyncCallback {
-    int connectionFd;  // connection fd for O(1) hash map lookup
+    NativeHandle connectionFd;  // connection fd for O(1) hash map lookup
     std::coroutine_handle<> handle;
     std::function<void()> work;  // optional work to execute before resuming
   };

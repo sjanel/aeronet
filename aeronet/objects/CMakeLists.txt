@@ -258,6 +258,8 @@ AeronetAddUnitTest(
     test/decompression-config_test.cpp
 )
 
+# dogstatsd_test uses AF_UNIX sockets and socket override helpers — Linux only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 AeronetAddUnitTest(
     dogstatsd_test
     test/dogstatsd_test.cpp
@@ -266,6 +268,7 @@ AeronetAddUnitTest(
     aeronet_sys
     aeronet_basic_test_support
 )
+endif()
 
 AeronetAddUnitTest(
     encoding_test

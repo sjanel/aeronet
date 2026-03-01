@@ -1,7 +1,11 @@
 #include "aeronet/socket.hpp"
 
 #include <gtest/gtest.h>
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <sys/socket.h>  // NOLINT(misc-include-cleaner) used by socket class
+#endif
 
 #include <cerrno>
 #include <cstdint>

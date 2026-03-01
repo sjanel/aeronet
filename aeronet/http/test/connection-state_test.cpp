@@ -3,11 +3,17 @@
 
 #include "aeronet/connection-state.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <fcntl.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <chrono>

@@ -40,7 +40,7 @@ struct TlsHandshakeResult {
 // should be the moment the TLS handshake began (steady clock). If it equals the epoch (count()==0)
 // durationNs remains 0.
 //  Logging format aligns with server's prior implementation.
-TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHandshake,
+TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, NativeHandle fd, bool logHandshake,
                                              std::chrono::steady_clock::time_point handshakeStart) {
   TlsHandshakeResult res(TLSInfo::Parts(64U));
 
@@ -86,7 +86,7 @@ TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, int fd, bool logHan
 }
 }  // namespace
 
-TLSInfo FinalizeTlsHandshake(const SSL* ssl, int fd, bool logHandshake, bool tlsHandshakeEventEmitted,
+TLSInfo FinalizeTlsHandshake(const SSL* ssl, NativeHandle fd, bool logHandshake, bool tlsHandshakeEventEmitted,
                              const TlsHandshakeCallback& cb, std::chrono::steady_clock::time_point handshakeStart,
                              TlsMetricsInternal& metrics) {
   TlsHandshakeResult hs = CollectAndLogTlsHandshake(ssl, fd, logHandshake, handshakeStart);
@@ -151,7 +151,7 @@ inline uint64_t DurationNs(std::chrono::steady_clock::time_point start) {
 }  // namespace
 
 void EmitTlsHandshakeEvent(const TLSInfo& tlsInfo, const TlsHandshakeCallback& cb, TlsHandshakeEvent::Result result,
-                           int fd, std::string_view reason, bool resumed, bool clientCertPresent) {
+                           NativeHandle fd, std::string_view reason, bool resumed, bool clientCertPresent) {
   if (cb) {
     TlsHandshakeEvent ev;
     ev.result = result;
@@ -174,7 +174,7 @@ void EmitTlsHandshakeEvent(const TLSInfo& tlsInfo, const TlsHandshakeCallback& c
   }
 }
 
-KtlsApplication MaybeEnableKtlsSend(KtlsEnableResult ktlsResult, int fd, TLSConfig::KtlsMode ktlsMode,
+KtlsApplication MaybeEnableKtlsSend(KtlsEnableResult ktlsResult, NativeHandle fd, TLSConfig::KtlsMode ktlsMode,
                                     TlsMetricsInternal& metrics) {
   const bool force = ktlsMode == TLSConfig::KtlsMode::Required;
   const bool warnOnFailure = ktlsMode == TLSConfig::KtlsMode::Enabled || ktlsMode == TLSConfig::KtlsMode::Required;

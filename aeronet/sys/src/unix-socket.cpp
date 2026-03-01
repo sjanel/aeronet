@@ -1,9 +1,26 @@
 #include "aeronet/unix-socket.hpp"
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_WINDOWS
+// Unix domain sockets are not supported on Windows in this implementation.
+#include <stdexcept>
+
+namespace aeronet {
+
+UnixSocket::UnixSocket(Type /*type*/) { throw std::runtime_error("Unix sockets are not supported on Windows"); }
+
+int UnixSocket::connect(std::string_view /*path*/) noexcept { return -1; }
+
+int64_t UnixSocket::send(const void* /*data*/, std::size_t /*len*/) noexcept { return -1; }
+
+}  // namespace aeronet
+
+#else  // POSIX
+
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -42,12 +59,12 @@ UnixSocket::UnixSocket(Type type) {
   _baseFd = BaseFd(::socket(AF_UNIX, nativeType, 0));
 #endif
   if (!_baseFd) {
-    throw_errno("UnixSocket: socket creation failed");
+    ThrowSystemError("UnixSocket: socket creation failed");
   }
 #ifndef __linux__
   // On macOS / others: set non-blocking and close-on-exec via fcntl.
-  if (!SetNonBlocking(_baseFd.fd()) || !SetCloseOnExec(_baseFd.fd())) {
-    throw_errno("UnixSocket: fcntl failed");
+  if (!SetNonBlocking(_baseFd.fd()) || !SetCloseOnExec(_baseFd.fd()) || !SetNoSigPipe(_baseFd.fd())) {
+    ThrowSystemError("UnixSocket: fcntl failed");
   }
 #endif
 }
@@ -72,3 +89,5 @@ int64_t UnixSocket::send(const void* data, std::size_t len) noexcept {
 }
 
 }  // namespace aeronet
+
+#endif  // AERONET_WINDOWS

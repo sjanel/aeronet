@@ -1,10 +1,14 @@
 #pragma once
 
+#include "aeronet/platform.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#endif
 
 // Auto-define AERONET_WANT_SYS_OVERRIDES on Linux. This guards all
 // Linux-specific system call overrides (epoll, accept4, recvmsg, memfd, etc.)
@@ -308,7 +312,7 @@ inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
   int retfd = static_cast<int>(::syscall(SYS_memfd_create, nameStr.c_str(), MFD_CLOEXEC));
   if (retfd < 0) {
-    throw std::runtime_error("memfd_create failed: " + std::string(std::strerror(errno)));
+    throw std::runtime_error("memfd_create failed: " + std::string(SystemErrorMessage(errno)));
   }
   return retfd;
 }
