@@ -18,6 +18,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -99,7 +100,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   while (true) {
     auto first = state.inBuffer.begin() + pos;
     auto last = state.inBuffer.end();
-    auto lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    auto lineEnd = SearchCRLF(first, last);
     if (lineEnd == last) {
       return BodyDecodeStatus::NeedMore;
     }
@@ -145,7 +146,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // First pass: validate trailers and find the end position
       std::size_t tempPos = pos;
       while (true) {
-        auto lineEndIt = std::search(state.inBuffer.begin() + tempPos, last, http::CRLF.begin(), http::CRLF.end());
+        auto lineEndIt = SearchCRLF(state.inBuffer.begin() + tempPos, last);
         if (lineEndIt == last) {
           return BodyDecodeStatus::NeedMore;
         }
@@ -267,7 +268,7 @@ bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* b
   headersMap.clear();
   while (first < last) {
     // Find line end
-    char* lineEnd = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    char* lineEnd = SearchCRLF(first, last);
     assert(lineEnd != last);
 
     // No check is made on header line format here
