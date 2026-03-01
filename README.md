@@ -33,13 +33,13 @@
 
 You can inspect the latest benchmark tables generated on `main` from the CI **benchmarks** job and detailed methodology here:
 
-- [Latest CI benchmarks (CI workflow, benchmarks job)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml?query=branch%3Amain)
-- [Latest HTTP/2 benchmarks (h2load)](https://github.com/sjanel/aeronet/actions/workflows/benchmarks-h2.yml?query=branch%3Amain)
+- [Latest CI benchmarks (HTTP/1.1 and HTTP/2)](https://github.com/sjanel/aeronet/actions/workflows/benchmarks-gh-pages.yml?query=branch%3Amain)
 - [Benchmark scenarios and methodology](benchmarks/scripted-servers/README.md)
 
 You can browse the latest rendered benchmark tables directly on GitHub Pages:
 
-- [Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/)
+- [HTTP/1.1 Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/)
+- [HTTP/2 Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
 
 ## Minimal Examples
 
