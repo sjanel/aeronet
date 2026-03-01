@@ -40,6 +40,7 @@
 #include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
 
 #ifndef NDEBUG
@@ -187,7 +188,7 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     }
     first += headerName.size() + http::HeaderSep.size();
 
-    const char* endLine = std::search(first, last, http::CRLF.begin(), http::CRLF.end());
+    const char* endLine = SearchCRLF(first, last);
     if (endLine == last) {
       throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
     }
@@ -366,8 +367,7 @@ constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, s
       }
     }
 
-    const char* nextCRLF =
-        std::search(headersBeg + http::HeaderSep.size(), headersEnd, http::CRLF.begin(), http::CRLF.end());
+    const char* nextCRLF = SearchCRLF(headersBeg + http::HeaderSep.size(), headersEnd);
 
     if (*headersBeg == ':' && begKey == endKey) {
       // Found the header we are looking for
@@ -402,14 +402,13 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
 
     const char* currentBegKey = ++last;
 
-    const char* begValue =
-        std::search(currentBegKey, endValue, http::HeaderSep.begin(), http::HeaderSep.end()) + http::HeaderSep.size();
+    const char* pColon =
+        static_cast<const char*>(std::memchr(currentBegKey, ':', static_cast<std::size_t>(endValue - currentBegKey)));
+    assert(pColon != nullptr);  // should not happen in well-formed headers
 
-    const char* currentEndKey = begValue - http::HeaderSep.size();
-
-    if (CaseInsensitiveEqual(std::string_view(currentBegKey, currentEndKey), key)) {
+    if (CaseInsensitiveEqual(std::string_view(currentBegKey, pColon), key)) {
       // Found the header we are looking for
-      return {begValue, endValue};
+      return {pColon + http::HeaderSep.size(), endValue};
     }
   }
   return {};
@@ -626,8 +625,7 @@ HttpResponse& HttpResponse::bodyAppend(std::string_view body, std::string_view c
     }
     if (!contentType.empty()) {
       char* pContentTypeValuePtr = getContentTypeValuePtr();
-      const auto it =
-          std::search(pContentTypeValuePtr, _data.data() + _data.size(), http::CRLF.begin(), http::CRLF.end());
+      const auto it = SearchCRLF(pContentTypeValuePtr, _data.data() + _data.size());
       assert(it != _data.data() + _data.size());
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
       neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
@@ -946,12 +944,13 @@ void HttpResponse::finalizeForHttp2() {
   char* last = _data.data() + bodyStartPos() - http::CRLF.size();
 
   while (first < last) {
-    for (; *first != ':'; ++first) {
-      *first = tolower(*first);
-    }
+    char* pColon = static_cast<char*>(std::memchr(first, ':', static_cast<std::size_t>(last - first)));
+    assert(pColon != nullptr);  // should not happen in well-formed headers
+
+    tolower(first, static_cast<std::size_t>(pColon - first));
 
     // move headersBeg to next header
-    first = std::search(first + http::HeaderSep.size(), last, http::CRLF.begin(), http::CRLF.end()) + http::CRLF.size();
+    first = SearchCRLF(first + http::HeaderSep.size(), last) + http::CRLF.size();
   }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
