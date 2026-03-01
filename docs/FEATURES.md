@@ -230,7 +230,7 @@ Behavior summary
 - [x] writev scatter-gather for response header + body
 - [x] Outbound write buffering with EPOLLOUT-driven backpressure
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
-- [ ] Benchmarks & profiling docs
+- [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
 - [x] MSG_ZEROCOPY for large payload sends (Linux-only, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
@@ -241,6 +241,7 @@ Behavior summary
 
   Implementation details: the decision is made after `accept()` (per connection) so a single listener can accept both loopback and remote peers. The zerocopy path uses `sendmsg(..., MSG_ZEROCOPY)` for large payloads (threshold: 16KiB) and falls back to normal `write`/`SSL_write` when unsupported or on retryable errors.
 - [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
+- [x] HTTP/2 benchmarks using [h2load](https://nghttp2.org/documentation/h2load-howto.html) (nghttp2). Supports both h2c (cleartext) and h2-tls modes via `run_benchmarks.py --protocol h2c|h2-tls`. All existing benchmark scenarios are supported. Competitor servers (drogon, axum, undertow, go, python/hypercorn) are updated for HTTP/2. Internal micro-benchmarks for HPACK, frame parsing, and flow control are also included. See `benchmarks/scripted-servers/README.md` and `.github/workflows/benchmarks-h2.yml`.
 
 ### Memory Management & std::string_view Safety
 

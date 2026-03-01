@@ -68,17 +68,17 @@ struct AeronetServerRunner {
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
           cfg.maxBodyBytes = 1UL << 25;
-          cfg.tcpNoDelay = true;
+          cfg.withTcpNoDelay();  // disable Nagle's algorithm for more consistent latency measurements
           return cfg;
         }()) {
     log::set_level(log::level::err);
-    server.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest &) {
+    server.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest&) {
       HttpResponse resp(200);
       resp.body(g_stringPool.next());
       return resp;
     });
 
-    server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest &req) {
+    server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest& req) {
       HttpResponse resp = req.makeResponse(http::StatusCodeOK);
       // Read requested header count from query param 'size'
       const std::size_t headerCount = req.queryParamInt<std::size_t>("size").value();
@@ -104,7 +104,7 @@ struct DrogonServerWrapper {
     using namespace std::chrono_literals;
 
     // All Drogon setup must happen in one thread before run()
-    auto &app = drogon::app();
+    auto& app = drogon::app();
 
     app.addListener("127.0.0.1", _port);
     drogon::app().setPipeliningRequestsNumber(1000000000);
@@ -112,7 +112,7 @@ struct DrogonServerWrapper {
 
     // Body handler
     app.registerHandler(benchutil::kBodyPath,
-                        [](const drogon::HttpRequestPtr &, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
+                        [](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
                           auto resp = drogon::HttpResponse::newHttpResponse();
                           resp->setStatusCode(drogon::k200OK);
                           auto body = g_stringPool.next();
@@ -125,7 +125,7 @@ struct DrogonServerWrapper {
     // Header handler
     app.registerHandler(
         benchutil::kHeaderPath,
-        [](const drogon::HttpRequestPtr &req, std::function<void(const drogon::HttpResponsePtr &)> &&cb) {
+        [](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& cb) {
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k200OK);
           auto sz = req->getParameter("size");
@@ -169,7 +169,7 @@ struct DrogonServerWrapper {
 };
 
 std::once_flag drogonInitFlag;
-DrogonServerWrapper *drogonServer = nullptr;
+DrogonServerWrapper* drogonServer = nullptr;
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
@@ -218,7 +218,7 @@ struct OatppBodyHandler : public oatpp::web::server::HttpRequestHandler {
   // no local RNG; pool-owned RNG is used for pregenerated strings
   OatppBodyHandler() = default;
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest> &) override {
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>&) override {
     auto body = g_stringPool.next();
     auto bodySz = body.size();
     auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
@@ -232,7 +232,7 @@ struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
   // no local RNG; pool-owned RNG is used for pregenerated strings
   OatppHeadersHandler() = default;
 
-  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest> &req) override {
+  std::shared_ptr<OutgoingResponse> handle(const std::shared_ptr<IncomingRequest>& req) override {
     auto szParam = req->getQueryParameter("size");
     auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
         oatpp::web::protocol::http::Status::CODE_200, szParam);
@@ -311,13 +311,13 @@ struct HttplibServerWrapper {
 
   HttplibServerWrapper() {
     svr.set_keep_alive_max_count(1000000);  // large keep-alive reuse allowance
-    svr.Get(benchutil::kBodyPath, [](const httplib::Request & /*req*/, httplib::Response &res) {
+    svr.Get(benchutil::kBodyPath, [](const httplib::Request& /*req*/, httplib::Response& res) {
       auto bodyStr = g_stringPool.next();
       auto bodySz = bodyStr.size();
       res.set_content(std::move(bodyStr), "text/plain");
       res.set_header("Content-Length", std::to_string(bodySz));
     });
-    svr.Get(benchutil::kHeaderPath, [](const httplib::Request &req, httplib::Response &res) {
+    svr.Get(benchutil::kHeaderPath, [](const httplib::Request& req, httplib::Response& res) {
       const auto nbHeaders = req.get_header_value_u64("size");
       for (size_t headerCount = 0; headerCount < nbHeaders; ++headerCount) {
         res.set_header(g_stringPool.next(), g_stringPool.next());
@@ -388,7 +388,7 @@ class PersistentClient {
 };
 
 template <class Server>
-void BodyMinMax(benchmark::State &state, std::string_view name, Server &server) {
+void BodyMinMax(benchmark::State& state, std::string_view name, Server& server) {
   // Redesigned: do not parse request params on server; instead return a pregenerated
   // body from a pool. Create a local deterministic RNG for the benchmark sequence
   // (so all frameworks see the same sample draws) and stop when pool is exhausted.
@@ -419,13 +419,13 @@ void BodyMinMax(benchmark::State &state, std::string_view name, Server &server) 
   }
 }
 
-void AeronetBodyMinMax(benchmark::State &state) {
+void AeronetBodyMinMax(benchmark::State& state) {
   AeronetServerRunner server;
   BodyMinMax(state, "aeronet", server);
 }
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-void DrogonBodyMinMax(benchmark::State &state) {
+void DrogonBodyMinMax(benchmark::State& state) {
   std::call_once(drogonInitFlag, [] {
     static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
     drogonServer = &drogonServerStatic;
@@ -436,21 +436,21 @@ void DrogonBodyMinMax(benchmark::State &state) {
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
-void OatppBodyMinMax(benchmark::State &state) {
+void OatppBodyMinMax(benchmark::State& state) {
   OatppServerWrapper server;
   BodyMinMax(state, "oatpp", server);
 }
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibBodyMinMax(benchmark::State &state) {
+void HttplibBodyMinMax(benchmark::State& state) {
   HttplibServerWrapper server;
   BodyMinMax(state, "httplib", server);
 }
 #endif
 
 template <class Server>
-void HeadersMinMax(benchmark::State &state, std::string_view name, Server &server) {
+void HeadersMinMax(benchmark::State& state, std::string_view name, Server& server) {
   // Use a local deterministic RNG for drawing header counts so all frameworks
   // see the same sequence across runs.
   PersistentClient client(server.port());
@@ -476,13 +476,13 @@ void HeadersMinMax(benchmark::State &state, std::string_view name, Server &serve
   }
 }
 
-void AeronetHeadersMinMax(benchmark::State &state) {
+void AeronetHeadersMinMax(benchmark::State& state) {
   AeronetServerRunner server;
   HeadersMinMax(state, "aeronet", server);
 }
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-void DrogonHeadersMinMax(benchmark::State &state) {
+void DrogonHeadersMinMax(benchmark::State& state) {
   std::call_once(drogonInitFlag, [] {
     static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
     drogonServer = &drogonServerStatic;
@@ -492,21 +492,21 @@ void DrogonHeadersMinMax(benchmark::State &state) {
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
-void OatppHeadersMinMax(benchmark::State &state) {
+void OatppHeadersMinMax(benchmark::State& state) {
   OatppServerWrapper server;
   HeadersMinMax(state, "oatpp", server);
 }
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibHeadersMinMax(benchmark::State &state) {
+void HttplibHeadersMinMax(benchmark::State& state) {
   HttplibServerWrapper server;
   HeadersMinMax(state, "httplib", server);
 }
 #endif
 
 template <class Server>
-void BodyMinMaxNoReuse(benchmark::State &state, std::string_view name, Server &server) {
+void BodyMinMaxNoReuse(benchmark::State& state, std::string_view name, Server& server) {
   const std::size_t minSize = static_cast<std::size_t>(state.range(0));
   const std::size_t maxSize = static_cast<std::size_t>(state.range(1));
   const std::size_t nbPregenCount = static_cast<std::size_t>(state.range(2));
@@ -547,7 +547,7 @@ void BodyMinMaxNoReuse(benchmark::State &state, std::string_view name, Server &s
 
 // 1) No connection reuse: establish a fresh TCP connection for every request.
 //    This highlights accept + handshake + kernel scheduling overhead vs pure keep-alive.
-void AeronetBodyMinMaxNoReuse(benchmark::State &state) {
+void AeronetBodyMinMaxNoReuse(benchmark::State& state) {
   // Construct the server once and reuse it across multiple benchmark invocations.
   // Google Benchmark may run the same benchmark function multiple times (warmup,
   // measurement repeats, etc.), which previously caused the server to be
@@ -558,7 +558,7 @@ void AeronetBodyMinMaxNoReuse(benchmark::State &state) {
 }
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-void DrogonBodyMinMaxNoReuse(benchmark::State &state) {
+void DrogonBodyMinMaxNoReuse(benchmark::State& state) {
   std::call_once(drogonInitFlag, [] {
     static DrogonServerWrapper drogonServerStatic;  // Construct once, main thread
     drogonServer = &drogonServerStatic;
@@ -569,20 +569,20 @@ void DrogonBodyMinMaxNoReuse(benchmark::State &state) {
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
 // Oatpp: no connection reuse variant (fresh TCP connection each request)
-void OatppBodyMinMaxNoReuse(benchmark::State &state) {
+void OatppBodyMinMaxNoReuse(benchmark::State& state) {
   static OatppServerWrapper server;  // local server instance
   BodyMinMaxNoReuse(state, "oatpp", server);
 }
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibBodyMinMaxNoReuse(benchmark::State &state) {
+void HttplibBodyMinMaxNoReuse(benchmark::State& state) {
   static HttplibServerWrapper server;
   BodyMinMaxNoReuse(state, "httplib", server);
 }
 #endif
 
-void AeronetResponseBuild(benchmark::State &state) {
+void AeronetResponseBuild(benchmark::State& state) {
   const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
   const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
   const std::size_t minSize = static_cast<std::size_t>(state.range(2));
@@ -621,7 +621,7 @@ void AeronetResponseBuild(benchmark::State &state) {
 }
 
 #ifdef AERONET_BENCH_ENABLE_DROGON
-void DrogonResponseBuild(benchmark::State &state) {
+void DrogonResponseBuild(benchmark::State& state) {
   const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
   const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
   const std::size_t minSize = static_cast<std::size_t>(state.range(2));
@@ -656,7 +656,7 @@ void DrogonResponseBuild(benchmark::State &state) {
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
-void OatppResponseBuild(benchmark::State &state) {
+void OatppResponseBuild(benchmark::State& state) {
   const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
   const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
   const std::size_t minSize = static_cast<std::size_t>(state.range(2));
@@ -692,7 +692,7 @@ void OatppResponseBuild(benchmark::State &state) {
 #endif
 
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
-void HttplibResponseBuild(benchmark::State &state) {
+void HttplibResponseBuild(benchmark::State& state) {
   const std::size_t minNbHeaders = static_cast<std::size_t>(state.range(0));
   const std::size_t maxNbHeaders = static_cast<std::size_t>(state.range(1));
   const std::size_t minSize = static_cast<std::size_t>(state.range(2));
