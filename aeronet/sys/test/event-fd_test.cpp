@@ -1,8 +1,14 @@
 #include "aeronet/event-fd.hpp"
 
+#include "aeronet/system-error.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/eventfd.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>
@@ -93,7 +99,7 @@ extern "C" int eventfd_read(int __fd, eventfd_t* __value) {  // NOLINT(bugprone-
 
 TEST(EventFdTest, ConstructorThrowsWhenKernelFails) {
   EventfdHookGuard guard;
-  SetCreateActions({EventfdErr(EMFILE)});
+  SetCreateActions({EventfdErr(error::kTooManyFiles)});
   EXPECT_THROW(EventFd(), std::system_error);
 }
 
@@ -106,7 +112,7 @@ TEST(EventFdTest, SuccessfulSend) {
 TEST(EventFdTest, SendHandlesEagainWithoutErrorLog) {
   EventFd fd;
   EventfdHookGuard guard;
-  SetWriteActions({EventfdErr(EAGAIN)});
+  SetWriteActions({EventfdErr(error::kWouldBlock)});
   fd.send();
 }
 
@@ -126,7 +132,7 @@ TEST(EventFdTest, SuccessfulRead) {
 TEST(EventFdTest, ReadHandlesEagainWithoutErrorLog) {
   EventFd fd;
   EventfdHookGuard guard;
-  SetReadActions({EventfdErr(EAGAIN)});
+  SetReadActions({EventfdErr(error::kWouldBlock)});
   fd.read();
 }
 

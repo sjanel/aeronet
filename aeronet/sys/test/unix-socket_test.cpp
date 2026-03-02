@@ -3,7 +3,6 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -18,8 +17,11 @@
 #include <thread>
 #include <type_traits>
 
+#include "aeronet/system-error.hpp"
+
 #define AERONET_WANT_SOCKET_OVERRIDES
 
+#include "aeronet/close-native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
 
 namespace aeronet {
@@ -67,11 +69,11 @@ TEST_F(UnixSocketTest, DatagramSocketIsNonBlocking) {
   EXPECT_GE(sock.fd(), 0);
   // Verify socket is non-blocking by attempting to recv (should return EAGAIN/EWOULDBLOCK)
   char buf[1];
-  ssize_t ret = ::recv(sock.fd(), buf, 1, MSG_DONTWAIT);
+  const auto ret = ::recv(sock.fd(), buf, 1, MSG_DONTWAIT);
   // Non-blocking socket with no data should return -1 with EAGAIN or EWOULDBLOCK
   EXPECT_EQ(-1, ret);
   int err = errno;
-  EXPECT_TRUE(err == EAGAIN || err == EWOULDBLOCK);
+  EXPECT_TRUE(err == error::kWouldBlock);
 }
 
 TEST_F(UnixSocketTest, StreamSocketIsNonBlocking) {
@@ -162,7 +164,7 @@ TEST_F(UnixSocketTest, SendDatagramSucceeds) {
   UnixSocket client(UnixSocket::Type::Datagram);
   client.connect(socketPath);
   const char* data = "hello";
-  ssize_t sent = client.send(data, 5);
+  const auto sent = client.send(data, 5);
   // Non-blocking send in datagram mode should succeed immediately
   EXPECT_EQ(5, sent);
 
@@ -183,7 +185,7 @@ TEST_F(UnixSocketTest, SendDatagramZeroBytes) {
   // Client connects and sends zero bytes
   UnixSocket client(UnixSocket::Type::Datagram);
   client.connect(socketPath);
-  ssize_t sent = client.send(nullptr, 0);
+  const auto sent = client.send(nullptr, 0);
   EXPECT_EQ(0, sent);
 
   CleanupSocket(socketPath);
@@ -207,7 +209,7 @@ TEST_F(UnixSocketTest, SendStreamSucceeds) {
     socklen_t len = sizeof(clientAddr);
     int clientFd = ::accept(server.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &len);
     if (clientFd >= 0) {
-      ::close(clientFd);
+      CloseNativeHandle(clientFd);
     }
   });
 
@@ -215,7 +217,7 @@ TEST_F(UnixSocketTest, SendStreamSucceeds) {
   UnixSocket client(UnixSocket::Type::Stream);
   client.connect(socketPath);
   const char* data = "stream";
-  ssize_t sent = client.send(data, 6);
+  const auto sent = client.send(data, 6);
   EXPECT_EQ(6, sent);
 
   acceptThread.join();
@@ -238,11 +240,11 @@ TEST_F(UnixSocketTest, SendToClosedSocketFails) {
   client.connect(socketPath);
 
   // Close server immediately
-  ::close(server.fd());
+  CloseNativeHandle(server.fd());
 
-  // Send should fail or return EPIPE
+  // Send should fail or return error::kBrokenPipe
   const char* data = "test";
-  ssize_t sent = client.send(data, 4);
+  const auto sent = client.send(data, 4);
   // Either send fails (-1) or returns less than requested due to non-blocking
   // In any case, we're testing that it handles the closed socket gracefully
   EXPECT_LT(sent, 4);
@@ -252,7 +254,7 @@ TEST_F(UnixSocketTest, SendToClosedSocketFails) {
 
 TEST_F(UnixSocketTest, FdAccessor) {
   UnixSocket sock(UnixSocket::Type::Datagram);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
   EXPECT_GE(fd, 0);
   // Verify we can use the fd directly and it's valid
   int flags = ::fcntl(fd, F_GETFD, 0);

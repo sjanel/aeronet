@@ -1,10 +1,15 @@
 #include "aeronet/test_util.hpp"
 
+#ifdef AERONET_POSIX
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>  // NOLINT(misc-include-cleaner) used by timeval
 #include <sys/types.h>
 #include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -29,10 +34,13 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
+#include "aeronet/system-error-message.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/toupperlower.hpp"
 #ifdef AERONET_ENABLE_BROTLI
@@ -53,7 +61,7 @@ namespace {
 constexpr std::size_t kChunkSize = 1 << 13;
 }
 
-void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
+void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
   const char* cursor = data.data();
   const auto start = std::chrono::steady_clock::now();
   const auto maxTs = start + totalTimeout;
@@ -63,10 +71,10 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   for (std::size_t remaining = data.size(); remaining > 0;) {
     const auto sent = SafeSend(fd, cursor, remaining);
     if (sent == -1) {
-      const auto err = errno;
+      const auto err = LastSystemError();
       if (!alreadyLoggedError) {
         alreadyLoggedError = true;
-        log::error("sendAll failed with error {}", std::strerror(err));
+        log::error("sendAll failed with error {}", err);
       }
       if (std::chrono::steady_clock::now() >= maxTs) {
         log::error("sendAll timed out after {} ms", totalTimeout.count());
@@ -80,7 +88,8 @@ void sendAll(int fd, std::string_view data, std::chrono::milliseconds totalTimeo
   }
 }
 
-std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std::size_t expectedReceivedBytes) {
+std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTimeout,
+                            std::size_t expectedReceivedBytes) {
   std::string out;
   auto start = std::chrono::steady_clock::now();
   auto maxTs = start + totalTimeout;
@@ -95,20 +104,23 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
     }
 
     bool again = false;
-
     bool peerClosed = false;
 
     out.resize_and_overwrite(oldSize + kChunkSize,
                              [fd, oldSize, &again, &peerClosed](char* data, [[maybe_unused]] std::size_t newCap) {
-                               ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
+#ifdef AERONET_WINDOWS
+                               const auto recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
+#else
+                               const auto recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
+#endif
                                if (recvBytes == -1) {
-                                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                                 const auto recvErr = LastSystemError();
+                                 if (recvErr == error::kWouldBlock) {
                                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
                                    again = true;
                                    return oldSize;
                                  }
-                                 if (errno == ECONNRESET) {
-                                   // Peer closed connection - return what we have so far
+                                 if (recvErr == error::kConnectionReset) {
                                    peerClosed = true;
                                    return oldSize;
                                  }
@@ -184,7 +196,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
   return out;
 }
 
-std::string recvUntilClosed(int fd) {
+std::string recvUntilClosed(NativeHandle fd) {
   std::string out;
   for (;;) {
     const std::size_t oldSize = out.size();
@@ -194,11 +206,10 @@ std::string recvUntilClosed(int fd) {
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
-      const ssize_t recvBytes = ::recv(fd, data + oldSize, kChunkSize, 0);
+      const auto recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
       if (recvBytes == -1) {
-        // When SO_RCVTIMEO is set on a blocking socket, recv returns -1 with errno = EAGAIN/EWOULDBLOCK
-        // when the timeout expires.
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        const auto recvErr = LastSystemError();
+        if (recvErr == error::kWouldBlock) {
           std::this_thread::sleep_for(1ms);
           return oldSize;
         }
@@ -217,7 +228,7 @@ std::string recvUntilClosed(int fd) {
 
 std::string sendAndCollect(uint16_t port, std::string_view raw) {
   ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  auto fd = clientConnection.fd();
 
   sendAll(fd, raw);
   return recvUntilClosed(fd);
@@ -245,33 +256,38 @@ std::pair<Socket, uint16_t> startEchoServer() {
 
   std::thread([fd = listenSock.fd()]() {
     BaseFd clientFd(::accept(fd, nullptr, nullptr));
-    if (clientFd.fd() == -1) {
-      const int err = errno;
+    if (clientFd.fd() == kInvalidHandle) {
+      const auto err = LastSystemError();
+#ifdef AERONET_POSIX
       if (err == EBADF || err == EINVAL) {
-        // Socket was closed by the caller before or during accept
         return;
       }
+#endif
       ThrowSystemError("Error from ::accept");
     }
     char buf[1024];
 
     while (true) {
-      ssize_t recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
+      const auto recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
       if (recvBytes == -1) {
-        const int err = errno;
-        // Treat common transient or peer-closed errors as termination conditions for the echo thread
-        if (err == EINTR) {
-          continue;
-        }
-        if (err == ECONNRESET || err == ENOTCONN || err == EBADF) {
-          // Peer reset or socket closed - stop the echo loop gracefully
-          log::error("Echo server recv returned {}, exiting echo loop", std::strerror(err));
+        const auto err = LastSystemError();
+#ifdef AERONET_WINDOWS
+        if (err == error::kConnectionReset || err == WSAENOTCONN) {
           break;
         }
+#else
+        if (err == error::kInterrupted) {
+          continue;
+        }
+        if (err == error::kConnectionReset || err == ENOTCONN || err == EBADF) {
+          log::error("Echo server recv returned {}, exiting echo loop", SystemErrorMessage(err));
+          break;
+        }
+#endif
         ThrowSystemError("Error from ::recv");
       }
       if (recvBytes == 0) {
-        break;  // connection closed
+        break;
       }
 
       try {
@@ -296,15 +312,15 @@ Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
   for (const auto deadline = std::chrono::steady_clock::now() + timeout; std::chrono::steady_clock::now() < deadline;
        std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
     Socket sock(Socket::Type::Stream);
-    int fd = sock.fd();
+    auto fd = sock.fd();
 
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       return sock;
     }
 
-    log::debug("connect failed for fd # {}: {}", fd, std::strerror(errno));
+    log::debug("connect failed for fd # {}: {}", static_cast<int64_t>(fd), LastSystemError());
   }
-  log::error("Error from ::connect for: {}", std::strerror(errno));
+  log::error("Error from ::connect for: {}", LastSystemError());
   return Socket{};
 }
 }  // namespace
@@ -335,7 +351,7 @@ bool noBodyAfterHeaders(std::string_view raw) {
 
 std::string simpleGet(uint16_t port, std::string_view path) {
   ClientConnection cnx(port);
-  if (cnx.fd() == -1) {
+  if (cnx.fd() == kInvalidHandle) {
     throw std::runtime_error("simpleGet: failed to connect");
   }
   std::string req;
@@ -572,12 +588,17 @@ ParsedResponse parseResponseOrThrow(std::string_view raw) {
   return *prOpt;
 }
 
-void setRecvTimeout(int fd, SysDuration timeout) {
+void setRecvTimeout(NativeHandle fd, SysDuration timeout) {
   const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
+#ifdef AERONET_WINDOWS
+  DWORD tv = static_cast<DWORD>(timeoutMs);
+  if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv)) == SOCKET_ERROR) {
+#else
   // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
+#endif
     ThrowSystemError("Error from setRecvTimeout");
   }
 }
@@ -613,7 +634,7 @@ std::string buildRequest(const RequestOptions& opt) {
 
 std::optional<std::string> request(uint16_t port, const RequestOptions& opt) {
   ClientConnection cnx(port);
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
   setRecvTimeout(fd, opt.recvTimeout);
   auto reqStr = buildRequest(opt);
 
@@ -742,7 +763,7 @@ bool AttemptConnect(uint16_t port) {
   return ::connect(sock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
 }
 
-bool WaitForPeerClose(int fd, std::chrono::milliseconds timeout) {
+bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout) {
   // Use recvUntilClosed via an async future so we can time out waiting for remote close.
   auto fut = std::async(std::launch::async, [fd]() { return recvUntilClosed(fd); });
   if (fut.wait_for(timeout) == std::future_status::ready) {

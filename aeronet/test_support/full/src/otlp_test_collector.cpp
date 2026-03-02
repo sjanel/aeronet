@@ -1,10 +1,17 @@
 #include "aeronet/otlp_test_collector.hpp"
 
+#include "aeronet/system-error.hpp"
+
+#ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include <cerrno>
 #include <charconv>
@@ -131,10 +138,15 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
   }
   _port = ntohs(actual.sin_port);
 
+#ifdef AERONET_WINDOWS
+  u_long nonBlock = 1;
+  ::ioctlsocket(_listen.fd(), FIONBIO, &nonBlock);
+#else
   int flags = ::fcntl(_listen.fd(), F_GETFL, 0);
   if (flags >= 0) {
     ::fcntl(_listen.fd(), F_SETFL, flags | O_NONBLOCK);
   }
+#endif
 
   _thread = std::jthread([this] { run(); });
 }
@@ -163,7 +175,11 @@ bool OtlpTestCollector::acceptOnce() {
   pfd.fd = _listen.fd();
   pfd.events = POLLIN;  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   constexpr int kPollMs = 25;
+#ifdef AERONET_WINDOWS
+  const int ready = ::WSAPoll(&pfd, 1, kPollMs);
+#else
   const int ready = ::poll(&pfd, 1, kPollMs);  // NOLINT(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
+#endif
   if (ready <= 0) {
     return false;
   }
@@ -181,19 +197,20 @@ void OtlpTestCollector::handleClient(int clientFd) {
   buffer.reserve(4096);
   while (!_stop.load()) {
     char chunk[4096];
-    const ssize_t received = ::recv(client.fd(), chunk, sizeof(chunk), 0);
+    const auto received = ::recv(client.fd(), chunk, sizeof(chunk), 0);
     if (received == 0) {
       break;
     }
     if (received < 0) {
-      if (errno == EINTR) {
+      const auto recvErr = LastSystemError();
+      if (recvErr == error::kInterrupted) {
         continue;
       }
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if (recvErr == error::kWouldBlock) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
         continue;
       }
-      log::error("OTLP test collector recv failed: {}", std::strerror(errno));
+      log::error("OTLP test collector recv failed: {}", recvErr);
       return;
     }
     buffer.append(chunk, static_cast<std::size_t>(received));

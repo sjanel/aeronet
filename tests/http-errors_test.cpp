@@ -29,6 +29,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -74,7 +75,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string bad = "GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n";  // unsupported version
   test::sendAll(fd, bad);
@@ -102,7 +103,7 @@ TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
 
   {
     test::ClientConnection clientConnection(port);
-    int fd = clientConnection.fd();
+    NativeHandle fd = clientConnection.fd();
 
     test::sendAll(fd, bad);
     std::string resp = test::recvUntilClosed(fd);
@@ -113,7 +114,7 @@ TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
   std::this_thread::sleep_for(2 * ts.server.config().pollInterval);
   {
     test::ClientConnection clientConnection(port);
-    int fd = clientConnection.fd();
+    NativeHandle fd = clientConnection.fd();
     test::sendAll(fd, bad);
     std::string resp = test::recvUntilClosed(fd);
     ASSERT_TRUE(resp.contains("400")) << resp;
@@ -123,7 +124,7 @@ TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   // zero length with Expect should NOT produce 100 Continue
   std::string zero =
@@ -151,7 +152,7 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   std::uniform_int_distribution<int> sizeDist(1, 15);
   std::string original;
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string head = "POST /f HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, head);
@@ -271,8 +272,8 @@ TEST(HttpResponseDispatchErrors, QueueDataTransportError) {
 
   // Inject a server-side write failure on the accepted fd (PlainTransport uses writev for head+body).
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
-      .writeActions = {{-1, EPIPE}},
-      .writevActions = {{-1, EPIPE}},
+      .writeActions = {{-1, error::kBrokenPipe}},
+      .writevActions = {{-1, error::kBrokenPipe}},
       .sendfileActions = {},
   });
 
@@ -317,8 +318,8 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   // Arrange:
   //  - first writev: short write
   //  - second writev: EAGAIN => leaves buffered data and enables EPOLLOUT
-  //  - third writev: EPIPE => flushOutbound hits TransportHint::Error and requests immediate close
-  test::SetWritevActions(serverFd, {{100, 0}, {-1, EAGAIN}, {-1, EPIPE}});
+  //  - third writev: error::kBrokenPipe => flushOutbound hits TransportHint::Error and requests immediate close
+  test::SetWritevActions(serverFd, {{100, 0}, {-1, error::kWouldBlock}, {-1, error::kBrokenPipe}});
   ASSERT_EQ(test::g_writev_actions.size(serverFd), 3U);
 
   test::sendAll(client.fd(), SimpleGetRequest("/flush-error", http::keepalive));
@@ -385,7 +386,7 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
       .writeActions = {},
       .writevActions = {},
-      .sendfileActions = {{-1, EAGAIN}, {static_cast<ssize_t>(payload.size()), 0}},
+      .sendfileActions = {{-1, error::kWouldBlock}, {static_cast<int64_t>(payload.size()), 0}},
   });
 
   test::ClientConnection client(ts.port());

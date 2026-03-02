@@ -1,10 +1,14 @@
 #pragma once
 
+#include "aeronet/system-error-message.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#endif
 
 // Auto-define AERONET_WANT_SYS_OVERRIDES on Linux. This guards all
 // Linux-specific system call overrides (epoll, accept4, recvmsg, memfd, etc.)
@@ -27,6 +31,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -308,7 +313,7 @@ inline int CreateMemfd(std::string_view name) {
   const std::string nameStr(name);
   int retfd = static_cast<int>(::syscall(SYS_memfd_create, nameStr.c_str(), MFD_CLOEXEC));
   if (retfd < 0) {
-    throw std::runtime_error("memfd_create failed: " + std::string(std::strerror(errno)));
+    throw std::runtime_error("memfd_create failed: " + std::string(SystemErrorMessage(errno)));
   }
   return retfd;
 }
@@ -437,7 +442,7 @@ class QueueResetGuard {
 using SyscallAction = std::pair<int, int>;  // (return value, errno)
 
 // Simple action type for IO overrides: first = return value (bytes or -1), second = errno to set when returning -1.
-using IoAction = std::pair<ssize_t, int>;
+using IoAction = std::pair<int64_t, int>;
 
 namespace aeronet::test {
 inline ActionQueue<SyscallAction> g_socket_actions;
@@ -446,7 +451,7 @@ inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_accept_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
-inline ActionQueue<std::pair<ssize_t, int>> g_send_actions;  // (ret, errno)
+inline ActionQueue<std::pair<int64_t, int>> g_send_actions;  // (ret, errno)
 
 // Install IO actions on the next accepted client socket.
 // This is required because tests create a client-side fd, but the server writes on the
@@ -608,7 +613,7 @@ inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); 
 inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
 inline void PushAcceptAction(SyscallAction action) { g_accept_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
-inline void PushSendAction(std::pair<ssize_t, int> action) { g_send_actions.push(action); }
+inline void PushSendAction(std::pair<int64_t, int> action) { g_send_actions.push(action); }
 #if AERONET_WANT_SYS_OVERRIDES
 inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
 inline void PushEpollCtlAddAction(EpollCtlAction action) { g_epoll_ctl_add_actions.push(action); }

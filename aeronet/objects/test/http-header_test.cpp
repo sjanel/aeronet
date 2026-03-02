@@ -203,15 +203,15 @@ TEST(HttpHeader, ReverseIteratorWithQuotedValues) {
 }
 
 TEST(HttpHeader, ReverseIteratorWithEscapedQuotes) {
-  std::string_view headerValue = R"("\"gzip", "value with \"escaped\" quotes", "deflate\"")";
+  std::string_view headerValue = R"hdr("\"gzip", "value with \"escaped\" quotes", "deflate\"")hdr";
   http::HeaderValueReverseTokensIterator<','> it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"("deflate\"")");
+  EXPECT_EQ(it.next(), R"hdr("deflate\"")hdr");
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"("value with \"escaped\" quotes")");
+  EXPECT_EQ(it.next(), R"hdr("value with \"escaped\" quotes")hdr");
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"("\"gzip")");
+  EXPECT_EQ(it.next(), R"hdr("\"gzip")hdr");
 
   EXPECT_FALSE(it.hasNext());
 }

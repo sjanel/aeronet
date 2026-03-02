@@ -1,8 +1,12 @@
 #include "aeronet/base-fd.hpp"
 
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>
@@ -11,7 +15,9 @@
 #include <initializer_list>
 #include <utility>
 
+#include "aeronet/close-native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 
 using namespace aeronet;
 
@@ -65,7 +71,7 @@ TEST(BaseFd, ReleaseMakesObjectClosedAndReturnsFd) {
   BaseFd rd(fds[0]);
   // The pipe returns two fds; ownership was transferred to BaseFd, so we must
   // close the write end manually to avoid leak.
-  ::close(fds[1]);
+  CloseNativeHandle(fds[1]);
 
   ASSERT_TRUE(rd);
   int raw = rd.release();
@@ -74,7 +80,7 @@ TEST(BaseFd, ReleaseMakesObjectClosedAndReturnsFd) {
   // raw must be a valid fd
   EXPECT_GE(raw, 0);
   // closing raw should succeed
-  EXPECT_EQ(0, ::close(raw));
+  EXPECT_EQ(0, CloseNativeHandle(raw));
 }
 
 TEST(BaseFd, ReleaseOnClosedReturnsClosedSentinel) {
@@ -93,7 +99,7 @@ TEST(BaseFd, BoolOperatorAndReleaseIntegration) {
   const int raw = fdOwner3.release();
   EXPECT_FALSE(fdOwner3);
   EXPECT_GE(raw, 0);
-  ::close(raw);
+  CloseNativeHandle(raw);
 }
 
 TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
@@ -102,7 +108,7 @@ TEST(BaseFd, DestroyShouldLogIfFdAlreadyClosed) {
 
   BaseFd fdOwner(fd);
 
-  ::close(fd);  // close before destruction to simulate double-close
+  CloseNativeHandle(fd);  // close before destruction to simulate double-close
 }
 
 TEST(BaseFd, MoveAssignSelfNoOpLeavesFdIntact) {
@@ -121,7 +127,7 @@ TEST(BaseFd, CloseRetriesAfterEintr) {
   const int fd = test::CreateMemfd("aeronet-memfd-eintr");
   ASSERT_GE(fd, 0);
 
-  SetCloseErrorSequence(fd, {CloseErr(EINTR)});
+  SetCloseErrorSequence(fd, {CloseErr(error::kInterrupted)});
 
   BaseFd fdOwner(fd);
   fdOwner.close();
