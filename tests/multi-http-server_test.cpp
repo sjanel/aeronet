@@ -1,7 +1,10 @@
 #include "aeronet/multi-http-server.hpp"
 
 #include <gtest/gtest.h>
+
+#ifdef AERONET_POSIX
 #include <poll.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -201,7 +204,7 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
   auto handle = multi.startDetachedAndStopWhen({});
 
   test::ClientConnection cnx(port);
-  const int fd = cnx.fd();
+  const NativeHandle fd = cnx.fd();
 
   const auto connectionClosedHeaderRaw = MakeHttp1HeaderLine(http::Connection, http::close);
 
@@ -671,7 +674,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   // Send a malformed request to trigger parser error callback (e.g., invalid start-line)
   {
     test::ClientConnection cnx(multi.port());
-    int fd = cnx.fd();
+    NativeHandle fd = cnx.fd();
     std::string bad = "BADREQUEST /somepath whatever\r\n\r\n";
     test::sendAll(fd, bad);
     // peer may be closed; just ignore the response

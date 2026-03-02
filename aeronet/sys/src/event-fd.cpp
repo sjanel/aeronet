@@ -13,7 +13,7 @@ namespace aeronet {
 
 EventFd::EventFd() : _baseFd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)) {
   if (fd() == -1) {
-    throw_errno("Unable to create a new EventFd");
+    ThrowSystemError("Unable to create a new EventFd");
   }
   log::debug("EventFd fd # {} opened", fd());
 }

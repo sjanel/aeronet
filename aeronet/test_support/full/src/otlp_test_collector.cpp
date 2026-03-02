@@ -119,15 +119,15 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;  // ephemeral
   if (::bind(_listen.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    throw_errno("bind OTLP collector socket");
+    ThrowSystemError("bind OTLP collector socket");
   }
   if (::listen(_listen.fd(), 8) != 0) {
-    throw_errno("listen OTLP collector socket");
+    ThrowSystemError("listen OTLP collector socket");
   }
   sockaddr_in actual{};
   socklen_t len = sizeof(actual);
   if (::getsockname(_listen.fd(), reinterpret_cast<sockaddr*>(&actual), &len) != 0) {
-    throw_errno("getsockname for OTLP collector");
+    ThrowSystemError("getsockname for OTLP collector");
   }
   _port = ntohs(actual.sin_port);
 

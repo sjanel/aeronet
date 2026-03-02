@@ -84,7 +84,7 @@ EventLoop::~EventLoop() { std::free(_pEvents); }
 
 void EventLoop::addOrThrow(EventFd event) const {
   if (!add(event)) [[unlikely]] {
-    throw_errno("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
+    ThrowSystemError("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
 }
 
