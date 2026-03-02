@@ -13,7 +13,7 @@ TEST(ErrnoThrow, ThrowsSystemErrorWithErrno) {
     // Simulate a system call failure by setting errno
     errno = ENOENT;  // No such file or directory
     int fd = 42;
-    throw_errno("Test error with code {}", fd);
+    ThrowSystemError("Test error with code {}", fd);
     FAIL() << "Expected std::system_error to be thrown";
   } catch (const std::system_error& e) {
     EXPECT_EQ(e.code().value(), ENOENT);

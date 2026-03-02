@@ -115,7 +115,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
     return resp;
   });
   test::ClientConnection cc(ts.port());
-  int fd = cc.fd();
+  NativeHandle fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -134,7 +134,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
     return resp;
   });
   test::ClientConnection cc(ts.port());
-  int fd = cc.fd();
+  NativeHandle fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -154,7 +154,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
     return resp;
   });
   test::ClientConnection cc(ts.port());
-  int fd = cc.fd();
+  NativeHandle fd = cc.fd();
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string responseText = test::recvUntilClosed(fd);
@@ -181,7 +181,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   });
 
   test::ClientConnection cc(ts.port());
-  int fd = cc.fd();
+  NativeHandle fd = cc.fd();
   std::string header = "POST /fairness HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
                        "\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, header);
@@ -215,7 +215,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());
-  int fd = cnx.fd();
+  NativeHandle fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
   // Send an incomplete request line and let it stall past the timeout.
   test::sendAll(fd, "GET /", std::chrono::milliseconds{100});
@@ -236,7 +236,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   test::ClientConnection cnx(ts.port());
-  int fd = cnx.fd();
+  NativeHandle fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
 
   test::sendAll(fd, "POST ", std::chrono::milliseconds{100});
@@ -276,7 +276,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   });
 
   test::ClientConnection cnx(port);
-  int fd = cnx.fd();
+  NativeHandle fd = cnx.fd();
 
   std::string req1 = "GET /one HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
   test::sendAll(fd, req1);
@@ -425,7 +425,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
   test::sendAll(fd, req);
@@ -444,7 +444,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 TEST(HttpKeepAlive10, OptInWithHeader) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
   std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req);
@@ -459,7 +459,7 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
 namespace {
 std::string sendRaw(uint16_t port, std::string_view raw) {
   test::ClientConnection clientConnection(port);
-  int fd = clientConnection.fd();
+  NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, raw);
   std::string resp = test::recvWithTimeout(fd, 300ms);
   // server may close depending on error severity
@@ -930,7 +930,7 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
 
   // Send many requests over a single connection using keep-alive
   test::ClientConnection cnx(localTs.port());
-  const int fd = cnx.fd();
+  const NativeHandle fd = cnx.fd();
   test::setRecvTimeout(fd, std::chrono::milliseconds{5000});
 
   constexpr int kRequests = 30;

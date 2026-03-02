@@ -651,7 +651,7 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
   PollIntervalScope pollInterval(std::chrono::milliseconds{5});
 
   test::ClientConnection cnx(ts.port());
-  int fd = cnx.fd();
+  NativeHandle fd = cnx.fd();
   ASSERT_GE(fd, 0);
   static constexpr std::string_view request =
       "POST /async-timeout HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n";

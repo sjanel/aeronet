@@ -160,6 +160,8 @@ function(AeronetSetProjectProperties name)
 
   # Platform specific properties
   if(WIN32)
+    # https://stackoverflow.com/questions/5004858/why-is-stdmin-failing-when-windows-h-is-included
+    target_compile_definitions(${name} PUBLIC NOMINMAX)
     target_compile_definitions(${name} PUBLIC AERONET_WINDOWS)
   elseif(UNIX)
     target_compile_definitions(${name} PUBLIC AERONET_POSIX)
