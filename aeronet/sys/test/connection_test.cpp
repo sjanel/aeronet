@@ -1,9 +1,15 @@
 #include "aeronet/connection.hpp"
 
+#include "aeronet/system-error.hpp"
+
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>
@@ -60,7 +66,7 @@ extern "C" int accept4(int __fd, struct sockaddr* __addr, socklen_t* __addr_len,
 
 TEST(ConnectionTest, AcceptWouldBlockYieldsEmptyConnection) {
   AcceptHookGuard guard;
-  SetAcceptActionSequence({AcceptErr(EAGAIN)});
+  SetAcceptActionSequence({AcceptErr(error::kWouldBlock)});
   Socket listener(Socket::Type::Stream);
 
   Connection conn(listener);

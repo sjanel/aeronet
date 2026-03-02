@@ -23,6 +23,7 @@
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
 
 using namespace aeronet;
@@ -122,7 +123,7 @@ TEST(FileTest, LoadAllContentRetriesAfterEintr) {
   const std::string path = tmp.filePath().string();
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
-  test::SetReadActions(path, {test::ReadErr(EINTR)});
+  test::SetReadActions(path, {test::ReadErr(error::kInterrupted)});
   EXPECT_EQ(LoadAllContent(fileObj), "retry-data");
 }
 
@@ -145,8 +146,8 @@ TEST(FileTest, ReadAtRetriesOnEintr) {
   File fileObj(path, File::OpenMode::ReadOnly);
   ASSERT_TRUE(static_cast<bool>(fileObj));
 
-  // First pread returns EINTR, second succeeds with 3 bytes read.
-  aeronet::test::SetPreadPathActions(path, {IoAction{-1, EINTR}, IoAction{3, 0}});
+  // First pread returns error::kInterrupted, second succeeds with 3 bytes read.
+  aeronet::test::SetPreadPathActions(path, {IoAction{-1, error::kInterrupted}, IoAction{3, 0}});
 
   std::array<std::byte, 4> buf{};
   const auto readBytes = fileObj.readAt(buf, 0);

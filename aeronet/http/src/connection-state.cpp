@@ -1,5 +1,7 @@
 #include "aeronet/connection-state.hpp"
 
+#include "aeronet/system-error-message.hpp"
+
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -23,6 +25,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/sendfile.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
@@ -128,12 +131,16 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
 
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
   const std::size_t maxBytes = std::min(fileSend.remaining, chunkLimit);
+#ifdef AERONET_POSIX
   off_t offset = static_cast<off_t>(fileSend.offset);
+#else
+  int64_t offset = static_cast<int64_t>(fileSend.offset);
+#endif
 
   int64_t result;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
-    result = static_cast<int64_t>(::pread(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, offset));
+    result = ReadOffset(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.offset);
   } else {
     result = Sendfile(clientFd, fileSend.file.fd(), offset, maxBytes);
   }
@@ -141,34 +148,49 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
 
   if (result == -1) [[unlikely]] {
     res.bytesDone = 0;
-    const int errnoVal = errno;
-    static_assert(EAGAIN == EWOULDBLOCK, "Check logic below if EAGAIN != EWOULDBLOCK");
+#ifdef AERONET_POSIX
+    const int errnoVal = LastSystemError();
     switch (errnoVal) {
-      case EWOULDBLOCK:
+      case error::kWouldBlock:
         res.enableWritable = true;
         [[fallthrough]];
-      case EINTR:
+      case error::kInterrupted:
         if (!tlsFlow || fileSend.remaining != 0) {
           res.code = FileResult::Code::WouldBlock;
         }
         return res;
       default: {
         res.code = FileResult::Code::Error;
-        // ECONNRESET / EPIPE / ECONNABORTED are normal peer-close events (client closed before
+        // ECONNRESET / error::kBrokenPipe / ECONNABORTED are normal peer-close events (client closed before
         // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
-        const bool peerClose = (errnoVal == ECONNRESET || errnoVal == EPIPE || errnoVal == ECONNABORTED);
+        const bool peerClose = (errnoVal == error::kConnectionReset || errnoVal == error::kBrokenPipe ||
+                                errnoVal == error::kConnectionAborted);
         if (peerClose) {
-          log::debug("{} peer closed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+          log::debug("{} peer closed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         } else {
-          log::error("{} failed during {} sendfile fd # {} errno={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, std::strerror(errnoVal));
+          log::error("{} failed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         }
         requestDrainAndClose();
         fileSend.active = false;
         return res;
       }
     }
+#elifdef AERONET_WINDOWS
+    const int errVal = static_cast<int>(::GetLastError());
+    if (errVal == error::kWouldBlock) {
+      res.enableWritable = true;
+      res.code = FileResult::Code::WouldBlock;
+      return res;
+    }
+    res.code = FileResult::Code::Error;
+    log::error("{} failed during {} sendfile fd # {} err={}", tlsFlow ? "ReadFile" : "TransmitFile",
+               tlsFlow ? "TLS" : "plain", clientFd, errVal);
+    requestDrainAndClose();
+    fileSend.active = false;
+    return res;
+#endif
   }
   if (tlsFlow) {
     tunnelOrFileBuffer.setSize(res.bytesDone);
@@ -243,6 +265,7 @@ void ConnectionState::installAggregatedBodyBridge() {
   request._bodyAccessBridge = &kAggregatedBodyBridge;
   request._bodyAccessContext = &bodyStreamContext;
 }
+
 #ifdef AERONET_ENABLE_OPENSSL
 bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb,
                                                           TlsMetricsInternal& metrics, const TLSConfig& cfg) {
