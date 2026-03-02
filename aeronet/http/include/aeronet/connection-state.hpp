@@ -81,7 +81,7 @@ struct ConnectionState {
     std::size_t bytesDone{0};
     Code code{Code::Sent};
     // When code == WouldBlock, indicates the caller should enable writable interest
-    // (true for EAGAIN/EWOULDBLOCK, false for EINTR).
+    // (true for error::kWouldBlock, false for error::kInterrupted).
     bool enableWritable{false};
   };
 

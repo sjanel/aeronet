@@ -1,7 +1,6 @@
 #include "aeronet/socket.hpp"
 
 #include <gtest/gtest.h>
-#include <sys/socket.h>  // NOLINT(misc-include-cleaner) used by socket class
 
 #include <cerrno>
 #include <cstdint>
@@ -13,6 +12,11 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
+
+#ifdef AERONET_POSIX
+#include <sys/socket.h>  // NOLINT(misc-include-cleaner) used by socket class
+#endif
 
 namespace aeronet {
 
@@ -59,7 +63,7 @@ TEST(Socket, BindAndListenThrowsWhenPortInUse) {
 }
 
 TEST(Socket, ConstructorThrowsWhenSocketCreationFails) {
-  test::PushSocketAction({-1, EMFILE});  // EMFILE: too many open files
+  test::PushSocketAction({-1, error::kTooManyFiles});  // error::kTooManyFiles: too many open files
   EXPECT_THROW(Socket{Socket::Type::Stream}, std::system_error);
 }
 

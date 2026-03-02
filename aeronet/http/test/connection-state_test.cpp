@@ -1,13 +1,18 @@
 // Enable syscall overrides for sendfile/pread used in ConnectionState::transportFile
+#include "aeronet/system-error.hpp"
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
 #include "aeronet/connection-state.hpp"
 
+#ifdef AERONET_POSIX
 #include <fcntl.h>
+#endif
 #include <gtest/gtest.h>
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <chrono>
@@ -56,8 +61,9 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   // Read the bytes from the other end to verify data flows
   std::string got;
   got.resize(res.bytesDone);
-  ssize_t rd = read(sv[1], got.data(), res.bytesDone);
-  EXPECT_EQ(rd, static_cast<ssize_t>(res.bytesDone));
+  auto rd = read(sv[1], got.data(), res.bytesDone);
+  ASSERT_GE(rd, 0);
+  EXPECT_EQ(static_cast<decltype(res.bytesDone)>(rd), res.bytesDone);
 }
 
 TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
@@ -159,12 +165,12 @@ TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEna
   state.fileSend.remaining = content.size();
   state.fileSend.active = true;
 
-  // Force sendfile to report EINTR once for sv[0]
-  test::SetSendfileActions(sv[0], {IoAction{-1, EINTR}});
+  // Force sendfile to report error::kInterrupted once for sv[0]
+  test::SetSendfileActions(sv[0], {IoAction{-1, error::kInterrupted}});
 
   auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
-  // EINTR should NOT request writable readiness
+  // error::kInterrupted should NOT request writable readiness
   EXPECT_FALSE(res.enableWritable);
   // Still active because we haven't transferred anything yet
   EXPECT_TRUE(state.fileSend.active);
@@ -186,11 +192,11 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositi
   state.fileSend.remaining = content.size();
   state.fileSend.active = true;
 
-  // Force pread on the file path to return EINTR once
-  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EINTR}});
+  // Force pread on the file path to return error::kInterrupted once
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, error::kInterrupted}});
 
   auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
-  // EINTR with remaining > 0 maps to WouldBlock (retry later) in TLS path
+  // error::kInterrupted with remaining > 0 maps to WouldBlock (retry later) in TLS path
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
   // In TLS path, initial enableWritable is true from the FileResult ctor
   EXPECT_TRUE(res.enableWritable);
@@ -213,14 +219,14 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlo
   state.fileSend.remaining = 0;
   state.fileSend.active = true;
 
-  // Force pread EINTR; since remaining == 0, code should not flip to WouldBlock per branch
-  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EINTR}});
+  // Force pread error::kInterrupted; since remaining == 0, code should not flip to WouldBlock per branch
+  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, error::kInterrupted}});
 
   auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
   EXPECT_NE(res.code, ConnectionState::FileResult::Code::WouldBlock);
   // It should stay as the initial TLS Read code with 0 bytes
   EXPECT_EQ(res.bytesDone, 0U);
-  // Because we returned early on EINTR, active is not cleared here
+  // Because we returned early on error::kInterrupted, active is not cleared here
   EXPECT_TRUE(state.fileSend.active);
 }
 
@@ -295,8 +301,9 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
         // Read the bytes from the peer socket to verify
         std::string got;
         got.resize(written);
-        ssize_t rd = read(sv[1], got.data(), written);
-        EXPECT_EQ(rd, static_cast<ssize_t>(written));
+        auto rd = read(sv[1], got.data(), written);
+        ASSERT_GE(rd, 0);
+        EXPECT_EQ(static_cast<decltype(written)>(rd), written);
         totalRead += static_cast<std::size_t>(rd);
         state.tunnelOrFileBuffer.erase_front(written);
       } else if (want == TransportHint::WriteReady) {
@@ -724,7 +731,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   state.fileSend.remaining = content.size();
   state.fileSend.active = true;
 
-  // Force a hard pread error (not EAGAIN/EINTR) to take default error path
+  // Force a hard pread error (not EAGAIN/error::kInterrupted) to take default error path
   test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, EIO}});
 
   auto res = state.transportFile(sv[0], /*tlsFlow=*/true);

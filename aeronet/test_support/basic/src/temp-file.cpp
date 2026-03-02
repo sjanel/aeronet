@@ -1,6 +1,10 @@
 #include "aeronet/temp-file.hpp"
 
+#include "aeronet/system-error-message.hpp"
+
+#ifdef AERONET_POSIX
 #include <unistd.h>
+#endif
 
 #include <array>
 #include <cerrno>
@@ -8,7 +12,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <random>
@@ -21,6 +24,8 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
+#include "aeronet/system-error.hpp"
 
 namespace aeronet::test {
 
@@ -103,7 +108,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
 
   // NOLINTNEXTLINE(misc-include-cleaner)
   BaseFd raii(::mkstemp(tmpl.data()));
-  int fd = raii.fd();
+  NativeHandle fd = raii.fd();
   if (fd == -1) {
     int err = errno;
     throw std::system_error(err, std::generic_category(), "ScopedTempFile: mkstemp failed");
@@ -118,7 +123,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
     int rc = ::unlink(_path.c_str());
     if (rc != 0) {
       int err = errno;
-      log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, std::strerror(err));
+      log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, SystemErrorMessage(err));
     }
     throw std::runtime_error("ScopedTempFile: write failed");
   }

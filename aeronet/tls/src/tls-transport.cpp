@@ -4,18 +4,16 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
-#include <cerrno>
 #include <cstddef>
 #include <string_view>
 
 #include "aeronet/log.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
-
-static_assert(EAGAIN == EWOULDBLOCK, "Add handling for EWOULDBLOCK if different from EAGAIN");
 
 namespace {
 inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
@@ -40,7 +38,7 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
 
   // SSL_read_ex returned <=0. Determine why using SSL_get_error to decide whether this
   // indicates an orderly close (ZERO_RETURN), a retry condition (WANT_READ/WANT_WRITE),
-  // or a transient/cryptic SYSCALL with errno==0 and no OpenSSL errors which should be
+  // or a transient/cryptic SYSCALL with err==0 and no OpenSSL errors which should be
   // treated as non-fatal would-block.
   const auto err = ::SSL_get_error(_ssl.get(), 0);
   if (err == SSL_ERROR_ZERO_RETURN) {
@@ -54,14 +52,15 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
-    if (errno == EAGAIN) {
+    const int sysErr = LastSystemError();
+    if (sysErr == error::kWouldBlock) {
       ret.want = TransportHint::ReadReady;
       return ret;
     }
-    // Some platforms may present SSL_ERROR_SYSCALL with errno==0 and no OpenSSL errors
+    // Some platforms may present SSL_ERROR_SYSCALL with err==0 and no OpenSSL errors
     // during non-blocking handshakes; treat this as a non-fatal would-block to avoid
     // prematurely closing the connection on transient EOF readings.
-    if (errno == 0 && ::ERR_peek_error() == 0) {
+    if (sysErr == 0 && ::ERR_peek_error() == 0) {
       ret.want = TransportHint::ReadReady;
       return ret;
     }
@@ -87,7 +86,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // When kTLS send is enabled and zerocopy is active, try to bypass SSL_write.
   // The kernel handles encryption directly on the socket, allowing us to use
   // MSG_ZEROCOPY for large payloads (DMA from user pages to NIC).
-  // If zerocopy write fails with an unsupported operation (EOPNOTSUPP), we
+  // If zerocopy write fails with an unsupported operation (error::kNotSupported), we
   // disable zerocopy and fall back to SSL_write for this and future calls.
   if (_zerocopyState.enabled() && data.size() >= _minBytesForZerocopy) {
     ret = writeZerocopy(data);
@@ -110,8 +109,8 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
 
   // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
   if (err == SSL_ERROR_SYSCALL) {
-    const auto saved_errno = errno;
-    if (saved_errno == EAGAIN || (saved_errno == 0 && ERR_peek_error() == 0)) {
+    const auto savedErr = LastSystemError();
+    if (savedErr == error::kWouldBlock || (savedErr == 0 && ERR_peek_error() == 0)) {
       ret.want = TransportHint::WriteReady;
       ret.bytesProcessed = 0;
       return ret;
@@ -174,7 +173,7 @@ TransportHint TlsTransport::handshake(TransportHint want) {
         return (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
       }
       // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && errno == EAGAIN) {
+      if (err == SSL_ERROR_SYSCALL && LastSystemError() == error::kWouldBlock) {
         return want;
       }
       return TransportHint::Error;
@@ -217,7 +216,7 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
   // Drain pending completion notifications before issuing a new zerocopy send.
-  // This prevents the kernel error queue from growing unbounded, avoids ENOBUFS,
+  // This prevents the kernel error queue from growing unbounded, avoids error::kNoBufferSpace,
   // and releases pinned pages promptly — critical for virtual devices (veth in K8s).
   pollZerocopyCompletions();
 
@@ -228,16 +227,17 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
     return ret;
   }
-  static_assert(EOPNOTSUPP == ENOTSUP);
-  if (errno == EOPNOTSUPP) {
+  static_assert(error::kNotSupported == ENOTSUP);
+  const int sysErr = LastSystemError();
+  if (sysErr == error::kNotSupported) {
     log::debug("MSG_ZEROCOPY not supported on kTLS socket fd # {}", _fd);
     // Disable zerocopy for this transport and fall through to SSL_write
     disableZerocopy();
-  } else if (errno == EINTR) {  // NOLINT(bugprone-branch-clone)
+  } else if (sysErr == error::kInterrupted) {  // NOLINT(bugprone-branch-clone)
     // Fall through to regular send
-  } else if (errno == EAGAIN) {
+  } else if (sysErr == error::kWouldBlock) {
     ret.want = TransportHint::WriteReady;
-  } else if (errno == ENOBUFS) {
+  } else if (sysErr == error::kNoBufferSpace) {
     // Kernel cannot pin more pages for zerocopy — fall through to SSL_write path.
     // This is a transient condition, not a fatal error.
   } else {

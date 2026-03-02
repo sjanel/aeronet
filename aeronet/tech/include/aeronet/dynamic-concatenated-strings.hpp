@@ -57,7 +57,8 @@ class DynamicConcatenatedStrings {
     std::string_view buf = _buf;
     while (!buf.empty()) {
       const auto nextSep = buf.find(kSep);
-      if (std::string_view{buf.begin(), nextSep} == part) {
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      if (std::string_view{buf.data(), nextSep} == part) {
         return true;
       }
       buf.remove_prefix(nextSep + kSep.size());
@@ -70,7 +71,8 @@ class DynamicConcatenatedStrings {
     std::string_view buf = _buf;
     while (!buf.empty()) {
       const auto nextSep = buf.find(kSep);
-      const std::string_view currentPart{buf.begin(), nextSep};
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      const std::string_view currentPart{buf.data(), nextSep};
       if (CaseInsensitiveEqual(currentPart, part)) {
         return true;
       }

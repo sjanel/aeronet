@@ -1,8 +1,6 @@
 #include "aeronet/zerocopy.hpp"
 
 #include <gtest/gtest.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 
 #include <cerrno>
 #include <cstddef>
@@ -15,8 +13,14 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
+
+#ifdef AERONET_POSIX
+#include <sys/socket.h>
+#include <sys/types.h>
+#endif
 
 namespace aeronet {
 
@@ -126,7 +130,7 @@ TEST(ZeroCopyTest, EnableZerocopyReturnsNotSupportedOnEopnotsupp) {
   BaseFd guard(fd);
 
   // Simulate kernel/socket type not supporting zerocopy
-  test::PushSetsockoptAction({-1, EOPNOTSUPP});
+  test::PushSetsockoptAction({-1, error::kNotSupported});
 
   const auto result = EnableZeroCopy(fd);
   EXPECT_EQ(result, ZeroCopyEnableResult::NotSupported);
@@ -185,7 +189,7 @@ TEST(PlainTransportZeroCopy, WriteStillWorksWithZerocopyEnabled) {
 
   // Verify data was received
   std::string recvBuf(testData.size(), '\0');
-  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<ssize_t>(testData.size()));
+  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<int64_t>(testData.size()));
   EXPECT_EQ(recvBuf, testData);
 }
 
@@ -218,7 +222,7 @@ TEST(PlainTransportZeroCopy, LargeWriteWorksWithZerocopyEnabled) {
   std::string recvBuf(largeData.size(), '\0');
   std::size_t totalRecv = 0;
   while (totalRecv < largeData.size()) {
-    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
     ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
     totalRecv += static_cast<std::size_t>(rc);
   }
@@ -244,7 +248,7 @@ TEST(PlainTransportZeroCopy, TwoBufWriteStillWorksWithZerocopyEnabled) {
 
   // Verify data was received correctly
   std::string recvBuf(head.size() + body.size(), '\0');
-  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<ssize_t>(recvBuf.size()));
+  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<int64_t>(recvBuf.size()));
   EXPECT_EQ(recvBuf, head + body);
 }
 
@@ -288,7 +292,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendSuccessPathWithMockedSendmsg) {
   const std::string largeData(payloadSize, 'X');
 
   // Mock sendmsg to return full payload sent (simulating successful zerocopy)
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<ssize_t>(payloadSize), 0}});
+  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(largeData);
@@ -312,7 +316,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendEAGAINReturnsWriteReady) {
   const std::string largeData(payloadSize, 'Y');
 
   // Mock sendmsg to return EAGAIN (kernel buffer full)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EAGAIN}});
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(largeData);
@@ -338,8 +342,8 @@ TEST(PlainTransportZeroCopy, ZerocopySendEINTRFallsBackToRegularWrite) {
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'Z');
 
-  // Mock sendmsg to return EINTR (signal interrupted), which should fall through to regular write
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EINTR}});
+  // Mock sendmsg to return error::kInterrupted (signal interrupted), which should fall through to regular write
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kInterrupted}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(largeData);
@@ -351,7 +355,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendEINTRFallsBackToRegularWrite) {
   std::string recvBuf(payloadSize, '\0');
   std::size_t totalRecv = 0;
   while (totalRecv < payloadSize) {
-    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
     ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
     totalRecv += static_cast<std::size_t>(rc);
   }
@@ -370,8 +374,8 @@ TEST(PlainTransportZeroCopy, ZerocopySendOtherErrorReturnsError) {
   const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
   const std::string largeData(payloadSize, 'E');
 
-  // Mock sendmsg to return a fatal error (EPIPE - broken pipe)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EPIPE}});
+  // Mock sendmsg to return a fatal error (error::kBrokenPipe - broken pipe)
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(largeData);
@@ -392,7 +396,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendPartialWriteReturnsPartialBytes) {
   const std::string largeData(payloadSize, 'P');
 
   // Mock sendmsg to return partial write (only half the data)
-  const ssize_t partialBytes = static_cast<ssize_t>(payloadSize / 2);
+  const auto partialBytes = static_cast<int64_t>(payloadSize / 2);
   test::SetSendmsgActions(sv[0], {IoAction{partialBytes, 0}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
@@ -416,7 +420,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufSuccessPathWithMockedSendmsg) {
   const std::size_t payloadSize = head.size() + body.size();
 
   // Mock sendmsg to return full payload sent (simulating successful zerocopy)
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<ssize_t>(payloadSize), 0}});
+  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(head, body);
@@ -438,7 +442,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEAGAINReturnsWriteReady) {
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
 
   // Mock sendmsg to return EAGAIN (kernel buffer full)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EAGAIN}});
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(head, body);
@@ -459,8 +463,8 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEINTRFallsBackToWritev) {
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
   const std::size_t payloadSize = head.size() + body.size();
 
-  // Mock sendmsg to return EINTR (signal interrupted), which should fall through to regular writev
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EINTR}});
+  // Mock sendmsg to return error::kInterrupted (signal interrupted), which should fall through to regular writev
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kInterrupted}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(head, body);
@@ -471,7 +475,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEINTRFallsBackToWritev) {
   std::string recvBuf(payloadSize, '\0');
   std::size_t totalRecv = 0;
   while (totalRecv < payloadSize) {
-    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
     ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
     totalRecv += static_cast<std::size_t>(rc);
   }
@@ -490,8 +494,8 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufOtherErrorReturnsError) {
   const std::string head(4, 'H');
   const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
 
-  // Mock sendmsg to return a fatal error (EPIPE - broken pipe)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, EPIPE}});
+  // Mock sendmsg to return a fatal error (error::kBrokenPipe - broken pipe)
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(head, body);
@@ -514,7 +518,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufPartialWriteReturnsPartialBytes) 
   const std::size_t payloadSize = head.size() + body.size();
 
   // Mock sendmsg to return partial write (only half the data)
-  const ssize_t partialBytes = static_cast<ssize_t>(payloadSize / 2);
+  const auto partialBytes = static_cast<int64_t>(payloadSize / 2);
   test::SetSendmsgActions(sv[0], {IoAction{partialBytes, 0}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
@@ -553,7 +557,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
   state.seqLo = 0;
   state.seqHi = 10;
 
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
@@ -571,7 +575,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
   state.seqLo = 1;
   state.seqHi = 5;
 
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, EINTR}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
@@ -589,7 +593,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
   state.seqLo = 0;
   state.seqHi = 43;
 
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
   const auto comps = PollZeroCopyCompletions(sv[0], state);
@@ -610,7 +614,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
 
   // mode: first value = 6 -> IPv6; second value = 1 -> keep zerocopy origin
   test::g_recvmsg_modes.setActions(sv[0], {6, 1});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
@@ -632,7 +636,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
 
   // mode: single value 2 -> non-zerocopy origin
   test::g_recvmsg_modes.setActions(sv[0], {2});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
@@ -654,7 +658,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
 
   // mode: 7 => set cmsg_type to non-IP_RECVERR (causes continue path)
   test::g_recvmsg_modes.setActions(sv[0], {7, 1});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
@@ -676,7 +680,7 @@ TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
 
   // mode: 8 => do not populate control message (CMSG_FIRSTHDR should be nullptr)
   test::g_recvmsg_modes.setActions(sv[0], {8});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
@@ -698,7 +702,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
 
   // mode: 9 => SOL_IPV6 but cmsg_type != IPV6_RECVERR (should continue)
   test::g_recvmsg_modes.setActions(sv[0], {9});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, EAGAIN}});
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
@@ -727,9 +731,9 @@ TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
   const std::size_t payloadSize = minBytesForZerocopy + 1024;
   const std::string largeData(payloadSize, 'N');
 
-  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // Mock sendmsg to return error::kNoBufferSpace (kernel cannot pin more pages for zerocopy).
   // This is a transient condition — the transport must fall through to regular write.
-  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kNoBufferSpace}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(largeData);
@@ -741,7 +745,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
   std::string recvBuf(payloadSize, '\0');
   std::size_t totalRecv = 0;
   while (totalRecv < payloadSize) {
-    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
     ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
     totalRecv += static_cast<std::size_t>(rc);
   }
@@ -762,9 +766,9 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
   const std::string body(minBytesForZerocopy + 64, 'B');
   const std::size_t payloadSize = head.size() + body.size();
 
-  // Mock sendmsg to return ENOBUFS (kernel cannot pin more pages for zerocopy).
+  // Mock sendmsg to return error::kNoBufferSpace (kernel cannot pin more pages for zerocopy).
   // This is a transient condition — the transport must fall through to regular writev.
-  test::SetSendmsgActions(sv[0], {IoAction{-1, ENOBUFS}});
+  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kNoBufferSpace}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
 
   auto result = transport.write(head, body);
@@ -775,7 +779,7 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
   std::string recvBuf(payloadSize, '\0');
   std::size_t totalRecv = 0;
   while (totalRecv < payloadSize) {
-    const ssize_t rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
     ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
     totalRecv += static_cast<std::size_t>(rc);
   }

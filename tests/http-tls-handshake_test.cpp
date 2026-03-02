@@ -20,6 +20,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -947,9 +948,9 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
     ASSERT_TRUE(test::recvWithTimeout(fd, 500ms).empty());
   } catch (const std::system_error& ex) {
     // Depending on timing and transport behavior, rejecting cleartext on a TLS port
-    // may result in a reset (ECONNRESET) rather than an orderly close.
+    // may result in a reset (error::kConnectionReset) rather than an orderly close.
     const int err = ex.code().value();
-    ASSERT_TRUE(err == ECONNRESET || err == ECONNABORTED || err == ENOTCONN) << ex.what();
+    ASSERT_TRUE(err == error::kConnectionReset || err == error::kConnectionAborted || err == ENOTCONN) << ex.what();
   }
 }
 

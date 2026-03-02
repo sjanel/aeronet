@@ -12,6 +12,8 @@
 
 #endif
 
+#include "aeronet/native-handle.hpp"
+
 namespace aeronet {
 
 // Result of enabling zerocopy on a socket.
@@ -48,7 +50,7 @@ struct ZeroCopyState {
 
 /// Enable MSG_ZEROCOPY on a TCP socket. Call once after socket creation.
 /// Returns the result of the operation.
-ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept;
+ZeroCopyEnableResult EnableZeroCopy(NativeHandle fd) noexcept;
 
 /// Perform a zerocopy send if conditions are met (large payload, zerocopy enabled).
 /// Returns the number of bytes sent, or -1 on error.
@@ -61,7 +63,7 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept;
 /// @param data The data to send
 /// @param state Zerocopy tracking state (updated on success)
 /// @return Bytes sent (>=0) or -1 on error (check errno)
-[[nodiscard]] ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexcept;
+[[nodiscard]] int64_t ZerocopySend(NativeHandle fd, std::string_view data, ZeroCopyState& state) noexcept;
 
 /// Perform a zerocopy send for two buffers if conditions are met (large payload, zerocopy enabled).
 /// Returns the number of bytes sent, or -1 on error.
@@ -75,7 +77,7 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept;
 /// @param secondBuf The second buffer to send
 /// @param state Zerocopy tracking state (updated on success)
 /// @return Bytes sent (>=0) or -1 on error (check errno)
-[[nodiscard]] ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondBuf,
+[[nodiscard]] int64_t ZerocopySend(NativeHandle fd, std::string_view firstBuf, std::string_view secondBuf,
                                    ZeroCopyState& state) noexcept;
 
 /// Poll the socket error queue for zerocopy completion notifications.
@@ -85,29 +87,30 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept;
 /// @param fd The socket file descriptor
 /// @param state Zerocopy tracking state (updated with completed ranges)
 /// @return Number of completions processed (may be 0 if none ready)
-std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept;
+std::size_t PollZeroCopyCompletions(NativeHandle fd, ZeroCopyState& state) noexcept;
 
 #else
 // Non-Linux stubs - zerocopy is Linux-specific
 
-inline ZeroCopyEnableResult EnableZeroCopy([[maybe_unused]] int fd) noexcept {
+inline ZeroCopyEnableResult EnableZeroCopy([[maybe_unused]] NativeHandle fd) noexcept {
   return ZeroCopyEnableResult::NotSupported;
 }
 
-[[nodiscard]] inline bool IsZeroCopyEnabled([[maybe_unused]] int fd) noexcept { return false; }
+[[nodiscard]] inline bool IsZeroCopyEnabled([[maybe_unused]] NativeHandle fd) noexcept { return false; }
 
-[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] int fd, [[maybe_unused]] std::string_view data,
+[[nodiscard]] inline int64_t ZerocopySend([[maybe_unused]] NativeHandle fd, [[maybe_unused]] std::string_view data,
                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return -1;
 }
 
-[[nodiscard]] inline ssize_t ZerocopySend([[maybe_unused]] int fd, [[maybe_unused]] std::string_view firstBuf,
+[[nodiscard]] inline int64_t ZerocopySend([[maybe_unused]] NativeHandle fd, [[maybe_unused]] std::string_view firstBuf,
                                           [[maybe_unused]] std::string_view secondBuf,
                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return -1;
 }
 
-inline std::size_t PollZeroCopyCompletions([[maybe_unused]] int fd, [[maybe_unused]] ZeroCopyState& state) noexcept {
+inline std::size_t PollZeroCopyCompletions([[maybe_unused]] NativeHandle fd,
+                                           [[maybe_unused]] ZeroCopyState& state) noexcept {
   return 0;
 }
 
