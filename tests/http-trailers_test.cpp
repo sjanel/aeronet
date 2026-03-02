@@ -49,7 +49,7 @@ TEST(HttpTrailers, BasicTrailer) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /trailer HTTP/1.1\r\n"
@@ -95,7 +95,7 @@ TEST(HttpTrailers, MultipleTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /multi HTTP/1.1\r\n"
@@ -123,7 +123,7 @@ TEST(HttpTrailers, NoTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /notrailer HTTP/1.1\r\n"
@@ -151,7 +151,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /trim HTTP/1.1\r\n"
@@ -173,7 +173,7 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
@@ -194,7 +194,7 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
@@ -215,7 +215,7 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
@@ -236,7 +236,7 @@ TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
@@ -260,7 +260,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   // Create a very large trailer that exceeds the 200-byte limit
   std::string largeValue(300, 'X');
@@ -292,7 +292,7 @@ TEST(HttpTrailers, TrailerEmptyValue) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /empty HTTP/1.1\r\n"
@@ -328,7 +328,7 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /case HTTP/1.1\r\n"
@@ -358,7 +358,7 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /dupmerge HTTP/1.1\r\n"
@@ -389,7 +389,7 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /dupoverride HTTP/1.1\r\n"
@@ -415,7 +415,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /unknownnomerge HTTP/1.1\r\n"
@@ -437,7 +437,7 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /malformed HTTP/1.1\r\n"
@@ -462,7 +462,7 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "POST /fixed HTTP/1.1\r\n"
@@ -498,7 +498,7 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
 
     for (std::string_view path : {"/stream", "/normal"}) {
       test::ClientConnection sock(port);
-      int fd = sock.fd();
+      NativeHandle fd = sock.fd();
 
       std::string req = "GET ";
       req += path;
@@ -547,7 +547,7 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "GET /multi HTTP/1.1\r\n"
@@ -572,7 +572,7 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "GET /empty HTTP/1.1\r\n"
@@ -596,7 +596,7 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "GET /late HTTP/1.1\r\n"
@@ -621,7 +621,7 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   });
 
   test::ClientConnection sock(port);
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   std::string req =
       "GET /fixed HTTP/1.1\r\n"

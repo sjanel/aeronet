@@ -215,7 +215,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       }
     } else {
       // Append chunk data to body buffer (original path)
-      const auto appendSz = std::min(chunkSize, state.inBuffer.size() - pos);
+      const auto appendSz = std::min(chunkSize, static_cast<std::size_t>(state.inBuffer.size() - pos));
 
       if (bodyAndTrailers.size() + appendSz > _config.maxBodyBytes) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);

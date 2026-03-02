@@ -128,7 +128,7 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
 
   {
     test::ClientConnection client(ts.port());
-    int fd = client.fd();
+    NativeHandle fd = client.fd();
 
     // Establish the CONNECT tunnel
     std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";

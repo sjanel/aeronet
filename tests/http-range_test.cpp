@@ -245,7 +245,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
 
   // Use a custom connection to manually control receive behavior for large files
   test::ClientConnection cnx(ts.port());
-  int fd = cnx.fd();
+  NativeHandle fd = cnx.fd();
 
   std::string req = "GET /" + fileName + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
