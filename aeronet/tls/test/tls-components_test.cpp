@@ -30,6 +30,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
@@ -146,7 +147,7 @@ struct SslTestPair {
 struct ControlledBioState {
   int readResult{-1};
   int writeResult{-1};
-  int errnoValue{EAGAIN};
+  int errnoValue{error::kWouldBlock};
   bool retryRead{false};
   bool retryWrite{false};
 };
@@ -486,7 +487,7 @@ TEST(TlsTransportTest, ReadReportsReadReadyOnSslSyscallEagain) {
   // Attach controlled bios where read returns -1 and sets errno to EAGAIN and marks retry
   ControlledBioState readState{};
   readState.readResult = -1;
-  readState.errnoValue = EAGAIN;
+  readState.errnoValue = error::kWouldBlock;
   readState.retryRead = false;  // SSL_ERROR_SYSCALL path uses errno, not BIO retry flags
 
   ControlledBioState writeState{};
@@ -528,7 +529,7 @@ TEST(TlsTransportLogTest, SslSyscallEagainShouldReturnReadReady) {
 
   ControlledBioState readState{};
   readState.readResult = -1;
-  readState.errnoValue = EAGAIN;
+  readState.errnoValue = error::kWouldBlock;
   readState.retryRead = false;
   ControlledBioState writeState{};
   writeState.writeResult = 0;
@@ -547,7 +548,7 @@ TEST(TlsTransportLogTest, ControlledBioSslReadErrorMapping) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ControlledBioState readState{};
   readState.readResult = -1;
-  readState.errnoValue = EAGAIN;
+  readState.errnoValue = error::kWouldBlock;
   readState.retryRead = false;
   ControlledBioState writeState{};
   writeState.writeResult = 0;

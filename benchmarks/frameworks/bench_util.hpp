@@ -16,6 +16,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/test_util.hpp"
 
 // (Pregen pools are declared inside the benchutil namespace below)
@@ -102,17 +103,17 @@ struct PregenPool {
 // "key\0value\0" entries. The callback is invoked with (key_sv, val_sv) for each
 // parsed pair. The helper is templated to accept any callable without allocations.
 template <typename Fn>
-inline void forEachHeader(std::string_view hdrBlock, Fn &&cb) {
-  const char *cur = hdrBlock.data();
-  const char *end = cur + hdrBlock.size();
+inline void forEachHeader(std::string_view hdrBlock, Fn&& cb) {
+  const char* cur = hdrBlock.data();
+  const char* end = cur + hdrBlock.size();
   while (cur < end) {
-    const char *keyPtr = cur;
-    const char *valPtr = static_cast<const char *>(memchr(cur, '\0', static_cast<size_t>(end - cur)));
+    const char* keyPtr = cur;
+    const char* valPtr = static_cast<const char*>(memchr(cur, '\0', static_cast<size_t>(end - cur)));
     if (valPtr == nullptr) {
       break;
     }
     ++valPtr;
-    const char *nextPtr = static_cast<const char *>(memchr(valPtr, '\0', static_cast<size_t>(end - valPtr)));
+    const char* nextPtr = static_cast<const char*>(memchr(valPtr, '\0', static_cast<size_t>(end - valPtr)));
     if (nextPtr == nullptr) {
       break;
     }
@@ -126,16 +127,16 @@ inline void forEachHeader(std::string_view hdrBlock, Fn &&cb) {
 }
 
 // Blocking recv helper - returns bytes read, 0 on close, -1 on timeout.
-inline ssize_t blockingRecv(int fd, char *buf, std::size_t len, std::chrono::steady_clock::time_point deadline) {
+inline int64_t blockingRecv(int fd, char* buf, std::size_t len, std::chrono::steady_clock::time_point deadline) {
   while (std::chrono::steady_clock::now() < deadline) {
-    ssize_t nb = ::recv(fd, buf, len, 0);
+    const auto nb = ::recv(fd, buf, len, 0);
     if (nb > 0) {
       return nb;
     }
     if (nb == 0) {
       return 0;  // connection closed
     }
-    if (errno == EINTR) {
+    if (errno == aeronet::error::kInterrupted) {
       continue;
     }
     return 0;  // error treated as close
@@ -202,9 +203,9 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
   aeronet::RawChars buf(kBufSize);
 
   // --- Phase 1: Read until we have complete headers ---
-  const char *headerEnd = nullptr;
+  const char* headerEnd = nullptr;
   while (headerEnd == nullptr) {
-    ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+    const auto nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
     if (nb <= 0) {
       return std::nullopt;
     }
@@ -249,7 +250,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
     std::size_t haveBody = buf.size() - bodyOffset;
     while (haveBody < contentLength) {
       buf.ensureAvailableCapacityExponential(kBufSize);
-      ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+      const auto nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
       if (nb <= 0) {
         return std::nullopt;
       }
@@ -266,7 +267,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
   auto ensureBytes = [&](std::size_t need) -> bool {
     while (buf.size() < need) {
       buf.ensureAvailableCapacityExponential(kBufSize);
-      ssize_t nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
+      const auto nb = blockingRecv(fd, buf.end(), buf.availableCapacity(), deadline);
       if (nb <= 0) {
         return false;
       }
@@ -281,8 +282,8 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
       return std::nullopt;
     }
 
-    const char *lineStart = buf.data() + pos;
-    const char *crlfPos = nullptr;
+    const char* lineStart = buf.data() + pos;
+    const char* crlfPos = nullptr;
     while (crlfPos == nullptr) {
       std::string_view remaining(buf.data() + pos, buf.size() - pos);
       auto idx = remaining.find(aeronet::http::CRLF);
@@ -295,7 +296,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
 
     // Parse hex chunk size
     std::size_t chunkSz = 0;
-    for (const char *pc = lineStart; pc < crlfPos; ++pc) {
+    for (const char* pc = lineStart; pc < crlfPos; ++pc) {
       int digit = aeronet::from_hex_digit(*pc);
       if (digit < 0) {
         break;

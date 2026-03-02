@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/system-error.hpp"
 
 namespace {
 
@@ -328,7 +329,7 @@ TEST(TcpConnectorTest, ResolutionFailureMarksFailure) {
 TEST(TcpConnectorTest, SocketEmfileStopsIteration) {
   HookGuard guard;
   AddrinfoOverrideGuard override({MakeLoopbackEntry(9)});
-  SetSocketErrorSequence({EMFILE});
+  SetSocketErrorSequence({error::kTooManyFiles});
   auto buffer = MakeHostPortBuffer("loopback", "9");
   ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_TRUE(result.failure);
@@ -376,7 +377,7 @@ TEST(TcpConnectorTest, ConnectSucceedsImmediately) {
 TEST(TcpConnectorTest, ConnectReportsPendingWhenInProgress) {
   HookGuard guard;
   AddrinfoOverrideGuard override({MakeLoopbackEntry(11000)});
-  SetConnectActionSequence({ConnectErr(EINPROGRESS)});
+  SetConnectActionSequence({ConnectErr(error::kInProgress)});
   auto buffer = MakeHostPortBuffer("loopback", "11000");
   ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_FALSE(result.failure);
@@ -400,7 +401,7 @@ TEST(TcpConnectorTest, ConnectReportsPendingWhenAlready) {
 TEST(TcpConnectorTest, ConnectRetriesAfterEintrAndSucceeds) {
   HookGuard guard;
   AddrinfoOverrideGuard override({MakeLoopbackEntry(16000), MakeLoopbackEntry(16001)});
-  SetConnectActionSequence({ConnectErr(EINTR), ConnectSuccess()});
+  SetConnectActionSequence({ConnectErr(error::kInterrupted), ConnectSuccess()});
   auto buffer = MakeHostPortBuffer("127.0.0.1", "16000");
   ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC);
   EXPECT_FALSE(result.failure);

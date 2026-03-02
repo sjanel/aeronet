@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 
 // Enable read override from sys-test-support.hpp so we can deterministically
@@ -215,14 +216,14 @@ extern "C" int timerfd_settime(int fd, int flags, const itimerspec* new_value, i
 
 TEST(TimerFdTest, DefaultCtorThrowsWhenCreateFails) {
   TimerfdOverrideGuard guard;
-  gTimerfd.pushCreateAction(CreateError(EMFILE));
+  gTimerfd.pushCreateAction(CreateError(error::kTooManyFiles));
 
   try {
     TimerFd timer;
     (void)timer;
     FAIL() << "Expected std::system_error";
   } catch (const std::system_error& e) {
-    EXPECT_EQ(e.code().value(), EMFILE);
+    EXPECT_EQ(e.code().value(), error::kTooManyFiles);
     const auto what = SysErrorWhat(e);
     EXPECT_NE(what.find("Unable to create a new TimerFd"), std::string::npos);
   }
@@ -337,7 +338,7 @@ TEST(TimerFdTest, DrainReturnsOnEagain) {
 
   TimerFd timer;
 
-  test::SetReadActions(fakeFd, {{-1, EAGAIN}});
+  test::SetReadActions(fakeFd, {{-1, error::kWouldBlock}});
   timer.drain();
 }
 
@@ -353,9 +354,9 @@ TEST(TimerFdTest, DrainDrainsMultipleThenStopsOnEagain) {
   TimerFd timer;
 
   test::SetReadActions(fakeFd, {
-                                   {static_cast<ssize_t>(sizeof(std::uint64_t)), 0},
-                                   {static_cast<ssize_t>(sizeof(std::uint64_t)), 0},
-                                   {-1, EAGAIN},
+                                   {static_cast<int64_t>(sizeof(std::uint64_t)), 0},
+                                   {static_cast<int64_t>(sizeof(std::uint64_t)), 0},
+                                   {-1, error::kWouldBlock},
                                });
 
   timer.drain();

@@ -1,9 +1,6 @@
 #include "aeronet/socket-ops.hpp"
 
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <cstdint>
@@ -13,7 +10,14 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/close-native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
+
+#ifdef AERONET_POSIX
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace aeronet {
 
@@ -28,7 +32,7 @@ class SocketOpsTest : public ::testing::Test {
 
   static void CloseSocket(int fd) {
     if (fd >= 0) {
-      ::close(fd);
+      CloseNativeHandle(fd);
     }
   }
 };

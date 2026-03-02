@@ -14,7 +14,7 @@ struct ConnectResult {
 
 // Attempt to resolve host:port and connect to one of the returned addresses.
 // On success returns a ConnectResult owning the connected socket and a flag
-// indicating whether the connect is still pending (non-blocking EINPROGRESS).
+// indicating whether the connect is still pending (non-blocking error::kInProgress).
 // On failure returns std::nullopt.
 //
 // Note: the default family value is 0 (unspecified). We avoid using
