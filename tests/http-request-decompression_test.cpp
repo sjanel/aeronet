@@ -523,7 +523,7 @@ void ExpectTrailers(std::vector<std::string_view> encodings, bool insertBadTrail
   req += http::CRLF;
 
   test::ClientConnection sock(ts.port());
-  int fd = sock.fd();
+  NativeHandle fd = sock.fd();
 
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);

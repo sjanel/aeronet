@@ -112,7 +112,7 @@ std::string recvWithTimeout(int fd, std::chrono::milliseconds totalTimeout, std:
                                    peerClosed = true;
                                    return oldSize;
                                  }
-                                 throw_errno("Error from non-blocking recv");
+                                 ThrowSystemError("Error from non-blocking recv");
                                }
                                return oldSize + static_cast<std::size_t>(recvBytes);
                              });
@@ -202,7 +202,7 @@ std::string recvUntilClosed(int fd) {
           std::this_thread::sleep_for(1ms);
           return oldSize;
         }
-        throw_errno("Error from blocking recv");
+        ThrowSystemError("Error from blocking recv");
       }
 
       return oldSize + static_cast<std::size_t>(recvBytes);
@@ -230,15 +230,15 @@ std::pair<Socket, uint16_t> startEchoServer() {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;  // ephemeral
   if (::bind(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    throw_errno("Error from ::bind");
+    ThrowSystemError("Error from ::bind");
   }
   if (::listen(listenSock.fd(), 1) == -1) {
-    throw_errno("Error from ::listen");
+    ThrowSystemError("Error from ::listen");
   }
   sockaddr_in actual{};
   socklen_t alen = sizeof(actual);
   if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr*>(&actual), &alen) != 0) {
-    throw_errno("Error from ::getsockname");
+    ThrowSystemError("Error from ::getsockname");
   }
 
   uint16_t port = ntohs(actual.sin_port);
@@ -251,7 +251,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
         // Socket was closed by the caller before or during accept
         return;
       }
-      throw_errno("Error from ::accept");
+      ThrowSystemError("Error from ::accept");
     }
     char buf[1024];
 
@@ -268,7 +268,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
           log::error("Echo server recv returned {}, exiting echo loop", std::strerror(err));
           break;
         }
-        throw_errno("Error from ::recv");
+        ThrowSystemError("Error from ::recv");
       }
       if (recvBytes == 0) {
         break;  // connection closed
@@ -578,7 +578,7 @@ void setRecvTimeout(int fd, SysDuration timeout) {
   struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
-    throw_errno("Error from setRecvTimeout");
+    ThrowSystemError("Error from setRecvTimeout");
   }
 }
 
