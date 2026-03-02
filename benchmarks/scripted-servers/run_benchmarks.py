@@ -1520,7 +1520,7 @@ class BenchmarkRunner:
 
         badge_payload = {
             "schemaVersion": 1,
-            "label": "aeronet peak rps",
+            "label": f"{self.protocol} aeronet peak rps",
             "message": f"{self._format_badge_value(best_value)} req/s",
             "color": self._badge_color(best_value),
             "labelColor": "#0f172a",
