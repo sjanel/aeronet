@@ -938,7 +938,7 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   test::TlsTestServer ts;  // default TLS (no ALPN needed here)
 
   test::ClientConnection cnx(ts.port());
-  int fd = cnx.fd();
+  auto fd = cnx.fd();
 
   std::string bogus = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";  // not TLS handshake
   test::sendAll(fd, bogus);
@@ -1014,7 +1014,7 @@ TEST(HttpTlsHandshakeTimeout, SilentClientClosed) {
   });
 
   test::ClientConnection cnx(ts.port());
-  const int fd = cnx.fd();
+  const auto fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
 
   const bool closed = test::WaitForPeerClose(fd, handshakeTimeout * 6);

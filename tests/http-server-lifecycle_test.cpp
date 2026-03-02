@@ -350,7 +350,7 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
 
   const auto port = ts.port();
   test::ClientConnection cnx(port);
-  const int fd = cnx.fd();
+  const auto fd = cnx.fd();
 
   test::sendAll(fd, SimpleGetRequest("/one", http::keepalive));
   auto firstResponse = test::recvWithTimeout(fd);
@@ -376,7 +376,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
 
   const auto port = ts.port();
   test::ClientConnection idle(port);
-  const int fd = idle.fd();
+  const auto fd = idle.fd();
 
   ASSERT_TRUE(test::WaitForServer(ts.server));
   ts.server.beginDrain(std::chrono::milliseconds{500});
@@ -478,7 +478,7 @@ TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAliv
 
   // Launch a keep-alive connection to observe readiness probe change during drain
   test::ClientConnection cnx(ts.port());
-  const int fd = cnx.fd();
+  const auto fd = cnx.fd();
   test::sendAll(fd, SimpleGetRequest("/some-path", http::keepalive));
 
   std::this_thread::sleep_for(20ms);  // ensure request is processed

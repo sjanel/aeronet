@@ -6,6 +6,8 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
+
+#include "aeronet/native-handle.hpp"
 #endif
 
 #include "aeronet/vector.hpp"
@@ -31,7 +33,7 @@ struct PendingUpdates {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Async callback posted from background threads to resume coroutines.
   struct AsyncCallback {
-    int connectionFd;  // connection fd for O(1) hash map lookup
+    NativeHandle connectionFd;  // connection fd for O(1) hash map lookup
     std::coroutine_handle<> handle;
     std::function<void()> work;  // optional work to execute before resuming
   };
