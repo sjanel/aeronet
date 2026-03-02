@@ -103,33 +103,28 @@ inline void AsciiLowerMask2(uint64_t* v) { AsciiLowerMask2(static_cast<const uin
 // Inplace optimized tolower for ASCII characters
 // buf should be at least of size 'len'.
 constexpr void tolower(char* buf, std::size_t len) {
+  if consteval {
+    for (std::size_t charPos = 0; charPos < len; ++charPos) {
+      buf[charPos] = tolower(buf[charPos]);
+    }
+    return;
+  }
+
   std::size_t charPos = 0;
 
   static constexpr std::size_t kWordAlign = alignof(std::uint64_t);
 
   const auto misalignment = reinterpret_cast<std::uintptr_t>(buf) % kWordAlign;
-  uint64_t head;
-  if consteval {
-    head = len;
+  std::size_t head;
+  if (misalignment == 0) {
+    head = 0;
   } else {
-    if (misalignment == 0) {
-      head = 0;
-    } else {
-      const auto delta = static_cast<std::size_t>(kWordAlign - misalignment);
-      if (len < delta) {
-        head = len;
-      } else {
-        head = delta;
-      }
-    }
+    const auto delta = static_cast<std::size_t>(kWordAlign - misalignment);
+    head = len < delta ? len : delta;
   }
 
   for (; charPos < head; ++charPos) {
     buf[charPos] = tolower(buf[charPos]);
-  }
-
-  if consteval {
-    return;
   }
 
 #if defined(__AVX2__)
