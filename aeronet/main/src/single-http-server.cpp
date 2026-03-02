@@ -39,6 +39,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -1009,7 +1010,7 @@ void SingleHttpServer::eventLoop() {
     _lifecycle.exchangeStopping();
   } else if (!events.empty()) {
     for (auto event : events) {
-      const int fd = event.fd;
+      const auto fd = event.fd;
       if (fd == _listenSocket.fd()) {
         // Always attempt to accept new connections when the listener is signaled.
         // The lifecycle controls higher-level acceptance semantics; accepting
@@ -1410,7 +1411,8 @@ void SingleHttpServer::applyPendingUpdates() {
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle<> handle, std::function<void()> work) {
+void SingleHttpServer::postAsyncCallback(NativeHandle connectionFd, std::coroutine_handle<> handle,
+                                         std::function<void()> work) {
   {
     std::scoped_lock lock(_updates.lock);
     _updates.asyncCallbacks.emplace_back(connectionFd, handle, std::move(work));
@@ -1427,13 +1429,13 @@ void SingleHttpServer::postAsyncCallback(int connectionFd, std::coroutine_handle
 /// and the client fd that owns the HTTP/2 connection.
 class H2TunnelBridge final : public ITunnelBridge {
  public:
-  H2TunnelBridge(SingleHttpServer& server, int clientFd) noexcept : _server(server), _clientFd(clientFd) {}
+  H2TunnelBridge(SingleHttpServer& server, NativeHandle clientFd) noexcept : _server(server), _clientFd(clientFd) {}
 
-  int setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
+  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
     return _server.setupH2Tunnel(_clientFd, streamId, host, port);
   }
 
-  void writeTunnel(int upstreamFd, std::span<const std::byte> data) override {
+  void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
     auto upIt = _server._connections.active.find(upstreamFd);
     if (upIt == _server._connections.active.end()) [[unlikely]] {
       return;
@@ -1444,25 +1446,25 @@ class H2TunnelBridge final : public ITunnelBridge {
     }
   }
 
-  void shutdownTunnelWrite(int upstreamFd) override {
+  void shutdownTunnelWrite(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.active.find(upstreamFd);
     if (upIt != _server._connections.active.end()) {
       _server.shutdownTunnelPeerWrite(upIt);
     }
   }
 
-  void closeTunnel(int upstreamFd) override {
+  void closeTunnel(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.active.find(upstreamFd);
     if (upIt == _server._connections.active.end()) {
       return;
     }
     // Clear peerFd so closeConnection won't try to tear down the client HTTP/2 connection.
-    upIt->second->peerFd = -1;
+    upIt->second->peerFd = kInvalidHandle;
     upIt->second->peerStreamId = 0;
     _server.closeConnection(upIt);
   }
 
-  void onTunnelWindowUpdate(int upstreamFd) override {
+  void onTunnelWindowUpdate(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.active.find(upstreamFd);
     if (upIt != _server._connections.active.end()) {
       // If we have buffered data from upstream, try to inject it now that the window opened.
@@ -1474,10 +1476,10 @@ class H2TunnelBridge final : public ITunnelBridge {
 
  private:
   SingleHttpServer& _server;
-  int _clientFd;
+  NativeHandle _clientFd;
 };
 
-void SingleHttpServer::installH2TunnelBridge(int clientFd, ConnectionState& state) {
+void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state) {
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
   state.tunnelBridge = std::make_unique<H2TunnelBridge>(*this, clientFd);
   h2Handler->setTunnelBridge(state.tunnelBridge.get());
@@ -1490,7 +1492,8 @@ void SingleHttpServer::installH2TunnelBridge(int clientFd, ConnectionState& stat
 #endif
 }
 
-void SingleHttpServer::setupHttp2Connection(int clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state) {
+void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode,
+                                            ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
@@ -1520,10 +1523,11 @@ void SingleHttpServer::setupHttp2Connection(int clientFd, TcpNoDelayMode tcpNoDe
   }
 }
 
-int SingleHttpServer::setupH2Tunnel(int clientFd, uint32_t streamId, std::string_view host, std::string_view port) {
-  const int upstreamFd = setupTunnelConnection(clientFd, host, port);
-  if (upstreamFd == -1) {
-    return -1;
+NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host,
+                                             std::string_view port) {
+  const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
+  if (upstreamFd == kInvalidHandle) {
+    return kInvalidHandle;
   }
 
   // Additionally set the HTTP/2 stream id on the upstream state.

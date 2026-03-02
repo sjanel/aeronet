@@ -6,6 +6,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/vector.hpp"
 
@@ -23,7 +24,7 @@ class ConnectionStorage {
   //      * The event loop code often keeps `ConnectionState&` / `ConnectionState*` across helper calls
   //        that may emplace new connections (see processSpecialMethods comment in the .cpp).
   //    If ConnectionState were stored by value in the hash table, these pointers/references could dangle.
-  using ConnectionMap = flat_hash_map<Connection, ConnectionState*, std::hash<int>, std::equal_to<>>;
+  using ConnectionMap = flat_hash_map<Connection, ConnectionState*, std::hash<NativeHandle>, std::equal_to<>>;
 
   using ConnectionMapIt = ConnectionMap::iterator;
 

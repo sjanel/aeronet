@@ -102,17 +102,18 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
         case 0:
           break;
         case 3:  // milliseconds
-          ts += std::chrono::milliseconds{read3(begSuffix)};
+          ts += std::chrono::duration_cast<SysDuration>(std::chrono::milliseconds{read3(begSuffix)});
           break;
         case 6:  // microseconds
-          ts += std::chrono::microseconds{read6(begSuffix)};
+          ts += std::chrono::duration_cast<SysDuration>(std::chrono::microseconds{read6(begSuffix)});
           break;
         case 9:  // nanoseconds
-          ts += std::chrono::nanoseconds{read9(begSuffix)};
+          ts += std::chrono::duration_cast<SysDuration>(std::chrono::nanoseconds{read9(begSuffix)});
           break;
         default:
-          ts += std::chrono::nanoseconds{StringToIntegral<int32_t>(begSuffix, static_cast<std::size_t>(subSecondsSz)) *
-                                         static_cast<int32_t>(ipow10(static_cast<uint8_t>(9 - subSecondsSz)))};
+          ts += std::chrono::duration_cast<SysDuration>(
+              std::chrono::nanoseconds{StringToIntegral<int32_t>(begSuffix, static_cast<std::size_t>(subSecondsSz)) *
+                                       static_cast<int32_t>(ipow10(static_cast<uint8_t>(9 - subSecondsSz)))});
           break;
       }
     }
