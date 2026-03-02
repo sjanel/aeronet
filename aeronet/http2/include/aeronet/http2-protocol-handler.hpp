@@ -14,6 +14,7 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -137,7 +138,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   /// Notify the handler that a tunnel upstream fd was closed externally (e.g., upstream EOF).
   /// Sends an empty DATA frame with END_STREAM to gracefully close the tunnel stream.
-  void closeTunnelByUpstreamFd(int upstreamFd);
+  void closeTunnelByUpstreamFd(NativeHandle upstreamFd);
 
   /// Notify the handler that the async connect for a tunnel stream's upstream fd failed.
   /// Sends RST_STREAM with CONNECT_ERROR on the stream.
@@ -146,8 +147,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Check if a given stream is a CONNECT tunnel.
   [[nodiscard]] bool isTunnelStream(uint32_t streamId) const noexcept;
 
-  using TunnelStreamsMap = flat_hash_map<uint32_t, int>;
-  using TunnelUpstreamsMap = flat_hash_map<int, uint32_t>;
+  using TunnelStreamsMap = flat_hash_map<uint32_t, NativeHandle>;
+  using TunnelUpstreamsMap = flat_hash_map<NativeHandle, uint32_t>;
 
   /// Drain all tunnel upstream fds and clear internal tunnel maps.
   /// Returns the list of upstream fds that must be closed by the caller.
