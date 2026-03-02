@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <string_view>
 #include <type_traits>
@@ -143,23 +144,34 @@ class RawBytesBase {
   void shrink_to_fit() noexcept;
 
   // Ensures that the buffer has at least the specified available capacity.
-  void ensureAvailableCapacity(uint64_t availableCapacity) { reserve(availableCapacity + _size); }
+  void ensureAvailableCapacity(std::unsigned_integral auto availableCapacity) { reserve(availableCapacity + _size); }
 
   // Overload to accept int64_t for convenience.
-  void ensureAvailableCapacity(int64_t capa) {
+  void ensureAvailableCapacity(std::signed_integral auto capa) {
     if (capa > 0) {
-      ensureAvailableCapacity(static_cast<uint64_t>(capa));
+      ensureAvailableCapacity(static_cast<std::make_unsigned_t<decltype(capa)>>(capa));
     }
   }
 
   // Ensures that the buffer has at least the specified available capacity,
   // growing the capacity exponentially.
-  void ensureAvailableCapacityExponential(uint64_t availableCapacity);
+  void ensureAvailableCapacityExponential(std::unsigned_integral auto availableCapacity) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    ensureAvailableCapacity(availableCapacity);
+#else
+    const uintmax_t required = availableCapacity + _size;
+
+    if (_capacity < required) {
+      const uintmax_t doubled = 2ULL * _capacity;
+      reallocUp(SafeCast<size_type>(required < doubled ? doubled : required));
+    }
+#endif
+  }
 
   // Overload to accept int64_t for convenience.
-  void ensureAvailableCapacityExponential(int64_t capa) {
+  void ensureAvailableCapacityExponential(std::signed_integral auto capa) {
     if (capa > 0) {
-      ensureAvailableCapacityExponential(static_cast<uint64_t>(capa));
+      ensureAvailableCapacityExponential(static_cast<std::make_unsigned_t<decltype(capa)>>(capa));
     }
   }
 

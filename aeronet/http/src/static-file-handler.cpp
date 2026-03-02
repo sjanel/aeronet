@@ -185,7 +185,7 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
     body.append("<p id=\"truncated\">Listing truncated after ");
 
     const auto nbCharEntries = nchars(entries.size());
-    body.ensureAvailableCapacityExponential(static_cast<uint64_t>(nbCharEntries));
+    body.ensureAvailableCapacityExponential(nbCharEntries);
     [[maybe_unused]] auto ptr =
         std::to_chars(body.data() + body.size(), body.data() + body.capacity(), entries.size()).ptr;
     assert(ptr == body.data() + body.size() + nbCharEntries);
