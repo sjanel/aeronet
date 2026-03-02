@@ -110,7 +110,7 @@ void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
-  ensureAvailableCapacityExponential(static_cast<uint64_t>(1));
+  ensureAvailableCapacityExponential(1U);
   unchecked_push_back(byte);
 }
 
@@ -171,20 +171,6 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
     }
 #endif
   }
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::ensureAvailableCapacityExponential(uint64_t availableCapacity) {
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  ensureAvailableCapacity(availableCapacity);
-#else
-  const uintmax_t required = availableCapacity + _size;
-
-  if (_capacity < required) {
-    const uintmax_t doubled = 2ULL * _capacity;
-    reallocUp(SafeCast<size_type>(std::max(required, doubled)));
-  }
-#endif
 }
 
 template <class T, class ViewType, class SizeType>
