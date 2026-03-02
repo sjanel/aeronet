@@ -156,6 +156,21 @@ function(AeronetSetProjectProperties name)
   if (AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS)
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS)
   endif()
+
+
+  # Platform specific properties
+  if(WIN32)
+    target_compile_definitions(${name} PUBLIC AERONET_WINDOWS)
+  elseif(UNIX)
+    target_compile_definitions(${name} PUBLIC AERONET_POSIX)
+    if(APPLE)
+      target_compile_definitions(${name} PUBLIC AERONET_MACOS)
+    else()
+      target_compile_definitions(${name} PUBLIC AERONET_LINUX)
+    endif()
+  else()
+    message(FATAL_ERROR "Unknown platform - aeronet currently supports Linux, macOS and Windows")
+  endif()
 endfunction()
 
 function(AeronetAddProjectExecutable name)
