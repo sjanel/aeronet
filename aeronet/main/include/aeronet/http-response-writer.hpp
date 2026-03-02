@@ -12,6 +12,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -183,7 +184,7 @@ class HttpResponseWriter {
  private:
   friend class SingleHttpServer;
 
-  HttpResponseWriter(SingleHttpServer& srv, int fd, const HttpRequest& request, bool requestConnClose,
+  HttpResponseWriter(SingleHttpServer& srv, NativeHandle fd, const HttpRequest& request, bool requestConnClose,
                      Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
                      std::span<const ResponseMiddleware> routeResponseMiddleware);
 
@@ -200,7 +201,7 @@ class HttpResponseWriter {
 
   SingleHttpServer* _server{nullptr};
   const HttpRequest* _request{nullptr};
-  int _fd{-1};
+  NativeHandle _fd{kInvalidHandle};
   bool _head{false};
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };

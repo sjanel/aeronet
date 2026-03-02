@@ -39,7 +39,8 @@ You can inspect the latest benchmark tables generated on `main` from the CI **be
 You can browse the latest rendered benchmark tables directly on GitHub Pages:
 
 - [HTTP/1.1 Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/)
-- [HTTP/2 Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
+- [HTTP/2 clear-text Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html)
+- [HTTP/2 TLS Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
 
 ## Minimal Examples
 
