@@ -110,7 +110,7 @@ void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
-  ensureAvailableCapacityExponential(1UL);
+  ensureAvailableCapacityExponential(static_cast<uint64_t>(1));
   unchecked_push_back(byte);
 }
 

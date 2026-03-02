@@ -24,7 +24,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
   // small helper: append integer value and the unit (with leading space)
   const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
     const auto buf = IntegralToCharVector(value);
-    out.ensureAvailableCapacityExponential(buf.size() + 1 + unit.size());
+    out.ensureAvailableCapacityExponential(static_cast<uint64_t>(unit.size() + buf.size() + 1));
     out.unchecked_append(buf.data(), buf.size());
     out.unchecked_push_back(' ');
     out.unchecked_append(unit);
@@ -63,7 +63,8 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     // print one decimal: int.frac unit
     const auto intBuf = IntegralToCharVector(finalInt);
     const auto fracBuf = IntegralToCharVector(finalFrac);
-    out.ensureAvailableCapacityExponential(intBuf.size() + 1U + fracBuf.size() + 1U + units[unitIdx].size());
+    out.ensureAvailableCapacityExponential(
+        static_cast<uint64_t>(intBuf.size() + 1U + fracBuf.size() + 1U + units[unitIdx].size()));
     out.unchecked_append(intBuf.data(), intBuf.size());
     out.unchecked_push_back('.');
     out.unchecked_append(fracBuf.data(), fracBuf.size());

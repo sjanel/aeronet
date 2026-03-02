@@ -1,16 +1,16 @@
 #include "aeronet/connection-state.hpp"
 
+#ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <string_view>
 #include <utility>
 
@@ -19,6 +19,7 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/sendfile.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -35,7 +36,7 @@
 
 namespace aeronet {
 
-void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, int cnxFd,
+void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
                                                    internal::ResponseCompressionState& compressionState) {
   request.init(config, compressionState);
 
@@ -89,7 +90,7 @@ ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseDa
   return res;
 }
 
-bool ConnectionState::tunnelTransportWrite(int fd) {
+bool ConnectionState::tunnelTransportWrite(NativeHandle fd) {
   const auto [written, want] = transportWrite(tunnelOrFileBuffer);
   if (want == TransportHint::Error) [[unlikely]] {
     // Fatal error writing tunnel data: close this connection
@@ -111,7 +112,7 @@ bool ConnectionState::tunnelTransportWrite(int fd) {
   return true;
 }
 
-ConnectionState::FileResult ConnectionState::transportFile(int clientFd, bool tlsFlow) {
+ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd, bool tlsFlow) {
   // Kernel sendfile(2): use a large chunk to minimize syscalls.  The kernel transfers
   // directly from page-cache to socket buffer, so a large value just means fewer
   // transitions to/from kernel mode. A too small value would cause excessive syscalls and reduce throughput, especially
@@ -243,7 +244,7 @@ void ConnectionState::installAggregatedBodyBridge() {
   request._bodyAccessContext = &bodyStreamContext;
 }
 #ifdef AERONET_ENABLE_OPENSSL
-bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(int fd, const TlsHandshakeCallback& cb,
+bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb,
                                                           TlsMetricsInternal& metrics, const TLSConfig& cfg) {
   auto* tlsTr = dynamic_cast<TlsTransport*>(transport.get());
   if (tlsTr == nullptr) {
@@ -308,7 +309,7 @@ void ConnectionState::reset() {
   lastActivity = {};
   headerStartTp = {};
   bodyLastActivity = {};
-  peerFd = -1;
+  peerFd = kInvalidHandle;
   requestsServed = 0;
   trailerLen = 0;
   closeMode = CloseMode::None;
