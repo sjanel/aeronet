@@ -943,17 +943,17 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  std::vector<int> closedFds;
+  std::vector<NativeHandle> closedFds;
   constexpr NativeHandle kFakeUpstreamFd1 = 42;
   constexpr NativeHandle kFakeUpstreamFd2 = 43;
   NativeHandle nextFd = kFakeUpstreamFd1;
 
   MockTunnelBridge bridge;
   bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle {
-    int fd = nextFd++;
+    NativeHandle fd = nextFd++;
     return fd;
   };
-  bridge.onClose = [&](int fd) { closedFds.push_back(fd); };
+  bridge.onClose = [&](NativeHandle fd) { closedFds.push_back(fd); };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish two tunnels on different streams.
