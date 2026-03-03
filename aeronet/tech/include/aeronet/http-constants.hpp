@@ -21,6 +21,13 @@ inline constexpr std::string_view HTTP11Sv = "HTTP/1.1";
 
 // Methods GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
 
+#ifdef AERONET_WINDOWS
+// On Windows DELETE is defined as a macro in winnt.h... :/
+#ifdef DELETE
+#undef DELETE
+#endif
+#endif
+
 inline constexpr std::string_view GET = "GET";
 inline constexpr std::string_view HEAD = "HEAD";
 inline constexpr std::string_view POST = "POST";

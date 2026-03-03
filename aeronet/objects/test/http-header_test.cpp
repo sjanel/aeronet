@@ -207,11 +207,11 @@ TEST(HttpHeader, ReverseIteratorWithEscapedQuotes) {
   http::HeaderValueReverseTokensIterator<','> it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"hdr("deflate\"")hdr");
+  EXPECT_EQ(it.next(), "\"deflate\\\"\"");
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"hdr("value with \"escaped\" quotes")hdr");
+  EXPECT_EQ(it.next(), "\"value with \\\"escaped\\\" quotes\"");
   ASSERT_TRUE(it.hasNext());
-  EXPECT_EQ(it.next(), R"hdr("\"gzip")hdr");
+  EXPECT_EQ(it.next(), "\"\\\"gzip\"");
 
   EXPECT_FALSE(it.hasNext());
 }

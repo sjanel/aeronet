@@ -24,7 +24,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
   // small helper: append integer value and the unit (with leading space)
   const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
     const auto buf = IntegralToCharVector(value);
-    out.ensureAvailableCapacityExponential(unit.size() + buf.size() + 1);
+    out.ensureAvailableCapacityExponential(unit.size() + buf.size() + 1U);
     out.unchecked_append(buf.data(), buf.size());
     out.unchecked_push_back(' ');
     out.unchecked_append(unit);

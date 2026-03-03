@@ -595,7 +595,8 @@ void setRecvTimeout(NativeHandle fd, SysDuration timeout) {
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv)) == SOCKET_ERROR) {
 #else
   // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
-  struct timeval tv{timeoutMs / 1000, static_cast<long>((timeoutMs % 1000) * 1000)};
+  struct timeval tv{static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
+                    static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000)};
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
 #endif
