@@ -1,11 +1,14 @@
 #include "aeronet/file.hpp"
 
+#include "aeronet/system-error.hpp"
+
 #ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
+#include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -52,7 +55,7 @@ inline int CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
 #ifdef AERONET_POSIX
   const int fd = ::open(std::string(path).c_str(), Flags(mode));
 #elifdef AERONET_WINDOWS
-  const int fd = ::open(std::string(path).c_str(), Flags(mode));
+  const int fd = _open(std::string(path).c_str(), Flags(mode));
 #endif
   CheckFd(path, fd);
   return fd;
@@ -62,7 +65,7 @@ inline int CreateFileBaseFd(const char* path, File::OpenMode mode) {
 #ifdef AERONET_POSIX
   const int fd = ::open(path, Flags(mode));
 #elifdef AERONET_WINDOWS
-  const int fd = ::open(path, Flags(mode));
+  const int fd = _open(path, Flags(mode));
 #endif
   CheckFd(path, fd);
   return fd;
@@ -76,7 +79,7 @@ inline std::size_t GetFileSize(BaseFd& fd) {
   }
 #elifdef AERONET_WINDOWS
   struct _stat64 st{};
-  if (fd && ::fstat64(fd.fd(), &st) == 0) {
+  if (fd && _fstat64(fd.fd(), &st) == 0) {
     return static_cast<std::size_t>(st.st_size);
   }
 #endif
@@ -98,17 +101,17 @@ std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
     const auto readResult = ::pread(_fd.fd(), dst.data(), dst.size(), static_cast<off_t>(offset));
 #elifdef AERONET_WINDOWS
     // Windows has no pread(); emulate by seeking + reading (file descriptors are not shared across threads here).
-    if (::lseeki64(_fd.fd(), static_cast<__int64>(offset), SEEK_SET) == -1) {
+    if (_lseeki64(_fd.fd(), static_cast<__int64>(offset), SEEK_SET) == -1) {
       log::error("Unable to seek file (fd {}, offset {}): error {}: {}", _fd.fd(), offset, errno,
                  SystemErrorMessage(errno));
       return kError;
     }
-    const auto readResult = ::read(_fd.fd(), dst.data(), static_cast<unsigned int>(dst.size()));
+    const auto readResult = _read(_fd.fd(), dst.data(), static_cast<unsigned int>(dst.size()));
 #endif
     if (readResult >= 0) {
       return static_cast<std::size_t>(readResult);
     }
-    if (errno == EINTR) {
+    if (errno == error::kInterrupted) {
       continue;
     }
     log::error("Unable to pread file (fd {}, offset {}, len {}): error {}: {}", _fd.fd(), offset, dst.size(), errno,

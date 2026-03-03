@@ -211,8 +211,8 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
 }
 
 // Explicit instantiations for commonly used concrete types
-template class RawBytesBase<char, std::string_view, std::size_t>;
 template class RawBytesBase<char, std::string_view, std::uint32_t>;
-template class RawBytesBase<std::byte, std::span<const std::byte>, std::size_t>;
+template class RawBytesBase<char, std::string_view, std::uint64_t>;
 template class RawBytesBase<std::byte, std::span<const std::byte>, std::uint32_t>;
+template class RawBytesBase<std::byte, std::span<const std::byte>, std::uint64_t>;
 }  // namespace aeronet
