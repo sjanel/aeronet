@@ -1,14 +1,12 @@
 // Enable syscall overrides for pread in small file inline path (Linux only)
 #ifdef __linux__
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
-#endif
 #define AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
+#endif
 
 #include "aeronet/static-file-handler.hpp"
 
 #include <gtest/gtest.h>
-
-#include "aeronet/system-error.hpp"
 
 #ifdef AERONET_POSIX
 #include <unistd.h>

@@ -128,7 +128,7 @@ class RawBytesBase {
   }
 
   // Returns the current size of the buffer.
-  [[nodiscard]] size_type size() const noexcept { return _size; }
+  [[nodiscard]] constexpr size_type size() const noexcept { return _size; }
 
   // Returns the current capacity of the buffer.
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }

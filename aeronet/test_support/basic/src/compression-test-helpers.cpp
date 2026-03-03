@@ -83,9 +83,9 @@ std::string MakePatternedPayload(std::size_t size) {
 RawChars MakeRandomPayload(std::size_t size) {
   RawChars payload(size);
   std::mt19937_64 rng{123456789ULL};
-  std::uniform_int_distribution<char> dist(std::numeric_limits<char>::min(), std::numeric_limits<char>::max());
+  std::uniform_int_distribution<int> dist(std::numeric_limits<char>::min(), std::numeric_limits<char>::max());
   for (std::size_t i = 0; i < size; ++i) {
-    payload[i] = dist(rng);
+    payload[i] = static_cast<char>(dist(rng));
   }
   payload.setSize(size);
   return payload;
