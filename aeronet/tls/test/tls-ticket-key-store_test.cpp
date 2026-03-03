@@ -1,6 +1,8 @@
 #include "aeronet/tls-ticket-key-store.hpp"
 
+#ifdef AERONET_POSIX
 #include <dlfcn.h>
+#endif
 #include <gtest/gtest.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>

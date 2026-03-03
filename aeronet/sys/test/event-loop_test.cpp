@@ -1,8 +1,6 @@
 #include "aeronet/event-loop.hpp"
 
 #include <gtest/gtest.h>
-#include <sys/epoll.h>
-#include <unistd.h>
 
 #include <cerrno>
 #include <chrono>
@@ -16,10 +14,16 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/system-error.hpp"
 
 // Enable epoll/socket syscall overrides from sys-test-support.hpp
 #define AERONET_WANT_SOCKET_OVERRIDES
 #include "aeronet/sys-test-support.hpp"
+
+#ifdef AERONET_POSIX
+#include <sys/epoll.h>
+#include <unistd.h>
+#endif
 
 using namespace aeronet;
 
@@ -176,7 +180,7 @@ TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails_BadFlags) {
 
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
   test::EventLoopHookGuard guard;
-  test::SetEpollCreateActions({test::EpollCreateFail(EMFILE)});
+  test::SetEpollCreateActions({test::EpollCreateFail(error::kTooManyFiles)});
   EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
 }
 
@@ -191,7 +195,7 @@ TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
 
 TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
   test::EventLoopHookGuard guard;
-  test::SetEpollWaitActions({test::WaitError(EINTR)});
+  test::SetEpollWaitActions({test::WaitError(error::kInterrupted)});
   EventLoop loop(std::chrono::milliseconds(5));
   const auto events = loop.poll();
   EXPECT_NE(events.data(), nullptr);

@@ -114,11 +114,11 @@ class DynamicConcatenatedStrings {
     iterator(const char* first, const char* last) noexcept : _cur(first, last), _end(last) { advance(true); }
 
     void advance(bool init = false) noexcept {
-      if ((init && _cur.empty()) || _cur.end() + kSep.size() == _end) {
+      if ((init && _cur.empty()) || _cur.data() + _cur.size() + kSep.size() == _end) {
         _cur = {};
         _end = nullptr;
       } else {
-        const char* begPtr = init ? _cur.begin() : _cur.end() + kSep.size();
+        const char* begPtr = init ? _cur.data() : _cur.data() + _cur.size() + kSep.size();
         const auto sepPos = std::string_view(begPtr, _end).find(kSep);
         assert(sepPos != std::string_view::npos);
         _cur = std::string_view(begPtr, begPtr + sepPos);

@@ -1,4 +1,4 @@
-aux_source_directory(src/ AERONET_SYS_SRC_LIST)
+aux_source_directory(src AERONET_SYS_SRC_LIST)
 
 # Remove zerocopy source file if not on Linux
 if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux"))
@@ -13,11 +13,27 @@ target_link_libraries(aeronet_sys
     PUBLIC aeronet_tech
 )
 
+if(WIN32)
+    target_link_libraries(aeronet_sys PUBLIC ws2_32 mswsock)
+endif()
+
 target_include_directories(aeronet_sys
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+# errno-throw is portable (pure C++ exception test)
+AeronetAddUnitTest(
+    errno-throw_test
+    test/errno-throw_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
+# The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
+# accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
 AeronetAddUnitTest(
     base-fd_test
@@ -33,11 +49,6 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_sys
     aeronet_basic_test_support
-)
-
-AeronetAddUnitTest(
-    errno-throw_test
-    test/errno-throw_test.cpp
 )
 
 AeronetAddUnitTest(
@@ -111,12 +122,12 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    AeronetAddUnitTest(
-        zerocopy_test
-        test/zerocopy_test.cpp
-        LIBRARIES
-        aeronet_sys
-        aeronet_basic_test_support
-    )
+AeronetAddUnitTest(
+    zerocopy_test
+    test/zerocopy_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
+)
+
 endif()

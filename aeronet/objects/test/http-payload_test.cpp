@@ -291,7 +291,7 @@ TEST(HttpPayload, ByteBuffer) {
 TEST(HttpPayload, EnsureCapacityWithNegativeValueDoesNothing) {
   HttpPayload body(std::string("abcd"));
 
-  body.ensureAvailableCapacityExponential(-5L);
+  body.ensureAvailableCapacityExponential(static_cast<int64_t>(-5));
   EXPECT_EQ(body.view(), "abcd");
 }
 

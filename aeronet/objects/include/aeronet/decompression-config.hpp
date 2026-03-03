@@ -31,7 +31,7 @@ struct DecompressionConfig {
 
   // Absolute cap on the decompressed size (in bytes). If exceeded during inflation, decompression
   // aborts and the request is rejected (413). Default: 4 GiB.
-  std::size_t maxDecompressedBytes{1UL << 32};
+  std::size_t maxDecompressedBytes{4ULL * 1024 * 1024 * 1024};
 
   // Minimal chunk size of buffer growths during decompression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
