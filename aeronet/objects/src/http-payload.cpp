@@ -100,8 +100,8 @@ void HttpPayload::append(std::string_view data) {
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           val.insert(val.end(), data.begin(), data.end());
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
-          val.insert(val.end(), reinterpret_cast<const std::byte*>(data.begin()),
-                     reinterpret_cast<const std::byte*>(data.end()));
+          const std::byte* buf = reinterpret_cast<const std::byte*>(data.data());
+          val.insert(val.end(), buf, buf + data.size());
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           // switch to RawChars to simplify appending
           RawChars rawChars(val.second + data.size());

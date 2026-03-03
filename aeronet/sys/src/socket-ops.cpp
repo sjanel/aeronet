@@ -3,6 +3,7 @@
 #include "aeronet/system-error.hpp"
 
 #ifdef AERONET_WINDOWS
+#include <io.h>
 #include <ws2tcpip.h>
 #else
 #include <fcntl.h>

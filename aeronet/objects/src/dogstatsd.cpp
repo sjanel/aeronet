@@ -36,13 +36,13 @@ constexpr std::string_view kSetSuffix{"|s"};
 constexpr std::size_t kFloatingBufferSize = std::numeric_limits<double>::max_digits10 + 12;
 constexpr std::size_t kMaxIntegerStrBufferSize = std::numeric_limits<uint64_t>::digits10 + 2;  // sign + left-most digit
 
-constexpr std::string_view FormatFloating(double value, char* buffer) {
+inline std::string_view FormatFloating(double value, char* buffer) {
   const auto [ptr, ec] = std::to_chars(buffer, buffer + kFloatingBufferSize, value, std::chars_format::general);
   assert(ec == std::errc{});
   return {buffer, ptr};
 }
 
-constexpr std::string_view FormatInteger(std::integral auto value, char* buffer) {
+inline std::string_view FormatInteger(std::integral auto value, char* buffer) {
   const auto [ptr, ec] = std::to_chars(buffer, buffer + kMaxIntegerStrBufferSize, value);
   assert(ec == std::errc{});
   return {buffer, ptr};
