@@ -1045,11 +1045,12 @@ class HttpResponse {
   }
 
   [[nodiscard]] std::string_view internalTrailers() const noexcept {
-    return {_data.end() - trailersSize(), _data.end()};
+    const char* endPtr = _data.data() + _data.size();
+    return {endPtr - trailersSize(), endPtr};
   }
 
   [[nodiscard]] std::string_view externalTrailers() const noexcept {
-    const char* last = _payloadVariant.view().end();
+    const char* last = _payloadVariant.view().data() + _payloadVariant.view().size();
     return {last - trailersSize(), last};
   }
 

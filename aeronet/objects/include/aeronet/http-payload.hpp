@@ -63,9 +63,11 @@ class HttpPayload {
 
   [[nodiscard]] constexpr bool hasCapturedBody() const noexcept { return _data.index() > 1U; }
 
-  FilePayload* getIfFilePayload() noexcept { return std::get_if<FilePayload>(&_data); }
+  constexpr FilePayload* getIfFilePayload() noexcept { return std::get_if<FilePayload>(&_data); }
 
-  [[nodiscard]] const FilePayload* getIfFilePayload() const noexcept { return std::get_if<FilePayload>(&_data); }
+  [[nodiscard]] constexpr const FilePayload* getIfFilePayload() const noexcept {
+    return std::get_if<FilePayload>(&_data);
+  }
 
   // does not work for file payloads
   [[nodiscard]] std::size_t size() const noexcept;
