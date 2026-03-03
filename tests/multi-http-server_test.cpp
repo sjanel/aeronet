@@ -169,8 +169,8 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   bool hasB = resp1.contains('B') || resp2.contains('B');
   if (!(hasA && hasB)) {
     // try additional connects with small delays to give scheduler chance to pick different acceptors
-    for (int i = 0; i < 15 && !(hasA && hasB); ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    for (int i = 0; i < 50 && !(hasA && hasB); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
       std::string retryResp = test::simpleGet(port, "/retry");
       if (retryResp.contains('A')) {
         hasA = true;

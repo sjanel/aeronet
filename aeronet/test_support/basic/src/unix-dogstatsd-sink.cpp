@@ -8,6 +8,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <afunix.h>
+#include <process.h>
+#include <ws2tcpip.h>
 #endif
 
 #include <array>
@@ -26,15 +30,23 @@ namespace aeronet::test {
 namespace {
 std::string MakeUniquePath() {
   static std::atomic<uint64_t> counter{0};
+#ifdef AERONET_POSIX
   const auto pid = static_cast<unsigned long>(::getpid());
+#else
+  const auto pid = static_cast<unsigned long>(_getpid());
+#endif
   const auto suffix = counter.fetch_add(1, std::memory_order_relaxed);
-  return "/tmp/aeronet-dogstatsd-" + std::to_string(pid) + "-" + std::to_string(suffix);
+  return std::string("/tmp/aeronet-dogstatsd-") + std::to_string(pid) + "-" + std::to_string(suffix);
 }
 }  // namespace
 
 UnixDogstatsdSink::UnixDogstatsdSink() : _fd(UnixSocket::Type::Datagram) {
   _path = MakeUniquePath();
+#ifdef AERONET_POSIX
   ::unlink(_path.c_str());
+#else
+  _unlink(_path.c_str());
+#endif
 
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
@@ -77,7 +89,11 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
 
 void UnixDogstatsdSink::closeAndUnlink() {
   if (!_path.empty()) {
+#ifdef AERONET_POSIX
     ::unlink(_path.c_str());
+#else
+    _unlink(_path.c_str());
+#endif
     _path.clear();
   }
 }
