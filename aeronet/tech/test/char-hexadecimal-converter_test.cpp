@@ -4,7 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <ios>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -21,19 +23,6 @@ TEST(CharHexConverter, ToLowerHexBasic) {
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "3f");
-}
-
-TEST(CharHexConverter, ToUpperHexBasic) {
-  char buf[3] = {};
-  char* end = to_upper_hex(',', buf);
-  EXPECT_EQ(end, buf + 2);
-  buf[2] = '\0';
-  EXPECT_STREQ(buf, "2C");
-
-  end = to_upper_hex('?', buf);
-  EXPECT_EQ(end, buf + 2);
-  buf[2] = '\0';
-  EXPECT_STREQ(buf, "3F");
 }
 
 TEST(CharHexConverter, ToHexEdgeValues) {
@@ -57,11 +46,6 @@ TEST(CharHexConverter, ToHexEdgeValues) {
   to_lower_hex(static_cast<unsigned char>(0xFF), buf);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "ff");
-
-  // uppercase variant
-  to_upper_hex(static_cast<unsigned char>(0xFF), buf);
-  buf[2] = '\0';
-  EXPECT_STREQ(buf, "FF");
 }
 
 TEST(CharHexConverter, FromHexDigitValidDigits) {
@@ -104,6 +88,12 @@ TEST(CharHexConverter, RoundTrip) {
   }
 }
 
+namespace {
+
+constexpr uint32_t kMaxHexDigitsSizeT = hex_digits(std::numeric_limits<std::size_t>::max());
+
+}
+
 TEST(CharHexConverterSizeT, HexDigitsAndToLower) {
   EXPECT_EQ(kMaxHexDigitsSizeT, 2UL * sizeof(size_t));
 
@@ -125,11 +115,11 @@ TEST(CharHexConverterSizeT, HexDigitsAndToLower) {
   }
 }
 
-TEST(CharHexConverterSizeT, ToUpperHexAndRoundTrip) {
+TEST(CharHexConverterSizeT, ToLowerHexAndRoundTrip) {
   static constexpr std::size_t vals[]{0U, 1U, 0xAU, 0x10U, 0xFFU, 0x100U, 0xDEADBEEFU};
   for (std::size_t val : vals) {
     char buf[kMaxHexDigitsSizeT + 1];
-    char* end = to_upper_hex(val, buf);
+    char* end = to_lower_hex(val, buf);
     *end = '\0';
 
     // Reconstruct numeric value from hex digits using from_hex_digit

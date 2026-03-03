@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +50,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -1047,8 +1047,8 @@ void SingleHttpServer::eventLoop() {
     }
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
   } else {
-    // timeout / EINTR (treated as timeout). Retry pending writes to handle edge-triggered epoll timing issues.
-    // With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
+    // timeout / error::kInterrupted (treated as timeout). Retry pending writes to handle edge-triggered epoll timing
+    // issues. With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
     // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
     maintenanceTick = true;
   }
@@ -1508,8 +1508,8 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
     // Disable Nagle's algorithm for HTTP/2 connections by default to reduce latency.
     // The protocol handler may choose to re-enable it later if it determines it's beneficial.
     if (!SetTcpNoDelay(clientFd)) [[unlikely]] {
-      const auto err = errno;
-      log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={} ({})", clientFd, err, std::strerror(err));
+      const auto err = LastSystemError();
+      log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", clientFd, err);
       _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
     }
   }

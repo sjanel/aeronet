@@ -30,6 +30,8 @@ target_include_directories(aeronet_http
         $<INSTALL_INTERFACE:include>
 )
 
+# connection-state_test uses socketpair(AF_UNIX), fcntl, and sendfile/pread overrides — Linux only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 AeronetAddUnitTest(
     connection-state_test
     test/connection-state_test.cpp
@@ -37,6 +39,7 @@ AeronetAddUnitTest(
     aeronet_http
     aeronet_test_support
 )
+endif()
 
 AeronetAddUnitTest(
     cors-policy_test

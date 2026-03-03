@@ -94,6 +94,7 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
       writeFd, {IoAction{-1, error::kInterrupted}, IoAction{-1, error::kWouldBlock}, IoAction{-1, error::kWouldBlock}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Enabled, 0U);
+  EXPECT_FALSE(transport.hasPendingReadData());
   std::string_view data("foobar");
 
   // First write: error::kInterrupted is retried internally, then hits error::kWouldBlock -> WriteReady with 0 bytes

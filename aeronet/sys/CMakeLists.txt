@@ -1,5 +1,10 @@
 aux_source_directory(src/ AERONET_SYS_SRC_LIST)
 
+# Remove zerocopy source file if not on Linux
+if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    list(REMOVE_ITEM AERONET_SYS_SRC_LIST src/zerocopy.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_sys
     ${AERONET_SYS_SRC_LIST}
 )
@@ -34,7 +39,6 @@ AeronetAddUnitTest(
     errno-throw_test
     test/errno-throw_test.cpp
 )
-
 
 AeronetAddUnitTest(
     event-fd_test
@@ -107,10 +111,12 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
-AeronetAddUnitTest(
-    zerocopy_test
-    test/zerocopy_test.cpp
-    LIBRARIES
-    aeronet_sys
-    aeronet_basic_test_support
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    AeronetAddUnitTest(
+        zerocopy_test
+        test/zerocopy_test.cpp
+        LIBRARIES
+        aeronet_sys
+        aeronet_basic_test_support
+    )
+endif()

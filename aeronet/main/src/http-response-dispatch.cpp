@@ -1,9 +1,7 @@
 #include <algorithm>
 #include <cassert>
-#include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -21,6 +19,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -86,10 +85,10 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   }
 
   // Save client fd — setupTunnelConnection may rehash the connection map.
-  const int clientFd = cnxIt->first.fd();
+  const auto clientFd = cnxIt->first.fd();
 
-  const int upstreamFd = setupTunnelConnection(clientFd, host, portStr);
-  if (upstreamFd == -1) {
+  const auto upstreamFd = setupTunnelConnection(clientFd, host, portStr);
+  if (upstreamFd == kInvalidHandle) {
     emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
     return LoopAction::Break;
   }
@@ -238,15 +237,15 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
 
-  const int fd = cnxIt->first.fd();
+  const NativeHandle fd = cnxIt->first.fd();
   while (!state.outBuffer.empty()) {
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
     want = stepWant;
     _stats.totalBytesWrittenFlush += written;
     switch (want) {
       case TransportHint::Error: {
-        auto savedErr = errno;
-        log::error("send/transportWrite failed fd # {} errno={} msg={}", fd, savedErr, std::strerror(savedErr));
+        auto savedErr = LastSystemError();
+        log::error("send/transportWrite failed fd # {} err={}", fd, savedErr);
         state.requestDrainAndClose();
         state.outBuffer.clear();
         break;
