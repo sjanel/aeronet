@@ -217,12 +217,14 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 // Steps (in order) and rationale / failure characteristics:
 //   1. socket(AF_INET, SOCK_STREAM, 0)
 //        - Expected to succeed under normal conditions. Failure indicates resource exhaustion
-//          (EMFILE per-process fd limit, ENFILE system-wide, ENOBUFS/ENOMEM) or misconfiguration (rare EACCES).
+//          (error::kTooManyFiles per-process fd limit, ENFILE system-wide, error::kNoBufferSpace/ENOMEM) or
+//          misconfiguration (rare EACCES).
 //   2. setsockopt(SO_REUSEADDR)
 //        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
 //          Mandatory to allow rapid restart after TIME_WAIT collisions.
 //   3. setsockopt(SO_REUSEPORT) (optional best-effort)
-//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning only,
+//        - Enabled only if cfg.reusePort. May fail on older kernels (error::kNotSupported/EINVAL) -> logged as warning
+//        only,
 //          not fatal. This provides horizontal scaling (multi-reactor) when supported.
 //   4. bind()
 //        - Most common legitimate failure point: EADDRINUSE when user supplies a fixed port already in use, or
