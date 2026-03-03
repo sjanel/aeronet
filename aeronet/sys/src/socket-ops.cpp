@@ -13,6 +13,8 @@
 
 #ifdef AERONET_POSIX
 #include <unistd.h>
+
+#include <cassert>
 #endif
 
 #include <cstddef>
@@ -60,16 +62,17 @@ bool SetNoSigPipe(NativeHandle fd) noexcept {
 }
 
 #ifdef AERONET_POSIX
-void SetPipeNonBlockingCloExec(int pipeRd, int pipeWr) noexcept {
-  for (int pfd : {pipeRd, pipeWr}) {
+void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcept {
+  for (NativeHandle pfd : {pipeRd, pipeWr}) {
     int flags = ::fcntl(pfd, F_GETFL, 0);
-    if (flags != -1) {
-      ::fcntl(pfd, F_SETFL, flags | O_NONBLOCK);
-    }
-    int fdFlags = ::fcntl(pfd, F_GETFD, 0);
-    if (fdFlags != -1) {
-      ::fcntl(pfd, F_SETFD, fdFlags | FD_CLOEXEC);
-    }
+    assert(flags != -1);
+    flags = ::fcntl(pfd, F_SETFL, flags | O_NONBLOCK);
+    assert(flags != -1);
+
+    flags = ::fcntl(pfd, F_GETFD, 0);
+    assert(flags != -1);
+    flags = ::fcntl(pfd, F_SETFD, flags | FD_CLOEXEC);
+    assert(flags != -1);
   }
 }
 #endif

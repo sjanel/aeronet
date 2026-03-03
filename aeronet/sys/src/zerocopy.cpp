@@ -1,19 +1,17 @@
 #include "aeronet/zerocopy.hpp"
 
-#ifdef __linux__
-
 #include <linux/errqueue.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
 
 #include <cassert>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <ctime>
 #include <string_view>
+
+#include "aeronet/system-error.hpp"
 
 namespace aeronet {
 
@@ -32,7 +30,7 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
   return ZeroCopyEnableResult::Enabled;
 }
 
-ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexcept {
+int64_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexcept {
   assert(state.enabled());
 
   // Use sendmsg with MSG_ZEROCOPY for large payloads
@@ -44,7 +42,7 @@ ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexce
   msg.msg_iov = &iov;
   msg.msg_iovlen = 1;
 
-  const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
+  const auto sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
     // Track the pending completion - kernel will notify via error queue.
     // The kernel assigns monotonically increasing sequence numbers starting from 0;
@@ -53,10 +51,10 @@ ssize_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexce
     ++state.seqHi;
   }
 
-  return sent;
+  return static_cast<int64_t>(sent);
 }
 
-ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondBuf, ZeroCopyState& state) noexcept {
+int64_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondBuf, ZeroCopyState& state) noexcept {
   // Use sendmsg with MSG_ZEROCOPY for large payloads
   // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
@@ -68,12 +66,12 @@ ssize_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondB
   msg.msg_iov = iov;
   msg.msg_iovlen = secondBuf.empty() ? 1 : 2;
 
-  const ssize_t sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
+  const auto sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (sent > 0) {
     ++state.seqHi;
   }
 
-  return sent;
+  return static_cast<int64_t>(sent);
 }
 
 std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
@@ -94,11 +92,10 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
 
     // MSG_ERRQUEUE reads from the socket error queue (where zerocopy completions arrive)
     // MSG_DONTWAIT ensures we don't block if no completions are ready
-    const ssize_t ret = ::recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
+    const auto ret = ::recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
     if (ret == -1) {
       // EAGAIN/EWOULDBLOCK means no more completions available
-      static_assert(EAGAIN == EWOULDBLOCK);
-      if (errno == EAGAIN) {
+      if (errno == error::kWouldBlock) {
         break;
       }
       // Other errors: stop polling but don't treat as fatal
@@ -134,5 +131,3 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
 }
 
 }  // namespace aeronet
-
-#endif  // __linux__

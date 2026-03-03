@@ -35,7 +35,7 @@ bool SetNoSigPipe(NativeHandle fd) noexcept;
 
 #ifdef AERONET_POSIX
 // Set both ends of a pipe to non-blocking mode and close-on-exec.
-void SetPipeNonBlockingCloExec(int pipeRd, int pipeWr) noexcept;
+void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcept;
 #endif
 
 // Enable TCP_NODELAY (disable Nagle's algorithm) on a TCP socket.
