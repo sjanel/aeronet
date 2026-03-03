@@ -1,7 +1,6 @@
 #include "aeronet/dogstatsd.hpp"
 
 #include <gtest/gtest.h>
-#include <sys/un.h>
 
 #include <cerrno>
 #include <chrono>
@@ -12,7 +11,12 @@
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
+
+#ifdef AERONET_POSIX
+#include <sys/un.h>
+#endif
 
 namespace aeronet {
 
@@ -34,7 +38,7 @@ TEST(DogStatsDTest, EmptyNamespace) {
 }
 
 TEST(DogStatsDTest, SocketFails) {
-  test::PushSocketAction({-1, EMFILE});  // EMFILE: too many open files
+  test::PushSocketAction({-1, error::kTooManyFiles});  // error::kTooManyFiles: too many open files
   EXPECT_THROW(DogStatsD("/invalid/path/to/socket.sock", "svc"), std::system_error);
 }
 
@@ -169,7 +173,7 @@ TEST(DogStatsDTest, SendEagainIsDropped) {
 
   // Inject EAGAIN for the next send; the client should treat it as a dropped metric
   // and not mark the connection for immediate reconnect. No exception should be thrown.
-  test::PushSendAction({-1, EAGAIN});
+  test::PushSendAction({-1, error::kWouldBlock});
   EXPECT_NO_THROW(client.increment("lost", 1));
 
   // Subsequent sends should still work (no socket teardown on EAGAIN)

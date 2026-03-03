@@ -97,7 +97,7 @@ void TimerFd::drain() const noexcept {
 #elifdef AERONET_MACOS
 
 TimerFd::TimerFd() {
-  int fds[2];
+  NativeHandle fds[2];
   if (::pipe(fds) != 0) {
     ThrowSystemError("Unable to create pipe for TimerFd");
   }
