@@ -73,8 +73,8 @@ using uint32 = uint32_t;
 using uint64 = uint64_t;
 using uint128 = std::pair<uint64, uint64>;
 
-inline uint64 Uint128Low64(const uint128& val) { return val.first; }
-inline uint64 Uint128High64(const uint128& val) { return val.second; }
+constexpr uint64 Uint128Low64(const uint128& val) { return val.first; }
+constexpr uint64 Uint128High64(const uint128& val) { return val.second; }
 
 // Hash function for a byte array.
 uint64 CityHash64(const char* buf, size_t len);
