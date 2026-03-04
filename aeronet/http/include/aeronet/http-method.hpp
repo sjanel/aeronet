@@ -9,6 +9,13 @@ namespace aeronet::http {
 
 using MethodBmp = uint16_t;
 
+#ifdef AERONET_WINDOWS
+// On Windows DELETE is defined as a macro in winnt.h... :/
+#ifdef DELETE
+#undef DELETE
+#endif
+#endif
+
 enum class Method : MethodBmp {
   GET = 1 << 0,
   HEAD = 1 << 1,
