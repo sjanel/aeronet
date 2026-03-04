@@ -782,9 +782,28 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  std::string_view targetPathString(targetPath.c_str());
+  struct PathString {
+    // On POSIX: just a view into the path's native buffer (no allocation)
+    // On Windows: owns the converted string, exposes a view into it
+#ifdef AERONET_WINDOWS
+    explicit PathString(const std::filesystem::path& p) : owned(p.string()), view(owned) {}
 
-  File file(targetPath.c_str(), File::OpenMode::ReadOnly);
+    [[nodiscard]] const char* c_str() const { return owned.c_str(); }
+
+    std::string owned;
+#else
+    explicit PathString(const std::filesystem::path& path) : p(path), view(path.native()) {}
+
+    [[nodiscard]] const char* c_str() const { return p.c_str(); }
+
+    const std::filesystem::path& p;
+#endif
+    std::string_view view;
+  };
+
+  PathString pathString(targetPath);
+
+  File file(pathString.c_str(), File::OpenMode::ReadOnly);
   if (!file) {
     resp = HttpResponse(http::StatusCodeNotFound, "Unable to open file\n");
     return resp;
@@ -846,11 +865,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   // 3) If that also failed, use default content type from config.
   std::string_view contentTypeForFile;
   if (_config.contentTypeResolver) {
-    contentTypeForFile = _config.contentTypeResolver(targetPathString);
+    contentTypeForFile = _config.contentTypeResolver(pathString.view);
   }
 
   if (contentTypeForFile.empty()) {
-    contentTypeForFile = DetermineMIMETypeStr(targetPathString);
+    contentTypeForFile = DetermineMIMETypeStr(pathString.view);
     if (contentTypeForFile.empty()) {
       contentTypeForFile = _config.defaultContentType();
     }

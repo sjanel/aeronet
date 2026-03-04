@@ -80,7 +80,7 @@ constexpr std::string_view AdjustReasonLen(std::string_view reason) {
 
 constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
 
-constexpr void InitData(char* data) {
+inline void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';
   data[HttpResponse::kReasonBeg] = '\n';  // marker for no reason
 #ifndef NDEBUG
@@ -114,8 +114,8 @@ constexpr int64_t TransferEncodingHeaderSizeDiff(std::uint8_t nCharsBodyLen) {
   return static_cast<int64_t>(kTransferEncodingChunkedCRLF.size()) - static_cast<int64_t>(oldContentLengthHeaderSize);
 }
 
-constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
-                                                         bool addTrailerHeader) {
+inline char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
+                                                      bool addTrailerHeader) {
   insertPtr = insertPtr + http::CRLF.size();
 
   // If adding Trailer header, write it now
@@ -354,13 +354,13 @@ struct HeaderSearchResult {
 // flatHeaders should end immediately after the last header CRLF.
 // Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
 constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
-  const char* endKey = key.end();
+  const char* endKey = key.data() + key.size();
   const char* headersBeg = flatHeaders.data();
   const char* headersEnd = headersBeg + flatHeaders.size();
 
   while (headersBeg < headersEnd) {
     // Perform an inplace case-insensitive 'starts_with' algorithm
-    const char* begKey = key.begin();
+    const char* begKey = key.data();
     for (; *headersBeg != ':' && begKey != endKey; ++headersBeg, ++begKey) {
       if (tolower(*headersBeg) != tolower(*begKey)) {
         break;
@@ -673,7 +673,7 @@ HttpResponse& HttpResponse::file(File fileObj, std::size_t offset, std::size_t l
   // If file is empty, we emit on purpose Content-Length: 0 and no body.
   // This is to distinguish an empty file response from a response with no body at all.
   // This is valid per HTTP semantics.
-  setBodyHeaders(contentType, std::max(1UL, resolvedLength), BodySetContext::Captured);
+  setBodyHeaders(contentType, std::max(static_cast<std::size_t>(1), resolvedLength), BodySetContext::Captured);
   if (resolvedLength == 0) {
     // we need to reset the '1' char that was written above
     *getContentLengthValuePtr() = '0';
