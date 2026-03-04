@@ -1,9 +1,19 @@
 #include "aeronet/temp-file.hpp"
 
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/system-error-message.hpp"
 
-#ifdef AERONET_POSIX
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#define AERONET_WRITE _write
+#define AERONET_UNLINK _unlink
+#else
+#include <fcntl.h>
 #include <unistd.h>
+#define AERONET_WRITE ::write
+#define AERONET_UNLINK ::unlink
 #endif
 
 #include <array>
@@ -53,12 +63,6 @@ std::mt19937_64& threadRng() {
   }();
   return engine;
 }
-
-// Note: ScopedTempFile should not create directories. The helper used to
-// create a unique directory was removed in favor of having callers provide
-// a ScopedTempDir. File creation is performed by the ScopedTempFile
-// constructor below.
-
 }  // namespace
 
 ScopedTempDir::ScopedTempDir(std::string_view prefix) {
@@ -97,32 +101,39 @@ void ScopedTempDir::cleanup() noexcept {
   }
 }
 
-// Create a file inside the provided ScopedTempDir. The constructor does not
-// create directories; callers must ensure the target directory exists.
 ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view content) {
   _dir = dir.dirPath();
 
-  // Create a unique file inside the provided directory. Use mkstemp on a
-  // template so we get an atomic create+open and avoid races.
-  std::string tmpl = _dir.string() + "/aeronet_temp_XXXXXX";
+  std::uniform_int_distribution<uint64_t> dist;
+  std::string tmpl;
+  NativeHandle fd = -1;
 
-  // NOLINTNEXTLINE(misc-include-cleaner)
-  BaseFd raii(::mkstemp(tmpl.data()));
-  NativeHandle fd = raii.fd();
-  if (fd == -1) {
-    int err = errno;
-    throw std::system_error(err, std::generic_category(), "ScopedTempFile: mkstemp failed");
+  for (int attempt = 0; attempt < 100; ++attempt) {
+    tmpl = _dir.string() + "/aeronet_temp_" + toHex(dist(threadRng()));
+#ifdef _WIN32
+    fd = _open(tmpl.c_str(), _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+    fd = ::open(tmpl.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
+#endif
+    if (fd != -1) {
+      break;
+    }
   }
 
-  // mkstemp returns the path it created in buf.data()
-  _path = std::filesystem::path(tmpl.data());
+  BaseFd raii(fd);
 
-  auto written = ::write(fd, content.data(), content.size());
-  if (std::cmp_not_equal(written, content.size())) {
+  if (fd == -1) {
+    ThrowSystemError("ScopedTempFile: open failed");
+  }
+
+  _path = std::filesystem::path(tmpl);
+
+  const auto written = AERONET_WRITE(fd, content.data(), static_cast<unsigned int>(content.size()));
+  if (written < 0 || static_cast<std::size_t>(written) != content.size()) {
     // best-effort cleanup: try to unlink the file we just created
-    int rc = ::unlink(_path.c_str());
+    const auto rc = AERONET_UNLINK(_path.string().c_str());
     if (rc != 0) {
-      int err = errno;
+      int err = LastSystemError();
       log::error("ScopedTempFile: unlink({}) failed: {} ({})", _path.string(), err, SystemErrorMessage(err));
     }
     throw std::runtime_error("ScopedTempFile: write failed");
@@ -149,8 +160,7 @@ ScopedTempFile& ScopedTempFile::operator=(ScopedTempFile&& other) noexcept {
 }
 
 void ScopedTempFile::cleanup() noexcept {
-  // Remove only the file we created. Do not touch directories — ScopedTempDir
-  // is responsible for removing its directory contents.
+  // Remove only the file we created.
   if (!_path.empty()) {
     std::error_code ec;
     bool removed = std::filesystem::remove(_path, ec);
@@ -162,5 +172,4 @@ void ScopedTempFile::cleanup() noexcept {
     _path.clear();
   }
 }
-
 }  // namespace aeronet::test

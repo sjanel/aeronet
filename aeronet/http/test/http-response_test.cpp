@@ -1507,6 +1507,7 @@ TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
   EXPECT_TRUE(thirdFull.contains("Yo"));
 }
 
+#ifdef AERONET_LINUX
 TEST_F(HttpResponseTest, SendInvalidFile) {
   test::FileSyscallHookGuard guard;
 
@@ -1519,6 +1520,7 @@ TEST_F(HttpResponseTest, SendInvalidFile) {
   auto resp = HttpResponse(http::StatusCodeOK, "OK");
   EXPECT_THROW(resp.file(std::move(file)), std::invalid_argument);
 }
+#endif
 
 // =============================================================================
 // BODY TESTS
