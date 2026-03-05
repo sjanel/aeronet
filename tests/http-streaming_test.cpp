@@ -2,7 +2,6 @@
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
-#include <unistd.h>
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>
 #endif

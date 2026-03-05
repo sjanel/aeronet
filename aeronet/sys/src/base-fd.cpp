@@ -1,5 +1,6 @@
 #include "aeronet/base-fd.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <utility>
 

@@ -1,8 +1,5 @@
 #include "aeronet/tcp-connector.hpp"
 
-#include "aeronet/system-error-message.hpp"
-#include "aeronet/system-error.hpp"
-
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
@@ -10,6 +7,7 @@
 #include <sys/socket.h>
 #endif
 
+#include <cerrno>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -17,6 +15,8 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/system-error-message.hpp"
+#include "aeronet/system-error.hpp"
 
 #ifndef AERONET_LINUX
 #include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec

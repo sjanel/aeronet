@@ -16,11 +16,11 @@
 namespace aeronet {
 
 namespace {
-inline bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
+constexpr bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
 }  // namespace
 
 bool TlsTransport::hasPendingReadData() const noexcept {
-  return _handshakeDone && _ssl && ::SSL_has_pending(_ssl.get());
+  return _handshakeDone && _ssl && (::SSL_has_pending(_ssl.get()) != 0);
 }
 
 ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
@@ -227,7 +227,6 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     ret.bytesProcessed = static_cast<std::size_t>(nbWritten);
     return ret;
   }
-  static_assert(error::kNotSupported == ENOTSUP);
   const int sysErr = LastSystemError();
   if (sysErr == error::kNotSupported) {
     log::debug("MSG_ZEROCOPY not supported on kTLS socket fd # {}", _fd);
