@@ -17,6 +17,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error.hpp"

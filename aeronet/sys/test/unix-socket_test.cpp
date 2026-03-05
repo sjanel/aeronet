@@ -17,12 +17,12 @@
 #include <thread>
 #include <type_traits>
 
-#include "aeronet/system-error.hpp"
-
 #define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/close-native-handle.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/system-error.hpp"
 
 namespace aeronet {
 

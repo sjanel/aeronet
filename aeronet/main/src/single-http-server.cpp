@@ -51,6 +51,7 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"

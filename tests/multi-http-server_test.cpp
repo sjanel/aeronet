@@ -2,8 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include "aeronet/test_server_fixture.hpp"
-
 #ifdef AERONET_POSIX
 #include <poll.h>
 #endif
@@ -31,8 +29,10 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
