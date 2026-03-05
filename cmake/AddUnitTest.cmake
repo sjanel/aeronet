@@ -36,8 +36,13 @@ function(AeronetAddExecutable name)
   AeronetAddProjectExecutable(${name} ${exe_sources})
   set_target_properties(${name} PROPERTIES
     BUILD_RPATH "${runtime_path}")
+  if(exe_libraries)
+    list(REMOVE_DUPLICATES exe_libraries)
+  endif()
   target_link_libraries(${name} PRIVATE ${exe_libraries})
-  list(REMOVE_DUPLICATES exe_include_dirs)
+  if(exe_include_dirs)
+    list(REMOVE_DUPLICATES exe_include_dirs)
+  endif()
   target_include_directories(${name} PRIVATE ${exe_include_dirs} ${exe_directories})
 endfunction()
 
@@ -59,7 +64,7 @@ function(AeronetAddUnitTest name)
 
   if(AERONET_BUILD_TESTS)
     AeronetAddExecutable(${name} ${MY_UNPARSED_ARGUMENTS})
-    target_link_libraries(${name} PRIVATE GTest::gtest GTest::gmock GTest::gmock_main)
+    target_link_libraries(${name} PRIVATE GTest::gmock_main)
 
     target_include_directories(${name} PRIVATE include)
 

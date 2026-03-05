@@ -257,6 +257,12 @@ std::pair<Socket, uint16_t> startEchoServer() {
     BaseFd clientFd(::accept(fd, nullptr, nullptr));
     if (clientFd.fd() == kInvalidHandle) {
       const auto err = LastSystemError();
+      // EBADF / EINVAL: socket was closed before accept (normal shutdown).
+      // ECONNABORTED / WSAECONNABORTED: connection was reset before accept
+      // (can occur on macOS/Windows under load or during test teardown).
+      if (err == error::kConnectionAborted) {
+        return;
+      }
 #ifdef AERONET_POSIX
       if (err == EBADF || err == EINVAL) {
         return;

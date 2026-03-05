@@ -220,19 +220,11 @@ AeronetAddUnitTest(
     aeronet_objects
 )
 
-AeronetAddUnitTest(
-    aeronet-version_test
-    test/aeronet-version_test.cpp
-    LIBRARIES
-    aeronet_objects
-)
-
 if(AERONET_ENABLE_BROTLI)
     AeronetAddUnitTest(
         brotli-encoder-decoder_test
         test/brotli-encoder-decoder_test.cpp
         LIBRARIES
-        aeronet_objects
         aeronet_basic_test_support
     )
 endif()
@@ -330,7 +322,6 @@ AeronetAddUnitTest(
     opentelemetry-integration_test
     test/opentelemetry-integration_test.cpp
     LIBRARIES
-    aeronet_objects
     aeronet_test_support
 )
 
@@ -360,7 +351,6 @@ AeronetAddUnitTest(
     telemetry-config_test
     test/telemetry-config_test.cpp
     LIBRARIES
-    aeronet_objects
     aeronet_basic_test_support
 )
 
@@ -376,7 +366,6 @@ if(AERONET_ENABLE_ZLIB)
         zlib-encoder-decoder_test
         test/zlib-encoder-decoder_test.cpp
         LIBRARIES
-        aeronet_objects
         aeronet_basic_test_support
     )
     
@@ -384,7 +373,6 @@ if(AERONET_ENABLE_ZLIB)
         zlib-stream-raii_test
         test/zlib-stream-raii_test.cpp
         LIBRARIES
-        aeronet_objects
         aeronet_basic_test_support
     )
 endif()
@@ -394,7 +382,6 @@ if(AERONET_ENABLE_ZSTD)
         zstd-encoder-decoder_test
         test/zstd-encoder-decoder_test.cpp
         LIBRARIES
-        aeronet_objects
         aeronet_basic_test_support
     )
 endif()

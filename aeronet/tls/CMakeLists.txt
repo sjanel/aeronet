@@ -15,7 +15,7 @@ find_package(OpenSSL REQUIRED)
 
 # Link against OpenSSL::SSL and OpenSSL::Crypto (imported by find_package) and base tech lib for utils.
 target_link_libraries(aeronet_tls
-    PRIVATE
+    PUBLIC
         OpenSSL::SSL
         OpenSSL::Crypto
     PUBLIC

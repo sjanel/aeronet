@@ -2,6 +2,10 @@
 
 #include <cstdint>
 
+#ifdef AERONET_MACOS
+#include <utility>
+#endif
+
 #include "aeronet/base-fd.hpp"
 #include "aeronet/native-handle.hpp"
 
@@ -17,6 +21,12 @@ class Socket {
   // Construct a socket with the given type and protocol.
   // Throws std::system_error on failure.
   explicit Socket(Type type, int protocol = 0);
+
+#ifdef AERONET_MACOS
+  // Construct a Socket wrapping an existing BaseFd. Used for the shared-listener
+  // model on macOS where multiple servers watch the same listen fd.
+  explicit Socket(BaseFd baseFd) noexcept : _baseFd(std::move(baseFd)) {}
+#endif
 
   [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 

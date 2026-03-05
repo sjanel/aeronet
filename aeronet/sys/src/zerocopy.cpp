@@ -21,7 +21,7 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
   // NOLINTNEXTLINE(misc-include-cleaner)
   if (::setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &optVal, sizeof(optVal)) == -1) {
     // ENOPROTOOPT means the kernel or socket type doesn't support zerocopy
-    if (errno == ENOPROTOOPT || errno == error::kNotSupported) {
+    if (errno == ENOPROTOOPT || error::IsNotSupported(errno)) {
       return ZeroCopyEnableResult::NotSupported;
     }
     return ZeroCopyEnableResult::Error;

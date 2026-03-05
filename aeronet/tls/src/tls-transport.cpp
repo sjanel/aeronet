@@ -86,7 +86,7 @@ ITransport::TransportResult TlsTransport::write(std::string_view data) {
   // When kTLS send is enabled and zerocopy is active, try to bypass SSL_write.
   // The kernel handles encryption directly on the socket, allowing us to use
   // MSG_ZEROCOPY for large payloads (DMA from user pages to NIC).
-  // If zerocopy write fails with an unsupported operation (error::kNotSupported), we
+  // If zerocopy write fails with an unsupported operation (EOPNOTSUPP), we
   // disable zerocopy and fall back to SSL_write for this and future calls.
   if (_zerocopyState.enabled() && data.size() >= _minBytesForZerocopy) {
     ret = writeZerocopy(data);
@@ -228,7 +228,7 @@ ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
     return ret;
   }
   const int sysErr = LastSystemError();
-  if (sysErr == error::kNotSupported) {
+  if (error::IsNotSupported(sysErr)) {
     log::debug("MSG_ZEROCOPY not supported on kTLS socket fd # {}", _fd);
     // Disable zerocopy for this transport and fall through to SSL_write
     disableZerocopy();
