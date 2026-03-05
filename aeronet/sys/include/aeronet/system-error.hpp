@@ -42,6 +42,7 @@ inline constexpr int kNotSupported = WSAEOPNOTSUPP;
 inline constexpr int kTooManyFiles = WSAEMFILE;
 #else
 static_assert(EAGAIN == EWOULDBLOCK, "Check that kWouldBlock is set to the correct value for this platform");
+static_assert(EOPNOTSUPP == ENOTSUP);
 
 inline constexpr int kWouldBlock = EAGAIN;
 inline constexpr int kInterrupted = EINTR;

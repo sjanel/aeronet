@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
-#include <sys/types.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <random>
@@ -27,6 +27,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"

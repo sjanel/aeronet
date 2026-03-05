@@ -4,7 +4,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>  // NOLINT(misc-include-cleaner) used by timeval
-#include <sys/types.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>

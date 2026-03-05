@@ -46,6 +46,8 @@
 #include "aeronet/tracing/tracer.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 

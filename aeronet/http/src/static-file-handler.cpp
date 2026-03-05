@@ -45,6 +45,25 @@
 namespace aeronet {
 namespace {
 
+struct PathString {
+  // On POSIX: just a view into the path's native buffer (no allocation)
+  // On Windows: owns the converted string, exposes a view into it
+#ifdef AERONET_WINDOWS
+  explicit PathString(const std::filesystem::path& p) : owned(p.string()), view(owned) {}
+
+  [[nodiscard]] const char* c_str() const { return owned.c_str(); }
+
+  std::string owned;
+#else
+  explicit PathString(const std::filesystem::path& path) : p(path), view(path.native()) {}
+
+  [[nodiscard]] const char* c_str() const { return p.c_str(); }
+
+  const std::filesystem::path& p;
+#endif
+  std::string_view view;
+};
+
 // Use a constexpr lookup table indexed by unsigned char for a fast, branchless test.
 // This avoids multiple comparisons and gives the compiler a chance to emit a single
 // table-lookup instruction. We use unsigned char to index the array safely.
@@ -210,7 +229,7 @@ struct DirectoryListingResult {
   std::error_code ec;
   std::filesystem::directory_iterator it(directory, ec);
   if (ec) {
-    log::error("Failed to open directory for listing '{}': {}", directory.c_str(), ec.message());
+    log::error("Failed to open directory for listing '{}': {}", PathString(directory).c_str(), ec.message());
     return result;
   }
 
@@ -228,7 +247,7 @@ struct DirectoryListingResult {
     std::filesystem::directory_entry current = *it;
     it.increment(ec);
     if (ec) {
-      log::error("Failed to advance directory iterator for '{}': {}", directory.c_str(), ec.message());
+      log::error("Failed to advance directory iterator for '{}': {}", PathString(directory).c_str(), ec.message());
     }
 
     std::string name = current.path().filename().string();
@@ -241,14 +260,16 @@ struct DirectoryListingResult {
     std::error_code stepEc;
     const auto entryStatus = current.symlink_status(stepEc);
     if (stepEc) {
-      log::error("Failed to get status for directory entry '{}': {}", current.path().c_str(), stepEc.message());
+      log::error("Failed to get status for directory entry '{}': {}", PathString(current.path()).c_str(),
+                 stepEc.message());
     } else {
       if (std::filesystem::is_directory(entryStatus)) {
         info.isDirectory = true;
       } else {
         const auto fileSize = current.file_size(stepEc);
         if (stepEc) {
-          log::error("Failed to get size for directory entry '{}': {}", current.path().c_str(), stepEc.message());
+          log::error("Failed to get size for directory entry '{}': {}", PathString(current.path()).c_str(),
+                     stepEc.message());
         } else {
           info.fileSizeKnown = true;
           info.sizeBytes = fileSize;
@@ -258,7 +279,7 @@ struct DirectoryListingResult {
 
     const auto writeTime = current.last_write_time(stepEc);
     if (stepEc) {
-      log::error("Failed to get last write time for directory entry '{}': {}", current.path().c_str(),
+      log::error("Failed to get last write time for directory entry '{}': {}", PathString(current.path()).c_str(),
                  stepEc.message());
     } else {
       info.lastModified = std::chrono::clock_cast<SysClock>(writeTime);
@@ -781,25 +802,6 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     }
     return resp;
   }
-
-  struct PathString {
-    // On POSIX: just a view into the path's native buffer (no allocation)
-    // On Windows: owns the converted string, exposes a view into it
-#ifdef AERONET_WINDOWS
-    explicit PathString(const std::filesystem::path& p) : owned(p.string()), view(owned) {}
-
-    [[nodiscard]] const char* c_str() const { return owned.c_str(); }
-
-    std::string owned;
-#else
-    explicit PathString(const std::filesystem::path& path) : p(path), view(path.native()) {}
-
-    [[nodiscard]] const char* c_str() const { return p.c_str(); }
-
-    const std::filesystem::path& p;
-#endif
-    std::string_view view;
-  };
 
   PathString pathString(targetPath);
 

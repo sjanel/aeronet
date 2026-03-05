@@ -1,7 +1,5 @@
 #include "aeronet/transport.hpp"
 
-#include "aeronet/system-error.hpp"
-
 #ifdef AERONET_POSIX
 #include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
 #include <unistd.h>
@@ -10,10 +8,12 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 

@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 #include <sys/timerfd.h>
-#include <sys/types.h>
 
 #include <cerrno>
 #include <chrono>

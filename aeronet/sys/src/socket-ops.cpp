@@ -1,6 +1,7 @@
 #include "aeronet/socket-ops.hpp"
 
-#include "aeronet/system-error.hpp"
+#include <cstddef>
+#include <cstdint>
 
 #ifdef AERONET_WINDOWS
 #include <io.h>
@@ -10,17 +11,14 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
-#endif
-
-#ifdef AERONET_POSIX
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <cassert>
 #endif
 
-#include <cstddef>
-
 #include "aeronet/native-handle.hpp"
+#include "aeronet/system-error.hpp"
 
 namespace aeronet {
 

@@ -1,6 +1,7 @@
 #include "aeronet/dogstatsd.hpp"
 
 #include <cassert>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <concepts>
