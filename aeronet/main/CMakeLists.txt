@@ -61,3 +61,15 @@ AeronetAddUnitTest(
     aeronet_http
     aeronet_sys
 )
+
+AeronetAddUnitTest(
+    version_test
+    test/version_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+if(AERONET_BUILD_TESTS AND AERONET_ENABLE_OPENSSL)
+  target_link_libraries(connection-storage_test PUBLIC aeronet_tls)
+  target_link_libraries(version_test PUBLIC aeronet_tls)
+endif()

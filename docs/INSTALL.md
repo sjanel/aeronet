@@ -2,13 +2,13 @@
 
 This document centralizes how to build, install, and consume **aeronet**.
 
-> Linux‑only C++23 HTTP/1.1 server library (optional TLS). Tested with Clang 21 / GCC 13.
+> Cross-platform C++23 HTTP/1.1 server library (optional TLS). Tested on Linux and macOS.
 
 ## Toolchain & Platform
 
 | Component | Minimum / Tested | Notes |
 | --------- | ---------------- | ----- |
-| OS | Linux (x86_64) | epoll required; no Windows/macOS support |
+| OS | Linux (x86_64, aarch64), macOS (arm64, x86_64) | Linux is primary (epoll); macOS uses kqueue |
 | CMake | 3.28+ | Enforced at configure time |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
 | Clang | 21.x | Earlier might work, not guaranteed |
@@ -17,6 +17,8 @@ This document centralizes how to build, install, and consume **aeronet**.
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
 | glaze (opt) | 7.0.2+ | JSON serialization support (`AERONET_ENABLE_GLAZE`) |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
+
+> **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
 
 ## CMake Options
 
@@ -84,6 +86,15 @@ Shared libraries (HTTP only):
 ```bash
 cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_SHARED=ON
 cmake --build build-shared -j
+```
+
+### macOS
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DAERONET_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
 ## Install

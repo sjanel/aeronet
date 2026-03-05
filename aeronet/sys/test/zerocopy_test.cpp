@@ -130,7 +130,7 @@ TEST(ZeroCopyTest, EnableZerocopyReturnsNotSupportedOnEopnotsupp) {
   BaseFd guard(fd);
 
   // Simulate kernel/socket type not supporting zerocopy
-  test::PushSetsockoptAction({-1, error::kNotSupported});
+  test::PushSetsockoptAction({-1, EOPNOTSUPP});
 
   const auto result = EnableZeroCopy(fd);
   EXPECT_EQ(result, ZeroCopyEnableResult::NotSupported);

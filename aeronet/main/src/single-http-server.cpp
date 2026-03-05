@@ -1583,7 +1583,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionMa
       return CloseStatus::Keep;
     }
 
-    std::size_t injectSize = std::min(state.inBuffer.size(), static_cast<std::size_t>(win));
+    const auto injectSize = std::min(state.inBuffer.size(), static_cast<RawChars::size_type>(win));
 
     // Inject data as HTTP/2 DATA frame(s) on the tunnel stream.
     const auto data = std::as_bytes(std::span<const char>(state.inBuffer.data(), injectSize));

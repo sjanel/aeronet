@@ -14,6 +14,12 @@
 #include <system_error>
 #include <type_traits>
 
+#ifdef AERONET_MACOS
+#include <cstdlib>
+#include <cstring>
+#include <system_error>
+#endif
+
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
@@ -60,7 +66,22 @@ double ParseQ(std::string_view token) {
       double qualityValue = 0.0;
       const char* begin = val.data();
       const char* end = begin + val.size();
+      // std::from_chars for floating-point is unavailable on Apple platforms
+      // regardless of SDK/deployment target version, use strtod instead
+#if AERONET_MACOS
+      char buf[64];
+      const auto len = std::min(val.size(), static_cast<std::string_view::size_type>(sizeof(buf) - 1));
+      std::memcpy(buf, begin, len);
+      buf[len] = '\0';
+      char* endPtr = nullptr;
+      qualityValue = std::strtod(buf, &endPtr);
+      struct {
+        const char* ptr;
+        std::errc ec;
+      } fcRes{begin + (endPtr - buf), (endPtr != buf) ? std::errc{} : std::errc::invalid_argument};
+#else
       auto fcRes = std::from_chars(begin, end, qualityValue);
+#endif
       if (fcRes.ec != std::errc() || fcRes.ptr != end) {
         return 0.0;  // invalid format
       }

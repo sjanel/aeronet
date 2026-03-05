@@ -493,6 +493,75 @@ jobs:
           JOBS=$(( ((NUM_PROC + 1) / 2) ))
           scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md
 
+  macos:
+    name: macOS
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    runs-on: macos-26
+
+    env:
+      CMAKE_BUILD_TYPE: ${{ matrix.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          brew install ninja
+
+      - name: Set compiler environment
+        run: |
+          GCC_PREFIX=$(brew --prefix gcc@15)
+          echo "CC=$GCC_PREFIX/bin/gcc-15" >> $GITHUB_ENV
+          echo "CXX=$GCC_PREFIX/bin/g++-15" >> $GITHUB_ENV
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> $GITHUB_ENV
+
+      - name: Show compiler version
+        run: |
+          $CC --version
+          $CXX --version
+
+      - name: Configure (CMake)
+        run: |
+          ./scripts/retry.sh cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_BUILD_EXAMPLES=ON \
+            -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -DAERONET_ENABLE_GLAZE=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_WEBSOCKET=ON
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+
+      - name: Run unit tests
+        run: |
+          NUM_PROC=$(sysctl -n hw.ncpu)
+          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
+          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+
+      - name: Summary
+        run: |
+          echo "Build type: ${CMAKE_BUILD_TYPE}" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
+          ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
+
   alpine-musl-debug:
     name: Alpine (musl) Debug build
     runs-on: ubuntu-latest

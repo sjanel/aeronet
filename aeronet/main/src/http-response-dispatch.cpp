@@ -339,9 +339,9 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
       if (!state.waitingWritable) {
         enableWritableInterest(cnxIt);
       }
-      if (state.fileSend.remaining == 0) {
-        state.fileSend.active = false;
-      }
+      // Do NOT set fileSend.active = false here: tunnelOrFileBuffer is still non-empty.
+      // Clearing active would cause flushOutbound to disable writable interest before the
+      // remaining TLS bytes are actually written, producing truncated responses.
       return true;
     }
 
@@ -359,9 +359,12 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
     state.fileSend.headersPending = false;
   }
 
-  if (state.fileSend.remaining == 0) {
+  // Only treat the send as fully complete when both the file is exhausted AND any
+  // user-space TLS staging buffer has been drained.  Clearing tunnelOrFileBuffer here
+  // while data is still pending would drop the last chunk of the response and produce
+  // truncated bodies on macOS / any platform without kTLS.
+  if (state.fileSend.remaining == 0 && state.tunnelOrFileBuffer.empty()) {
     state.fileSend.active = false;
-    state.tunnelOrFileBuffer.clear();
     return;
   }
 

@@ -1,9 +1,10 @@
+#include "aeronet/version.hpp"
+
 #include <gtest/gtest.h>
 
 #include <string>
 
 #include "aeronet/features.hpp"
-#include "aeronet/version.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/decode.h>

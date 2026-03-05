@@ -18,6 +18,19 @@ class BaseFd {
  public:
   static constexpr NativeHandle kClosedFd = kInvalidHandle;
 
+#ifdef AERONET_MACOS
+  /// Create a non-owning wrapper around an existing fd.
+  /// The returned BaseFd will NOT close the fd on destruction or move-assignment.
+  /// Used for the macOS shared-listener model where multiple event loops watch
+  /// the same listen fd but only the original owner closes it.
+  static BaseFd Borrow(NativeHandle fd) noexcept {
+    BaseFd result;
+    result._fd = fd;
+    result._owns = false;
+    return result;
+  }
+#endif
+
 #ifdef AERONET_WINDOWS
   /// Discriminates between Winsock SOCKETs and generic Win32 HANDLEs.
   enum class HandleKind : uint8_t { Socket, Win32Handle };
@@ -30,6 +43,10 @@ class BaseFd {
   BaseFd(const BaseFd& other) = delete;
   BaseFd(BaseFd&& other) noexcept
       : _fd(other.release())
+#ifdef AERONET_MACOS
+        ,
+        _owns(other._owns)
+#endif
 #ifdef AERONET_WINDOWS
         ,
         _kind(other._kind)
@@ -58,11 +75,14 @@ class BaseFd {
   // Idempotent: multiple calls after first successful/failed close are no-ops.
   void close() noexcept;
 
-  // Equality comparison - simply compare the underlying fd integer.
-  bool operator==(const BaseFd&) const noexcept = default;
+  // Equality comparison - compare only the underlying fd, not ownership semantics.
+  bool operator==(const BaseFd& other) const noexcept { return _fd == other._fd; }
 
  private:
   NativeHandle _fd;
+#ifdef AERONET_MACOS
+  bool _owns{true};
+#endif
 #ifdef AERONET_WINDOWS
   HandleKind _kind = HandleKind::Socket;
 #endif
