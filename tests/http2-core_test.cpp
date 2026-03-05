@@ -6,9 +6,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <iterator>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -28,6 +30,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
@@ -1537,16 +1540,16 @@ TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
   auto res3 = client.waitAndGetResponse(stream3, std::chrono::milliseconds{1000});
 
   ASSERT_TRUE(res1.has_value());
-  EXPECT_EQ(res1->statusCode, 200);
-  EXPECT_TRUE(res1->body.find("ok=1") != std::string::npos);
+  EXPECT_EQ(res1.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_TRUE(res1.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
 
   ASSERT_TRUE(res2.has_value());
-  EXPECT_EQ(res2->statusCode, 200);
-  EXPECT_TRUE(res2->body.find("ok=1") != std::string::npos);
+  EXPECT_EQ(res2.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_TRUE(res2.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
 
   ASSERT_TRUE(res3.has_value());
-  EXPECT_EQ(res3->statusCode, 200);
-  EXPECT_TRUE(res3->body.find("ok=1") != std::string::npos);
+  EXPECT_EQ(res3.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_TRUE(res3.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
 }
 
 // Test deferWork(): exception (std::exception) thrown in work function

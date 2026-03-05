@@ -15,7 +15,6 @@
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_POSIX
-#include <sys/types.h>
 #include <unistd.h>
 #endif
 

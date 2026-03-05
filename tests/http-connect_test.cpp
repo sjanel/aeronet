@@ -12,6 +12,7 @@
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"

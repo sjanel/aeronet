@@ -1,11 +1,8 @@
 #include "aeronet/connection-state.hpp"
 
-#include "aeronet/system-error-message.hpp"
-
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -25,6 +22,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/sendfile.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"

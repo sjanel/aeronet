@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
 
-#include "aeronet/system-error.hpp"
-
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
 #include <sys/un.h>
