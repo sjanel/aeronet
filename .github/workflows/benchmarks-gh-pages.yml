@@ -302,6 +302,15 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      - name: Upload H2 badge (h2c high-connections only)
+        if: steps.filter.outputs.skip != 'true' && matrix.protocol == 'h2c' && matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v6
+        with:
+          name: h2-bench-badge-h2c
+          path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
+          retention-days: 3
+          if-no-files-found: ignore
+
   # ------------------------------------------------------------------ #
   # Publish: aggregate all benchmark results and deploy to gh-pages.    #
   # ------------------------------------------------------------------ #
@@ -379,9 +388,12 @@ jobs:
             fi
           done
 
-          # Copy H2 badge if available
+          # Copy H2 badges if available
           if [[ -f /tmp/bench-artifacts/h2-bench-badge/benchmark_badge.json ]]; then
             cp /tmp/bench-artifacts/h2-bench-badge/benchmark_badge.json /tmp/site/benchmarks/h2/benchmark_badge.json
+          fi
+          if [[ -f /tmp/bench-artifacts/h2-bench-badge-h2c/benchmark_badge.json ]]; then
+            cp /tmp/bench-artifacts/h2-bench-badge-h2c/benchmark_badge.json /tmp/site/benchmarks/h2/benchmark_badge_h2c.json
           fi
 
       - name: Publish site snapshot to gh-pages

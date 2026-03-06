@@ -4,6 +4,11 @@
 
 #pragma once
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfree-nonheap-object"
+#endif
+
 // NOLINTBEGIN
 // clang-format off
 
@@ -95,6 +100,11 @@ constexpr int sherwood_v8_constants<T>::num_jump_distances;
 template<typename T>
 constexpr size_t sherwood_v8_constants<T>::jump_distances[num_jump_distances];
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4624) // 'ska::detailv8::sherwood_v8_block<T,BlockSize>': destructor was implicitly defined as deleted
+#endif
+
 template<typename T, uint8_t BlockSize>
 struct sherwood_v8_block
 {
@@ -131,6 +141,10 @@ struct sherwood_v8_block
         std::fill(std::begin(control_bytes), std::end(control_bytes), value);
     }
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 template<typename T, typename FindKey, typename ArgumentHash, typename Hasher, typename ArgumentEqual, typename Equal, typename ArgumentAlloc, typename ByteAlloc, uint8_t BlockSize>
 class sherwood_v8_table : private ByteAlloc, private Hasher, private Equal
@@ -1445,4 +1459,8 @@ public:
 } // end namespace ska
 
 // NOLINTEND
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 // clang-format off

@@ -61,6 +61,7 @@ extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-res
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
 #endif
 
+#ifdef AERONET_POSIX
 namespace aeronet::test {
 
 // Allocation failure injection utilities used by sys tests. Tests can call
@@ -190,6 +191,40 @@ Fn ResolveNext(const char* name) {
 }
 
 }  // namespace aeronet::test
+
+#else  // AERONET_POSIX — no-op stubs for Windows
+// Malloc/realloc failure injection requires POSIX dlsym + __atomic builtins
+// and cannot be ported to MSVC. Tests guard their bodies with
+// AERONET_WANT_MALLOC_OVERRIDES (compile-time) or GTEST_SKIP (runtime);
+// stubs exist only so those translation units compile on Windows.
+namespace aeronet::test {
+
+inline int g_malloc_failure_counter = 0;
+inline int g_realloc_failure_counter = 0;
+inline int g_malloc_fail_after = 0;
+inline int g_realloc_fail_after = 0;
+
+inline void FailNextMalloc([[maybe_unused]] int count = 1) {}
+inline void FailNextMalloc([[maybe_unused]] int expectedSuccessfulAllocs,
+                           [[maybe_unused]] int expectedUnsuccessfulAllocs) {}
+inline void FailAllMallocs() {}
+inline void ResetToSysMalloc() {}
+inline void FailNextRealloc([[maybe_unused]] int count = 1) {}
+inline void FailNextRealloc([[maybe_unused]] int expectedSuccessfulAllocs,
+                            [[maybe_unused]] int expectedUnsuccessfulAllocs) {}
+inline void FailAllReallocs() {}
+inline void ResetToSysRealloc() {}
+[[nodiscard]] inline bool ShouldFailMalloc() { return false; }
+[[nodiscard]] inline bool ShouldFailRealloc() { return false; }
+
+template <typename Fn>
+Fn ResolveNext(const char* /*name*/) {
+  std::abort();  // Never called: AERONET_WANT_MALLOC_OVERRIDES is 0 on Windows.
+}
+
+}  // namespace aeronet::test
+
+#endif  // AERONET_POSIX
 
 // Disable overriding malloc/realloc for:
 // 1. Clang builds instrumented with AddressSanitizer - Clang's ASAN runtime
@@ -621,6 +656,7 @@ inline void PushEpollCreateAction(EpollCreateAction action) { g_epoll_create_act
 inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.push(std::move(action)); }
 #endif  // AERONET_WANT_SYS_OVERRIDES
 
+#ifdef AERONET_POSIX
 using SocketFn = int (*)(int, int, int);
 using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
 using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
@@ -708,6 +744,7 @@ inline SendFn ResolveRealSend() {
   fn = aeronet::test::ResolveNext<SendFn>("send");
   return fn;
 }
+#endif  // AERONET_POSIX
 
 #if AERONET_WANT_SYS_OVERRIDES
 inline EpollCtlFn ResolveRealEpollCtl() {
@@ -808,6 +845,7 @@ inline ActionQueue<std::pair<int, int>> g_connect_actions;
 
 inline void PushConnectAction(std::pair<int, int> action) { g_connect_actions.push(action); }
 
+#ifdef AERONET_POSIX
 using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
 
 inline ConnectFn ResolveRealConnect() {
@@ -818,6 +856,7 @@ inline ConnectFn ResolveRealConnect() {
   fn = aeronet::test::ResolveNext<ConnectFn>("connect");
   return fn;
 }
+#endif  // AERONET_POSIX
 
 inline void ResetIoActions() {
   g_read_actions.reset();
@@ -831,14 +870,17 @@ inline void SetWriteActions(int fd, std::initializer_list<IoAction> actions) {
 inline void PushReadAction(int fd, IoAction action) { g_read_actions.push(fd, action); }
 inline void PushWriteAction(int fd, IoAction action) { g_write_actions.push(fd, action); }
 
+#ifdef AERONET_POSIX
 using ReadFn = ssize_t (*)(int, void*, size_t);
 using WriteFn = ssize_t (*)(int, const void*, size_t);
 using WritevFn = ssize_t (*)(int, const struct iovec*, int);
 using SendmsgFn = ssize_t (*)(int, const struct msghdr*, int);
+#endif  // AERONET_POSIX
 
 inline KeyedActionQueue<int, IoAction> g_writev_actions;
 inline KeyedActionQueue<int, IoAction> g_sendmsg_actions;
 
+#ifdef AERONET_POSIX
 inline ReadFn ResolveRealRead() {
   static ReadFn fn = nullptr;
   if (fn != nullptr) {
@@ -884,6 +926,7 @@ inline void SetSendmsgActions(int fd, std::initializer_list<IoAction> actions) {
 }
 
 inline void PushSendmsgAction(int fd, IoAction action) { g_sendmsg_actions.push(fd, action); }
+#endif  // AERONET_POSIX
 
 }  // namespace aeronet::test
 
