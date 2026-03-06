@@ -4,6 +4,8 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+- `aeronet` is now available for **macOS** with a kqueue-based event loop backend.
+
 ### Breaking changes
 
 - `HttpServerConfig::tcpNoDelay` becomes an enum with `Auto` mode added instead of a simple boolean. The default value is `Auto` to activate `TCP_NODELAY` for HTTP/2 with TLS connections that benefit the most from it, while keeping it disabled for other connections. `HttpServerConfig::withTcpNoDelay()` stays unchanged.

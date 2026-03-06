@@ -17,6 +17,15 @@
 #endif
 #include "aeronet/router.hpp"
 
+#ifdef AERONET_WINDOWS
+// Windows compatibility: <winnt.h> (pulled in by GoogleTest on Windows) defines DELETE as
+// a security-access-mask macro (0x00010000L) after http-method.hpp has already #undef'd it once.
+// Undefine it again here so that http::Method::DELETE refers to the enum member, not the macro.
+#ifdef DELETE
+#undef DELETE
+#endif
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
 #endif
