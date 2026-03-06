@@ -169,7 +169,10 @@ class SingleHttpServer {
   // A SingleHttpServer is copyable - but only from a non-running instance.
   // The copy will duplicate the configuration and router state, but not
   // any active connections or runtime state.
-  SingleHttpServer(const SingleHttpServer& other);
+  // sharedListenFd is used by MultiHttpServer on macOS where SO_REUSEPORT does not load-balance loopback traffic.
+  // The caller retains ownership of the socket; this instance registers EVFILT_READ on it
+  // in its own kqueue, enabling thundering-herd accept() distribution.
+  SingleHttpServer(const SingleHttpServer& other, NativeHandle sharedListenFd = kInvalidHandle);
 
   // Copy-assignment mirrors the copy-constructor semantics: the source must be fully stopped while the
   // destination is stopped (stop() is invoked internally before applying the copy). Attempts to copy-assign
@@ -406,7 +409,7 @@ class SingleHttpServer {
 
   using ConnectionMapIt = internal::ConnectionStorage::ConnectionMapIt;
 
-  void initListener();
+  void initListener(NativeHandle listenFd = kInvalidHandle);
   void prepareRun();
 
   void eventLoop();
@@ -600,6 +603,13 @@ class SingleHttpServer {
 
   // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
+
+#ifdef AERONET_MACOS
+  // When true (default), this instance owns the listen socket and will close it
+  // on stop/destruction. When false, the socket is borrowed from another instance
+  // (shared-fd model on macOS) and must not be closed by this instance.
+  bool _ownsListenSocket{true};
+#endif
 
 #ifdef AERONET_ENABLE_OPENSSL
   internal::TlsRuntimeState _tls;

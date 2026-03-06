@@ -20,6 +20,9 @@ BaseFd& BaseFd::operator=(BaseFd&& other) noexcept {
   if (this != &other) {
     close();
     _fd = other.release();
+#ifdef AERONET_MACOS
+    _owns = other._owns;
+#endif
 #ifdef AERONET_WINDOWS
     _kind = other._kind;
 #endif
@@ -29,6 +32,14 @@ BaseFd& BaseFd::operator=(BaseFd&& other) noexcept {
 
 void BaseFd::close() noexcept {
   if (_fd != kClosedFd) {
+#ifdef AERONET_MACOS
+    if (!_owns) {
+      // Non-owning (borrowed) fd — do not close, just forget.
+      log::debug("fd # {} released (borrowed, not closed)", static_cast<intptr_t>(_fd));
+      _fd = kClosedFd;
+      return;
+    }
+#endif
     while (true) {
 #ifdef AERONET_WINDOWS
       if (_kind == HandleKind::Win32Handle) {
