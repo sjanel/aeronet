@@ -284,7 +284,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   while (state.fileSend.remaining > 0 || !state.tunnelOrFileBuffer.empty()) {
     // If no pending buffered file data, attempt to read into the buffer (TLS path).
     if (state.tunnelOrFileBuffer.empty() && state.fileSend.remaining > 0) {
-      auto fr = state.transportFile(sv[0], /*tlsFlow=*/true);
+      const auto fr = state.transportFile(sv[0], /*tlsFlow=*/true);
       EXPECT_NE(fr.code, ConnectionState::FileResult::Code::Error);
       // If WouldBlock is returned (very unlikely for pread), just continue and retry.
       if (fr.code == ConnectionState::FileResult::Code::WouldBlock) {
@@ -300,7 +300,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
         // Read the bytes from the peer socket to verify
         std::string got;
         got.resize(written);
-        auto rd = read(sv[1], got.data(), written);
+        const auto rd = read(sv[1], got.data(), written);
         ASSERT_GE(rd, 0);
         EXPECT_EQ(static_cast<decltype(written)>(rd), written);
         totalRead += static_cast<std::size_t>(rd);
@@ -332,7 +332,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
   state.fileSend.remaining = 0;
   state.fileSend.active = true;
 
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
   EXPECT_TRUE(res.enableWritable);
 }
@@ -347,13 +347,14 @@ TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string());
   File file(tmp.filePath().string());
+
   state.fileSend.file = std::move(file);
   state.fileSend.offset = 0;
   state.fileSend.remaining = 0;
   state.fileSend.active = true;
 
   // Call transportFile in TLS mode which uses pread into tunnelOrFileBuffer
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
 
   EXPECT_EQ(res.bytesDone, 0U);
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
@@ -368,14 +369,14 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
 
   // Grow buffers to have extra capacity
   state.inBuffer.reserve(2048);
-  state.inBuffer.append(std::string_view("hello world"));
+  state.inBuffer.append("hello world");
 
   state.bodyAndTrailersBuffer.reserve(1025);
-  state.bodyAndTrailersBuffer.append(std::string_view("chunked body"));
+  state.bodyAndTrailersBuffer.append("chunked body");
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   state.asyncState.headBuffer.reserve(4096);
-  state.asyncState.headBuffer.append(std::string_view("GET / HTTP/1.1\r\nHost: a\r\n\r\n"));
+  state.asyncState.headBuffer.append("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
 #endif
 
   // Sanity: capacities should be larger than sizes prior to shrink
