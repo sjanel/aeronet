@@ -38,11 +38,20 @@ inline constexpr int kConnectionReset = WSAECONNRESET;
 inline constexpr int kConnectionAborted = WSAECONNABORTED;
 inline constexpr int kBrokenPipe = WSAECONNRESET;  // Windows has no EPIPE for sockets
 inline constexpr int kNoBufferSpace = WSAENOBUFS;
-inline constexpr int kNotSupported = WSAEOPNOTSUPP;
 inline constexpr int kTooManyFiles = WSAEMFILE;
+
+constexpr bool IsNotSupported(int err) { return err == WSAEOPNOTSUPP; }
+
 #else
 static_assert(EAGAIN == EWOULDBLOCK, "Check that kWouldBlock is set to the correct value for this platform");
-static_assert(EOPNOTSUPP == ENOTSUP);
+
+constexpr bool IsNotSupported(int err) {
+  if constexpr (EOPNOTSUPP == ENOTSUP) {
+    return err == EOPNOTSUPP;
+  } else {
+    return err == EOPNOTSUPP || err == ENOTSUP;
+  }
+}
 
 inline constexpr int kWouldBlock = EAGAIN;
 inline constexpr int kInterrupted = EINTR;
@@ -52,7 +61,6 @@ inline constexpr int kConnectionReset = ECONNRESET;
 inline constexpr int kConnectionAborted = ECONNABORTED;
 inline constexpr int kBrokenPipe = EPIPE;
 inline constexpr int kNoBufferSpace = ENOBUFS;
-inline constexpr int kNotSupported = EOPNOTSUPP;
 inline constexpr int kTooManyFiles = EMFILE;
 #endif
 }  // namespace error

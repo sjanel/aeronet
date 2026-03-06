@@ -98,7 +98,7 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
   initListener();
 }
 
-SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
+SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle sharedListenFd)
     : _callbacks([&other] {
         // Must validate *before* moving any members.
         // Otherwise we can move out (and destroy) connection storage while the event-loop
@@ -112,8 +112,7 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
       _config(other._config),
       _compressionState(_config.compression),
       // do not copy the decompression state, we just use our own.
-      _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(_config.pollInterval),
+      // do not initialize listenSocket and eventLoop, they will be initialized in initListener.
       _router(other._router),
       _telemetry(_config.telemetry) {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -121,7 +120,7 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other)
   _tls.sharedTicketKeyStore = other._tls.sharedTicketKeyStore;
 #endif
 
-  initListener();
+  initListener(sharedListenFd);
 }
 
 SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
@@ -223,7 +222,7 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 //        - Practically infallible unless programming error (EINVAL) or extreme memory pressure (ENOMEM).
 //          Mandatory to allow rapid restart after TIME_WAIT collisions.
 //   3. setsockopt(SO_REUSEPORT) (optional best-effort)
-//        - Enabled only if cfg.reusePort. May fail on older kernels (error::kNotSupported/EINVAL) -> logged as warning
+//        - Enabled only if cfg.reusePort. May fail on older kernels (EOPNOTSUPP/EINVAL) -> logged as warning
 //        only,
 //          not fatal. This provides horizontal scaling (multi-reactor) when supported.
 //   4. bind()
@@ -252,14 +251,24 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 //   - In a nominal environment using an ephemeral port (cfg.port == 0), the probability of an exception is ~0 unless
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
-void SingleHttpServer::initListener() {
+void SingleHttpServer::initListener(NativeHandle listenFd) {
   if (_config.nbThreads > 1U) {
     throw std::invalid_argument("SingleHttpServer cannot be configured with nbThreads > 1");
   }
   _config.validate();
 
   if (!_listenSocket) {
-    _listenSocket = Socket(Socket::Type::StreamNonBlock);
+#ifdef AERONET_MACOS
+    if (listenFd != kInvalidHandle) {
+      _listenSocket = Socket(BaseFd::Borrow(listenFd));
+      _ownsListenSocket = false;
+    } else {
+      _ownsListenSocket = true;
+#endif
+      _listenSocket = Socket(Socket::Type::StreamNonBlock);
+#ifdef AERONET_MACOS
+    }
+#endif
     _eventLoop = EventLoop(_config.pollInterval);
   }
 
@@ -270,9 +279,16 @@ void SingleHttpServer::initListener() {
   }
 #endif
 
-  _listenSocket.bindAndListen(_config.reusePort, _config.port);
+#ifdef AERONET_MACOS
+  if (listenFd == kInvalidHandle) {
+#endif
+    _listenSocket.bindAndListen(_config.reusePort, _config.port);
+    listenFd = _listenSocket.fd();
+#ifdef AERONET_MACOS
+  }
+#endif
 
-  _eventLoop.addOrThrow(EventLoop::EventFd{_listenSocket.fd(), EventIn});
+  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   updateMaintenanceTimer();

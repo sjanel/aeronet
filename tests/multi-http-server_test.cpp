@@ -165,9 +165,9 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
   // Because of hashing, both could come from same server but with two sequential connects
   // we expect distribution eventually, so tolerate the rare case of both identical by allowing either pattern
 #ifdef AERONET_MACOS
-  // macOS kernel often routes all SO_REUSEPORT loopback traffic to the last bound socket.
-  // We just ensure at least one server served the requests.
-  // TODO: Make MacOS load balance evenly with kqueue.
+  // macOS kernel routes all SO_REUSEPORT loopback traffic to the most recently bound socket.
+  // This is a known FreeBSD-inherited kernel limitation. The recommended fix is to use
+  // MultiHttpServer which uses shared-fd accept() distribution on macOS instead.
   EXPECT_TRUE(hasA || hasB);
 #else
   EXPECT_TRUE(hasA);

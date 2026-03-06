@@ -76,7 +76,6 @@ AeronetAddUnitTest(
     http-headers-view_test
     test/http-headers-view_test.cpp
     LIBRARIES
-    aeronet_http
     aeronet_basic_test_support
 )
 
