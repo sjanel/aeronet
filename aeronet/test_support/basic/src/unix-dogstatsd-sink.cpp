@@ -74,8 +74,12 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
   }
   pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h should be the correct header
   pfd.fd = _fd.fd();
-  pfd.events = POLLIN;                           // NOLINT(misc-include-cleaner) poll.h should be the correct header
+  pfd.events = POLLIN;  // NOLINT(misc-include-cleaner) poll.h should be the correct header
+#ifdef AERONET_WINDOWS
+  const int ready = ::WSAPoll(&pfd, 1, timeoutMs);
+#else
   const int ready = ::poll(&pfd, 1, timeoutMs);  // NOLINT(misc-include-cleaner) poll.h should be the correct header
+#endif
   if (ready <= 0 || (pfd.revents & POLLIN) == 0) {
     return {};
   }
