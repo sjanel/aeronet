@@ -464,7 +464,7 @@ class SingleHttpServer {
   // Returns true if the caller should return early because the buffer is still non-empty.
   bool flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt);
 
-  ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
+  void closeConnection(ConnectionMapIt cnxIt);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is

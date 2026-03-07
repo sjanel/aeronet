@@ -43,6 +43,9 @@ class CharReplacer {
 }  // namespace
 
 ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family) {
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
   addrinfo* res = nullptr;
 
   int gai;

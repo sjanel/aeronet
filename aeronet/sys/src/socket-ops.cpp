@@ -22,6 +22,19 @@
 
 namespace aeronet {
 
+#ifdef AERONET_WINDOWS
+void EnsureWinsockInitialized() {
+  struct WinsockInit {
+    WinsockInit() {
+      WSADATA wsaData;
+      ::WSAStartup(MAKEWORD(2, 2), &wsaData);
+    }
+    ~WinsockInit() { ::WSACleanup(); }
+  };
+  static WinsockInit instance;
+}
+#endif
+
 bool SetNonBlocking(NativeHandle fd) noexcept {
 #ifdef AERONET_WINDOWS
   u_long mode = 1;

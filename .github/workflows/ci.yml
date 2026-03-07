@@ -562,6 +562,58 @@ jobs:
           echo "Tests executed:" >> $GITHUB_STEP_SUMMARY
           ctest --test-dir build -N | sed 's/^/  /' >> $GITHUB_STEP_SUMMARY
 
+  windows:
+    name: Windows
+    strategy:
+      fail-fast: false
+      matrix:
+        build: [Debug, Release]
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure (CMake)
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=${{ matrix.build }} `
+            -DAERONET_BUILD_TESTS=ON `
+            -DAERONET_BUILD_EXAMPLES=OFF `
+            -DAERONET_BUILD_BENCHMARKS=OFF `
+            -DAERONET_ENABLE_ASAN=OFF `
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF `
+            -DAERONET_ENABLE_CLANG_TIDY=OFF `
+            -DAERONET_ENABLE_ASYNC_HANDLERS=OFF `
+            -DAERONET_ENABLE_GLAZE=OFF `
+            -DAERONET_ENABLE_HTTP2=OFF `
+            -DAERONET_ENABLE_BROTLI=OFF `
+            -DAERONET_ENABLE_ZLIB=OFF `
+            -DAERONET_ENABLE_ZSTD=OFF `
+            -DAERONET_ENABLE_OPENSSL=OFF `
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF `
+            -DAERONET_ENABLE_SPDLOG=OFF `
+            -DAERONET_ENABLE_WEBSOCKET=OFF
+        shell: pwsh
+
+      - name: Build
+        run: |
+          cmake --build build --config ${{ matrix.build }} --parallel
+
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build --build-config ${{ matrix.build }} --output-on-failure --timeout 120
+        shell: pwsh
+
+      - name: Summary
+        run: |
+          echo "Compiler: MSVC" >> $env:GITHUB_STEP_SUMMARY
+          echo "Build type: ${{ matrix.build }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "Commit: $env:GITHUB_SHA" >> $env:GITHUB_STEP_SUMMARY
+          echo "Tests executed:" >> $env:GITHUB_STEP_SUMMARY
+          ctest --test-dir build --build-config ${{ matrix.build }} -N | ForEach-Object { "  $_" } >> $env:GITHUB_STEP_SUMMARY
+        shell: pwsh
+
   alpine-musl-debug:
     name: Alpine (musl) Debug build
     runs-on: ubuntu-latest

@@ -29,10 +29,10 @@ class ConnectionStorage {
   using ConnectionMapIt = ConnectionMap::iterator;
 
 #ifdef AERONET_ENABLE_OPENSSL
-  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, bool tlsEnabled, ConnectionMapIt cnxIt,
-                                   uint32_t& handshakesInFlight) {
+  void recycleOrRelease(uint32_t maxCachedConnections, bool tlsEnabled, ConnectionMapIt cnxIt,
+                        uint32_t& handshakesInFlight) {
 #else
-  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
+  void recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
 #endif
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     auto& asyncState = cnxIt->second->asyncState;
@@ -63,7 +63,7 @@ class ConnectionStorage {
       _connectionStatePool.destroyAndRelease(cnxIt->second);
     }
 
-    return active.erase(cnxIt);
+    active.erase(cnxIt);
   }
 
   auto emplace(Connection&& cnx) { return active.emplace(std::move(cnx), getNewConnectionState()); }
