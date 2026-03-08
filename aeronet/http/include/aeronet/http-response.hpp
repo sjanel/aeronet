@@ -1016,7 +1016,8 @@ class HttpResponse {
   [[nodiscard]] constexpr bool isHead() const noexcept { return _opts.isHeadMethod(); }
 
   constexpr void setHeadSize(std::size_t size) {
-    _payloadVariant = HttpPayload(std::string_view(static_cast<const char*>(nullptr), size));
+    // Use a non-null sentinel so MSVC debug mode doesn't assert on string_view(nullptr, size).
+    _payloadVariant = HttpPayload(std::string_view(&HttpPayload::kSizeOnlySentinel, size));
   }
 
   void headerAddLineUnchecked(std::string_view key, std::string_view value);
