@@ -67,8 +67,8 @@ bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::st
   // Update all pointers in map that are after firstValueLast
   for (auto& [key, val] : map) {
     if (key.data() > firstValueLast) {
-      key = std::string_view(key.begin() + szToMove, key.end() + szToMove);
-      val = std::string_view(val.begin() + szToMove, val.end() + szToMove);
+      key = std::string_view(key.data() + szToMove, key.size());
+      val = std::string_view(val.data() + szToMove, val.size());
     }
   }
 

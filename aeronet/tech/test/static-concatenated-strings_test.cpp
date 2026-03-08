@@ -90,7 +90,7 @@ TEST(ConcatenatedStrings, GuardAgainstOverflowConstruction) {
   EXPECT_NO_THROW((TestType({aa, aa, aa})));
   EXPECT_THROW((TestType({aa, aa, bb})), std::overflow_error);
 
-  std::string_view cc(&ch, std::numeric_limits<uint32_t>::max() + 1UL);
+  std::string_view cc(&ch, static_cast<std::string_view::size_type>(std::numeric_limits<uint32_t>::max()) + 1);
   EXPECT_THROW((TestType({cc, aa, aa})), std::overflow_error);
 }
 
