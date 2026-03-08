@@ -56,7 +56,7 @@ class HttpPayload {
   // Used only for HEAD responses where only the size matters.
   [[nodiscard]] constexpr bool isSizeOnly() const noexcept {
     if (auto sv = std::get_if<std::string_view>(&_data)) {
-      return sv->data() == nullptr;
+      return sv->data() == &kSizeOnlySentinel;
     }
     return false;
   }
@@ -103,6 +103,9 @@ class HttpPayload {
   void clear() noexcept;
 
   void shrink_to_fit();
+
+  // Sentinel for HEAD responses where only the body size is tracked (data is never sent).
+  static constexpr char kSizeOnlySentinel{};
 
  private:
   std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>, std::vector<std::byte>,

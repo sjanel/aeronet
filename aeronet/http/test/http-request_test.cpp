@@ -225,6 +225,7 @@ TEST_F(HttpRequestTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
   EXPECT_TRUE(chunk.empty());
 }
 
+#ifdef AERONET_POSIX
 TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
   for (Encoding encoding : test::SupportedEncodings()) {
     test::UnixDogstatsdSink sink;
@@ -247,6 +248,7 @@ TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
     EXPECT_EQ(sink.recvMessage(), "svc.aeronet.http_responses.compression.exceeds_max_ratio_total:1|c");
   }
 }
+#endif
 
 TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
   // Aggregate accessor: null context -> empty body
