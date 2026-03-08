@@ -67,7 +67,7 @@ std::string_view HttpPayload::view() const noexcept {
       [](auto const& val) -> std::string_view {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::string_view>) {
-          if (val.data() == nullptr) {
+          if (val.data() == &kSizeOnlySentinel) {
             return {};
           }
           return val;

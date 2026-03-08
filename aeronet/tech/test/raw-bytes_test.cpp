@@ -223,8 +223,8 @@ TYPED_TEST(RawBaseTest, CopyAssignmentGrowCapacity) {
   std::string payload(64, 'A');
   RawT src(reinterpret_cast<const Type*>(payload.data()), static_cast<SizeType>(payload.size()));
   // Destination with smaller capacity and different content
-  std::string small = "xx";  // capacity 2 (or small) – definitely < src.capacity()
-  RawT dst(reinterpret_cast<const Type*>(small.data()), static_cast<SizeType>(small.size()));
+  std::string smallStr = "xx";  // capacity 2 (or small) – definitely < src.capacity()
+  RawT dst(reinterpret_cast<const Type*>(smallStr.data()), static_cast<SizeType>(smallStr.size()));
   auto oldCap = dst.capacity();
   dst = src;  // copy assignment
   EXPECT_EQ(dst.size(), src.size());

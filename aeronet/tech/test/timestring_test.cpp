@@ -163,7 +163,10 @@ TEST_F(StringToTimeISO8601UTCTest, ParsesWithNanoseconds) {
 
   EXPECT_GT(dur, std::chrono::nanoseconds{0});
   EXPECT_LT(dur, std::chrono::days{1});
-  EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 1000000000, 864693);
+  // Truncate expected value to system_clock precision (100ns on Windows, 1ns on Linux/macOS)
+  constexpr auto expected = duration_cast<SysDuration>(nanoseconds{864693});
+  EXPECT_EQ(duration_cast<SysDuration>(dur).count() % duration_cast<SysDuration>(std::chrono::seconds{1}).count(),
+            expected.count());
 }
 
 TEST_F(StringToTimeISO8601UTCTest, ParsesWithCustomSubSecondPrecision) {
@@ -352,7 +355,10 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecond) {
 
   dur -= std::chrono::hours{12} + std::chrono::minutes{34} + std::chrono::seconds{56};
 
-  EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 10000000000, 350819188);
+  // Truncate to system_clock precision (100ns on Windows, 1ns on Linux/macOS)
+  constexpr auto expected10 = duration_cast<SysDuration>(nanoseconds{350819188});
+  EXPECT_EQ(duration_cast<SysDuration>(dur).count() % duration_cast<SysDuration>(std::chrono::seconds{10}).count(),
+            expected10.count());
 }
 
 TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimePlus) {
@@ -363,7 +369,9 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimePlus) {
 
   dur -= std::chrono::hours{11} + std::chrono::minutes{34} + std::chrono::seconds{56};
 
-  EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 10000000000, 350819188);
+  constexpr auto expectedPlus = duration_cast<SysDuration>(nanoseconds{350819188});
+  EXPECT_EQ(duration_cast<SysDuration>(dur).count() % duration_cast<SysDuration>(std::chrono::seconds{10}).count(),
+            expectedPlus.count());
 }
 
 TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimeMinus) {
@@ -374,7 +382,9 @@ TEST_F(StringToTimeISO8601UTCTest, Handles10DigitSubsecondWithZonedTimeMinus) {
 
   dur -= std::chrono::hours{14} + std::chrono::minutes{4} + std::chrono::seconds{56};
 
-  EXPECT_EQ(duration_cast<nanoseconds>(dur).count() % 10000000000, 350819188);
+  constexpr auto expectedMinus = duration_cast<SysDuration>(nanoseconds{350819188});
+  EXPECT_EQ(duration_cast<SysDuration>(dur).count() % duration_cast<SysDuration>(std::chrono::seconds{10}).count(),
+            expectedMinus.count());
 }
 
 TEST(DateIso8601UTCTest, BasicDate) {
