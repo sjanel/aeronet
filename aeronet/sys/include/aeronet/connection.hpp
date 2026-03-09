@@ -1,5 +1,7 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
+
 #include "aeronet/base-fd.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"
@@ -27,6 +29,8 @@ class Connection {
   // This operator is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
   // from Fd received from the event loop.
   operator NativeHandle() const noexcept { return _baseFd.fd(); }
+
+  using trivially_relocatable = amc::is_trivially_relocatable<BaseFd>::type;
 
  private:
   BaseFd _baseFd;

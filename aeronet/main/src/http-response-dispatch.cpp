@@ -29,9 +29,10 @@
 
 namespace aeronet {
 
-SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
+SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
-  HttpRequest& request = cnxIt->second->request;
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  HttpRequest& request = state.request;
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
@@ -42,7 +43,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
 
     // For TRACE, we need to pass the raw request data
     const std::string_view requestData = (request.method() == http::Method::TRACE)
-                                             ? std::string_view(cnxIt->second->inBuffer.data(), consumedBytes)
+                                             ? std::string_view(state.inBuffer.data(), consumedBytes)
                                              : std::string_view{};
 
     auto result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
@@ -62,9 +63,9 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionM
   return LoopAction::Nothing;
 }
 
-SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMapIt& cnxIt, std::size_t consumedBytes,
+SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                     const CorsPolicy* pCorsPolicy) {
-  HttpRequest& request = cnxIt->second->request;
+  HttpRequest& request = _connections.connectionState(cnxIt).request;
 
   // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
   // proxy bytes bidirectionally between client and upstream.
@@ -86,7 +87,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
   }
 
   // Save client fd — setupTunnelConnection may rehash the connection map.
-  const auto clientFd = cnxIt->first.fd();
+  const auto clientFd = cnxIt->fd();
 
   const auto upstreamFd = setupTunnelConnection(clientFd, host, portStr);
   if (upstreamFd == kInvalidHandle) {
@@ -94,28 +95,29 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionMa
     return LoopAction::Break;
   }
 
-  // Re-find client iterator after potential map rehash inside setupTunnelConnection.
-  cnxIt = _connections.active.find(clientFd);
-  assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during map rehash");
+  // Re-find client iterator after potential connections reallocation inside setupTunnelConnection.
+  cnxIt = _connections.iterator(clientFd);
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  assert(cnxIt != _connections.end() && "Client connection cannot vanish during map rehash");
 
   finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
   // Enter tunneling mode: link client → upstream (upstream → client is set by setupTunnelConnection).
-  cnxIt->second->peerFd = upstreamFd;
+  state.peerFd = upstreamFd;
 
   // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
-  if (auto* clientPlain = dynamic_cast<PlainTransport*>(cnxIt->second->transport.get())) {
+  if (auto* clientPlain = dynamic_cast<PlainTransport*>(state.transport.get())) {
     clientPlain->disableZerocopy();
   }
 
   // From now on, both connections bypass HTTP parsing; we simply proxy bytes.
-  cnxIt->second->inBuffer.clear();
+  state.inBuffer.clear();
   return LoopAction::Continue;
 }
 
-void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, HttpResponse&& resp,
+void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
                                                        std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
-  ConnectionState& state = *cnxIt->second;
+  ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
   if (pCorsPolicy != nullptr) {
     (void)pCorsPolicy->applyToResponse(request, resp);
@@ -155,8 +157,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, Ht
   request.end(respStatusCode);
 }
 
-void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
@@ -230,15 +232,15 @@ void SingleHttpServer::queueData(ConnectionMapIt cnxIt, HttpResponseData httpRes
   }
 }
 
-void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
+void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
-  ConnectionState& state = *cnxIt->second;
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
 
-  const NativeHandle fd = cnxIt->first.fd();
+  const NativeHandle fd = cnxIt->fd();
   while (!state.outBuffer.empty()) {
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
     want = stepWant;
@@ -304,8 +306,8 @@ void SingleHttpServer::flushOutbound(ConnectionMapIt cnxIt) {
   }
 }
 
-bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   if (state.tunnelOrFileBuffer.empty()) {
     return false;
   }
@@ -349,8 +351,8 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt) {
   }
 }
 
-void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
   if (state.fileSend.headersPending) {
     if (!state.outBuffer.empty()) {
@@ -397,7 +399,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
       return;
     }
 
-    const auto res = state.transportFile(cnxIt->first.fd(), userSpaceTls);
+    const auto res = state.transportFile(cnxIt->fd(), userSpaceTls);
     switch (res.code) {
       case ConnectionState::FileResult::Code::Read:
         // Read case: data read from file into buffer; now try to write it immediately.
@@ -428,7 +430,7 @@ void SingleHttpServer::flushFilePayload(ConnectionMapIt cnxIt) {
           // Edge-triggered epoll fix: immediately retry ONCE after enabling writable interest.
           // If the socket became writable between sendfile() returning EAGAIN and epoll_ctl(),
           // we would miss the edge. This immediate retry catches that case.
-          const auto retryRes = state.transportFile(cnxIt->first.fd(), userSpaceTls);
+          const auto retryRes = state.transportFile(cnxIt->fd(), userSpaceTls);
           if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
             _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL

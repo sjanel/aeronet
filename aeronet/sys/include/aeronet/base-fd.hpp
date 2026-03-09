@@ -1,5 +1,7 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
+
 #include "aeronet/native-handle.hpp"
 
 #ifdef AERONET_WINDOWS
@@ -77,6 +79,8 @@ class BaseFd {
 
   // Equality comparison - compare only the underlying fd, not ownership semantics.
   bool operator==(const BaseFd& other) const noexcept { return _fd == other._fd; }
+
+  using trivially_relocatable = amc::is_trivially_relocatable<NativeHandle>::type;
 
  private:
   NativeHandle _fd;

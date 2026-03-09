@@ -56,6 +56,7 @@ AeronetAddUnitTest(
 
 AeronetAddUnitTest(
     connection-storage_test
+    src/connection-storage.cpp
     test/connection-storage_test.cpp
     LIBRARIES
     aeronet_http
