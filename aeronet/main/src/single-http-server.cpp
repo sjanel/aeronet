@@ -210,33 +210,33 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
   _lifecycle.wakeupFd.send();
 }
 
-bool SingleHttpServer::enableWritableInterest(ConnectionMapIt cnxIt) {
-  ConnectionState* state = cnxIt->second;
-  assert(!state->waitingWritable);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
-    state->waitingWritable = true;
+bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  assert(!state.waitingWritable);
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
+    state.waitingWritable = true;
     ++_stats.deferredWriteEvents;
     return true;
   }
   ++_stats.epollModFailures;
-  cnxIt->second->requestDrainAndClose();
+  state.requestDrainAndClose();
   return false;
 }
 
-bool SingleHttpServer::disableWritableInterest(ConnectionMapIt cnxIt) {
-  ConnectionState* state = cnxIt->second;
-  assert(state->waitingWritable);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->first.fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
-    state->waitingWritable = false;
+bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  assert(state.waitingWritable);
+  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
+    state.waitingWritable = false;
     return true;
   }
   ++_stats.epollModFailures;
-  cnxIt->second->requestDrainAndClose();
+  state.requestDrainAndClose();
   return false;
 }
 
-bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
   // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
   if (state.protocolHandler != nullptr) {
@@ -260,7 +260,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
         // Switch to HTTP/2 protocol handler using unified dispatch
         state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                   _decompressionState, _telemetry, _sharedBuffers.buf);
-        installH2TunnelBridge(cnxIt->first.fd(), state);
+        installH2TunnelBridge(cnxIt->fd(), state);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -273,16 +273,17 @@ bool SingleHttpServer::processConnectionInput(ConnectionMapIt cnxIt) {
   return processHttp1Requests(cnxIt);
 }
 
-bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
+bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
   // Save the client fd before entering the loop. processInput() may call back
   // into setupTunnelConnection() (HTTP/2 CONNECT), which emplaces a new entry
   // into _connections.active and may trigger a rehash, invalidating cnxIt.
   // We re-find cnxIt by fd after each processInput() call, matching the same
   // pattern used by the HTTP/1.1 CONNECT path in http-response-dispatch.cpp.
-  const int clientFd = cnxIt->first.fd();
-  ConnectionState& state = *cnxIt->second;
+  const NativeHandle clientFd = cnxIt->fd();
 
-  auto& handler = *state.protocolHandler;
+  ConnectionState* pState = _connections.pConnectionState(clientFd);
+  assert(pState != nullptr);
+  auto& handler = *pState->protocolHandler;
 
   // Process input in a loop until no more bytes can be consumed.
   // This is important for HTTP/2 where the client may send multiple frames
@@ -295,29 +296,27 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
   // syscalls, particularly with few connections where the socket rarely blocks.
   bool hasAccumulatedOutput = false;
 
-  while (!state.inBuffer.empty()) {
+  while (!pState->inBuffer.empty()) {
     // Convert input buffer to span of bytes
-    std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(state.inBuffer.data()),
-                                         state.inBuffer.size());
+    std::span<const std::byte> inputData(reinterpret_cast<const std::byte*>(pState->inBuffer.data()),
+                                         pState->inBuffer.size());
 
     // Process input through the protocol handler.
-    // NOTE: for HTTP/2 CONNECT this may call setupTunnelConnection() which
-    // emplaces into _connections.active and can rehash the map, invalidating
-    // cnxIt. Re-find it immediately afterward. state/handler references
-    // remain valid because the ConnectionState object itself is not moved.
-    const auto result = handler.processInput(inputData, state);
-    cnxIt = _connections.active.find(clientFd);
-    assert(cnxIt != _connections.active.end() && "Client connection cannot vanish during processInput");
+    const auto result = handler.processInput(inputData, *pState);
+
+    // processInput may insert new elements in connections.
+    cnxIt = _connections.iterator(clientFd);
+    pState = _connections.pConnectionState(clientFd);
 
     // Consume processed bytes from input buffer
-    state.inBuffer.erase_front(result.bytesConsumed);
+    pState->inBuffer.erase_front(result.bytesConsumed);
 
     // Queue any pending output from the handler into outBuffer (no socket I/O yet)
     if (handler.hasPendingOutput()) {
       auto pendingOutput = handler.getPendingOutput();
       assert(!pendingOutput.empty());
 
-      state.outBuffer.append(
+      pState->outBuffer.append(
           std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
       handler.onOutputWritten(pendingOutput.size());
 
@@ -335,7 +334,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
           if (hasAccumulatedOutput) {
             flushOutbound(cnxIt);
           }
-          return state.isAnyCloseRequested();
+          return pState->isAnyCloseRequested();
         }
         break;
 
@@ -349,7 +348,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
         if (hasAccumulatedOutput) {
           flushOutbound(cnxIt);
         }
-        state.requestDrainAndClose();
+        pState->requestDrainAndClose();
         return true;
 
       case ProtocolProcessResult::Action::CloseImmediate:
@@ -358,7 +357,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
           flushOutbound(cnxIt);
         }
         log::warn("Protocol handler reported error");
-        state.requestDrainAndClose();
+        pState->requestDrainAndClose();
         return true;
     }
   }
@@ -368,11 +367,11 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionMapIt cnxIt) {
     flushOutbound(cnxIt);
   }
 
-  return state.isAnyCloseRequested();
+  return pState->isAnyCloseRequested();
 }
 
-bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   if (state.asyncState.active) {
     handleAsyncBodyProgress(cnxIt);
@@ -459,13 +458,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
       state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                 _decompressionState, _telemetry, _sharedBuffers.buf);
       state.protocol = ProtocolType::Http2;
-      installH2TunnelBridge(cnxIt->first.fd(), state);
+      installH2TunnelBridge(cnxIt->fd(), state);
 
       // Queue the upgrade response
       state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
       flushOutbound(cnxIt);
 
-      log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->first.fd());
+      log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->fd());
 
       ++state.requestsServed;
       ++_stats.totalRequestsServed;
@@ -585,9 +584,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
 
     const bool isStreaming = routingResult.streamingHandler() != nullptr;
 
-    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, consumedBytes,
+    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, &state, consumedBytes,
                          pCorsPolicy](HttpResponse&& resp) {
-      ApplyResponseMiddleware(cnxIt->second->request, resp, responseMiddlewareRange, _router.globalResponseMiddleware(),
+      ApplyResponseMiddleware(state.request, resp, responseMiddlewareRange, _router.globalResponseMiddleware(),
                               _telemetry, isStreaming, _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
@@ -678,8 +677,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionMapIt cnxIt) {
   return state.isAnyCloseRequested();
 }
 
-bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool usePerConnectionBodyStorage) {
-  ConnectionState& state = *cnxIt->second;
+bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
 
   usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerLen != 0;
@@ -707,14 +706,14 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool us
   return true;
 }
 
-bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt,
+bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionIt cnxIt,
                                             std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                                             std::span<const ResponseMiddleware> postMiddleware) {
-  HttpRequest& request = cnxIt->second->request;
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  HttpRequest& request = state.request;
   bool wantClose = request.wantClose();
   bool isHead = request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
-  ConnectionState& state = *cnxIt->second;
 
   // Determine active CORS policy (route-specific if provided, otherwise global)
   if (pCorsPolicy != nullptr) {
@@ -744,8 +743,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   }
 
   // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
-  HttpResponseWriter writer(*this, cnxIt->first.fd(), request, wantClose, compressionFormat, pCorsPolicy,
-                            postMiddleware);
+  HttpResponseWriter writer(*this, cnxIt->fd(), request, wantClose, compressionFormat, pCorsPolicy, postMiddleware);
   try {
     streamingHandler(request, writer);
   } catch (const std::exception& ex) {
@@ -776,21 +774,22 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
+bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
                                             bool isChunked, bool expectContinue, std::size_t consumedBytes,
                                             const CorsPolicy* pCorsPolicy,
                                             std::span<const ResponseMiddleware> responseMiddleware) {
-  ConnectionState& state = *cnxIt->second;
-  RequestTask<HttpResponse> task = handler(state.request);
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  HttpRequest& request = state.request;
+  RequestTask<HttpResponse> task = handler(request);
 
   if (!task.valid()) {
     static constexpr std::string_view kMessage = "Async handler inactive";
-    log::error("Async path handler returned an invalid RequestTask for path {}", state.request.path());
+    log::error("Async path handler returned an invalid RequestTask for path {}", request.path());
     if (bodyReady) {
       HttpResponse resp(http::StatusCodeInternalServerError);
       resp.body(kMessage);
-      ApplyResponseMiddleware(state.request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry,
-                              false, _callbacks.middlewareMetrics);
+      ApplyResponseMiddleware(request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry, false,
+                              _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     } else {
       emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
@@ -830,7 +829,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
   state.request.pinHeadStorage(state);
 
   // Install the postCallback function for deferred work
-  asyncState.postCallback = [this, fd = cnxIt->first.fd()](std::coroutine_handle<> handle, std::function<void()> work) {
+  asyncState.postCallback = [this, fd = cnxIt->fd()](std::coroutine_handle<> handle, std::function<void()> work) {
     postAsyncCallback(fd, handle, std::move(work));
   };
 
@@ -838,8 +837,8 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRe
   return asyncState.active;
 }
 
-void SingleHttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   auto& async = state.asyncState;
   if (!async.active || !async.handle) {
     return;
@@ -861,8 +860,8 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionMapIt cnxIt) {
   }
 }
 
-void SingleHttpServer::handleAsyncBodyProgress(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   auto& async = state.asyncState;
   if (!async.active) {
     return;
@@ -927,8 +926,8 @@ bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& st
   return true;
 }
 
-void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   auto& async = state.asyncState;
   if (!async.handle) {
     return;
@@ -964,8 +963,8 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionMapIt cnxIt) {
   }
 }
 
-void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
   auto& async = state.asyncState;
 
   assert(!async.needsBody);
@@ -1024,13 +1023,13 @@ void SingleHttpServer::eventLoop() {
         maintenanceTick = true;
       } else {
         const auto bmp = event.eventBmp;
-        const auto cnxIt = _connections.active.find(fd);
-        if (cnxIt == _connections.active.end()) [[unlikely]] {
+        const auto cnxIt = _connections.iterator(fd);
+        if (!*cnxIt) [[unlikely]] {
           log::warn("fd # {} not found (stale epoll event or race)", fd);
           continue;
         }
 
-        cnxIt->second->lastActivity = now;
+        _connections.connectionState(cnxIt).lastActivity = now;
 
         CloseStatus closeStatus = CloseStatus::Keep;
         if ((bmp & EventOut) != 0) {
@@ -1057,7 +1056,7 @@ void SingleHttpServer::eventLoop() {
   // Under high load epoll_wait may return immediately and never hit the timeout path.
   // We still need periodic maintenance for timeouts and edge-triggered sendfile progress.
   if (maintenanceTick) {
-    const auto nbActiveConnections = _connections.active.size();
+    const auto nbActiveConnections = _connections.size();
 
     _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
     _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
@@ -1125,8 +1124,10 @@ void SingleHttpServer::closeListener() noexcept {
 }
 
 void SingleHttpServer::closeAllConnections() {
-  for (auto it = _connections.active.begin(); it != _connections.active.end();) {
-    it = closeConnection(it);
+  for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
+    if (*cnxIt) {
+      closeConnection(cnxIt);
+    }
   }
 }
 
@@ -1178,7 +1179,7 @@ ServerStats SingleHttpServer::stats() const {
   return statsOut;
 }
 
-void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, std::string_view body) {
+void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body) {
   queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
   if (_callbacks.parserErr) {
@@ -1192,14 +1193,15 @@ void SingleHttpServer::emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode s
     }
   }
 
-  cnxIt->second->requestDrainAndClose();
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
-  cnxIt->second->request.end(statusCode);
+  state.requestDrainAndClose();
+  state.request.end(statusCode);
 }
 
-bool SingleHttpServer::handleExpectHeader(ConnectionMapIt cnxIt, std::string_view expectHeader,
+bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
                                           const CorsPolicy* pCorsPolicy, bool& found100Continue) {
-  HttpRequest& request = cnxIt->second->request;
+  HttpRequest& request = _connections.connectionState(cnxIt).request;
   const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
@@ -1381,17 +1383,18 @@ void SingleHttpServer::applyPendingUpdates() {
       }
 
       // Use O(1) hash map lookup with the connection fd
-      auto it = _connections.active.find(cb.connectionFd);
-      if (it != _connections.active.end()) {
+      auto it = _connections.iterator(cb.connectionFd);
+      if (it != _connections.end()) {
+        ConnectionState& state = _connections.connectionState(it);
 #ifdef AERONET_ENABLE_HTTP2
         // For HTTP/2 connections, delegate to the protocol handler which tracks per-stream async state.
-        if (it->second->protocol == ProtocolType::Http2 && it->second->protocolHandler != nullptr) {
-          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(it->second->protocolHandler.get());
+        if (state.protocol == ProtocolType::Http2 && state.protocolHandler != nullptr) {
+          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
           if (h2Handler->resumeAsyncTaskByHandle(cb.handle)) {
             // Flush any pending output generated by the completed async handler
             if (h2Handler->hasPendingOutput()) {
               auto pendingOutput = h2Handler->getPendingOutput();
-              it->second->outBuffer.append(
+              state.outBuffer.append(
                   std::string_view(reinterpret_cast<const char*>(pendingOutput.data()), pendingOutput.size()));
               h2Handler->onOutputWritten(pendingOutput.size());
               flushOutbound(it);
@@ -1400,7 +1403,7 @@ void SingleHttpServer::applyPendingUpdates() {
           continue;
         }
 #endif
-        auto& asyncState = it->second->asyncState;
+        auto& asyncState = state.asyncState;
         if (asyncState.active && asyncState.handle == cb.handle) {
           asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
           resumeAsyncHandler(it);
@@ -1437,8 +1440,8 @@ class H2TunnelBridge final : public ITunnelBridge {
   }
 
   void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
-    auto upIt = _server._connections.active.find(upstreamFd);
-    if (upIt == _server._connections.active.end()) [[unlikely]] {
+    auto upIt = _server._connections.iterator(upstreamFd);
+    if (upIt == _server._connections.end()) [[unlikely]] {
       return;
     }
     if (!_server.forwardTunnelData(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size())))
@@ -1448,28 +1451,30 @@ class H2TunnelBridge final : public ITunnelBridge {
   }
 
   void shutdownTunnelWrite(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.active.find(upstreamFd);
-    if (upIt != _server._connections.active.end()) {
+    auto upIt = _server._connections.iterator(upstreamFd);
+    if (upIt != _server._connections.end()) {
       _server.shutdownTunnelPeerWrite(upIt);
     }
   }
 
   void closeTunnel(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.active.find(upstreamFd);
-    if (upIt == _server._connections.active.end()) {
+    auto upIt = _server._connections.iterator(upstreamFd);
+    if (upIt == _server._connections.end()) {
       return;
     }
+    ConnectionState& state = _server._connections.connectionState(upIt);
     // Clear peerFd so closeConnection won't try to tear down the client HTTP/2 connection.
-    upIt->second->peerFd = kInvalidHandle;
-    upIt->second->peerStreamId = 0;
+    state.peerFd = kInvalidHandle;
+    state.peerStreamId = 0;
     _server.closeConnection(upIt);
   }
 
   void onTunnelWindowUpdate(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.active.find(upstreamFd);
-    if (upIt != _server._connections.active.end()) {
+    auto upIt = _server._connections.iterator(upstreamFd);
+    if (upIt != _server._connections.end()) {
       // If we have buffered data from upstream, try to inject it now that the window opened.
-      if (!upIt->second->inBuffer.empty()) {
+      ConnectionState& state = _server._connections.connectionState(upIt);
+      if (!state.inBuffer.empty()) {
         _server.handleInH2Tunneling(upIt);
       }
     }
@@ -1532,23 +1537,24 @@ NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t str
   }
 
   // Additionally set the HTTP/2 stream id on the upstream state.
-  auto upIt = _connections.active.find(upstreamFd);
-  assert(upIt != _connections.active.end());
-  upIt->second->peerStreamId = streamId;
+  auto upIt = _connections.iterator(upstreamFd);
+  assert(upIt != _connections.end());
+  ConnectionState& state = _connections.connectionState(upIt);
+  state.peerStreamId = streamId;
 
   return upstreamFd;
 }
 
-SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionMapIt cnxIt) {
-  ConnectionState& state = *cnxIt->second;
+SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
   // Find the client HTTP/2 connection via peerFd.
-  auto peerIt = _connections.active.find(state.peerFd);
-  if (peerIt == _connections.active.end()) [[unlikely]] {
+  auto peerIt = _connections.iterator(state.peerFd);
+  if (peerIt == _connections.end()) [[unlikely]] {
     return CloseStatus::Close;
   }
 
-  ConnectionState& peerState = *peerIt->second;
+  ConnectionState& peerState = _connections.connectionState(peerIt);
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
   if (h2Handler == nullptr) [[unlikely]] {
     return CloseStatus::Close;

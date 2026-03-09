@@ -184,10 +184,11 @@ void HttpResponseWriter::ensureHeadersSent() {
     _pCorsPolicy = nullptr;
   }
 
-  auto cnxIt = _server->_connections.active.find(_fd);
+  auto cnxIt = _server->_connections.iterator(_fd);
   _server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._opts,
                                                             nullptr, _server->config().minCapturedBodySize));
-  if (cnxIt->second->isAnyCloseRequested()) {
+  ConnectionState& state = _server->_connections.connectionState(cnxIt);
+  if (state.isAnyCloseRequested()) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
                SystemErrorMessage(LastSystemError()));
@@ -387,12 +388,13 @@ void HttpResponseWriter::end() {
 
 bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   // Access the connection state to determine backpressure / closure.
-  const auto cnxIt = _server->_connections.active.find(_fd);
-  if (cnxIt == _server->_connections.active.end()) {
+  const auto cnxIt = _server->_connections.iterator(_fd);
+  if (cnxIt == _server->_connections.end()) {
     return false;
   }
   _server->queueData(cnxIt, std::move(httpResponseData));
-  return !cnxIt->second->isAnyCloseRequested();
+  ConnectionState& state = _server->_connections.connectionState(cnxIt);
+  return !state.isAnyCloseRequested();
 }
 
 bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {

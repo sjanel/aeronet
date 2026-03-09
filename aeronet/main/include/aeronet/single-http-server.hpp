@@ -407,7 +407,7 @@ class SingleHttpServer {
   friend class MultiHttpServer;
   friend class H2TunnelBridge;  // allow tunnel bridge to access connection management internals
 
-  using ConnectionMapIt = internal::ConnectionStorage::ConnectionMapIt;
+  using ConnectionIt = internal::ConnectionStorage::ConnectionIt;
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void prepareRun();
@@ -420,33 +420,33 @@ class SingleHttpServer {
   enum class CloseStatus : uint8_t { Keep, Close };
 
   // Returns true if connection has been closed, false otherwise.
-  CloseStatus handleWritableClient(ConnectionMapIt cnxIt);
+  CloseStatus handleWritableClient(ConnectionIt cnxIt);
   // Returns true if connection has been closed, false otherwise.
-  CloseStatus handleReadableClient(ConnectionMapIt cnxIt);
+  CloseStatus handleReadableClient(ConnectionIt cnxIt);
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
   // For WebSocket, routes through the protocol handler.
   // Returns true if the connection should be closed.
-  bool processConnectionInput(ConnectionMapIt cnxIt);
-  bool processHttp1Requests(ConnectionMapIt cnxIt);
+  bool processConnectionInput(ConnectionIt cnxIt);
+  bool processHttp1Requests(ConnectionIt cnxIt);
   // Process WebSocket data through the protocol handler.
   // Returns true if the connection should be closed.
-  bool processSpecialProtocolHandler(ConnectionMapIt cnxIt);
+  bool processSpecialProtocolHandler(ConnectionIt cnxIt);
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
-  BodyDecodeStatus decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked, bool expectContinue,
+  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked, bool expectContinue,
                                      std::size_t& consumedBytes);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
-  BodyDecodeStatus decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
   bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
-  bool maybeDecompressRequestBody(ConnectionMapIt cnxIt, bool usePerConnectionBodyStorage);
-  void finalizeAndSendResponseForHttp1(ConnectionMapIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
+  bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
+  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                        const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
-  bool handleExpectHeader(ConnectionMapIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
+  bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
   void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
@@ -454,31 +454,31 @@ class SingleHttpServer {
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // The connection will be closed after draining buffered writes.
-  void emitSimpleError(ConnectionMapIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
+  void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
   // Outbound write helpers. On transport failure, the connection is closed immediately.
-  void queueData(ConnectionMapIt cnxIt, HttpResponseData httpResponseData);
-  void flushOutbound(ConnectionMapIt cnxIt);
-  void flushFilePayload(ConnectionMapIt cnxIt);
+  void queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData);
+  void flushOutbound(ConnectionIt cnxIt);
+  void flushFilePayload(ConnectionIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
   // Used when kTLS is not available and file data must be encrypted in user-space.
   // Returns true if the caller should return early because the buffer is still non-empty.
-  bool flushUserSpaceTlsBuffer(ConnectionMapIt cnxIt);
+  bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
 
-  ConnectionMapIt closeConnection(ConnectionMapIt cnxIt);
+  void closeConnection(ConnectionIt cnxIt);
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionMapIt cnxIt, std::size_t consumedBytes,
+  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionIt cnxIt, std::size_t consumedBytes,
                             const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> postMiddleware);
 
   enum class LoopAction : uint8_t { Nothing, Continue, Break };
 
-  LoopAction processSpecialMethods(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
+  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
   // HTTP/1.1-specific CONNECT handling (TCP tunnel setup).
-  LoopAction processConnectMethod(ConnectionMapIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
+  LoopAction processConnectMethod(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
   // Shared CONNECT tunnel helpers used by both HTTP/1.1 and HTTP/2 paths.
 
@@ -489,17 +489,17 @@ class SingleHttpServer {
 
   /// Forward data to a tunnel peer with write-buffering and EPOLLOUT arming.
   /// @return false on fatal transport error (caller should close the connection).
-  bool forwardTunnelData(ConnectionMapIt targetIt, std::string_view data);
+  bool forwardTunnelData(ConnectionIt targetIt, std::string_view data);
 
   /// Overload that moves data from sourceBuffer with swap optimisation.
   /// Clears sourceBuffer on success.
-  bool forwardTunnelData(ConnectionMapIt targetIt, RawChars& sourceBuffer);
+  bool forwardTunnelData(ConnectionIt targetIt, RawChars& sourceBuffer);
 
   /// Half-close the write side of a tunnel peer, deferring if data is still buffered.
-  void shutdownTunnelPeerWrite(ConnectionMapIt peerIt);
+  void shutdownTunnelPeerWrite(ConnectionIt peerIt);
 
-  CloseStatus readTunnelData(ConnectionMapIt cnxIt, std::size_t& bytesReadThisEvent, bool& hitEagain);
-  CloseStatus handleInTunneling(ConnectionMapIt cnxIt);
+  CloseStatus readTunnelData(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent, bool& hitEagain);
+  CloseStatus handleInTunneling(ConnectionIt cnxIt);
 
   void closeListener() noexcept;
   void closeAllConnections();
@@ -514,8 +514,8 @@ class SingleHttpServer {
   // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
   // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
   // consistently. Return true on success, false on failure (caller should handle close).
-  bool enableWritableInterest(ConnectionMapIt cnxIt);
-  bool disableWritableInterest(ConnectionMapIt cnxIt);
+  bool enableWritableInterest(ConnectionIt cnxIt);
+  bool disableWritableInterest(ConnectionIt cnxIt);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;
@@ -524,13 +524,13 @@ class SingleHttpServer {
   // Called from background threads via ConnectionState::asyncState.postCallback.
   void postAsyncCallback(NativeHandle connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
 
-  bool dispatchAsyncHandler(ConnectionMapIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
+  bool dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                             std::span<const ResponseMiddleware> responseMiddleware);
-  void resumeAsyncHandler(ConnectionMapIt cnxIt);
-  void handleAsyncBodyProgress(ConnectionMapIt cnxIt);
-  void onAsyncHandlerCompleted(ConnectionMapIt cnxIt);
-  void tryFlushPendingAsyncResponse(ConnectionMapIt cnxIt);
+  void resumeAsyncHandler(ConnectionIt cnxIt);
+  void handleAsyncBodyProgress(ConnectionIt cnxIt);
+  void onAsyncHandlerCompleted(ConnectionIt cnxIt);
+  void tryFlushPendingAsyncResponse(ConnectionIt cnxIt);
 #endif
 
   [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
@@ -550,7 +550,7 @@ class SingleHttpServer {
 
   // Handle readable events from an HTTP/2 CONNECT tunnel upstream.
   // Reads data and injects it as DATA frames into the HTTP/2 stream.
-  CloseStatus handleInH2Tunneling(ConnectionMapIt cnxIt);
+  CloseStatus handleInH2Tunneling(ConnectionIt cnxIt);
 #endif
 
   struct StatsInternal {
