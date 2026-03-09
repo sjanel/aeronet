@@ -26,7 +26,7 @@
 
 namespace aeronet {
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(ConnectionMapIt cnxIt, bool isChunked,
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked,
                                                                        bool expectContinue,
                                                                        std::size_t& consumedBytes) {
   consumedBytes = 0;
@@ -37,9 +37,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(Connectio
   return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
 }
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(ConnectionMapIt cnxIt, bool expectContinue,
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue,
                                                                            std::size_t& consumedBytes) {
-  ConnectionState& state = *cnxIt->second;
+  ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
   auto optContentLength = request.headerValue(http::ContentLength);
   const std::size_t headerEnd = request.headSpanSize();
@@ -73,9 +73,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   return BodyDecodeStatus::Ready;
 }
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(ConnectionMapIt cnxIt, bool expectContinue,
+SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue,
                                                                        std::size_t& consumedBytes) {
-  ConnectionState& state = *cnxIt->second;
+  ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
   if (expectContinue) {
     queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));

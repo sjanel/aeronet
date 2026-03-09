@@ -19,7 +19,6 @@
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
-#include <sys/types.h>
 #endif
 
 namespace aeronet {
