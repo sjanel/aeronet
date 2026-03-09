@@ -11,6 +11,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/close-native-handle.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
 
 #ifdef AERONET_POSIX

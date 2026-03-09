@@ -1,97 +1,85 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
-#include <functional>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
-#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/vector.hpp"
-
-#ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/tls-transport.hpp"
-#endif
 
 namespace aeronet::internal {
 
 class ConnectionStorage {
  public:
   //  - The server and request layer rely on a stable ConnectionState address:
+  // TODO: change that, we can store vector + idx instead of raw pointer.
   //      * HttpRequest stores `ConnectionState* _ownerState` and uses it for async/body coordination
   //        (e.g. HttpRequest::markAwaitingBody()) and body access bridges.
   //      * The event loop code often keeps `ConnectionState&` / `ConnectionState*` across helper calls
   //        that may emplace new connections (see processSpecialMethods comment in the .cpp).
   //    If ConnectionState were stored by value in the hash table, these pointers/references could dangle.
-  using ConnectionMap = flat_hash_map<Connection, ConnectionState*, std::hash<NativeHandle>, std::equal_to<>>;
 
-  using ConnectionMapIt = ConnectionMap::iterator;
+  using ConnectionIt = vector<Connection>::iterator;
 
+ private:
+  [[nodiscard]] static uint32_t ConnectionItToIdx(ConnectionIt it) { return static_cast<uint32_t>(it->fd() - 1); }
+
+ public:
 #ifdef AERONET_ENABLE_OPENSSL
-  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, bool tlsEnabled, ConnectionMapIt cnxIt,
-                                   uint32_t& handshakesInFlight) {
+  void recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedConnections, bool tlsEnabled,
+                        uint32_t& handshakesInFlight);
 #else
-  ConnectionMapIt recycleOrRelease(uint32_t maxCachedConnections, ConnectionMapIt cnxIt) {
-#endif
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    auto& asyncState = cnxIt->second->asyncState;
-    if (asyncState.active || asyncState.handle) {
-      asyncState.clear();
-    }
+  void recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedConnections);
 #endif
 
-    // Best-effort graceful TLS shutdown
-#ifdef AERONET_ENABLE_OPENSSL
-    if (tlsEnabled) {
-      // If the connection is closed mid-handshake, release admission control slot.
-      if (cnxIt->second->tlsHandshakeInFlight) {
-        cnxIt->second->tlsHandshakeInFlight = false;
-        --handshakesInFlight;
-      }
+  ConnectionIt emplace(Connection&& cnx) {
+    const NativeHandle fd = cnx.fd();
+    assert(fd != 0);
+    const auto connectionIdx = static_cast<vector<Connection>::size_type>(fd - 1);
 
-      if (auto* tlsTr = dynamic_cast<TlsTransport*>(cnxIt->second->transport.get())) {
-        tlsTr->shutdown();
-      }
-    }
-#endif
-
-    // Move ConnectionState to cache for potential reuse
-    if (_cachedConnections.size() < maxCachedConnections) {
-      _cachedConnections.push_back(cnxIt->second);
-    } else {
-      _connectionStatePool.destroyAndRelease(cnxIt->second);
+    while (_activeConnections.size() < connectionIdx + 1U) {
+      _activeConnections.emplace_back();
+      _activeConnectionStates.emplace_back();
     }
 
-    return active.erase(cnxIt);
+    _activeConnections[connectionIdx] = std::move(cnx);
+    _activeConnectionStates[connectionIdx] = getNewConnectionState();
+    ++_nbActiveConnections;
+
+    return _activeConnections.begin() + connectionIdx;
   }
 
-  auto emplace(Connection&& cnx) { return active.emplace(std::move(cnx), getNewConnectionState()); }
+  void sweepCachedConnections(std::chrono::steady_clock::duration timeout);
 
-  void sweepCachedConnections(std::chrono::steady_clock::duration timeout) {
-    const auto deadline = now - timeout;
-    auto it = _cachedConnections.begin();
-    for (; it != _cachedConnections.end() && (*it)->lastActivity < deadline; ++it) {
-      _connectionStatePool.destroyAndRelease(*it);
-    }
-    _cachedConnections.erase(_cachedConnections.begin(), it);
-  }
+  void shrink_to_fit();
 
-  [[nodiscard]] std::size_t nbCachedConnections() const noexcept { return _cachedConnections.size(); }
+  [[nodiscard]] std::size_t nbCachedConnections() const noexcept { return _cachedConnectionStates.size(); }
 
-  ConnectionMap active;
+  ConnectionIt begin() { return _activeConnections.begin(); }
+  ConnectionIt end() { return _activeConnections.end(); }
+
+  ConnectionIt iterator(NativeHandle fd) { return _activeConnections.begin() + (fd - 1); }
+
+  [[nodiscard]] std::size_t size() const { return _nbActiveConnections; }
+
+  ConnectionState& connectionState(ConnectionIt cnxIt) { return *_activeConnectionStates[ConnectionItToIdx(cnxIt)]; }
+
+  ConnectionState* pConnectionState(ConnectionIt cnxIt) { return _activeConnectionStates[ConnectionItToIdx(cnxIt)]; }
+  ConnectionState* pConnectionState(NativeHandle fd) { return _activeConnectionStates[static_cast<uint32_t>(fd - 1)]; }
 
   std::chrono::steady_clock::time_point now;
 
  private:
   ConnectionState* getNewConnectionState() {
     ConnectionState* statePtr;
-    if (_cachedConnections.empty()) {
+    if (_cachedConnectionStates.empty()) {
       statePtr = _connectionStatePool.allocateAndConstruct();
       statePtr->request._ownerState = statePtr;
     } else {
-      statePtr = _cachedConnections.back();
-      _cachedConnections.pop_back();
+      statePtr = _cachedConnectionStates.back();
+      _cachedConnectionStates.pop_back();
       statePtr->reset();
     }
     statePtr->lastActivity = now;
@@ -99,7 +87,11 @@ class ConnectionStorage {
   }
 
   ObjectPool<ConnectionState> _connectionStatePool;
-  vector<ConnectionState*> _cachedConnections;  // cache of closed ConnectionState objects for reuse
+
+  vector<Connection> _activeConnections;
+  vector<ConnectionState*> _activeConnectionStates;
+  vector<ConnectionState*> _cachedConnectionStates;  // cache of closed ConnectionState objects for reuse
+  std::size_t _nbActiveConnections{};
 };
 
 }  // namespace aeronet::internal
