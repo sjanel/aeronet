@@ -20,7 +20,7 @@ void DecompressionConfig::validate() const {
   if (maxExpansionRatio < 0.0) {
     throw std::invalid_argument("maxExpansionRatio must be >= 0");
   }
-  if (maxCompressedBytes != 0 && maxCompressedBytes > (128UL * 1024UL * 1024UL * 1024UL)) {
+  if (maxCompressedBytes != 0 && maxCompressedBytes > (static_cast<std::size_t>(128) * 1024UL * 1024UL * 1024UL)) {
     // Cap insane compressed size to catch likely misconfiguration
     throw std::invalid_argument("maxCompressedBytes is unreasonably large");
   }

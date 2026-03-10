@@ -97,10 +97,16 @@ void SingleHttpServer::sweepIdleConnections() {
   // needs a periodic check because a client might send a partial request line then stall; no
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   const auto now = _connections.now;
+
+#ifdef AERONET_WINDOWS
+  auto cnxIt = _connections.begin();
+  while (cnxIt != _connections.end()) {
+#else
   for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
-    if (!*cnxIt) {
+    if (!internal::ConnectionStorage::active(cnxIt)) {
       continue;
     }
+#endif
     const NativeHandle fd = cnxIt->fd();
     ConnectionState& state = _connections.connectionState(cnxIt);
 
@@ -113,6 +119,9 @@ void SingleHttpServer::sweepIdleConnections() {
     if (state.canCloseConnectionForDrain()) {
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_drain");
+#ifdef AERONET_WINDOWS
+      cnxIt = _connections.begin();
+#endif
       continue;
     }
 
@@ -122,6 +131,9 @@ void SingleHttpServer::sweepIdleConnections() {
       log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", fd);
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
+#ifdef AERONET_WINDOWS
+      cnxIt = _connections.begin();
+#endif
       continue;
     }
 
@@ -132,6 +144,9 @@ void SingleHttpServer::sweepIdleConnections() {
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_header_read_timeout");
+#ifdef AERONET_WINDOWS
+      cnxIt = _connections.begin();
+#endif
       continue;
     }
 
@@ -143,6 +158,9 @@ void SingleHttpServer::sweepIdleConnections() {
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
+#ifdef AERONET_WINDOWS
+      cnxIt = _connections.begin();
+#endif
       continue;
     }
 
@@ -156,12 +174,19 @@ void SingleHttpServer::sweepIdleConnections() {
                              kTlsHandshakeFailureReasonHandshakeTimeout);
         closeConnection(cnxIt);
         _telemetry.counterAdd("aeronet.connections.closed_for_handshake_timeout");
+#ifdef AERONET_WINDOWS
+        cnxIt = _connections.begin();
+#endif
         continue;
       }
     }
 #endif
 
     state.reclaimMemoryFromOversizedBuffers();
+
+#ifdef AERONET_WINDOWS
+    ++cnxIt;
+#endif
   }
 
   _telemetry.gauge("aeronet.connections.cached_count", static_cast<int64_t>(_connections.nbCachedConnections()));

@@ -96,7 +96,7 @@ TEST(DecompressionConfigTest, ValidMaxCompressedBytes) {
   DecompressionConfig cfg;
 
   cfg.enable = true;
-  cfg.maxCompressedBytes = 1UL * 1024UL * 1024UL * 1024UL;  // 1 GB
+  cfg.maxCompressedBytes = static_cast<std::size_t>(1) * 1024UL * 1024UL * 1024UL;  // 1 GB
 
 #if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_NO_THROW(cfg.validate());
@@ -109,7 +109,7 @@ TEST(DecompressionConfigTest, InvalidMaxCompressedBytes) {
   DecompressionConfig cfg;
 
   cfg.enable = true;
-  cfg.maxCompressedBytes = 256UL * 1024UL * 1024UL * 1024UL * 1024UL;  // 256 TB
+  cfg.maxCompressedBytes = static_cast<std::size_t>(256) * 1024UL * 1024UL * 1024UL * 1024UL;  // 256 TB
 
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }

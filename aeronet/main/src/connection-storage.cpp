@@ -15,10 +15,14 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
 #else
 void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedConnections) {
 #endif
-  const uint32_t connectionIdx = ConnectionItToIdx(cnxIt);
-  auto* pConnection = _activeConnectionStates[connectionIdx];
+#ifdef AERONET_WINDOWS
+  auto* pConnectionState = cnxIt._it->second;
+#else
+  const auto connectionIdx = ConnectionItToIdx(cnxIt);
+  auto* pConnectionState = _activeConnectionStates[connectionIdx];
+#endif
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  auto& asyncState = pConnection->asyncState;
+  auto& asyncState = pConnectionState->asyncState;
   if (asyncState.active || asyncState.handle) {
     asyncState.clear();
   }
@@ -28,12 +32,12 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
 #ifdef AERONET_ENABLE_OPENSSL
   if (tlsEnabled) {
     // If the connection is closed mid-handshake, release admission control slot.
-    if (pConnection->tlsHandshakeInFlight) {
-      pConnection->tlsHandshakeInFlight = false;
+    if (pConnectionState->tlsHandshakeInFlight) {
+      pConnectionState->tlsHandshakeInFlight = false;
       --handshakesInFlight;
     }
 
-    if (auto* tlsTr = dynamic_cast<TlsTransport*>(pConnection->transport.get())) {
+    if (auto* tlsTr = dynamic_cast<TlsTransport*>(pConnectionState->transport.get())) {
       tlsTr->shutdown();
     }
   }
@@ -41,15 +45,20 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
 
   // Move ConnectionState to cache for potential reuse
   if (_cachedConnectionStates.size() < maxCachedConnections) {
-    _cachedConnectionStates.push_back(pConnection);
+    _cachedConnectionStates.push_back(pConnectionState);
   } else {
-    _connectionStatePool.destroyAndRelease(pConnection);
+    _connectionStatePool.destroyAndRelease(pConnectionState);
   }
 
+#ifdef AERONET_WINDOWS
+  cnxIt._it->first.close();
+  _activeConnections.erase(cnxIt._it);
+#else
   _activeConnections[connectionIdx].close();
   _activeConnectionStates[connectionIdx] = nullptr;
 
   --_nbActiveConnections;
+#endif
 }
 
 void ConnectionStorage::sweepCachedConnections(std::chrono::steady_clock::duration timeout) {
@@ -62,6 +71,8 @@ void ConnectionStorage::sweepCachedConnections(std::chrono::steady_clock::durati
 }
 
 void ConnectionStorage::shrink_to_fit() {
+#ifndef AERONET_WINDOWS
+  // POSIX only: trim trailing null vector slots and reclaim capacity.
   if (_activeConnectionStates.empty()) {
     return;
   }
@@ -81,5 +92,6 @@ void ConnectionStorage::shrink_to_fit() {
     _activeConnectionStates.shrink_to_fit();
     _cachedConnectionStates.shrink_to_fit();
   }
+#endif
 }
 }  // namespace aeronet::internal
