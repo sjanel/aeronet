@@ -24,10 +24,12 @@ using namespace aeronet;
 // (which can happen during the epoll failure simulation). SIGPIPE is raised when trying
 // to write to a socket whose read end has been closed. Without this, test crashes are
 // intermittent and hard to reproduce.
+#ifdef AERONET_POSIX
 static const int kSigpipeIgnored = []() {
   ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
   return 0;
 }();
+#endif
 
 class HttpConnectDefaultConfig : public ::testing::Test {
  public:

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 
@@ -123,6 +124,7 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesAll) {
   EXPECT_EQ(storage.nbCachedConnections(), 0U);
 }
 
+#ifdef AERONET_POSIX
 TEST(ConnectionStorage, ShrinkToFitTrimsTrailingNulls) {
   ConnectionStorage storage;
 
@@ -166,9 +168,11 @@ TEST(ConnectionStorage, ShrinkToFitShrinksLargeCapacity) {
   // Now call shrink_to_fit which should erase trailing slots and trigger capacity shrink branch
   storage.shrink_to_fit();
 
+  // POSIX only: verify trailing null vector slots were trimmed (maps have no trailing slots).
   EXPECT_LT(storage.end() - storage.begin(), total);
   EXPECT_EQ(storage.size(), static_cast<std::size_t>(keep));
 }
+#endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(ConnectionStorage, RecycleOrReleaseWithActiveAsyncState) {

@@ -11,6 +11,9 @@
 #ifdef AERONET_POSIX
 #include <unistd.h>
 #endif
+#ifdef AERONET_WINDOWS
+#include <io.h>
+#endif
 
 #include "aeronet/native-handle.hpp"
 
@@ -42,6 +45,13 @@ void BaseFd::close() noexcept {
 #endif
     while (true) {
 #ifdef AERONET_WINDOWS
+      if (_kind == HandleKind::CrtFd) {
+        if (::_close(static_cast<int>(_fd)) == 0) {
+          break;
+        }
+        log::error("_close crt fd {} failed: error {}: {}", static_cast<int>(_fd), errno, SystemErrorMessage(errno));
+        break;
+      }
       if (_kind == HandleKind::Win32Handle) {
         // Win32 kernel objects (Event, WaitableTimer) must use CloseHandle.
         if (::CloseHandle(reinterpret_cast<HANDLE>(_fd))) {

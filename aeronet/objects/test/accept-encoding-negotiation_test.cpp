@@ -2,17 +2,20 @@
 
 #include <gtest/gtest.h>
 
-#include <initializer_list>  // std::initializer_list
 #include <string_view>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 
+#ifdef AERONET_ENABLE_ZLIB
+#include <initializer_list>
+#endif
+
 namespace aeronet {
 
 namespace {
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+#ifdef AERONET_ENABLE_ZLIB
 EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
   CompressionConfig cfg;
   for (auto enc : prefs) {
