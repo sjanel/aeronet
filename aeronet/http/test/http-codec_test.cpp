@@ -12,7 +12,6 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
-#include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -30,6 +29,8 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
+#include <utility>
+
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"

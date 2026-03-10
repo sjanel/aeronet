@@ -18,7 +18,6 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <utility>
 
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-config.hpp"
@@ -37,6 +36,10 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include <utility>
+#endif
 
 using namespace aeronet;
 

@@ -24,8 +24,8 @@ class EventFd {
 
  private:
   BaseFd _baseFd;
-#ifdef AERONET_MACOS
-  BaseFd _writeFd;  // write end of the pipe
+#if defined(AERONET_MACOS) || defined(AERONET_WINDOWS)
+  BaseFd _writeFd;  // write end of the pipe / socket pair
 #endif
 };
 

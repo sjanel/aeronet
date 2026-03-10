@@ -7,7 +7,7 @@
 #elifdef AERONET_MACOS
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
-// Windows event via CreateEventW — included via system-error.hpp
+// Socket pair — included via socket-ops.hpp
 #endif
 
 #include <cerrno>
@@ -18,8 +18,8 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
 
-#ifdef AERONET_MACOS
-#include "aeronet/socket-ops.hpp"  // SetPipeNonBlockingCloExec
+#if defined(AERONET_MACOS) || defined(AERONET_WINDOWS)
+#include "aeronet/socket-ops.hpp"  // SetPipeNonBlockingCloExec / CreateLocalSocketPair
 #endif
 
 namespace aeronet {
@@ -100,29 +100,38 @@ void EventFd::read() const noexcept {
   log::trace("EventFd pipe drained");
 }
 
-// ---- Windows: Event object stub ----
+// ---- Windows: loopback socket pair ----
 #elifdef AERONET_WINDOWS
 
 EventFd::EventFd() {
-  // Use a manual-reset event. The HANDLE is stored as NativeHandle in BaseFd.
-  HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (ev == nullptr) {
-    auto err = ::GetLastError();
-    log::error("CreateEventW failed (error={})", err);
-    throw std::runtime_error("Unable to create EventFd on Windows");
-  }
-  _baseFd = BaseFd(reinterpret_cast<NativeHandle>(ev), BaseFd::HandleKind::Win32Handle);
-  log::debug("EventFd Windows event handle created");
+  NativeHandle readEnd;
+  NativeHandle writeEnd;
+  CreateLocalSocketPair(readEnd, writeEnd);
+  _baseFd = BaseFd(readEnd);    // read end — registered in event loop
+  _writeFd = BaseFd(writeEnd);  // write end — send() writes here
+  log::debug("EventFd socket pair read={} write={} opened", static_cast<uintptr_t>(readEnd),
+             static_cast<uintptr_t>(writeEnd));
 }
 
 void EventFd::send() const noexcept {
-  ::SetEvent(reinterpret_cast<HANDLE>(_baseFd.fd()));
-  log::trace("EventFd Windows event signaled");
+  static constexpr char one = 1;
+  const auto ret = ::send(_writeFd.fd(), &one, sizeof(one), 0);
+  if (ret == SOCKET_ERROR) {
+    auto savedErr = LastSystemError();
+    if (savedErr != error::kWouldBlock) {
+      log::error("EventFd socket send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+    }
+  } else {
+    log::trace("EventFd socket send succeeded");
+  }
 }
 
 void EventFd::read() const noexcept {
-  ::ResetEvent(reinterpret_cast<HANDLE>(_baseFd.fd()));
-  log::trace("EventFd Windows event reset");
+  char buf[64];
+  // Drain all pending bytes from the socket pair
+  while (::recv(_baseFd.fd(), buf, sizeof(buf), 0) > 0) {
+  }
+  log::trace("EventFd socket drained");
 }
 
 #endif

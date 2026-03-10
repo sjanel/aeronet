@@ -1,7 +1,7 @@
-aux_source_directory(src/ AERONET_WEBSOCKET_SRC_LIST)
+aux_source_directory(src AERONET_WEBSOCKET_SRC_LIST)
 
 if(NOT AERONET_ENABLE_ZLIB)
-    list(REMOVE_ITEM AERONET_WEBSOCKET_SRC_LIST src/websocket-deflate.cpp)
+    list(REMOVE_ITEM AERONET_WEBSOCKET_SRC_LIST src/websocket-compress.cpp)
 endif()
 
 AeronetAddProjectLibrary(aeronet_websocket
