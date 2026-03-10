@@ -34,8 +34,8 @@ class BaseFd {
 #endif
 
 #ifdef AERONET_WINDOWS
-  /// Discriminates between Winsock SOCKETs and generic Win32 HANDLEs.
-  enum class HandleKind : uint8_t { Socket, Win32Handle };
+  /// Discriminates between Winsock SOCKETs, generic Win32 HANDLEs and CRT file descriptors.
+  enum class HandleKind : uint8_t { Socket, Win32Handle, CrtFd };
 
   explicit BaseFd(NativeHandle fd = kClosedFd, HandleKind kind = HandleKind::Socket) noexcept : _fd(fd), _kind(kind) {}
 #else

@@ -26,9 +26,11 @@ class Connection {
 
   bool operator==(const Connection&) const noexcept = default;
 
+#ifdef AERONET_WINDOWS
   // This operator is used in the connections map in SingleHttpServer. This allows usage of transparent look-ups
   // from Fd received from the event loop.
   operator NativeHandle() const noexcept { return _baseFd.fd(); }
+#endif
 
   using trivially_relocatable = amc::is_trivially_relocatable<BaseFd>::type;
 

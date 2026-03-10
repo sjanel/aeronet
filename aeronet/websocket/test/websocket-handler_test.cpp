@@ -19,8 +19,11 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-constants.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet::websocket {
 namespace {

@@ -26,8 +26,8 @@ class TimerFd {
 
  private:
   BaseFd _baseFd;
-#ifdef AERONET_MACOS
-  BaseFd _writeFd;  // write end of timer pipe (used by kqueue EVFILT_TIMER callback path)
+#if defined(AERONET_MACOS) || defined(AERONET_WINDOWS)
+  BaseFd _writeFd;  // write end of timer pipe / socket pair
 #endif
 };
 

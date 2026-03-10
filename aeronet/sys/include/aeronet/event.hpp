@@ -9,7 +9,7 @@ using EventBmp = uint32_t;
 // Platform-abstract event flags.
 // On Linux, implementations verify these match the corresponding EPOLL* values.
 // On macOS, the kqueue backend maps to/from native kevent flags internally.
-// On Windows, the IOCP backend maps to/from completion-based semantics internally.
+// On Windows, the WSAPoll backend maps to/from poll-based semantics internally.
 inline constexpr EventBmp EventIn = 0x001;
 inline constexpr EventBmp EventOut = 0x004;
 inline constexpr EventBmp EventErr = 0x008;

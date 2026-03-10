@@ -102,6 +102,21 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
       out.reserve(std::max(doubled, desired));
     }
 
+#ifdef AERONET_WINDOWS
+    // On Windows there is no per-call MSG_DONTWAIT; use select() so recv never blocks.
+    {
+      fd_set readSet;
+      FD_ZERO(&readSet);  // NOLINT(readability-isolate-declaration)
+      FD_SET(fd, &readSet);
+      timeval tv{};
+      tv.tv_usec = 1000;  // 1 ms
+      if (::select(0, &readSet, nullptr, nullptr, &tv) <= 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        continue;
+      }
+    }
+#endif
+
     bool again = false;
     bool peerClosed = false;
 
@@ -119,7 +134,7 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
                                    again = true;
                                    return oldSize;
                                  }
-                                 if (recvErr == error::kConnectionReset) {
+                                 if (recvErr == error::kConnectionReset || recvErr == error::kConnectionAborted) {
                                    peerClosed = true;
                                    return oldSize;
                                  }
@@ -210,6 +225,9 @@ std::string recvUntilClosed(NativeHandle fd) {
         const auto recvErr = LastSystemError();
         if (recvErr == error::kWouldBlock) {
           std::this_thread::sleep_for(1ms);
+          return oldSize;
+        }
+        if (recvErr == error::kConnectionReset || recvErr == error::kConnectionAborted) {
           return oldSize;
         }
         ThrowSystemError("Error from blocking recv");

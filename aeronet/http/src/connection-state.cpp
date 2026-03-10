@@ -140,7 +140,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
     result = ReadOffset(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.offset);
   } else {
-    result = Sendfile(clientFd, fileSend.file.fd(), offset, maxBytes);
+    result = Sendfile(clientFd, static_cast<int>(fileSend.file.fd()), offset, maxBytes);
   }
   FileResult res{static_cast<std::size_t>(result), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
 
