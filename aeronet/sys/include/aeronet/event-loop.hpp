@@ -11,7 +11,7 @@
 namespace aeronet {
 
 // Thin RAII wrapper over a platform event-notification mechanism
-// (epoll on Linux, kqueue on macOS, IOCP stub on Windows).
+// (epoll on Linux, kqueue on macOS, WSAPoll on Windows).
 //
 // Design notes:
 //  * Inherits from BaseFd to reuse unified close()/logging + move semantics.
@@ -61,19 +61,19 @@ class EventLoop {
 
   // Register fd with given events.
   // On error, throws std::system_error.
-  void addOrThrow(EventFd event) const;
+  void addOrThrow(EventFd event);
 
   // Register fd with given events.
   // Returns true on success, false on failure (logged).
-  [[nodiscard]] bool add(EventFd event) const;
+  [[nodiscard]] bool add(EventFd event);
 
   // Modify fd with given events.
   // Returns true on success, false on failure (logged).
-  [[nodiscard]] bool mod(EventFd event) const;
+  [[nodiscard]] bool mod(EventFd event);
 
   // Delete fd from monitoring.
   // Log on error.
-  void del(NativeHandle fd) const;
+  void del(NativeHandle fd);
 
   // Polls for ready events up to the poll timeout.
   //
@@ -98,6 +98,10 @@ class EventLoop {
   int _pollTimeoutMs = 0;
   BaseFd _baseFd;
   void* _pEvents = nullptr;
+#ifdef AERONET_WINDOWS
+  void* _pPollFds = nullptr;   // WSAPOLLFD registration array for WSAPoll()
+  uint32_t _nbRegistered = 0;  // number of fds currently registered
+#endif
 };
 
 }  // namespace aeronet

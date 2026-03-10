@@ -20,7 +20,7 @@
 #include "aeronet/native-handle.hpp"
 
 #ifndef AERONET_LINUX
-#include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec
+#include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec, EnsureWinsockInitialized
 #endif
 
 namespace aeronet {
@@ -43,6 +43,7 @@ NativeHandle CreateSocket(Socket::Type type, int protocol) {
   }
   return ::socket(AF_INET, sockType, protocol);
 #elifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
   SOCKET sock = ::WSASocketW(AF_INET, SOCK_STREAM, protocol, nullptr, 0, WSA_FLAG_OVERLAPPED);
   if (sock != INVALID_SOCKET && type == Socket::Type::StreamNonBlock) {
     u_long mode = 1;

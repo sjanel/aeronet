@@ -11,7 +11,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
-// Windows waitable timer — headers via system-error.hpp
+// Socket pair — included via socket-ops.hpp
 #endif
 
 #include <cerrno>
@@ -25,8 +25,8 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/timedef.hpp"
 
-#ifdef AERONET_MACOS
-#include "aeronet/socket-ops.hpp"  // SetPipeNonBlockingCloExec
+#if defined(AERONET_MACOS) || defined(AERONET_WINDOWS)
+#include "aeronet/socket-ops.hpp"  // SetPipeNonBlockingCloExec / CreateLocalSocketPair
 #endif
 
 namespace aeronet {
@@ -126,35 +126,31 @@ void TimerFd::drain() const noexcept {
   }
 }
 
-// ---- Windows: stub ----
+// ---- Windows: loopback socket pair (poll-timeout driven, like macOS) ----
 #elifdef AERONET_WINDOWS
 
 TimerFd::TimerFd() {
-  HANDLE timer = ::CreateWaitableTimerW(nullptr, FALSE, nullptr);
-  if (timer == nullptr) {
-    auto err = ::GetLastError();
-    log::error("CreateWaitableTimerW failed (error={})", err);
-    throw std::runtime_error("Unable to create TimerFd on Windows");
-  }
-  _baseFd = BaseFd(reinterpret_cast<NativeHandle>(timer), BaseFd::HandleKind::Win32Handle);
-  log::debug("TimerFd Windows waitable timer created");
+  NativeHandle readEnd;
+  NativeHandle writeEnd;
+  CreateLocalSocketPair(readEnd, writeEnd);
+  _baseFd = BaseFd(readEnd);    // read end — registered in event loop
+  _writeFd = BaseFd(writeEnd);  // write end — unused (maintenance driven by poll timeout)
+  log::debug("TimerFd socket pair read={} write={} opened", static_cast<uintptr_t>(readEnd),
+             static_cast<uintptr_t>(writeEnd));
 }
 
 void TimerFd::armPeriodic(SysDuration interval) const {
+  // On Windows (like macOS), maintenance is driven by the event loop's poll timeout.
+  // The socket pair allows the timer fd to be registered in WSAPoll.
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(interval).count();
-  // Convert to 100-nanosecond intervals, negative = relative time
-  LARGE_INTEGER dueTime;
-  dueTime.QuadPart = -static_cast<LONGLONG>(ms) * 10000LL;
-  HANDLE timer = reinterpret_cast<HANDLE>(_baseFd.fd());
-  if (!::SetWaitableTimer(timer, &dueTime, static_cast<LONG>(ms), nullptr, nullptr, FALSE)) {
-    auto err = ::GetLastError();
-    log::error("SetWaitableTimer failed (error={})", err);
-  }
+  log::debug("TimerFd armPeriodic interval={}ms (Windows socket-pair, relying on poll timeout)", ms);
+  (void)ms;
 }
 
 void TimerFd::drain() const noexcept {
-  // Windows waitable timers don't accumulate; nothing to drain.
-  log::trace("TimerFd drain (no-op on Windows)");
+  char buf[64];
+  while (::recv(_baseFd.fd(), buf, sizeof(buf), 0) > 0) {
+  }
 }
 
 #endif

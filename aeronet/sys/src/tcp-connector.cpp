@@ -43,6 +43,9 @@ class CharReplacer {
 }  // namespace
 
 ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family) {
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
   addrinfo* res = nullptr;
 
   int gai;
@@ -96,7 +99,7 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
     }
 
     const int connectErr = LastSystemError();
-    // Non-blocking connect started -> completion will be signalled via poll/epoll/IOCP
+    // Non-blocking connect started -> completion will be signalled via poll/epoll/WSAPoll
     switch (connectErr) {
       case error::kInProgress:
         [[fallthrough]];
