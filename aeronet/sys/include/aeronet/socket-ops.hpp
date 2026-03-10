@@ -14,6 +14,12 @@
 
 namespace aeronet {
 
+#ifdef AERONET_WINDOWS
+// Ensure Winsock (WSAStartup) has been called. Thread-safe, idempotent.
+// Must be called before any Winsock API (socket, getaddrinfo, etc.).
+void EnsureWinsockInitialized();
+#endif
+
 // Cross-platform socket operations.
 // All Linux / macOS / Windows specifics are hidden in the .cpp file.
 // These thin wrappers centralise system calls so that
@@ -82,5 +88,12 @@ bool ShutdownReadWrite(NativeHandle fd) noexcept;
 // Read from a given offset without changing the file pointer (pread semantics).
 // Returns the number of bytes read, or -1 on error (errno is set).
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept;
+
+#ifdef AERONET_WINDOWS
+// Create a connected non-blocking loopback TCP socket pair.
+// On success, readFd receives the "read" end and writeFd the "write" end.
+// Throws std::runtime_error on failure.
+void CreateLocalSocketPair(NativeHandle& readFd, NativeHandle& writeFd);
+#endif
 
 }  // namespace aeronet

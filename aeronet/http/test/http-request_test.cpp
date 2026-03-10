@@ -119,7 +119,7 @@ class HttpRequestTest : public ::testing::Test {
   // Test helpers that require friend access to HttpRequest private members
   struct FakeSpan : public tracing::Span {
     static inline int64_t lastStatusCode = -1;
-    static inline long lastDurationUs = -1;
+    static inline int64_t lastDurationUs = -1;
     static inline bool ended = false;
     static inline bool sawHttpHost = false;
 
@@ -127,7 +127,7 @@ class HttpRequestTest : public ::testing::Test {
       if (key == "http.status_code") {
         lastStatusCode = val;
       } else if (key == "http.duration_us") {
-        lastDurationUs = static_cast<long>(val);
+        lastDurationUs = val;
       }
     }
 
@@ -141,7 +141,7 @@ class HttpRequestTest : public ::testing::Test {
   };
 
   static std::string_view bridgeReadChunk(HttpRequest& /*req*/, void* /*ctx*/, std::size_t /*maxBytes*/) {
-    return {"chunk-data"};
+    return "chunk-data";
   }
 
   static bool bridgeHasMore(const HttpRequest& /*req*/, void* /*ctx*/) { return true; }

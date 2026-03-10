@@ -539,7 +539,7 @@ class SingleHttpServer {
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame),
   // installs CONNECT tunnel bridge, and flushes output.
-  void setupHttp2Connection(int clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
+  void setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
 
   // Install CONNECT tunnel bridge on an existing HTTP/2 protocol handler.
   void installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state);

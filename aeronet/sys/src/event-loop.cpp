@@ -7,7 +7,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #elifdef AERONET_WINDOWS
-// IOCP headers included via system-error.hpp (winsock2.h)
+// WSAPoll headers included via winsock2.h
 #endif
 
 #include <algorithm>
@@ -84,8 +84,40 @@ std::size_t NativeEventSize() { return sizeof(epoll_event); }
 #elifdef AERONET_MACOS
 std::size_t NativeEventSize() { return sizeof(struct kevent); }
 #elifdef AERONET_WINDOWS
-// IOCP uses OVERLAPPED_ENTRY for GetQueuedCompletionStatusEx
-std::size_t NativeEventSize() { return sizeof(OVERLAPPED_ENTRY); }
+// WSAPoll: EventFd[] output buffer uses sizeof(EventFd) directly.
+std::size_t NativeEventSize() { return sizeof(EventLoop::EventFd); }
+
+short EventBmpToPollEvents(EventBmp bmp) {
+  short ev = 0;
+  if (bmp & EventIn) {
+    ev |= POLLIN;
+  }
+  if (bmp & EventOut) {
+    ev |= POLLOUT;
+  }
+  // EventEt, EventRdHup, EventErr, EventHup are not settable in poll; output-only or unsupported.
+  return ev;
+}
+
+EventBmp PollReventsToEventBmp(short revents) {
+  EventBmp bmp = 0;
+  if (revents & POLLIN) {
+    bmp |= EventIn;
+  }
+  if (revents & POLLOUT) {
+    bmp |= EventOut;
+  }
+  if (revents & POLLERR) {
+    bmp |= EventErr;
+  }
+  if (revents & POLLHUP) {
+    bmp |= EventHup | EventRdHup;
+  }
+  if (revents & POLLNVAL) {
+    bmp |= EventErr;
+  }
+  return bmp;
+}
 #endif
 
 }  // namespace
@@ -119,57 +151,75 @@ EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
     throw std::runtime_error("event loop creation failed");
   }
 #elifdef AERONET_WINDOWS
-  // Create an I/O Completion Port with no initial file handle association.
-  HANDLE iocp = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
-  if (iocp == nullptr) {
-    auto err = ::GetLastError();
-    log::error("CreateIoCompletionPort failed (error={})", err);
+  // WSAPoll doesn't need a kernel object like epoll/kqueue.
+  // Allocate the WSAPOLLFD registration array.
+  _pPollFds = std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * sizeof(WSAPOLLFD));
+  if (_pPollFds == nullptr) {
     std::free(_pEvents);
     _pEvents = nullptr;
-    throw std::runtime_error("event loop creation failed");
+    throw std::bad_alloc();
   }
-  _baseFd = BaseFd(reinterpret_cast<NativeHandle>(iocp), BaseFd::HandleKind::Win32Handle);
 #endif
 
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");
   }
 
+#ifndef AERONET_WINDOWS
   log::debug("EventLoop fd # {} opened", static_cast<intptr_t>(_baseFd.fd()));
+#else
+  log::debug("EventLoop WSAPoll initialized (capacity={})", _nbAllocatedEvents);
+#endif
 }
 
 EventLoop::EventLoop(EventLoop&& rhs) noexcept
     : _nbAllocatedEvents(std::exchange(rhs._nbAllocatedEvents, 0)),
       _pollTimeoutMs(rhs._pollTimeoutMs),
       _baseFd(std::move(rhs._baseFd)),
-      _pEvents(std::exchange(rhs._pEvents, nullptr)) {}
+      _pEvents(std::exchange(rhs._pEvents, nullptr))
+#ifdef AERONET_WINDOWS
+      ,
+      _pPollFds(std::exchange(rhs._pPollFds, nullptr)),
+      _nbRegistered(std::exchange(rhs._nbRegistered, 0U))
+#endif
+{
+}
 
 EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
     std::free(_pEvents);
+#ifdef AERONET_WINDOWS
+    std::free(_pPollFds);
+#endif
 
     _nbAllocatedEvents = std::exchange(rhs._nbAllocatedEvents, 0);
     _pollTimeoutMs = rhs._pollTimeoutMs;
     _baseFd = std::move(rhs._baseFd);
     _pEvents = std::exchange(rhs._pEvents, nullptr);
+#ifdef AERONET_WINDOWS
+    _pPollFds = std::exchange(rhs._pPollFds, nullptr);
+    _nbRegistered = std::exchange(rhs._nbRegistered, 0U);
+#endif
   }
   return *this;
 }
 
 EventLoop::~EventLoop() {
-  // BaseFd::close() handles Windows IOCP HANDLE via HandleKind::Win32Handle.
   std::free(_pEvents);
+#ifdef AERONET_WINDOWS
+  std::free(_pPollFds);
+#endif
 }
 
 // ---- add / mod / del ----
 
-void EventLoop::addOrThrow(EventFd event) const {
+void EventLoop::addOrThrow(EventFd event) {
   if (!add(event)) [[unlikely]] {
     ThrowSystemError("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
 }
 
-bool EventLoop::add(EventFd event) const {
+bool EventLoop::add(EventFd event) {
 #ifdef AERONET_LINUX
   epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, event.fd, &ev) != 0) [[unlikely]] {
@@ -207,21 +257,33 @@ bool EventLoop::add(EventFd event) const {
     return false;
   }
 #elifdef AERONET_WINDOWS
-  // Associate the handle with the IOCP. The completion key stores the fd value for dispatch.
-  HANDLE iocp = reinterpret_cast<HANDLE>(_baseFd.fd());
-  HANDLE result =
-      ::CreateIoCompletionPort(reinterpret_cast<HANDLE>(event.fd), iocp, static_cast<ULONG_PTR>(event.fd), 0);
-  if (result == nullptr) [[unlikely]] {
-    auto err = ::GetLastError();
-    log::error("CreateIoCompletionPort ADD failed (fd # {}, events=0x{:x}, error={})", static_cast<uintptr_t>(event.fd),
-               event.eventBmp, err);
-    return false;
+  // Grow both buffers if the registration array is full.
+  if (_nbRegistered == _nbAllocatedEvents) {
+    const uint32_t newCap = _nbAllocatedEvents * 2U;
+    void* newPollFds = std::realloc(_pPollFds, static_cast<std::size_t>(newCap) * sizeof(WSAPOLLFD));
+    if (newPollFds == nullptr) {
+      log::error("Failed to grow WSAPoll fd array from {} to {}", _nbAllocatedEvents, newCap);
+      return false;
+    }
+    _pPollFds = newPollFds;
+    void* newEvents = std::realloc(_pEvents, static_cast<std::size_t>(newCap) * NativeEventSize());
+    if (newEvents == nullptr) {
+      log::error("Failed to grow WSAPoll event buffer from {} to {}", _nbAllocatedEvents, newCap);
+      return false;
+    }
+    _pEvents = newEvents;
+    _nbAllocatedEvents = newCap;
   }
+  auto* pollFds = static_cast<WSAPOLLFD*>(_pPollFds);
+  pollFds[_nbRegistered].fd = event.fd;
+  pollFds[_nbRegistered].events = EventBmpToPollEvents(event.eventBmp);
+  pollFds[_nbRegistered].revents = 0;
+  ++_nbRegistered;
 #endif
   return true;
 }
 
-bool EventLoop::mod(EventFd event) const {
+bool EventLoop::mod(EventFd event) {
 #ifdef AERONET_LINUX
   epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_MOD, event.fd, &ev) != 0) [[unlikely]] {
@@ -241,14 +303,19 @@ bool EventLoop::mod(EventFd event) const {
   // kqueue: EV_ADD on an existing filter replaces it (acts like MOD).
   return add(event);
 #elifdef AERONET_WINDOWS
-  // IOCP doesn't support modifying events — once associated, persistence is managed
-  // by submitting new overlapped operations. This is a stub for the readiness-model API.
-  log::debug("EventLoop::mod is a no-op on Windows (IOCP model) for fd # {}", static_cast<uintptr_t>(event.fd));
-  return true;
+  auto* pollFds = static_cast<WSAPOLLFD*>(_pPollFds);
+  for (uint32_t idx = 0; idx < _nbRegistered; ++idx) {
+    if (pollFds[idx].fd == event.fd) {
+      pollFds[idx].events = EventBmpToPollEvents(event.eventBmp);
+      return true;
+    }
+  }
+  log::error("EventLoop::mod fd # {} not found in WSAPoll set", static_cast<uintptr_t>(event.fd));
+  return false;
 #endif
 }
 
-void EventLoop::del(NativeHandle fd) const {
+void EventLoop::del(NativeHandle fd) {
 #ifdef AERONET_LINUX
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_DEL, fd, nullptr) != 0) [[unlikely]] {
     // DEL failures are usually benign if fd already closed; log at debug to avoid noise.
@@ -267,15 +334,23 @@ void EventLoop::del(NativeHandle fd) const {
   }
 
 #elifdef AERONET_WINDOWS
-  // IOCP auto-cleans when the handle is closed. Explicit removal is not supported.
-  log::debug("EventLoop::del is a no-op on Windows (IOCP model) for fd # {}", static_cast<uintptr_t>(fd));
+  auto* pollFds = static_cast<WSAPOLLFD*>(_pPollFds);
+  for (uint32_t idx = 0; idx < _nbRegistered; ++idx) {
+    if (pollFds[idx].fd == fd) {
+      pollFds[idx] = pollFds[--_nbRegistered];
+      return;
+    }
+  }
+  log::debug("EventLoop::del fd # {} not found in WSAPoll set", static_cast<uintptr_t>(fd));
 #endif
 }
 
 // ---- poll ----
 
 std::span<const EventLoop::EventFd> EventLoop::poll() {
+#ifdef AERONET_POSIX
   const uint32_t capacityBeforePoll = _nbAllocatedEvents;
+#endif
 
 #ifdef AERONET_LINUX
   auto* epollEvents = static_cast<epoll_event*>(_pEvents);
@@ -312,24 +387,30 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
   const uint32_t nbReadyEvents = static_cast<uint32_t>(nbReadyFds);
 
 #elifdef AERONET_WINDOWS
-  auto* entries = static_cast<OVERLAPPED_ENTRY*>(_pEvents);
-  ULONG nbRemoved = 0;
-  BOOL ok = ::GetQueuedCompletionStatusEx(reinterpret_cast<HANDLE>(_baseFd.fd()), entries, capacityBeforePoll,
-                                          &nbRemoved, static_cast<DWORD>(_pollTimeoutMs), FALSE);
-  if (!ok) {
-    DWORD err = ::GetLastError();
-    if (err == WAIT_TIMEOUT) {
+  auto* pollFdsBuf = static_cast<WSAPOLLFD*>(_pPollFds);
+  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, _pollTimeoutMs);
+
+  if (nbReadyFds == SOCKET_ERROR) {
+    auto err = LastSystemError();
+    if (err == error::kInterrupted) {
       return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
     }
-    log::error("GetQueuedCompletionStatusEx failed (error={})", err);
+    log::error("WSAPoll failed (err={}, msg={})", err, SystemErrorMessage(err));
     return {};
   }
 
-  const uint32_t nbReadyEvents = static_cast<uint32_t>(nbRemoved);
+  if (nbReadyFds == 0) {
+    // Timeout
+    return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
+  }
+
+  const uint32_t nbReadyEvents = static_cast<uint32_t>(nbReadyFds);
 
 #endif
 
   // If saturated, grow buffer for subsequent polls.
+  // On Windows, buffer growth is handled in add() when registration count reaches capacity.
+#ifndef AERONET_WINDOWS
   if (nbReadyEvents == capacityBeforePoll) {
     const uint32_t newCapacity = capacityBeforePoll * 2U;
     void* newEvents = std::realloc(_pEvents, static_cast<std::size_t>(newCapacity) * NativeEventSize());
@@ -340,6 +421,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
       _nbAllocatedEvents = newCapacity;
     }
   }
+#endif
 
   EventFd* out = std::launder(reinterpret_cast<EventFd*>(_pEvents));
 
@@ -362,12 +444,13 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
     out[idx] = EventFd{nativeHandle, bmp};
   }
 #elifdef AERONET_WINDOWS
-  // Convert OVERLAPPED_ENTRY[] into EventFd[] in-place.
-  // For now, map completions to EventIn (read readiness) as a placeholder.
-  auto* entriesOut = static_cast<OVERLAPPED_ENTRY*>(_pEvents);
-  for (uint32_t idx = 0; idx < nbReadyEvents; ++idx) {
-    auto nativeHandle = static_cast<NativeHandle>(entriesOut[idx].lpCompletionKey);
-    out[idx] = EventFd{nativeHandle, EventIn};
+  // Convert ready WSAPOLLFD entries into EventFd[] output buffer.
+  auto* pollFdsConv = static_cast<WSAPOLLFD*>(_pPollFds);
+  uint32_t outIdx = 0;
+  for (uint32_t idx = 0; idx < _nbRegistered && outIdx < nbReadyEvents; ++idx) {
+    if (pollFdsConv[idx].revents != 0) {
+      out[outIdx++] = EventFd{pollFdsConv[idx].fd, PollReventsToEventBmp(pollFdsConv[idx].revents)};
+    }
   }
 #endif
 

@@ -93,12 +93,12 @@ TEST(HttpCompression, BelowThresholdNotCompressed) {
     cfg.compression.minBytes = 2048;
     cfg.compression.preferredFormats = {Encoding::br};
   });
-  std::string small(64, 's');
-  ts.router().setDefault([small](const HttpRequest&) { return HttpResponse(small); });
+  std::string smallStr(64, 's');
+  ts.router().setDefault([smallStr](const HttpRequest&) { return HttpResponse(smallStr); });
   auto resp = test::simpleGet(ts.port(), "/br3", {{"Accept-Encoding", "br"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
-  EXPECT_EQ(resp.body.size(), small.size());
+  EXPECT_EQ(resp.body.size(), smallStr.size());
 }
 
 TEST(HttpCompression, NoAcceptEncodingHeaderStillCompressesDefault) {
@@ -327,8 +327,8 @@ TEST(HttpCompression, BelowThresholdIdentity) {
     cfg.compression.minBytes = 1024;
     cfg.compression.preferredFormats = {Encoding::br};
   });
-  std::string small(80, 'x');
-  ts.router().setDefault([small](const HttpRequest&) { return HttpResponse(small); });
+  std::string smallStr(80, 'x');
+  ts.router().setDefault([smallStr](const HttpRequest&) { return HttpResponse(smallStr); });
   auto resp = test::simpleGet(ts.port(), "/sbr2", {{"Accept-Encoding", "br"}});
   EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
   EXPECT_TRUE(resp.body.contains('x'));
@@ -647,15 +647,15 @@ TEST(HttpCompression, StreamingBelowThresholdIdentity) {
     cfg.compression.preferredFormats = {Encoding::gzip};
   });
 
-  std::string small(40, 'y');
-  ts.router().setDefault([small](const HttpRequest&, HttpResponseWriter& writer) {
+  std::string smallStr(40, 'y');
+  ts.router().setDefault([smallStr](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.writeBody(small);  // never crosses threshold
+    writer.writeBody(smallStr);  // never crosses threshold
     writer.end();
   });
   auto resp = test::simpleGet(ts.port(), "/sid", {{"Accept-Encoding", "gzip"}});
   EXPECT_FALSE(resp.headers.contains(http::ContentEncoding));
-  EXPECT_TRUE(resp.body.contains(small));
+  EXPECT_TRUE(resp.body.contains(smallStr));
 }
 
 TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActivation) {

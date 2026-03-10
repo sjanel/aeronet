@@ -59,7 +59,7 @@ inline void SetFcntlErrors(std::string_view path, std::initializer_list<int> err
 
 #ifdef AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
 using aeronet::test::PathForFd;
-#else
+#elif defined(AERONET_POSIX)
 inline std::optional<std::string> PathForFd(int fd) {
   std::array<char, 64> linkBuf{};
   std::snprintf(linkBuf.data(), linkBuf.size(), "/proc/self/fd/%d", fd);
@@ -71,6 +71,8 @@ inline std::optional<std::string> PathForFd(int fd) {
   pathBuf[static_cast<std::size_t>(len)] = '\0';
   return std::string(pathBuf.data());
 }
+#else
+inline std::optional<std::string> PathForFd(int /*fd*/) { return std::nullopt; }
 #endif
 
 inline ReadAction PopReadAction(int fd, bool& hasAction) {
@@ -142,6 +144,8 @@ class FileSyscallHookGuard {
 };
 
 }  // namespace aeronet::test
+
+#ifdef AERONET_POSIX
 
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -233,3 +237,5 @@ extern "C" int fcntl(int __fd, int __cmd, ...) {
 #elifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
+
+#endif  // AERONET_POSIX

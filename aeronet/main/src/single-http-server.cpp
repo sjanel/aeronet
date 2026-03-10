@@ -1024,7 +1024,11 @@ void SingleHttpServer::eventLoop() {
       } else {
         const auto bmp = event.eventBmp;
         const auto cnxIt = _connections.iterator(fd);
-        if (!*cnxIt) [[unlikely]] {
+#ifdef AERONET_WINDOWS
+        if (!_connections.active(cnxIt)) [[unlikely]] {
+#else
+        if (!internal::ConnectionStorage::active(cnxIt)) [[unlikely]] {
+#endif
           log::warn("fd # {} not found (stale epoll event or race)", fd);
           continue;
         }
@@ -1041,7 +1045,7 @@ void SingleHttpServer::eventLoop() {
           closeStatus = std::max(handleReadableClient(cnxIt), closeStatus);
         }
         if (closeStatus == CloseStatus::Close) {
-          closeConnection(cnxIt);
+          closeConnection(_connections.iterator(fd));
         }
       }
     }
@@ -1124,11 +1128,17 @@ void SingleHttpServer::closeListener() noexcept {
 }
 
 void SingleHttpServer::closeAllConnections() {
+#ifdef AERONET_WINDOWS
+  while (_connections.begin() != _connections.end()) {
+    closeConnection(_connections.begin());
+  }
+#else
   for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
     if (*cnxIt) {
       closeConnection(cnxIt);
     }
   }
+#endif
 }
 
 ServerStats SingleHttpServer::stats() const {

@@ -111,7 +111,8 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
   for (int attempt = 0; attempt < 100; ++attempt) {
     tmpl = _dir.string() + "/aeronet_temp_" + toHex(dist(threadRng()));
 #ifdef _WIN32
-    fd = _open(tmpl.c_str(), _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+    const int crtFd = _open(tmpl.c_str(), _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+    fd = static_cast<NativeHandle>(crtFd);
 #else
     fd = ::open(tmpl.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
 #endif
@@ -120,7 +121,11 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
     }
   }
 
+#ifdef _WIN32
+  BaseFd raii(fd, BaseFd::HandleKind::CrtFd);
+#else
   BaseFd raii(fd);
+#endif
 
   if (fd == -1) {
     ThrowSystemError("ScopedTempFile: open failed");
@@ -128,7 +133,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
 
   _path = std::filesystem::path(tmpl);
 
-  const auto written = AERONET_WRITE(fd, content.data(), static_cast<unsigned int>(content.size()));
+  const auto written = AERONET_WRITE(static_cast<int>(fd), content.data(), static_cast<unsigned int>(content.size()));
   if (written < 0 || static_cast<std::size_t>(written) != content.size()) {
     // best-effort cleanup: try to unlink the file we just created
     const auto rc = AERONET_UNLINK(_path.string().c_str());
