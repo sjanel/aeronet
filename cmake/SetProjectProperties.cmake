@@ -175,9 +175,40 @@ function(AeronetSetProjectProperties name)
   endif()
 endfunction()
 
+function(AeronetStageRuntimeDlls name)
+  if(NOT WIN32)
+    return()
+  endif()
+
+  set(_copy_runtime_dlls_script "${CMAKE_CURRENT_BINARY_DIR}/${name}-copy-runtime-dlls-$<CONFIG>.cmake")
+  set(_copy_runtime_dlls_content
+"set(runtime_dlls [==[$<TARGET_RUNTIME_DLLS:${name}>]==])
+if(runtime_dlls STREQUAL \"\")
+  return()
+endif()
+
+foreach(runtime_dll IN LISTS runtime_dlls)
+  execute_process(
+    COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different \"\${runtime_dll}\" \"$<TARGET_FILE_DIR:${name}>\"
+    COMMAND_ERROR_IS_FATAL ANY
+  )
+endforeach()
+")
+  file(GENERATE
+    OUTPUT "${_copy_runtime_dlls_script}"
+    CONTENT "${_copy_runtime_dlls_content}"
+  )
+
+  add_custom_command(TARGET ${name} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -P "${_copy_runtime_dlls_script}"
+    VERBATIM
+  )
+endfunction()
+
 function(AeronetAddProjectExecutable name)
   add_executable(${name} ${ARGN})
   AeronetSetProjectProperties(${name})
+  AeronetStageRuntimeDlls(${name})
 endfunction()
 
 function(AeronetAddProjectLibrary name)

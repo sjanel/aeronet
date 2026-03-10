@@ -6,6 +6,8 @@
 #ifdef AERONET_WINDOWS
 #include <io.h>
 #include <ws2tcpip.h>
+
+#include <stdexcept>
 #else
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -21,6 +23,19 @@
 #include "aeronet/system-error.hpp"
 
 namespace aeronet {
+
+#ifdef AERONET_WINDOWS
+void EnsureWinsockInitialized() {
+  struct WinsockInit {
+    WinsockInit() {
+      WSADATA wsaData;
+      ::WSAStartup(MAKEWORD(2, 2), &wsaData);
+    }
+    ~WinsockInit() { ::WSACleanup(); }
+  };
+  static WinsockInit instance;
+}
+#endif
 
 bool SetNonBlocking(NativeHandle fd) noexcept {
 #ifdef AERONET_WINDOWS
@@ -162,11 +177,63 @@ int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t o
   ov.Offset = static_cast<DWORD>(static_cast<int64_t>(offset) & 0xFFFFFFFF);
   ov.OffsetHigh = static_cast<DWORD>((static_cast<int64_t>(offset) >> 32) & 0xFFFFFFFF);
   DWORD bytesRead = 0;
-  if (::ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(fd)), buffer, static_cast<DWORD>(len), &bytesRead, &ov)) {
+  if (::ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(fd))), buffer, static_cast<DWORD>(len),
+                 &bytesRead, &ov)) {
     return static_cast<int64_t>(bytesRead);
   }
   return -1;
 #endif
 }
+
+#ifdef AERONET_WINDOWS
+void CreateLocalSocketPair(NativeHandle& readFd, NativeHandle& writeFd) {
+  EnsureWinsockInitialized();
+
+  SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (listener == INVALID_SOCKET) {
+    throw std::runtime_error("CreateLocalSocketPair: socket() failed for listener");
+  }
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+
+  if (::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR ||
+      ::listen(listener, 1) == SOCKET_ERROR) {
+    ::closesocket(listener);
+    throw std::runtime_error("CreateLocalSocketPair: bind/listen failed");
+  }
+
+  socklen_t addrLen = sizeof(addr);
+  ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &addrLen);
+
+  SOCKET connector = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (connector == INVALID_SOCKET) {
+    ::closesocket(listener);
+    throw std::runtime_error("CreateLocalSocketPair: socket() failed for connector");
+  }
+
+  if (::connect(connector, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+    ::closesocket(connector);
+    ::closesocket(listener);
+    throw std::runtime_error("CreateLocalSocketPair: connect failed");
+  }
+
+  SOCKET accepted = ::accept(listener, nullptr, nullptr);
+  ::closesocket(listener);
+
+  if (accepted == INVALID_SOCKET) {
+    ::closesocket(connector);
+    throw std::runtime_error("CreateLocalSocketPair: accept failed");
+  }
+
+  SetNonBlocking(accepted);
+  SetNonBlocking(connector);
+
+  readFd = accepted;
+  writeFd = connector;
+}
+#endif
 
 }  // namespace aeronet
