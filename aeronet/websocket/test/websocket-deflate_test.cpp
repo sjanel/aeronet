@@ -3,16 +3,20 @@
 #include <gtest/gtest.h>
 
 #include <cctype>
-#include <cstddef>
 #include <cstring>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/raw-chars.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include <cstddef>
+#include <span>
+
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
+#endif
 
 namespace aeronet::websocket {
 namespace {
@@ -32,16 +36,6 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
 #ifdef AERONET_ENABLE_ZLIB
   // By default, config should be valid
   EXPECT_TRUE(config.enabled);
-  EXPECT_NO_THROW(config.validate());
-#else
-  EXPECT_FALSE(config.enabled);
-  // If zlib is not enabled, validation should not throw regardless of config values
-  EXPECT_NO_THROW(config.validate());
-  config.enabled = true;
-  EXPECT_THROW(config.validate(), std::invalid_argument);
-#endif
-
-  // Valid config should not throw
   EXPECT_NO_THROW(config.validate());
 
   config.serverMaxWindowBits = 7;
@@ -69,6 +63,13 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
   config.minCompressSize = 512UL;
   EXPECT_NO_THROW(config.validate());
+#else
+  EXPECT_FALSE(config.enabled);
+  // If zlib is not enabled, validation should not throw regardless of config values
+  EXPECT_NO_THROW(config.validate());
+  config.enabled = true;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+#endif
 }
 
 // ============================================================================

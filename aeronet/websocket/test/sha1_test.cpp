@@ -174,7 +174,8 @@ TEST(SHA1Test, IncrementalUpdateVaryingChunks) {
   std::string_view data = "The quick brown fox jumps over the lazy dog";
   // Feed in various chunk sizes
   SHA1 hasher;
-  hasher.update(data.begin(), 10);                    // "The quick "
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  hasher.update(data.data(), 10);                     // "The quick "
   hasher.update(data.data() + 10, 6);                 // "brown "
   hasher.update(data.data() + 16, 20);                // "fox jumps over the "
   hasher.update(data.data() + 36, data.size() - 36);  // "lazy dog"

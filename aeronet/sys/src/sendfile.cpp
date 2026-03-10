@@ -45,14 +45,34 @@ int64_t Sendfile(NativeHandle outFd, int fileFd, int64_t& offset, std::size_t co
   OVERLAPPED ov{};
   ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFF);
   ov.OffsetHigh = static_cast<DWORD>(static_cast<uint64_t>(offset) >> 32);
-  const DWORD toSend = static_cast<DWORD>(count);
-  if (!::TransmitFile(outFd, fileHandle, toSend, 0, &ov, nullptr, TF_USE_DEFAULT_WORKER)) {
+  ov.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+  if (ov.hEvent == nullptr) {
     return -1;
   }
-  // TransmitFile is synchronous when called on a blocking socket or with an
-  // OVERLAPPED on a non-overlapped socket. On success the full count was sent.
-  offset += static_cast<int64_t>(toSend);
-  return static_cast<int64_t>(toSend);
+  const DWORD toSend = static_cast<DWORD>(count);
+  if (::TransmitFile(outFd, fileHandle, toSend, 0, &ov, nullptr, TF_USE_DEFAULT_WORKER)) {
+    // Completed synchronously.
+    CloseHandle(ov.hEvent);
+    offset += static_cast<int64_t>(toSend);
+    return static_cast<int64_t>(toSend);
+  }
+  const DWORD err = WSAGetLastError();
+  if (err == WSA_IO_PENDING) {
+    // Socket is overlapped/non-blocking — wait for the operation to complete.
+    DWORD bytesTransferred = 0;
+    DWORD flags = 0;
+    if (!WSAGetOverlappedResult(outFd, &ov, &bytesTransferred, TRUE, &flags)) {
+      CloseHandle(ov.hEvent);
+      return -1;
+    }
+    CloseHandle(ov.hEvent);
+    offset += static_cast<int64_t>(bytesTransferred);
+    return static_cast<int64_t>(bytesTransferred);
+  }
+  // Other errors (WSAEWOULDBLOCK, etc.) — propagate to caller.
+  CloseHandle(ov.hEvent);
+  WSASetLastError(err);
+  return -1;
 }
 #endif
 

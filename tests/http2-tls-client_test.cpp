@@ -1,10 +1,7 @@
 #include <gtest/gtest.h>
 
-#include <cstddef>
-#include <limits>
 #include <string>
 
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -15,6 +12,10 @@
 #include "aeronet/timestring.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
+#include <cstddef>
+#include <limits>
+
+#include "aeronet/http-constants.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"

@@ -220,14 +220,18 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   ASSERT_GE(fd, 0) << "connect failed";
   // Send an incomplete request line and let it stall past the timeout.
   test::sendAll(fd, "GET /", std::chrono::milliseconds{100});
-  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{10});
-  // Try to finish the request; the server should already consider it timed out and reply with 408.
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{20});
+
+  // Read the 408 BEFORE sending more data — on Windows, sending to a peer that has
+  // closed can trigger RST processing which discards pending receive-buffer data.
+  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+
+  // Try to finish the request; the server should already consider it timed out.
   static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
   SafeSend(fd, rest);
 
-  std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_FALSE(resp.empty());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
 }
 
@@ -549,6 +553,7 @@ TEST(HttpServerCopy, CopyConstruct) {
   EXPECT_THROW(SingleHttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
 }
 
+#ifdef AERONET_POSIX
 TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
   test::UnixDogstatsdSink sink;
 
@@ -599,6 +604,7 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
   dogStatsDClient.increment("metric1", 2);
   EXPECT_EQ(sink.recvMessage(), "tel.metric1:2|c");
 }
+#endif
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/hello world", [](const HttpRequest& req) {

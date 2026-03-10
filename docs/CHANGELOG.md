@@ -52,6 +52,7 @@ All notable changes to aeronet are documented in this file.
 - Bumped `clang-format` version to **21**.
 - Fix: Resolve race in TLS handshake handling that caused a flaky test.
 - Addition of **HTTP/2** scripted benchmarks in the CI pipeline, with `h2load`.
+- Fixed compilation of `aeronet` with `AERONET_ENABLE_ZLIB` off but `AERONET_ENABLE_WEBSOCKET` on.
 
 ## [1.1.0] - 2026-02-16
 

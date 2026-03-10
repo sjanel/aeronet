@@ -1,8 +1,6 @@
 #include "aeronet/websocket-deflate.hpp"
 
-#include <algorithm>
 #include <cctype>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -11,16 +9,19 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
-#include <system_error>
 
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
+#include <algorithm>
+#include <charconv>
+#include <system_error>
+
+#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/websocket-compress.hpp"
 #endif
 
@@ -246,6 +247,7 @@ DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConf
 
 DeflateContext::~DeflateContext() = default;
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 const char* DeflateContext::compress(std::span<const std::byte> input, RawBytes& output) {
 #ifdef AERONET_ENABLE_ZLIB
   return _impl->compressor.compress(input, output, _impl->deflateNoContextTakeover);
@@ -256,6 +258,7 @@ const char* DeflateContext::compress(std::span<const std::byte> input, RawBytes&
 #endif
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 const char* DeflateContext::decompress(std::span<const std::byte> input, RawBytes& output,
                                        std::size_t maxDecompressedSize) {
 #ifdef AERONET_ENABLE_ZLIB

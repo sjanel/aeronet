@@ -12,8 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/compression-test-helpers.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -24,7 +22,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -33,6 +30,12 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/raw-chars.hpp"
 #endif
 
 using namespace aeronet;

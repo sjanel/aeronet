@@ -51,24 +51,32 @@ inline void CheckFd(std::string_view path, int fd) {
   }
 }
 
-inline int CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
+inline BaseFd CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
 #ifdef AERONET_POSIX
   const int fd = ::open(std::string(path).c_str(), Flags(mode));
 #elifdef AERONET_WINDOWS
   const int fd = _open(std::string(path).c_str(), Flags(mode));
 #endif
   CheckFd(path, fd);
-  return fd;
+#ifdef AERONET_WINDOWS
+  return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
+#else
+  return BaseFd(fd);
+#endif
 }
 
-inline int CreateFileBaseFd(const char* path, File::OpenMode mode) {
+inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 #ifdef AERONET_POSIX
   const int fd = ::open(path, Flags(mode));
 #elifdef AERONET_WINDOWS
   const int fd = _open(path, Flags(mode));
 #endif
   CheckFd(path, fd);
-  return fd;
+#ifdef AERONET_WINDOWS
+  return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
+#else
+  return BaseFd(fd);
+#endif
 }
 
 inline std::size_t GetFileSize(BaseFd& fd) {
@@ -79,7 +87,7 @@ inline std::size_t GetFileSize(BaseFd& fd) {
   }
 #elifdef AERONET_WINDOWS
   struct _stat64 st{};
-  if (fd && _fstat64(fd.fd(), &st) == 0) {
+  if (fd && _fstat64(static_cast<int>(fd.fd()), &st) == 0) {
     return static_cast<std::size_t>(st.st_size);
   }
 #endif
@@ -101,12 +109,12 @@ std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
     const auto readResult = ::pread(_fd.fd(), dst.data(), dst.size(), static_cast<off_t>(offset));
 #elifdef AERONET_WINDOWS
     // Windows has no pread(); emulate by seeking + reading (file descriptors are not shared across threads here).
-    if (_lseeki64(_fd.fd(), static_cast<__int64>(offset), SEEK_SET) == -1) {
-      log::error("Unable to seek file (fd {}, offset {}): error {}: {}", _fd.fd(), offset, errno,
+    if (_lseeki64(static_cast<int>(_fd.fd()), static_cast<__int64>(offset), SEEK_SET) == -1) {
+      log::error("Unable to seek file (fd {}, offset {}): error {}: {}", static_cast<int>(_fd.fd()), offset, errno,
                  SystemErrorMessage(errno));
       return kError;
     }
-    const auto readResult = _read(_fd.fd(), dst.data(), static_cast<unsigned int>(dst.size()));
+    const auto readResult = _read(static_cast<int>(_fd.fd()), dst.data(), static_cast<unsigned int>(dst.size()));
 #endif
     if (readResult >= 0) {
       return static_cast<std::size_t>(readResult);
