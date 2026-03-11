@@ -1417,7 +1417,7 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
   EXPECT_TRUE(h2.serverData.back().endStream);
 }
 
-#ifdef AERONET_ENABLE_OPENSSL
+#if defined(AERONET_ENABLE_ASYNC_HANDLERS) && defined(AERONET_ENABLE_OPENSSL)
 
 // Test deferWork(): basic async work execution returning a value in HTTP/2
 TEST(Http2Async, DeferWorkBasicReturnValue) {

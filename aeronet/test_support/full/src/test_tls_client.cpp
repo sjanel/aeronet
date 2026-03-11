@@ -148,6 +148,16 @@ std::string TlsClient::readAll() {
       }
       continue;
     }
+    if (err == SSL_ERROR_SYSCALL) {
+      // On Windows, the server may close the connection without sending a TLS close_notify
+      // (e.g., non-blocking SSL_shutdown could not flush). In that case SSL_read returns
+      // SSL_ERROR_SYSCALL with no queued OpenSSL error and errno/WSAGetLastError() == 0.
+      // Treat as graceful EOF — return whatever data was accumulated so far.
+      if (ERR_peek_error() == 0) {
+        break;
+      }
+      log::error("SSL_read SSL_ERROR_SYSCALL, OpenSSL error queue not empty");
+    }
     // Fatal error
     break;
   }

@@ -130,6 +130,12 @@ void TlsTransport::shutdown() noexcept {
   if (ssl == nullptr) {
     return;
   }
+  if (!_handshakeDone) {
+    // Connection closed before TLS handshake completed (e.g., plain TCP probe).
+    // SSL_shutdown on a non-handshaked SSL is undefined — just clear stale errors.
+    ::ERR_clear_error();
+    return;
+  }
   // OpenSSL SSL_shutdown semantics (simplified):
   //  - First call attempts to send our "close_notify" alert. Return values:
   //      1 : Bidirectional shutdown already complete (we previously received peer's close_notify).
@@ -172,9 +178,12 @@ TransportHint TlsTransport::handshake(TransportHint want) {
       if (isRetry(err)) {
         return (err == SSL_ERROR_WANT_WRITE) ? TransportHint::WriteReady : TransportHint::ReadReady;
       }
-      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK should be treated as retry
-      if (err == SSL_ERROR_SYSCALL && LastSystemError() == error::kWouldBlock) {
-        return want;
+      // SSL_ERROR_SYSCALL with EAGAIN/EWOULDBLOCK or sysErr==0 (spurious wakeup) should be treated as retry
+      if (err == SSL_ERROR_SYSCALL) {
+        const int sysErr = LastSystemError();
+        if (sysErr == error::kWouldBlock || (sysErr == 0 && ::ERR_peek_error() == 0)) {
+          return want;
+        }
       }
       return TransportHint::Error;
     }

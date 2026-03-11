@@ -44,7 +44,10 @@ void TestServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
   const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
   if (future.wait_for(waitTimeout) == std::future_status::timeout) {
     log::warn("Config update did not complete within {} ms", waitTimeout.count());
-    future.wait();
+    // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
+    if (future.wait_for(std::chrono::seconds{10}) == std::future_status::timeout) {
+      throw std::runtime_error("postConfigUpdate: server event loop appears stuck (10 s timeout)");
+    }
   }
 }
 
@@ -65,7 +68,10 @@ void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
   const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
   if (future.wait_for(waitTimeout) == std::future_status::timeout) {
     log::warn("Router update did not complete within {} ms", waitTimeout.count());
-    future.wait();
+    // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
+    if (future.wait_for(std::chrono::seconds{10}) == std::future_status::timeout) {
+      throw std::runtime_error("postRouterUpdate: server event loop appears stuck (10 s timeout)");
+    }
   }
 }
 
