@@ -73,7 +73,7 @@ void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds t
 std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTimeout = 500ms,
                             std::size_t expectedReceivedBytes = 0);
 
-std::string recvUntilClosed(NativeHandle fd);
+std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout = std::chrono::seconds{10});
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
