@@ -146,7 +146,10 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
                                          _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
-  if (!keepAlive && state.outBuffer.empty()) {
+  if (!keepAlive) {
+    // Always request drain+close for non-keep-alive connections. The actual close
+    // only triggers once outBuffer is empty (checked by canCloseConnectionForDrain),
+    // so it is safe to call this before a large response finishes flushing.
     state.requestDrainAndClose();
   }
   if (_callbacks.metrics) {

@@ -210,7 +210,15 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
   return out;
 }
 
-std::string recvUntilClosed(NativeHandle fd) {
+std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
+  // Ensure a receive timeout is set so that a stuck server causes a test failure
+  // rather than blocking the whole test suite indefinitely.
+  try {
+    setRecvTimeout(fd, recvTimeout);
+  } catch (const std::exception& ex) {
+    // Best-effort: some callers use mock sockets that do not support SO_RCVTIMEO.
+    log::debug("recvUntilClosed: setRecvTimeout failed ({})", ex.what());
+  }
   std::string out;
   for (;;) {
     const std::size_t oldSize = out.size();
@@ -228,6 +236,11 @@ std::string recvUntilClosed(NativeHandle fd) {
           return oldSize;
         }
         if (recvErr == error::kConnectionReset || recvErr == error::kConnectionAborted) {
+          return oldSize;
+        }
+        if (recvErr == error::kTimedOut) {
+          // SO_RCVTIMEO expired (WSAETIMEDOUT on Windows, EAGAIN on Linux handled above).
+          // Return what we have — caller will detect no progress and break.
           return oldSize;
         }
         ThrowSystemError("Error from blocking recv");
@@ -288,7 +301,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
 #endif
       ThrowSystemError("Error from ::accept");
     }
-    char buf[1024];
+    char buf[16384];
 
     while (true) {
       const auto recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
@@ -659,12 +672,11 @@ std::string buildRequest(const RequestOptions& opt) {
 std::optional<std::string> request(uint16_t port, const RequestOptions& opt) {
   ClientConnection cnx(port);
   auto fd = cnx.fd();
-  setRecvTimeout(fd, opt.recvTimeout);
   auto reqStr = buildRequest(opt);
 
   sendAll(fd, reqStr);
 
-  return recvUntilClosed(fd);
+  return recvUntilClosed(fd, opt.recvTimeout);
 }
 
 EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {

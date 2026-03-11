@@ -39,6 +39,7 @@ inline constexpr int kConnectionAborted = WSAECONNABORTED;
 inline constexpr int kBrokenPipe = WSAECONNRESET;  // Windows has no EPIPE for sockets
 inline constexpr int kNoBufferSpace = WSAENOBUFS;
 inline constexpr int kTooManyFiles = WSAEMFILE;
+inline constexpr int kTimedOut = WSAETIMEDOUT;
 
 constexpr bool IsNotSupported(int err) { return err == WSAEOPNOTSUPP; }
 
@@ -62,6 +63,7 @@ inline constexpr int kConnectionAborted = ECONNABORTED;
 inline constexpr int kBrokenPipe = EPIPE;
 inline constexpr int kNoBufferSpace = ENOBUFS;
 inline constexpr int kTooManyFiles = EMFILE;
+inline constexpr int kTimedOut = ETIMEDOUT;
 #endif
 }  // namespace error
 

@@ -101,6 +101,10 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
     const int connectErr = LastSystemError();
     // Non-blocking connect started -> completion will be signalled via poll/epoll/WSAPoll
     switch (connectErr) {
+      case error::kWouldBlock:
+        // Windows returns WSAEWOULDBLOCK (10035) from connect() on a non-blocking socket;
+        // Linux/macOS return EINPROGRESS instead. Both mean "connection in progress".
+        [[fallthrough]];
       case error::kInProgress:
         [[fallthrough]];
       case error::kAlready:
