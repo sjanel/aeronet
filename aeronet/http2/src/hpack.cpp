@@ -1,5 +1,7 @@
 #include "aeronet/hpack.hpp"
 
+#include <sys/types.h>
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -497,10 +499,10 @@ void HpackDynamicTable::evict() {
 
 namespace {
 struct DecodedIndex {
-  static constexpr std::size_t kInvalidIndex = static_cast<std::size_t>(~0ULL);
+  static constexpr uint64_t kInvalidIndex = std::numeric_limits<uint64_t>::max();
 
-  std::size_t index{kInvalidIndex};
-  std::size_t consumed{0};
+  uint64_t index{kInvalidIndex};
+  uint8_t consumed{0};
 };
 
 /// Decode an integer with the specified prefix bits (RFC 7541 §5.1).
@@ -525,34 +527,33 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
   // Security hardening: cap at 8 continuation bytes (enough for any valid uint64_t / HTTP/2 value).
   // This prevents a malicious encoder from forcing excessive loop iterations with crafted
   // continuation bytes before the original multiplier-overflow check would trigger.
-  static constexpr int kMaxContinuationBytes = 8;
-  std::size_t pos = 1;
+  static constexpr uint8_t kMaxContinuationBytes = 8;
+  uint8_t pos = 1;
   uint64_t multiplier = 1;
-  int continuationCount = 0;
 
   while (pos < data.size()) {
-    if (++continuationCount > kMaxContinuationBytes) [[unlikely]] {
+    if (pos > kMaxContinuationBytes) [[unlikely]] {
       return ret;  // Invalid: integer encoding uses too many continuation bytes
     }
 
     const uint8_t currByte = static_cast<uint8_t>(data[pos]);
     value += (currByte & 0x7F) * multiplier;
+
+    // Overflow cannot happen, we can only multiply by 128 (2⁷) kMaxContinuationBytes times.
+    static_assert(kMaxContinuationBytes * 7 < static_cast<uint8_t>(sizeof(uint64_t) * 8),
+                  "Multiplier overflow possible in DecodeInteger");
+
     multiplier *= 128;
     ++pos;
 
     if ((currByte & 0x80) == 0) {
       ret.index = value;
       ret.consumed = pos;
-      return ret;
-    }
-
-    // Overflow check
-    if (multiplier == 0) [[unlikely]] {
-      return ret;
+      break;
     }
   }
 
-  return ret;  // Incomplete integer
+  return ret;
 }
 
 }  // namespace
@@ -562,36 +563,6 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
   _decodedHeadersMap.clear();
 
   std::size_t pos = 0;
-
-  // Helper: decode name from index or as literal string
-  auto decodeName = [this, &data, &pos](std::size_t index,
-                                        const char* errMsg) -> std::pair<std::string_view, const char*> {
-    if (index == 0) {
-      // New literal name
-      const auto nameResult = decodeString(data.subspan(pos));
-      if (nameResult.consumed == DecodedString::kInvalidConsumed) {
-        return {{}, errMsg};
-      }
-      pos += nameResult.consumed;
-      return {nameResult.str, nullptr};
-    }
-    // Indexed name
-    const auto header = lookupIndex(index);
-    if (header.name.empty()) {
-      return {{}, "Index out of bounds for header name"};
-    }
-    return {header.name, nullptr};
-  };
-
-  // Helper: decode value string
-  auto decodeValue = [this, &data, &pos](const char* errMsg) -> std::pair<std::string_view, const char*> {
-    auto valueResult = decodeString(data.subspan(pos));
-    if (valueResult.consumed == DecodedString::kInvalidConsumed) {
-      return {{}, errMsg};
-    }
-    pos += valueResult.consumed;
-    return {valueResult.str, nullptr};
-  };
 
   DecodeResult res{{}, _decodedHeadersMap};
 
@@ -646,19 +617,34 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += indexResult.consumed;
 
-      auto [name, nameErr] = decodeName(indexResult.index, "Failed to decode literal header name");
-      if (nameErr != nullptr) {
-        res.errorMessage = nameErr;
-        return res;
+      std::string_view name;
+      if (indexResult.index == 0) {
+        // New literal name
+        const auto nameResult = decodeString(data.subspan(pos));
+        if (nameResult.consumed == DecodedString::kInvalidConsumed) {
+          res.errorMessage = "Failed to decode literal header name";
+          return res;
+        }
+        pos += nameResult.consumed;
+        name = nameResult.str;
+      } else {
+        // Indexed name
+        const auto header = lookupIndex(indexResult.index);
+        if (header.name.empty()) {
+          res.errorMessage = "Index out of bounds for header name";
+          return res;
+        }
+        name = header.name;
       }
 
-      auto [value, valueErr] = decodeValue("Failed to decode literal header value");
-      if (valueErr != nullptr) {
-        res.errorMessage = valueErr;
+      auto valueResult = decodeString(data.subspan(pos));
+      if (valueResult.consumed == DecodedString::kInvalidConsumed) {
+        res.errorMessage = "Failed to decode literal header value";
         return res;
       }
+      pos += valueResult.consumed;
 
-      res.errorMessage = storeHeader(http::HeaderView{name, value});
+      res.errorMessage = storeHeader(http::HeaderView{name, valueResult.str});
       if (res.errorMessage != nullptr) {
         return res;
       }
@@ -666,7 +652,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       if (withIndexing) {
         // Note: add() copies name/value before evicting, so this is safe even if
         // name/value point to data owned by entries that will be evicted
-        _dynamicTable.add(name, value);
+        _dynamicTable.add(name, valueResult.str);
       }
     }
   }
@@ -801,7 +787,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   return {buf, sz};
 }
 
-http::HeaderView HpackDecoder::lookupIndex(std::size_t index) const {
+http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
   // Static table: indices 1-61
   http::HeaderView ret;
   if (index <= kStaticTable.size()) {

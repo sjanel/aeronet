@@ -158,7 +158,7 @@ class HpackDecoder {
 
   /// Look up a header by combined index (1-61 = static, 62+ = dynamic).
   /// Returns an empty header name if index is out of bounds.
-  [[nodiscard]] http::HeaderView lookupIndex(std::size_t index) const;
+  [[nodiscard]] http::HeaderView lookupIndex(uint64_t index) const;
 
   // Store a decoded header into internal storage.
   // Returns an error message on failure, or nullptr on success.

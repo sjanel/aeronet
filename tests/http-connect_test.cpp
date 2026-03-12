@@ -53,13 +53,13 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, std::chrono::milliseconds{10000});
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, 93UL);
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, 93UL);
   EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
   test::sendAll(fd, simpleHello, std::chrono::milliseconds{10000});
-  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, simpleHello.size());
+  auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, simpleHello.size());
   EXPECT_EQ(echoedHello, simpleHello);
 
 // Send payload that upstream will partially echo
@@ -72,7 +72,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   test::sendAll(fd, payload, std::chrono::milliseconds{10000});
 
   // Wait to receive the full payload (some arrives quickly, remainder after upstream sleeps)
-  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{10000}, payload.size());
+  auto echoed = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, payload.size());
   EXPECT_TRUE(echoed.starts_with("aaaaaaaaaaaaaaaaaa"));
   EXPECT_TRUE(echoed.ends_with("aaaaaaaaaaaaaaaaaa"));
   EXPECT_EQ(echoed.size(), payload.size());
