@@ -8,7 +8,6 @@
 #include <cstring>
 #include <limits>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -79,11 +78,9 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
     case ConnectionState::GoAwayReceived:
       return processFrames(data);
 
-    case ConnectionState::Closed:
-      return ProcessResult{ProcessResult::Action::Closed, ErrorCode::NoError, 0, {}};
-
     default:
-      throw std::logic_error("Invalid connection state");  // should not happen
+      assert(_state == ConnectionState::Closed);
+      return ProcessResult{ProcessResult::Action::Closed, ErrorCode::NoError, 0, {}};
   }
 }
 

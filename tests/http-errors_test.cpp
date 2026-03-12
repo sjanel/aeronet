@@ -496,7 +496,6 @@ TEST(ConnectionManagerErrors, HeaderReadTimeoutInReadLoop) {
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
 }
 
-// Test max buffer overflow in handleReadableClient (line 531-533)
 TEST(ConnectionManagerErrors, MaxBufferOverflow) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.headerReadTimeout = {};

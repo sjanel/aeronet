@@ -411,6 +411,57 @@ TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
   }
 }
 
+TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulatively) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.maxCompressedBytes = 0;
+  });
+  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+
+  const auto defaultMaxBodyBytes = ts.server.config().maxBodyBytes;
+  std::string plain(4096, 'Q');
+
+  for (std::string_view encoding : kKnownEncodings) {
+    const auto comp = compress(encoding, plain);
+    ASSERT_GT(comp.size(), 1U) << "Compressed payload unexpectedly too small for encoding: " << encoding;
+
+    const std::size_t firstChunkSize = comp.size() - 1;
+    const std::size_t secondChunkSize = 1;
+    ASSERT_LE(firstChunkSize, comp.size());
+
+    ts.postConfigUpdate([firstChunkSize](HttpServerConfig& cfg) { cfg.maxBodyBytes = firstChunkSize; });
+
+    std::ostringstream hdr;
+    hdr << "POST /chunked-cumulative-limit HTTP/1.1\r\n";
+    hdr << "Host: example.com\r\n";
+    hdr << "Transfer-Encoding: chunked\r\n";
+    hdr << "Content-Encoding: " << encoding << "\r\n";
+    hdr << "Connection: close\r\n\r\n";
+    hdr << std::hex << firstChunkSize << "\r\n";
+
+    std::string req = hdr.str();
+    req.append(comp.data(), firstChunkSize);
+    req += "\r\n";
+    hdr.str({});
+    hdr.clear();
+    hdr << std::hex << secondChunkSize << "\r\n";
+    req += hdr.str();
+    req.append(comp.data() + firstChunkSize, secondChunkSize);
+    req += "\r\n0\r\n\r\n";
+
+    test::ClientConnection sock(ts.port());
+    NativeHandle fd = sock.fd();
+    test::sendAll(fd, req);
+    std::string resp = test::recvUntilClosed(fd);
+
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 413"))
+        << "Expected cumulative compressed-size limit to trigger for encoding: " << encoding
+        << ", compressed size: " << comp.size() << ", response: " << resp;
+  }
+
+  ts.postConfigUpdate([defaultMaxBodyBytes](HttpServerConfig& cfg) { cfg.maxBodyBytes = defaultMaxBodyBytes; });
+}
+
 TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
