@@ -70,6 +70,14 @@ AeronetAddUnitTest(
     aeronet_objects
 )
 
+AeronetAddUnitTest(
+    http-parser_test
+    test/http-parser_test.cpp
+    LIBRARIES
+    aeronet
+    aeronet_test_support
+)
+
 if(AERONET_BUILD_TESTS AND AERONET_ENABLE_OPENSSL)
   target_link_libraries(connection-storage_test PUBLIC aeronet_tls)
   target_link_libraries(version_test PUBLIC aeronet_tls)
