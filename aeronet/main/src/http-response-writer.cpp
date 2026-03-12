@@ -80,12 +80,6 @@ void HttpResponseWriter::reason(std::string_view reason) {
 }
 
 void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view value) {
-  if (!http::IsValidHeaderName(name)) [[unlikely]] {
-    throw std::invalid_argument("Invalid HTTP header name");
-  }
-  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
-    throw std::invalid_argument("HTTP header value is invalid");
-  }
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -94,12 +88,6 @@ void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view v
 }
 
 void HttpResponseWriter::header(std::string_view name, std::string_view value) {
-  if (!http::IsValidHeaderName(name)) [[unlikely]] {
-    throw std::invalid_argument("Invalid HTTP header name");
-  }
-  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
-    throw std::invalid_argument("HTTP header value is invalid");
-  }
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -187,18 +175,18 @@ void HttpResponseWriter::ensureHeadersSent() {
   auto cnxIt = _server->_connections.iterator(_fd);
   _server->queueData(cnxIt, _fixedResponse.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, _fixedResponse._opts,
                                                             nullptr, _server->config().minCapturedBodySize));
-  ConnectionState& state = _server->_connections.connectionState(cnxIt);
-  if (state.isAnyCloseRequested()) {
+  ConnectionState& cnx = _server->_connections.connectionState(cnxIt);
+  if (cnx.isAnyCloseRequested()) {
     _state = HttpResponseWriter::State::Failed;
     log::error("Streaming: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
                SystemErrorMessage(LastSystemError()));
-    return;
+  } else {
+    _state = HttpResponseWriter::State::HeadersSent;
   }
-  _state = HttpResponseWriter::State::HeadersSent;
 }
 
 void HttpResponseWriter::emitLastChunk() {
-  if (!chunked() || _head || _state == State::Failed) {
+  if (!chunked() || _state == State::Failed) {
     return;
   }
 
@@ -326,16 +314,16 @@ void HttpResponseWriter::end() {
                _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
+  // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
+  // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
+  ensureHeadersSent();
+
   if (_fixedResponse.hasBodyFile()) {
-    ensureHeadersSent();
     if (_state != State::Failed) {
       _state = State::Ended;
     }
     return;
   }
-  // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
-  // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
-  ensureHeadersSent();
 
   if (_compressionActivated) {
     const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
@@ -373,7 +361,7 @@ void HttpResponseWriter::end() {
   }
 #ifndef NDEBUG
   // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (!chunked() && !_head) {
+  if (_declaredLength != 0 && !_head) {
     // _declaredLength may be zero either because user explicitly set it or because we synthesized 0 for HEAD;
     // for HEAD we suppress body so skip. For identity path we track bytesWritten; for compression path we cannot
     // validate because encoder output size may differ from raw input; in that case we only asserted the user should
@@ -397,15 +385,12 @@ bool HttpResponseWriter::enqueue(HttpResponseData httpResponseData) {
   return !state.isAnyCloseRequested();
 }
 
-bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {
+bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {
   if (_state != State::Opened) {
     log::warn("Streaming: file ignored fd # {} reason=writer-not-open", _fd);
     return false;
   }
-  if (_bytesWritten > 0) {
-    log::warn("Streaming: file ignored fd # {} reason=body-bytes-already-written", _fd);
-    return false;
-  }
+  assert(_bytesWritten == 0);
   if (_declaredLength != 0) {
     log::warn("Streaming: file overriding previously declared Content-Length fd # {}", _fd);
     _declaredLength = 0;
@@ -414,7 +399,7 @@ bool HttpResponseWriter::file(File fileObj, std::uint64_t offset, std::uint64_t 
   _compressionActivated = false;
   _preCompressBuffer.clear();
 
-  _fixedResponse.file(std::move(fileObj), offset, length, contentType);
+  _fixedResponse.file(std::move(file), offset, length, contentType);
   _declaredLength = _fixedResponse.bodyLength();
   return true;
 }
@@ -478,7 +463,6 @@ bool HttpResponseWriter::tryPush(RawChars data, bool doNotWriteHexPrefix) {
     Copy(http::CRLF, prefix.data() + nbDigitsHex);
     prefix.setSize(nbDigitsHex + http::CRLF.size());
 
-    // do not use append here to avoid exponential growth of the buffer
     // capacity of the additional CRLF is already reserved
     assert(data.availableCapacity() >= http::CRLF.size());
     data.unchecked_append(http::CRLF);
@@ -494,7 +478,9 @@ bool HttpResponseWriter::tryPush(RawChars data, bool doNotWriteHexPrefix) {
                SystemErrorMessage(LastSystemError()));
     return false;
   }
+#ifndef NDEBUG
   _bytesWritten += dataSize;
+#endif
   return true;
 }
 
