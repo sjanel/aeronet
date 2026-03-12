@@ -98,15 +98,19 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   std::size_t totalCompressedSize = 0;
 
   while (true) {
-    auto first = state.inBuffer.begin() + pos;
-    auto last = state.inBuffer.end();
-    auto lineEnd = SearchCRLF(first, last);
+    auto* first = state.inBuffer.begin() + pos;
+    auto* last = state.inBuffer.end();
+    auto* lineEnd = SearchCRLF(first, last);
     if (lineEnd == last) {
       return BodyDecodeStatus::NeedMore;
     }
-    const auto sizeLineEnd = std::find(first, lineEnd, ';');  // ignore chunk extensions per RFC 7230 section 4.1.1
+    // ignore chunk extensions per RFC 7230 section 4.1.1
+    auto* sizeLineEnd = static_cast<const char*>(std::memchr(first, ';', static_cast<std::size_t>(lineEnd - first)));
+    if (sizeLineEnd == nullptr) {
+      sizeLineEnd = lineEnd;
+    }
     std::size_t chunkSize = 0;
-    for (auto it = first; it != sizeLineEnd; ++it) {
+    for (auto* it = first; it != sizeLineEnd; ++it) {
       const int8_t digit = from_hex_digit(*it);
       if (digit < 0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
@@ -118,7 +122,10 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         return BodyDecodeStatus::Error;
       }
     }
+
     pos = static_cast<std::size_t>(lineEnd - state.inBuffer.data()) + http::CRLF.size();
+
+    // First, check if we have at least the immediate terminating CRLF
     if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
       return BodyDecodeStatus::NeedMore;
     }
@@ -126,11 +133,6 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     if (chunkSize == 0) {
       // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
       // Trailers are terminated by a blank line (CRLF).
-
-      // First, check if we have at least the immediate terminating CRLF
-      if (state.inBuffer.size() < pos + http::CRLF.size()) {
-        return BodyDecodeStatus::NeedMore;
-      }
 
       // Check if trailers are present (not immediate CRLF)
       auto* trailerStart = state.inBuffer.data() + pos;
@@ -168,8 +170,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         }
 
         // Parse trailer field: name:value
-        auto* colonPtr = std::find(lineStart, lineLast, ':');
-        if (colonPtr == lineLast) {
+        auto* colonPtr =
+            static_cast<char*>(std::memchr(lineStart, ':', static_cast<std::size_t>(lineLast - lineStart)));
+        if (colonPtr == nullptr) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer header");
           return BodyDecodeStatus::Error;
         }

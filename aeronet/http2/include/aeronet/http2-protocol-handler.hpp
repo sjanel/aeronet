@@ -166,9 +166,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Called by the server when an async callback fires for this connection.
   /// @return true if a matching task was found and resumed, false otherwise.
   bool resumeAsyncTaskByHandle(std::coroutine_handle<> handle);
-
-  /// Check if there are any pending async tasks.
-  [[nodiscard]] bool hasAsyncTasks() const noexcept { return !_pendingAsyncTasks.empty(); }
 #endif
 
  private:

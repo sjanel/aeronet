@@ -729,6 +729,19 @@ TEST(HpackEncoder, FindHeaderInDynamicTable) {
   EXPECT_EQ(result.index, 62U);  // First dynamic table entry
 }
 
+TEST(HpackEncoder, FindSmallHeaderInDynamicTable) {
+  HpackEncoder encoder(4096);
+
+  // Add a custom header
+  RawBytes output;
+  encoder.encode(output, "hd", "custom-value");
+
+  // Should be found in dynamic table (index 62)
+  auto result = encoder.findHeader("hd", "custom-value");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);  // First dynamic table entry
+}
+
 TEST(HpackEncoder, FindHeaderTooLongToBeAStaticHeader) {
   HpackEncoder encoder(4096);
 
