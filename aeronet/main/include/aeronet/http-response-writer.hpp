@@ -100,7 +100,7 @@ class HttpResponseWriter {
   // (already sent body data, not opened, etc).
   // 'contentType': if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
   // object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
-  bool file(File fileObj, std::string_view contentType = {}) { return file(std::move(fileObj), 0, 0, contentType); }
+  bool file(File file, std::string_view contentType = {}) { return this->file(std::move(file), 0, 0, contentType); }
 
   // Stream the given file as the response body; zero-copy where transport allows.
   // Call before headers are sent and finish with end().
@@ -108,7 +108,7 @@ class HttpResponseWriter {
   // (already sent body data, not opened, etc).
   // 'contentType': if non-empty, sets given content type value. Otherwise, attempt to guess it from the file
   // object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
-  bool file(File fileObj, std::uint64_t offset, std::uint64_t length, std::string_view contentType = {});
+  bool file(File file, std::uint64_t offset, std::uint64_t length, std::string_view contentType = {});
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
   //
@@ -199,25 +199,28 @@ class HttpResponseWriter {
 
   [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
 
-  SingleHttpServer* _server{nullptr};
-  const HttpRequest* _request{nullptr};
-  NativeHandle _fd{kInvalidHandle};
-  bool _head{false};
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
+
+  SingleHttpServer* _server;
+  const HttpRequest* _request;
+  NativeHandle _fd;
+  bool _head;
   State _state{State::Opened};
-  Encoding _compressionFormat{Encoding::none};
+  Encoding _compressionFormat;
   bool _compressionActivated{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
   HttpResponse _fixedResponse;
   std::size_t _declaredLength{0};
+#ifndef NDEBUG
   std::size_t _bytesWritten{0};
+#endif
   EncoderContext* _activeEncoderCtx{nullptr};  // streaming context (owned by compression state)
   RawChars _preCompressBuffer;                 // threshold buffering before activation
   RawChars _trailers;                          // Trailer headers (RFC 7230 §4.1.2) buffered until end()
-  const CorsPolicy* _pCorsPolicy{nullptr};
+  const CorsPolicy* _pCorsPolicy;
   std::span<const ResponseMiddleware> _routeResponseMiddleware;
 };
 
