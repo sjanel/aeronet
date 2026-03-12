@@ -664,13 +664,13 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   raw(port, "HEAD", headResp);
   raw(port, "GET", getResp);
 
-  ASSERT_TRUE(headResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(headResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "6")));
   // No chunked framing, no body.
   ASSERT_FALSE(headResp.contains("abcdef"));
   ASSERT_FALSE(headResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // GET path: should carry body; since we set fixed length it should not be chunked.
-  ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::ContentLength, "6")));
   ASSERT_TRUE(getResp.contains("abcdef"));
   ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -708,7 +708,7 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
   });
   std::string getResp;
   raw(port, "GET", getResp);
-  ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   // No explicit Content-Length, chunked framing present.
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   ASSERT_FALSE(getResp.contains(http::ContentLength));
