@@ -43,6 +43,7 @@ All notable changes to aeronet are documented in this file.
 - Less calls to `std::chrono::steady_clock::now()` in the main event loop for better performance
 - Security hardening for HTTP/2.
 - Optimized char buffer search for '\r\n' by using `std::memchr` instead of `std::search` in `SearchCRLF` utility function, which is a hot path in HTTP parsing.
+- Optimized hpack HTTP/2 static header name lookup by using binary search instead of linear search.
 
 ### Other
 
