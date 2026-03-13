@@ -434,14 +434,9 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
   // Used by load balancers to determine if instance should receive traffic.
   _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
-    HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.ready()) {
-      resp.body("OK\n");
-    } else {
-      resp.status(http::StatusCodeServiceUnavailable);
-      resp.body("Not Ready\n");
-    }
-    return resp;
+    const bool isReady = _lifecycle.ready();
+    return HttpResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                        isReady ? "OK\n" : "Not Ready\n");
   });
 
   // Startup: Returns 200 once server is running (listener active).
@@ -449,14 +444,9 @@ void SingleHttpServer::registerBuiltInProbes() {
   // equivalent to liveness. Provided for Kubernetes compatibility where startup
   // probes can have different timeout/period settings for slow-starting applications.
   _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
-    HttpResponse resp(http::StatusCodeOK);
-    if (_lifecycle.started()) {
-      resp.body("OK\n");
-    } else {
-      resp.status(http::StatusCodeServiceUnavailable);
-      resp.body("Starting\n");
-    }
-    return resp;
+    const bool isStarted = _lifecycle.started();
+    return HttpResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                        isStarted ? "OK\n" : "Starting\n");
   });
 }
 

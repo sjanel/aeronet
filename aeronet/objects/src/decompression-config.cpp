@@ -1,5 +1,6 @@
 #include "aeronet/decompression-config.hpp"
 
+#include <cstddef>
 #include <stdexcept>
 
 namespace aeronet {

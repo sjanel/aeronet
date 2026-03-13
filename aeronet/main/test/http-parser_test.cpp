@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -22,7 +23,7 @@ namespace {
 
 // Shared server used by most tests. A short poll interval keeps NeedMore round-trips fast.
 test::TestServer ts(HttpServerConfig{}, {}, 5ms);
-auto port = ts.port();
+const auto port = ts.port();
 
 // Echo the request body back in the response.
 void InstallEchoHandler() {

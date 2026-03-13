@@ -1,7 +1,5 @@
 #include "aeronet/hpack.hpp"
 
-#include <sys/types.h>
-
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -88,6 +86,29 @@ constexpr std::array<http::HeaderView, 61> kStaticTable = {{
     {"via", ""},
     {"www-authenticate", ""},
 }};
+
+struct StaticTableEntry {
+  std::string_view name;
+  std::uint8_t index;
+};
+
+static_assert(kStaticTable.size() <= std::numeric_limits<decltype(StaticTableEntry{}.index)>::max(),
+              "Static table header names must be representable in uint8_t for efficient indexing");
+
+// Sorted by name, then by index (to get lowest index first for name-only matches)
+constexpr auto kStaticTableByName = []() {
+  std::array<StaticTableEntry, kStaticTable.size()> entries{};
+  for (std::uint8_t idx = 0; idx < static_cast<std::uint8_t>(kStaticTable.size()); ++idx) {
+    entries[idx] = {kStaticTable[idx].name, idx};
+  }
+  std::ranges::sort(entries, [](const StaticTableEntry& lhs, const StaticTableEntry& rhs) {
+    if (lhs.name != rhs.name) {
+      return lhs.name < rhs.name;
+    }
+    return lhs.index < rhs.index;  // stable: lowest index first
+  });
+  return entries;
+}();
 
 constexpr std::size_t kStaticHeaderNameMinLen =
     std::ranges::min_element(
@@ -978,23 +999,25 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
 
   HpackLookupResult result;
 
-  // Search static table first.
-  // We could optimize this with a hash map, but linear search is acceptable
-  // due to small size and good cache locality.
+  // Search static table first, using binary search.
   if (name.size() >= kStaticHeaderNameMinLen && name.size() <= kStaticHeaderNameMaxLen) {
-    auto it = std::ranges::find(kStaticTable, name, &http::HeaderView::name);
-    if (it != kStaticTable.end()) {
-      result.index = static_cast<uint32_t>(it - kStaticTable.begin()) + 1U;
-      if (it->value == value) {
+    for (auto it = std::ranges::lower_bound(kStaticTableByName, name, {}, &StaticTableEntry::name);
+         it != kStaticTableByName.end() && it->name == name; ++it) {
+      const auto& entry = kStaticTable[it->index];
+      if (result.match == HpackLookupResult::Match::None) {
+        result.index = 1U + it->index;  // RFC 7541 is 1-based
+        result.match = HpackLookupResult::Match::NameOnly;
+      }
+      if (entry.value == value) {
+        result.index = 1U + it->index;
         result.match = HpackLookupResult::Match::Full;
         return result;
       }
-      result.match = HpackLookupResult::Match::NameOnly;
     }
   }
 
-  // Search dynamic table
-  // TODO: would it make sense to optimize this with a hash map for large sizes?
+  // Search dynamic table in a linear scan, which is reasonable since dynamic table is expected to be small and recently
+  // added entries are more likely to match.
   for (uint32_t idx = 0; idx < _dynamicTable.entryCount(); ++idx) {
     const auto& entry = _dynamicTable[idx];
     if (entry.name() == name) {

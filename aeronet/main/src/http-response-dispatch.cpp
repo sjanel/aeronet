@@ -13,6 +13,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
