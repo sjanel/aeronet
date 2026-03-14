@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/encoding.hpp"
+#include "aeronet/log.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
@@ -119,7 +120,14 @@ class HttpRequest {
         } catch (...) {
           *exPtr = std::current_exception();
         }
-        req.postCallback(handle, nullptr);
+        try {
+          req.postCallback(handle, nullptr);
+        } catch (const std::exception& ex) {
+          // Connection may have been closed while background work was running.
+          // The coroutine will never be resumed; the server will eventually
+          // clean up the connection via idle-sweep or drain-close.
+          log::error("Exception posting async callback: {}", ex.what());
+        }
       }).detach();
     }
 

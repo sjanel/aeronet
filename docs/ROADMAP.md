@@ -2,6 +2,7 @@
 
 ## Recently completed
 
+- **Cross-platform error abstraction & platform hardening**: Unified all raw `errno`/`WSAGetLastError()`/`strerror()` usage behind portable helpers in `system-error.hpp` (`LastSystemError`, `SystemErrorMessage`, `ThrowSystemError`, and `error::k*` constants). Fixed several platform-specific correctness issues: `SO_NOSIGPIPE` on macOS, `BaseFd` handle-kind discrimination on Windows, `FormatMessageA` for Winsock error codes, `TransmitFile` parameter types, `SO_REUSEPORT` on macOS 12+. See changelog for details.
 - **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2. Each stream owns its async task independently; when a coroutine suspends, other streams on the same connection continue to make progress. Previously HTTP/2 drained coroutines synchronously, blocking all streams.
 - **Formal security review of HTTP/2 frame handling and state machines**: Comprehensive code audit of ~4700 lines across 11 files covering frame parsing, connection/stream state machines, HPACK codec, flow control, and CONNECT tunneling. Identified 5 actionable findings (CONTINUATION accumulation limit, stream recv-window overflow check, HPACK integer decode overflow tightening, SETTINGS silent truncation logging, priority flood mitigation). See commit history and inline comments for details.
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
@@ -20,9 +21,12 @@
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
+  - MacOS even load balancer of event loop back traffic with SO_REUSEPORT (currently all goes to last bound socket)
 
 ## Medium priority
 
+- **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
+- **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 - **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
 - **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
