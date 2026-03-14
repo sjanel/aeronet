@@ -298,6 +298,13 @@ std::pair<Socket, uint16_t> startEchoServer() {
       if (err == EBADF || err == EINVAL) {
         return;
       }
+#elifdef AERONET_WINDOWS
+      // On Windows, closesocket() on the listen socket while accept() is blocked wakes
+      // accept() with WSAEINTR (interrupted), WSAEINVAL (invalid socket), or WSAENOTSOCK
+      // (socket already closed). Treat all of these as a clean server shutdown.
+      if (err == WSAEINTR || err == WSAEINVAL || err == WSAENOTSOCK) {
+        return;
+      }
 #endif
       ThrowSystemError("Error from ::accept");
     }

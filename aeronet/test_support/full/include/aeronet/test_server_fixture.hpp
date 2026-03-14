@@ -30,7 +30,7 @@ namespace aeronet::test {
 class TestServer {
  public:
   explicit TestServer(HttpServerConfig cfg, RouterConfig routerCfg = {},
-                      std::chrono::milliseconds pollPeriod = std::chrono::milliseconds{1});
+                      std::chrono::milliseconds poll = std::chrono::milliseconds{1});
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
 
