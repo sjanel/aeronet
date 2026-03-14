@@ -231,6 +231,9 @@ void CreateLocalSocketPair(NativeHandle& readFd, NativeHandle& writeFd) {
   SetNonBlocking(accepted);
   SetNonBlocking(connector);
 
+  SetTcpNoDelay(accepted);
+  SetTcpNoDelay(connector);
+
   readFd = accepted;
   writeFd = connector;
 }

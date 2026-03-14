@@ -1,8 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>
-#include <cstddef>
+#include <cstdint>
 #include <mutex>
 
 namespace aeronet {
@@ -22,9 +23,8 @@ class ServerLifecycleTracker {
 
   void notifyServerStopped() {
     std::scoped_lock lock(_mutex);
-    if (_running > 0) {
-      --_running;
-    }
+    assert(_running > 0);
+    --_running;
     _cv.notify_all();
   }
 
@@ -44,7 +44,7 @@ class ServerLifecycleTracker {
  private:
   std::mutex _mutex;
   std::condition_variable _cv;
-  std::size_t _running{0};
+  int64_t _running{0};
 };
 
 }  // namespace aeronet

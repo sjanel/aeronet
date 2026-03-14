@@ -109,6 +109,7 @@ EventFd::EventFd() {
   CreateLocalSocketPair(readEnd, writeEnd);
   _baseFd = BaseFd(readEnd);    // read end — registered in event loop
   _writeFd = BaseFd(writeEnd);  // write end — send() writes here
+
   log::debug("EventFd socket pair read={} write={} opened", static_cast<uintptr_t>(readEnd),
              static_cast<uintptr_t>(writeEnd));
 }
