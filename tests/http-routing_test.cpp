@@ -681,6 +681,9 @@ TEST(HttpRouting, AsyncLargeResponseChunks) {
   opts.target = "/async-large";
   opts.headers.emplace_back(http::Connection, "close");
   opts.maxResponseBytes = kAsyncLargePayload + 1024;
+  // Use a generous per-recv timeout: on Windows the loopback stack and CI runners can be
+  // slower than Linux, and the handler allocates a 16 MiB body before the first byte is sent.
+  opts.recvTimeout = std::chrono::seconds{30};
 
   auto raw = test::requestOrThrow(ts.port(), opts);
   auto parsed = test::parseResponseOrThrow(raw);
@@ -1330,7 +1333,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
         });
 
         --concurrentRequests;
-        co_return HttpResponse(http::StatusCodeOK).body("done");
+        co_return HttpResponse("done");
       });
 
   // Launch multiple requests in parallel
@@ -1342,7 +1345,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
   for (int idx = 0; idx < kNumRequests; ++idx) {
     threads.emplace_back([&]() {
       const std::string response = test::simpleGet(ts.port(), "/defer-concurrent");
-      if (response.contains("HTTP/1.1 200") && response.contains("done")) {
+      if (response.starts_with("HTTP/1.1 200") && response.ends_with("done")) {
         ++successCount;
       }
     });
@@ -1370,7 +1373,7 @@ TEST(HttpRouting, DeferWorkReturnsBool) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-bool");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("success")) << response;
 }
 

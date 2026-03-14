@@ -45,21 +45,6 @@
 namespace aeronet {
 using namespace std::chrono_literals;
 
-TEST(HttpTlsBasic, LargePayload) {
-  std::string largeBody(1 << 24, 'a');
-  // Prepare config with in-memory self-signed cert/key
-  test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
-    cfg.withMaxOutboundBufferBytes(largeBody.size() + 512);  // +512 for headers
-    cfg.withKeepAliveTimeout(std::chrono::hours(1));
-  });
-  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(largeBody); });
-  test::TlsClient client(ts.port());
-  auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
-  ASSERT_FALSE(raw.empty());
-  EXPECT_TRUE(raw.contains("HTTP/1.1 200"));
-  EXPECT_TRUE(raw.contains(largeBody));
-}
-
 TEST(HttpTlsCompressionStreaming, CompressionActivatedOverThresholdTls) {
   CompressionConfig compressionConfig;
   compressionConfig.minBytes = 32;
@@ -310,6 +295,21 @@ TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
   ASSERT_NE(ctx.get(), nullptr);
   ASSERT_NE(mctx.get(), nullptr);
   EXPECT_EQ(store.processTicket(bogus, iv, EVP_MAX_IV_LENGTH, ctx.get(), mctx.get(), 0), 0);
+}
+
+TEST(HttpTlsBasic, LargePayload) {
+  std::string largeBody(1 << 25, 'a');
+  // Prepare config with in-memory self-signed cert/key
+  test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
+    cfg.withMaxOutboundBufferBytes(largeBody.size() + 64);  // +64 for headers
+    cfg.withKeepAliveTimeout(std::chrono::hours(1));
+  });
+  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(largeBody); });
+  test::TlsClient client(ts.port());
+  auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
+  ASSERT_FALSE(raw.empty());
+  EXPECT_TRUE(raw.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(raw.ends_with(largeBody));
 }
 
 #ifdef AERONET_ENABLE_HTTP2

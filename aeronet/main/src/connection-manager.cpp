@@ -295,7 +295,9 @@ void SingleHttpServer::acceptNewConnections() {
         continue;
       }
 
-      if (AeronetSslSetFd(sslPtr.get(), cnxFd) != 1) [[unlikely]] {  // associate
+      // OpenSSL's SSL_set_fd takes int; on Windows SOCKET is UINT_PTR but the value
+      // round-trips safely through int for sockets allocated by the OS.
+      if (AeronetSslSetFd(sslPtr.get(), static_cast<int>(cnxFd)) != 1) [[unlikely]] {  // associate
         log::error("SSL_set_fd failed for fd # {}", cnxFd);
         FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
                              kTlsHandshakeFailureReasonSslSetFdFailed);

@@ -21,8 +21,8 @@
 
 namespace aeronet::test {
 
-TestServer::TestServer(HttpServerConfig cfg, RouterConfig routerCfg, std::chrono::milliseconds pollPeriod)
-    : server(std::move(cfg.withPollInterval(pollPeriod).withMaxCachedConnections(1)), std::move(routerCfg)) {
+TestServer::TestServer(HttpServerConfig cfg, RouterConfig routerCfg, std::chrono::milliseconds poll)
+    : server(std::move(cfg.withPollInterval(poll).withMaxCachedConnections(1)), std::move(routerCfg)) {
   server.start();
   waitReady(std::chrono::milliseconds{500});
 }

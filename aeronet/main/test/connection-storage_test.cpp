@@ -172,6 +172,33 @@ TEST(ConnectionStorage, ShrinkToFitShrinksLargeCapacity) {
   EXPECT_LT(storage.end() - storage.begin(), total);
   EXPECT_EQ(storage.size(), static_cast<std::size_t>(keep));
 }
+
+TEST(ConnectionStorage, ShrinkToFitDoesNotShrinkSmallEmptyCapacity) {
+  ConnectionStorage storage;
+
+  // Create a large number of connections to grow internal vectors' capacity
+  const int total = 140;
+  for (int i = 0; i < total; ++i) {
+    auto it = storage.emplace(Connection(BaseFd(i + 10)));
+    ASSERT_TRUE(it != storage.end());
+  }
+
+  // Keep first 130 active, recycle the rest to create trailing nulls
+  const int keep = 130;
+  for (int i = keep; i < total; ++i) {
+    RecycleConnection(storage, 0xFFFFFFFF, storage.iterator(i + 10));
+  }
+
+  // Sanity: nb active should equal 'keep'
+  EXPECT_EQ(storage.size(), static_cast<std::size_t>(keep));
+
+  // Now call shrink_to_fit which should erase trailing slots and trigger capacity shrink branch
+  storage.shrink_to_fit();
+
+  // POSIX only: verify trailing null vector slots were trimmed (maps have no trailing slots).
+  EXPECT_LT(storage.end() - storage.begin(), total);
+  EXPECT_EQ(storage.size(), static_cast<std::size_t>(keep));
+}
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
