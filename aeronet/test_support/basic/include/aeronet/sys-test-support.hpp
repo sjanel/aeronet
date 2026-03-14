@@ -575,8 +575,10 @@ inline void PushBioCtrlAction(int cmd, long ret, int err = 0) { g_bio_ctrl_actio
 
 #endif  // AERONET_ENABLE_OPENSSL
 
-#ifdef AERONET_ENABLE_OPENSSL
-// --- Interposed overrides for OpenSSL functions (tests only) ---
+// Interposed overrides for OpenSSL functions (tests only).
+// These rely on POSIX dlsym(RTLD_NEXT, ...) to resolve the real OpenSSL symbols,
+// which is not available on Windows (ResolveNext calls std::abort there).
+#if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_POSIX)
 extern "C" long BIO_ctrl(BIO* b, int cmd, long larg, void* parg) {  // NOLINT
   using Fn = long (*)(BIO*, int, long, void*);
   static Fn real_fn = nullptr;
@@ -610,7 +612,7 @@ extern "C" BIO* SSL_get_wbio(const SSL* s) {  // NOLINT
   }
   return real_fn(s);
 }
-#endif  // AERONET_ENABLE_OPENSSL
+#endif  // AERONET_ENABLE_OPENSSL && AERONET_POSIX
 
 #if AERONET_WANT_SYS_OVERRIDES
 inline void ResetEpollCtlModFail() {

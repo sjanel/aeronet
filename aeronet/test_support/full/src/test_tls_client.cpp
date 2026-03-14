@@ -105,6 +105,12 @@ std::string TlsClient::readAll() {
     return out;
   }
   static constexpr std::size_t kChunkSize = 4096;
+  // Maximum number of consecutive SSL_ERROR_SYSCALL+errno=0 retries before treating as EOF.
+  // On Windows, non-blocking TLS sockets can transiently return SSL_ERROR_SYSCALL with no
+  // system error before all application data has been delivered (see server-side handling in
+  // tls-transport.cpp::read()). A short pause + retry avoids premature EOF on large responses.
+  static constexpr int kMaxSyscallRetries = 5;
+  int syscallRetries = 0;
   out.reserve(kChunkSize);
 
   for (;;) {
@@ -125,7 +131,8 @@ std::string TlsClient::readAll() {
                              });
 
     if (readRet > 0) {
-      continue;  // Successfully read data, try to read more
+      syscallRetries = 0;  // Reset retry counter on successful read
+      continue;            // Successfully read data, try to read more
     }
 
     // readRet <= 0: check SSL error
@@ -152,8 +159,17 @@ std::string TlsClient::readAll() {
       // On Windows, the server may close the connection without sending a TLS close_notify
       // (e.g., non-blocking SSL_shutdown could not flush). In that case SSL_read returns
       // SSL_ERROR_SYSCALL with no queued OpenSSL error and errno/WSAGetLastError() == 0.
-      // Treat as graceful EOF — return whatever data was accumulated so far.
+      // Additionally, Windows non-blocking TLS can transiently produce this condition mid-
+      // transfer before all data has been delivered. Retry a few times with a brief wait
+      // (mirroring the server-side tls-transport.cpp::read() behaviour) before treating it
+      // as a graceful EOF and returning the accumulated data.
       if (ERR_peek_error() == 0) {
+        if (++syscallRetries <= kMaxSyscallRetries) {
+          if (waitForSocketReady(POLLIN, std::chrono::milliseconds{100})) {
+            continue;
+          }
+        }
+        // Timed out or exceeded retries — treat as graceful EOF.
         break;
       }
       log::error("SSL_read SSL_ERROR_SYSCALL, OpenSSL error queue not empty");
@@ -321,7 +337,9 @@ void TlsClient::init() {
   if (!localSsl) {
     throw std::runtime_error("Unable to allocate SSL");
   }
-  ::SSL_set_fd(localSsl.get(), fd);
+  // OpenSSL's SSL_set_fd takes int; on Windows NativeHandle is SOCKET (UINT_PTR) but the
+  // value round-trips safely through int for sockets allocated by the OS.
+  ::SSL_set_fd(localSsl.get(), static_cast<int>(fd));
   if (!_opts.serverName.empty()) {
     ::SSL_set_tlsext_host_name(localSsl.get(), _opts.serverName.c_str());
   }
