@@ -127,7 +127,10 @@ void SingleHttpServer::sweepIdleConnections() {
 
     // Keep-alive inactivity enforcement only if enabled.
     // Don't close if there's an active file send - those can block waiting for socket to be writable.
-    if (_config.enableKeepAlive && !state.isSendingFile() && now > state.lastActivity + _config.keepAliveTimeout) {
+    // Don't close tunnel connections - they can legitimately be idle waiting for data from the
+    // remote peer and rely on TCP-level keepalive / peer close detection instead.
+    if (_config.enableKeepAlive && !state.isSendingFile() && !state.isTunneling() &&
+        now > state.lastActivity + _config.keepAliveTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", fd);
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
