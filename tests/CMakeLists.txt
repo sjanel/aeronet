@@ -3,6 +3,7 @@ function(aeronet_http_test NAME)
 	AeronetAddProjectExecutable(${TGT} ${TGT}.cpp ${ARGN})
 	target_link_libraries(${TGT} PRIVATE aeronet aeronet_test_support GTest::gtest GTest::gmock GTest::gmock_main)
 	add_test(NAME ${TGT} COMMAND ${TGT})
+	_aeronet_inject_dll_path(${TGT})
 endfunction()
 
 aeronet_http_test(compile-time-traits)

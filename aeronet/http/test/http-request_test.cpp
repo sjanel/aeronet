@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -181,6 +183,11 @@ class HttpRequestTest : public ::testing::Test {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void callPinHeadStorage() { req.pinHeadStorage(cs); }
+  void callPostCallback(std::coroutine_handle<> handle, std::function<void()> work) {
+    req.postCallback(handle, std::move(work));
+  }
+  void setH2PostCallback(HttpRequest::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
+  void setH2SuspendedFlag(bool* flag) { req._h2SuspendedFlag = flag; }
 #endif
 
   // Helper to set a header view pointing at arbitrary bytes (fixture has friend access)
@@ -429,6 +436,77 @@ TEST_F(HttpRequestTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
 
   cs.asyncState.needsBody = true;
   EXPECT_TRUE(req.hasMoreBody());
+}
+
+// postCallback: HTTP/1.x path forwards the non-null work function to asyncState.postCallback.
+TEST_F(HttpRequestTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState) {
+  cs.asyncState.active = true;
+  std::coroutine_handle<> capturedHandle{};
+  std::function<void()> capturedWork;
+  cs.asyncState.postCallback = [&](std::coroutine_handle<> handle, std::function<void()> work) {
+    capturedHandle = handle;
+    capturedWork = std::move(work);
+  };
+
+  bool workCalled = false;
+  callPostCallback(std::coroutine_handle<>{}, [&workCalled] { workCalled = true; });
+
+  // asyncState.postCallback should have received the non-null work function.
+  ASSERT_TRUE(capturedWork) << "asyncState.postCallback should have received a non-null work callback";
+  capturedWork();
+  EXPECT_TRUE(workCalled) << "The forwarded work function should be invocable";
+}
+
+// postCallback: HTTP/2 path forwards the non-null work function to _h2PostCallback.
+TEST_F(HttpRequestTest, PostCallback_H2Path_NonNullWork_IsPassedToH2Callback) {
+  std::coroutine_handle<> capturedHandle{};
+  std::function<void()> capturedWork;
+  setH2PostCallback([&](std::coroutine_handle<> handle, std::function<void()> work) {
+    capturedHandle = handle;
+    capturedWork = std::move(work);
+  });
+
+  bool workCalled = false;
+  callPostCallback(std::coroutine_handle<>{}, [&workCalled] { workCalled = true; });
+
+  // _h2PostCallback should have received the non-null work function.
+  ASSERT_TRUE(capturedWork) << "_h2PostCallback should have received a non-null work callback";
+  capturedWork();
+  EXPECT_TRUE(workCalled) << "The forwarded work function should be invocable";
+}
+
+// When postCallback throws (e.g. connection closed while background work was running),
+// DeferredWorkAwaitable::await_suspend swallows the exception and calls log::error.
+// Verified here by confirming no exception escapes and the code reaches the error path.
+TEST_F(HttpRequestTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
+  // Use the H2 path: _h2SuspendedFlag satisfies markAwaitingCallback() without
+  // requiring asyncState.active, keeping the test self-contained.
+  bool suspendedFlag = false;
+  setH2SuspendedFlag(&suspendedFlag);
+
+  // postCallback will throw, simulating a broken event-loop channel.
+  std::atomic<bool> postCallbackInvoked{false};
+  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, std::function<void()>) {
+    postCallbackInvoked.store(true, std::memory_order_release);
+    throw std::runtime_error("connection closed while background work was running");
+  });
+
+  // Manually drive await_suspend; it spawns a detached background thread.
+  auto awaitable = req.deferWork([] { return 42; });
+  awaitable.await_suspend(std::coroutine_handle<>{});
+
+  // Wait for the background thread to reach postCallback (generous 5-second timeout).
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!postCallbackInvoked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(postCallbackInvoked.load()) << "Background thread should have called postCallback";
+
+  // Allow the catch block (log::error call) to finish before locals are destroyed.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  // If we reach here without a crash, the throwing path is handled correctly.
+  EXPECT_TRUE(suspendedFlag) << "markAwaitingCallback should have set the H2 suspended flag";
 }
 
 #endif

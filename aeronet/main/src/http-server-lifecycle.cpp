@@ -161,6 +161,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _maintenanceTimer(std::move(other._maintenanceTimer)),
       _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
+#ifndef AERONET_LINUX
+      _lastMaintenanceTp(other._lastMaintenanceTp),
+#endif
       _router(std::move(other._router)),
       _connections(std::move(other._connections)),
       _sharedBuffers(std::move(other._sharedBuffers)),
@@ -198,6 +201,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _maintenanceTimer = std::move(other._maintenanceTimer);
     _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);
+#ifndef AERONET_LINUX
+    _lastMaintenanceTp = other._lastMaintenanceTp;
+#endif
     _router = std::move(other._router);
     _connections = std::move(other._connections);
     _sharedBuffers = std::move(other._sharedBuffers);
@@ -342,7 +348,11 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
   return {std::jthread([this, errorPtr](const std::stop_token& st) {
             try {
               runUntil([&st]() { return st.stop_requested(); });
+            } catch (const std::exception& ex) {
+              log::error("Event loop thread exiting due to exception: {}", ex.what());
+              *errorPtr = std::current_exception();
             } catch (...) {
+              log::error("Event loop thread exiting due to unknown exception");
               *errorPtr = std::current_exception();
             }
           }),
@@ -355,7 +365,11 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::fu
   return {std::jthread([this, pred = std::move(predicate), errorPtr](const std::stop_token& st) {
             try {
               runUntil([&st, &pred]() { return st.stop_requested() || pred(); });
+            } catch (const std::exception& ex) {
+              log::error("Event loop thread exiting due to exception: {}", ex.what());
+              *errorPtr = std::current_exception();
             } catch (...) {
+              log::error("Event loop thread exiting due to unknown exception");
               *errorPtr = std::current_exception();
             }
           }),
@@ -368,7 +382,11 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
   return {std::jthread([this, token = std::move(token), errorPtr](const std::stop_token& st) {
             try {
               runUntil([&st, &token]() { return st.stop_requested() || token.stop_requested(); });
+            } catch (const std::exception& ex) {
+              log::error("Event loop thread exiting due to exception: {}", ex.what());
+              *errorPtr = std::current_exception();
             } catch (...) {
+              log::error("Event loop thread exiting due to unknown exception");
               *errorPtr = std::current_exception();
             }
           }),

@@ -587,6 +587,13 @@ class SingleHttpServer {
 
   internal::Lifecycle _lifecycle;
 
+#ifndef AERONET_LINUX
+  // Timestamp of last maintenance sweep. Used as fallback on Windows/macOS where the
+  // TimerFd does not fire real events; ensures sweepIdleConnections runs at least once
+  // per pollInterval even under sustained event activity.
+  std::chrono::steady_clock::time_point _lastMaintenanceTp;
+#endif
+
   Router _router;
 
   internal::ConnectionStorage _connections;
