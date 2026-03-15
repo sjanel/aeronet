@@ -394,7 +394,15 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   const auto targetCount = _servers.capacity();
 
+  // Invalidate the old serversAlive guard before destroying any server instances.
+  // Any stale stop callback that captured the previous serversAlive will see false
+  // and skip dereferencing raw server pointers.
+  _serversAlive->store(false, std::memory_order_release);
+
   _servers.resize(1UL);
+
+  // Create a fresh guard for the next start cycle.
+  _serversAlive = std::make_shared<std::atomic<bool>>(true);
 
 #ifdef AERONET_MACOS
   // macOS SO_REUSEPORT does not load balance loopback traffic — the kernel routes

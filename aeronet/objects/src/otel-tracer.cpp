@@ -81,7 +81,7 @@ namespace aeronet::tracing {
 namespace {
 
 namespace {
-constexpr auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
+inline auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
 }  // namespace
 
 // Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.

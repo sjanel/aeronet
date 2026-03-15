@@ -17,6 +17,100 @@ endif()
 project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
 set(AERONET_PROJECT_VERSION ${PROJECT_VERSION} CACHE INTERNAL "aeronet project version")
 
+# ---------------------------------------------------------------------------
+# MSVC system path injection (Ninja + MSVC without VS Developer Command Prompt)
+# ---------------------------------------------------------------------------
+# When CMake is configured with the Ninja generator + MSVC outside a VS
+# Developer Command Prompt, both CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES and
+# CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES are empty.  This causes:
+#   - LNK1104 for bare library names (ws2_32, mswsock, …)
+#   - C1083 "Cannot open include file: 'string'" for standard headers
+# We detect the MSVC toolchain root from CMAKE_CXX_COMPILER and the Windows
+# SDK root from the registry, then inject both the include and lib dirs.
+if(WIN32 AND MSVC AND NOT CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+  # --- MSVC include + lib dirs ------------------------------------------------
+  # CMAKE_CXX_COMPILER = .../VC/Tools/MSVC/<ver>/bin/Hostx64/x64/cl.exe
+  # so parent of parent of parent of parent = .../VC/Tools/MSVC/<ver>
+  get_filename_component(_cl_dir  "${CMAKE_CXX_COMPILER}"  DIRECTORY)  # .../Hostx64/x64
+  get_filename_component(_cl_dir  "${_cl_dir}"             DIRECTORY)  # .../Hostx64
+  get_filename_component(_cl_dir  "${_cl_dir}"             DIRECTORY)  # .../bin
+  get_filename_component(_msvc_root "${_cl_dir}"           DIRECTORY)  # .../MSVC/<ver>
+  set(_msvc_include "${_msvc_root}/include")
+  if(EXISTS "${_msvc_include}")
+    message(STATUS "[aeronet] Injecting MSVC include dir (no VS env): ${_msvc_include}")
+    include_directories(SYSTEM "${_msvc_include}")
+  endif()
+  # MSVC lib dir: .../MSVC/<ver>/lib/x64 — needed for msvcprt, vcruntime, etc.
+  set(_msvc_libdir "${_msvc_root}/lib/x64")
+  if(EXISTS "${_msvc_libdir}")
+    message(STATUS "[aeronet] Injecting MSVC lib dir (no VS env): ${_msvc_libdir}")
+    link_directories("${_msvc_libdir}")
+  endif()
+  unset(_cl_dir)
+  unset(_msvc_root)
+  unset(_msvc_include)
+  unset(_msvc_libdir)
+
+  # --- Windows SDK include + lib dirs -----------------------------------------
+  cmake_host_system_information(
+    RESULT _winsdk_root
+    QUERY WINDOWS_REGISTRY
+      "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
+    VALUE "KitsRoot10"
+    VIEW HOST
+  )
+  if(_winsdk_root)
+    cmake_path(SET _winsdk_root NORMALIZE "${_winsdk_root}")
+
+    # Newest SDK version directory under Include/
+    file(GLOB _winsdk_inc_dirs "${_winsdk_root}/Include/*")
+    list(SORT _winsdk_inc_dirs ORDER DESCENDING)
+    if(_winsdk_inc_dirs)
+      list(GET _winsdk_inc_dirs 0 _winsdk_inc_ver)
+      foreach(_sub ucrt shared um winrt km)
+        if(EXISTS "${_winsdk_inc_ver}/${_sub}")
+          message(STATUS "[aeronet] Injecting WinSDK include (no VS env): ${_winsdk_inc_ver}/${_sub}")
+          include_directories(SYSTEM "${_winsdk_inc_ver}/${_sub}")
+        endif()
+      endforeach()
+    endif()
+
+    # Newest SDK version directory under Lib/
+    file(GLOB _winsdk_um_dirs "${_winsdk_root}/Lib/*/um/x64")
+    list(SORT _winsdk_um_dirs ORDER DESCENDING)
+    if(_winsdk_um_dirs)
+      list(GET _winsdk_um_dirs 0 _winsdk_libdir)
+      message(STATUS "[aeronet] Injecting Windows SDK lib dir (no VS env): ${_winsdk_libdir}")
+      link_directories("${_winsdk_libdir}")
+      # ucrt/x64 is needed for ucrtd.lib / ucrt.lib (Universal CRT)
+      get_filename_component(_winsdk_lib_ver "${_winsdk_libdir}" DIRECTORY)  # .../um
+      get_filename_component(_winsdk_lib_ver "${_winsdk_lib_ver}" DIRECTORY) # .../10.0.26100.0
+      set(_winsdk_ucrt_lib "${_winsdk_lib_ver}/ucrt/x64")
+      if(EXISTS "${_winsdk_ucrt_lib}")
+        message(STATUS "[aeronet] Injecting WinSDK ucrt lib dir (no VS env): ${_winsdk_ucrt_lib}")
+        link_directories("${_winsdk_ucrt_lib}")
+      endif()
+    endif()
+  endif()
+  unset(_winsdk_root)
+  unset(_winsdk_inc_dirs)
+  unset(_winsdk_inc_ver)
+  unset(_winsdk_um_dirs)
+  unset(_winsdk_libdir)
+endif()
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# CMake 4.x enables C++ module dependency scanning by default for C++20/23.
+# With MSVC + Ninja outside a VS Developer Command Prompt the scanner runs
+# without the MSVC system include paths and fails on any header that pulls in
+# <string>, <stdint.h>, etc. (OpenSSL, protobuf, etc.).  Since this project
+# does not use C++ named modules, disable scanning globally for MSVC builds.
+if(MSVC)
+  set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+endif()
+# ---------------------------------------------------------------------------
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -26,7 +120,9 @@ message(STATUS "[aeronet] version: ${AERONET_PROJECT_VERSION}")
 set(AERONET_BUILD_BENCHMARKS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
 set(ASAN_DEFAULT OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  set(ASAN_DEFAULT ON)
+  if(NOT WIN32)
+    set(ASAN_DEFAULT ON)
+  endif()
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF)
 endif()
 
