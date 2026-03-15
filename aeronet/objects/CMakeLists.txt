@@ -200,16 +200,28 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     # Link system libraries required by opentelemetry (protobuf and curl).
     # Ensure protobuf and curl are available to consumers. System-installed OpenTelemetry
     # targets may or may not expose these transitively, so always find and link them.
+    # Use modern cmake targets (protobuf::libprotobuf, CURL::libcurl) rather than the
+    # old-style Protobuf_LIBRARIES / CURL_LIBRARIES variables: on Windows with shared
+    # protobuf the module-mode variable is set to the DLL path (LOCATION), not the
+    # import library, which would cause LNK1107 (linker fed a DLL directly).
     find_package(Protobuf REQUIRED)
     if(Protobuf_FOUND)
         target_include_directories(aeronet_objects PUBLIC ${Protobuf_INCLUDE_DIRS})
-        target_link_libraries(aeronet_objects PUBLIC ${Protobuf_LIBRARIES})
+        if(TARGET protobuf::libprotobuf)
+            target_link_libraries(aeronet_objects PUBLIC protobuf::libprotobuf)
+        else()
+            target_link_libraries(aeronet_objects PUBLIC ${Protobuf_LIBRARIES})
+        endif()
     endif()
 
     find_package(CURL REQUIRED)
     if(CURL_FOUND)
         target_include_directories(aeronet_objects PUBLIC ${CURL_INCLUDE_DIRS})
-        target_link_libraries(aeronet_objects PUBLIC ${CURL_LIBRARIES})
+        if(TARGET CURL::libcurl)
+            target_link_libraries(aeronet_objects PUBLIC CURL::libcurl)
+        else()
+            target_link_libraries(aeronet_objects PUBLIC ${CURL_LIBRARIES})
+        endif()
     endif()
 endif()
 

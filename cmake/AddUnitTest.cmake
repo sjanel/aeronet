@@ -1,3 +1,41 @@
+# ---------------------------------------------------------------------------
+# Windows runtime DLL path injection for CTest
+# ---------------------------------------------------------------------------
+# When Ninja + MSVC is used outside a VS Developer Command Prompt the vcpkg
+# applocal.ps1 post-build step fails silently (dumpbin not found), so test
+# executables cannot locate their shared-library dependencies at runtime
+# (exit code 0xc0000135 = STATUS_DLL_NOT_FOUND).  This helper function
+# prepends the required DLL directories to the PATH of every CTest test.
+function(_aeronet_inject_dll_path test_name)
+  if(NOT WIN32)
+    return()
+  endif()
+  set(_dirs "")
+  # vcpkg shared libraries: protobuf, CURL, abseil, brotli, spdlog, etc.
+  if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR NOT CMAKE_BUILD_TYPE)
+      list(APPEND _dirs "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/bin")
+    else()
+      list(APPEND _dirs "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin")
+    endif()
+  endif()
+  # System OpenSSL: OPENSSL_INCLUDE_DIR = <root>/include → DLLs live in <root>/bin
+  if(DEFINED OPENSSL_INCLUDE_DIR AND OPENSSL_INCLUDE_DIR)
+    get_filename_component(_ssl_root "${OPENSSL_INCLUDE_DIR}" DIRECTORY)
+    if(EXISTS "${_ssl_root}/bin")
+      list(APPEND _dirs "${_ssl_root}/bin")
+    endif()
+  endif()
+  list(REMOVE_DUPLICATES _dirs)
+  foreach(_dir IN LISTS _dirs)
+    if(EXISTS "${_dir}")
+      set_property(TEST "${test_name}" APPEND PROPERTY ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:${_dir}")
+    endif()
+  endforeach()
+endfunction()
+# ---------------------------------------------------------------------------
+
 #[[ Create an executable
 Syntax:
 AeronetAddExecutable(<name> src1 [src2 ...] [LIBRARIES lib1 lib2 ...] [DEFINITIONS def1 def2])
@@ -73,5 +111,6 @@ function(AeronetAddUnitTest name)
       ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1 abort_on_error=1 print_stacktrace=1;\
                           LSAN_OPTIONS=detect_leaks=1 malloc_context_size=2 print_suppressions=0"
       WORKING_DIRECTORY ${CMAKE_HOME_DIRECTORY})
+    _aeronet_inject_dll_path(${name})
   endif()
 endfunction()

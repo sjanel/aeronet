@@ -32,6 +32,35 @@ function(_aeronet_normalize_imported_location target)
   endif()
 endfunction()
 
+# Work around some vcpkg / CMake configurations on Windows where an imported shared
+# library target provides only the DLL (IMPORTED_LOCATION) but not the import
+# library (IMPORTED_IMPLIB). MSVC will fail linking if it is asked to link the
+# DLL directly.
+function(_aeronet_ensure_imported_implib target)
+  if(NOT WIN32)
+    return()
+  endif()
+  if(NOT TARGET ${target})
+    return()
+  endif()
+
+  foreach(_cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+    get_target_property(_loc "${target}" IMPORTED_LOCATION_${_cfg})
+    get_target_property(_implib "${target}" IMPORTED_IMPLIB_${_cfg})
+    if(_loc AND NOT _implib AND _loc MATCHES "\\.dll$")
+      # Try to deduce the corresponding import library path by replacing /bin/
+      # with /lib/ and swapping extension to .lib.
+      string(REPLACE "\\" "/" _loc_normalized "${_loc}")
+      string(REPLACE "/bin/" "/lib/" _candidate "${_loc_normalized}")
+      string(REGEX REPLACE "\\.dll$" ".lib" _candidate "${_candidate}")
+      file(TO_NATIVE_PATH "${_candidate}" _candidate_native)
+      if(EXISTS "${_candidate_native}")
+        set_target_properties(${target} PROPERTIES IMPORTED_IMPLIB_${_cfg} "${_candidate_native}")
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
 set(LINK_AMC FALSE)
 find_package(amc CONFIG)
 if(amc_FOUND)
@@ -230,6 +259,14 @@ if(AERONET_ENABLE_OPENTELEMETRY)
             CACHE FILEPATH "Protobuf protoc executable" FORCE)
       endif()
     endif()
+
+    # On Windows, vcpkg's protobuf targets can contain only the DLL path.
+    # Ensure MSVC links the corresponding import library instead.
+    if(WIN32)
+      _aeronet_ensure_imported_implib(protobuf::libprotobuf)
+      _aeronet_ensure_imported_implib(protobuf::libprotobuf-lite)
+      _aeronet_ensure_imported_implib(protobuf::libprotoc)
+    endif()
     # ABI + feature configuration
     set(WITH_STL OFF CACHE BOOL "Use nostd for ABI stability" FORCE)
     set(WITH_HTTP_CLIENT_CURL ON CACHE BOOL "" FORCE)
@@ -278,6 +315,18 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # We let FetchContent attempt population; if it fails to create the
   # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
+
+  # Inject MSVC system include dirs into opentelemetry_proto so that protobuf-
+  # generated headers (which include <limits> etc. at line 9 in protobuf >=6.x)
+  # can be compiled when building outside a VS Developer Command Prompt.
+  # CMAKE_CXX_SCAN_FOR_MODULES is already OFF globally (CMakeLists.txt) for
+  # MSVC, so no separate scanDependencies workaround is needed here.
+  if(TARGET opentelemetry_proto)
+    if(MSVC AND CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+      target_include_directories(opentelemetry_proto SYSTEM PRIVATE
+        ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
+    endif()
+  endif()
 
   # Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode).
   # zlib-ng 2.3+ provides ALIAS targets (zlib-ng::zlib, zlib-ng::zlibstatic),
