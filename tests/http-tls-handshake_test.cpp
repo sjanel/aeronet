@@ -442,9 +442,11 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
   // Consume the single token
   test::ClientConnection first(ts.port());
   const auto firstHandshakeFinished = std::chrono::steady_clock::now();
-  // Wait slightly more than one second to ensure the seconds-based refill calculation
+  // Wait well over one second to ensure the seconds-based refill calculation
   // yields addIntervals > 0 in connection-manager.cpp (which uses whole-second intervals).
-  const auto waitUntil = firstHandshakeFinished + 1100ms;
+  // 1500 ms gives comfortable margin for Windows timer resolution (~15.6 ms) and
+  // the scheduling delta between client-side sleep and server-side accept timestamps.
+  const auto waitUntil = firstHandshakeFinished + 1500ms;
 
   // Second connection in same second should be rejected
   test::ClientConnection rejected(ts.port());
@@ -458,7 +460,10 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
 
   // Now a new connection should be accepted because tokens were refilled
   test::ClientConnection after(ts.port());
-  // If connection is not closed immediately, assume accepted
+  // Use a timeout well below handshakeTimeout (500 ms) to avoid a race:
+  // ClientConnection is plain TCP so the server-side TLS handshake never
+  // completes; it will be closed when handshakeTimeout fires.  We only need
+  // to verify that the connection is *not* closed immediately (= accepted).
   EXPECT_FALSE(test::WaitForPeerClose(after.fd(), 250ms));
   ts.stop();
 }
