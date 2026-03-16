@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <exception>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -12,6 +13,7 @@
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -83,13 +85,15 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   test::FailAllEpollCtlMod(EACCES);
   try {
     test::sendAll(fd, payload, std::chrono::milliseconds{5000});
-    // Get out of the recv as soon as we receive some data to decrease the unit test time, but don't assert anything here
+    // Get out of the recv as soon as we receive some data to decrease the unit test time, but don't assert anything
+    // here
     test::recvWithTimeout(fd, std::chrono::milliseconds{500}, 16UL);
-  } catch (...) {
+  } catch (const std::exception& ex) {
     // The server may close the tunnel when epoll_ctl MOD fails (requestDrainAndClose),
     // causing sendAll to hit ECONNRESET/timeout. This is acceptable degradation behavior;
     // the test verifies the server stays alive (subsequent tests still pass), not that
     // tunneled data survives fault injection.
+    log::error("Caught exception during send/recv with epoll_ctl MOD failures: {}", ex.what());
   }
 }
 

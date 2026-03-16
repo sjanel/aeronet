@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/http-header.hpp"

@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -21,6 +22,7 @@
 #include <utility>
 
 #include "aeronet/bytes-string.hpp"
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
@@ -382,6 +384,14 @@ struct RangeSelection {
   std::size_t length{0};
 };
 
+// Result of parsing a (possibly multi-range) Range header.
+struct MultiRangeResult {
+  enum class Kind : std::uint8_t { None, SingleValid, MultiValid, Invalid, Unsatisfiable };
+
+  Kind kind{Kind::None};
+  vector<RangeSelection> ranges;
+};
+
 inline constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
 
 std::size_t ParseSize(std::string_view token) {
@@ -399,44 +409,26 @@ std::size_t ParseSize(std::string_view token) {
   return value;
 }
 
-// Note: only single-range requests are supported here (e.g. "Range: bytes=N-M").
-// Multi-range requests (comma-separated ranges) and multipart/byteranges
-// responses are intentionally not implemented. Supporting multiple ranges requires
-// generating multipart/byteranges bodies with unique boundaries and careful
-// streaming/memory handling; implement only if you need RFC7233 multipart support.
-//
-// Also note: ETag comparisons in this file use strong validators. Weak ETags
+// Parse a single byte-range-spec (e.g. "0-99", "50-", "-100").
+// Does NOT handle the "bytes=" prefix — caller must strip that.
+// ETag comparisons in this file use strong validators. Weak ETags
 // (prefixed with "W/") are treated as non-matching for strong comparisons. We
 // derive ETags from file size and modification time and require exact (strong)
 // matches for conditional semantics (304/412 decisions).
-RangeSelection ParseRange(std::string_view raw, std::size_t fileSize) {
+RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize) {
   RangeSelection result;
-  raw = TrimOws(raw);
-  if (raw.empty()) {
-    return result;
-  }
-  static constexpr std::string_view kBytesEqual = "bytes=";
-  if (!CaseInsensitiveEqual(raw.substr(0, kBytesEqual.size()), kBytesEqual)) {
+  spec = TrimOws(spec);
+  if (spec.empty()) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  raw.remove_prefix(kBytesEqual.size());
-  raw = TrimOws(raw);
-  if (raw.empty()) {
-    result.state = RangeSelection::State::Invalid;
-    return result;
-  }
-  if (raw.contains(',')) {
-    result.state = RangeSelection::State::Invalid;
-    return result;
-  }
-  const auto dashPos = raw.find('-');
+  const auto dashPos = spec.find('-');
   if (dashPos == std::string_view::npos) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  auto firstPart = TrimOws(raw.substr(0, dashPos));
-  auto secondPart = TrimOws(raw.substr(dashPos + 1));
+  auto firstPart = TrimOws(spec.substr(0, dashPos));
+  auto secondPart = TrimOws(spec.substr(dashPos + 1));
 
   if (fileSize == 0) {
     result.state = RangeSelection::State::Unsatisfiable;
@@ -487,6 +479,97 @@ RangeSelection ParseRange(std::string_view raw, std::size_t fileSize) {
   result.offset = firstValue;
   result.length = endInclusive - firstValue + 1;
   result.state = RangeSelection::State::Valid;
+  return result;
+}
+
+// Sort ranges by offset ascending and coalesce overlapping/adjacent ranges.
+void SortAndCoalesceRanges(vector<RangeSelection>& ranges) {
+  if (ranges.size() <= 1) {
+    return;
+  }
+
+  std::ranges::sort(ranges, {}, &RangeSelection::offset);
+
+  uint32_t outIdx = 0;
+  for (uint32_t idx = 1; idx < ranges.size(); ++idx) {
+    const std::size_t curEnd = ranges[outIdx].offset + ranges[outIdx].length;
+    if (ranges[idx].offset <= curEnd) {
+      // Overlapping or adjacent — merge
+      const std::size_t newEnd = std::max(curEnd, ranges[idx].offset + ranges[idx].length);
+      ranges[outIdx].length = newEnd - ranges[outIdx].offset;
+    } else {
+      ++outIdx;
+      ranges[outIdx] = ranges[idx];
+    }
+  }
+  ranges.resize(outIdx + 1);
+}
+
+// Parse a (possibly multi-range) Range header value, returning a MultiRangeResult.
+// maxRanges limits the number of range-specs to prevent abuse; 0 means unlimited.
+// Unsatisfiable individual sub-ranges are silently dropped (RFC 7233 §4.4).
+// If ALL sub-ranges are unsatisfiable, the result is Unsatisfiable.
+// Any syntactically invalid sub-range makes the whole request Invalid.
+MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::uint8_t maxRanges) {
+  MultiRangeResult result;
+  raw = TrimOws(raw);
+  if (raw.empty()) {
+    return result;
+  }
+  static constexpr std::string_view kBytesEqual = "bytes=";
+  if (!CaseInsensitiveEqual(raw.substr(0, kBytesEqual.size()), kBytesEqual)) {
+    result.kind = MultiRangeResult::Kind::Invalid;
+    return result;
+  }
+  raw.remove_prefix(kBytesEqual.size());
+  raw = TrimOws(raw);
+  if (raw.empty()) {
+    result.kind = MultiRangeResult::Kind::Invalid;
+    return result;
+  }
+
+  // Split on commas: each piece is one byte-range-spec
+  vector<RangeSelection> satisfiable;
+  std::size_t rangeCount = 0;
+  while (!raw.empty()) {
+    auto commaPos = raw.find(',');
+    auto spec = (commaPos == std::string_view::npos) ? raw : raw.substr(0, commaPos);
+
+    ++rangeCount;
+    if (maxRanges > 0 && rangeCount > maxRanges) {
+      result.kind = MultiRangeResult::Kind::Invalid;
+      return result;
+    }
+
+    RangeSelection sel = ParseSingleRangeSpec(spec, fileSize);
+    if (sel.state == RangeSelection::State::Invalid) {
+      result.kind = MultiRangeResult::Kind::Invalid;
+      return result;
+    }
+    if (sel.state == RangeSelection::State::Valid) {
+      satisfiable.push_back(sel);
+    }
+    // Unsatisfiable sub-ranges are silently dropped (RFC 7233 §4.4)
+
+    if (commaPos == std::string_view::npos) {
+      break;
+    }
+    raw.remove_prefix(commaPos + 1);
+  }
+
+  if (satisfiable.empty()) {
+    result.kind = MultiRangeResult::Kind::Unsatisfiable;
+    return result;
+  }
+
+  SortAndCoalesceRanges(satisfiable);
+
+  if (satisfiable.size() == 1) {
+    result.kind = MultiRangeResult::Kind::SingleValid;
+  } else {
+    result.kind = MultiRangeResult::Kind::MultiValid;
+  }
+  result.ranges = std::move(satisfiable);
   return result;
 }
 
@@ -659,6 +742,119 @@ UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   result.len = static_cast<std::uint8_t>(buf - result.buf);
 
   return result;
+}
+
+inline constexpr std::size_t kBoundarySize = 24;
+inline constexpr std::string_view kAeronetPrefix = "aeronet";
+
+struct Boundary {
+  char data[kBoundarySize];
+};
+
+// Generate a unique boundary string for multipart/byteranges responses.
+// Format: "aeronet" + 16 hex chars (24 chars total).
+Boundary GenerateBoundary() {
+  // NOLINTNEXTLINE(cert-msc51-cpp) — thread_local PRNG seeded from random_device is intentional
+  thread_local std::mt19937_64 rng(std::random_device{}());
+
+  const std::uint64_t val = rng();
+  const auto nbHexChars = hex_digits(val);
+  const auto nbZeros = kBoundarySize - kAeronetPrefix.size() - nbHexChars;  // 7 chars in "aeronet"
+
+  Boundary res;
+
+  auto* insertPtr = Append(kAeronetPrefix, res.data);
+  std::memset(insertPtr, '0', nbZeros);
+
+  insertPtr = to_lower_hex(val, insertPtr + nbZeros);
+  assert(insertPtr == res.data + kBoundarySize);
+
+  return res;
+}
+
+// Estimate the total size of a multipart/byteranges body (inclusive of all boundaries and per-part headers).
+// Returns kInvalidSize if the estimate exceeds maxBodySize.
+std::size_t EstimateMultipartBodySize(std::span<const RangeSelection> ranges, std::string_view contentType,
+                                      std::size_t maxBodySize) {
+  // Per part: "\r\n--" boundary "\r\nContent-Type: " contentType "\r\nContent-Range: bytes START-END/TOTAL\r\n\r\n"
+  //           + <data bytes>
+  // Closing:  "\r\n--" boundary "--\r\n"
+  static constexpr std::size_t kMaxContentRangePerPart = 80;  // generous upper bound for "bytes START-END/TOTAL"
+  const std::size_t perPartOverhead = 4 + kBoundarySize + 16 + contentType.size() + 17 + kMaxContentRangePerPart + 4;
+  const std::size_t closingOverhead = 4 + kBoundarySize + 4;
+
+  std::size_t total = closingOverhead;
+  for (const auto& rng : ranges) {
+    total += perPartOverhead + rng.length;
+    if (total > maxBodySize) {
+      return kInvalidSize;
+    }
+  }
+  return total;
+}
+
+// Build the multipart/byteranges body by reading file segments and assembling the MIME structure.
+// Returns an empty string on file read error or if the body would exceed maxBodySize.
+bool BuildMultipartBody(const File& file, std::span<const RangeSelection> ranges, std::size_t fileSize,
+                        std::string_view contentType, std::size_t maxBodySize, HttpResponse& resp) {
+  const std::size_t estimate = EstimateMultipartBodySize(ranges, contentType, maxBodySize);
+  if (estimate == kInvalidSize) {
+    return false;
+  }
+
+  const Boundary boundary = GenerateBoundary();
+
+  std::string_view boundarySv(boundary.data, kBoundarySize);
+
+  resp.reserve(resp.sizeInlined() + estimate);
+
+  static constexpr std::string_view kContentTypeHeaderPrefix = "multipart/byteranges; boundary=";
+
+  char contentTypeHeader[kContentTypeHeaderPrefix.size() + kBoundarySize];
+  char* endPtr = Append(kContentTypeHeaderPrefix, contentTypeHeader);
+  endPtr = Append(boundarySv, endPtr);
+
+  assert(ranges.size() > 1U);
+
+  resp.bodyAppend("\r\n--", std::string_view(contentTypeHeader, endPtr));
+
+  for (const auto& rng : ranges) {
+    // Part delimiter
+    resp.bodyAppend(boundarySv);
+    resp.bodyAppend("\r\nContent-Type: ");
+    resp.bodyAppend(contentType);
+    resp.bodyAppend("\r\nContent-Range: ");
+
+    // Build Content-Range value: "bytes START-END/TOTAL"
+    const auto rangeHdr = BuildRangeHeader(rng.offset, rng.length, fileSize);
+    resp.bodyAppend(std::string_view(rangeHdr.buf, rangeHdr.len));
+    resp.bodyAppend(http::DoubleCRLF);
+
+    // Read file data for this range
+    bool error = false;
+    resp.bodyInlineAppend(rng.length, [&file, &rng, &error](std::byte* buf) {
+      const std::size_t bytesRead = file.readAt(std::span<std::byte>(buf, rng.length), rng.offset);
+      if (bytesRead != rng.length) {
+        error = true;
+        return static_cast<std::size_t>(0);
+      }
+      return bytesRead;
+    });
+    if (error) {
+      resp.body(std::string_view{});
+      return false;
+    }
+
+    resp.bodyAppend("\r\n--");
+  }
+
+  // Closing boundary
+  resp.bodyAppend(boundarySv);
+  resp.bodyAppend("--\r\n");
+
+  resp.status(http::StatusCodePartialContent);
+
+  return true;
 }
 
 }  // namespace
@@ -879,30 +1075,38 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   const bool allowRanges = _config.enableRange && conditionalOutcome.rangeAllowed;
   if (allowRanges) {
-    if (auto rangeHeader = request.headerValue(http::Range); rangeHeader.has_value()) {
+    if (auto rangeHeaderVal = request.headerValue(http::Range); rangeHeaderVal.has_value()) {
       bool allowed = true;
       if (auto ifRange = request.headerValue(http::IfRange); ifRange.has_value()) {
         allowed = IfRangeAllowsPartial(*ifRange, etagView, lastModified);
       }
       if (allowed) {
-        RangeSelection rangeSelection = ParseRange(*rangeHeader, fileSize);
+        MultiRangeResult rangeResult = ParseRanges(*rangeHeaderVal, fileSize, _config.maxMultipartRanges);
 
-        if (rangeSelection.state == RangeSelection::State::Invalid ||
-            rangeSelection.state == RangeSelection::State::Unsatisfiable) {
-          const auto rangeHeader = BuildUnsatisfiedRangeHeader(fileSize);
+        if (rangeResult.kind == MultiRangeResult::Kind::Invalid ||
+            rangeResult.kind == MultiRangeResult::Kind::Unsatisfiable) {
+          const auto unsatHeader = BuildUnsatisfiedRangeHeader(fileSize);
           resp.status(http::StatusCodeRangeNotSatisfiable);
-          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf, rangeHeader.len));
-          resp.body(rangeSelection.state == RangeSelection::State::Invalid ? "Invalid Range\n"
-                                                                           : "Range Not Satisfiable\n");
+          resp.headerAddLine(http::ContentRange, std::string_view(unsatHeader.buf, unsatHeader.len));
+          resp.body(rangeResult.kind == MultiRangeResult::Kind::Invalid ? "Invalid Range\n"
+                                                                        : "Range Not Satisfiable\n");
           return resp;
         }
-        if (rangeSelection.state == RangeSelection::State::Valid) {
-          const auto rangeHeader = BuildRangeHeader(rangeSelection.offset, rangeSelection.length, fileSize);
+        if (rangeResult.kind == MultiRangeResult::Kind::SingleValid) {
+          const auto& sel = rangeResult.ranges[0];
+          const auto singleHeader = BuildRangeHeader(sel.offset, sel.length, fileSize);
 
           resp.status(http::StatusCodePartialContent);
-          resp.headerAddLine(http::ContentRange, std::string_view(rangeHeader.buf, rangeHeader.len));
-          resp.file(std::move(file), rangeSelection.offset, rangeSelection.length, contentTypeForFile);
+          resp.headerAddLine(http::ContentRange, std::string_view(singleHeader.buf, singleHeader.len));
+          resp.file(std::move(file), sel.offset, sel.length, contentTypeForFile);
           return resp;
+        }
+        if (rangeResult.kind == MultiRangeResult::Kind::MultiValid) {
+          if (BuildMultipartBody(file, rangeResult.ranges, fileSize, contentTypeForFile, _config.maxMultipartBodySize,
+                                 resp)) {
+            return resp;
+          }
+          // Body exceeds maxMultipartBodySize or read error — fall through to full 200 response
         }
       }
     }
