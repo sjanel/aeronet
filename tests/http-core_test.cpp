@@ -769,7 +769,7 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 // ============================
 // Zerocopy stress tests — data integrity under backpressure
 // ============================
-
+#ifdef AERONET_LINUX
 TEST(ZerocopyMode, ForcedModeSmallPayload) {
   HttpServerConfig cfg;
   cfg.withZerocopyMode(ZerocopyMode::Enabled);
@@ -951,5 +951,6 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
     ASSERT_TRUE(resp.find(payload) != std::string::npos) << "data corruption at iteration " << iter;
   }
 }
+#endif
 
 }  // namespace aeronet
