@@ -492,7 +492,7 @@ TEST_F(HttpRequestTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
 
   // postCallback will throw, simulating a broken event-loop channel.
   std::atomic<bool> postCallbackInvoked{false};
-  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, std::function<void()>) {
+  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, const std::function<void()>&) {
     postCallbackInvoked.store(true, std::memory_order_release);
     throw std::runtime_error("connection closed while background work was running");
   });

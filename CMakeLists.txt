@@ -146,35 +146,32 @@ option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimenta
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
 # Features
-# Optional dependencies (aeronet is able to compile without the feature if not enabled)
-# Most of these features depend on external libraries, except WEBSOCKET which is
-# implemented internally without third-party dependencies.
+# All features are optional, and independent of each other.
+# For example, you may activate WebSocket without zlib support, in which case the WebSocket implementation will simply not support permessage-deflate compression.
+
+# Features needing external dependencies (disabled by default, except if compiled as main project)
 option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
-option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
 option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZLIB "Enable usage of zlib for deflate and gzip codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJECT_IS_TOP_LEVEL})
-# WebSocket is ON by default, but you can disable it if you don't need WebSocket support
-# and wish to reduce binary size and compilation time.
-option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support (no library dependency)" ON)
+
+# Features without external dependencies (enabled by default, but you can disable them if you don't need them to reduce binary size and compilation time)
+option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)
+option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
+option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ON)
 
 # zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
 # You can disable it in favor of classic zlib by setting this option to OFF.
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)
 
-# If you do not use async handlers in the Router, you can disable them to reduce binary size, and slightly
-# reduce the memory footprint of aeronet.
-option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)
-
+# Miscellaneous
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
-# Below option will notably replace all exponential growths of RawBytes buffers into exact sized allocations
-# to help catch memory issues in tests that may be hidden by overallocation.
 option(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS "Enable miscellaneous additional memory checks to complement ASAN" OFF)
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
