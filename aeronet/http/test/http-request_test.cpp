@@ -18,6 +18,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <functional>
+#include <thread>
+#endif
+
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/connection-state.hpp"

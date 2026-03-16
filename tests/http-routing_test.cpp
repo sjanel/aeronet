@@ -72,7 +72,6 @@ struct PollIntervalScope {
   std::chrono::milliseconds _previous;
 };
 
-constexpr std::size_t kAsyncLargePayload = 16 << 20;
 }  // namespace
 
 TEST(HttpRouting, BasicPathDispatch) {
@@ -667,6 +666,12 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
   EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
   EXPECT_TRUE(handlerInvoked.load(std::memory_order_relaxed));
+}
+
+namespace {
+
+constexpr std::size_t kAsyncLargePayload = 16 << 20;
+
 }
 
 TEST(HttpRouting, AsyncLargeResponseChunks) {
