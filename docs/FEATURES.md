@@ -2,7 +2,7 @@
 
 Single consolidated reference for **aeronet** features.
 
-> **Platform support:** aeronet runs on **Linux** (primary, epoll) and **macOS** (kqueue).
+> **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (IOCP).
 > Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
 
 ## Index
@@ -231,11 +231,11 @@ Behavior summary
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
-- [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS)
+- [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, IOCP on Windows)
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
-- [x] MSG_ZEROCOPY for large payload *(Linux-only)*, with automatic fallback for small payloads. Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥128KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
+- [x] MSG_ZEROCOPY for large payload sends *(Linux-only)*, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
   Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:
   - `Disabled`: never attempt MSG_ZEROCOPY.
@@ -1673,7 +1673,7 @@ router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
 
 ## Construction Model (RAII & Ephemeral Ports)
 
-`SingleHttpServer` binds, configures the listening socket and registers it with the platform I/O backend (epoll on Linux, kqueue on macOS,) inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
+`SingleHttpServer` binds, configures the listening socket and registers it with the platform I/O backend (epoll on Linux, kqueue on macOS, IOCP on Windows) inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
 
 Why RAII:
 
@@ -1735,7 +1735,7 @@ The library interprets this boolean slightly differently depending on whether yo
 
 - Single `SingleHttpServer`:
   - `reusePort = false` creates the listening socket without that reuse option.
-  - `reusePort = true` requests the kernel-level reuse option (`SO_REUSEPORT` on Linux 3.9+ and macOS 12+) when creating the listening socket for that server instance.
+  - `reusePort = true` requests the kernel-level reuse option (`SO_REUSEPORT` on Linux 3.9+ and macOS 12+, `SO_REUSEADDR` on Windows) when creating the listening socket for that server instance.
 
 - `MultiHttpServer` (multi-reactor wrapper):
   - `reusePort = false` (recommended for explicit ports): the first server binds the explicit port exclusively (no reuse option) temporarily to ensure the process obtains the port and avoid accidentally binding to an unrelated process. Once the exclusive bind succeeds, subsequent internal sibling servers created by `MultiHttpServer` will be started to reuse that resolved port internally for multi-reactor operation. This gives a safe default for explicit ports while still providing multi-reactor scaling inside the process.
