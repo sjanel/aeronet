@@ -605,15 +605,10 @@ TEST_F(StaticFileHandlerTest, RangeInvalidFormsReturnErrors) {
     const char* expectedBody;
   };
   static constexpr Case cases[] = {
-      {"Range: foo=1-2", "Invalid Range\n"},
-      {"Range: bytes=", "Invalid Range\n"},
-      {"Range: bytes=5", "Invalid Range\n"},
-      {"Range: bytes=-0", "Invalid Range\n"},
-      {"Range: bytes=1-2,3-4", "Invalid Range\n"},
-      {"Range: bytes=5-a", "Invalid Range\n"},
-      {"Range: bytes=5-6a", "Invalid Range\n"},
-      {"Range: bytes= - \t", "Invalid Range\n"},
-      {"Range: bytes=15-1", "Range Not Satisfiable\n"},
+      {"Range: foo=1-2", "Invalid Range\n"},     {"Range: bytes=", "Invalid Range\n"},
+      {"Range: bytes=5", "Invalid Range\n"},     {"Range: bytes=-0", "Invalid Range\n"},
+      {"Range: bytes=5-a", "Invalid Range\n"},   {"Range: bytes=5-6a", "Invalid Range\n"},
+      {"Range: bytes= - \t", "Invalid Range\n"}, {"Range: bytes=15-1", "Range Not Satisfiable\n"},
   };
 
   for (const auto& testCase : cases) {
@@ -756,6 +751,453 @@ TEST_F(StaticFileHandlerTest, IfRangeHonorsEtagsAndDates) {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Multipart / multi-range tests (RFC 7233 multipart/byteranges)
+// ---------------------------------------------------------------------------
+namespace {
+// Helper: parse a multipart/byteranges response body into parts.
+struct MultipartPart {
+  std::string contentType;
+  std::string contentRange;
+  std::string body;
+};
+
+vector<MultipartPart> ParseMultipartByteranges(std::string_view contentTypeHeader, std::string_view body) {
+  // Extract boundary from "multipart/byteranges; boundary=XYZ"
+  auto bpos = contentTypeHeader.find("boundary=");
+  if (bpos == std::string_view::npos) {
+    return {};
+  }
+  std::string boundary(contentTypeHeader.substr(bpos + 9));
+
+  std::string delimiter = "\r\n--" + boundary;
+
+  vector<MultipartPart> parts;
+  std::string_view remaining = body;
+
+  // Body starts with \r\n--boundary (first delimiter)
+  auto firstDelim = remaining.find(delimiter);
+  if (firstDelim == std::string_view::npos) {
+    return {};
+  }
+  remaining.remove_prefix(firstDelim + delimiter.size());
+
+  while (true) {
+    // Check for closing boundary
+    if (remaining.starts_with("--")) {
+      break;
+    }
+    // Expect \r\n after delimiter
+    if (!remaining.starts_with(http::CRLF)) {
+      break;
+    }
+    remaining.remove_prefix(http::CRLF.size());
+
+    // Find end of headers (blank line)
+    auto headerEnd = remaining.find(http::DoubleCRLF);
+    if (headerEnd == std::string_view::npos) {
+      break;
+    }
+    auto headerBlock = remaining.substr(0, headerEnd);
+    remaining.remove_prefix(headerEnd + http::DoubleCRLF.size());
+
+    MultipartPart part;
+    // Parse headers
+    while (!headerBlock.empty()) {
+      auto lineEnd = headerBlock.find(http::CRLF);
+      auto line = (lineEnd == std::string_view::npos) ? headerBlock : headerBlock.substr(0, lineEnd);
+      auto colon = line.find(':');
+      if (colon != std::string_view::npos) {
+        auto key = line.substr(0, colon);
+        auto val = line.substr(colon + 1);
+        while (!val.empty() && val.front() == ' ') {
+          val.remove_prefix(1);
+        }
+        if (key == "Content-Type") {
+          part.contentType = std::string(val);
+        } else if (key == "Content-Range") {
+          part.contentRange = std::string(val);
+        }
+      }
+      if (lineEnd == std::string_view::npos) {
+        break;
+      }
+      headerBlock.remove_prefix(lineEnd + http::CRLF.size());
+    }
+
+    // Find next delimiter
+    auto nextDelim = remaining.find(delimiter);
+    if (nextDelim == std::string_view::npos) {
+      break;
+    }
+    part.body = std::string(remaining.substr(0, nextDelim));
+    remaining.remove_prefix(nextDelim + delimiter.size());
+    parts.push_back(std::move(part));
+  }
+
+  return parts;
+}
+}  // namespace
+
+TEST_F(StaticFileHandlerTest, MultiRangeResponseReturns206) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeResponseContentType) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto ct = resp.headerValueOrEmpty(http::ContentType);
+  EXPECT_TRUE(ct.starts_with("multipart/byteranges; boundary=")) << "Got: " << ct;
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeResponseBodyIsParseable) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto ct = resp.headerValueOrEmpty(http::ContentType);
+  auto body = resp.bodyInMemory();
+  auto parts = ParseMultipartByteranges(ct, body);
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].body, "0123");
+  EXPECT_EQ(parts[1].body, "5678");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangePerPartContentRange) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].contentRange, "bytes 0-3/10");
+  EXPECT_EQ(parts[1].contentRange, "bytes 5-8/10");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangePerPartContentType) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  // Both parts should have the file's content type
+  EXPECT_FALSE(parts[0].contentType.empty());
+  EXPECT_EQ(parts[0].contentType, parts[1].contentType);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeNoTopLevelContentRange) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  // RFC 7233 §4.1: No Content-Range at the top level for multipart responses
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).empty());
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeClosingBoundary) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  auto body = resp.bodyInMemory();
+  // Body must end with closing boundary "--\r\n"
+  EXPECT_TRUE(body.ends_with("--\r\n"));
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeThreeRanges) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-1, 4-5, 8-9");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 3U);
+  EXPECT_EQ(parts[0].body, "01");
+  EXPECT_EQ(parts[1].body, "45");
+  EXPECT_EQ(parts[2].body, "89");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeCoalescesOverlapping) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // Ranges 0-5 and 3-8 overlap; should be coalesced to 0-8
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-5, 3-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  // Coalesced to single range → uses simple Content-Range, not multipart
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 0-8/"));
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeCoalescesAdjacent) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // Adjacent ranges 0-4 and 5-9 → coalesced to 0-9
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-4, 5-9");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  // Coalesced to single range → simple Content-Range
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 0-9/"));
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeSortsDescending) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // Descending order 5-8, 0-3 → sorted to 0-3, 5-8
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=5-8, 0-3");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].contentRange, "bytes 0-3/10");
+  EXPECT_EQ(parts[1].contentRange, "bytes 5-8/10");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeSkipsUnsatisfiable) {
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // One satisfiable (0-3) and one unsatisfiable (100-200)
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 100-200");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  // Only one satisfiable → single-range Content-Range
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 0-3/"));
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeAllUnsatisfiable) {
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=100-200, 300-400");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeExceedsMaxRanges) {
+  const std::string fileContent(256, 'x');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileConfig cfg;
+  cfg.withMaxMultipartRanges(2);
+  StaticFileHandler handler(tmpFile.dirPath(), cfg);
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-1, 5-6, 10-11");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+  EXPECT_EQ(resp.bodyInMemory(), "Invalid Range\n");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeSuffixSpec) {
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // bytes=0-3, -3 → first=0-3, suffix=-3 → 7-9; two non-overlapping ranges
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, -3");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].body, "0123");
+  EXPECT_EQ(parts[1].body, "789");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeWhitespace) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes= 0 - 3 , 5 - 8 ");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].body, "0123");
+  EXPECT_EQ(parts[1].body, "5678");
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeWithIfRangeMismatch) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8\r\nIf-Range: \"mismatch\"");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  // If-Range mismatch → full body (200)
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeOnEmptyFile) {
+  const auto filePath = tmpDir.dirPath() / "empty.bin";
+  {
+    std::ofstream ofs(filePath);
+  }
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReqWithHeaders("empty.bin", "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeDisabledByConfig) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileConfig cfg;
+  cfg.enableRange = false;
+  StaticFileHandler handler(tmpFile.dirPath(), cfg);
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  // Range disabled → full body (200)
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeSingleValidFromMulti) {
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // Two ranges but one wholly inside the other → coalesced to single
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-8, 2-5");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  // Should use simple Content-Range, not multipart
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).starts_with("bytes 0-8/"));
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeExceedsMaxBodySize) {
+  // Create a larger file and set a very small max body size
+  const std::string fileContent(1024, 'A');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileConfig cfg;
+  cfg.withMaxMultipartBodySize(50);  // Very small — will trigger fallback
+  StaticFileHandler handler(tmpFile.dirPath(), cfg);
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-99, 200-299");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  // Exceeds maxMultipartBodySize → falls back to full 200
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeCorrectContentLength) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 5-8");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  // Content-Length should match actual body size
+  auto body = resp.bodyInMemory();
+  EXPECT_EQ(resp.bodyLength(), body.size());
+}
+
+TEST_F(StaticFileHandlerTest, MultiRangeOpenEndedSpec) {
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // Open-ended range: 0-3 and 7-
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 7-");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].body, "0123");
+  EXPECT_EQ(parts[1].body, "789");
+}
+
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+TEST_F(StaticFileHandlerTest, MultiRangeErrorFileRead) {
+  test::FileSyscallHookGuard guard;
+
+  const std::string fileContent = "0123456789";  // size 10
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  test::SetPreadPathActions(tmpFile.filePath().string(), {{-1, EIO}});
+
+  // Open-ended range: 0-3 and 7-
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, 7-");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  // should fall through to full 200 response
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+  auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_TRUE(parts.empty());
+}
+#endif
+
+TEST_F(StaticFileHandlerTest, MultiRangeInvalidSubRange) {
+  const std::string fileContent = "0123456789";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  // One valid, one syntactically invalid → whole request is Invalid → 416
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-3, abc-5");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+  EXPECT_EQ(resp.bodyInMemory(), "Invalid Range\n");
 }
 
 TEST_F(StaticFileHandlerTest, ContentTypeResolverOverridesDefault) {

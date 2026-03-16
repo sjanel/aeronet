@@ -55,8 +55,27 @@ class StaticFileConfig {
     return *this;
   }
 
-  /// Whether byte-range requests are honored (RFC 7233 single range).
+  StaticFileConfig& withMaxMultipartRanges(std::uint8_t maxRanges) {
+    maxMultipartRanges = maxRanges;
+    return *this;
+  }
+
+  StaticFileConfig& withMaxMultipartBodySize(std::size_t maxSize) {
+    maxMultipartBodySize = maxSize;
+    return *this;
+  }
+
+  /// Whether byte-range requests are honored (RFC 7233 single and multi-range).
   bool enableRange{true};
+
+  /// Maximum number of byte-ranges allowed in a single Range header for multipart/byteranges responses.
+  /// Requests with more ranges are rejected with 416. Default: 16.
+  std::uint8_t maxMultipartRanges{16};
+
+  /// Safety cap on the total size of an assembled multipart/byteranges response body.
+  /// If the assembled body would exceed this limit the server falls back to a 200 full-body response.
+  /// Default: 32 MiB.
+  std::size_t maxMultipartBodySize{32ULL * 1024ULL * 1024ULL};
 
   // Whether conditional headers (ETag, If-* preconditions) are processed.
   bool enableConditional{true};
