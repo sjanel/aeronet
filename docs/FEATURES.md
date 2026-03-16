@@ -2181,7 +2181,22 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   obey `maxEntriesToList` and advertise truncation via `x-directory-listing-truncated: 1`.
 - **Single-range support**: `Range: bytes=N-M` (RFC 7233 §2.1) is parsed with strict validation. Valid ranges return
   `206 Partial Content` with `Content-Range`. Invalid syntax returns `416` with `Content-Range: bytes */<size>` per the
-  spec. Multi-range requests (comma-separated) are rejected as invalid.
+  spec.
+- **Multi-range support** (`multipart/byteranges`, RFC 7233 §4.1): comma-separated byte ranges such as
+  `Range: bytes=0-99,200-299,500-` are fully supported. The response uses status `206 Partial Content` with
+  `Content-Type: multipart/byteranges; boundary=<token>` and each MIME part carries its own `Content-Type` and
+  `Content-Range` header. Implementation details:
+  - Overlapping and adjacent ranges are **sorted and coalesced** per RFC recommendation, reducing redundant I/O.
+  - If multi-range resolution produces a **single range** after coalescing, the handler emits a simple
+    `Content-Range` response (no multipart overhead).
+  - Unsatisfiable sub-ranges are **silently dropped**; a `416` is returned only when *all* sub-ranges are
+    unsatisfiable (RFC 7233 §4.4).
+  - `If-Range` interaction: when the validator mismatches, the full body is returned (200) regardless of the
+    number of ranges requested.
+  - Safety limits are configurable via `StaticFileConfig`:
+    - `maxMultipartRanges` (default **16**) — requests exceeding this are treated as invalid (416).
+    - `maxMultipartBodySize` (default **32 MiB**) — if the assembled multipart body would exceed this limit the
+      handler falls back to a full 200 response instead of partial content.
 - **Conditional requests**: `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, and `If-Range`
   are honoured using strong validators. Requests that do not modify the resource return `304 Not Modified` for GET/HEAD
   or `412 Precondition Failed` for unsafe methods. `If-Range` transparently falls back to the full body when the
@@ -2246,11 +2261,15 @@ curl -i http://localhost:8080/somefile.txt
 curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
 ```
 
-Testing lives in `tests/http_range_test.cpp` which exercises full-body responses, single-range `206`, unsatisfiable
-requests, `If-None-Match`, and `If-Range`. Those tests rely on the same public API shown above, ensuring the feature is
-covered end-to-end.
+Testing lives in `tests/http-range_test.cpp` which exercises full-body responses, single-range `206`, multi-range
+`206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit
+behaviour. Unit tests in `aeronet/http/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing,
+coalescing, boundary generation, and multipart body assembly paths.
 
-- [ ] Multi-range (`multipart/byteranges`) responses (planned)
+```bash
+# Test multi-range request
+curl -i -H "Range: bytes=0-3,10-13" http://localhost:8080/somefile.txt
+```
 
 ## Mixed Mode & Dispatch Precedence
 

@@ -8,6 +8,7 @@
 - **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.
 - `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
 - `MSG_ZEROCOPY` support for large payloads on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`. Threshold is 16KB. See [zerocopy.hpp](../aeronet/sys/include/aeronet/zerocopy.hpp). Now supports kTLS connections by bypassing OpenSSL's SSL_write and using sendmsg() directly on the kTLS socket.
+- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range): Full `206 Partial Content` with `multipart/byteranges` MIME body. Ranges are sorted, coalesced, and safety-limited (`maxMultipartRanges`, `maxMultipartBodySize`). See `StaticFileHandler` and `StaticFileConfig`.
 
 ## High priority
 
@@ -22,8 +23,6 @@
   - Fuzzing harness integration (libFuzzer + AFL)
 
 ## Medium priority
-
-- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
 - **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
