@@ -12,6 +12,7 @@
 
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/test_tls_client.hpp"
 
 namespace aeronet::test {
@@ -100,14 +101,17 @@ class TlsHttp2Client {
 
   /// Wait for data on a tunnel stream.
   /// @param streamId Stream ID
+  /// @param out Output buffer to fill with received data
   /// @param timeout Maximum time to wait
-  /// @return Received data, or empty on timeout/error
-  std::vector<std::byte> receiveTunnelData(uint32_t streamId,
-                                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000});
+  void receiveTunnelData(RawChars& out, uint32_t streamId,
+                         std::chrono::milliseconds timeout = std::chrono::milliseconds{5000});
 
   /// Get the underlying HTTP/2 connection for advanced testing.
   [[nodiscard]] http2::Http2Connection& connection() noexcept { return *_http2Connection; }
   [[nodiscard]] const http2::Http2Connection& connection() const noexcept { return *_http2Connection; }
+
+  /// Get the underlying socket file descriptor.
+  [[nodiscard]] int fd() const noexcept { return _tlsClient.fd(); }
 
   /// Build and send a request on a new stream asynchronously, returning the stream ID.
   uint32_t sendAsyncRequest(std::string_view method, std::string_view path,
@@ -122,11 +126,13 @@ class TlsHttp2Client {
   /// Write data to TLS connection.
   bool writeAll(std::span<const std::byte> data);
 
+ public:
   /// Read and process HTTP/2 frames.
   /// @param timeout Maximum time to wait for response
   /// @return True if successful, false on timeout or error
   bool processFrames(std::chrono::milliseconds timeout = std::chrono::milliseconds{5000});
 
+ private:
   /// Wait for a specific stream to receive a complete response.
   bool waitForResponse(uint32_t streamId, std::chrono::milliseconds timeout = std::chrono::milliseconds{5000},
                        bool waitForComplete = true);
