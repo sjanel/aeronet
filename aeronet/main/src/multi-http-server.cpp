@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -113,6 +114,18 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
 
   std::ranges::for_each(_serverHandles, [](auto& handle) { handle.stop(); });
 
+  // Collect any stored errors before clearing the handles so rethrowIfError()
+  // can still report them after stop() returns.
+  for (auto& handle : _serverHandles) {
+    try {
+      handle.rethrowIfError();
+    } catch (...) {
+      if (!_storedError) {
+        _storedError = std::current_exception();
+      }
+    }
+  }
+
   // Release the shared stop callback so any weak_ptr held by the MultiHttpServer
   // instance can expire when the caller has stopped the AsyncHandle. Clear the
   // local thread vector to reflect there are no active background threads.
@@ -122,6 +135,10 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
 }
 
 void MultiHttpServer::AsyncHandle::rethrowIfError() {
+  // Check stored error from a previous stop() call first.
+  if (_storedError) {
+    std::rethrow_exception(_storedError);
+  }
   std::ranges::for_each(_serverHandles, [](auto& handle) { handle.rethrowIfError(); });
 }
 
