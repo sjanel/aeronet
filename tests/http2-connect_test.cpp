@@ -11,7 +11,8 @@
 #include <vector>
 
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/log.hpp"
+#include "aeronet/http2-config.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
 #include "aeronet/test_util.hpp"
@@ -34,8 +35,9 @@ TEST(Http2ConnectTest, BasicTunneling) {
   std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
   ASSERT_TRUE(client.sendTunnelData(streamId, data));
 
-  auto received = client.receiveTunnelData(streamId);
-  std::string receivedStr(reinterpret_cast<const char*>(received.data()), received.size());
+  RawChars received;
+  client.receiveTunnelData(received, streamId);
+  std::string_view receivedStr(received.data(), received.size());
   EXPECT_EQ(receivedStr, payload);
 }
 
@@ -64,9 +66,18 @@ TEST(Http2ConnectTest, AllowlistRejectsTarget) {
 }
 
 TEST(Http2ConnectTest, LargePayloadTunneling) {
-  aeronet::log::set_level(aeronet::log::level::debug);
-  test::TlsHttp2TestServer ts;
-  test::TlsHttp2Client client(ts.port());
+  // Use large flow-control windows to minimise WINDOW_UPDATE round-trips.
+  static constexpr uint32_t kLargeWindow = 1U << 20;  // 1 MB
+
+  test::TlsHttp2TestServer ts(nullptr, [](Http2Config& h2) {
+    h2.initialWindowSize = kLargeWindow;
+    h2.connectionWindowSize = kLargeWindow * 2;
+  });
+
+  Http2Config clientCfg;
+  clientCfg.initialWindowSize = kLargeWindow;
+  clientCfg.connectionWindowSize = kLargeWindow * 2;
+  test::TlsHttp2Client client(ts.port(), clientCfg);
   ASSERT_TRUE(client.isConnected());
 
   auto [sock, port] = test::startEchoServer();
@@ -83,7 +94,7 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
 
   std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
 
-  std::string receivedStr;
+  RawChars received;
   std::size_t offset = 0;
   while (offset < data.size()) {
     auto* stream = client.connection().getStream(streamId);
@@ -95,37 +106,37 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
 
     if (win <= 0) {
       // Wait for WINDOW_UPDATE
-      auto received = client.receiveTunnelData(streamId, std::chrono::milliseconds{100});
-      receivedStr.append(reinterpret_cast<const char*>(received.data()), received.size());
+      client.receiveTunnelData(received, streamId, std::chrono::milliseconds{100});
       continue;
     }
 
-    std::size_t chunkSize = std::min({data.size() - offset, static_cast<std::size_t>(win)});
+    // Cap each send to avoid blocking in writeAll (which would deadlock if the
+    // echo server can't drain because our TCP recv buffer is full).
+    static constexpr int32_t kMaxSendChunk = 16 << 10;  // 16 KB
+    int32_t sendWin = std::min(win, kMaxSendChunk);
+    std::size_t chunkSize = std::min(data.size() - offset, static_cast<std::size_t>(sendWin));
     ASSERT_TRUE(client.sendTunnelData(streamId, data.subspan(offset, chunkSize), false));
     offset += chunkSize;
 
-    // Also receive data to prevent the server from blocking
-    while (true) {
-      auto received = client.receiveTunnelData(streamId, std::chrono::milliseconds{10});
-      if (received.empty()) {
-        break;
-      }
-      receivedStr.append(reinterpret_cast<const char*>(received.data()), received.size());
-    }
+    // Non-blocking drain of incoming echo data to keep the TCP receive buffer
+    // from filling up (which would prevent the server from writing).
+    client.receiveTunnelData(received, streamId, std::chrono::milliseconds{0});
   }
 
   // Send empty END_STREAM
   ASSERT_TRUE(client.sendTunnelData(streamId, {}, true));
 
-  while (receivedStr.size() < payload.size()) {
-    auto received = client.receiveTunnelData(streamId, std::chrono::milliseconds{10000});
-    if (received.empty()) {
+  while (received.size() < payload.size()) {
+    const std::size_t oldSize = received.size();
+    client.receiveTunnelData(received, streamId, std::chrono::milliseconds{10000});
+    if (received.size() == oldSize) {
       break;
     }
-    receivedStr.append(reinterpret_cast<const char*>(received.data()), received.size());
   }
 
-  EXPECT_EQ(receivedStr.size(), payload.size());
-  EXPECT_TRUE(receivedStr.starts_with("aaaaaaaaaaaaaaaaaa"));
-  EXPECT_TRUE(receivedStr.ends_with("aaaaaaaaaaaaaaaaaa"));
+  std::string_view receivedSv(received.data(), received.size());
+
+  EXPECT_EQ(receivedSv.size(), payload.size());
+  EXPECT_TRUE(receivedSv.starts_with("aaaaaaaaaaaaaaaaaa"));
+  EXPECT_TRUE(receivedSv.ends_with("aaaaaaaaaaaaaaaaaa"));
 }

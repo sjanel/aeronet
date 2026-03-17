@@ -307,6 +307,11 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   handle1.stop();
   handle1.rethrowIfError();
 
+#ifdef AERONET_WINDOWS
+  // Allow extra time for OS-level socket and thread cleanup before rebinding.
+  std::this_thread::sleep_for(50ms);
+#endif
+
   // Change handler before restart; old servers are discarded, so new handler should take effect.
   multi.router().setDefault([](const HttpRequest&) {
     HttpResponse resp;

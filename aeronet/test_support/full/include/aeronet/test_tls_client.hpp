@@ -80,6 +80,9 @@ class TlsClient {
   /// Get the underlying socket file descriptor.
   [[nodiscard]] int fd() const noexcept;
 
+  /// Get the raw SSL handle for advanced operations.
+  [[nodiscard]] SSL* sslHandle() const noexcept { return _ssl.get(); }
+
  private:
   using SSLUniquePtr = std::unique_ptr<SSL, void (*)(SSL*)>;
   using SSL_CTXUniquePtr = std::unique_ptr<SSL_CTX, void (*)(SSL_CTX*)>;

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <stop_token>
@@ -83,6 +84,7 @@ class MultiHttpServer {
     std::shared_ptr<HandleCompletion> _completion;
     std::shared_ptr<ServerLifecycleTracker> _lifecycleTracker;
     std::shared_ptr<void> _stopTokenBinding;
+    std::exception_ptr _storedError;
     std::atomic<bool> _stopCalled{false};
 
     void notifyCompletion() noexcept;

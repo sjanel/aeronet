@@ -1024,12 +1024,11 @@ void SingleHttpServer::eventLoop() {
       } else {
         const auto bmp = event.eventBmp;
         const auto cnxIt = _connections.iterator(fd);
-#ifdef AERONET_WINDOWS
         if (!_connections.active(cnxIt)) [[unlikely]] {
-#else
-        if (!internal::ConnectionStorage::active(cnxIt)) [[unlikely]] {
-#endif
           log::warn("fd # {} not found (stale epoll event or race)", fd);
+          // Remove stale entry from the event-loop poller so it doesn't keep firing.
+          // Safe to call here because we are inside the event-loop thread.
+          _eventLoop.del(fd);
           continue;
         }
 
