@@ -4,7 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
-- `aeronet` is now available for **macOS** with a kqueue-based event loop backend.
+`aeronet` is now available for:
+
+- **macOS** with a kqueue-based event loop backend.
+- **Windows** with an IOCP-based event loop backend.
 
 ### Breaking changes
 
