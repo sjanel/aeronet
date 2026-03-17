@@ -31,6 +31,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -213,30 +214,46 @@ bool TlsHttp2Client::writeAll(std::span<const std::byte> data) {
 bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
 
-  while (std::chrono::steady_clock::now() < deadline) {
+  // Allow at least one iteration even with a zero timeout so callers can
+  // drain already-buffered TLS data without paying a 1ms poll penalty.
+  bool firstIteration = true;
+
+  while (firstIteration || std::chrono::steady_clock::now() < deadline) {
+    firstIteration = false;
+
     // Try to read data from TLS connection
     std::array<char, 16384> buffer{};
     int fd = _tlsClient.fd();
 
-    struct pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h is the correct include
-    pfd.fd = fd;
-    pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
+    // If OpenSSL already has decrypted data buffered we can skip the poll.
+    bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
 
+    if (!sslHasPending) {
+      struct pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h is the correct include
+      pfd.fd = fd;
+      pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
+
+      auto remainingMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+      int pollMs = (remainingMs <= 0)
+                       ? 0
+                       : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
 #ifdef AERONET_WINDOWS
-    int ret = ::WSAPoll(&pfd, 1, 100);
+      int ret = ::WSAPoll(&pfd, 1, pollMs);
 #else
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    int ret = ::poll(&pfd, 1, 100);  // 100ms poll timeout
+      // NOLINTNEXTLINE(misc-include-cleaner)
+      int ret = ::poll(&pfd, 1, pollMs);
 #endif
-    if (ret < 0) {
-      return false;
-    }
-    if (ret == 0) {
-      // Timeout - check if we have what we need
-      if (_http2Connection->state() == http2::ConnectionState::Open) {
-        return true;
+      if (ret < 0) {
+        return false;
       }
-      continue;
+      if (ret == 0) {
+        // Timeout - check if we have what we need
+        if (_http2Connection->state() == http2::ConnectionState::Open) {
+          return true;
+        }
+        continue;
+      }
     }
 
     // Read from TLS
@@ -325,10 +342,13 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
     pfd.fd = fd;
     pfd.events = POLLIN;
 
+    auto remainingMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+    int pollMs = std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
 #ifdef AERONET_WINDOWS
-    int ret = ::WSAPoll(&pfd, 1, 100);
+    int ret = ::WSAPoll(&pfd, 1, pollMs);
 #else
-    int ret = ::poll(&pfd, 1, 100);
+    int ret = ::poll(&pfd, 1, pollMs);
 #endif
     if (ret <= 0) {
       continue;
@@ -528,39 +548,52 @@ bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte
   return true;
 }
 
-std::vector<std::byte> TlsHttp2Client::receiveTunnelData(uint32_t streamId, std::chrono::milliseconds timeout) {
+void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
-  std::vector<std::byte> result;
+
+  // Allow at least one non-blocking check even with a zero timeout.
+  bool firstIteration = true;
 
   std::array<char, 32U << 10> buffer{};
-  while (std::chrono::steady_clock::now() < deadline) {
+  while (firstIteration || std::chrono::steady_clock::now() < deadline) {
+    firstIteration = false;
+
     auto iter = _streamResponses.find(streamId);
     if (iter != _streamResponses.end() && !iter->second.response.body.empty()) {
       auto& body = iter->second.response.body;
-      result.insert(result.end(), reinterpret_cast<const std::byte*>(body.data()),
-                    reinterpret_cast<const std::byte*>(body.data() + body.size()));
+      out.append(body.data(), body.size());
       body.clear();  // Consume the data
-      return result;
+      return;
     }
 
     if (iter != _streamResponses.end() && iter->second.complete) {
-      return result;  // Stream closed
+      return;  // Stream closed
     }
 
     // Read and process more frames
     int fd = _tlsClient.fd();
 
-    struct pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLIN;
+    // Skip poll if SSL already has decrypted data buffered.
+    bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
 
+    if (!sslHasPending) {
+      struct pollfd pfd{};
+      pfd.fd = fd;
+      pfd.events = POLLIN;
+
+      auto remainingMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+      int pollMs = (remainingMs <= 0)
+                       ? 0
+                       : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
 #ifdef AERONET_WINDOWS
-    int ret = ::WSAPoll(&pfd, 1, 100);
+      int ret = ::WSAPoll(&pfd, 1, pollMs);
 #else
-    int ret = ::poll(&pfd, 1, 100);
+      int ret = ::poll(&pfd, 1, pollMs);
 #endif
-    if (ret <= 0) {
-      continue;
+      if (ret <= 0) {
+        continue;
+      }
     }
 
     auto data = _tlsClient.readSome(buffer);
@@ -611,8 +644,6 @@ std::vector<std::byte> TlsHttp2Client::receiveTunnelData(uint32_t streamId, std:
       }
     }
   }
-
-  return result;
 }
 
 }  // namespace aeronet::test
