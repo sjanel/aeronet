@@ -208,7 +208,16 @@ TlsHttp2Client::Response TlsHttp2Client::request(std::string_view method, std::s
 }
 
 bool TlsHttp2Client::writeAll(std::span<const std::byte> data) {
-  return _tlsClient.writeAll(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
+  bool ok = _tlsClient.writeAll(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
+  // Reclaim any bytes that TlsClient::writeAll SSL_read'd while waiting for
+  // POLLOUT (TCP deadlock prevention) and queue them for HTTP/2 processing.
+  auto& drained = _tlsClient.drainedDuringWrite();
+  if (!drained.empty()) {
+    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(drained.data()),
+                         reinterpret_cast<const std::byte*>(drained.data() + drained.size()));
+    drained.clear();
+  }
+  return ok;
 }
 
 bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
@@ -225,10 +234,13 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
     std::array<char, 16384> buffer{};
     int fd = _tlsClient.fd();
 
-    // If OpenSSL already has decrypted data buffered we can skip the poll.
+    // Skip the poll when SSL or our own buffer already has data to process;
+    // but always attempt a non-blocking readSome so an incomplete frame in
+    // _pendingInput can be completed with fresh socket bytes.
     bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
+    bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
 
-    if (!sslHasPending) {
+    if (!sslHasPending && !hasPendingInput) {
       struct pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h is the correct include
       pfd.fd = fd;
       pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
@@ -256,14 +268,17 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
       }
     }
 
-    // Read from TLS
-    auto data = _tlsClient.readSome(buffer);
-    if (data.empty()) {
-      continue;
+    // Non-blocking read (poll was skipped when hasPendingInput was true).
+    {
+      auto data = _tlsClient.readSome(buffer);
+      if (!data.empty()) {
+        _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                             reinterpret_cast<const std::byte*>(data.data() + data.size()));
+      }
     }
-
-    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
-                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
+    if (_pendingInput.size() <= _pendingOffset) {
+      continue;  // Nothing to process
+    }
 
     // Process through HTTP/2 connection
     for (;;) {
@@ -573,10 +588,13 @@ void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::ch
     // Read and process more frames
     int fd = _tlsClient.fd();
 
-    // Skip poll if SSL already has decrypted data buffered.
+    // Skip the poll when SSL or our own buffer already has data to process;
+    // but always attempt a non-blocking readSome so an incomplete frame in
+    // _pendingInput can be completed with fresh socket bytes.
     bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
+    bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
 
-    if (!sslHasPending) {
+    if (!sslHasPending && !hasPendingInput) {
       struct pollfd pfd{};
       pfd.fd = fd;
       pfd.events = POLLIN;
@@ -596,13 +614,17 @@ void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::ch
       }
     }
 
-    auto data = _tlsClient.readSome(buffer);
-    if (data.empty()) {
-      continue;
+    // Non-blocking read (poll was skipped when hasPendingInput was true).
+    {
+      auto data = _tlsClient.readSome(buffer);
+      if (!data.empty()) {
+        _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                             reinterpret_cast<const std::byte*>(data.data() + data.size()));
+      }
     }
-
-    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
-                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
+    if (_pendingInput.size() <= _pendingOffset) {
+      continue;  // Nothing to process
+    }
 
     for (;;) {
       std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
