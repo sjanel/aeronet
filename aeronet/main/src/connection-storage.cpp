@@ -51,7 +51,11 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   }
 
 #ifdef AERONET_WINDOWS
-  cnxIt._it->first.close();
+  // Do NOT call cnxIt._it->first.close() here: Connection is the hash-map key,
+  // and mutating the fd (which changes the hash) before erase corrupts the
+  // internal chain structure of bytell_hash_map, causing infinite loops in
+  // find_parent_block(). The erase will destroy the pair whose Connection
+  // destructor (~BaseFd) closes the socket automatically.
   _activeConnections.erase(cnxIt._it);
 #else
   _activeConnections[connectionIdx].close();

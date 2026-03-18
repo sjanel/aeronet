@@ -331,6 +331,7 @@ void ConnectionState::reset() {
   headerStartTp = {};
   bodyLastActivity = {};
   peerFd = kInvalidHandle;
+  peerStreamId = 0;
   requestsServed = 0;
   trailerLen = 0;
   closeMode = CloseMode::None;
@@ -338,6 +339,8 @@ void ConnectionState::reset() {
   tlsEstablished = false;
   waitingForBody = false;
   connectPending = false;
+  shutdownWritePending = false;
+  eofReceived = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};

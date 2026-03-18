@@ -51,8 +51,6 @@ struct CertKeyCache {
     localhost = test::MakeEphemeralCertKey("localhost");
     server = test::MakeEphemeralCertKey("server");
     client = test::MakeEphemeralCertKey("client");
-
-    log::set_level(log::level::debug);
   }
 };
 }  // namespace

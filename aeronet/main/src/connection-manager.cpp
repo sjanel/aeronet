@@ -114,6 +114,13 @@ void SingleHttpServer::sweepIdleConnections() {
     if (state.isSendingFile() && state.waitingWritable) {
       flushFilePayload(cnxIt);
     }
+    // Retry pending outbound buffer flushes to handle potential missed EPOLLOUT edges.
+    // On Windows, WSAPoll can fail to report writability on loopback sockets, leaving
+    // buffered response data (including HTTP/2 DATA frames) stuck in outBuffer indefinitely.
+    // Periodic retry here ensures forward progress regardless of missed poll events.
+    if (!state.outBuffer.empty() && state.waitingWritable) {
+      flushOutbound(cnxIt);
+    }
 
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
@@ -461,6 +468,12 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
                                       _tls.handshakesInFlight);
 #else
         _connections.recycleOrRelease(peerIt, _config.maxCachedConnections);
+#endif
+#ifdef AERONET_WINDOWS
+        // bytell_hash_map::erase() can relocate chain-tail elements into the
+        // erased slot, invalidating any iterator that pointed at the moved entry.
+        // Re-lookup our own iterator so we don't use a stale one below.
+        cnxIt = _connections.iterator(cfd);
 #endif
       } else {
         log::error("Tunnel peer mismatch while closing fd # {} (peerFd={}, peer.peerFd={})", cfd, peerFd,

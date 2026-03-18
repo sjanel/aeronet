@@ -394,13 +394,20 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
 }
 
 void SingleHttpServer::stop() noexcept {
-  closeListener();
-  if (_lifecycle.exchangeStopping() == internal::Lifecycle::State::Running) {
-    log::debug("Stopping server");
+  auto prevState = _lifecycle.exchangeStopping();
+  if (prevState == internal::Lifecycle::State::Running) {
+    // Wake the event loop immediately so it notices the Stopping state and exits
+    // before we close the listen socket.  On Windows, closing the listen socket
+    // while WSAPoll holds it can cause WSAPoll to hang indefinitely.
+    _lifecycle.wakeupFd.send();
 
     // Stop internal handle if start() was used (non-blocking API).
     // This joins the background thread, after which the thread has already called _lifecycle.reset().
     _internalHandle.stop();
+
+    // Close the listener AFTER the event-loop thread has exited, so WSAPoll never
+    // sees the invalidated listen socket fd.
+    closeListener();
 
     // In multi-server mode the background thread is NOT owned by _internalHandle — it is managed
     // by MultiHttpServer::AsyncHandle and will be joined later.  The thread calls
@@ -410,7 +417,9 @@ void SingleHttpServer::stop() noexcept {
     if (!isInMultiHttpServer()) {
       _lifecycle.reset();
     }
-    log::debug("Stopped server");
+  } else {
+    // Already stopping or idle — still ensure the listener is closed.
+    closeListener();
   }
 }
 

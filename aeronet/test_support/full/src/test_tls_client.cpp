@@ -65,6 +65,18 @@ bool TlsClient::writeAll(std::string_view data) {
   const char* cursor = data.data();
   auto remaining = data.size();
 
+  // A single shared deadline for ALL WANT_WRITE waits within this writeAll()
+  // call.  Giving each SSL_ERROR_WANT_WRITE a fresh deadline independently
+  // causes an infinite loop when select() incorrectly reports write-readiness
+  // on Windows loopback (a known platform bug similar to the WSAPoll one) but
+  // SSL_write still returns WANT_WRITE: we retry immediately with a brand-new 5 s
+  // budget, so we never actually give up.  Using one shared deadline guarantees
+  // that the function eventually returns false if the write truly cannot make
+  // progress.
+  using Clock = std::chrono::steady_clock;
+  auto wantWriteDeadline = Clock::now() + std::chrono::seconds(8);
+  int sockfd = -1;  // lazily set on first WANT_WRITE
+
   while (remaining > 0) {
     int written = ::SSL_write(_ssl.get(), cursor, static_cast<int>(remaining));
     if (written > 0) {
@@ -75,12 +87,32 @@ bool TlsClient::writeAll(std::string_view data) {
 
     int err = ::SSL_get_error(_ssl.get(), written);
     if (err == SSL_ERROR_WANT_READ) {
-      // SSL needs to read before it can write (e.g., renegotiation)
-      // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
-      if (!waitForSocketReady(POLLIN, std::chrono::seconds(30))) {
-        return false;
+      // SSL needs to read before it can write.  This can happen when OpenSSL
+      // has already read TLS data off the socket into its internal buffer
+      // during a previous operation (e.g., after the TLS handshake, the peer
+      // sends its initial frames before we send ours).  In that case the
+      // kernel socket buffer is empty so select/poll reports not-readable even
+      // though data is available via SSL_read.  Always attempt SSL_read first
+      // to drain any OpenSSL-buffered bytes; only block on the socket if
+      // SSL_pending is zero (i.e., no data in OpenSSL's internal buffer).
+      {
+        char drainBuf[16384];
+        int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
+        if (drained > 0) {
+          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
+          continue;  // retry SSL_write
+        }
+        int readErr = ::SSL_get_error(_ssl.get(), drained);
+        if (readErr == SSL_ERROR_WANT_READ) {
+          // Nothing buffered in OpenSSL; wait for kernel socket to become readable.
+          // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
+          if (!waitForSocketReady(POLLIN, std::chrono::seconds(30))) {
+            return false;
+          }
+        }
+        // For any other error (WANT_WRITE etc.), just retry SSL_write.
+        continue;
       }
-      continue;
     }
     if (err == SSL_ERROR_WANT_WRITE) {
       // SSL cannot flush to the socket yet. Poll for both POLLIN and POLLOUT:
@@ -89,43 +121,81 @@ bool TlsClient::writeAll(std::string_view data) {
       // send (breaking a bidirectional TCP deadlock).
       // SSL_read here is safe in TLS 1.3 — read/write paths are independent
       // and we always retry SSL_write with the same cursor/remaining below.
-      int sockfd = ::SSL_get_fd(_ssl.get());
-      auto wantWriteDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-      bool writable = false;
-      while (!writable) {
-        auto deadlineMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(wantWriteDeadline - std::chrono::steady_clock::now())
-                .count();
-        if (deadlineMs <= 0) {
-          return false;
-        }
-        int pollMs = static_cast<int>(std::min(deadlineMs, static_cast<decltype(deadlineMs)>(100)));
-        struct pollfd wpfd{};  // NOLINT(misc-include-cleaner)
-        wpfd.fd = sockfd;
-        wpfd.events = POLLIN | POLLOUT;  // NOLINT(misc-include-cleaner)
-#ifdef AERONET_WINDOWS
-        int wret = ::WSAPoll(&wpfd, 1, pollMs);
-#else
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        int wret = ::poll(&wpfd, 1, pollMs);
-#endif
-        if (wret < 0) {
-          return false;
-        }
-        if (wret == 0) {
-          continue;
-        }
-        if ((wpfd.revents & POLLOUT) != 0) {  // NOLINT(misc-include-cleaner)
-          writable = true;
-        } else if ((wpfd.revents & POLLIN) != 0) {  // NOLINT(misc-include-cleaner)
-          // Drain to free TCP receive window; store for later HTTP/2 processing.
-          char drainBuf[16384];
+      if (sockfd < 0) {
+        sockfd = ::SSL_get_fd(_ssl.get());
+      }
+      // Eagerly drain all available incoming data before polling.  Draining
+      // frees TCP receive-window space so the peer can flush its send buffer,
+      // which in turn lets the peer read our blocked bytes and free our TCP
+      // send buffer.
+      {
+        char drainBuf[16384];
+        for (;;) {
           int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
-          if (drained > 0) {
-            _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
+          if (drained <= 0) {
+            break;
           }
+          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
         }
       }
+      // Check the shared deadline AFTER draining so that as long as data
+      // keeps flowing (drain succeeds) we don't give up prematurely.
+      auto deadlineMs = std::chrono::duration_cast<std::chrono::milliseconds>(wantWriteDeadline - Clock::now()).count();
+      if (deadlineMs <= 0) {
+        return false;
+      }
+      // Wait for readability OR writability with a short timeout.
+      // On Windows loopback, select() may spuriously report write-readiness;
+      // we therefore do not exit the wait immediately on POLLOUT alone — we
+      // always at least drain readable bytes first to help the peer make
+      // progress before we try the write again.
+      int pollMs = static_cast<int>(std::min(deadlineMs, static_cast<decltype(deadlineMs)>(100)));
+      bool readable = false;
+#ifdef AERONET_WINDOWS
+      fd_set readFds;
+      fd_set writeFds;
+      FD_ZERO(&readFds);
+      FD_ZERO(&writeFds);
+      FD_SET(static_cast<SOCKET>(sockfd), &readFds);
+      FD_SET(static_cast<SOCKET>(sockfd), &writeFds);
+      struct timeval tv{};
+      tv.tv_sec = pollMs / 1000;
+      tv.tv_usec = (pollMs % 1000) * 1000;
+      int sret = ::select(0, &readFds, &writeFds, nullptr, &tv);
+      if (sret < 0) {
+        return false;
+      }
+      if (sret > 0) {
+        readable = FD_ISSET(static_cast<SOCKET>(sockfd), &readFds) != 0;
+      }
+#else
+      struct pollfd wpfd{};  // NOLINT(misc-include-cleaner)
+      wpfd.fd = sockfd;
+      wpfd.events = POLLIN | POLLOUT;  // NOLINT(misc-include-cleaner)
+      // NOLINTNEXTLINE(misc-include-cleaner)
+      int wret = ::poll(&wpfd, 1, pollMs);
+      if (wret < 0) {
+        return false;
+      }
+      if (wret > 0) {
+        readable = (wpfd.revents & POLLIN) != 0;  // NOLINT(misc-include-cleaner)
+      }
+#endif
+      if (readable) {
+        // Drain the newly arrived data to further free TCP receive window.
+        char drainBuf[16384];
+        for (;;) {
+          int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
+          if (drained <= 0) {
+            break;
+          }
+          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
+        }
+      }
+      // Fall through to retry SSL_write regardless of whether select() reported
+      // POLLOUT.  On platforms where POLLOUT reporting is reliable this avoids
+      // an unnecessary extra 100 ms wait; on Windows loopback the retry is
+      // harmless because another WANT_WRITE will simply bring us back here.
       continue;
     }
     // Fatal error
@@ -274,31 +344,50 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
     return false;
   }
 
+  auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+
+#ifdef AERONET_WINDOWS
+  // Use select() instead of WSAPoll(): WSAPoll has a known Windows bug where
+  // POLLOUT (and occasionally POLLIN) is not reliably reported on non-blocking
+  // loopback sockets, causing spurious hangs.
+  fd_set readFds{};
+  fd_set writeFds{};
+  FD_ZERO(&readFds);
+  FD_ZERO(&writeFds);
+  bool wantRead = (events & POLLIN) != 0;
+  bool wantWrite = (events & POLLOUT) != 0;
+  if (wantRead) {
+    FD_SET(static_cast<SOCKET>(fd), &readFds);
+  }
+  if (wantWrite) {
+    FD_SET(static_cast<SOCKET>(fd), &writeFds);
+  }
+  struct timeval tv{};
+  tv.tv_sec = static_cast<long>(timeoutMs / 1000);
+  tv.tv_usec = static_cast<long>((timeoutMs % 1000) * 1000);
+  int ret = ::select(0, wantRead ? &readFds : nullptr, wantWrite ? &writeFds : nullptr, nullptr, &tv);
+  if (ret <= 0) {
+    return false;
+  }
+  bool readable = wantRead && (FD_ISSET(static_cast<SOCKET>(fd), &readFds) != 0);
+  bool writable = wantWrite && (FD_ISSET(static_cast<SOCKET>(fd), &writeFds) != 0);
+  return readable || writable;
+#else
   // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   struct pollfd pfd;
   pfd.fd = fd;
   pfd.events = events;
   pfd.revents = 0;
-
-  auto timeoutMs = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
-#ifdef AERONET_WINDOWS
-  int ret = ::WSAPoll(&pfd, 1, static_cast<int>(timeoutMs));
-#else
   // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
   int ret = ::poll(&pfd, 1, static_cast<int>(timeoutMs));
-#endif
-
   if (ret < 0) {
-    // poll error
     return false;
   }
   if (ret == 0) {
-    // Timeout
     return false;
   }
-
-  // Check if the requested event occurred
   return (pfd.revents & events) != 0;
+#endif
 }
 
 // Convenience: perform a GET request and read entire response.
