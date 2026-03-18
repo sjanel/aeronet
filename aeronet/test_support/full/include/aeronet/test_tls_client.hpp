@@ -83,6 +83,11 @@ class TlsClient {
   /// Get the raw SSL handle for advanced operations.
   [[nodiscard]] SSL* sslHandle() const noexcept { return _ssl.get(); }
 
+  /// Data that was SSL_read'd while waiting for POLLOUT during writeAll (TCP
+  /// deadlock prevention). TlsHttp2Client picks this up after writeAll returns
+  /// and feeds it into its pending-input queue for HTTP/2 processing.
+  std::string& drainedDuringWrite() noexcept { return _drainedDuringWrite; }
+
  private:
   using SSLUniquePtr = std::unique_ptr<SSL, void (*)(SSL*)>;
   using SSL_CTXUniquePtr = std::unique_ptr<SSL_CTX, void (*)(SSL_CTX*)>;
@@ -106,5 +111,7 @@ class TlsClient {
   // Initialize with valid deleter function pointers so default-constructed state is safe.
   SSL_CTXUniquePtr _ctx{nullptr, ::SSL_CTX_free};
   SSLUniquePtr _ssl{nullptr, ::SSL_free};
+  // Bytes SSL_read'd while waiting for POLLOUT in writeAll; see drainedDuringWrite().
+  std::string _drainedDuringWrite;
 };
 }  // namespace aeronet::test
