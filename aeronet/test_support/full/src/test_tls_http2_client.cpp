@@ -99,7 +99,6 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   if (_http2Connection->hasPendingOutput()) {
     auto output = _http2Connection->getPendingOutput();
     if (!writeAll(output)) {
-      log::error("Failed to send HTTP/2 connection preface");
       return;
     }
     _http2Connection->onOutputWritten(output.size());
@@ -107,7 +106,6 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
 
   // Process server's SETTINGS frame
   if (!processFrames(std::chrono::milliseconds{2000})) {
-    log::error("Failed to process server SETTINGS");
     return;
   }
 
@@ -115,26 +113,18 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   if (_http2Connection->hasPendingOutput()) {
     auto output = _http2Connection->getPendingOutput();
     if (!writeAll(output)) {
-      log::error("Failed to send SETTINGS ACK");
       return;
     }
     _http2Connection->onOutputWritten(output.size());
   }
 
   _connected = _http2Connection->isOpen();
-  if (_connected) {
-    log::debug("HTTP/2 client connected successfully");
-  }
 }
 
 TlsHttp2Client::~TlsHttp2Client() {
-  if (_connected && _http2Connection) {
-    _http2Connection->initiateGoAway(http2::ErrorCode::NoError);
-    if (_http2Connection->hasPendingOutput()) {
-      auto output = _http2Connection->getPendingOutput();
-      writeAll(output);
-    }
-  }
+  // Tests do not require graceful HTTP/2 session teardown. Avoiding any final
+  // GOAWAY write here prevents large-transfer teardown from re-entering the
+  // TLS write path after the test body has already completed.
 }
 
 bool TlsHttp2Client::isConnected() const noexcept { return _connected; }
@@ -241,20 +231,28 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
     bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
 
     if (!sslHasPending && !hasPendingInput) {
-      struct pollfd pfd{};  // NOLINT(misc-include-cleaner) poll.h is the correct include
-      pfd.fd = fd;
-      pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
-
       auto remainingMs =
           std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
       int pollMs = (remainingMs <= 0)
                        ? 0
                        : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+      int ret = 0;
 #ifdef AERONET_WINDOWS
-      int ret = ::WSAPoll(&pfd, 1, pollMs);
+      // select() is used instead of WSAPoll() — WSAPoll has a bug on Windows
+      // where it can fail to report readability on non-blocking loopback sockets.
+      fd_set rfds{};
+      FD_ZERO(&rfds);
+      FD_SET(static_cast<SOCKET>(fd), &rfds);
+      struct timeval tv{};
+      tv.tv_sec = pollMs / 1000;
+      tv.tv_usec = (pollMs % 1000) * 1000;
+      ret = ::select(0, &rfds, nullptr, nullptr, &tv);
 #else
+      struct pollfd pfd{};  // NOLINT(misc-include-cleaner)
+      pfd.fd = fd;
+      pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
       // NOLINTNEXTLINE(misc-include-cleaner)
-      int ret = ::poll(&pfd, 1, pollMs);
+      ret = ::poll(&pfd, 1, pollMs);
 #endif
       if (ret < 0) {
         return false;
@@ -268,63 +266,51 @@ bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
       }
     }
 
-    // Non-blocking read (poll was skipped when hasPendingInput was true).
+    // Non-blocking read — always attempt even when hasPendingInput is true,
+    // so that an incomplete frame in _pendingInput can be completed with
+    // fresh socket bytes.
     {
       auto data = _tlsClient.readSome(buffer);
       if (!data.empty()) {
         _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
                              reinterpret_cast<const std::byte*>(data.data() + data.size()));
+      } else if (hasPendingInput) {
+        // Incomplete frame and no bytes available without blocking — wait.
+        auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        int pollMs =
+            (remainingMs <= 0)
+                ? 0
+                : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+#ifdef AERONET_WINDOWS
+        fd_set rfds2{};
+        FD_ZERO(&rfds2);
+        FD_SET(static_cast<SOCKET>(fd), &rfds2);
+        struct timeval tv2{};
+        tv2.tv_sec = pollMs / 1000;
+        tv2.tv_usec = (pollMs % 1000) * 1000;
+        int ret2 = ::select(0, &rfds2, nullptr, nullptr, &tv2);
+#else
+        struct pollfd pfd2{};
+        pfd2.fd = fd;
+        pfd2.events = POLLIN;
+        int ret2 = ::poll(&pfd2, 1, pollMs);
+#endif
+        if (ret2 <= 0) {
+          continue;
+        }
+        data = _tlsClient.readSome(buffer);
+        if (!data.empty()) {
+          _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                               reinterpret_cast<const std::byte*>(data.data() + data.size()));
+        }
       }
     }
     if (_pendingInput.size() <= _pendingOffset) {
       continue;  // Nothing to process
     }
 
-    // Process through HTTP/2 connection
-    for (;;) {
-      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
-                                           _pendingInput.size() - _pendingOffset);
-      if (inputData.empty()) {
-        break;
-      }
-
-      auto result = _http2Connection->processInput(inputData);
-
-      if (result.bytesConsumed > 0) {
-        _pendingOffset += result.bytesConsumed;
-        if (_pendingOffset == _pendingInput.size()) {
-          _pendingInput.clear();
-          _pendingOffset = 0;
-        } else if (_pendingOffset > (64UL * 1024UL)) {
-          _pendingInput.erase(_pendingInput.begin(),
-                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
-          _pendingOffset = 0;
-        }
-      }
-
-      // Send any pending output (SETTINGS ACK, WINDOW_UPDATE, etc.)
-      if (_http2Connection->hasPendingOutput()) {
-        auto output = _http2Connection->getPendingOutput();
-        if (!writeAll(output)) {
-          return false;
-        }
-        _http2Connection->onOutputWritten(output.size());
-      }
-
-      if (result.action == http2::Http2Connection::ProcessResult::Action::Error) {
-        log::error("HTTP/2 protocol error: {}", result.errorMessage);
-        return false;
-      }
-
-      if (result.action == http2::Http2Connection::ProcessResult::Action::Closed ||
-          result.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
-        return false;
-      }
-
-      if (result.bytesConsumed == 0) {
-        break;  // Need more data
-      }
-    }
+    processPendingInput();
 
     // Check if we've completed handshake
     if (_http2Connection->state() == http2::ConnectionState::Open) {
@@ -353,74 +339,80 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
     std::array<char, 16384> buffer{};
     int fd = _tlsClient.fd();
 
-    struct pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = POLLIN;
+    // Process any data already queued (e.g. drained during a prior writeAll
+    // WANT_WRITE) before blocking on the socket.
+    bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
+    bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
 
-    auto remainingMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-    int pollMs = std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+    if (!sslHasPending && !hasPendingInput) {
+      auto remainingMs =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+      int pollMs = std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+      int ret = 0;
 #ifdef AERONET_WINDOWS
-    int ret = ::WSAPoll(&pfd, 1, pollMs);
+      // select() instead of WSAPoll() — WSAPoll has a bug on Windows where it
+      // can fail to report readability on non-blocking loopback sockets.
+      fd_set rfds{};
+      FD_ZERO(&rfds);
+      FD_SET(static_cast<SOCKET>(fd), &rfds);
+      struct timeval tv{};
+      tv.tv_sec = pollMs / 1000;
+      tv.tv_usec = (pollMs % 1000) * 1000;
+      ret = ::select(0, &rfds, nullptr, nullptr, &tv);
 #else
-    int ret = ::poll(&pfd, 1, pollMs);
+      struct pollfd pfd{};
+      pfd.fd = fd;
+      pfd.events = POLLIN;
+      ret = ::poll(&pfd, 1, pollMs);
 #endif
-    if (ret <= 0) {
-      continue;
-    }
-
-    auto data = _tlsClient.readSome(buffer);
-    if (data.empty()) {
-      continue;
-    }
-
-    _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
-                         reinterpret_cast<const std::byte*>(data.data() + data.size()));
-
-    for (;;) {
-      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
-                                           _pendingInput.size() - _pendingOffset);
-      if (inputData.empty()) {
-        break;
+      if (ret <= 0) {
+        continue;
       }
+    }
 
-      auto result = _http2Connection->processInput(inputData);
-
-      if (result.bytesConsumed > 0) {
-        _pendingOffset += result.bytesConsumed;
-        if (_pendingOffset == _pendingInput.size()) {
-          _pendingInput.clear();
-          _pendingOffset = 0;
-        } else if (_pendingOffset > (64UL * 1024UL)) {
-          _pendingInput.erase(_pendingInput.begin(),
-                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
-          _pendingOffset = 0;
+    // Always attempt a non-blocking read, even when hasPendingInput is true.
+    // An incomplete HTTP/2 frame may be sitting in _pendingInput waiting for
+    // more bytes; skipping readSome would spin forever consuming 0 bytes.
+    {
+      auto data = _tlsClient.readSome(buffer);
+      if (!data.empty()) {
+        _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                             reinterpret_cast<const std::byte*>(data.data() + data.size()));
+      } else if (hasPendingInput) {
+        // Incomplete frame in buffer but no bytes available without blocking.
+        // Wait for the socket to become readable before retrying.
+        auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (remainingMs <= 0) {
+          break;
+        }
+        int pollMs = std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+#ifdef AERONET_WINDOWS
+        fd_set rfds{};
+        FD_ZERO(&rfds);
+        FD_SET(static_cast<SOCKET>(fd), &rfds);
+        struct timeval tv{};
+        tv.tv_sec = pollMs / 1000;
+        tv.tv_usec = (pollMs % 1000) * 1000;
+        int ret = ::select(0, &rfds, nullptr, nullptr, &tv);
+#else
+        struct pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        int ret = ::poll(&pfd, 1, pollMs);
+#endif
+        if (ret <= 0) {
+          continue;
+        }
+        data = _tlsClient.readSome(buffer);
+        if (!data.empty()) {
+          _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
+                               reinterpret_cast<const std::byte*>(data.data() + data.size()));
         }
       }
-
-      if (_http2Connection->hasPendingOutput()) {
-        auto output = _http2Connection->getPendingOutput();
-        writeAll(output);
-        _http2Connection->onOutputWritten(output.size());
-      }
-
-      if (result.action == http2::Http2Connection::ProcessResult::Action::Error) {
-        log::error("HTTP/2 client protocol error while waiting for response: {} ({})", result.errorMessage,
-                   http2::ErrorCodeName(result.errorCode));
-        return false;
-      }
-
-      if (result.action == http2::Http2Connection::ProcessResult::Action::Closed ||
-          result.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
-        log::error("HTTP/2 client connection closed while waiting for response (action={}, error={})",
-                   static_cast<int>(result.action), http2::ErrorCodeName(result.errorCode));
-        return false;
-      }
-
-      if (result.bytesConsumed == 0) {
-        break;
-      }
     }
+
+    processPendingInput();
   }
 
   auto iter = _streamResponses.find(streamId);
@@ -541,6 +533,46 @@ uint32_t TlsHttp2Client::connect(std::string_view authority,
   return streamId;
 }
 
+void TlsHttp2Client::processPendingInput() {
+  for (;;) {
+    std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset, _pendingInput.size() - _pendingOffset);
+    if (inputData.empty()) {
+      break;
+    }
+
+    auto result = _http2Connection->processInput(inputData);
+
+    if (result.bytesConsumed > 0) {
+      _pendingOffset += result.bytesConsumed;
+      if (_pendingOffset == _pendingInput.size()) {
+        _pendingInput.clear();
+        _pendingOffset = 0;
+      } else if (_pendingOffset > (64UL * 1024UL)) {
+        _pendingInput.erase(_pendingInput.begin(), _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
+        _pendingOffset = 0;
+      }
+    }
+
+    if (_http2Connection->hasPendingOutput()) {
+      auto output = _http2Connection->getPendingOutput();
+      if (!writeAll(output)) {
+        return;
+      }
+      _http2Connection->onOutputWritten(output.size());
+    }
+
+    if (result.action == http2::Http2Connection::ProcessResult::Action::Error ||
+        result.action == http2::Http2Connection::ProcessResult::Action::Closed ||
+        result.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
+      return;
+    }
+
+    if (result.bytesConsumed == 0) {
+      break;
+    }
+  }
+}
+
 bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
   if (!_connected) {
     return false;
@@ -560,111 +592,119 @@ bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte
     _http2Connection->onOutputWritten(output.size());
   }
 
+  // Process any data that TlsClient::writeAll drained from the socket while
+  // waiting for POLLOUT (TCP deadlock prevention).  Doing this here ensures
+  // that WINDOW_UPDATE frames sent by the remote end are consumed immediately,
+  // which keeps H2 flow-control windows open and prevents a secondary deadlock.
+  if (_pendingInput.size() > _pendingOffset) {
+    processPendingInput();
+  }
+
   return true;
 }
 
 void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
 
-  // Allow at least one non-blocking check even with a zero timeout.
+  std::array<char, 32U << 10> buffer{};
   bool firstIteration = true;
 
-  std::array<char, 32U << 10> buffer{};
-  while (firstIteration || std::chrono::steady_clock::now() < deadline) {
-    firstIteration = false;
-
-    auto iter = _streamResponses.find(streamId);
-    if (iter != _streamResponses.end() && !iter->second.response.body.empty()) {
-      auto& body = iter->second.response.body;
-      out.append(body.data(), body.size());
-      body.clear();  // Consume the data
-      return;
-    }
-
-    if (iter != _streamResponses.end() && iter->second.complete) {
-      return;  // Stream closed
-    }
-
-    // Read and process more frames
-    int fd = _tlsClient.fd();
-
-    // Skip the poll when SSL or our own buffer already has data to process;
-    // but always attempt a non-blocking readSome so an incomplete frame in
-    // _pendingInput can be completed with fresh socket bytes.
-    bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
-    bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
-
-    if (!sslHasPending && !hasPendingInput) {
-      struct pollfd pfd{};
-      pfd.fd = fd;
-      pfd.events = POLLIN;
-
-      auto remainingMs =
-          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-      int pollMs = (remainingMs <= 0)
-                       ? 0
-                       : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
-#ifdef AERONET_WINDOWS
-      int ret = ::WSAPoll(&pfd, 1, pollMs);
-#else
-      int ret = ::poll(&pfd, 1, pollMs);
-#endif
-      if (ret <= 0) {
-        continue;
+  while (true) {
+    // Consume any body already parsed by the H2 layer.
+    {
+      auto iter = _streamResponses.find(streamId);
+      if (iter != _streamResponses.end() && !iter->second.response.body.empty()) {
+        auto& body = iter->second.response.body;
+        out.append(body.data(), body.size());
+        body.clear();
+        return;
+      }
+      if (iter != _streamResponses.end() && iter->second.complete) {
+        return;
       }
     }
 
-    // Non-blocking read (poll was skipped when hasPendingInput was true).
+    int fd = _tlsClient.fd();
+    bool sslHasPending = (::SSL_pending(_tlsClient.sslHandle()) > 0);
+    bool hasPendingInput = (_pendingInput.size() > _pendingOffset);
+
+    // If there's no data immediately available, check whether we have time left.
+    if (!sslHasPending && !hasPendingInput) {
+      auto nowMs = std::chrono::steady_clock::now();
+      bool timeExpired = !firstIteration && (nowMs >= deadline);
+
+      auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - nowMs).count();
+      // Always do at least one poll (even with 0ms) so we flush any socket bytes.
+      int pollMs = timeExpired
+                       ? 0
+                       : std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+      int ret = 0;
+#ifdef AERONET_WINDOWS
+      // select() instead of WSAPoll() — WSAPoll has a bug on Windows where it
+      // can fail to report readability on non-blocking loopback sockets.
+      fd_set rfds{};
+      FD_ZERO(&rfds);
+      FD_SET(static_cast<SOCKET>(fd), &rfds);
+      struct timeval tv{};
+      tv.tv_sec = pollMs / 1000;
+      tv.tv_usec = (pollMs % 1000) * 1000;
+      ret = ::select(0, &rfds, nullptr, nullptr, &tv);
+#else
+      struct pollfd pfd{};  // NOLINT(misc-include-cleaner)
+      pfd.fd = fd;
+      pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
+      // NOLINTNEXTLINE(misc-include-cleaner)
+      ret = ::poll(&pfd, 1, pollMs);
+#endif
+      firstIteration = false;
+      if (ret <= 0) {
+        // Nothing available right now; stop if deadline reached, else retry.
+        if (timeExpired) {
+          return;
+        }
+        continue;
+      }
+    } else {
+      firstIteration = false;
+    }
+
+    // Read whatever is available right now (non-blocking).
     {
       auto data = _tlsClient.readSome(buffer);
       if (!data.empty()) {
         _pendingInput.insert(_pendingInput.end(), reinterpret_cast<const std::byte*>(data.data()),
                              reinterpret_cast<const std::byte*>(data.data() + data.size()));
-      }
-    }
-    if (_pendingInput.size() <= _pendingOffset) {
-      continue;  // Nothing to process
-    }
-
-    for (;;) {
-      std::span<const std::byte> inputData(_pendingInput.data() + _pendingOffset,
-                                           _pendingInput.size() - _pendingOffset);
-      if (inputData.empty()) {
-        break;
-      }
-
-      auto result_process = _http2Connection->processInput(inputData);
-
-      if (result_process.bytesConsumed > 0) {
-        _pendingOffset += result_process.bytesConsumed;
-        if (_pendingOffset == _pendingInput.size()) {
-          _pendingInput.clear();
-          _pendingOffset = 0;
-        } else if (_pendingOffset > (64UL * 1024UL)) {
-          _pendingInput.erase(_pendingInput.begin(),
-                              _pendingInput.begin() + static_cast<std::ptrdiff_t>(_pendingOffset));
-          _pendingOffset = 0;
+      } else if (!sslHasPending && _pendingInput.size() > _pendingOffset) {
+        // hasPendingInput was true but readSome produced nothing — we have a
+        // partial H2 frame and need more socket bytes to complete it.  Poll
+        // briefly so we don't spin at 100% CPU while waiting for the server to
+        // send the rest of the frame.  Honour the deadline to avoid hanging.
+        auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (remainingMs <= 0) {
+          return;
         }
-      }
-
-      if (_http2Connection->hasPendingOutput()) {
-        auto output = _http2Connection->getPendingOutput();
-        if (!writeAll(output)) {
-          break;
-        }
-        _http2Connection->onOutputWritten(output.size());
-      }
-
-      if (result_process.action == http2::Http2Connection::ProcessResult::Action::Error ||
-          result_process.action == http2::Http2Connection::ProcessResult::Action::Closed ||
-          result_process.action == http2::Http2Connection::ProcessResult::Action::GoAway) {
-        break;
-      }
-
-      if (result_process.bytesConsumed == 0) {
-        break;
+        int pollMs = std::max(1, static_cast<int>(std::min(remainingMs, static_cast<decltype(remainingMs)>(100))));
+#ifdef AERONET_WINDOWS
+        // select() instead of WSAPoll() — see above.
+        fd_set rfds{};
+        FD_ZERO(&rfds);
+        FD_SET(static_cast<SOCKET>(fd), &rfds);
+        struct timeval tv{};
+        tv.tv_sec = pollMs / 1000;
+        tv.tv_usec = (pollMs % 1000) * 1000;
+        ::select(0, &rfds, nullptr, nullptr, &tv);
+#else
+        struct pollfd pfd{};  // NOLINT(misc-include-cleaner)
+        pfd.fd = fd;
+        pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        ::poll(&pfd, 1, pollMs);
+#endif
       }
     }
+
+    processPendingInput();
   }
 }
 

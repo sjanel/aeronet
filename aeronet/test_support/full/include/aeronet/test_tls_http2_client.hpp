@@ -141,6 +141,10 @@ class TlsHttp2Client {
   uint32_t sendRequest(std::string_view method, std::string_view path,
                        const std::vector<std::pair<std::string, std::string>>& headers, std::string_view body);
 
+  /// Process all data currently in _pendingInput through the HTTP/2 layer,
+  /// sending any resulting output frames (SETTINGS ACK, WINDOW_UPDATE, etc.).
+  void processPendingInput();
+
   /// Per-stream response data accumulator.
   struct StreamResponse {
     Response response;
