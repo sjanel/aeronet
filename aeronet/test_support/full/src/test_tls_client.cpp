@@ -83,10 +83,48 @@ bool TlsClient::writeAll(std::string_view data) {
       continue;
     }
     if (err == SSL_ERROR_WANT_WRITE) {
-      // SSL needs socket to be writable
-      // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
-      if (!waitForSocketReady(POLLOUT, std::chrono::seconds(30))) {
-        return false;
+      // SSL cannot flush to the socket yet. Poll for both POLLIN and POLLOUT:
+      // if the peer is also blocked writing because our TCP receive buffer is
+      // full, reading from the socket frees window and eventually unblocks our
+      // send (breaking a bidirectional TCP deadlock).
+      // SSL_read here is safe in TLS 1.3 — read/write paths are independent
+      // and we always retry SSL_write with the same cursor/remaining below.
+      int sockfd = ::SSL_get_fd(_ssl.get());
+      auto wantWriteDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      bool writable = false;
+      while (!writable) {
+        auto deadlineMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(wantWriteDeadline - std::chrono::steady_clock::now())
+                .count();
+        if (deadlineMs <= 0) {
+          return false;
+        }
+        int pollMs = static_cast<int>(std::min(deadlineMs, static_cast<decltype(deadlineMs)>(100)));
+        struct pollfd wpfd{};  // NOLINT(misc-include-cleaner)
+        wpfd.fd = sockfd;
+        wpfd.events = POLLIN | POLLOUT;  // NOLINT(misc-include-cleaner)
+#ifdef AERONET_WINDOWS
+        int wret = ::WSAPoll(&wpfd, 1, pollMs);
+#else
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        int wret = ::poll(&wpfd, 1, pollMs);
+#endif
+        if (wret < 0) {
+          return false;
+        }
+        if (wret == 0) {
+          continue;
+        }
+        if ((wpfd.revents & POLLOUT) != 0) {  // NOLINT(misc-include-cleaner)
+          writable = true;
+        } else if ((wpfd.revents & POLLIN) != 0) {  // NOLINT(misc-include-cleaner)
+          // Drain to free TCP receive window; store for later HTTP/2 processing.
+          char drainBuf[16384];
+          int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
+          if (drained > 0) {
+            _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
+          }
+        }
       }
       continue;
     }

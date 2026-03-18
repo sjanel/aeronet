@@ -2,6 +2,8 @@
 
 #ifdef AERONET_WINDOWS
 #include <winsock2.h>  // SOCKET
+// winsock2.h → winnt.h defines DELETE as a macro, which clashes with http::Method::DELETE.
+#undef DELETE
 #endif
 
 namespace aeronet {
