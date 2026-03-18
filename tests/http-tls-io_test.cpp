@@ -433,7 +433,6 @@ TEST(HttpRangeStatic_H2Tls, LargeFileStreaming_H2Tls) {
 
 #if defined(BIO_CTRL_GET_KTLS_SEND) && !defined(OPENSSL_NO_KTLS)
 TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
-  log::set_level(log::level::debug);
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
   ts.setDefault([](const HttpRequest&) { return HttpResponse("ktls"); });

@@ -136,22 +136,12 @@ void TlsTransport::shutdown() noexcept {
     ::ERR_clear_error();
     return;
   }
-  // OpenSSL SSL_shutdown semantics (simplified):
-  //  - First call attempts to send our "close_notify" alert. Return values:
-  //      1 : Bidirectional shutdown already complete (we previously received peer's close_notify).
-  //      0 : Our close_notify sent, but peer's close_notify not yet seen (need a second call).
-  //     <0 : Error or needs retry (SSL_ERROR_WANT_READ / SSL_ERROR_WANT_WRITE for non-blocking I/O).
-  //  - A second call (only when the first returned 0) lets OpenSSL process an already received peer
-  //    close_notify (if it arrived between calls) or indicates that we still need to read to finish.
-  //
-  // In this transport we issue at most two immediate calls as a best-effort graceful shutdown and then
-  // rely on the outer layer closing the underlying socket. We intentionally ignore WANT_READ / WANT_WRITE
-  // here for simplicity; a fully asynchronous graceful close would capture those conditions and defer
-  // the second call until the socket becomes readable/writable.
-  auto rc = ::SSL_shutdown(ssl);
-  if (rc == 0) {  // Need second invocation to try completing bidirectional shutdown.
-    ::SSL_shutdown(ssl);
-  }
+  // Best-effort graceful close only. A second immediate SSL_shutdown() call can
+  // re-enter OpenSSL's shutdown state machine while the connection is already
+  // being force-closed by the server, which has shown up as rare stop-time
+  // stalls on Windows after large TLS transfers. One call is enough to emit a
+  // close_notify when possible; the outer layer will close the socket either way.
+  (void)::SSL_shutdown(ssl);
   // Clear any errors left on the per-thread OpenSSL error queue by the shutdown.
   // Without this, stale errors can pollute subsequent SSL_read_ex/SSL_write_ex calls
   // on other SSL connections sharing the same thread (the error queue is per-thread,
