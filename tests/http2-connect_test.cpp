@@ -74,69 +74,71 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
     h2.connectionWindowSize = kLargeWindow * 2;
   });
 
-  Http2Config clientCfg;
-  clientCfg.initialWindowSize = kLargeWindow;
-  clientCfg.connectionWindowSize = kLargeWindow * 2;
-  test::TlsHttp2Client client(ts.port(), clientCfg);
-  ASSERT_TRUE(client.isConnected());
+  {
+    Http2Config clientCfg;
+    clientCfg.initialWindowSize = kLargeWindow;
+    clientCfg.connectionWindowSize = kLargeWindow * 2;
+    test::TlsHttp2Client client(ts.port(), clientCfg);
+    ASSERT_TRUE(client.isConnected());
 
-  auto [sock, port] = test::startEchoServer();
-  std::string authority = "127.0.0.1:" + std::to_string(port);
+    auto [sock, port] = test::startEchoServer();
+    std::string authority = "127.0.0.1:" + std::to_string(port);
 
-  uint32_t streamId = client.connect(authority);
-  ASSERT_GT(streamId, 0);
+    uint32_t streamId = client.connect(authority);
+    ASSERT_GT(streamId, 0);
 
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  std::string payload(1024UL * 1024, 'a');
+#if defined(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS) || defined(AERONET_WINDOWS)
+    std::string payload(1024UL * 1024, 'a');
 #else
-  std::string payload(16UL << 20, 'a');
+    std::string payload(16UL << 20, 'a');
 #endif
 
-  std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
+    std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
 
-  RawChars received;
-  std::size_t offset = 0;
-  while (offset < data.size()) {
-    auto* stream = client.connection().getStream(streamId);
-    ASSERT_NE(stream, nullptr);
+    RawChars received;
+    std::size_t offset = 0;
+    while (offset < data.size()) {
+      auto* stream = client.connection().getStream(streamId);
+      ASSERT_NE(stream, nullptr);
 
-    int32_t streamWin = stream->sendWindow();
-    int32_t connWin = client.connection().connectionSendWindow();
-    int32_t win = std::min(streamWin, connWin);
+      int32_t streamWin = stream->sendWindow();
+      int32_t connWin = client.connection().connectionSendWindow();
+      int32_t win = std::min(streamWin, connWin);
 
-    if (win <= 0) {
-      // Wait for WINDOW_UPDATE
-      client.receiveTunnelData(received, streamId, std::chrono::milliseconds{100});
-      continue;
+      if (win <= 0) {
+        // Wait for WINDOW_UPDATE
+        client.receiveTunnelData(received, streamId, std::chrono::milliseconds{100});
+        continue;
+      }
+
+      // Cap each send to avoid blocking in writeAll (which would deadlock if the
+      // echo server can't drain because our TCP recv buffer is full).
+      static constexpr int32_t kMaxSendChunk = 16 << 10;  // 16 KB
+      int32_t sendWin = std::min(win, kMaxSendChunk);
+      std::size_t chunkSize = std::min(data.size() - offset, static_cast<std::size_t>(sendWin));
+      ASSERT_TRUE(client.sendTunnelData(streamId, data.subspan(offset, chunkSize), false));
+      offset += chunkSize;
+
+      // Non-blocking drain of incoming echo data to keep the TCP receive buffer
+      // from filling up (which would prevent the server from writing).
+      client.receiveTunnelData(received, streamId, std::chrono::milliseconds{0});
     }
 
-    // Cap each send to avoid blocking in writeAll (which would deadlock if the
-    // echo server can't drain because our TCP recv buffer is full).
-    static constexpr int32_t kMaxSendChunk = 16 << 10;  // 16 KB
-    int32_t sendWin = std::min(win, kMaxSendChunk);
-    std::size_t chunkSize = std::min(data.size() - offset, static_cast<std::size_t>(sendWin));
-    ASSERT_TRUE(client.sendTunnelData(streamId, data.subspan(offset, chunkSize), false));
-    offset += chunkSize;
+    // Send empty END_STREAM
+    ASSERT_TRUE(client.sendTunnelData(streamId, {}, true));
 
-    // Non-blocking drain of incoming echo data to keep the TCP receive buffer
-    // from filling up (which would prevent the server from writing).
-    client.receiveTunnelData(received, streamId, std::chrono::milliseconds{0});
-  }
-
-  // Send empty END_STREAM
-  ASSERT_TRUE(client.sendTunnelData(streamId, {}, true));
-
-  while (received.size() < payload.size()) {
-    const std::size_t oldSize = received.size();
-    client.receiveTunnelData(received, streamId, std::chrono::milliseconds{10000});
-    if (received.size() == oldSize) {
-      break;
+    while (received.size() < payload.size()) {
+      const std::size_t oldSize = received.size();
+      client.receiveTunnelData(received, streamId, std::chrono::milliseconds{10000});
+      if (received.size() == oldSize) {
+        break;
+      }
     }
+
+    std::string_view receivedSv(received.data(), received.size());
+
+    EXPECT_EQ(receivedSv.size(), payload.size());
+    EXPECT_TRUE(receivedSv.starts_with("aaaaaaaaaaaaaaaaaa"));
+    EXPECT_TRUE(receivedSv.ends_with("aaaaaaaaaaaaaaaaaa"));
   }
-
-  std::string_view receivedSv(received.data(), received.size());
-
-  EXPECT_EQ(receivedSv.size(), payload.size());
-  EXPECT_TRUE(receivedSv.starts_with("aaaaaaaaaaaaaaaaaa"));
-  EXPECT_TRUE(receivedSv.ends_with("aaaaaaaaaaaaaaaaaa"));
 }

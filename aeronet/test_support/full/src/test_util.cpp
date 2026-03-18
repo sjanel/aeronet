@@ -308,6 +308,12 @@ std::pair<Socket, uint16_t> startEchoServer() {
 #endif
       ThrowSystemError("Error from ::accept");
     }
+    // Detached helper threads must not be able to keep the test process alive
+    // indefinitely if tunnel teardown stalls. Break out after a bounded idle
+    // period with no traffic.
+    setRecvTimeout(clientFd.fd(), std::chrono::milliseconds{250});
+    const auto maxIdle = std::chrono::seconds{3};
+    auto idleDeadline = std::chrono::steady_clock::now() + maxIdle;
     char buf[16384];
 
     while (true) {
@@ -315,11 +321,23 @@ std::pair<Socket, uint16_t> startEchoServer() {
       if (recvBytes == -1) {
         const auto err = LastSystemError();
 #ifdef AERONET_WINDOWS
+        if (err == error::kTimedOut) {
+          if (std::chrono::steady_clock::now() >= idleDeadline) {
+            break;
+          }
+          continue;
+        }
         if (err == error::kConnectionReset || err == WSAENOTCONN) {
           break;
         }
 #else
         if (err == error::kInterrupted) {
+          continue;
+        }
+        if (err == error::kTimedOut || err == error::kWouldBlock) {
+          if (std::chrono::steady_clock::now() >= idleDeadline) {
+            break;
+          }
           continue;
         }
         if (err == error::kConnectionReset || err == ENOTCONN || err == EBADF) {
@@ -332,6 +350,7 @@ std::pair<Socket, uint16_t> startEchoServer() {
       if (recvBytes == 0) {
         break;
       }
+      idleDeadline = std::chrono::steady_clock::now() + maxIdle;
 
       try {
         sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
