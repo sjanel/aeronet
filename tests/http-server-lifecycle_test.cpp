@@ -32,19 +32,7 @@ using namespace std::chrono_literals;
 
 namespace aeronet {
 
-namespace {
-
-std::string SimpleGetRequest(std::string_view target, std::string_view connectionHeader = "close") {
-  std::string req;
-  req.reserve(128);
-  req.append("GET ").append(target).append(" HTTP/1.1\r\n");
-  req.append("Host: localhost\r\n");
-  req.append("Connection: ").append(connectionHeader).append("\r\n");
-  req.append("Content-Length: 0\r\n\r\n");
-  return req;
-}
-
-}  // namespace
+using test::SimpleGetRequest;
 
 TEST(SingleHttpServer, DefaultConstructor) {
   SingleHttpServer server;
@@ -325,13 +313,12 @@ TEST(HttpDrain, StopsNewConnections) {
 
   ASSERT_TRUE(test::AttemptConnect(port));
 
-  // Baseline request to ensure server responds prior to draining.
-  {
-    test::ClientConnection cnx(port);
-    test::sendAll(cnx.fd(), SimpleGetRequest("/pre", http::keepalive));
-    const auto resp = test::recvWithTimeout(cnx.fd());
-    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
-  }
+  // Keep a connection alive across beginDrain() so the server does not auto-stop
+  // (draining with 0 active connections exits the event loop immediately).
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), SimpleGetRequest("/pre", http::keepalive));
+  const auto resp = test::recvWithTimeout(cnx.fd());
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
 
   ts.server.beginDrain();
 

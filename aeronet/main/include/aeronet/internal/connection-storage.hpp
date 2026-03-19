@@ -135,7 +135,6 @@ class ConnectionStorage {
 
   // Check whether a ConnectionIt points to a valid active connection.
   // POSIX: checks the vector slot is occupied. Windows: checks the iterator was found in the map.
-
 #ifdef AERONET_WINDOWS
   [[nodiscard]] bool active(ConnectionIt cnxIt) const { return cnxIt._it != _activeConnections.end(); }
 #else

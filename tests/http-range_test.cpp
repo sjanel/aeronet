@@ -26,15 +26,9 @@
 
 using namespace aeronet;
 
-namespace {
+using test::getHeader;
 
-std::string getHeader(const test::ParsedResponse& resp, std::string_view key) {
-  const auto it = resp.headers.find(key);
-  if (it == resp.headers.end()) {
-    return {};
-  }
-  return it->second;
-}
+namespace {
 
 test::TestServer ts(HttpServerConfig{});
 
