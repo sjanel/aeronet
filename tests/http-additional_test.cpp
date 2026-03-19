@@ -1309,10 +1309,17 @@ TEST(SingleHttpServer, EpollPollFailure) {
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
 
-  test::ClientConnection clientConnection(ts.port());
+  // The server may have already stopped due to injected epoll_wait errors before
+  // the client can connect or send. Both outcomes are valid: the test verifies
+  // that the server stops and the client receives no complete response.
+  test::ClientConnection clientConnection(ts.port(), 50ms);
   NativeHandle fd = clientConnection.fd();
 
-  test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  try {
+    test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  } catch (const std::runtime_error&) {
+    return;
+  }
 
   auto data = test::recvWithTimeout(fd, 50ms);
 

@@ -55,11 +55,17 @@ struct Lifecycle {
     drainDeadlineEnabled = false;
   }
 
-  // Atomically set state to Stopping only if current state is Running.
+  // Atomically set state to Stopping if current state is Running or Draining.
   // Returns the previous state.
   State exchangeStopping() noexcept {
     State expected = State::Running;
     // Use strong compare_exchange to change Running -> Stopping atomically.
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
+      drainDeadlineEnabled = false;
+      return expected;
+    }
+    // Also handle Draining -> Stopping (e.g. stop() called after beginDrain()).
+    expected = State::Draining;
     if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
       drainDeadlineEnabled = false;
     }

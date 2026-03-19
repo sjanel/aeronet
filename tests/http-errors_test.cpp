@@ -56,15 +56,7 @@ struct Capture {
   }
 };
 
-std::string SimpleGetRequest(std::string_view target, std::string_view connectionHeader = "close") {
-  std::string req;
-  req.reserve(128);
-  req.append("GET ").append(target).append(" HTTP/1.1\r\n");
-  req.append("Host: localhost\r\n");
-  req.append("Connection: ").append(connectionHeader).append("\r\n");
-  req.append("Content-Length: 0\r\n\r\n");
-  return req;
-}
+using test::SimpleGetRequest;
 
 test::TestServer ts(HttpServerConfig{});
 auto port = ts.port();

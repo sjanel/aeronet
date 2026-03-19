@@ -45,54 +45,28 @@ namespace {
 test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
 auto port = ts.port();
 
-struct HeaderReadTimeoutScope {
-  explicit HeaderReadTimeoutScope(std::chrono::milliseconds timeout) {
-    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(timeout); });
-  }
+using HeaderReadTimeoutScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
+auto makeHeaderReadTimeoutScope(std::chrono::milliseconds timeout) {
+  return HeaderReadTimeoutScope(
+      ts, [](const HttpServerConfig& config) { return config.headerReadTimeout; },
+      [](HttpServerConfig& config, std::chrono::milliseconds timeout) { config.withHeaderReadTimeout(timeout); },
+      timeout);
+}
 
-  HeaderReadTimeoutScope(const HeaderReadTimeoutScope&) = delete;
-  HeaderReadTimeoutScope& operator=(const HeaderReadTimeoutScope&) = delete;
-  HeaderReadTimeoutScope(HeaderReadTimeoutScope&&) = delete;
-  HeaderReadTimeoutScope& operator=(HeaderReadTimeoutScope&&) = delete;
+using MaxPerEventReadBytesScope = test::ScopedConfigUpdate<std::size_t>;
+auto makeMaxPerEventReadBytesScope(std::size_t limitBytes) {
+  return MaxPerEventReadBytesScope(
+      ts, [](const HttpServerConfig& config) { return config.maxPerEventReadBytes; },
+      [](HttpServerConfig& config, std::size_t limitBytes) { config.withMaxPerEventReadBytes(limitBytes); },
+      limitBytes);
+}
 
-  ~HeaderReadTimeoutScope() {
-    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(std::chrono::milliseconds{0}); });
-  }
-};
-
-struct MaxPerEventReadBytesScope {
-  explicit MaxPerEventReadBytesScope(std::size_t limitBytes) : _previous(ts.server.config().maxPerEventReadBytes) {
-    ts.postConfigUpdate([limitBytes](HttpServerConfig& cfg) { cfg.withMaxPerEventReadBytes(limitBytes); });
-  }
-  MaxPerEventReadBytesScope(const MaxPerEventReadBytesScope&) = delete;
-  MaxPerEventReadBytesScope& operator=(const MaxPerEventReadBytesScope&) = delete;
-  MaxPerEventReadBytesScope(MaxPerEventReadBytesScope&&) = delete;
-  MaxPerEventReadBytesScope& operator=(MaxPerEventReadBytesScope&&) = delete;
-
-  ~MaxPerEventReadBytesScope() {
-    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withMaxPerEventReadBytes(prev); });
-  }
-
- private:
-  std::size_t _previous;
-};
-
-struct TcpNoDelayScope {
-  explicit TcpNoDelayScope(TcpNoDelayMode tcpNoDelayMode) : _previous(ts.server.config().tcpNoDelay) {
-    ts.postConfigUpdate([tcpNoDelayMode](HttpServerConfig& cfg) { cfg.withTcpNoDelayMode(tcpNoDelayMode); });
-  }
-  TcpNoDelayScope(const TcpNoDelayScope&) = delete;
-  TcpNoDelayScope& operator=(const TcpNoDelayScope&) = delete;
-  TcpNoDelayScope(TcpNoDelayScope&&) = delete;
-  TcpNoDelayScope& operator=(TcpNoDelayScope&&) = delete;
-
-  ~TcpNoDelayScope() {
-    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withTcpNoDelayMode(prev); });
-  }
-
- private:
-  TcpNoDelayMode _previous;
-};
+using TcpNoDelayScope = test::ScopedConfigUpdate<TcpNoDelayMode>;
+auto makeTcpNoDelayScope(TcpNoDelayMode mode) {
+  return TcpNoDelayScope(
+      ts, [](const HttpServerConfig& config) { return config.tcpNoDelay; },
+      [](HttpServerConfig& config, TcpNoDelayMode mode) { config.withTcpNoDelayMode(mode); }, mode);
+}
 
 std::string httpGet(uint16_t port, std::string_view target) {
   test::RequestOptions opt;
@@ -167,7 +141,7 @@ TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
 
 TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   const std::size_t cap = 2UL * ts.server.config().minReadChunkBytes;
-  MaxPerEventReadBytesScope scope(cap);
+  auto scope = makeMaxPerEventReadBytesScope(cap);
 
   const std::size_t payloadSize = cap * 3;
   std::string payload(payloadSize, 'x');
@@ -201,7 +175,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 }
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
-  TcpNoDelayScope scope(TcpNoDelayMode::Enabled);
+  auto scope = makeTcpNoDelayScope(TcpNoDelayMode::Enabled);
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });
   std::string resp = httpGet(ts.port(), "/tcp");
   ASSERT_FALSE(resp.empty());
@@ -211,7 +185,7 @@ TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
 
 TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
-  HeaderReadTimeoutScope headerTimeout(readTimeout);
+  auto headerTimeout = makeHeaderReadTimeoutScope(readTimeout);
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -237,7 +211,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
 
 TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
-  HeaderReadTimeoutScope headerTimeout(readTimeout);
+  auto headerTimeout = makeHeaderReadTimeoutScope(readTimeout);
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
   test::ClientConnection cnx(ts.port());
