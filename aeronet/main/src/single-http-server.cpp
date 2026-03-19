@@ -25,7 +25,6 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
@@ -50,6 +49,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -1018,13 +1018,24 @@ void SingleHttpServer::eventLoop() {
         acceptNewConnections();
       } else if (fd == _lifecycle.wakeupFd.fd()) {
         _lifecycle.wakeupFd.read();
+        // When stop() is called from another thread it sets the state to Stopping
+        // and sends a wakeup.  Close the listener immediately so no new connections
+        // are accepted while we wait for the maintenance tick to clean up.
+        if (_lifecycle.isStopping()) {
+          closeListener();
+          maintenanceTick = true;
+        }
       } else if (fd == _maintenanceTimer.fd()) {
         _maintenanceTimer.drain();
         maintenanceTick = true;
       } else {
         const auto bmp = event.eventBmp;
         const auto cnxIt = _connections.iterator(fd);
+#ifdef AERONET_WINDOWS
         if (!_connections.active(cnxIt)) [[unlikely]] {
+#else
+        if (!internal::ConnectionStorage::active(cnxIt)) [[unlikely]] {
+#endif
           log::warn("fd # {} not found (stale epoll event or race)", fd);
           // Remove stale entry from the event-loop poller so it doesn't keep firing.
           // Safe to call here because we are inside the event-loop thread.
@@ -1078,6 +1089,7 @@ void SingleHttpServer::eventLoop() {
     sweepIdleConnections();
 
     if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
+      closeListener();
       closeAllConnections();
       _lifecycle.reset();
       if (!isInMultiHttpServer()) {
@@ -1086,6 +1098,7 @@ void SingleHttpServer::eventLoop() {
     } else if (_lifecycle.isDraining()) {
       if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
         log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
+        closeListener();
         closeAllConnections();
         _lifecycle.reset();
         log::info("Server drained after deadline");
@@ -1130,19 +1143,8 @@ void SingleHttpServer::updateMaintenanceTimer() {
 
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
-#ifndef AERONET_WINDOWS
-    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
-    // so removing the fd from the event loop while the poll thread is blocked is fine.
     _eventLoop.del(_listenSocket.fd());
-#endif
-    // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
-    // Calling it here from a stop-signalling thread while the event-loop thread is
-    // blocked inside WSAPoll() is a data race.  Instead we just close the socket;
-    // the next WSAPoll() iteration will report POLLNVAL for the stale entry, which
-    // the event loop handles gracefully (fd won't match listen/wakeup/timer and the
-    // connection lookup returns not-found, logged and skipped).
     _listenSocket.close();
-    // Trigger wakeup to break any blocking poll quickly.
     _lifecycle.wakeupFd.send();
   }
 }
@@ -1233,31 +1235,18 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
                                           const CorsPolicy* pCorsPolicy, bool& found100Continue) {
   HttpRequest& request = _connections.connectionState(cnxIt).request;
   const std::size_t headerEnd = request.headSpanSize();
-  // Parse comma-separated tokens (trim spaces/tabs). Case-insensitive comparison for 100-continue.
+  // Parse comma-separated tokens (trim OWS). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
-  // TODO: simplify this code using TrimOws
-  for (const char *cur = expectHeader.data(), *end = cur + expectHeader.size(); cur < end; ++cur) {
-    // skip leading whitespace
-    while (cur < end && http::IsHeaderWhitespace(*cur)) {
-      ++cur;
-    }
-    if (cur >= end) {
-      break;
-    }
-    const char* tokStart = cur;
-    // find comma or end
-    while (cur < end && *cur != ',') {
-      ++cur;
-    }
-    const char* tokEnd = cur;
-    // trim trailing whitespace
-    while (tokEnd > tokStart && http::IsHeaderWhitespace(*(tokEnd - 1))) {
-      --tokEnd;
-    }
-    if (tokStart == tokEnd) {
+  for (std::size_t pos = 0; pos < expectHeader.size();) {
+    const auto commaPos = expectHeader.find(',', pos);
+    const auto tokenEnd = (commaPos == std::string_view::npos) ? expectHeader.size() : commaPos;
+
+    const auto token = TrimOws(expectHeader.substr(pos, tokenEnd - pos));
+    pos = (commaPos == std::string_view::npos) ? expectHeader.size() : commaPos + 1;
+
+    if (token.empty()) {
       continue;
     }
-    std::string_view token(tokStart, tokEnd);
     if (CaseInsensitiveEqual(token, http::h100_continue)) {
       // Note presence of 100-continue; we'll use this to trigger interim 100
       found100Continue = true;

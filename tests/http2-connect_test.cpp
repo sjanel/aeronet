@@ -8,7 +8,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"

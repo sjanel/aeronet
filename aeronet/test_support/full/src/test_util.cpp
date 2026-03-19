@@ -848,4 +848,22 @@ bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout) {
   return !AttemptConnect(port);
 }
 
+std::string SimpleGetRequest(std::string_view target, std::string_view connectionHeader) {
+  std::string req;
+  req.reserve(128);
+  req.append("GET ").append(target).append(" HTTP/1.1\r\n");
+  req.append("Host: localhost\r\n");
+  req.append("Connection: ").append(connectionHeader).append("\r\n");
+  req.append("Content-Length: 0\r\n\r\n");
+  return req;
+}
+
+std::string getHeader(const ParsedResponse& resp, std::string_view key) {
+  const auto it = resp.headers.find(key);
+  if (it == resp.headers.end()) {
+    return {};
+  }
+  return it->second;
+}
+
 }  // namespace aeronet::test

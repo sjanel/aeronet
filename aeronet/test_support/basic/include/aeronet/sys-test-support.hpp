@@ -59,6 +59,7 @@
 #ifdef __GLIBC__
 extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
+extern "C" void* __libc_calloc(size_t, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
 #endif
 
 #ifdef AERONET_POSIX
@@ -227,11 +228,15 @@ Fn ResolveNext(const char* /*name*/) {
 #endif  // AERONET_POSIX
 
 // Disable overriding malloc/realloc for:
-// 1. Clang builds instrumented with AddressSanitizer - Clang's ASAN runtime
-//    may call allocation functions very early during initialization.
+// 1. Builds instrumented with AddressSanitizer - ASAN's runtime may call
+//    allocation functions very early during initialization and also during
+//    background thread setup (pthread_getattr_np), which can conflict with
+//    our failure injection overrides.
 // 2. Non-glibc systems (like musl/Alpine) - without __libc_malloc fallback,
 //    dlsym resolution can deadlock or recurse during early initialization.
-#if defined(__clang__) && defined(__has_feature)
+#if defined(__SANITIZE_ADDRESS__)
+#define AERONET_WANT_MALLOC_OVERRIDES 0
+#elif defined(__clang__) && defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define AERONET_WANT_MALLOC_OVERRIDES 0
 #endif
@@ -297,15 +302,41 @@ void* CallRealRealloc(void* ptr, size_t size) {
   resolving = 0;
   return fn(ptr, size);
 }
+
+void* CallRealCalloc(size_t nmemb, size_t size) {
+  using CallocFn = void* (*)(size_t, size_t);
+  static CallocFn fn = nullptr;
+  static volatile int resolving = 0;
+  if (fn != nullptr) {
+    return fn(nmemb, size);
+  }
+  if (!__sync_bool_compare_and_swap(&resolving, 0, 1)) {
+#ifdef __GLIBC__
+    return __libc_calloc(nmemb, size);
+#else
+    while (fn == nullptr) {
+      __asm__ __volatile__("pause");
+    }
+    return fn(nmemb, size);
+#endif
+  }
+
+  fn = aeronet::test::ResolveNext<CallocFn>("calloc");
+  __sync_synchronize();
+  resolving = 0;
+  return fn(nmemb, size);
+}
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 // Note: we intentionally do NOT override `free` to avoid interfering with
 // runtime loader and sanitizer internals which may call `free` during
-// dlsym/dlerror initialization. Only `malloc`/`realloc` are overridden for
-// deterministic failure injection in tests.
+// dlsym/dlerror initialization. Only `malloc`/`realloc`/`calloc` are
+// overridden for deterministic failure injection in tests.
 
-// Provide malloc/realloc overrides only when allowed. On Clang+ASAN we skip
-// overrides to avoid AddressSanitizer runtime initialization problems.
+// Provide malloc/realloc/calloc overrides only when allowed. On Clang+ASAN we
+// skip overrides to avoid AddressSanitizer runtime initialization problems.
+// calloc must be overridden because compilers (e.g. clang -O3) can fold
+// malloc+memset(0) into calloc, bypassing a malloc-only override.
 #if AERONET_WANT_MALLOC_OVERRIDES
 extern "C" void* malloc(size_t size) {
   if (aeronet::test::ShouldFailMalloc()) {
@@ -313,6 +344,14 @@ extern "C" void* malloc(size_t size) {
     return nullptr;
   }
   return CallRealMalloc(size);
+}
+
+extern "C" void* calloc(size_t nmemb, size_t size) {
+  if (aeronet::test::ShouldFailMalloc()) {
+    errno = ENOMEM;
+    return nullptr;
+  }
+  return CallRealCalloc(nmemb, size);
 }
 
 extern "C" void* realloc(void* ptr, size_t size) {
