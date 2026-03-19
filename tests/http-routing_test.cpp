@@ -43,34 +43,19 @@ using namespace aeronet;
 namespace {
 test::TestServer ts(HttpServerConfig{});
 
-struct BodyReadTimeoutScope {
-  explicit BodyReadTimeoutScope(std::chrono::milliseconds timeout) {
-    ts.postConfigUpdate([timeout](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(timeout); });
-  }
-  BodyReadTimeoutScope(const BodyReadTimeoutScope&) = delete;
-  BodyReadTimeoutScope& operator=(const BodyReadTimeoutScope&) = delete;
-  BodyReadTimeoutScope(BodyReadTimeoutScope&&) = delete;
-  BodyReadTimeoutScope& operator=(BodyReadTimeoutScope&&) = delete;
-  ~BodyReadTimeoutScope() {
-    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(std::chrono::milliseconds{0}); });
-  }
-};
+using BodyReadTimeoutScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
+auto makeBodyReadTimeoutScope(std::chrono::milliseconds timeout) {
+  return BodyReadTimeoutScope(
+      ts, [](const HttpServerConfig& c) { return c.bodyReadTimeout; },
+      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withBodyReadTimeout(v); }, timeout);
+}
 
-struct PollIntervalScope {
-  explicit PollIntervalScope(std::chrono::milliseconds interval) : _previous(ts.server.config().pollInterval) {
-    ts.postConfigUpdate([interval](HttpServerConfig& cfg) { cfg.withPollInterval(interval); });
-  }
-  PollIntervalScope(const PollIntervalScope&) = delete;
-  PollIntervalScope& operator=(const PollIntervalScope&) = delete;
-  PollIntervalScope(PollIntervalScope&&) = delete;
-  PollIntervalScope& operator=(PollIntervalScope&&) = delete;
-  ~PollIntervalScope() {
-    ts.postConfigUpdate([prev = _previous](HttpServerConfig& cfg) { cfg.withPollInterval(prev); });
-  }
-
- private:
-  std::chrono::milliseconds _previous;
-};
+using PollIntervalScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
+auto makePollIntervalScope(std::chrono::milliseconds interval) {
+  return PollIntervalScope(
+      ts, [](const HttpServerConfig& c) { return c.pollInterval; },
+      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withPollInterval(v); }, interval);
+}
 
 }  // namespace
 
@@ -650,8 +635,8 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
   });
 
   constexpr auto readTimeout = std::chrono::milliseconds{50};
-  BodyReadTimeoutScope timeout(readTimeout);
-  PollIntervalScope pollInterval(std::chrono::milliseconds{5});
+  auto timeout = makeBodyReadTimeoutScope(readTimeout);
+  auto pollInterval = makePollIntervalScope(std::chrono::milliseconds{5});
 
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();

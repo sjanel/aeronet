@@ -1,5 +1,7 @@
 #include "aeronet/test_tls_http2_client.hpp"
 
+#include <openssl/ssl.h>
+
 #ifdef AERONET_POSIX
 #include <poll.h>
 #elifdef AERONET_WINDOWS
@@ -31,7 +33,6 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -121,11 +122,10 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   _connected = _http2Connection->isOpen();
 }
 
-TlsHttp2Client::~TlsHttp2Client() {
-  // Tests do not require graceful HTTP/2 session teardown. Avoiding any final
-  // GOAWAY write here prevents large-transfer teardown from re-entering the
-  // TLS write path after the test body has already completed.
-}
+// Tests do not require graceful HTTP/2 session teardown. Avoiding any final
+// GOAWAY write here prevents large-transfer teardown from re-entering the
+// TLS write path after the test body has already completed.
+TlsHttp2Client::~TlsHttp2Client() = default;
 
 bool TlsHttp2Client::isConnected() const noexcept { return _connected; }
 

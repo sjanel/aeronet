@@ -117,4 +117,10 @@ bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout);
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
 
+// Build a minimal HTTP/1.1 GET request string. Useful for tests that need raw request bytes.
+std::string SimpleGetRequest(std::string_view target, std::string_view connectionHeader = "close");
+
+// Retrieve a header value from a ParsedResponse by key. Returns empty string if not found.
+std::string getHeader(const ParsedResponse& resp, std::string_view key);
+
 }  // namespace aeronet::test

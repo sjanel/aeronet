@@ -395,7 +395,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
 
 void SingleHttpServer::stop() noexcept {
   auto prevState = _lifecycle.exchangeStopping();
-  if (prevState == internal::Lifecycle::State::Running) {
+  if (prevState == internal::Lifecycle::State::Running || prevState == internal::Lifecycle::State::Draining) {
     // Wake the event loop immediately so it notices the Stopping state and exits
     // before we close the listen socket.  On Windows, closing the listen socket
     // while WSAPoll holds it can cause WSAPoll to hang indefinitely.
@@ -405,16 +405,15 @@ void SingleHttpServer::stop() noexcept {
     // This joins the background thread, after which the thread has already called _lifecycle.reset().
     _internalHandle.stop();
 
-    // Close the listener AFTER the event-loop thread has exited, so WSAPoll never
-    // sees the invalidated listen socket fd.
-    closeListener();
-
     // In multi-server mode the background thread is NOT owned by _internalHandle — it is managed
-    // by MultiHttpServer::AsyncHandle and will be joined later.  The thread calls
-    // _lifecycle.reset() on exit, so calling reset() here would race on non-atomic Lifecycle
-    // fields (drainDeadline, drainDeadlineEnabled).  Only reset when we are sure the thread has
-    // already finished (i.e. single-server mode where _internalHandle.stop() joined it).
+    // by MultiHttpServer::AsyncHandle and will be joined later.  The event-loop thread closes
+    // the listener itself when it processes the Stopping state, so we must NOT call
+    // closeListener() here — doing so would close the socket while WSAPoll still holds it,
+    // causing undefined behavior on Windows.
     if (!isInMultiHttpServer()) {
+      // Close the listener AFTER the event-loop thread has exited (joined via _internalHandle),
+      // so WSAPoll never sees the invalidated listen socket fd.
+      closeListener();
       _lifecycle.reset();
     }
   } else {

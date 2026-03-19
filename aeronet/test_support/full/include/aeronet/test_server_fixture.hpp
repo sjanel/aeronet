@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <utility>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router-config.hpp"
@@ -51,6 +52,50 @@ class TestServer {
 
  private:
   void waitReady(std::chrono::milliseconds timeout) const;
+};
+
+// Generic RAII scope guard for temporarily changing an HttpServerConfig field via
+// TestServer::postConfigUpdate(). Captures the previous value on construction and
+// restores it on destruction. Movable so it can be returned from factory functions.
+//
+// Usage:
+//   ScopedConfigUpdate<std::chrono::milliseconds> guard(
+//       ts,
+//       [](const HttpServerConfig& c) { return c.headerReadTimeout; },
+//       [](HttpServerConfig& c, auto v) { c.withHeaderReadTimeout(v); },
+//       std::chrono::milliseconds{500});
+//
+template <typename T>
+class ScopedConfigUpdate {
+ public:
+  template <typename Getter, typename Setter>
+  ScopedConfigUpdate(TestServer& server, Getter&& getter, Setter&& setter, T newValue)
+      : _server(&server), _setter(std::forward<Setter>(setter)), _previous(getter(server.server.config())) {
+    _server->postConfigUpdate([this, val = std::move(newValue)](HttpServerConfig& cfg) { _setter(cfg, val); });
+  }
+
+  ScopedConfigUpdate(const ScopedConfigUpdate&) = delete;
+  ScopedConfigUpdate& operator=(const ScopedConfigUpdate&) = delete;
+  ScopedConfigUpdate(ScopedConfigUpdate&& other) noexcept
+      : _server(other._server), _setter(std::move(other._setter)), _previous(std::move(other._previous)) {
+    other._server = nullptr;
+  }
+  ScopedConfigUpdate& operator=(ScopedConfigUpdate&&) = delete;
+
+  ~ScopedConfigUpdate() {
+    if (_server != nullptr) {
+      try {
+        _server->postConfigUpdate([this](HttpServerConfig& cfg) { _setter(cfg, _previous); });
+      } catch (...) {
+        log::error("Failed to restore HttpServerConfig field in ScopedConfigUpdate destructor");
+      }
+    }
+  }
+
+ private:
+  TestServer* _server;
+  std::function<void(HttpServerConfig&, T)> _setter;
+  T _previous;
 };
 
 bool WaitForServer(SingleHttpServer& server, bool running = true,
