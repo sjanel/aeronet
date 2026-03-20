@@ -219,6 +219,14 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
 }
 
+TEST_F(HttpResponseTest, ConstructorFromBytesSpan) {
+  static constexpr std::byte bodyBytes[]{std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'},
+                                         std::byte{'o'}};
+  HttpResponse resp(bodyBytes);
+  EXPECT_EQ(resp.bodyInMemory(), "Hello");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/octet-stream");
+}
+
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
   static constexpr std::string_view kBadConcatenatedHeaders[] = {
       "HeaderWithoutSep\r\n",

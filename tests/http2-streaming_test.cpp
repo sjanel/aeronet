@@ -13,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
@@ -27,16 +26,17 @@
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
 
-
 namespace aeronet::http2 {
 namespace {
 
+test::TlsHttp2TestServer ts;
+
+}
 // ============================================================================
 // Basic streaming
 // ============================================================================
 
 TEST(Http2Streaming, SimpleWriteBodyAndEnd) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/stream", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -57,7 +57,6 @@ TEST(Http2Streaming, SimpleWriteBodyAndEnd) {
 }
 
 TEST(Http2Streaming, EmptyBodyEndOnly) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/empty", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{204});
     writer.end();
@@ -72,7 +71,6 @@ TEST(Http2Streaming, EmptyBodyEndOnly) {
 }
 
 TEST(Http2Streaming, CustomStatusAndReason) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/created", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{201});
     writer.reason("Created");
@@ -89,7 +87,6 @@ TEST(Http2Streaming, CustomStatusAndReason) {
 }
 
 TEST(Http2Streaming, MultipleWriteBodyCalls) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/multi", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("application/octet-stream");
@@ -110,7 +107,6 @@ TEST(Http2Streaming, MultipleWriteBodyCalls) {
 }
 
 TEST(Http2Streaming, LargeBody) {
-  test::TlsHttp2TestServer ts;
   const std::string kPayload(128UL * 1024, 'X');  // 128 KB
 
   ts.http().router().setPath(http::Method::GET, "/large",
@@ -140,7 +136,6 @@ TEST(Http2Streaming, LargeBody) {
 // ============================================================================
 
 TEST(Http2Streaming, HeadersIgnoredAfterFirstWrite) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/hdr-ignore",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -162,7 +157,6 @@ TEST(Http2Streaming, HeadersIgnoredAfterFirstWrite) {
 }
 
 TEST(Http2Streaming, MultipleCustomHeaders) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/multi-hdr",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -191,7 +185,6 @@ TEST(Http2Streaming, MultipleCustomHeaders) {
 // ============================================================================
 
 TEST(Http2Streaming, HeadSuppressesBody) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/head-test",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -213,7 +206,6 @@ TEST(Http2Streaming, HeadSuppressesBody) {
 // ============================================================================
 
 TEST(Http2Streaming, ExplicitContentLength) {
-  test::TlsHttp2TestServer ts;
   constexpr std::string_view kBody = "fixed-length-body";
 
   ts.http().router().setPath(http::Method::GET, "/fixed-cl",
@@ -242,8 +234,6 @@ TEST(Http2Streaming, ExplicitContentLength) {
 // ============================================================================
 
 TEST(Http2Streaming, MixedStreamingAndNormalHandlers) {
-  test::TlsHttp2TestServer ts;
-
   // Streaming GET
   ts.http().router().setPath(http::Method::GET, "/mix", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
@@ -269,8 +259,6 @@ TEST(Http2Streaming, MixedStreamingAndNormalHandlers) {
 }
 
 TEST(Http2Streaming, StreamingDefaultFallback) {
-  test::TlsHttp2TestServer ts;
-
   // Global streaming default
   ts.http().router().setDefault([](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
@@ -291,8 +279,6 @@ TEST(Http2Streaming, StreamingDefaultFallback) {
 // ============================================================================
 
 TEST(Http2Streaming, MethodNotAllowedOnStreamingPath) {
-  test::TlsHttp2TestServer ts;
-
   ts.http().router().setPath(http::Method::GET, "/get-only",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -312,7 +298,6 @@ TEST(Http2Streaming, MethodNotAllowedOnStreamingPath) {
 // ============================================================================
 
 TEST(Http2Streaming, PostStreamingHandler) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::POST, "/upload", [](const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -329,7 +314,6 @@ TEST(Http2Streaming, PostStreamingHandler) {
 }
 
 TEST(Http2Streaming, PutStreamingHandler) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::PUT, "/resource",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -346,7 +330,6 @@ TEST(Http2Streaming, PutStreamingHandler) {
 }
 
 TEST(Http2Streaming, DeleteStreamingHandler) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::DELETE, "/resource/42",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -367,7 +350,6 @@ TEST(Http2Streaming, DeleteStreamingHandler) {
 // ============================================================================
 
 TEST(Http2Streaming, ConcurrentStreamingRequests) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/slow", [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -404,8 +386,6 @@ TEST(Http2Streaming, ConcurrentStreamingRequests) {
 }
 
 TEST(Http2Streaming, ConcurrentMixedStreamingAndNormal) {
-  test::TlsHttp2TestServer ts;
-
   ts.http().router().setPath(http::Method::GET, "/stream-path",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -446,7 +426,6 @@ TEST(Http2Streaming, ConcurrentMixedStreamingAndNormal) {
 // ============================================================================
 
 TEST(Http2Streaming, SequentialRequestsOnSameConnection) {
-  test::TlsHttp2TestServer ts;
   int invocationCount = 0;
   ts.http().router().setPath(http::Method::GET, "/seq",
                              [&invocationCount](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
@@ -478,7 +457,7 @@ TEST(Http2Streaming, SequentialRequestsOnSameConnection) {
 
 #ifdef AERONET_ENABLE_ZLIB
 TEST(Http2StreamingCompression, GzipCompressedStreamingBody) {
-  test::TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     CompressionConfig compression;
     compression.minBytes = 8;
     compression.preferredFormats.clear();
@@ -507,7 +486,7 @@ TEST(Http2StreamingCompression, GzipCompressedStreamingBody) {
 }
 
 TEST(Http2StreamingCompression, IdentityEncodingPreventsCompression) {
-  test::TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     CompressionConfig compression;
     compression.minBytes = 8;
     compression.preferredFormats = {Encoding::gzip};
@@ -538,7 +517,6 @@ TEST(Http2StreamingCompression, IdentityEncodingPreventsCompression) {
 // ============================================================================
 
 TEST(Http2Streaming, TrailersEmitted) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/trailers",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -565,7 +543,6 @@ TEST(Http2Streaming, TrailersEmitted) {
 // ============================================================================
 
 TEST(Http2Streaming, PathParamsWithStreamingHandler) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/items/{id}", [](const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -587,7 +564,6 @@ TEST(Http2Streaming, PathParamsWithStreamingHandler) {
 // ============================================================================
 
 TEST(Http2Streaming, QueryParamAccess) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/search", [](const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -610,7 +586,6 @@ TEST(Http2Streaming, QueryParamAccess) {
 // ============================================================================
 
 TEST(Http2Streaming, HandlerExceptionBeforeHeadersSendsDefault200) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(
       http::Method::GET, "/crash",
       [](const HttpRequest& /*req*/, HttpResponseWriter& /*writer*/) { throw std::runtime_error("handler-exploded"); });
@@ -630,7 +605,6 @@ TEST(Http2Streaming, HandlerExceptionBeforeHeadersSendsDefault200) {
 // ============================================================================
 
 TEST(Http2Streaming, DoubleEndIsNoOp) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/double-end",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -652,7 +626,6 @@ TEST(Http2Streaming, DoubleEndIsNoOp) {
 // ============================================================================
 
 TEST(Http2Streaming, WriteAfterEndIgnored) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/write-after-end",
                              [](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
@@ -675,8 +648,6 @@ TEST(Http2Streaming, WriteAfterEndIgnored) {
 // ============================================================================
 
 TEST(Http2Streaming, GlobalStreamingPrecedenceOverNormal) {
-  test::TlsHttp2TestServer ts;
-
   // Register both global normal and global streaming defaults
   ts.http().router().setDefault(
       [](const HttpRequest& /*req*/) { return HttpResponse(http::StatusCode{200}, "normal-global"); });
@@ -700,7 +671,6 @@ TEST(Http2Streaming, GlobalStreamingPrecedenceOverNormal) {
 // ============================================================================
 
 TEST(Http2Streaming, AccessRequestHeaders) {
-  test::TlsHttp2TestServer ts;
   ts.http().router().setPath(http::Method::GET, "/echo-header", [](const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCode{200});
     writer.contentType("text/plain");
@@ -717,5 +687,4 @@ TEST(Http2Streaming, AccessRequestHeaders) {
   EXPECT_EQ(response.body, "auth:Bearer token123");
 }
 
-}  // namespace
 }  // namespace aeronet::http2

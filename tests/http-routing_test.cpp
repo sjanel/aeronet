@@ -618,14 +618,15 @@ namespace {
 
 auto makeBodyReadTimeoutScope(std::chrono::milliseconds timeout) {
   return test::ScopedConfigUpdate<std::chrono::milliseconds>(
-      ts, [](const HttpServerConfig& c) { return c.bodyReadTimeout; },
-      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withBodyReadTimeout(v); }, timeout);
+      ts, [](const HttpServerConfig& config) { return config.bodyReadTimeout; },
+      [](HttpServerConfig& config, std::chrono::milliseconds timeout) { config.withBodyReadTimeout(timeout); },
+      timeout);
 }
 
 auto makePollIntervalScope(std::chrono::milliseconds interval) {
   return test::ScopedConfigUpdate<std::chrono::milliseconds>(
-      ts, [](const HttpServerConfig& c) { return c.pollInterval; },
-      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withPollInterval(v); }, interval);
+      ts, [](const HttpServerConfig& config) { return config.pollInterval; },
+      [](HttpServerConfig& config, std::chrono::milliseconds poll) { config.withPollInterval(poll); }, interval);
 }
 
 }  // namespace
