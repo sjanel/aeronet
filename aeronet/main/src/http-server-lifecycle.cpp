@@ -424,8 +424,11 @@ void SingleHttpServer::stop() noexcept {
       closeListener();
       _lifecycle.reset();
     }
-  } else {
-    // Already stopping or idle — still ensure the listener is closed.
+  } else if (prevState != internal::Lifecycle::State::Stopping) {
+    // Idle — still ensure the listener is closed.
+    // When Stopping, another stop() call (or the event-loop thread) is already
+    // handling shutdown.  Calling closeListener() here would race with
+    // the event-loop thread's WSAPoll on Windows.
     closeListener();
   }
 }
