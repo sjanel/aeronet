@@ -40,12 +40,14 @@ class EncoderContext;
 
 namespace internal {
 class HttpCodec;
+class Http1WriterTransport;
 struct ResponseCompressionState;
 }  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2 {
 class Http2ProtocolHandler;
+class Http2WriterTransport;
 }  // namespace http2
 #endif
 
@@ -1000,9 +1002,11 @@ class HttpResponse {
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class internal::HttpCodec;
+  friend class internal::Http1WriterTransport;  // HTTP/1.1 transport for streaming
   friend class StaticFileHandler;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
+  friend class http2::Http2WriterTransport;
 #endif
 
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.

@@ -70,7 +70,7 @@ Socket::Socket(Type type, int protocol) : _baseFd(CreateSocket(type, protocol)) 
   log::debug("Socket fd # {} opened", static_cast<intptr_t>(_baseFd.fd()));
 }
 
-[[nodiscard]] bool Socket::tryBind(bool reusePort, uint16_t port) const {
+[[nodiscard]] bool Socket::tryBind([[maybe_unused]] bool reusePort, uint16_t port) const {
   const auto fd = _baseFd.fd();
 
   static constexpr int enable = 1;
@@ -84,14 +84,13 @@ Socket::Socket(Type type, int protocol) : _baseFd(CreateSocket(type, protocol)) 
   if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, optPtr, sizeof(enable)) == -1) {
     ThrowSystemError("setsockopt(SO_REUSEADDR) failed");
   }
+  // SO_REUSEPORT not available on Windows
 #ifdef AERONET_POSIX
   // SO_REUSEPORT: kernel load-balancing across listeners (Linux 3.9+, macOS 12+).
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_REUSEPORT
   if (reusePort && ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, optPtr, sizeof(enable)) == -1) {
     ThrowSystemError("setsockopt(SO_REUSEPORT) failed");
   }
-#else
-  (void)reusePort;  // SO_REUSEPORT not available on Windows
 #endif
 
   sockaddr_in addr{};
@@ -106,7 +105,7 @@ Socket::Socket(Type type, int protocol) : _baseFd(CreateSocket(type, protocol)) 
 }
 
 void Socket::bindAndListen(bool reusePort, uint16_t& port) {
-  const int fd = _baseFd.fd();
+  const auto fd = _baseFd.fd();
 
   if (!tryBind(reusePort, port)) {
     ThrowSystemError("bind failed");

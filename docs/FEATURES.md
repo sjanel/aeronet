@@ -2964,7 +2964,7 @@ Notes:
 
 - Pattern syntax, trailing-slash policy, and HEAD→GET fallback apply identically to both protocols.
 - `AsyncRequestHandler` (including `co_await req.deferWork(...)`) is fully supported for HTTP/2 with true per-stream async execution — suspended coroutines do not block other streams on the connection.
-- `StreamingHandler` support for HTTP/2 is not yet implemented (returns 501 Not Implemented).
+- `StreamingHandler` is fully supported for HTTP/2, including flow-control-aware DATA framing and compression.
 - All handler types registered in the Router work transparently for both HTTP/1.1 and HTTP/2.
 
 ### Http2Config

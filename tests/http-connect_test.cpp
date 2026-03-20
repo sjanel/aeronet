@@ -37,7 +37,7 @@ class HttpConnectDefaultConfig : public ::testing::Test {
  public:
   test::TestServer ts{HttpServerConfig{}};
   test::ClientConnection client{ts.port()};
-  int fd{client.fd()};
+  NativeHandle fd{client.fd()};
 };
 
 // This test reproduces a partial-write scenario on the upstream side while tunneling.
