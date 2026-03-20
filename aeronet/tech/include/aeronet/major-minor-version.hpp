@@ -33,7 +33,8 @@ class MajorMinorVersion {
       char major = pStr[kPrefix.size()];
       char minor = pStr[kPrefix.size() + 2UL];
       if (major >= '1' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
-        _data = static_cast<std::uint8_t>((major - '0') << 4U) | static_cast<std::uint8_t>(minor - '0');
+        _data = static_cast<std::uint8_t>(static_cast<std::uint8_t>(static_cast<std::uint8_t>(major - '0') << 4U) |
+                                          static_cast<std::uint8_t>(minor - '0'));
       }
     }
   }

@@ -169,12 +169,12 @@ TEST_F(CorsPolicyTest, PreflightAllowed) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  const auto& response = result.response;
-  EXPECT_EQ(response.status(), http::StatusCodeNoContent);
-  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://example.com");
-  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowMethods), "GET, POST");
-  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");
-  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlMaxAge), "600");
+  const auto& httpResponse = result.response;
+  EXPECT_EQ(httpResponse.status(), http::StatusCodeNoContent);
+  EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://example.com");
+  EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlAllowMethods), "GET, POST");
+  EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");
+  EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlMaxAge), "600");
 }
 
 TEST_F(CorsPolicyTest, PreflightDeniedUnknownMethod) {

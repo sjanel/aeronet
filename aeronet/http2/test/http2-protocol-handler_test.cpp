@@ -445,7 +445,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   MockTunnelBridge bridge;
   bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle {
     setupCalled = true;
-    return -1;
+    return kInvalidHandle;
   };
   loop.handler.setTunnelBridge(&bridge);
 

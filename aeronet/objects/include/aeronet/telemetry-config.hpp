@@ -84,7 +84,7 @@ class TelemetryConfig {
   TelemetryConfig& addHistogramBuckets(std::string_view name, std::span<const double> boundaries);
 
   // Configures the sampling rate [0.0, 1.0]. 1.0 = sample all, 0.0 = sample none. Default: 1.0
-  TelemetryConfig& withSampleRate(double sampleRate);
+  TelemetryConfig& withSampleRate(double rate);
 
   bool operator==(const TelemetryConfig&) const noexcept = default;
 

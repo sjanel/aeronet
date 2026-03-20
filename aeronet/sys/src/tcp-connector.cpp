@@ -93,7 +93,11 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
       continue;
     }
 
+#ifdef AERONET_WINDOWS
+    if (::connect(connectResult.cnx.fd(), rp->ai_addr, static_cast<int>(rp->ai_addrlen)) == 0) {
+#else
     if (::connect(connectResult.cnx.fd(), rp->ai_addr, rp->ai_addrlen) == 0) {
+#endif
       // connected immediately
       return connectResult;
     }
