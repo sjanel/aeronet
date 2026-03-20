@@ -329,6 +329,14 @@ void SingleHttpServer::run() {
 }
 
 void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
+  // Check the predicate before initializing resources.  When used inside
+  // MultiHttpServer, the stop flag is set before server.stop() calls
+  // closeListener().  Without this early check, a late-scheduled thread
+  // could be inside initListener() (creating socket / event loop) while
+  // the main thread concurrently calls closeListener(), causing a data race.
+  if (predicate()) {
+    return;
+  }
   prepareRun();
   _lifecycle.enterRunning();
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);

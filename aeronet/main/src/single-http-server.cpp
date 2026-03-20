@@ -56,6 +56,7 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
+#include "http1-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
@@ -742,8 +743,10 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     compressionFormat = negotiated.encoding;
   }
 
-  // Pass the resolved activeCors pointer to the streaming writer so it can apply headers lazily
-  HttpResponseWriter writer(*this, cnxIt->fd(), request, wantClose, compressionFormat, pCorsPolicy, postMiddleware);
+  // Create the protocol-specific transport backend and the protocol-agnostic writer
+  internal::Http1WriterTransport transport(*this, cnxIt->fd(), wantClose, pCorsPolicy, postMiddleware);
+  HttpResponseWriter writer(transport, request, compressionFormat, _config.compression, _compressionState,
+                            _config.globalHeaders.fullStringWithLastSep(), _config.addTrailerHeader);
   try {
     streamingHandler(request, writer);
   } catch (const std::exception& ex) {
@@ -1507,8 +1510,11 @@ class H2TunnelBridge final : public ITunnelBridge {
     if (upIt != _server._connections.end()) {
       // If we have buffered data from upstream, try to inject it now that the window opened.
       ConnectionState& state = _server._connections.connectionState(upIt);
-      if (!state.inBuffer.empty()) {
-        _server.handleInH2Tunneling(upIt);
+      if (!state.inBuffer.empty() || state.eofReceived) {
+        auto closeStatus = _server.handleInH2Tunneling(upIt);
+        if (closeStatus == SingleHttpServer::CloseStatus::Close) {
+          _server.closeConnection(_server._connections.iterator(upstreamFd));
+        }
       }
     }
   }
