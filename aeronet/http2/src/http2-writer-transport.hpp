@@ -1,19 +1,21 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/header-write.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"
@@ -31,26 +33,26 @@ namespace aeronet::http2 {
 class Http2WriterTransport final : public internal::IWriterTransport {
  public:
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders)
-      : _connection(&connection), _streamId(streamId), _pGlobalHeaders(pGlobalHeaders) {}
+      : _connection(&connection), _pGlobalHeaders(pGlobalHeaders), _streamId(streamId) {}
 
   bool emitHeaders(HttpResponse& response, const HttpRequest& /*request*/, bool /*compressionActivated*/,
                    Encoding /*compressionFormat*/, std::size_t /*declaredLength*/, bool isHead) override {
     _isHead = isHead;
 
-    // Finalize Date header (same as sendResponse path)
-    WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
-
     // HTTP/2 requires lowercase header names
     response.finalizeForHttp2();
+
+    // Finalize Date header (same as sendResponse path)
+    WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
 
     // Determine END_STREAM: headers-only response if HEAD request, or no body expected and no trailers.
     // For streaming, we generally do NOT set END_STREAM on HEADERS because body follows.
     // However, if isHead is true, end() will be called but no body data is sent.
     // We delay END_STREAM to emitEnd() since the writer always calls end().
-    const bool endStream = false;
+    static constexpr bool kEndStream = false;
 
     const ErrorCode err = _connection->sendHeaders(
-        _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), endStream, _pGlobalHeaders);
+        _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), kEndStream, _pGlobalHeaders);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send headers on stream {}: {}", _streamId, ErrorCodeName(err));
       return false;
@@ -100,12 +102,9 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   }
 
   bool emitEnd(RawChars trailers) override {
-    if (_pendingFile) {
-      // File payload: the protocol handler will flush it via flushPendingFileSends/flushPendingStreamingSends.
-      _pendingTrailers = std::move(trailers);
-      _pendingEnd = true;
-      return true;
-    }
+    // File payloads are handled by HttpResponseWriter::end() which early-returns before calling emitEnd().
+    // The protocol handler reads pending file state directly from extractPendingFile().
+    assert(!_pendingFile && "emitEnd should not be called when a file payload is pending");
 
     if (!_pendingBuffer.empty()) {
       // We have buffered data that couldn't be sent due to flow control.
@@ -128,7 +127,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     if (!trailers.empty()) {
       // Emit trailers as a HEADERS frame with END_STREAM
-      HeadersView tv(std::string_view{trailers.data(), trailers.size()});
+      const HeadersView tv(std::string_view{trailers.data(), trailers.size()});
       const ErrorCode err = _connection->sendHeaders(_streamId, http::StatusCode{}, tv, /*endStream=*/true);
       if (err != ErrorCode::NoError) {
         log::error("HTTP/2 streaming: failed to send trailers on stream {}: {}", _streamId, ErrorCodeName(err));
@@ -147,7 +146,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   }
 
   [[nodiscard]] bool isAlive() const override {
-    auto* stream = _connection->getStream(_streamId);
+    const Http2Stream* stream = _connection->getStream(_streamId);
     return stream != nullptr && stream->canSend();
   }
 
@@ -179,17 +178,17 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
  private:
   Http2Connection* _connection;
-  uint32_t _streamId;
   const ConcatenatedHeaders* _pGlobalHeaders;
+  uint32_t _streamId;
   bool _isHead{false};
 
   // Flow-control buffering
+  bool _pendingFile{false};
+  bool _pendingEnd{false};
   RawChars _pendingBuffer;
   RawChars _pendingTrailers;
-  bool _pendingEnd{false};
 
   // File payload extracted from response
-  bool _pendingFile{false};
   PendingFileInfo _filePayload;
 };
 

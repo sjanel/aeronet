@@ -287,16 +287,12 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
   cfg.withReusePort();
   cfg.withNbThreads(2U);
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("Phase1");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("Phase1"); });
   auto handle1 = multi.startDetached();
-  auto p1 = multi.port();
+  const auto p1 = multi.port();
   ASSERT_GT(p1, 0);
   auto r1 = test::simpleGet(p1, "/a", {});
-  ASSERT_EQ(r1.statusCode, 200);
+  ASSERT_EQ(r1.statusCode, http::StatusCodeOK);
   ASSERT_TRUE(r1.body.contains("Phase1"));
   handle1.stop();
   handle1.rethrowIfError();
@@ -307,16 +303,12 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 #endif
 
   // Change handler before restart; old servers are discarded, so new handler should take effect.
-  multi.router().setDefault([](const HttpRequest&) {
-    HttpResponse resp;
-    resp.body("Phase2");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequest&) { return HttpResponse("Phase2"); });
   auto handle2 = multi.startDetached();
-  auto p2 = multi.port();  // same port expected unless user reset cfg.port in between
+  const auto p2 = multi.port();  // same port expected unless user reset cfg.port in between
   EXPECT_EQ(p1, p2);
   auto r2 = test::simpleGet(p2, "/b", {});
-  ASSERT_EQ(r2.statusCode, 200);
+  ASSERT_EQ(r2.statusCode, http::StatusCodeOK);
   EXPECT_TRUE(r2.body.contains("Phase2"));
   handle2.stop();
   handle2.rethrowIfError();

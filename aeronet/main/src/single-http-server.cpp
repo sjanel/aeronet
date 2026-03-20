@@ -1146,8 +1146,18 @@ void SingleHttpServer::updateMaintenanceTimer() {
 
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
+#ifndef AERONET_WINDOWS
+    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
+    // so removing the fd from the event loop while the poll thread is blocked is fine.
     _eventLoop.del(_listenSocket.fd());
+#endif
+    // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
+    // Calling it from a different thread while WSAPoll() is blocked is a data race.
+    // Just close the socket; the next WSAPoll() iteration will report POLLNVAL for
+    // the stale entry, which the event loop handles gracefully (fd won't match
+    // listen/wakeup/timer and the connection lookup returns not-found — logged and skipped).
     _listenSocket.close();
+    // Trigger wakeup to break any blocking poll quickly.
     _lifecycle.wakeupFd.send();
   }
 }

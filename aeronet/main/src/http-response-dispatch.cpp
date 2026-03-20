@@ -77,7 +77,9 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
     return LoopAction::Break;
   }
-  const std::string_view host(target.data(), target.data() + static_cast<ptrdiff_t>(colonPos));
+
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const std::string_view host(target.data(), colonPos);
   const std::string_view portStr(target.begin() + static_cast<ptrdiff_t>(colonPos + 1), target.end());
 
   // Enforce CONNECT allowlist if present

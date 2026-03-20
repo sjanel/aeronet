@@ -23,6 +23,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-prefinalize.hpp"
@@ -522,23 +523,14 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
     }
   }
 
-  // Negotiate compression
+  // Negotiate compression.
+  // Note: encoding rejection (identity;q=0 with no alternatives) is already handled
+  // in onHeadersDecodedReceived before the request reaches this point.
   Encoding compressionFormat = Encoding::none;
   if (!isHead) {
     auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
     auto negotiated = _pCompressionState->selector.negotiateAcceptEncoding(encHeader);
-    if (negotiated.reject) {
-      HttpResponse resp(http::StatusCodeNotAcceptable);
-      resp.body("No acceptable content-coding available");
-      internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
-      resp.finalizeForHttp2();
-      const ErrorCode err = sendResponse(streamId, std::move(resp), isHead);
-      if (err != ErrorCode::NoError) [[unlikely]] {
-        log::error("HTTP/2 failed to send 406 on stream {}: {}", streamId, ErrorCodeName(err));
-      }
-      _streamRequests.erase(streamId);
-      return;
-    }
+    assert(!negotiated.reject && "Encoding rejection should have been handled in onHeadersDecodedReceived");
     compressionFormat = negotiated.encoding;
   }
 
@@ -621,6 +613,16 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
     {
       auto routingResult = _pRouter->match(request.method(), request.path());
       if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
+        // Check path-specific HTTP/2 config
+        if (routingResult.pathConfig.http2Enable == PathEntryConfig::Http2Enable::Disable) {
+          err = sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), false);
+          _streamRequests.erase(streamId);
+          if (err != ErrorCode::NoError) [[unlikely]] {
+            log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+          }
+          return;
+        }
+
         // Run request middleware before the async handler
         auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
 
@@ -781,24 +783,12 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (routingResult.asyncRequestHandler() != nullptr) {
-    // Async handlers are dispatched directly by dispatchRequest(), not through reply().
-    // If we reach here, it means dispatchRequest() didn't intercept it (shouldn't happen).
-    log::error("HTTP/2 async handler reached reply() unexpectedly for path {}", request.path());
-    HttpResponse resp(http::StatusCodeInternalServerError, "Internal routing error");
-    finalizeResponse(resp);
-    return resp;
-  }
+  // Async handlers are always intercepted in dispatchRequest() before reply() is called.
+  assert(routingResult.asyncRequestHandler() == nullptr);
 #endif
 
-  if (routingResult.streamingHandler() != nullptr) {
-    // Streaming handlers are dispatched in dispatchRequest() before reply() is called.
-    // If we reach here, it means dispatchRequest() didn't intercept it (shouldn't happen).
-    log::error("HTTP/2 streaming handler reached reply() unexpectedly for path {}", request.path());
-    HttpResponse resp(http::StatusCodeInternalServerError, "Internal routing error");
-    finalizeResponse(resp);
-    return resp;
-  }
+  // Streaming handlers are always intercepted in dispatchRequest() before reply() is called.
+  assert(routingResult.streamingHandler() == nullptr);
 
   if (routingResult.methodNotAllowed) {
     HttpResponse resp(http::StatusCodeMethodNotAllowed);
