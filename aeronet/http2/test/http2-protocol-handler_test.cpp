@@ -47,6 +47,8 @@
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -3608,7 +3610,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, std::function<void()>) {
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
         capturedHandle = handle;
         callbackFired.store(true, std::memory_order_release);
       });
@@ -3668,7 +3670,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, std::function<void()>) {
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
         capturedHandle = handle;
         callbackFired.store(true, std::memory_order_release);
       });
@@ -3714,7 +3716,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, std::function<void()>) {
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
         capturedHandle = handle;
         callbackFired.store(true, std::memory_order_release);
       });
@@ -3757,7 +3759,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackCount](std::coroutine_handle<> handle, std::function<void()>) {
+      [&capturedHandle, &callbackCount](std::coroutine_handle<> handle, const std::function<void()>&) {
         capturedHandle = handle;
         callbackCount.fetch_add(1, std::memory_order_release);
       });
@@ -3818,7 +3820,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, std::function<void()>) {
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
         capturedHandle = handle;
         callbackFired.store(true, std::memory_order_release);
       });

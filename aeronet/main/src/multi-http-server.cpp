@@ -395,6 +395,18 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   auto& firstServer = _servers.front();
 
+  // On restart (when copies from the previous cycle still exist), fully
+  // reinitialize the first server's listener.  After a stop cycle in multi-
+  // server mode the event-loop thread may have exited via predicate before the
+  // maintenance tick called closeListener(), leaving the listen socket open or
+  // the event loop in a stale state.  Re-creating both here — on the single
+  // main thread before any worker threads start — guarantees a clean state and
+  // avoids a racy in-thread initListener() call.
+  if (_servers.size() > 1UL) {
+    firstServer.closeListener();
+    firstServer.initListener();
+  }
+
   firstServer.applyPendingUpdates();
 
 #ifdef AERONET_ENABLE_OPENSSL
