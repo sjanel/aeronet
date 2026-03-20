@@ -279,10 +279,10 @@ struct HttpServerConfig {
 
   // Set number of threads to use for the server event loops.
   // This setting is only meaningful for HttpServer (aka MultiHttpServer);
-  HttpServerConfig& withNbThreads(uint32_t nbThreads);
+  HttpServerConfig& withNbThreads(uint32_t threads);
 
   // Set explicit listening port (0 = ephemeral)
-  HttpServerConfig& withPort(uint16_t port);
+  HttpServerConfig& withPort(uint16_t serverPort);
 
   // Enable/disable SO_REUSEPORT
   HttpServerConfig& withReusePort(bool on = true);
@@ -301,10 +301,10 @@ struct HttpServerConfig {
   HttpServerConfig& withTrailerHeader(bool on = true);
 
   // Adjust header size ceiling
-  HttpServerConfig& withMaxHeaderBytes(std::size_t maxHeaderBytes);
+  HttpServerConfig& withMaxHeaderBytes(std::size_t bytes);
 
   // Adjust body size limit
-  HttpServerConfig& withMaxBodyBytes(std::size_t maxBodyBytes);
+  HttpServerConfig& withMaxBodyBytes(std::size_t bytes);
 
   // Adjust threshold (bytes) under which captured body contents are appended inline with the head.
   HttpServerConfig& withMinCapturedBodySize(std::size_t bytes);
@@ -313,7 +313,7 @@ struct HttpServerConfig {
   HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
 
   // Adjust min payload size for zerocopy responses (when enabled).
-  HttpServerConfig& withZerocopyMinBytes(std::uint32_t zerocopyMinBytes);
+  HttpServerConfig& withZerocopyMinBytes(std::uint32_t minBytes);
 
   // Adjust request-per-connection cap
   HttpServerConfig& withMaxRequestsPerConnection(uint32_t maxRequests);
@@ -322,7 +322,7 @@ struct HttpServerConfig {
   HttpServerConfig& withKeepAliveTimeout(std::chrono::milliseconds timeout);
 
   // Maximum number of closed connection objects to cache for reuse to reduce allocations.
-  HttpServerConfig& withMaxCachedConnections(uint32_t maxCachedConnections);
+  HttpServerConfig& withMaxCachedConnections(uint32_t nbCachedConnections);
 
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);
@@ -411,7 +411,7 @@ struct HttpServerConfig {
   HttpServerConfig& withTelemetryConfig(TelemetryConfig cfg);
 
   // Configure the minimum read chunk size when receiving request data. Returns *this.
-  HttpServerConfig& withMinReadChunkBytes(std::size_t minReadChunkBytes);
+  HttpServerConfig& withMinReadChunkBytes(std::size_t bytes);
 
   // Configure a per-event read fairness cap (0 => unlimited)
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);

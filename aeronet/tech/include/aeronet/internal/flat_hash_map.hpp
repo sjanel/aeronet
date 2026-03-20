@@ -255,9 +255,9 @@ struct fibonacci_hash_policy
         size = std::max(size_t(2), detailv3::next_power_of_two(size));
         return 64 - detailv3::log2(size);
     }
-    void commit(int8_t shift)
+    void commit(int8_t sh)
     {
-        this->shift = shift;
+        this->shift = sh;
     }
     void reset()
     {

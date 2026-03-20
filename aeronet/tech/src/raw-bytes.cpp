@@ -50,8 +50,8 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : Raw
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(RawBytesBase&& rhs) noexcept
     : _buf(std::exchange(rhs._buf, nullptr)),
-      _size(std::exchange(rhs._size, 0)),
-      _capacity(std::exchange(rhs._capacity, 0)) {}
+      _size(std::exchange(rhs._size, static_cast<SizeType>(0))),
+      _capacity(std::exchange(rhs._capacity, static_cast<SizeType>(0))) {}
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operator=(RawBytesBase&& rhs) noexcept {
@@ -59,8 +59,8 @@ RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operat
     std::free(_buf);
 
     _buf = std::exchange(rhs._buf, nullptr);
-    _size = std::exchange(rhs._size, 0);
-    _capacity = std::exchange(rhs._capacity, 0);
+    _size = std::exchange(rhs._size, static_cast<SizeType>(0));
+    _capacity = std::exchange(rhs._capacity, static_cast<SizeType>(0));
   }
   return *this;
 }

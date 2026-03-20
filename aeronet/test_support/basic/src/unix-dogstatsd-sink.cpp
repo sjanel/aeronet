@@ -84,7 +84,11 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
     return {};
   }
   std::array<char, 512> buf;
+#ifdef AERONET_WINDOWS
+  const auto bytes = ::recv(_fd.fd(), buf.data(), static_cast<int>(buf.size()), 0);
+#else
   const auto bytes = ::recv(_fd.fd(), buf.data(), buf.size(), 0);
+#endif
   if (bytes <= 0) {
     return {};
   }

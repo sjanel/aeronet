@@ -36,13 +36,13 @@ TLSConfig& HttpServerConfig::ensureTls() {
   return tls;
 }
 
-HttpServerConfig& HttpServerConfig::withNbThreads(uint32_t nbThreads) {
-  this->nbThreads = nbThreads;
+HttpServerConfig& HttpServerConfig::withNbThreads(uint32_t threads) {
+  this->nbThreads = threads;
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withPort(uint16_t port) {
-  this->port = port;
+HttpServerConfig& HttpServerConfig::withPort(uint16_t serverPort) {
+  this->port = serverPort;
   return *this;
 }
 
@@ -71,13 +71,13 @@ HttpServerConfig& HttpServerConfig::withTrailerHeader(bool on) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::size_t maxHeaderBytes) {
-  this->maxHeaderBytes = maxHeaderBytes;
+HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::size_t bytes) {
+  this->maxHeaderBytes = bytes;
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMaxBodyBytes(std::size_t maxBodyBytes) {
-  this->maxBodyBytes = maxBodyBytes;
+HttpServerConfig& HttpServerConfig::withMaxBodyBytes(std::size_t bytes) {
+  this->maxBodyBytes = bytes;
   return *this;
 }
 
@@ -86,8 +86,8 @@ HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOu
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withZerocopyMinBytes(std::uint32_t zerocopyMinBytes) {
-  this->zerocopyMinBytes = zerocopyMinBytes;
+HttpServerConfig& HttpServerConfig::withZerocopyMinBytes(std::uint32_t minBytes) {
+  this->zerocopyMinBytes = minBytes;
   return *this;
 }
 
@@ -101,8 +101,8 @@ HttpServerConfig& HttpServerConfig::withKeepAliveTimeout(std::chrono::millisecon
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMaxCachedConnections(uint32_t maxCachedConnections) {
-  this->maxCachedConnections = maxCachedConnections;
+HttpServerConfig& HttpServerConfig::withMaxCachedConnections(uint32_t nbCachedConnections) {
+  this->maxCachedConnections = nbCachedConnections;
   return *this;
 }
 
@@ -221,11 +221,11 @@ HttpServerConfig& HttpServerConfig::withTelemetryConfig(TelemetryConfig cfg) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMinReadChunkBytes(std::size_t minReadChunkBytes) {
-  if (std::cmp_greater(minReadChunkBytes, std::numeric_limits<std::uint32_t>::max())) {
+HttpServerConfig& HttpServerConfig::withMinReadChunkBytes(std::size_t bytes) {
+  if (std::cmp_greater(bytes, std::numeric_limits<std::uint32_t>::max())) {
     throw std::invalid_argument("minReadChunkBytes value too large");
   }
-  this->minReadChunkBytes = static_cast<std::uint32_t>(minReadChunkBytes);
+  this->minReadChunkBytes = static_cast<std::uint32_t>(bytes);
   return *this;
 }
 

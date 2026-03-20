@@ -302,7 +302,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
         got.resize(written);
         const auto rd = read(sv[1], got.data(), written);
         ASSERT_GE(rd, 0);
-        EXPECT_EQ(static_cast<decltype(written)>(rd), written);
+        EXPECT_EQ(static_cast<std::size_t>(rd), written);
         totalRead += static_cast<std::size_t>(rd);
         state.tunnelOrFileBuffer.erase_front(written);
       } else if (want == TransportHint::WriteReady) {

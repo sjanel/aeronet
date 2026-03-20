@@ -9,14 +9,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <utility>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "aeronet/compression-config.hpp"
@@ -29,6 +26,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
+
 
 namespace aeronet::http2 {
 namespace {
@@ -120,7 +118,7 @@ TEST(Http2Streaming, LargeBody) {
                                writer.status(http::StatusCode{200});
                                writer.contentType("application/octet-stream");
                                // Write in 16 KB chunks
-                               constexpr std::size_t kChunkSize = static_cast<const std::size_t>(16 * 1024);
+                               constexpr std::size_t kChunkSize = static_cast<std::size_t>(16 * 1024);
                                for (std::size_t offset = 0; offset < kPayload.size(); offset += kChunkSize) {
                                  auto len = std::min(kChunkSize, kPayload.size() - offset);
                                  writer.writeBody(std::string_view(kPayload).substr(offset, len));

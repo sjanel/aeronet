@@ -1501,27 +1501,27 @@ TEST_F(HttpRequestTest, LongInputs) {
   // Long header name
   {
     std::string longName(1000, 'A');
-    std::string req = "GET / HTTP/1.1\r\n" + longName + ": v\r\n\r\n";
+    std::string reqStr = "GET / HTTP/1.1\r\n" + longName + ": v\r\n\r\n";
     RawChars buf;
-    buf.append(req);
+    buf.append(reqStr);
     ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
   }
 
   // Long header value
   {
     std::string longVal(10000, 'B');
-    std::string req = "GET / HTTP/1.1\r\nX: " + longVal + "\r\n\r\n";
+    std::string reqStr = "GET / HTTP/1.1\r\nX: " + longVal + "\r\n\r\n";
     RawChars buf;
-    buf.append(req);
+    buf.append(reqStr);
     ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
   }
 
   // Long path
   {
     std::string longPath(5000, 'x');
-    std::string req = "GET /" + longPath + " HTTP/1.1\r\nHost: h\r\n\r\n";
+    std::string reqStr = "GET /" + longPath + " HTTP/1.1\r\nHost: h\r\n\r\n";
     RawChars buf;
-    buf.append(req);
+    buf.append(reqStr);
     ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
   }
 }

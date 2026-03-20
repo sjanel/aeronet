@@ -182,9 +182,9 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithWebSocket) {
 #endif
 
 TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
-  auto& entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
   addPaths();
-  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); })
+  router.setPath(http::Method::GET, "/ctor", MakeNormalHandler())
+      .before([](HttpRequest&) { return MiddlewareResult::Continue(); })
       .after([](const HttpRequest&, HttpResponse&) {})
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
@@ -289,8 +289,8 @@ TEST_F(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
 #endif
 
 TEST_F(PathHandlerEntryTest, CorsAndMiddlewarePopulatedOnMatch) {
-  auto& entry = router.setPath(http::Method::GET, "/middleware", MakeNormalHandler());
-  entry.cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin())
+  router.setPath(http::Method::GET, "/middleware", MakeNormalHandler())
+      .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin())
       .before([](HttpRequest&) { return MiddlewareResult::Continue(); })
       .after([](const HttpRequest&, HttpResponse&) {});
 

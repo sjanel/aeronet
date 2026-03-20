@@ -87,8 +87,8 @@ TelemetryConfig& TelemetryConfig::addDogStatsdTag(std::string_view tag) {
   return *this;
 }
 
-TelemetryConfig& TelemetryConfig::withSampleRate(double sampleRate) {
-  this->sampleRate = static_cast<float>(sampleRate);
+TelemetryConfig& TelemetryConfig::withSampleRate(double rate) {
+  this->sampleRate = static_cast<float>(rate);
   return *this;
 }
 

@@ -39,13 +39,13 @@ using ska::detailv3::HashPolicySelector;
 template<typename = void>
 struct sherwood_v8_constants
 {
-    static constexpr int8_t magic_for_empty = int8_t(0b11111111);
-    static constexpr int8_t magic_for_reserved = int8_t(0b11111110);
-    static constexpr int8_t bits_for_direct_hit = int8_t(0b10000000);
-    static constexpr int8_t magic_for_direct_hit = int8_t(0b00000000);
-    static constexpr int8_t magic_for_list_entry = int8_t(0b10000000);
+    static constexpr int8_t magic_for_empty = static_cast<int8_t>(0b11111111);
+    static constexpr int8_t magic_for_reserved = static_cast<int8_t>(0b11111110);
+    static constexpr int8_t bits_for_direct_hit = static_cast<int8_t>(0b10000000);
+    static constexpr int8_t magic_for_direct_hit = static_cast<int8_t>(0b00000000);
+    static constexpr int8_t magic_for_list_entry = static_cast<int8_t>(0b10000000);
 
-    static constexpr int8_t bits_for_distance = int8_t(0b01111111);
+    static constexpr int8_t bits_for_distance = static_cast<int8_t>(0b01111111);
     inline static int distance_from_metadata(int8_t metadata)
     {
         return metadata & bits_for_distance;
@@ -421,17 +421,17 @@ public:
     template <typename K>
     inline iterator find(const K & key)
     {
+        const size_t nb_slots_minus_one = this->num_slots_minus_one;
         size_t index = hash_object(key);
-        size_t num_slots_minus_one = this->num_slots_minus_one;
-        BlockPointer entries = this->entries;
-        index = hash_policy.index_for_hash(index, num_slots_minus_one);
+        BlockPointer pBlock = this->entries;
+        index = hash_policy.index_for_hash(index, nb_slots_minus_one);
         bool first = true;
         for (;;)
         {
-            size_t block_index = index / BlockSize;
-            int index_in_block = index % BlockSize;
-            BlockPointer block = entries + block_index;
-            int8_t metadata = block->control_bytes[index_in_block];
+            const size_t index_in_block = index % BlockSize;
+            const size_t block_index = index / BlockSize;
+            const BlockPointer block = pBlock + block_index;
+            const int8_t metadata = block->control_bytes[index_in_block];
             if (first)
             {
                 if ((metadata & Constants::bits_for_direct_hit) != Constants::magic_for_direct_hit)
@@ -444,7 +444,7 @@ public:
             if (to_next_index == 0)
                 return end();
             index += Constants::jump_distances[to_next_index];
-            index = hash_policy.keep_in_range(index, num_slots_minus_one);
+            index = hash_policy.keep_in_range(index, nb_slots_minus_one);
         }
     }
     template <typename K>
@@ -508,17 +508,17 @@ public:
     template<typename Key, typename... Args>
     std::pair<iterator, bool> emplace(Key && key, Args &&... args)
     {
+        const size_t nb_slots_minus_one = this->num_slots_minus_one;
         size_t index = hash_object(key);
-        size_t num_slots_minus_one = this->num_slots_minus_one;
-        BlockPointer entries = this->entries;
-        index = hash_policy.index_for_hash(index, num_slots_minus_one);
+        BlockPointer pBlock = this->entries;
+        index = hash_policy.index_for_hash(index, nb_slots_minus_one);
         bool first = true;
         for (;;)
         {
-            size_t block_index = index / BlockSize;
-            int index_in_block = index % BlockSize;
-            BlockPointer block = entries + block_index;
-            int8_t metadata = block->control_bytes[index_in_block];
+            const size_t index_in_block = index % BlockSize;
+            const size_t block_index = index / BlockSize;
+            const BlockPointer block = pBlock + block_index;
+            const int8_t metadata = block->control_bytes[index_in_block];
             if (first)
             {
                 if ((metadata & Constants::bits_for_direct_hit) != Constants::magic_for_direct_hit)
@@ -527,11 +527,11 @@ public:
             }
             if (compares_equal(key, block->data[index_in_block]))
                 return { { block, index }, false };
-            int8_t to_next_index = metadata & Constants::bits_for_distance;
+            const int8_t to_next_index = metadata & Constants::bits_for_distance;
             if (to_next_index == 0)
                 return emplace_new_key({ index, block }, std::forward<Key>(key), std::forward<Args>(args)...);
             index += Constants::jump_distances[to_next_index];
-            index = hash_policy.keep_in_range(index, num_slots_minus_one);
+            index = hash_policy.keep_in_range(index, nb_slots_minus_one);
         }
     }
 
@@ -539,17 +539,17 @@ protected:
     template<typename Key, typename... Args>
     std::pair<iterator, bool> emplace_no_key(const Key & key, Args &&... args)
     {
+        const size_t nb_slots_minus_one = this->num_slots_minus_one;
         size_t index = hash_object(key);
-        size_t num_slots_minus_one = this->num_slots_minus_one;
-        BlockPointer entries = this->entries;
-        index = hash_policy.index_for_hash(index, num_slots_minus_one);
+        BlockPointer pBlock = this->entries;
+        index = hash_policy.index_for_hash(index, nb_slots_minus_one);
         bool first = true;
         for (;;)
         {
-            size_t block_index = index / BlockSize;
-            int index_in_block = index % BlockSize;
-            BlockPointer block = entries + block_index;
-            int8_t metadata = block->control_bytes[index_in_block];
+            const size_t index_in_block = index % BlockSize;
+            const size_t block_index = index / BlockSize;
+            const BlockPointer block = pBlock + block_index;
+            const int8_t metadata = block->control_bytes[index_in_block];
             if (first)
             {
                 if ((metadata & Constants::bits_for_direct_hit) != Constants::magic_for_direct_hit)
@@ -562,7 +562,7 @@ protected:
             if (to_next_index == 0)
                 return emplace_new_key_no_key({ index, block }, key, std::forward<Args>(args)...);
             index += Constants::jump_distances[to_next_index];
-            index = hash_policy.keep_in_range(index, num_slots_minus_one);
+            index = hash_policy.keep_in_range(index, nb_slots_minus_one);
         }
     }
 
@@ -649,9 +649,9 @@ public:
         deallocate_data(new_buckets, num_items - 1);
     }
 
-    void reserve(size_t num_elements)
+    void reserve(size_t n_elems)
     {
-        size_t required_buckets = num_buckets_for_reserve(num_elements);
+        size_t required_buckets = num_buckets_for_reserve(n_elems);
         if (required_buckets > bucket_count())
             rehash(required_buckets);
     }
@@ -827,9 +827,9 @@ private:
     float _max_load_factor = 0.9375f;
     size_t num_elements = 0;
 
-    size_t num_buckets_for_reserve(size_t num_elements) const
+    size_t num_buckets_for_reserve(size_t n_elems) const
     {
-        return static_cast<size_t>(std::ceil(static_cast<double>(num_elements) / static_cast<double>(_max_load_factor)));
+        return static_cast<size_t>(std::ceil(static_cast<double>(n_elems) / static_cast<double>(_max_load_factor)));
     }
     void rehash_for_other_container(const sherwood_v8_table & other)
     {
@@ -870,7 +870,7 @@ private:
         {
             return { block, index };
         }
-        int index_in_block() const
+        auto index_in_block() const
         {
             return index % BlockSize;
         }
@@ -1130,12 +1130,12 @@ private:
         rehash(std::max(size_t(10), 2 * bucket_count()));
     }
 
-    void deallocate_data(BlockPointer begin, size_t num_slots_minus_one)
+    void deallocate_data(BlockPointer begin, size_t nb_slots_minus_one)
     {
         if (begin == BlockType::empty_block())
             return;
 
-        const size_t num_slots = num_slots_minus_one + 1;
+        const size_t num_slots = nb_slots_minus_one + 1;
         size_t num_blocks = num_slots / BlockSize;
         if (num_slots % BlockSize)
             ++num_blocks;
