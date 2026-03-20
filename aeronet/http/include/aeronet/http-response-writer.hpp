@@ -186,18 +186,9 @@ class HttpResponseWriter {
   // Returns true in an error occur during the streaming flow (unrecoverable).
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
-  /// Access the internal HttpResponse used for header accumulation (for transports that need it).
-  [[nodiscard]] HttpResponse& response() noexcept { return _fixedResponse; }
-  [[nodiscard]] const HttpResponse& response() const noexcept { return _fixedResponse; }
-
-  /// Whether this writer has a file body set (for transport integration).
-  [[nodiscard]] bool hasFile() const noexcept { return _fixedResponse.hasBodyFile(); }
-
-  /// The declared content length (0 = chunked mode).
-  [[nodiscard]] std::size_t declaredLength() const noexcept { return _declaredLength; }
-
-  /// Whether this writer uses chunked mode (no declared length and not a HEAD request).
-  [[nodiscard]] bool isChunked() const { return _declaredLength == 0 && !_head; }
+ private:
+  friend class http2::Http2ProtocolHandler;
+  friend class SingleHttpServer;
 
   /// Construct a writer with a transport backend.
   /// @param transport   Protocol-specific transport (lifetime must exceed writer).
@@ -211,7 +202,6 @@ class HttpResponseWriter {
                      const CompressionConfig& compressionConfig, internal::ResponseCompressionState& compressionState,
                      std::string_view globalHeadersStr, bool addTrailerHeader);
 
- private:
   void ensureHeadersSent();
 
   bool accumulateInPreCompressBuffer(std::string_view data);
