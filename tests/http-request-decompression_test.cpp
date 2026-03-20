@@ -106,8 +106,8 @@ constexpr std::string_view kKnownEncodingsWithIdentity[] = {
 };
 
 RawChars compress(std::string_view alg, std::string_view input) {
-  RawChars buf;
   CompressionConfig cc;
+  buf.clear();
   if (CaseInsensitiveEqual(alg, "identity")) {
     buf.assign(input);
 #ifdef AERONET_ENABLE_ZLIB
@@ -292,9 +292,6 @@ TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain(1000, 'A');
   std::ranges::iota(plain.begin(), plain.end(), 'A');
-
-  std::mt19937 rng(12345);
-  std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
 
   // Loop on all tuples of known encodings (there will be duplicates, but it's ok, we test that also)
   for (std::string_view firstEnc : kKnownEncodingsWithIdentity) {

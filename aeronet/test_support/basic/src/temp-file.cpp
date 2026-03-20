@@ -106,7 +106,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
 
   std::uniform_int_distribution<uint64_t> dist;
   std::string tmpl;
-  NativeHandle fd = -1;
+  NativeHandle fd = kInvalidHandle;
 
   for (int attempt = 0; attempt < 100; ++attempt) {
     tmpl = _dir.string() + "/aeronet_temp_" + toHex(dist(threadRng()));
@@ -116,7 +116,7 @@ ScopedTempFile::ScopedTempFile(const ScopedTempDir& dir, std::string_view conten
 #else
     fd = ::open(tmpl.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
 #endif
-    if (fd != -1) {
+    if (fd != kInvalidHandle) {
       break;
     }
   }

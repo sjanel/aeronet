@@ -1077,7 +1077,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     vector<int> called(routeCount, 0);
 
     // registration lambda so we reuse logic
-    auto registerRoutes = [&](Router& router) {
+    auto registerRoutes = [&called](Router& r) {
       for (uint32_t idx = 0; idx < routeCount; ++idx) {
         http::MethodBmp registerMethod{};
         switch (idx % 4) {
@@ -1110,7 +1110,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
           path += '/';
         }
 
-        router.setPath(registerMethod, path, [idx, &called](const HttpRequest&) {
+        r.setPath(registerMethod, path, [idx, &called](const HttpRequest&) {
           called[idx]++;
           return HttpResponse(200);
         });
@@ -1118,7 +1118,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     };
 
     // matching lambda
-    auto matchAndInvoke = [&](Router& router) {
+    auto matchAndInvoke = [policy](Router& r) {
       alignas(HttpRequest) std::byte dummyStorage[sizeof(HttpRequest)];
       const HttpRequest& dummyReq = *reinterpret_cast<const HttpRequest*>(&dummyStorage);
 
@@ -1154,7 +1154,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
           matchPath += '/';
         }
 
-        auto res = router.match(matchMethod, matchPath);
+        auto res = r.match(matchMethod, matchPath);
         ASSERT_NE(res.requestHandler(), nullptr)
             << "No handler for path: " << matchPath << " policy=" << static_cast<int>(policy);
         (*res.requestHandler())(dummyReq);
@@ -1362,7 +1362,6 @@ TEST_F(RouterTest, ParamWithLiteralSuffix) {
 }
 
 TEST_F(RouterTest, StrictRejectsTrailingSlash) {
-  RouterConfig cfg;
   cfg.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Strict;
   router = Router(cfg);
 
@@ -1373,7 +1372,6 @@ TEST_F(RouterTest, StrictRejectsTrailingSlash) {
 }
 
 TEST_F(RouterTest, NormalizedWithTrailingSlashShouldOverride) {
-  RouterConfig cfg;
   cfg.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Normalize;
   router = Router(cfg);
 
@@ -1391,7 +1389,6 @@ TEST_F(RouterTest, NormalizedWithTrailingSlashShouldOverride) {
 }
 
 TEST_F(RouterTest, ParamRouteTrailingSlashNormalize) {
-  RouterConfig cfg;
   cfg.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Normalize;
   router = Router(cfg);
 

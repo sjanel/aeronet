@@ -68,7 +68,7 @@ auto makeTcpNoDelayScope(TcpNoDelayMode mode) {
       [](HttpServerConfig& config, TcpNoDelayMode mode) { config.withTcpNoDelayMode(mode); }, mode);
 }
 
-std::string httpGet(uint16_t port, std::string_view target) {
+std::string httpGet(std::string_view target) {
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = target;
@@ -170,16 +170,16 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_FALSE(resp.empty()) << "expected a response";
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
 }
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
   auto scope = makeTcpNoDelayScope(TcpNoDelayMode::Enabled);
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });
-  std::string resp = httpGet(ts.port(), "/tcp");
+  std::string resp = httpGet("/tcp");
   ASSERT_FALSE(resp.empty());
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("tcp ok")) << resp;
 }
 
@@ -240,7 +240,7 @@ TEST(HttpBasic, SimpleGet) {
     resp.body(std::move(body));
     return resp;
   });
-  std::string resp = httpGet(ts.port(), "/abc");
+  std::string resp = httpGet("/abc");
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("You requested: /abc"));
@@ -271,7 +271,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
 }
 
 namespace {
-std::string rawGet(uint16_t port) {
+std::string rawGet() {
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/";
@@ -297,7 +297,7 @@ std::string headerValue(std::string_view resp, std::string_view name) {
 
 TEST(HttpDate, PresentAndFormat) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
-  auto resp = rawGet(port);
+  auto resp = rawGet();
   ASSERT_FALSE(resp.empty());
   auto date = headerValue(resp, http::Date);
   ASSERT_EQ(29U, date.size()) << date;
@@ -322,12 +322,12 @@ TEST(HttpDate, StableWithinSameSecond) {
   std::string anchorDate;
   std::string anchorHMS;
   for (int i = 0; i < 50; ++i) {  // up to ~500ms budget
-    anchorDate = headerValue(rawGet(port), http::Date);
+    anchorDate = headerValue(rawGet(), http::Date);
     anchorHMS = extractHMS(anchorDate);
     if (!anchorHMS.empty()) {
       // Sleep a short time and confirm we are still in same second; if not, loop and pick new anchor.
       std::this_thread::sleep_for(20ms);
-      auto confirm = headerValue(rawGet(port), http::Date);
+      auto confirm = headerValue(rawGet(), http::Date);
       if (extractHMS(confirm) == anchorHMS) {
         anchorDate = confirm;  // use the confirmed value
         break;
@@ -338,8 +338,8 @@ TEST(HttpDate, StableWithinSameSecond) {
 
   // Take two additional samples and ensure at least two out of the three share the same second.
   // (If we landed exactly on a boundary the anchor may differ, but then the other two should match.)
-  auto s2 = headerValue(rawGet(port), http::Date);
-  auto s3 = headerValue(rawGet(port), http::Date);
+  auto s2 = headerValue(rawGet(), http::Date);
+  auto s3 = headerValue(rawGet(), http::Date);
   std::string h1 = extractHMS(anchorDate);
   std::string h2 = extractHMS(s2);
   std::string h3 = extractHMS(s3);
@@ -358,14 +358,14 @@ TEST(HttpDate, StableWithinSameSecond) {
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
 
-  auto first = rawGet(port);
+  auto first = rawGet();
   auto d1 = headerValue(first, http::Date);
   ASSERT_EQ(29U, d1.size());
   // spin until date changes (max ~1500ms)
   std::string d2;
   for (int i = 0; i < 150; ++i) {
     std::this_thread::sleep_for(10ms);
-    d2 = headerValue(rawGet(port), http::Date);
+    d2 = headerValue(rawGet(), http::Date);
     if (d2 != d1 && !d2.empty()) {
       break;
     }
@@ -436,7 +436,7 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
 }
 
 namespace {
-std::string sendRaw(uint16_t port, std::string_view raw) {
+std::string sendRaw(std::string_view raw) {
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, raw);
@@ -448,7 +448,7 @@ std::string sendRaw(uint16_t port, std::string_view raw) {
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
-  std::string resp = sendRaw(port, "GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
+  std::string resp = sendRaw("GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
@@ -458,7 +458,7 @@ TEST(HttpMalformed, OversizedHeaders) {
 
   std::string big(200, 'A');
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
-  std::string resp = sendRaw(port, raw);
+  std::string resp = sendRaw(raw);
   ASSERT_TRUE(resp.contains("431")) << resp;
 }
 
@@ -467,7 +467,7 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
 
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
-  std::string resp = sendRaw(port, raw);
+  std::string resp = sendRaw(raw);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
@@ -490,9 +490,9 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   };
 
   for (const auto& pair : cases) {
-    std::string resp = sendRaw(port, pair.first);
+    std::string resp = sendRaw(pair.first);
     // Response should be 200 and include the method echoed in the body.
-    EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << "Resp=" << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << "Resp=" << resp;
     EXPECT_TRUE(resp.contains(std::string("method=") + pair.second)) << "Resp=" << resp;
   }
 }

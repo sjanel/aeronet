@@ -46,7 +46,7 @@ class OtlpTestCollector {
  private:
   void run();
   bool acceptOnce();
-  void handleClient(int clientFd);
+  void handleClient(NativeHandle clientFd);
   void recordRequest(CapturedOtlpRequest req);
 
   Socket _listen;

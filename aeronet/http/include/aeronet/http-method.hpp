@@ -33,12 +33,16 @@ using MethodIdx = uint8_t;
 inline constexpr MethodIdx kNbMethods = 9;
 
 constexpr MethodBmp operator|(Method lhs, Method rhs) noexcept {
-  return static_cast<MethodBmp>(lhs) | static_cast<MethodBmp>(rhs);
+  return static_cast<MethodBmp>(static_cast<MethodBmp>(lhs) | static_cast<MethodBmp>(rhs));
 }
 
-constexpr MethodBmp operator|(MethodBmp lhs, Method rhs) noexcept { return lhs | static_cast<MethodBmp>(rhs); }
+constexpr MethodBmp operator|(MethodBmp lhs, Method rhs) noexcept {
+  return static_cast<MethodBmp>(lhs | static_cast<MethodBmp>(rhs));
+}
 
-constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept { return static_cast<MethodBmp>(lhs) | rhs; }
+constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept {
+  return static_cast<MethodBmp>(static_cast<MethodBmp>(lhs) | rhs);
+}
 
 static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
               "MethodBmp type too small to hold all methods; increase size or change type");

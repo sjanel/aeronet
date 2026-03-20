@@ -1468,9 +1468,8 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   EXPECT_EQ(resp.trailersLength(), HttpResponse::HeaderSize(9U, 13U) + HttpResponse::HeaderSize(11U, 14U));
 
   static constexpr bool kHead = false;
-  static constexpr bool kAddTrailerHeader = true;
 
-  auto prepared = finalizePrepared(std::move(resp), {}, kHead, kAddTrailerHeader, true, kMinCapturedBodySize);
+  auto prepared = finalizePrepared(std::move(resp), {}, kHead, true, true, kMinCapturedBodySize);
   std::string all(prepared.firstBuffer());
   all.append(prepared.secondBuffer());
 
@@ -2295,8 +2294,7 @@ TEST_F(HttpResponseTest, SeveralBodyAppend) {
 }
 
 TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
-  static constexpr std::size_t kMinCapturedBodySize[] = {1ULL, 13ULL, 4096ULL};
-  for (const auto minCapturedBodySize : kMinCapturedBodySize) {
+  for (const auto minCapturedBodySize : {1ULL, 13ULL, 4096ULL}) {
     HttpResponse resp;
     resp.body(std::string("Hello, World!"));
     EXPECT_FALSE(resp.hasBodyFile());

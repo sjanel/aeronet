@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/native-handle.hpp"
 #include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport.hpp"
 
@@ -18,7 +19,7 @@ class TlsTransport final : public ITransport {
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
   TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
-      : ITransport(-1, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
+      : ITransport(kInvalidHandle, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
 
   TransportResult read(char* buf, std::size_t len) override;
 
@@ -53,10 +54,10 @@ class TlsTransport final : public ITransport {
 
   /// Store the underlying socket fd for zerocopy operations.
   /// Called after SSL_set_fd to cache the fd for direct socket I/O when kTLS is active.
-  void setUnderlyingFd(int fd) noexcept { _fd = fd; }
+  void setUnderlyingFd(NativeHandle fd) noexcept { _fd = fd; }
 
   /// Get the underlying socket fd.
-  [[nodiscard]] int underlyingFd() const noexcept { return _fd; }
+  [[nodiscard]] NativeHandle underlyingFd() const noexcept { return _fd; }
 
  private:
   TransportHint handshake(TransportHint want);

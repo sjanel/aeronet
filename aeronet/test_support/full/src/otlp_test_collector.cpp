@@ -32,6 +32,7 @@
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/test_util.hpp"
@@ -191,7 +192,7 @@ bool OtlpTestCollector::acceptOnce() {
   return true;
 }
 
-void OtlpTestCollector::handleClient(int clientFd) {
+void OtlpTestCollector::handleClient(NativeHandle clientFd) {
   BaseFd client(clientFd);
   std::string buffer;
   buffer.reserve(4096);

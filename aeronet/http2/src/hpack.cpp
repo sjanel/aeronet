@@ -536,7 +536,7 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
   }
 
   const uint8_t prefixMask = static_cast<uint8_t>((1U << prefixBits) - 1);
-  uint64_t value = static_cast<uint8_t>(data[0]) & prefixMask;
+  uint64_t value = static_cast<uint64_t>(static_cast<uint8_t>(data[0]) & prefixMask);
 
   if (value < prefixMask) {
     // Value fits in prefix
