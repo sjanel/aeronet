@@ -12,20 +12,25 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
-#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-class SingleHttpServer;
 class HttpRequest;
 class CorsPolicy;
+struct CompressionConfig;
+
+namespace internal {
+class IWriterTransport;
+struct ResponseCompressionState;
+}  // namespace internal
 
 // HttpResponseWriter
 //  - Used to stream HTTP responses in a backpressure-aware manner.
 //  - Not thread-safe; intended for use within streaming path handlers only.
 //  - Supports both chunked transfer encoding (default) and fixed Content-Length mode.
 //  - Supports setting status, reason, headers before any body data is sent.
+//  - Protocol-agnostic: delegates transport operations (framing, sending) to an IWriterTransport.
 class HttpResponseWriter {
  public:
   // Replaces the status code. Must be a 3 digits integer.
@@ -181,30 +186,41 @@ class HttpResponseWriter {
   // Returns true in an error occur during the streaming flow (unrecoverable).
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
+  /// Access the internal HttpResponse used for header accumulation (for transports that need it).
+  [[nodiscard]] HttpResponse& response() noexcept { return _fixedResponse; }
+  [[nodiscard]] const HttpResponse& response() const noexcept { return _fixedResponse; }
+
+  /// Whether this writer has a file body set (for transport integration).
+  [[nodiscard]] bool hasFile() const noexcept { return _fixedResponse.hasBodyFile(); }
+
+  /// The declared content length (0 = chunked mode).
+  [[nodiscard]] std::size_t declaredLength() const noexcept { return _declaredLength; }
+
+  /// Whether this writer uses chunked mode (no declared length and not a HEAD request).
+  [[nodiscard]] bool isChunked() const { return _declaredLength == 0 && !_head; }
+
+  /// Construct a writer with a transport backend.
+  /// @param transport   Protocol-specific transport (lifetime must exceed writer).
+  /// @param request     The originating HTTP request.
+  /// @param compressionFormat  Negotiated compression encoding (Encoding::none if disabled).
+  /// @param compressionConfig  Compression configuration (thresholds, etc.).
+  /// @param compressionState   Shared compression state (encoder pool).
+  /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
+  /// @param addTrailerHeader   Whether to auto-add the Trailer header.
+  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequest& request, Encoding compressionFormat,
+                     const CompressionConfig& compressionConfig, internal::ResponseCompressionState& compressionState,
+                     std::string_view globalHeadersStr, bool addTrailerHeader);
+
  private:
-  friend class SingleHttpServer;
-
-  HttpResponseWriter(SingleHttpServer& srv, NativeHandle fd, const HttpRequest& request, bool requestConnClose,
-                     Encoding compressionFormat, const CorsPolicy* pCorsPolicy,
-                     std::span<const ResponseMiddleware> routeResponseMiddleware);
-
   void ensureHeadersSent();
-  void emitLastChunk();
-
-  bool enqueue(HttpResponseData httpResponseData);
 
   bool accumulateInPreCompressBuffer(std::string_view data);
-
-  bool tryPush(RawChars data, bool doNotWriteHexPrefix = false);
-
-  [[nodiscard]] bool chunked() const { return _declaredLength == 0 && !_head; }
 
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
 
-  SingleHttpServer* _server;
+  internal::IWriterTransport* _transport;
   const HttpRequest* _request;
-  NativeHandle _fd;
   bool _head;
   State _state{State::Opened};
   Encoding _compressionFormat;
@@ -217,11 +233,11 @@ class HttpResponseWriter {
 #ifndef NDEBUG
   std::size_t _bytesWritten{0};
 #endif
-  EncoderContext* _activeEncoderCtx{nullptr};  // streaming context (owned by compression state)
-  RawChars _preCompressBuffer;                 // threshold buffering before activation
-  RawChars _trailers;                          // Trailer headers (RFC 7230 §4.1.2) buffered until end()
-  const CorsPolicy* _pCorsPolicy;
-  std::span<const ResponseMiddleware> _routeResponseMiddleware;
+  EncoderContext* _activeEncoderCtx{nullptr};              // streaming context (owned by compression state)
+  RawChars _preCompressBuffer;                             // threshold buffering before activation
+  RawChars _trailers;                                      // Trailer headers buffered until end()
+  const CompressionConfig* _pCompressionConfig;            // compression thresholds, etc.
+  internal::ResponseCompressionState* _pCompressionState;  // encoder pool
 };
 
 }  // namespace aeronet

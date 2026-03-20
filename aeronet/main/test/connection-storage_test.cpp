@@ -15,6 +15,10 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
 
+#ifdef AERONET_POSIX
+#include "aeronet/native-handle.hpp"
+#endif
+
 namespace aeronet::internal {
 
 namespace {
@@ -129,13 +133,13 @@ TEST(ConnectionStorage, ShrinkToFitTrimsTrailingNulls) {
   ConnectionStorage storage;
 
   // Create 10 connections
-  for (int fd = 1; fd <= 10; ++fd) {
+  for (NativeHandle fd = 1; fd <= 10; ++fd) {
     auto it = storage.emplace(Connection(BaseFd(10 + fd)));
     ASSERT_TRUE(it != storage.end());
   }
 
   // Recycle last 3 connections (make their states nullptr)
-  for (int fd = 8; fd <= 10; ++fd) {
+  for (NativeHandle fd = 8; fd <= 10; ++fd) {
     RecycleConnection(storage, 10, storage.iterator(10 + fd));
   }
 
