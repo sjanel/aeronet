@@ -23,6 +23,7 @@
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -1409,11 +1410,14 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
 }
 #endif
 
-TEST(Http2ProtocolHandler, StreamingHandlerReturns501NotImplemented) {
+TEST(Http2ProtocolHandler, StreamingHandlerSendsDataOverHttp2) {
   Router router;
   router.setPath(http::Method::GET, "/stream",
-                 ::aeronet::StreamingHandler{[]([[maybe_unused]] const HttpRequest& req,
-                                                [[maybe_unused]] ::aeronet::HttpResponseWriter& writer) {}});
+                 ::aeronet::StreamingHandler{[](const HttpRequest& /*req*/, ::aeronet::HttpResponseWriter& writer) {
+                   writer.status(http::StatusCode{200});
+                   writer.writeBody("hello from streaming");
+                   writer.end();
+                 }});
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1430,9 +1434,9 @@ TEST(Http2ProtocolHandler, StreamingHandlerReturns501NotImplemented) {
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "501");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
   ASSERT_FALSE(loop.clientData.empty());
-  EXPECT_TRUE(loop.clientData[0].data.contains("not yet supported"));
+  EXPECT_TRUE(loop.clientData[0].data.contains("hello from streaming"));
 }
 
 TEST(Http2ProtocolHandler, MethodNotAllowedReturns405) {

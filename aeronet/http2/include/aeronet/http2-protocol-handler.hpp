@@ -6,6 +6,7 @@
 #include <memory>
 #include <span>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -14,7 +15,9 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -23,9 +26,6 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
-#include "aeronet/cors-policy.hpp"
-#include "aeronet/middleware.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -91,6 +91,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     _connection.onOutputWritten(bytesWritten);
     if (!_connection.hasPendingOutput()) {
       flushPendingFileSends();
+      flushPendingStreamingSends();
     }
   }
 
@@ -106,6 +107,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
     _streamRequests.clear();
     _pendingFileSends.clear();
+    _pendingStreamingSends.clear();
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     // Destroy any in-flight async coroutines before clearing state.
@@ -197,6 +199,21 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void flushPendingFileSends();
   [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, PendingFileSend& pending, bool endStreamAfterBody);
 
+  /// Buffered streaming body data when flow-control windows are exhausted.
+  struct PendingStreamingSend {
+    RawChars buffer;        // Remaining body data
+    std::size_t offset{0};  // How much of buffer has been sent
+    RawChars trailersData;  // Trailer lines (may be empty)
+  };
+
+  using PendingStreamingSendsMap = flat_hash_map<uint32_t, PendingStreamingSend>;
+
+  void flushPendingStreamingSends();
+
+  /// Dispatch a streaming handler request on an HTTP/2 stream.
+  void handleStreamingRequest(StreamRequestsMap::iterator it, const StreamingHandler& handler,
+                              const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
+
   /// Dispatch a completed request to the dispatcher and send response.
   void dispatchRequest(StreamRequestsMap::iterator it);
 
@@ -251,6 +268,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   // File payload streaming state per stream (flow-control aware)
   PendingFileSendsMap _pendingFileSends;
   RawChars _fileSendBuffer;
+
+  // Streaming handler buffered body data per stream (flow-control aware)
+  PendingStreamingSendsMap _pendingStreamingSends;
 
   HttpServerConfig* _pServerConfig;
   internal::ResponseCompressionState* _pCompressionState;

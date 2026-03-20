@@ -37,6 +37,7 @@ if (AERONET_ENABLE_OPENSSL)
 	if(AERONET_ENABLE_HTTP2)
 		aeronet_http_test(http2-tls-client)
 		aeronet_http_test(http2-connect)
+		aeronet_http_test(http2-streaming)
 	endif()
 endif()
 

@@ -11,7 +11,7 @@
 namespace aeronet {
 
 // Simple RAII class wrapping a socket file descriptor / native handle.
-// On POSIX this wraps an int fd; on Windows it wraps a SOCKET.
+// On POSIX this wraps an integral; on Windows it wraps a SOCKET.
 //
 // On Windows, some OS objects (Event, WaitableTimer) are Win32 HANDLEs rather
 // than SOCKETs. Construct with HandleKind::Win32Handle so that close() calls

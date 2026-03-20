@@ -16,16 +16,17 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-prefinalize.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -36,18 +37,19 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "http2-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/middleware.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -110,10 +112,11 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
                                                          [[maybe_unused]] ::aeronet::ConnectionState& state) {
   auto result = _connection.processInput(data);
 
-  // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending file sends.
+  // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
   // Only do this when we don't already have pending output to avoid unbounded buffering.
   if (!_connection.hasPendingOutput()) {
     flushPendingFileSends();
+    flushPendingStreamingSends();
     if (result.action == Http2Connection::ProcessResult::Action::Continue && _connection.hasPendingOutput()) {
       result.action = Http2Connection::ProcessResult::Action::OutputReady;
     }
@@ -415,6 +418,177 @@ void Http2ProtocolHandler::flushPendingFileSends() {
   }
 }
 
+void Http2ProtocolHandler::flushPendingStreamingSends() {
+  for (auto it = _pendingStreamingSends.begin(); it != _pendingStreamingSends.end();) {
+    const uint32_t streamId = it->first;
+    PendingStreamingSend& pending = it->second;
+
+    // Stream might have been closed/reset.
+    if (_connection.getStream(streamId) == nullptr) {
+      it = _pendingStreamingSends.erase(it);
+      continue;
+    }
+
+    // Try to send buffered body data.
+    while (pending.offset < pending.buffer.size()) {
+      auto* stream = _connection.getStream(streamId);
+      if (stream == nullptr) {
+        break;
+      }
+
+      const int32_t streamWin = stream->sendWindow();
+      const int32_t connWin = _connection.connectionSendWindow();
+      if (streamWin <= 0 || connWin <= 0) {
+        // Flow control still blocked — wait for WINDOW_UPDATE.
+        break;
+      }
+
+      const std::size_t remaining = pending.buffer.size() - pending.offset;
+      const auto maxFrame = static_cast<std::size_t>(_connection.peerSettings().maxFrameSize);
+      const auto chunkSize =
+          std::min({remaining, static_cast<std::size_t>(streamWin), static_cast<std::size_t>(connWin), maxFrame});
+
+      if (chunkSize == 0) {
+        break;
+      }
+
+      const bool lastBodyChunk = (pending.offset + chunkSize >= pending.buffer.size());
+      const bool endStream = lastBodyChunk && pending.trailersData.empty();
+
+      const auto bytes = std::span<const std::byte>(
+          reinterpret_cast<const std::byte*>(pending.buffer.data() + pending.offset), chunkSize);
+      const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+      if (err != ErrorCode::NoError) {
+        if (err == ErrorCode::FlowControlError) {
+          break;  // Will retry on next WINDOW_UPDATE / output drain
+        }
+        log::error("HTTP/2 failed to continue streaming data on stream {}: {}", streamId, ErrorCodeName(err));
+        _connection.sendRstStream(streamId, err);
+        it = _pendingStreamingSends.erase(it);
+        goto next;
+      }
+
+      pending.offset += chunkSize;
+    }
+
+    // Check if all body data has been sent.
+    if (pending.offset < pending.buffer.size()) {
+      ++it;
+      continue;
+    }
+
+    // Body fully sent. Send trailers if present.
+    if (!pending.trailersData.empty()) {
+      HeadersView tv(std::string_view{pending.trailersData.data(), pending.trailersData.size()});
+      const auto sendErr = _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
+      if (sendErr != ErrorCode::NoError) {
+        log::error("HTTP/2 failed to send streaming trailers on stream {}: {}", streamId, ErrorCodeName(sendErr));
+        _connection.sendRstStream(streamId, sendErr);
+      }
+    }
+
+    it = _pendingStreamingSends.erase(it);
+    continue;
+
+  next:;
+  }
+}
+
+void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it, const StreamingHandler& handler,
+                                                  const CorsPolicy* pCorsPolicy,
+                                                  std::span<const ResponseMiddleware> responseMiddleware) {
+  const uint32_t streamId = it->first;
+  HttpRequest& request = it->second.request;
+  const bool isHead = (request.method() == http::Method::HEAD);
+
+  // CORS preflight rejection
+  if (pCorsPolicy != nullptr) {
+    if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+      HttpResponse corsResp(http::StatusCodeForbidden);
+      corsResp.body("Forbidden by CORS policy");
+      ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
+                              *_pTelemetryContext, false, {});
+      if (pCorsPolicy != nullptr) {
+        (void)pCorsPolicy->applyToResponse(request, corsResp);
+      }
+      internal::PrefinalizeHttpResponse(request, corsResp, isHead, *_pCompressionState, *_pTelemetryContext);
+      corsResp.finalizeForHttp2();
+      const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHead);
+      if (err != ErrorCode::NoError) [[unlikely]] {
+        log::error("HTTP/2 failed to send CORS rejection on stream {}: {}", streamId, ErrorCodeName(err));
+      }
+      _streamRequests.erase(streamId);
+      return;
+    }
+  }
+
+  // Negotiate compression
+  Encoding compressionFormat = Encoding::none;
+  if (!isHead) {
+    auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
+    auto negotiated = _pCompressionState->selector.negotiateAcceptEncoding(encHeader);
+    if (negotiated.reject) {
+      HttpResponse resp(http::StatusCodeNotAcceptable);
+      resp.body("No acceptable content-coding available");
+      internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
+      resp.finalizeForHttp2();
+      const ErrorCode err = sendResponse(streamId, std::move(resp), isHead);
+      if (err != ErrorCode::NoError) [[unlikely]] {
+        log::error("HTTP/2 failed to send 406 on stream {}: {}", streamId, ErrorCodeName(err));
+      }
+      _streamRequests.erase(streamId);
+      return;
+    }
+    compressionFormat = negotiated.encoding;
+  }
+
+  const ConcatenatedHeaders* pGlobalHeaders =
+      _pServerConfig->globalHeaders.empty() ? nullptr : &_pServerConfig->globalHeaders;
+
+  // Create H2 transport and writer
+  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders);
+  HttpResponseWriter writer(transport, request, compressionFormat, _pServerConfig->compression, *_pCompressionState,
+                            _pServerConfig->globalHeaders.fullStringWithLastSep(), _pServerConfig->addTrailerHeader);
+
+  // Apply response middleware to the writer's internal response (before handler call, for pre-set headers).
+  // Note: CORS application is handled lazily by the writer through the transport.
+  // Response middleware runs here too if needed? Actually, for streaming, response middleware runs in emitHeaders
+  // via the transport... But Http2WriterTransport doesn't run middleware — that's an HTTP/1.1 concern.
+  // For HTTP/2, we skip response middleware on streaming for now (TODO if needed).
+
+  try {
+    handler(request, writer);
+  } catch (const std::exception& ex) {
+    log::error("HTTP/2 streaming handler exception on stream {}: {}", streamId, ex.what());
+  } catch (...) {
+    log::error("HTTP/2 streaming handler unknown exception on stream {}", streamId);
+  }
+  if (!writer.finished()) {
+    writer.end();
+  }
+
+  // Transfer any pending data from the transport to the protocol handler's deferred-send maps.
+  if (transport.hasPendingFile()) {
+    auto fileInfo = transport.extractPendingFile();
+    PendingFileSend pendingFile;
+    pendingFile.file = std::move(fileInfo.file);
+    pendingFile.offset = fileInfo.offset;
+    pendingFile.remaining = fileInfo.remaining;
+    pendingFile.trailersData = transport.extractPendingTrailers();
+    pendingFile.trailersView =
+        HeadersView(std::string_view{pendingFile.trailersData.data(), pendingFile.trailersData.size()});
+    _pendingFileSends[streamId] = std::move(pendingFile);
+  } else if (transport.hasPendingData()) {
+    PendingStreamingSend pending;
+    pending.buffer = transport.extractPendingBuffer();
+    pending.trailersData = transport.extractPendingTrailers();
+    _pendingStreamingSends[streamId] = std::move(pending);
+  }
+
+  // Clean up stream request
+  _streamRequests.erase(streamId);
+}
+
 void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   const uint32_t streamId = it->first;
   HttpRequest& request = it->second.request;
@@ -478,6 +652,45 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
       }
     }
 #endif
+
+    // Check routing for streaming handlers before calling reply().
+    // Streaming handlers run synchronously via HttpResponseWriter + Http2WriterTransport.
+    {
+      auto routingResult = _pRouter->match(request.method(), request.path());
+      if (const auto* streamingHandler = routingResult.streamingHandler(); streamingHandler != nullptr) {
+        // Check path-specific HTTP/2 config
+        if (routingResult.pathConfig.http2Enable == PathEntryConfig::Http2Enable::Disable) {
+          err = sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), false);
+          _streamRequests.erase(streamId);
+          if (err != ErrorCode::NoError) [[unlikely]] {
+            log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+          }
+          return;
+        }
+
+        // Run request middleware
+        auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
+                                                 routingResult.requestMiddlewareRange, *_pTelemetryContext, true, {});
+        if (globalResult.has_value()) {
+          const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+          if (pCorsPolicy != nullptr) {
+            (void)pCorsPolicy->applyToResponse(request, *globalResult);
+          }
+          internal::PrefinalizeHttpResponse(request, *globalResult, isHead, *_pCompressionState, *_pTelemetryContext);
+          globalResult->finalizeForHttp2();
+          err = sendResponse(streamId, std::move(*globalResult), isHead);
+          _streamRequests.erase(streamId);
+          if (err != ErrorCode::NoError) [[unlikely]] {
+            log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+          }
+          return;
+        }
+
+        request.finalizeBeforeHandlerCall(routingResult.pathParams);
+        handleStreamingRequest(it, *streamingHandler, routingResult.pCorsPolicy, routingResult.responseMiddlewareRange);
+        return;
+      }
+    }
 
     HttpResponse resp = reply(request);
 
@@ -579,15 +792,10 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request) {
 #endif
 
   if (routingResult.streamingHandler() != nullptr) {
-    // TODO: Streaming handlers not yet supported for HTTP/2
-    // Full implementation requires:
-    // 1. Create Http2ResponseWriter that emits HEADERS frame when headers are first sent
-    // 2. Emit DATA frames for each writeBody() call (respecting peer's maxFrameSize)
-    // 3. Handle HTTP/2 flow control (may need to pause/resume when window exhausted)
-    // 4. Emit trailers as final HEADERS frame with END_STREAM
-    // 5. Integrate with the event loop for backpressure handling
-    log::warn("Streaming handlers not yet fully supported for HTTP/2, path: {}", request.path());
-    HttpResponse resp(http::StatusCodeNotImplemented, "Streaming handlers not yet supported for HTTP/2");
+    // Streaming handlers are dispatched in dispatchRequest() before reply() is called.
+    // If we reach here, it means dispatchRequest() didn't intercept it (shouldn't happen).
+    log::error("HTTP/2 streaming handler reached reply() unexpectedly for path {}", request.path());
+    HttpResponse resp(http::StatusCodeInternalServerError, "Internal routing error");
     finalizeResponse(resp);
     return resp;
   }

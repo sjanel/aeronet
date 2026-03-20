@@ -45,7 +45,7 @@ inline int Flags(File::OpenMode mode) {
   }
 }
 
-inline void CheckFd(std::string_view path, int fd) {
+inline void CheckFileFd(std::string_view path, int fd) {
   if (fd == -1) [[unlikely]] {
     log::error("Unable to open file '{}' (error {}: {})", path, errno, SystemErrorMessage(errno));
   }
@@ -57,7 +57,7 @@ inline BaseFd CreateFileBaseFd(std::string_view path, File::OpenMode mode) {
 #elifdef AERONET_WINDOWS
   const int fd = _open(std::string(path).c_str(), Flags(mode));
 #endif
-  CheckFd(path, fd);
+  CheckFileFd(path, fd);
 #ifdef AERONET_WINDOWS
   return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
 #else
@@ -71,7 +71,7 @@ inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 #elifdef AERONET_WINDOWS
   const int fd = _open(path, Flags(mode));
 #endif
-  CheckFd(path, fd);
+  CheckFileFd(path, fd);
 #ifdef AERONET_WINDOWS
   return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
 #else
