@@ -291,6 +291,36 @@ TEST(HttpExpect, ZeroLengthNo100) {
   ASSERT_TRUE(resp.contains('Z'));
 }
 
+// Test empty tokens in Expect header (comma-separated with leading/trailing commas)
+// Exercises the token.empty() continue path in handleExpectHeader
+TEST(HttpExpect, EmptyTokensInExpectHeader) {
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ET"); });
+  test::ClientConnection clientConnection(ts.port());
+  NativeHandle fd = clientConnection.fd();
+  // Leading comma, trailing comma, double comma -> empty tokens that should be skipped
+  std::string headers =
+      "POST /et HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: ,100-continue,,\r\nConnection: close\r\n\r\n"
+      "hello";
+  test::sendAll(fd, headers);
+  std::string resp = test::recvUntilClosed(fd);
+  // 100-continue should still be recognized despite surrounding empty tokens
+  EXPECT_TRUE(resp.contains("ET")) << resp;
+}
+
+// Test unknown Expect token without expectation handler -> 417 Expectation Failed
+TEST(HttpExpect, UnknownExpectTokenReturns417) {
+  ts.server.setExpectationHandler({});
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("never"); });
+  test::ClientConnection clientConnection(ts.port());
+  NativeHandle fd = clientConnection.fd();
+  std::string headers =
+      "POST /unk HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: unknown-token\r\nConnection: close\r\n\r\n"
+      "hello";
+  test::sendAll(fd, headers);
+  std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.contains("417")) << resp;
+}
+
 TEST(HttpServer, PostConfigUpdateExceptionDoesNotCrash) {
   ts.postConfigUpdate(
       [](HttpServerConfig& /*cfg*/) { throw std::runtime_error("Intentional exception in config update"); });
@@ -1384,4 +1414,66 @@ TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
 
   ASSERT_TRUE(WaitForPeerClosedNonBlocking(clientFd, 1s));
   test::ResetIoActions();
+}
+
+// =============================================================================
+// Http1WriterTransport coverage tests
+// =============================================================================
+
+// Test emitData with empty data (http1-writer-transport.hpp line 89-90)
+// The empty data case should be a no-op and return true
+TEST(Http1WriterTransport, EmitDataEmptyIsNoOp) {
+  test::TestServer localTs(TestServerConfig());
+  localTs.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    // Write empty data - should be silently ignored
+    writer.writeBody("");
+    writer.writeBody("real-data");
+    writer.end();
+  });
+
+  auto resp = test::simpleGet(localTs.port(), "/empty-data");
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("real-data")) << resp;
+}
+
+// Test enqueue when connection has a transport error during streaming write.
+// This exercises the enqueue() returning false path when isAnyCloseRequested()
+// is true (http1-writer-transport.hpp lines 156-157).
+// After a write error marks the connection for drain+close, subsequent writeBody calls
+// should return false.
+TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
+  test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  bool firstWriteOk = false;
+  bool secondWriteOk = true;
+
+  test::TestServer localTs(TestServerConfig());
+  localTs.router().setDefault([&firstWriteOk, &secondWriteOk](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    firstWriteOk = writer.writeBody("first-chunk");
+    // After the first write triggers a transport error, writeBody should return false
+    secondWriteOk = writer.writeBody("second-chunk");
+    writer.end();
+  });
+
+  // Inject write failure after the first writev (headers + first chunk)
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {{-1, error::kBrokenPipe}},
+      .writevActions = {{-1, error::kBrokenPipe}},
+      .sendfileActions = {},
+  });
+
+  test::ClientConnection client(localTs.port());
+  NativeHandle fd = client.fd();
+  test::sendAll(fd, test::SimpleGetRequest("/writer-error", http::keepalive));
+
+  (void)test::recvWithTimeout(fd, 1000ms);
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 2000ms));
+
+  // First write attempt includes headers which triggers the write error
+  // Second write should see the connection marked for close
+  EXPECT_FALSE(secondWriteOk);
 }

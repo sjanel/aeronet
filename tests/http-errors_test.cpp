@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -671,4 +672,215 @@ TEST(ConnectionManagerTlsErrors, TlsHandshakeWriteReadyEpollMod) {
 
   tlsServer.stop();
 }
+
+// Test pread error path in flushFilePayload (non-TLS, user-space TLS buffer path)
+// This exercises the scenario where kTLS is disabled and pread fails during file serving.
+TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
+  test::QueueResetGuard<decltype(test::g_pread_path_actions)> guard(test::g_pread_path_actions);
+
+  // Create a file larger than a typical read chunk so pread is invoked
+  std::string payload(32UL * 1024, 'P');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  std::string filePath = tmp.filePath().string();
+
+  // Use kTLS Disabled to force user-space TLS path (pread + SSL_write)
+  test::TlsTestServer tlsTs({"http/1.1"},
+                            [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
+
+  tlsTs.setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(filePath));
+    writer.end();
+  });
+
+  // Inject pread error: first read succeeds partially, second fails with EIO
+  test::SetPreadPathActions(filePath, {{static_cast<int64_t>(1024), 0}, {-1, EIO}});
+
+  test::TlsClient client(tlsTs.port());
+  ASSERT_TRUE(client.handshakeOk());
+
+  client.writeAll("GET /pread-error HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+  auto resp = client.readAll();
+
+  // Connection should be truncated due to pread error
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  // Body will be truncated
+  EXPECT_LT(resp.size(), payload.size() + 256);
+}
 #endif  // AERONET_ENABLE_OPENSSL
+
+// =============================================================================
+// Outbound buffer retry paths in sweepIdleConnections
+// =============================================================================
+
+// Test sweepIdleConnections outBuffer flush retry path (lines 119-123 in connection-manager.cpp)
+// This exercises the case where a connection has buffered outbound data and is waiting for
+// writable interest; the sweep timer retries the flush.
+TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
+  test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  // Use a short poll interval so sweepIdleConnections runs quickly
+  HttpServerConfig cfg;
+  cfg.withPollInterval(std::chrono::milliseconds{5});
+  test::TestServer localTs(std::move(cfg));
+
+  std::string largeBody(64UL * 1024, 'S');
+  localTs.router().setDefault([&largeBody](const HttpRequest&) { return HttpResponse(largeBody); });
+
+  // Inject EAGAIN on first writev to leave data buffered, then let subsequent writes succeed
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {{-1, error::kWouldBlock}},
+      .sendfileActions = {},
+  });
+
+  test::ClientConnection client(localTs.port());
+  test::sendAll(client.fd(), SimpleGetRequest("/sweep-retry"));
+
+  // The first writev returns EAGAIN, leaving data in outBuffer.
+  // The sweep timer should retry and eventually flush the data.
+  auto resp = test::recvWithTimeout(client.fd(), 3000ms);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(largeBody.substr(0, 32))) << resp;
+}
+
+// Test sweepIdleConnections file payload retry path (line 117 in connection-manager.cpp)
+// This exercises the case where a file send is pending and waitingWritable; the sweep timer
+// retries the file payload flush.
+TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
+  test::QueueResetGuard<decltype(test::g_sendfile_actions)> guard(test::g_sendfile_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  HttpServerConfig cfg;
+  cfg.withPollInterval(std::chrono::milliseconds{5});
+  test::TestServer localTs(std::move(cfg));
+
+  std::string payload(16UL * 1024, 'F');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  std::string filePath = tmp.filePath().string();
+
+  localTs.router().setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(filePath));
+    writer.end();
+  });
+
+  // Inject EAGAIN on first sendfile to leave file send pending,
+  // then let subsequent sendfile calls succeed
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {},
+      .sendfileActions = {{-1, error::kWouldBlock}, {static_cast<int64_t>(payload.size()), 0}},
+  });
+
+  test::ClientConnection client(localTs.port());
+  test::sendAll(client.fd(), SimpleGetRequest("/sweep-file-retry"));
+
+  auto resp = test::recvWithTimeout(client.fd(), 5000ms);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+}
+
+// =============================================================================
+// flushOutbound headersPending transition
+// =============================================================================
+
+// Test flushOutbound headersPending->false transition (line 281-283 in http-response-dispatch.cpp)
+// When a file payload has headersPending=true and outBuffer is flushed empty, headersPending
+// should be cleared to allow flushFilePayload to proceed.
+TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
+  test::QueueResetGuard<decltype(test::g_sendfile_actions)> guard(test::g_sendfile_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+
+  std::string payload(8UL * 1024, 'H');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  std::string filePath = tmp.filePath().string();
+
+  ts.router().setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(filePath));
+    writer.end();
+  });
+
+  // First writev returns partial write (headers still buffered), second succeeds
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {{10, 0}},
+      .sendfileActions = {},
+  });
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), SimpleGetRequest("/headers-pending"));
+
+  auto resp = test::recvWithTimeout(client.fd(), 3000ms);
+  // The partial write path may cause a truncated status line, but the file content should be delivered
+  EXPECT_TRUE(resp.contains("200") || resp.contains("HHHH")) << resp;
+}
+
+// =============================================================================
+// flushOutbound transportNeedsWrite path
+// =============================================================================
+
+// Test flushOutbound when transport needs write after non-TLS flush (lines 303-311)
+// This exercises the path where outBuffer is empty but transport still reports WriteReady.
+// This typically happens briefly during TLS handshake completion. We simulate it by causing
+// the first write to return partial (with WriteReady need), then subsequent writes succeed.
+TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {
+  test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("needs-write"); });
+
+  // First writev returns EAGAIN (WriteReady), then second succeeds
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {{-1, error::kWouldBlock}},
+      .sendfileActions = {},
+  });
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), SimpleGetRequest("/transport-needs-write"));
+
+  auto resp = test::recvWithTimeout(client.fd(), 2000ms);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("needs-write")) << resp;
+}
+
+// =============================================================================
+// Connection close after TLS handshake finalization
+// =============================================================================
+
+// Test epoll_ctl ADD failure during accept (connection-manager.cpp line ~336)
+// This exercises the code path where adding a new accepted connection to epoll fails.
+TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
+  test::EventLoopHookGuard hookGuard;
+
+  HttpServerConfig cfg;
+  cfg.withPollInterval(std::chrono::milliseconds{5});
+  test::TestServer localTs(std::move(cfg));
+
+  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  // Inject epoll_ctl ADD failure for the next accepted connection
+  test::PushEpollCtlAddAction(test::EpollCtlAction{-1, ENOMEM});
+
+  {
+    test::ClientConnection client(localTs.port());
+    // The connection should be rejected due to epoll_ctl ADD failure
+    test::sendAll(client.fd(), SimpleGetRequest("/epoll-add-fail"));
+    test::recvWithTimeout(client.fd(), 1000ms);
+    // May or may not get a response depending on timing
+  }
+
+  std::this_thread::sleep_for(50ms);
+
+  // Server should still work for subsequent connections
+  auto resp = test::simpleGet(localTs.port(), "/after-add-fail");
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+}

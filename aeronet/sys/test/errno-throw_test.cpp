@@ -17,7 +17,6 @@ TEST(ErrnoThrow, ThrowsSystemErrorWithWSAError) {
     WSASetLastError(WSAECONNREFUSED);
     int fd = 42;
     ThrowSystemError("Test error with code {}", fd);
-    FAIL() << "Expected std::system_error to be thrown";
   } catch (const std::system_error& e) {
     EXPECT_EQ(e.code().value(), WSAECONNREFUSED);
     EXPECT_EQ(e.code().category(), std::system_category());

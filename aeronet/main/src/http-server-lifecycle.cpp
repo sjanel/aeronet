@@ -351,6 +351,9 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
 void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
+  if (_lifecycle.isActive()) {
+    throw std::logic_error("Server is already running");
+  }
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, errorPtr](const std::stop_token& st) {
@@ -368,6 +371,9 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
+  if (_lifecycle.isActive()) {
+    throw std::logic_error("Server is already running");
+  }
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, pred = std::move(predicate), errorPtr](const std::stop_token& st) {
@@ -385,6 +391,9 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::fu
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::stop_token token) {
+  if (_lifecycle.isActive()) {
+    throw std::logic_error("Server is already running");
+  }
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, token = std::move(token), errorPtr](const std::stop_token& st) {

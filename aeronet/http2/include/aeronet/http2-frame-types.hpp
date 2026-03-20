@@ -112,10 +112,10 @@ inline constexpr uint32_t kDefaultMaxHeaderListSize = 8192;  // RFC says unlimit
 
 // HTTP/2 Limits (RFC 9113)
 // ========================
-inline constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
-inline constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE (2^24 - 1)
-inline constexpr uint32_t kMaxWindowSize = 2147483647;  // Maximum flow control window size (2^31 - 1)
-inline constexpr uint32_t kMaxStreamId = 2147483647;    // Maximum stream identifier (2^31 - 1)
+inline constexpr uint32_t kMinMaxFrameSize = 16384;           // Minimum allowed SETTINGS_MAX_FRAME_SIZE
+inline constexpr uint32_t kMaxMaxFrameSize = (1U << 24) - 1;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
+inline constexpr uint32_t kMaxWindowSize = (1U << 31) - 1;    // Maximum flow control window size
+inline constexpr uint32_t kMaxStreamId = (1U << 31) - 1;      // Maximum stream identifier
 
 // Frame header size is always 9 bytes
 inline constexpr std::size_t kFrameHeaderSize = 9;
