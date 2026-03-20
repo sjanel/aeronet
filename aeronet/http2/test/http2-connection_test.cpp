@@ -118,7 +118,7 @@ struct WireDecodedHeadersDebug {
 // Helper to create connection preface as bytes
 vector<std::byte> MakePreface() {
   vector<std::byte> preface;
-  preface.reserve(kConnectionPreface.size());
+  preface.reserve(static_cast<decltype(preface)::size_type>(kConnectionPreface.size()));
   std::ranges::transform(kConnectionPreface, std::back_inserter(preface),
                          [](char ch) { return static_cast<std::byte>(ch); });
   return preface;
@@ -446,7 +446,7 @@ TEST(Http2Connection, RecvRstStreamClosesAndDecrementsActiveStreamCount) {
       std::byte{static_cast<uint8_t>((code >> 24) & 0xFF)}, std::byte{static_cast<uint8_t>((code >> 16) & 0xFF)},
       std::byte{static_cast<uint8_t>((code >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(code & 0xFF)}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::RstStream;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -478,7 +478,7 @@ TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
       std::byte{static_cast<uint8_t>((code >> 24) & 0xFF)}, std::byte{static_cast<uint8_t>((code >> 16) & 0xFF)},
       std::byte{static_cast<uint8_t>((code >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(code & 0xFF)}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::RstStream;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -787,7 +787,7 @@ TEST(Http2Connection, SettingsFrameInvalidLengthIsFrameSizeError) {
 
   std::array<std::byte, 5> payload = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -810,7 +810,7 @@ TEST(Http2Connection, SettingsFrameInvalidEnablePushIsProtocolError) {
   };
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -833,7 +833,7 @@ TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
   };
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -854,7 +854,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooLargeIsFlowControlError) {
                                     std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -889,7 +889,7 @@ TEST(Http2Connection, UnknownSettingsParameterIsIgnored) {
                                     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -927,7 +927,7 @@ TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
   std::array<std::byte, 8> payload = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
                                       std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Ping;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -946,7 +946,7 @@ TEST(Http2Connection, PingFrameInvalidLengthIsFrameSizeError) {
   std::array<std::byte, 7> payload = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
                                       std::byte{5}, std::byte{6}, std::byte{7}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Ping;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -965,7 +965,7 @@ TEST(Http2Connection, PingAckFrameIsAcceptedAndNoResponseSent) {
   std::array<std::byte, 8> payload = {std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}, std::byte{0xDD},
                                       std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Ping;
   header.flags = FrameFlags::PingAck;  // ACK set
   header.streamId = 0;
@@ -987,7 +987,7 @@ TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
   std::array<std::byte, 7> payload = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
                                       std::byte{0}, std::byte{0}, std::byte{0}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::GoAway;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -1007,7 +1007,7 @@ TEST(Http2Connection, GoAwayFrameOnNonZeroStreamIsProtocolError) {
   std::array<std::byte, 8> payload = {std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
                                       std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::GoAway;
   header.flags = FrameFlags::None;
   header.streamId = 1;  // Non-zero stream id should be protocol error
@@ -1025,7 +1025,7 @@ TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
 
   std::array<std::byte, 3> payload = {std::byte{0}, std::byte{0}, std::byte{1}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::WindowUpdate;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -1049,7 +1049,7 @@ TEST(Http2Connection, WindowUpdateConnectionOverflowIsFlowControlError) {
                                       std::byte{static_cast<uint8_t>(increment & 0xFF)}};
 
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::WindowUpdate;
   header.flags = FrameFlags::None;
   header.streamId = 0;  // connection-level
@@ -1099,7 +1099,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
                                     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -1155,7 +1155,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
                                     std::byte{static_cast<uint8_t>(newInitial & 0xFF)}};
 
   FrameHeader header;
-  header.length = entry.size();
+  header.length = static_cast<uint32_t>(entry.size());
   header.type = FrameType::Settings;
   header.flags = FrameFlags::None;
   header.streamId = 0;
@@ -1191,7 +1191,7 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::WindowUpdate;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -1240,7 +1240,7 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
       std::byte{static_cast<uint8_t>((winInc >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(winInc & 0xFF)}};
 
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::WindowUpdate;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -1279,7 +1279,7 @@ TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
 
   std::array<std::byte, 1> payload = {std::byte{0x00}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Continuation;
   header.flags = FrameFlags::None;
   header.streamId = 1;
@@ -1353,7 +1353,7 @@ TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
   FrameHeader header;
-  header.length = payload.size();
+  header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::PushPromise;
   header.flags = FrameFlags::None;
   header.streamId = 1;

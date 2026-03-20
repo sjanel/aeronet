@@ -63,7 +63,7 @@ namespace {
 
 [[nodiscard]] vector<std::byte> MakePreface() {
   vector<std::byte> preface;
-  preface.reserve(kConnectionPreface.size());
+  preface.reserve(static_cast<decltype(preface)::size_type>(kConnectionPreface.size()));
   std::ranges::transform(kConnectionPreface, std::back_inserter(preface),
                          [](char ch) { return static_cast<std::byte>(ch); });
   return preface;
@@ -648,7 +648,8 @@ TEST(Http2Core, ContinuationFrameOnWrongStreamIsProtocolError) {
   // Start a HEADERS frame that requires continuation (END_HEADERS not set).
   RawBytes buf;
   std::array<std::byte, 1> headerBlock = {std::byte{0x82}};  // :method: GET
-  WriteFrame(buf, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1, headerBlock.size());
+  WriteFrame(buf, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1,
+             static_cast<uint32_t>(headerBlock.size()));
   buf.append(headerBlock);
 
   auto res1 = conn.processInput(AsSpan(buf));
@@ -677,7 +678,7 @@ TEST(Http2Core, MissingContinuationThenOtherFrameIsProtocolError) {
   // HEADERS without END_HEADERS.
   RawBytes headers;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
-  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1, hb.size());
+  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1, static_cast<uint32_t>(hb.size()));
   headers.append(hb);
   auto res1 = conn.processInput(AsSpan(headers));
   ASSERT_NE(res1.action, Http2Connection::ProcessResult::Action::Error);
@@ -827,7 +828,7 @@ TEST(Http2Core, HeadersOnStreamZeroIsProtocolError) {
 
   RawBytes headers;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
-  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 0, hb.size());
+  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 0, static_cast<uint32_t>(hb.size()));
   headers.append(hb);
 
   auto res = conn.processInput(AsSpan(headers));
@@ -1000,7 +1001,7 @@ TEST(Http2Core, GoAwayReceivedPreventsNewStreamsBeyondLastStreamId) {
   // Now attempt to open stream 3 (should be ignored).
   RawBytes headers;
   std::array<std::byte, 4> hb = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}, std::byte{0x01}};
-  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 3, hb.size());
+  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 3, static_cast<uint32_t>(hb.size()));
   headers.append(hb);
 
   auto resHeaders = h2.server.processInput(AsSpan(headers));

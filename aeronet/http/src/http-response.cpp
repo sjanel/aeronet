@@ -858,7 +858,7 @@ HttpResponse& HttpResponse::headerRemoveLine(std::string_view key) & {
 
   std::memmove(dest, last + http::CRLF.size(), sizeToMove);
   _data.setSize(_data.size() - lineSize);
-  adjustBodyStart(static_cast<int64_t>(-lineSize));
+  adjustBodyStart(-static_cast<int64_t>(lineSize));
 
   return *this;
 }
@@ -881,7 +881,7 @@ HttpResponse& HttpResponse::headerRemoveValue(std::string_view key, std::string_
 
     std::memmove(dest, last + http::CRLF.size(), sizeToMove);
     _data.setSize(_data.size() - lineSize);
-    adjustBodyStart(static_cast<int64_t>(-lineSize));
+    adjustBodyStart(-static_cast<int64_t>(lineSize));
 
     return *this;
   }

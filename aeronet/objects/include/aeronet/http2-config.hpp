@@ -121,13 +121,13 @@ struct Http2Config {
     return *this;
   }
 
-  Http2Config& withEnablePush(bool enable) {
-    enablePush = enable;
+  Http2Config& withEnablePush(bool on) {
+    enablePush = on;
     return *this;
   }
 
-  Http2Config& withMergeUnknownRequestHeaders(bool enable) {
-    this->mergeUnknownRequestHeaders = enable;
+  Http2Config& withMergeUnknownRequestHeaders(bool on) {
+    this->mergeUnknownRequestHeaders = on;
     return *this;
   }
 
@@ -176,18 +176,18 @@ struct Http2Config {
     return *this;
   }
 
-  Http2Config& withEnableH2c(bool enable) {
-    enableH2c = enable;
+  Http2Config& withEnableH2c(bool on) {
+    enableH2c = on;
     return *this;
   }
 
-  Http2Config& withEnableH2cUpgrade(bool enable) {
-    enableH2cUpgrade = enable;
+  Http2Config& withEnableH2cUpgrade(bool on) {
+    enableH2cUpgrade = on;
     return *this;
   }
 
-  Http2Config& withEnablePriority(bool enable) {
-    enablePriority = enable;
+  Http2Config& withEnablePriority(bool on) {
+    enablePriority = on;
     return *this;
   }
 

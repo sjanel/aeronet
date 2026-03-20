@@ -34,7 +34,7 @@ std::vector<std::string> SamplePayloads() {
   std::vector<std::string> payloads;
   payloads.emplace_back("");
   payloads.emplace_back("Hello, Brotli compression!");
-  payloads.emplace_back(512, 'A');
+  payloads.emplace_back(512U, 'A');
   payloads.emplace_back(test::MakePatternedPayload(128UL * 1024UL));
   return payloads;
 }

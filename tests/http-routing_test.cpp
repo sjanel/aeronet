@@ -41,21 +41,8 @@
 using namespace aeronet;
 
 namespace {
+
 test::TestServer ts(HttpServerConfig{});
-
-using BodyReadTimeoutScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
-auto makeBodyReadTimeoutScope(std::chrono::milliseconds timeout) {
-  return BodyReadTimeoutScope(
-      ts, [](const HttpServerConfig& c) { return c.bodyReadTimeout; },
-      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withBodyReadTimeout(v); }, timeout);
-}
-
-using PollIntervalScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
-auto makePollIntervalScope(std::chrono::milliseconds interval) {
-  return PollIntervalScope(
-      ts, [](const HttpServerConfig& c) { return c.pollInterval; },
-      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withPollInterval(v); }, interval);
-}
 
 }  // namespace
 
@@ -626,6 +613,23 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+
+namespace {
+
+auto makeBodyReadTimeoutScope(std::chrono::milliseconds timeout) {
+  return test::ScopedConfigUpdate<std::chrono::milliseconds>(
+      ts, [](const HttpServerConfig& c) { return c.bodyReadTimeout; },
+      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withBodyReadTimeout(v); }, timeout);
+}
+
+auto makePollIntervalScope(std::chrono::milliseconds interval) {
+  return test::ScopedConfigUpdate<std::chrono::milliseconds>(
+      ts, [](const HttpServerConfig& c) { return c.pollInterval; },
+      [](HttpServerConfig& c, std::chrono::milliseconds v) { c.withPollInterval(v); }, interval);
+}
+
+}  // namespace
+
 TEST(HttpRouting, AsyncBodyReadTimeout) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   std::atomic_bool handlerInvoked{false};
@@ -1034,7 +1038,7 @@ TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/unmatched-path");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("default-streaming:")) << response;
   EXPECT_TRUE(response.contains("/unmatched-path")) << response;
 }
@@ -1046,11 +1050,14 @@ TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
     throw std::runtime_error("Task creation failed");
     // Note: co_return would make this a coroutine, but throw happens first,
     // before coroutine frame is created, so exception is caught in dispatchAsyncHandler
+#ifdef _MSC_VER
+#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
+#endif
     co_return HttpResponse(http::StatusCodeOK);
   });
 
   const std::string response = test::simpleGet(ts.port(), "/async-throw-std");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Task creation failed")) << response;
 }
 
@@ -1060,6 +1067,9 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE entering coroutine body - caught by dispatchAsyncHandler
                                    throw 42;  // Non-std exception
+#ifdef _MSC_VER
+#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
+#endif
                                    co_return HttpResponse(http::StatusCodeOK);
                                  });
 
@@ -1094,7 +1104,7 @@ TEST(HttpRouting, AsyncHandlerReturnsNullHandle) {
                                  });
 
   const std::string response = test::simpleGet(ts.port(), "/async-null-handle");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Async handler inactive")) << response;
 }
 
@@ -1104,6 +1114,9 @@ TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
                                    throw std::runtime_error("Failed before body ready");
+#ifdef _MSC_VER
+#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
+#endif
                                    co_return HttpResponse(http::StatusCodeOK);
                                  });
 
@@ -1180,6 +1193,9 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
                                    throw 999;  // Non-std exception
+#ifdef _MSC_VER
+#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
+#endif
                                    co_return HttpResponse(http::StatusCodeOK);
                                  });
 
@@ -1232,7 +1248,7 @@ TEST(HttpRouting, DeferWorkReturnsString) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-string");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("computed-value")) << response;
 }
 
@@ -1300,18 +1316,16 @@ TEST(HttpRouting, DeferWorkCombinedWithBody) {
   opt.body = "hello world!";
   const std::string response = test::requestOrThrow(ts.port(), opt);
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("body_size=12")) << response;
 }
 
+// On Windows the WSAPoll-based event loop + socket-pair EventFd does not reliably
+// resume all coroutines when multiple deferWork callbacks fire concurrently.  Unresumed
+// coroutines leave the event loop stuck, which cascades into subsequent tests.
+#ifndef AERONET_WINDOWS
 // Test deferWork(): event loop can process other requests while waiting
 TEST(HttpRouting, DeferWorkEventLoopContinues) {
-#ifdef AERONET_WINDOWS
-  // On Windows the WSAPoll-based event loop + socket-pair EventFd does not reliably
-  // resume all coroutines when multiple deferWork callbacks fire concurrently.  Unresumed
-  // coroutines leave the event loop stuck, which cascades into subsequent tests.
-  GTEST_SKIP() << "Concurrent deferWork not reliable on Windows (WSAPoll + socket-pair EventFd)";
-#endif
   std::atomic<int> concurrentRequests{0};
   std::atomic<int> maxConcurrent{0};
 
@@ -1357,6 +1371,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
   EXPECT_GT(maxConcurrent.load(), 1) << "Event loop should handle multiple concurrent requests while waiting for "
                                         "deferWork";
 }
+#endif
 
 // Test deferWork(): work returning bool
 TEST(HttpRouting, DeferWorkReturnsBool) {
@@ -1379,10 +1394,7 @@ TEST(HttpRouting, DeferWorkThrowsStdException) {
       http::Method::GET, "/defer-throw-std", [](HttpRequest& req) -> RequestTask<HttpResponse> {
         // The work function throws - exception is captured and rethrown in await_resume
         try {
-          (void)co_await req.deferWork([]() -> int {
-            throw std::runtime_error("work failed");
-            return 0;  // never reached
-          });
+          (void)co_await req.deferWork([]() -> int { throw std::runtime_error("work failed"); });
           co_return HttpResponse(http::StatusCodeOK).body("should not reach");
         } catch (const std::runtime_error& ex) {
           co_return HttpResponse(http::StatusCodeInternalServerError).body(std::string("caught: ") + ex.what());
@@ -1402,7 +1414,6 @@ TEST(HttpRouting, DeferWorkThrowsNonStdException) {
         try {
           (void)co_await req.deferWork([]() -> int {
             throw 42;  // non-std exception
-            return 0;
           });
           co_return HttpResponse(http::StatusCodeOK).body("should not reach");
         } catch (int ex) {
@@ -1417,15 +1428,12 @@ TEST(HttpRouting, DeferWorkThrowsNonStdException) {
 
 // Test deferWork(): unhandled exception propagates to coroutine promise
 TEST(HttpRouting, DeferWorkUnhandledException) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-unhandled",
-                                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
-                                   // Exception not caught in coroutine - propagates to promise
-                                   (void)co_await req.deferWork([]() -> int {
-                                     throw std::runtime_error("unhandled in work");
-                                     return 0;
-                                   });
-                                   co_return HttpResponse(http::StatusCodeOK).body("should not reach");
-                                 });
+  ts.resetRouterAndGet().setPath(
+      http::Method::GET, "/defer-unhandled", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+        // Exception not caught in coroutine - propagates to promise
+        (void)co_await req.deferWork([]() -> int { throw std::runtime_error("unhandled in work"); });
+        co_return HttpResponse(http::StatusCodeOK).body("should not reach");
+      });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-unhandled");
   // Server catches unhandled exception and returns 500

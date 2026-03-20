@@ -97,7 +97,7 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
 
     if (*begSuffix == '.') {
       // parse sub-seconds parts until the end (possible 'Z' removed)
-      const auto subSecondsSz = std::min<long>(endPtr - ++begSuffix, 9);
+      const int64_t subSecondsSz = std::min(static_cast<int64_t>(endPtr - ++begSuffix), static_cast<int64_t>(9));
       switch (subSecondsSz) {
         case 0:
           break;
@@ -152,18 +152,20 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return ret;
   }
 
-  static constexpr uint16_t kGMTRep = read3("GMT");
+  static constexpr uint16_t kGMTRep = static_cast<uint16_t>(read3("GMT"));
 
-  if (read3(ptr + 26) != kGMTRep) {
+  if (static_cast<uint16_t>(read3(ptr + 26)) != kGMTRep) {
     return ret;
   }
 
   static constexpr uint16_t kMonthsRep[]{
-      read3("Jan"), read3("Feb"), read3("Mar"), read3("Apr"), read3("May"), read3("Jun"),
-      read3("Jul"), read3("Aug"), read3("Sep"), read3("Oct"), read3("Nov"), read3("Dec"),
+      static_cast<uint16_t>(read3("Jan")), static_cast<uint16_t>(read3("Feb")), static_cast<uint16_t>(read3("Mar")),
+      static_cast<uint16_t>(read3("Apr")), static_cast<uint16_t>(read3("May")), static_cast<uint16_t>(read3("Jun")),
+      static_cast<uint16_t>(read3("Jul")), static_cast<uint16_t>(read3("Aug")), static_cast<uint16_t>(read3("Sep")),
+      static_cast<uint16_t>(read3("Oct")), static_cast<uint16_t>(read3("Nov")), static_cast<uint16_t>(read3("Dec")),
   };
 
-  const auto monthIt = std::ranges::find(kMonthsRep, read3(ptr + 8));
+  const auto monthIt = std::ranges::find(kMonthsRep, static_cast<uint16_t>(read3(ptr + 8)));
   if (monthIt == std::end(kMonthsRep)) {
     return ret;
   }
@@ -184,9 +186,11 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
   const std::chrono::year_month_day ymd{yearField, monthField, dayField};
   // Verify the weekday token (e.g. "Sun") matches the resolved date
-  static constexpr uint16_t kWeekdays[]{read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"),
-                                        read3("Thu"), read3("Fri"), read3("Sat")};
-  const auto weekdayIt = std::ranges::find(kWeekdays, read3(ptr));
+  static constexpr uint16_t kWeekdays[]{static_cast<uint16_t>(read3("Sun")), static_cast<uint16_t>(read3("Mon")),
+                                        static_cast<uint16_t>(read3("Tue")), static_cast<uint16_t>(read3("Wed")),
+                                        static_cast<uint16_t>(read3("Thu")), static_cast<uint16_t>(read3("Fri")),
+                                        static_cast<uint16_t>(read3("Sat"))};
+  const auto weekdayIt = std::ranges::find(kWeekdays, static_cast<uint16_t>(read3(ptr)));
   if (weekdayIt == std::end(kWeekdays)) {
     return ret;
   }

@@ -293,7 +293,7 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
 }
 
 http::MethodBmp CorsPolicy::effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
-  return _allowedMethods & routeMethods;
+  return static_cast<http::MethodBmp>(_allowedMethods & routeMethods);
 }
 
 }  // namespace aeronet
