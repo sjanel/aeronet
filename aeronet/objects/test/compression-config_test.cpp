@@ -93,13 +93,15 @@ TEST(CompressionConfigTest, BrotliOK) {
 
 TEST(CompressionConfigTest, NonFiniteMaxCompressRatioThrows) {
   CompressionConfig config;
-  config.maxCompressRatio = std::numeric_limits<double>::infinity();
+  using T = std::remove_cvref_t<decltype(config.maxCompressRatio)>;
+
+  config.maxCompressRatio = std::numeric_limits<T>::infinity();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 
-  config.maxCompressRatio = -std::numeric_limits<double>::infinity();
+  config.maxCompressRatio = -std::numeric_limits<T>::infinity();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 
-  config.maxCompressRatio = std::numeric_limits<double>::quiet_NaN();
+  config.maxCompressRatio = std::numeric_limits<T>::quiet_NaN();
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

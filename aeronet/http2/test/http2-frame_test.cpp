@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <span>
 
@@ -277,7 +278,8 @@ TEST(Http2Frame, WriteHeadersFrame) {
   RawBytes buffer;
   std::array<std::byte, 3> headerBlock = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
 
-  WriteFrame(buffer, FrameType::Headers, ComputeHeaderFrameFlags(true, true), 1, headerBlock.size());
+  WriteFrame(buffer, FrameType::Headers, ComputeHeaderFrameFlags(true, true), 1,
+             static_cast<uint32_t>(headerBlock.size()));
   buffer.append(headerBlock);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());

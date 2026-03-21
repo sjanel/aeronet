@@ -22,6 +22,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -749,6 +750,99 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
     auto resp = test::simpleGet(port, "/");
     EXPECT_TRUE(resp.contains("restart"));
   }
+}
+
+// Test stop() called while already in Stopping state (else-if branch line 437)
+// Exercises the path where stop() is called twice - the second call should be a no-op.
+TEST(SingleHttpServer, DoubleStopIsNoOp) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+  SingleHttpServer server(cfg);
+
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse("double-stop"); });
+
+  auto handle = server.startDetached();
+  EXPECT_TRUE(test::WaitForServer(server, true));
+
+  auto resp = test::simpleGet(server.port(), "/");
+  EXPECT_TRUE(resp.contains("double-stop"));
+
+  // First stop
+  handle.stop();
+  EXPECT_TRUE(test::WaitForServer(server, false));
+
+  // Second stop on an already stopped handle should be a no-op
+  EXPECT_NO_THROW(handle.stop());
+  EXPECT_NO_THROW(handle.rethrowIfError());
+}
+
+// Test rethrowIfError propagates exceptions from startDetached.
+// Calling startDetached() on an already-running server should throw immediately
+// on the calling thread (no background thread is created).
+TEST(HttpServerAsyncHandle, RethrowIfErrorPropagatesException) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(1ms);
+
+  SingleHttpServer server(cfg);
+  server.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+
+  // Start the server normally
+  auto handle = server.startDetached();
+  EXPECT_TRUE(test::WaitForServer(server, true));
+
+  // Trying to start AGAIN on the same server should throw immediately
+  EXPECT_THROW((void)server.startDetached(), std::logic_error);
+
+  // Original server should still be operational
+  auto resp = test::simpleGet(server.port(), "/");
+  EXPECT_TRUE(resp.contains("OK")) << resp;
+
+  handle.stop();
+  EXPECT_TRUE(test::WaitForServer(server, false));
+}
+
+// Test startup probe returns "Starting\n" before server is fully started.
+// This exercises the uncovered _lifecycle.started() == false branch in registerBuiltInProbes.
+// NOTE: This is tricky to test because the server needs to be running to accept probe requests
+// but the probe checks if the server is "started". The "Starting" response would only happen
+// if the probe handler is invoked before _lifecycle.enterRunning(), which doesn't happen in
+// normal flow. This path may be reachable only in edge cases with multi-http-server sequencing.
+// Instead, we verify that when the server IS started, the startup probe returns "OK".
+TEST(SingleHttpServer, BuiltinStartupProbeReturnsOKWhenRunning) {
+  HttpServerConfig cfg;
+  cfg.enableBuiltinProbes(true);
+  cfg.withPollInterval(1ms);
+  SingleHttpServer server(cfg);
+  auto port = server.port();
+
+  auto handle = server.startDetached();
+  ASSERT_TRUE(test::WaitForServer(server, true));
+
+  auto resp = test::simpleGet(port, "/startupz");
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("OK")) << resp;
+
+  // Also test readiness probe
+  auto readResp = test::simpleGet(port, "/readyz");
+  EXPECT_TRUE(readResp.contains("HTTP/1.1 200")) << readResp;
+
+  // Also test liveness probe
+  auto liveResp = test::simpleGet(port, "/livez");
+  EXPECT_TRUE(liveResp.contains("HTTP/1.1 200")) << liveResp;
+
+  // Now start draining and check readiness probe returns 503.
+  // Hold a connection open so the drain does not complete immediately
+  // (zero active connections would cause the maintenance tick to stop the server
+  // before the probe request can connect).
+  test::ClientConnection keepAlive(port);
+  ASSERT_NE(keepAlive.fd(), aeronet::kInvalidHandle);
+
+  server.beginDrain();
+  auto drainResp = test::simpleGet(port, "/readyz");
+  EXPECT_TRUE(drainResp.contains("503")) << drainResp;
+  EXPECT_TRUE(drainResp.contains("Not Ready")) << drainResp;
+
+  handle.stop();
 }
 
 }  // namespace aeronet

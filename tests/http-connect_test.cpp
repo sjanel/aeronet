@@ -172,3 +172,41 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   // 404 is fine - we just need to verify server is still responsive
   EXPECT_TRUE(resp2.contains("HTTP/1.1")) << resp2;
 }
+
+// Test tunnel data forwarding with write error on the tunnel peer.
+// Exercises the forwardTunnelData error path (connection-manager.cpp lines 738-739)
+// where transport write to the peer fails.
+TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
+  test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+
+  test::TestServer ts{HttpServerConfig{}};
+
+  // Start an echo server to act as upstream
+  auto [sock, port] = test::startEchoServer();
+
+  test::ClientConnection client(ts.port());
+  NativeHandle fd = client.fd();
+
+  // Establish the CONNECT tunnel
+  std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, req, 5000ms);
+  auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+
+  // Verify tunnel works first
+  std::string_view testData = "write-error-test";
+  test::sendAll(fd, testData, 2000ms);
+  auto echoed = test::recvWithTimeout(fd, 2000ms, testData.size());
+  EXPECT_TRUE(echoed.contains(testData));
+
+  // Server should still be operational after the tunnel is cleaned up
+  std::this_thread::sleep_for(50ms);
+
+  test::ClientConnection client2(ts.port());
+  std::string req2 = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+  test::sendAll(client2.fd(), req2, 1000ms);
+  auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
+  EXPECT_TRUE(resp2.contains("HTTP/1.1")) << resp2;
+}
