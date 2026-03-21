@@ -1,7 +1,6 @@
 #include "aeronet/http2-stream.hpp"
 
 #include <cstdint>
-#include <limits>
 #include <utility>
 
 #include "aeronet/http2-frame-types.hpp"
@@ -156,14 +155,13 @@ bool Http2Stream::consumeRecvWindow(uint32_t bytes) noexcept {
 
 ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
   // Check for overflow: RFC 9113 §6.9 specifies max window size as 2^31-1
-  static constexpr int32_t kMaxWindowSize = std::numeric_limits<int32_t>::max();
 
   if (increment == 0) {
     return ErrorCode::ProtocolError;
   }
 
   int64_t newWindow = static_cast<int64_t>(_sendWindow) + static_cast<int64_t>(increment);
-  if (newWindow > kMaxWindowSize) {
+  if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;
   }
 
@@ -175,10 +173,9 @@ ErrorCode Http2Stream::increaseRecvWindow(uint32_t increment) noexcept {
   // Security hardening: check for overflow. RFC 9113 §6.9.1 mandates that a window
   // size must never exceed 2^31-1 (kMaxWindowSize). Without this check, a bug or
   // double-increment could silently overflow the int32_t window.
-  static constexpr int32_t kMaxWindowSize = std::numeric_limits<int32_t>::max();
 
   int64_t newWindow = static_cast<int64_t>(_recvWindow) + static_cast<int64_t>(increment);
-  if (newWindow > kMaxWindowSize) [[unlikely]] {
+  if (std::cmp_less(kMaxWindowSize, newWindow)) [[unlikely]] {
     return ErrorCode::FlowControlError;
   }
 
@@ -195,10 +192,9 @@ ErrorCode Http2Stream::updateInitialWindowSize(uint32_t newInitialWindowSize) no
   int64_t delta = static_cast<int64_t>(newInitialWindowSize) - static_cast<int64_t>(_initialSendWindow);
 
   // Check for overflow
-  static constexpr int32_t kMaxWindowSize = std::numeric_limits<int32_t>::max();
   int64_t newWindow = static_cast<int64_t>(_sendWindow) + delta;
 
-  if (newWindow > kMaxWindowSize || newWindow < 0) [[unlikely]] {
+  if (std::cmp_less(kMaxWindowSize, newWindow) || newWindow < 0) [[unlikely]] {
     return ErrorCode::FlowControlError;
   }
 
