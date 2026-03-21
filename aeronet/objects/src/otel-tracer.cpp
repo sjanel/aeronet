@@ -168,9 +168,6 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
     return;
   }
 
-#if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
-  const auto telemetryHeaders = buildOtlpHeaders(cfg);
-#endif
   const auto telemetryResource = buildTelemetryResource(cfg);
 
   // Build trace exporter
@@ -182,7 +179,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
     opts.url = cfg.endpoint();
     log::info("Initializing OTLP HTTP trace exporter with endpoint: {}", cfg.endpoint());
   }
-  opts.http_headers = telemetryHeaders;
+  opts.http_headers = buildOtlpHeaders(cfg);
   auto exporter = std::unique_ptr<opentelemetry::sdk::trace::SpanExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpExporter(std::move(opts)));  // NOLINT(performance-move-const-arg)
 #elifdef AERONET_HAVE_OSTREAM_EXPORTER
@@ -227,7 +224,7 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
     metricOpts.url = std::move(endpoint);
   }
 
-  metricOpts.http_headers = telemetryHeaders;
+  metricOpts.http_headers = buildOtlpHeaders(cfg);
 
   auto metricExporter = std::unique_ptr<opentelemetry::sdk::metrics::PushMetricExporter>(
       new opentelemetry::exporter::otlp::OtlpHttpMetricExporter(
