@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload install dir artifact
         if: success()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           # NOTE: Artifact names must be globally unique within a single workflow run.
           # The previous name omitted the build type, so Debug and Release matrix legs
@@ -311,7 +311,7 @@ jobs:
           echo "Coverage artifacts are still uploaded via actions/upload-artifact." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifact (HTML + lcov)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: |
