@@ -208,6 +208,7 @@ jobs:
       pull-requests: write
     env:
       BUILD_DIR: build-coverage
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -292,16 +293,22 @@ jobs:
             $BINARIES $OBJECTS
 
       - name: Upload coverage to Codecov
+        if: env.CODECOV_TOKEN != '' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
         uses: codecov/codecov-action@v5
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
+          token: ${{ env.CODECOV_TOKEN }}
           files: build-coverage/coverage.lcov
           flags: unittests
           name: aeronet-unit-tests
           fail_ci_if_error: true
           disable_search: true
           verbose: true
+
+      - name: Skip Codecov upload (bot PR or missing token)
+        if: env.CODECOV_TOKEN == '' || github.actor == 'dependabot[bot]' || github.actor == 'renovate[bot]'
+        run: |
+          echo "Codecov upload skipped for actor '${{ github.actor }}' or missing CODECOV_TOKEN." >> $GITHUB_STEP_SUMMARY
+          echo "Coverage artifacts are still uploaded via actions/upload-artifact." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage artifact (HTML + lcov)
         uses: actions/upload-artifact@v5
