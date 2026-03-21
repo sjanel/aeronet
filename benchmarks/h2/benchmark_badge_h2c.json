@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "label": "h2c aeronet peak rps",
+  "message": "492k req/s",
+  "color": "brightgreen",
+  "labelColor": "#0f172a",
+  "namedLogo": "speedtest",
+  "cacheSeconds": 3600
+}
