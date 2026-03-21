@@ -819,28 +819,32 @@ TEST(SingleHttpServer, BuiltinStartupProbeReturnsOKWhenRunning) {
   ASSERT_TRUE(test::WaitForServer(server, true));
 
   auto resp = test::simpleGet(port, "/startupz");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.contains("OK")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 
   // Also test readiness probe
   auto readResp = test::simpleGet(port, "/readyz");
-  EXPECT_TRUE(readResp.contains("HTTP/1.1 200")) << readResp;
+  EXPECT_TRUE(readResp.starts_with("HTTP/1.1 200")) << readResp;
 
   // Also test liveness probe
   auto liveResp = test::simpleGet(port, "/livez");
-  EXPECT_TRUE(liveResp.contains("HTTP/1.1 200")) << liveResp;
+  EXPECT_TRUE(liveResp.starts_with("HTTP/1.1 200")) << liveResp;
 
   // Now start draining and check readiness probe returns 503.
   // Hold a connection open so the drain does not complete immediately
   // (zero active connections would cause the maintenance tick to stop the server
   // before the probe request can connect).
+  // Send a request and read the response to guarantee the server has accepted the connection
+  // before we begin draining (otherwise the event loop may not have registered it yet).
   test::ClientConnection keepAlive(port);
   ASSERT_NE(keepAlive.fd(), aeronet::kInvalidHandle);
+  test::sendAll(keepAlive.fd(), SimpleGetRequest("/livez", http::keepalive));
+  auto keepAliveResp = test::recvWithTimeout(keepAlive.fd());
+  ASSERT_TRUE(keepAliveResp.starts_with("HTTP/1.1 200")) << keepAliveResp;
 
   server.beginDrain();
   auto drainResp = test::simpleGet(port, "/readyz");
-  EXPECT_TRUE(drainResp.contains("503")) << drainResp;
-  EXPECT_TRUE(drainResp.contains("Not Ready")) << drainResp;
+  EXPECT_TRUE(drainResp.starts_with("HTTP/1.1 503")) << drainResp;
+  EXPECT_TRUE(drainResp.ends_with("Not Ready")) << drainResp;
 
   handle.stop();
 }

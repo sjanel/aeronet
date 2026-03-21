@@ -286,8 +286,8 @@ if(AERONET_ENABLE_OPENTELEMETRY)
       TARGETS
         opentelemetry-cpp::otlp_http_exporter
       DECLARE
-        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.25.0.tar.gz
-        URL_HASH SHA256=a0c944a9de981fe1874b31d1fe44b830fc30ee030efa27ee23fc73012a3a13e9
+        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.26.0.tar.gz
+        URL_HASH SHA256=8a878777a18a013e0ee6604629d1b5f29b162354c14489ad1dccd370f14ac372
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
 
@@ -301,8 +301,8 @@ if(AERONET_ENABLE_GLAZE)
     CONFIG
     TARGETS glaze::glaze
     DECLARE
-      URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.0.2.tar.gz
-      URL_HASH SHA256=febbec555648b310c2a1975ca750939cd00c4801dede8362fcf84cab7b3ae46f
+      URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.2.1.tar.gz
+      URL_HASH SHA256=9fe494c1f1850160aaafb4d3c3426618f92b3442c9deda9e6e347449f1196a43
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
 endif()

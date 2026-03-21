@@ -1,10 +1,10 @@
 {
   "name": "aeronet",
   "version-string": "1.2.0",
-  "description": "C++ HTTP server library (Linux, TLS optional)",
+  "description": "C++ HTTP server library with built-in HTTP/2, WebSocket, OpenTelemetry, compression, and more",
   "homepage": "https://github.com/sjanel/aeronet",
   "license": "MIT",
-  "supports": "linux",
+  "supports": "linux | osx | windows",
   "dependencies": [
     "vcpkg-cmake",
     "vcpkg-cmake-config",
@@ -24,8 +24,8 @@
       "dependencies": ["brotli"]
     },
     "zlib": {
-      "description": "Enable zlib compression support",
-      "dependencies": ["zlib"]
+      "description": "Enable deflate/gzip compression support (zlib-ng by default)",
+      "dependencies": ["zlib-ng"]
     },
     "zstd": {
       "description": "Enable zstd compression support",

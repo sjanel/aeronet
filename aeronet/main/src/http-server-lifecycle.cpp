@@ -475,14 +475,14 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Liveness: Always returns 200 OK if the server is responding.
   // Indicates the application is alive (not deadlocked/crashed).
   _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequest&) { return HttpResponse("OK\n"); });
+                  [](const HttpRequest&) { return HttpResponse("OK"); });
 
   // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
   // Used by load balancers to determine if instance should receive traffic.
   _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
     const bool isReady = _lifecycle.ready();
     return HttpResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
-                        isReady ? "OK\n" : "Not Ready\n");
+                        isReady ? "OK" : "Not Ready");
   });
 
   // Startup: Returns 200 once server is running (listener active).
@@ -492,7 +492,7 @@ void SingleHttpServer::registerBuiltInProbes() {
   _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
     const bool isStarted = _lifecycle.started();
     return HttpResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
-                        isStarted ? "OK\n" : "Starting\n");
+                        isStarted ? "OK" : "Starting");
   });
 }
 
