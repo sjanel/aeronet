@@ -1,0 +1,151 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "onboarding": false,
+  "enabledManagers": [
+    "custom.regex"
+  ],
+  "labels": [
+    "dependencies",
+    "cmake"
+  ],
+  "prConcurrentLimit": 3,
+  "packageRules": [
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "minimumReleaseAge": "3 days"
+    }
+  ],
+  "postUpgradeTasks": {
+    "commands": [
+      "node scripts/update_fetchcontent_hashes.mjs --file cmake/Dependencies.cmake"
+    ],
+    "fileFilters": [
+      "cmake/Dependencies.cmake"
+    ],
+    "executionMode": "branch"
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/AmadeusITGroup/amc/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "AmadeusITGroup/amc",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/google/googletest/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "google/googletest",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/google/googletest/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/gabime/spdlog/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "gabime/spdlog",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/gabime/spdlog/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/madler/zlib/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "madler/zlib",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/madler/zlib/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/zlib-ng/zlib-ng/archive/refs/tags/(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "zlib-ng/zlib-ng",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/zlib-ng/zlib-ng/archive/refs/tags/{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/facebook/zstd/releases/download/v(?<currentValue>[^\\s/]+)/zstd-[^\\s/]+\\.tar\\.gz"
+      ],
+      "depNameTemplate": "facebook/zstd",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/facebook/zstd/releases/download/v{{{newValue}}}/zstd-{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/google/brotli/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "google/brotli",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/google/brotli/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "open-telemetry/opentelemetry-cpp",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^cmake\\/Dependencies\\.cmake$/"
+      ],
+      "matchStrings": [
+        "(?<indentation>[ \\t]*)URL https://github\\.com/stephenberry/glaze/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
+      ],
+      "depNameTemplate": "stephenberry/glaze",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver",
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/stephenberry/glaze/archive/refs/tags/v{{{newValue}}}.tar.gz"
+    }
+  ]
+}
