@@ -156,7 +156,7 @@ jobs:
           ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN"
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.conn_label }}
           path: build-pages/benchmarks/scripted-servers/results/benchmark_latest.json
@@ -164,7 +164,7 @@ jobs:
 
       - name: Upload badge (high-connections run only)
         if: matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: bench-badge
           path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
@@ -291,7 +291,7 @@ jobs:
 
       - name: Upload H2 results
         if: steps.filter.outputs.skip != 'true'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: h2-results-${{ matrix.protocol }}-${{ matrix.conn_label }}
           path: build-pages/benchmarks/scripted-servers/results/benchmark_latest.json
@@ -299,7 +299,7 @@ jobs:
 
       - name: Upload H2 badge (h2-tls high-connections only)
         if: steps.filter.outputs.skip != 'true' && matrix.protocol == 'h2-tls' && matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: h2-bench-badge
           path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
@@ -308,7 +308,7 @@ jobs:
 
       - name: Upload H2 badge (h2c high-connections only)
         if: steps.filter.outputs.skip != 'true' && matrix.protocol == 'h2c' && matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: h2-bench-badge-h2c
           path: build-pages/benchmarks/scripted-servers/results/benchmark_badge.json
@@ -343,7 +343,7 @@ jobs:
           cp README.md /tmp/site/index.md
 
       - name: Download all benchmark results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/bench-artifacts
 
