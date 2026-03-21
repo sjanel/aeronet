@@ -23,7 +23,7 @@ class AeronetConan(ConanFile):
     version = _read_version()
     license = "MIT"
     url = "https://github.com/sjanel/aeronet"
-    description = "Linux-only C++23 HTTP/1.1 server library with optional TLS (OpenSSL)"
+    description = "C++23 HTTP/1.1, WebSocket and HTTP/2 server library with optional TLS (OpenSSL)"
     topics = ("http", "server", "epoll", "tls", "networking")
     settings = "os", "compiler", "build_type", "arch"
     options = {
@@ -33,6 +33,7 @@ class AeronetConan(ConanFile):
         "with_spdlog": [True, False],
         "with_br": [True, False],
         "with_zlib": [True, False],
+        "with_zlibng": [True, False],
         "with_zstd": [True, False],
         "with_opentelemetry": [True, False],
         "with_glaze": [True, False],
@@ -44,6 +45,7 @@ class AeronetConan(ConanFile):
         "with_spdlog": False,
         "with_br": False,
         "with_zlib": False,
+        "with_zlibng": True,
         "with_zstd": False,
         "with_opentelemetry": False,
         "with_glaze": False,
@@ -74,6 +76,9 @@ class AeronetConan(ConanFile):
         )
         tc.variables["AERONET_ENABLE_BROTLI"] = "ON" if self.options.with_br else "OFF"
         tc.variables["AERONET_ENABLE_ZLIB"] = "ON" if self.options.with_zlib else "OFF"
+        tc.variables["AERONET_ENABLE_ZLIBNG"] = (
+            "ON" if self.options.with_zlib and self.options.with_zlibng else "OFF"
+        )
         tc.variables["AERONET_ENABLE_ZSTD"] = "ON" if self.options.with_zstd else "OFF"
         tc.variables["AERONET_ENABLE_OPENTELEMETRY"] = (
             "ON" if self.options.with_opentelemetry else "OFF"
@@ -107,7 +112,10 @@ class AeronetConan(ConanFile):
         if self.options.with_br:
             self.requires("brotli/[~1.2]")
         if self.options.with_zlib:
-            self.requires("zlib-ng/[~2.3]")
+            if self.options.with_zlibng:
+                self.requires("zlib-ng/[~2.3]")
+            else:
+                self.requires("zlib/[~1.3]")
         if self.options.with_zstd:
             self.requires("zstd/[~1.5]")
         if self.options.with_opentelemetry:
@@ -151,7 +159,10 @@ class AeronetConan(ConanFile):
         if self.options.with_spdlog:
             self.cpp_info.requires.append("spdlog::spdlog")
         if self.options.with_zlib:
-            self.cpp_info.requires.append("zlib-ng::zlib-ng")
+            if self.options.with_zlibng:
+                self.cpp_info.requires.append("zlib-ng::zlib-ng")
+            else:
+                self.cpp_info.requires.append("zlib::zlib")
         if self.options.with_zstd:
             self.cpp_info.requires.append("zstd::zstd")
         if self.options.with_opentelemetry:
