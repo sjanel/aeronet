@@ -20,6 +20,7 @@
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 
@@ -38,7 +39,6 @@ namespace internal {
 struct ResponseCompressionState;
 struct RequestDecompressionState;
 }  // namespace internal
-class Router;
 
 namespace http2 {
 
@@ -235,7 +235,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
   // to the appropriate handler (sync, async, or streaming).
-  HttpResponse reply(HttpRequest& request);
+  HttpResponse reply(HttpRequest& request, const Router::RoutingResult& routingResult);
 
   /// Emit metrics and end trace span for a completed request.
   void onRequestCompleted(HttpRequest& request, http::StatusCode status);
@@ -269,6 +269,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Called when an async task completes: finalize and send the response.
   void onAsyncTaskCompleted(uint32_t streamId);
 #endif
+
+  bool applyRequestMiddleware(HttpRequest& request, uint32_t streamId, bool isHead, bool streaming,
+                              const Router::RoutingResult& routingResult);
 
   Http2Connection _connection;
 
