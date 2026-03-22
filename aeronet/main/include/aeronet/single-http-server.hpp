@@ -421,6 +421,7 @@ class SingleHttpServer {
   void sweepIdleConnections();
   void applyPendingUpdates();
   void acceptNewConnections();
+  void setupAcceptedConnection(Connection cnx);
 
   enum class CloseStatus : uint8_t { Keep, Close };
 

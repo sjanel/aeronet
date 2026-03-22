@@ -885,6 +885,7 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
   auto moved = std::move(server);
   auto handler = moved.server.startDetached();
   ASSERT_TRUE(handler.started());
+  ASSERT_TRUE(test::WaitForServer(moved.server, true));
 
   {
     test::TlsClient sniClient(moved.port(), sniOpts);

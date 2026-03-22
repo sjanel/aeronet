@@ -125,7 +125,10 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
 #ifdef AERONET_WINDOWS
                                const auto recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
 #else
-                               const auto recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
+                               ssize_t recvBytes;
+                               do {
+                                 recvBytes = ::recv(fd, data + oldSize, kChunkSize, MSG_DONTWAIT);
+                               } while (recvBytes == -1 && LastSystemError() == error::kInterrupted);
 #endif
                                if (recvBytes == -1) {
                                  const auto recvErr = LastSystemError();
@@ -228,7 +231,10 @@ std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
-      const auto recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
+      ssize_t recvBytes;
+      do {
+        recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
+      } while (recvBytes == -1 && LastSystemError() == error::kInterrupted);
       if (recvBytes == -1) {
         const auto recvErr = LastSystemError();
         if (recvErr == error::kWouldBlock) {

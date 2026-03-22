@@ -17,8 +17,11 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/accept-callouts.hpp"
 #include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
@@ -1014,7 +1017,12 @@ void SingleHttpServer::eventLoop() {
   } else if (!events.empty()) {
     for (auto event : events) {
       const auto fd = event.fd;
-      if (fd == _listenSocket.fd()) {
+      if (event.eventBmp & EventAccept) {
+        // io_uring completion-based accept: fd is already the accepted socket
+        // (SOCK_NONBLOCK | SOCK_CLOEXEC already set by the kernel).
+        AeronetOnConnectionAccepted(fd);
+        setupAcceptedConnection(Connection(BaseFd(fd)));
+      } else if (fd == _listenSocket.fd()) {
         // Always attempt to accept new connections when the listener is signaled.
         // The lifecycle controls higher-level acceptance semantics; accepting
         // here is safe and allows probes to connect during drain.
@@ -1147,9 +1155,9 @@ void SingleHttpServer::updateMaintenanceTimer() {
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
 #ifndef AERONET_WINDOWS
-    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
+    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) / io_uring cancel are kernel-level thread-safe,
     // so removing the fd from the event loop while the poll thread is blocked is fine.
-    _eventLoop.del(_listenSocket.fd());
+    _eventLoop.cancelAccept(_listenSocket.fd());
 #endif
     // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
     // Calling it from a different thread while WSAPoll() is blocked is a data race.

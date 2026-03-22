@@ -24,6 +24,10 @@ class Connection {
 
   void close() noexcept { _baseFd.close(); }
 
+  // Release ownership of the underlying fd without closing it.
+  // Returns the raw fd; the Connection becomes empty.
+  NativeHandle release() noexcept { return _baseFd.release(); }
+
   bool operator==(const Connection&) const noexcept = default;
 
 #ifdef AERONET_WINDOWS

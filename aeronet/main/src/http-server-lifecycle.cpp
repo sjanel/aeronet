@@ -295,7 +295,9 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
   }
 #endif
 
-  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
+  if (!_eventLoop.submitAccept(listenFd)) {
+    throw std::runtime_error("EventLoop submitAccept failed");
+  }
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   updateMaintenanceTimer();

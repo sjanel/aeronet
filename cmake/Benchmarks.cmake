@@ -128,6 +128,12 @@ set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmark
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
 set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
 
+if(AERONET_ENABLE_IO_URING)
+  set(AERONET_BENCH_INTERNAL_URING ${AERONET_BENCH_ROOT}/internal/event-loop-uring_bench.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-uring ${AERONET_BENCH_INTERNAL_URING})
+  set_target_properties(aeronet-bench-internal-uring PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 # HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)
 if(AERONET_ENABLE_HTTP2)
   set(AERONET_BENCH_INTERNAL_HPACK ${AERONET_BENCH_ROOT}/internal/hpack_bench.cpp)

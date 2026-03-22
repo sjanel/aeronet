@@ -58,7 +58,13 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   // destructor (~BaseFd) closes the socket automatically.
   _activeConnections.erase(cnxIt._it);
 #else
+#ifdef AERONET_IO_URING
+  // Release ownership without closing — the caller will close asynchronously via
+  // EventLoop::submitClose() (IORING_OP_CLOSE).
+  _activeConnections[connectionIdx].release();
+#else
   _activeConnections[connectionIdx].close();
+#endif
   _activeConnectionStates[connectionIdx] = nullptr;
 
   --_nbActiveConnections;

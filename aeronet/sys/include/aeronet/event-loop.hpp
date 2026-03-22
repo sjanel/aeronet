@@ -75,6 +75,26 @@ class EventLoop {
   // Log on error.
   void del(NativeHandle fd);
 
+  // Submit a completion-based accept on the given listen socket.
+  // On io_uring: submits IORING_OP_ACCEPT (multishot). Accepted fds are delivered as
+  //   EventFd{newFd, EventAccept} in subsequent poll() calls.
+  // On other backends: equivalent to add(EventFd{listenFd, EventIn}) — caller must
+  //   still call accept() when the listen fd becomes readable.
+  // Returns true on success.
+  [[nodiscard]] bool submitAccept(NativeHandle listenFd);
+
+  // Cancel a previously submitted multishot accept on the given listen socket.
+  // On io_uring: cancels the outstanding IORING_OP_ACCEPT SQE.
+  // On other backends: equivalent to del(listenFd).
+  void cancelAccept(NativeHandle listenFd);
+
+  // Close an fd asynchronously.
+  // On io_uring: queues IORING_OP_CLOSE (non-blocking, batched with next poll cycle).
+  //   The caller must have released ownership of the fd (e.g. via Connection::release())
+  //   to prevent double-close from RAII destructors.
+  // On other backends: calls ::close(fd) synchronously.
+  void submitClose(NativeHandle fd);
+
   // Polls for ready events up to the poll timeout.
   //
   // Returns a span over an internal, reusable buffer (no allocations on the hot path).
@@ -93,11 +113,28 @@ class EventLoop {
   // Update the poll timeout.
   void updatePollTimeout(SysDuration pollTimeout);
 
+  // Returns an opaque pointer to the I/O io_uring ring (for data-path read/write/splice/send_zc).
+  // Returns nullptr when io_uring is not active.
+  [[nodiscard]] void* ioRing() const noexcept;
+
+  // Returns the read end of the internal splice pipe (for IORING_OP_SPLICE sendfile replacement).
+  // Returns kInvalidHandle when io_uring is not active.
+  [[nodiscard]] NativeHandle splicePipeRead() const noexcept;
+
+  // Returns the write end of the internal splice pipe (for IORING_OP_SPLICE sendfile replacement).
+  // Returns kInvalidHandle when io_uring is not active.
+  [[nodiscard]] NativeHandle splicePipeWrite() const noexcept;
+
  private:
   uint32_t _nbAllocatedEvents = 0;
   int _pollTimeoutMs = 0;
   BaseFd _baseFd;
   void* _pEvents = nullptr;
+#ifdef AERONET_IO_URING
+  void* _pRing = nullptr;      // heap-allocated struct io_uring for event notifications (poll/accept/cancel/close)
+  void* _pIoRing = nullptr;    // heap-allocated struct io_uring for data I/O (read/write/splice/send_zc)
+  int _splicePipe[2]{-1, -1};  // pipe pair for IORING_OP_SPLICE (sendfile replacement)
+#endif
 #ifdef AERONET_WINDOWS
   void* _pPollFds = nullptr;   // WSAPOLLFD registration array for WSAPoll()
   uint32_t _nbRegistered = 0;  // number of fds currently registered

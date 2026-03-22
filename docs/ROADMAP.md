@@ -25,6 +25,7 @@
   - MacOS even load balancer of event loop back traffic with SO_REUSEPORT (currently all goes to last bound socket)
 
 ## Medium priority
+
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 - **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
@@ -44,7 +45,7 @@
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 - Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
-- `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
+- `io_uring` support for Linux: Phase 1 (readiness-based poll replacement), Phase 2 (data I/O: recv/send/sendmsg via dedicated Ring B, zerocopy send_zc/sendmsg_zc, per-fd callout for test compatibility), and Phase 3 (SQE batching + async close, E2E benchmarks) are implemented. Splice file transfer (`IORING_OP_SPLICE`) is implemented but disabled due to shared-pipe backpressure issues with non-blocking sockets; regular `sendfile()` is used instead. Future work: registered files (`IORING_REGISTER_FILES`), registered buffers (`IORING_REGISTER_BUFFERS`), per-connection pipe pairs for splice re-enablement.
 
 ## Long-term / Nice-to-have
 

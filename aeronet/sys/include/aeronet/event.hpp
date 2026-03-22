@@ -17,4 +17,13 @@ inline constexpr EventBmp EventHup = 0x010;
 inline constexpr EventBmp EventRdHup = 0x2000;
 inline constexpr EventBmp EventEt = 1U << 31;
 
+// Synthetic flag set on CQEs produced by completion-based accept (io_uring IORING_OP_ACCEPT).
+// When set, EventFd.fd is the NEW accepted client fd, not the listen socket.
+// On non-io_uring backends this flag is never set; accept is readiness-based.
+inline constexpr EventBmp EventAccept = 1U << 30;
+
+// Mask to strip edge-triggered and synthetic flags when converting to poll(2) masks
+// (used by io_uring IORING_OP_POLL_ADD which uses poll semantics).
+inline constexpr EventBmp EventPollMask = ~(EventEt | EventAccept);
+
 }  // namespace aeronet

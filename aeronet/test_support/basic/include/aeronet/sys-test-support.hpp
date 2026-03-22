@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aeronet/accept-callouts.hpp"
 #include "aeronet/system-error-message.hpp"
 
 #ifdef AERONET_POSIX
@@ -1305,6 +1306,47 @@ extern "C" __attribute__((no_sanitize("address"))) int accept4(int sockfd, struc
   return fd;
 }
 #endif  // AERONET_WANT_SYS_OVERRIDES
+
+// Override for io_uring completion-based accept: the kernel performs accept() directly,
+// bypassing libc, so the accept4() override above never fires. This hook is called from the
+// EventAccept dispatch path to replicate the same test accounting.
+extern "C" void AeronetOnConnectionAccepted(aeronet::NativeHandle fd) {
+  if (fd >= 0) {
+    aeronet::test::g_last_accepted_fd.store(fd, std::memory_order_release);
+    aeronet::test::g_accept_count.fetch_add(1, std::memory_order_acq_rel);
+    if (auto install = aeronet::test::g_on_accept_install_actions.pop()) {
+      if (!install->writeActions.empty()) {
+        aeronet::test::g_write_actions.setActions(fd, install->writeActions);
+      }
+      if (!install->writevActions.empty()) {
+        aeronet::test::g_writev_actions.setActions(fd, install->writevActions);
+      }
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+      if (!install->sendfileActions.empty()) {
+        aeronet::test::g_sendfile_actions.setActions(fd, install->sendfileActions);
+      }
+#endif
+    }
+  }
+}
+
+// Override for io_uring data I/O: when test action queues have pending error-injection
+// entries for a fd, disable io_uring send/recv/splice so that userspace write()/writev()/
+// sendfile() overrides can intercept the calls.
+extern "C" bool AeronetUseIoRingForFd(aeronet::NativeHandle fd) {
+  if (aeronet::test::g_write_actions.size(fd) > 0) {
+    return false;
+  }
+  if (aeronet::test::g_writev_actions.size(fd) > 0) {
+    return false;
+  }
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+  if (aeronet::test::g_sendfile_actions.size(fd) > 0) {
+    return false;
+  }
+#endif
+  return true;
+}
 
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const struct sockaddr* addr,

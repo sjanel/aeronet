@@ -29,4 +29,12 @@ int64_t Sendfile(NativeHandle outFd, NativeHandle inFd, off_t& offset, std::size
 int64_t Sendfile(NativeHandle outFd, int fileFd, int64_t& offset, std::size_t count) noexcept;
 #endif
 
+#ifdef AERONET_IO_URING
+/// io_uring splice-based sendfile replacement.
+/// Uses two linked IORING_OP_SPLICE SQEs (file → pipe → socket) for zero-copy transfer.
+/// Returns bytes transferred (>= 0) or -1 on error (errno set).
+int64_t IoUringSpliceFile(void* ioRing, NativeHandle pipeRead, NativeHandle pipeWrite, NativeHandle outFd,
+                          NativeHandle inFd, off_t& offset, std::size_t count) noexcept;
+#endif
+
 }  // namespace aeronet
