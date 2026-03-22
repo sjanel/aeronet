@@ -1,5 +1,6 @@
 #include "aeronet/zstd-decoder.hpp"
 
+#define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
 #include <cstddef>
@@ -9,19 +10,37 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/decoder-buffer-manager.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-ZstdDecoderContext::ZstdDecoderContext(ZstdDecoderContext&& rhs) noexcept
-    : _pState(std::exchange(rhs._pState, nullptr)) {}
+namespace {
+
+void* ZstdAlloc(void* opaque, std::size_t size) { return static_cast<internal::BufferCache*>(opaque)->allocate(size); }
+
+void ZstdFree(void* opaque, void* address) noexcept {
+  static_cast<internal::BufferCache*>(opaque)->deallocate(address);
+}
+
+}  // namespace
+
+ZstdDecoderContext::ZstdDecoderContext(ZstdDecoderContext&& rhs) noexcept : _cache(std::move(rhs._cache)) {
+  // Don't transfer rhs state - it holds a stale opaque pointer to rhs._cache.
+  // _pState stays nullptr; init() will create a fresh context with &_cache.
+  ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(rhs._pState));
+  rhs._pState = nullptr;
+}
 
 ZstdDecoderContext& ZstdDecoderContext::operator=(ZstdDecoderContext&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
     ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(_pState));
-    _pState = std::exchange(rhs._pState, nullptr);
+    _pState = nullptr;
+    _cache = std::move(rhs._cache);
+    ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(rhs._pState));
+    rhs._pState = nullptr;
   }
   return *this;
 }
@@ -30,7 +49,7 @@ ZstdDecoderContext::~ZstdDecoderContext() { ZSTD_freeDStream(reinterpret_cast<ZS
 
 void ZstdDecoderContext::init() {
   if (_pState == nullptr) {
-    _pState = ZSTD_createDStream();
+    _pState = ZSTD_createDCtx_advanced(ZSTD_customMem{ZstdAlloc, ZstdFree, &_cache});
     if (_pState == nullptr) [[unlikely]] {
       throw std::bad_alloc();
     }

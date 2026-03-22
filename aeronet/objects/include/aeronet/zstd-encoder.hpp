@@ -6,6 +6,7 @@
 #include <memory>
 #include <string_view>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
@@ -42,6 +43,7 @@ class ZstdEncoderContext final : public EncoderContext {
     void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
   };
 
+  internal::BufferCache _cache;
   std::unique_ptr<ZSTD_CCtx, ZstdCtxDeleter> _ctx;
   bool _endDone{false};
 };

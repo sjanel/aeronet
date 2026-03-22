@@ -99,16 +99,16 @@ TEST(ZstdEncoderDecoderTest, MallocConstructorFails) {
   ZstdEncoder encoder(cfg.zstd);
   auto compressed = test::BuildStreamingCompressed(*encoder.makeContext(), "some-data", 4096U);
   ZstdDecoder decoder;
-  test::FailNextMalloc();
+  test::FailNextRealloc();
   RawChars buf;
-  // Internal zstd malloc failure returns false instead of throwing
+  // Zstd's custom allocator is backed by BufferCache, which currently fails through realloc.
   EXPECT_THROW(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, buf), std::bad_alloc);
 }
 
 TEST(ZstdEncoderDecoderTest, ZstdContextInitFails) {
   CompressionConfig cfg;
   ZstdEncoder encoder(cfg.zstd);
-  test::FailNextMalloc();
+  test::FailNextRealloc();
   EXPECT_THROW(encoder.makeContext(), std::bad_alloc);
 }
 
@@ -120,7 +120,7 @@ TEST(ZstdEncoderDecoderTest, EncodeFails) {
 
   auto ctx = encoder.makeContext();
   RawChars out(ZSTD_compressBound(std::string_view{"some-data"}.size()));
-  test::FailNextMalloc();
+  test::FailNextRealloc();
   EXPECT_TRUE(ctx->encodeChunk("some-data", out.capacity(), out.data()).hasError());
 }
 
@@ -131,6 +131,12 @@ TEST(ZstdEncoderContext, MoveConstructor) {
 
   auto& selfCtx = ctx1;
   ctx1 = std::move(selfCtx);  // self move should do nothing
+
+  ZstdDecoderContext decoderCtx1;
+  ZstdDecoderContext decoderCtx2(std::move(decoderCtx1));
+
+  auto& selfDecoderCtx = decoderCtx2;
+  decoderCtx2 = std::move(selfDecoderCtx);  // self move should do nothing
 
   ctx1.init(2, 15);
   RawChars produced;

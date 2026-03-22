@@ -1,3 +1,4 @@
+#define ZSTD_STATIC_LINKING_ONLY
 #include "aeronet/zstd-encoder.hpp"
 
 #include <zstd.h>
@@ -9,16 +10,33 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/encoder-result.hpp"
 
 namespace aeronet {
 
+namespace {
+
+void* ZstdAlloc(void* opaque, std::size_t size) { return static_cast<internal::BufferCache*>(opaque)->allocate(size); }
+
+void ZstdFree(void* opaque, void* address) noexcept {
+  static_cast<internal::BufferCache*>(opaque)->deallocate(address);
+}
+
+}  // namespace
+
 ZstdEncoderContext::ZstdEncoderContext(ZstdEncoderContext&& rhs) noexcept
-    : _ctx(std::move(rhs._ctx)), _endDone(std::exchange(rhs._endDone, false)) {}
+    : _cache(std::move(rhs._cache)), _endDone(std::exchange(rhs._endDone, false)) {
+  // Don't transfer rhs context - it holds a stale opaque pointer to rhs._cache.
+  // _ctx stays nullptr; init() will create a fresh context with &_cache.
+  rhs._ctx.reset();
+}
 
 ZstdEncoderContext& ZstdEncoderContext::operator=(ZstdEncoderContext&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
-    _ctx = std::move(rhs._ctx);
+    _ctx.reset();
+    _cache = std::move(rhs._cache);
+    rhs._ctx.reset();
     _endDone = std::exchange(rhs._endDone, false);
   }
   return *this;
@@ -28,7 +46,7 @@ void ZstdEncoderContext::init(int level, int windowLog) {
   if (_ctx) {
     ZSTD_CCtx_reset(_ctx.get(), ZSTD_reset_session_and_parameters);
   } else {
-    _ctx.reset(ZSTD_createCCtx());
+    _ctx.reset(ZSTD_createCCtx_advanced(ZSTD_customMem{ZstdAlloc, ZstdFree, &_cache}));
     if (!_ctx) [[unlikely]] {
       throw std::bad_alloc();
     }
