@@ -34,7 +34,7 @@
 
 namespace aeronet::internal {
 
-// TODO: can we override all alloc / free calls from these decoders / encoders to use a shared arena or pool?
+// All decoders / encoders use custom allocators (BufferCache or ObjectArrayPool) to reuse memory across sessions.
 
 struct RequestDecompressionState {
 #ifdef AERONET_ENABLE_BROTLI
