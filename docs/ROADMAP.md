@@ -47,12 +47,13 @@
 - **Keep-alive timeout: timer wheel instead of sweep** — idle connection cleanup in `ConnectionManager` sweeps all connections (O(n)). A timer wheel or min-heap sorted by expiry lets each poll iteration check only connections whose expiry has passed → O(expired). Significant at 10 K+ idle connections.
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
+- Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
+- `io_uring` support for Linux: Phase 1 (readiness-based poll replacement), Phase 2 (data I/O: recv/send/sendmsg via dedicated Ring B, zerocopy send_zc/sendmsg_zc, per-fd callout for test compatibility), and Phase 3 (SQE batching + async close, E2E benchmarks) are implemented. Splice file transfer (`IORING_OP_SPLICE`) is implemented but disabled due to shared-pipe backpressure issues with non-blocking sockets; regular `sendfile()` is used instead. Future work: registered files (`IORING_REGISTER_FILES`), registered buffers (`IORING_REGISTER_BUFFERS`), per-connection pipe pairs for splice re-enablement.
 
 #### Low priority / specialized
 
 - **WebSocket frame demasking: full SIMD XOR** — SSE4.2 is used for mask detection, but the actual XOR demasking loop is scalar. Vectorize the 4-byte-repeating XOR with SSE2/AVX2 to process 16–32 bytes per iteration → 2–4× throughput for large binary WebSocket frames.
 - **Pre-computed static file response headers** — response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
-- `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
 #### Benchmark gaps
 

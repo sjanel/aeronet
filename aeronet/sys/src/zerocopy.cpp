@@ -1,5 +1,8 @@
 #include "aeronet/zerocopy.hpp"
 
+#ifdef AERONET_IO_URING
+#include <liburing.h>
+#endif
 #include <linux/errqueue.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -129,5 +132,88 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
 
   return completions;
 }
+
+#ifdef AERONET_IO_URING
+namespace {
+// Wait for send completion + optional buffer notification CQE.
+// Returns bytes sent or -1 on error (errno set).
+int64_t WaitSendZcCompletion(struct io_uring* ring) {
+  struct io_uring_cqe* cqe = nullptr;
+  int waitRet = ::io_uring_wait_cqe(ring, &cqe);
+  if (waitRet < 0) [[unlikely]] {
+    errno = -waitRet;
+    return -1;
+  }
+  const int res = cqe->res;
+  const bool hasMore = (cqe->flags & IORING_CQE_F_MORE) != 0;
+  ::io_uring_cqe_seen(ring, cqe);
+
+  if (res < 0) {
+    // If send failed, still consume the notification CQE if flagged.
+    if (hasMore) {
+      cqe = nullptr;
+      (void)::io_uring_wait_cqe(ring, &cqe);
+      if (cqe != nullptr) {
+        ::io_uring_cqe_seen(ring, cqe);
+      }
+    }
+    errno = -res;
+    return -1;
+  }
+
+  // Wait for IORING_CQE_F_NOTIF (buffer release notification).
+  if (hasMore) {
+    cqe = nullptr;
+    waitRet = ::io_uring_wait_cqe(ring, &cqe);
+    if (cqe != nullptr) {
+      ::io_uring_cqe_seen(ring, cqe);
+    }
+  }
+
+  return static_cast<int64_t>(res);
+}
+}  // namespace
+
+int64_t IoUringSendZc(void* ioRing, NativeHandle fd, std::string_view data) noexcept {
+  auto* ring = static_cast<struct io_uring*>(ioRing);
+  auto* sqe = ::io_uring_get_sqe(ring);
+  if (sqe == nullptr) [[unlikely]] {
+    errno = EAGAIN;
+    return -1;
+  }
+  ::io_uring_prep_send_zc(sqe, fd, data.data(), data.size(), MSG_NOSIGNAL, 0);
+  ::io_uring_sqe_set_data64(sqe, 0);
+  const int submitted = ::io_uring_submit(ring);
+  if (submitted < 0) [[unlikely]] {
+    errno = -submitted;
+    return -1;
+  }
+  return WaitSendZcCompletion(ring);
+}
+
+int64_t IoUringSendZc(void* ioRing, NativeHandle fd, std::string_view firstBuf, std::string_view secondBuf) noexcept {
+  auto* ring = static_cast<struct io_uring*>(ioRing);
+  auto* sqe = ::io_uring_get_sqe(ring);
+  if (sqe == nullptr) [[unlikely]] {
+    errno = EAGAIN;
+    return -1;
+  }
+  // NOLINTNEXTLINE(misc-include-cleaner)
+  iovec iov[]{{const_cast<char*>(firstBuf.data()), firstBuf.size()},
+              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
+  msghdr msg{};
+  msg.msg_iov = iov;
+  msg.msg_iovlen = secondBuf.empty() ? 1 : 2;
+  ::io_uring_prep_sendmsg_zc(sqe, fd, &msg, MSG_NOSIGNAL);
+  ::io_uring_sqe_set_data64(sqe, 0);
+  const int submitted = ::io_uring_submit(ring);
+  if (submitted < 0) [[unlikely]] {
+    errno = -submitted;
+    return -1;
+  }
+  return WaitSendZcCompletion(ring);
+}
+#endif
 
 }  // namespace aeronet
