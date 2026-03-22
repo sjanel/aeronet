@@ -989,6 +989,7 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::Stat
   metrics.bytesIn = bytesIn;
   metrics.reusedConnection = reusedConnection;
   metrics.method = request.method();
+  metrics.version = request.version();
   metrics.path = request.path();
   metrics.duration = _connections.now - request.reqStart();
 
@@ -1538,6 +1539,17 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
   state.tunnelBridge = std::make_unique<H2TunnelBridge>(*this, clientFd);
   h2Handler->setTunnelBridge(state.tunnelBridge.get());
+
+  // Install per-request completion callback for metrics, counters and tracing.
+  h2Handler->setRequestCompletionCallback([this, fd = clientFd](const HttpRequest& request, http::StatusCode status) {
+    auto* pState = _connections.pConnectionState(fd);
+    assert(pState != nullptr);
+    ++pState->requestsServed;
+    ++_stats.totalRequestsServed;
+    if (_callbacks.metrics) {
+      emitRequestMetrics(request, status, request.body().size(), pState->requestsServed > 1);
+    }
+  });
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
