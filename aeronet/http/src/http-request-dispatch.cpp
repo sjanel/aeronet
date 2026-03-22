@@ -72,7 +72,7 @@ void BuildAllowHeader(http::MethodBmp methodBitmap, HttpResponse& response) {
 }  // namespace
 
 std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
-                                                  const SpecialMethodConfig& config, const CorsPolicy* pCorsPolicy,
+                                                  SpecialMethodConfig config, const CorsPolicy* pCorsPolicy,
                                                   std::string_view requestData) {
   std::optional<HttpResponse> result;
 

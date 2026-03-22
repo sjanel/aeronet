@@ -17,7 +17,7 @@ namespace aeronet {
 /// Configuration for special method processing.
 struct SpecialMethodConfig {
   HttpServerConfig::TraceMethodPolicy tracePolicy{HttpServerConfig::TraceMethodPolicy::Disabled};
-  bool isTls{false};  ///< true if request arrived over TLS (for TRACE policy check)
+  bool isTls{false};  // true if request arrived over TLS (for TRACE policy check)
 };
 
 /// Process special HTTP methods (OPTIONS, TRACE) in a protocol-agnostic way.
@@ -36,7 +36,7 @@ struct SpecialMethodConfig {
 /// @param requestData Raw request data for TRACE echo (only needed for HTTP/1.1 TRACE)
 /// @return Result indicating action taken
 [[nodiscard]] std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
-                                                                const SpecialMethodConfig& config,
+                                                                SpecialMethodConfig config,
                                                                 const CorsPolicy* pCorsPolicy,
                                                                 std::string_view requestData = {});
 
