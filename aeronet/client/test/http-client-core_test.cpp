@@ -310,6 +310,26 @@ TEST_F(HttpClientE2ETest, NotFound) {
   EXPECT_FALSE(resp.status() >= 200 && resp.status() < 300);
 }
 
+// Sequential (externally serialized) use of one HttpClient from different threads is a supported
+// pattern. On io_uring builds the event loop's ring is bound to the first polling thread
+// (SINGLE_ISSUER), so each thread change must transparently re-bind it (waitIo calls
+// prepareForLoopThread); without that, every request after a thread hop fails. Three hops
+// (main -> thread -> main) also exercise re-arming of the pooled keep-alive connection.
+TEST_F(HttpClientE2ETest, SequentialUseAcrossThreads) {
+  HttpClient client;
+  auto resp = client.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  std::thread worker([&client] {
+    auto threadResp = client.get(Url("/hello")).value();
+    EXPECT_EQ(threadResp.status(), 200);
+    EXPECT_EQ(threadResp.bodyInMemory(), "world");
+  });
+  worker.join();
+  resp = client.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
 TEST_F(HttpClientE2ETest, SurfacesReservedResponseHeadersLosslessly) {
   HttpClient client;
   auto resp = client.get(Url("/hello")).value();

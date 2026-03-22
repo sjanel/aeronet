@@ -202,6 +202,7 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
+#ifndef AERONET_IO_URING
 // Test eventLoop.add failure path
 // This exercises the path where epoll_ctl ADD fails for a new connection
 TEST(ConnectionManagerErrors, EventLoopAddFailure) {
@@ -226,6 +227,7 @@ TEST(ConnectionManagerErrors, EventLoopAddFailure) {
   auto resp2 = test::simpleGet(ts.port(), "/after");
   EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
 }
+#endif  // !AERONET_IO_URING
 
 // Test sweepIdleConnections - isImmediateCloseRequested path
 // This exercises the sweep when a connection has requested immediate close
@@ -910,6 +912,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {
 
 // Test epoll_ctl ADD failure during accept (connection-manager.cpp line ~336)
 // This exercises the code path where adding a new accepted connection to epoll fails.
+#ifndef AERONET_IO_URING
 TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
   test::EventLoopHookGuard hookGuard;
 
@@ -936,3 +939,4 @@ TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
   auto resp = test::simpleGet(localTs.port(), "/after-add-fail");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
+#endif  // !AERONET_IO_URING

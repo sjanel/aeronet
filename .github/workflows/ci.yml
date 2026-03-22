@@ -22,10 +22,17 @@ jobs:
           - { compiler: gcc-13, features: ON, build: Debug }
           - { compiler: clang-21, features: OFF, build: Debug }
           - { compiler: clang-21, features: ON, build: Debug }
+          # io_uring backend leg: the proactor event loop (async recv/send, multishot
+          # accept, drain-safe teardown) is a completely different data path from epoll,
+          # so it needs its own Debug+ASAN coverage. Runners are ubuntu-24.04 (kernel
+          # >= 6.8), well above the io_uring >= 5.19 floor.
+          - { compiler: clang-21, features: ON, build: Debug, io_uring: ON }
           # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
           # caught (Release's -DNDEBUG strips assert()-based invariants), and Release is
           # already exercised independently by the arm/macos/windows/packaging jobs.
-          - { compiler: gcc-13, features: ON, build: Release }
+          # io_uring is ON here too: it is the Release default on Linux when liburing is
+          # present, so this leg matches what users actually build.
+          - { compiler: gcc-13, features: ON, build: Release, io_uring: ON }
     runs-on: ubuntu-latest
 
     env:
@@ -45,6 +52,12 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Install io_uring dependencies
+        if: ${{ matrix.io_uring == 'ON' }}
+        run: |
+          sudo apt update
+          sudo apt install -y liburing-dev
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
@@ -90,6 +103,7 @@ jobs:
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -DAERONET_ENABLE_ASAN=ON \
+            -DAERONET_ENABLE_IO_URING=${{ matrix.io_uring == 'ON' && 'ON' || 'OFF' }} \
             -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
@@ -166,7 +180,9 @@ jobs:
         if: ${{ matrix.features == 'ON' }}
         run: |
           sudo apt update
-          sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+          # liburing-dev: the Release leg picks up the io_uring event loop by default
+          # (arm64 coverage of the ring backend; Debug keeps epoll).
+          sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler liburing-dev
 
       - name: Configure (CMake)
         run: |

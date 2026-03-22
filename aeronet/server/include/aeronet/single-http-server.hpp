@@ -450,6 +450,7 @@ class SingleHttpServer {
   void sweepIdleConnections();
   void applyPendingUpdates();
   void acceptNewConnections();
+  void setupAcceptedConnection(Connection cnx, const sockaddr_storage& peerAddress);
 
   enum class CloseStatus : uint8_t { Keep, Close };
 
@@ -457,6 +458,51 @@ class SingleHttpServer {
   CloseStatus handleWritableClient(ConnectionIt cnxIt);
   // Returns true if connection has been closed, false otherwise.
   CloseStatus handleReadableClient(ConnectionIt cnxIt);
+
+  // Process the completion of an io_uring async recv: updates inBuffer with the bytes the
+  // kernel deposited (or schedules close on EOF/error), runs the input pipeline, and re-arms
+  // a new recv SQE if the connection is kept alive.
+  CloseStatus handleAsyncRecvCompletion(ConnectionIt cnxIt, int32_t bytesAvailable);
+
+  // Process the completion of an io_uring async send from outBuffer: advances the buffer
+  // offset, resubmits the remainder (short send), promotes pendingOutBuffer, and resumes
+  // pipelined request processing / file payload flush once the outbound data is drained.
+  CloseStatus handleAsyncSendCompletion(ConnectionIt cnxIt, int32_t sentBytes);
+
+  // Submit an async send SQE for the next unsent span of outBuffer (io_uring proactor mode).
+  // Caller must have ensured no send is currently in flight. Returns true if the SQE was
+  // queued (asyncSendInFlight set); on failure the caller falls back to synchronous writes.
+  bool startAsyncSend(ConnectionIt cnxIt);
+
+  // Re-submit an async recv SQE for an already-armed connection (caller must have ensured
+  // state.usesAsyncRecv == true and that no other recv is currently in flight).
+  // Returns true if submission succeeded; on failure the connection has been transitioned to
+  // synchronous reads with multishot poll registered.
+  bool armAsyncRecv(ConnectionIt cnxIt);
+
+  // Release a connection's event-loop registration, storage slot and fd.
+  // Maintenance state (keep-alive heap, deadlines, sweep counters) must already be forgotten.
+  // With io_uring: if async recv/send CQEs are still in flight, the kernel holds pointers into
+  // this connection's buffers — the connection is parked (closePendingAsyncCqe) with the socket
+  // shut down, and the release completes when the terminal CQEs are harvested.
+  void releaseConnection(ConnectionIt cnxIt);
+
+#ifdef AERONET_IO_URING
+  // Called on the loop thread when it stops polling (run()/runUntil() exit): cancels every
+  // pending ring operation and drains the terminal CQEs.  This hands buffer ownership back
+  // from the kernel (recv/send cancellations release parked connections) and disarms the
+  // multishot accept so an abandoned ring cannot keep consuming connections from a listener
+  // kept open for restart.  The next run (possibly on another thread) re-arms everything via
+  // EventLoop::prepareForLoopThread().
+  void drainRingAtLoopExit();
+
+  // Consume a terminal recv/send CQE for a parked connection (closePendingAsyncCqe):
+  // successful send completions keep draining the output queued before the close
+  // (drain-then-close semantics survive parking), and the release is finished once the
+  // kernel holds no more references to the connection's buffers.
+  // Returns true if the event targeted a parked connection and has been fully handled.
+  bool finishParkedConnectionCqe(ConnectionIt cnxIt, EventBmp bmp, int32_t bytesAvailable);
+#endif
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
@@ -499,6 +545,11 @@ class SingleHttpServer {
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
   void flushOutbound(ConnectionIt cnxIt);
+  // Flush protocol-handler output (HTTP/2 / WebSocket frames drained into outBuffer):
+  // submits it as an async ring send on eligible io_uring connections (same eligibility as
+  // queueData), no-ops while a send is already in flight (handleAsyncSendCompletion continues
+  // the drain), and falls back to the synchronous flushOutbound otherwise.
+  void flushProtocolOutput(ConnectionIt cnxIt);
   void flushFilePayload(ConnectionIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
   // Used when kTLS is not available and file data must be encrypted in user-space.
@@ -694,6 +745,11 @@ class SingleHttpServer {
     uint32_t http2Connections{0};
 #endif
     uint32_t pendingTimeoutConnections{0};
+#ifdef AERONET_IO_URING
+    // Connections parked in releaseConnection awaiting terminal recv/send CQEs; the sweep
+    // must keep running to force-abort parked sends whose peer stopped reading.
+    uint32_t parkedConnections{0};
+#endif
   };
   ConnectionSweepState _connectionSweepState;
 

@@ -52,7 +52,11 @@ struct ConnectionState {
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
 
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
-    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile();
+    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile()
+#ifdef AERONET_IO_URING
+           && pendingOutBuffer.empty()
+#endif
+        ;
   }
 
   // Request to close after draining currently buffered writes (graceful half-close semantics).
@@ -137,6 +141,12 @@ struct ConnectionState {
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
   HttpMessageData outBuffer;
+#ifdef AERONET_IO_URING
+  // Response data queued while an async send from outBuffer is in flight (the kernel reads
+  // from outBuffer until the send CQE arrives, so outBuffer cannot be appended to or moved).
+  // Promoted into outBuffer and submitted when the in-flight send completes.
+  HttpMessageData pendingOutBuffer;
+#endif
   // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals
   // completion via the error queue. Without this, the allocator can reuse the freed
   // pages while the kernel is still DMA-ing from them, causing data corruption.
@@ -198,6 +208,26 @@ struct ConnectionState {
   bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
   bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
   bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
+  // True when this connection consumes inbound data via io_uring async recv (proactor).
+  // When true, the event loop has neither registered a multishot poll nor performs synchronous
+  // transport reads on this fd; instead a recv SQE is submitted, and EventDataArrived CQEs are
+  // delivered to the dispatcher.
+  bool usesAsyncRecv : 1 {false};
+  // True when an async recv SQE is currently in flight in the kernel for this connection.
+  // Used to avoid double-submission and to know when it is safe to grow inBuffer capacity.
+  bool asyncRecvInFlight : 1 {false};
+  // True when an async send SQE is currently in flight in the kernel for this connection.
+  // While set, the kernel reads from outBuffer: outBuffer must not be mutated (no append,
+  // no shrink, no move) — new response data is staged in pendingOutBuffer instead.
+  bool asyncSendInFlight : 1 {false};
+  // True when the connection is closed from the server's point of view but async recv/send
+  // CQEs are still in flight: the kernel holds pointers into inBuffer/outBuffer, so buffer
+  // release is deferred until the terminal CQEs are harvested (see releaseConnection).
+  bool closePendingAsyncCqe : 1 {false};
+  // Grace marker for parked connections: set the first time the maintenance sweep visits a
+  // parked connection; on the second visit the socket is fully shut down so a peer that
+  // stopped reading cannot pin the pending send (and its buffers) forever.
+  bool closeParkSweepSeen : 1 {false};
 
   // Whether the connection should attempt to enable MSG_ZEROCOPY when possible.
   // Determined at accept time based on server configuration and peer/local addresses.

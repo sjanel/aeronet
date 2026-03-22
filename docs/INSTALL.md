@@ -18,6 +18,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
 | glaze (opt) | 7.0.2+ | JSON serialization support (`AERONET_ENABLE_GLAZE`) |
+| liburing (opt) | 2.x | io_uring event loop (`AERONET_ENABLE_IO_URING`); Linux only, kernel ≥ 5.19 at runtime |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
 > **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
@@ -37,6 +38,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
 | `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
+| `AERONET_ENABLE_IO_URING` | ON (Linux Release, if liburing found) | io_uring event loop instead of epoll (`liburing-dev`, kernel ≥ 5.19) |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib / zlib-ng) compression + decompression |
 | `AERONET_ENABLE_ZLIBNG` | ON | Use `zlib-ng` implementation instead of classic `zlib` |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |

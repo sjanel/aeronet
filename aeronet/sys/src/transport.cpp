@@ -31,12 +31,14 @@ PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint3
 }
 
 ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
+  TransportResult ret{0, TransportHint::None};
+
 #ifdef AERONET_POSIX
   const auto nbRead = ::read(_fd, buf, len);
 #elifdef AERONET_WINDOWS
   const auto nbRead = ::recv(_fd, buf, static_cast<int>(len), 0);
 #endif
-  TransportResult ret{static_cast<std::size_t>(nbRead), TransportHint::None};
+  ret.bytesProcessed = static_cast<std::size_t>(nbRead);
   if (nbRead == -1) {
     ret.bytesProcessed = 0;
 
@@ -116,16 +118,6 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
 ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Use writev / WSASend for scatter-gather I/O - single syscall for both buffers.
   // This avoids extra memcpy and allows optimal TCP segmentation.
-#ifdef AERONET_POSIX
-  // NOLINTNEXTLINE(misc-include-cleaner)
-  iovec iov[]{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-              {const_cast<char*>(firstBuf.data()), firstBuf.size()},
-              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
-#elifdef AERONET_WINDOWS
-  WSABUF iov[]{{static_cast<ULONG>(firstBuf.size()), const_cast<char*>(firstBuf.data())},
-               {static_cast<ULONG>(secondBuf.size()), const_cast<char*>(secondBuf.data())}};
-#endif
 
   TransportResult ret{0, TransportHint::None};
   const std::size_t totalSize = firstBuf.size() + secondBuf.size();
@@ -155,6 +147,17 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
       return ret;
     }
   }
+
+#ifdef AERONET_POSIX
+  // NOLINTNEXTLINE(misc-include-cleaner)
+  iovec iov[]{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+              {const_cast<char*>(firstBuf.data()), firstBuf.size()},
+              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
+#elifdef AERONET_WINDOWS
+  WSABUF iov[]{{static_cast<ULONG>(firstBuf.size()), const_cast<char*>(firstBuf.data())},
+               {static_cast<ULONG>(secondBuf.size()), const_cast<char*>(secondBuf.data())}};
+#endif
 
   while (ret.bytesProcessed < totalSize) {
     // Adjust iovec based on bytes already written

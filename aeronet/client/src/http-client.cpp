@@ -271,6 +271,12 @@ void HttpClient::clearIdleConnections() {
 }
 
 bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+  // The io_uring-backed EventLoop binds its ring to the first polling thread (SINGLE_ISSUER +
+  // registered ring fd): every io_uring_enter from another thread fails EINVAL. Sequential use of
+  // one HttpClient from different threads (documented as supported with external guarding) must
+  // therefore re-bind the ring when the calling thread changed since the last request. This is a
+  // cheap early-return when the thread is unchanged, and a no-op on non-io_uring builds.
+  _loop.prepareForLoopThread();
   if (!armLoop(fd, interest)) {
     return false;
   }

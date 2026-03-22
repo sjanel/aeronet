@@ -18,6 +18,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/io-callouts.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -206,6 +207,44 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
+#ifdef AERONET_IO_URING
+  // Proactor send path: submit the response bytes through the ring instead of a write syscall.
+  // The SQE is batched with recv re-arms and flushed by the next io_uring_enter, so a whole
+  // event-loop iteration costs a single syscall regardless of the number of responses.
+  // Excluded: TLS (usesAsyncRecv false), tunnels (ordering with tunnelOrFileBuffer),
+  // MSG_ZEROCOPY transports (zerocopy runs through the synchronous sendmsg path), and fds
+  // for which ring data I/O is disabled (AeronetUseIoRingForFd — test error injection).
+  // asyncSendInFlight is also honoured alone: even if the connection dropped async recv
+  // (SQ exhaustion fallback), an in-flight send owns outBuffer and ordering must hold.
+  if ((state.asyncSendInFlight || (state.usesAsyncRecv && AeronetUseIoRingForFd(cnxIt->fd()))) &&
+      !state.isTunneling() && !state.transport->isZerocopyEnabled()) {
+    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+    if (state.asyncSendInFlight) {
+      // The kernel is reading from outBuffer: stage the new response in pendingOutBuffer.
+      // It is promoted into outBuffer by handleAsyncSendCompletion once the send drains.
+      state.pendingOutBuffer.append(std::move(httpResponseData));
+      if (state.pendingOutBuffer.remainingSize() > _config.maxOutboundBufferBytes) {
+        state.requestDrainAndClose();
+      }
+      _stats.maxConnectionOutboundBuffer =
+          std::max(_stats.maxConnectionOutboundBuffer, state.pendingOutBuffer.remainingSize());
+    } else {
+      assert(state.outBuffer.empty());
+      state.outBuffer = std::move(httpResponseData);
+      if (!startAsyncSend(cnxIt)) [[unlikely]] {
+        // SQ exhausted even after flush: drain synchronously to preserve ordering.
+        flushOutbound(cnxIt);
+      }
+    }
+    if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+      // No-op while response headers are still in outBuffer (fileSendHeadersPending);
+      // handleAsyncSendCompletion resumes the file payload once headers are flushed.
+      flushFilePayload(cnxIt);
+    }
+    return;
+  }
+#endif
+
   // flushOutbound() always drains outBuffer to empty before returning (spinning on EAGAIN
   // until the kernel accepts bytes or a terminal error clears outBuffer). Errors set
   // isAnyCloseRequested(), caught by the guard above. This path is therefore unreachable
@@ -267,10 +306,37 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   }
 }
 
+void SingleHttpServer::flushProtocolOutput(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  if (state.asyncSendInFlight) {
+    // The kernel owns outBuffer; frames drained meanwhile were staged in pendingOutBuffer and
+    // handleAsyncSendCompletion promotes + submits them once the in-flight span drains.
+    return;
+  }
+#ifdef AERONET_IO_URING
+  // Same eligibility as queueData: plain (non-TLS) async-recv connections whose transport does
+  // not run MSG_ZEROCOPY, excluding tunnels (ordering with tunnelOrFileBuffer).
+  if (state.usesAsyncRecv && !state.isTunneling() && !state.transport->isZerocopyEnabled() &&
+      AeronetUseIoRingForFd(cnxIt->fd()) && startAsyncSend(cnxIt)) [[likely]] {
+    return;
+  }
+  // SQ exhausted or connection not eligible: synchronous flush preserves forward progress.
+#endif
+  flushOutbound(cnxIt);
+}
+
 void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
   ConnectionState& state = _connections.connectionState(cnxIt);
+
+#ifdef AERONET_IO_URING
+  // An async send owns outBuffer until its CQE arrives; the drain continues in
+  // handleAsyncSendCompletion.  Writing synchronously here would duplicate bytes.
+  if (state.asyncSendInFlight) {
+    return;
+  }
+#endif
 
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();

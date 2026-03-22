@@ -52,7 +52,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y gcc-13 g++-13 libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y gcc-13 g++-13 libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev liburing-dev
 
       - name: Set compiler environment
         run: |
@@ -142,7 +142,7 @@ jobs:
       - name: Install runtime dependencies
         run: |
           sudo apt update
-          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev liburing-dev
           pip install uvicorn starlette
 
       - name: Download build artifact
@@ -263,7 +263,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         run: |
           sudo apt update
-          sudo apt install -y nghttp2-client libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y nghttp2-client libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev liburing-dev
           pip install uvicorn starlette hypercorn[h2]
           h2load --version
 
@@ -365,7 +365,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev liburing-dev
 
       - name: Install k6
         run: |
@@ -485,7 +485,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         run: |
           sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev liburing-dev
 
       - name: Download build artifact
         if: steps.filter.outputs.skip != 'true'

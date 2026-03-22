@@ -188,6 +188,12 @@ class BenchmarkRunner:
             and sys.platform.startswith("linux")
             and shutil.which("taskset") is not None
         )
+        # Physical-core topology (SMT siblings grouped, fastest cores first) so the server
+        # gets one logical CPU per full physical core and never shares a core with the load
+        # generator. Naive contiguous ranges (0-4 / 5-9) are wrong on SMT/hybrid CPUs: logical
+        # CPUs 2k/2k+1 are hyperthread siblings, so "5 CPUs" is really 2.5 cores and the two
+        # ranges collide on a shared physical core — a large source of run-to-run variance.
+        self._cpu_topology = self._read_cpu_topology() if self._cpu_pin_enabled else []
         self.connections = args.connections
         self.duration = args.duration
         self.warmup = args.warmup
@@ -812,22 +818,90 @@ class BenchmarkRunner:
         """Contiguous CPU list for `taskset -c`, e.g. (0, 5) -> '0-4', (5, 1) -> '5'."""
         return str(start) if count <= 1 else f"{start}-{start + count - 1}"
 
-    def _server_pin_prefix(self) -> List[str]:
-        """`taskset` prefix pinning the server to the first ``self.threads`` cores.
+    @staticmethod
+    def _read_cpu_topology() -> List[List[int]]:
+        """Physical cores as lists of their logical CPUs (SMT siblings), fastest first.
 
-        Only pins when there is also room to give the load generator a disjoint core set
-        for at least a 1:1 run (``2 * server <= cpu_count``); otherwise the server runs
-        unpinned (pinning it to a subset while wrk roams every core would be worse).
+        Reads /sys topology; orders cores by descending max frequency so that on hybrid
+        CPUs (Intel P+E) the performance cores are handed out first, ties broken by the
+        lowest logical CPU id for a stable order. Returns [] when the information is
+        unavailable (non-Linux, restricted sysfs), letting callers fall back to
+        contiguous-range pinning."""
+        base = Path("/sys/devices/system/cpu")
+        cores: Dict[Tuple[int, int], List[int]] = {}
+        freqs: Dict[Tuple[int, int], int] = {}
+        for cpu_dir in base.glob("cpu[0-9]*"):
+            topo = cpu_dir / "topology"
+            try:
+                cpu = int(cpu_dir.name[3:])
+                key = (
+                    int((topo / "physical_package_id").read_text()),
+                    int((topo / "core_id").read_text()),
+                )
+            except (OSError, ValueError):
+                return []
+            cores.setdefault(key, []).append(cpu)
+            try:
+                freq = int((cpu_dir / "cpufreq" / "cpuinfo_max_freq").read_text())
+            except (OSError, ValueError):
+                freq = 0
+            freqs[key] = max(freqs.get(key, 0), freq)
+        if not cores:
+            return []
+        for cpus in cores.values():
+            cpus.sort()
+        return [cores[key] for key in sorted(cores, key=lambda k: (-freqs[k], cores[k][0]))]
+
+    def _server_cpu_list(self) -> List[int]:
+        """Logical CPUs for the server: one per physical core, fastest cores first.
+
+        The SMT siblings of these CPUs are deliberately left idle so each server thread
+        owns a full physical core (steadier and higher throughput than packing threads
+        onto sibling hyperthreads). Requires at least one spare physical core for the
+        load generator; returns [] (fall back / no pinning) otherwise."""
+        if len(self._cpu_topology) > self.threads:
+            return sorted(core[0] for core in self._cpu_topology[: self.threads])
+        return []
+
+    def _loadgen_cpu_list(self, loadgen_threads: int) -> List[int]:
+        """Logical CPUs for wrk/h2load: drawn from the physical cores the server does not
+        use (one CPU per core first, then their SMT siblings). Never overlaps a server
+        core, so the load generator cannot steal server cycles through a shared core."""
+        spare_cores = self._cpu_topology[self.threads:]
+        cpus = [core[0] for core in spare_cores]
+        for core in spare_cores:
+            cpus.extend(core[1:])
+        return sorted(cpus[: max(loadgen_threads, 1)])
+
+    def _server_pin_prefix(self) -> List[str]:
+        """`taskset` prefix pinning the server to dedicated physical cores.
+
+        Topology-aware when /sys exposes it (one logical CPU per physical core, SMT
+        siblings idle, load generator on the remaining cores); otherwise falls back to
+        the first ``self.threads`` logical CPUs. Only pins when the load generator can
+        also get a disjoint set; otherwise the server runs unpinned (pinning it to a
+        subset while wrk roams every core would be worse).
         """
-        if not self._cpu_pin_enabled or 2 * self.threads > self.cpu_count:
+        if not self._cpu_pin_enabled:
+            return []
+        cpus = self._server_cpu_list()
+        if cpus:
+            return ["taskset", "-c", ",".join(map(str, cpus))]
+        if 2 * self.threads > self.cpu_count:
             return []
         return ["taskset", "-c", self._cpu_range(0, self.threads)]
 
     def _loadgen_pin_prefix(self, loadgen_threads: int) -> List[str]:
-        """`taskset` prefix pinning wrk/h2load to the cores right after the server's, so
-        the load generator and the server never share a core. Disabled when they would
-        not fit disjointly (kept consistent with :meth:`_server_pin_prefix`)."""
-        if not self._cpu_pin_enabled or self.threads + loadgen_threads > self.cpu_count:
+        """`taskset` prefix pinning wrk/h2load to cores disjoint from the server's
+        (kept consistent with :meth:`_server_pin_prefix`)."""
+        if not self._cpu_pin_enabled:
+            return []
+        if self._server_cpu_list():
+            cpus = self._loadgen_cpu_list(loadgen_threads)
+            if cpus:
+                return ["taskset", "-c", ",".join(map(str, cpus))]
+            return []
+        if self.threads + loadgen_threads > self.cpu_count:
             return []
         return ["taskset", "-c", self._cpu_range(self.threads, loadgen_threads)]
 

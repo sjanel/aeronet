@@ -361,6 +361,17 @@ void ConnectionState::reset() {
   shutdownWritePending = false;
   eofReceived = false;
   corkable = false;
+  fileSendActive = false;
+  fileSendHeadersPending = false;
+  usesAsyncRecv = false;
+  asyncRecvInFlight = false;
+  asyncSendInFlight = false;
+  closePendingAsyncCqe = false;
+  closeParkSweepSeen = false;
+#ifdef AERONET_IO_URING
+  pendingOutBuffer.shrink_to_fit();
+  pendingOutBuffer.clear();
+#endif
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};
