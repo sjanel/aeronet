@@ -262,6 +262,17 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   req._reqStart = std::chrono::steady_clock::now();
   req._responsePossibleEncoding = encoding;
 
+  // Create trace span for HTTP/2 request (mirrors HTTP/1 span from initTrySetHead)
+  req._traceSpan = _pTelemetryContext->createSpan("http.request");
+  if (req._traceSpan) {
+    req._traceSpan->setAttribute("http.method", http::MethodToStr(req._method));
+    req._traceSpan->setAttribute("http.target", req.path());
+    req._traceSpan->setAttribute("http.scheme", req.scheme());
+    if (!req.authority().empty()) {
+      req._traceSpan->setAttribute("http.host", req.authority());
+    }
+  }
+
   // CONNECT requests must be dispatched immediately after headers regardless of endStream,
   // because CONNECT has no request body — subsequent DATA frames carry tunnel payload.
   if (endStream || req.method() == http::Method::CONNECT) {
@@ -518,6 +529,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
       if (err != ErrorCode::NoError) [[unlikely]] {
         log::error("HTTP/2 failed to send CORS rejection on stream {}: {}", streamId, ErrorCodeName(err));
       }
+      onRequestCompleted(request, http::StatusCodeForbidden);
       _streamRequests.erase(streamId);
       return;
     }
@@ -558,6 +570,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
   if (!writer.finished()) {
     writer.end();
   }
+
+  // Emit metrics for the streaming request (matching HTTP/1 behavior with StatusCodeOK)
+  onRequestCompleted(request, http::StatusCodeOK);
 
   // Transfer any pending data from the transport to the protocol handler's deferred-send maps.
   if (transport.hasPendingFile()) {
@@ -602,6 +617,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   }
 
   ErrorCode err = ErrorCode::NoError;
+  http::StatusCode respStatusCode{};
 
   // Dispatch to the callback provided by SingleHttpServer
   try {
@@ -616,6 +632,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
         // Check path-specific HTTP/2 config
         if (routingResult.pathConfig.http2Enable == PathEntryConfig::Http2Enable::Disable) {
           err = sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), false);
+          onRequestCompleted(request, http::StatusCodeNotFound);
           _streamRequests.erase(streamId);
           if (err != ErrorCode::NoError) [[unlikely]] {
             log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
@@ -635,7 +652,9 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
           }
           internal::PrefinalizeHttpResponse(request, *globalResult, isHead, *_pCompressionState, *_pTelemetryContext);
           globalResult->finalizeForHttp2();
+          const auto middlewareStatus = globalResult->status();
           err = sendResponse(streamId, std::move(*globalResult), isHead);
+          onRequestCompleted(request, middlewareStatus);
           _streamRequests.erase(streamId);
           if (err != ErrorCode::NoError) [[unlikely]] {
             log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
@@ -663,6 +682,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
         // Check path-specific HTTP/2 config
         if (routingResult.pathConfig.http2Enable == PathEntryConfig::Http2Enable::Disable) {
           err = sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), false);
+          onRequestCompleted(request, http::StatusCodeNotFound);
           _streamRequests.erase(streamId);
           if (err != ErrorCode::NoError) [[unlikely]] {
             log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
@@ -680,7 +700,9 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
           }
           internal::PrefinalizeHttpResponse(request, *globalResult, isHead, *_pCompressionState, *_pTelemetryContext);
           globalResult->finalizeForHttp2();
+          const auto middlewareStatus = globalResult->status();
           err = sendResponse(streamId, std::move(*globalResult), isHead);
+          onRequestCompleted(request, middlewareStatus);
           _streamRequests.erase(streamId);
           if (err != ErrorCode::NoError) [[unlikely]] {
             log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
@@ -700,19 +722,24 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
     resp.finalizeForHttp2();
 
+    respStatusCode = resp.status();
     err = sendResponse(streamId, std::move(resp), isHead);
   } catch (const std::exception& ex) {
     log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, ex.what()),
+    respStatusCode = http::StatusCodeInternalServerError;
+    err = sendResponse(streamId, HttpResponse(respStatusCode, ex.what()),
                        /*isHeadMethod=*/false);
   } catch (...) {
     log::error("HTTP/2 unknown exception on stream {}", streamId);
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Unknown error"),
+    respStatusCode = http::StatusCodeInternalServerError;
+    err = sendResponse(streamId, HttpResponse(respStatusCode, "Unknown error"),
                        /*isHeadMethod=*/false);
   }
   if (err != ErrorCode::NoError) [[unlikely]] {
     log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
   }
+
+  onRequestCompleted(request, respStatusCode);
 
   // Clean up stream request
   _streamRequests.erase(streamId);
@@ -1006,6 +1033,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamRequestsMap::iterator it, con
                pendingRef.streamRequest.request.path());
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
                        /*isHeadMethod=*/false);
+    onRequestCompleted(pendingRef.streamRequest.request, http::StatusCodeInternalServerError);
     _pendingAsyncTasks.erase(streamId);
     return false;
   }
@@ -1074,6 +1102,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   HttpRequest& request = pending.streamRequest.request;
   const bool isHead = pending.isHead;
   ErrorCode err = ErrorCode::NoError;
+  http::StatusCode respStatusCode{};
 
   try {
     HttpResponse resp = pending.task.runSynchronously();
@@ -1089,20 +1118,25 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
     resp.finalizeForHttp2();
 
+    respStatusCode = resp.status();
     err = sendResponse(streamId, std::move(resp), isHead);
   } catch (const std::exception& ex) {
     log::error("HTTP/2 async handler exception on stream {}: {}", streamId, ex.what());
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, ex.what()),
+    respStatusCode = http::StatusCodeInternalServerError;
+    err = sendResponse(streamId, HttpResponse(respStatusCode, ex.what()),
                        /*isHeadMethod=*/false);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
-    err = sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Unknown error"),
+    respStatusCode = http::StatusCodeInternalServerError;
+    err = sendResponse(streamId, HttpResponse(respStatusCode, "Unknown error"),
                        /*isHeadMethod=*/false);
   }
 
   if (err != ErrorCode::NoError) [[unlikely]] {
     log::error("HTTP/2 failed to send async response on stream {}: {}", streamId, ErrorCodeName(err));
   }
+
+  onRequestCompleted(request, respStatusCode);
 
   _pendingAsyncTasks.erase(it);
 }
@@ -1120,6 +1154,13 @@ bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handl
 }
 
 #endif  // AERONET_ENABLE_ASYNC_HANDLERS
+
+void Http2ProtocolHandler::onRequestCompleted(HttpRequest& request, http::StatusCode status) {
+  request.end(status);
+  if (_requestCompletionCallback) {
+    _requestCompletionCallback(request, status);
+  }
+}
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
