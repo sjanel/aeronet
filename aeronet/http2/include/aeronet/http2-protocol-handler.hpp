@@ -129,6 +129,15 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Get the underlying HTTP/2 connection for advanced usage.
   [[nodiscard]] Http2Connection& connection() noexcept { return _connection; }
 
+  /// Callback invoked after each HTTP/2 request is completed (response sent).
+  /// Parameters: request reference, response status code.
+  using RequestCompletionCallback = std::function<void(const HttpRequest&, http::StatusCode)>;
+
+  /// Install a completion callback for per-request metrics and tracing.
+  void setRequestCompletionCallback(RequestCompletionCallback cb) noexcept {
+    _requestCompletionCallback = std::move(cb);
+  }
+
   /// Install a tunnel bridge for CONNECT tunnel management.
   /// The bridge must outlive this handler (typically owned by ConnectionState).
   void setTunnelBridge(ITunnelBridge* bridge) noexcept { _tunnelBridge = bridge; }
@@ -228,6 +237,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   // to the appropriate handler (sync, async, or streaming).
   HttpResponse reply(HttpRequest& request);
 
+  /// Emit metrics and end trace span for a completed request.
+  void onRequestCompleted(HttpRequest& request, http::StatusCode status);
+
   /// Send an HTTP response on a stream.
   ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
 
@@ -283,6 +295,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
   ITunnelBridge* _tunnelBridge{nullptr};
+  RequestCompletionCallback _requestCompletionCallback;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Pending async tasks per stream (coroutines that have suspended).
