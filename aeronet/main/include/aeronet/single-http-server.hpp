@@ -26,6 +26,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/internal/pending-updates.hpp"
@@ -79,6 +80,7 @@ class SingleHttpServer {
   struct RequestMetrics {
     http::StatusCode status{0};
     http::Method method;
+    http::Version version;
     bool reusedConnection{false};
     std::string_view path;
     std::size_t bytesIn{0};

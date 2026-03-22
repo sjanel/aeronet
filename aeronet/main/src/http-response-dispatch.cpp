@@ -126,7 +126,6 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     (void)pCorsPolicy->applyToResponse(request, resp);
   }
 
-  // TODO: metrics should also be updated in HTTP/2
   ++state.requestsServed;
   ++_stats.totalRequestsServed;
 
