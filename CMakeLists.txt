@@ -192,6 +192,28 @@ include(CMakeDependentOption)
 cmake_dependent_option(AERONET_ENABLE_JWT "Enable JWT (JWS) support"
     ON "AERONET_ENABLE_OPENSSL;AERONET_ENABLE_GLAZE" OFF)
 
+# Linux-only: use io_uring instead of epoll for the event loop.
+# Requires liburing (liburing-dev) and Linux kernel >= 5.19 at runtime.
+# Enabled by default in Release builds when liburing is available, so a plain Release
+# configure never hard-fails on a machine without liburing (explicitly passing
+# -DAERONET_ENABLE_IO_URING=ON still requires it).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_IO_URING_DEFAULT OFF)
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(URING_PROBE QUIET liburing)
+      if(URING_PROBE_FOUND)
+        set(_IO_URING_DEFAULT ON)
+      endif()
+    endif()
+    if(NOT _IO_URING_DEFAULT)
+      message(STATUS "liburing not found - io_uring event loop disabled by default (install liburing-dev to enable)")
+    endif()
+  endif()
+  option(AERONET_ENABLE_IO_URING "Use io_uring instead of epoll for the Linux event loop" ${_IO_URING_DEFAULT})
+endif()
+
 # zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
 # You can disable it in favor of classic zlib by setting this option to OFF.
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)

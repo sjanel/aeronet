@@ -23,7 +23,9 @@
 #include "aeronet/sys-test-support.hpp"
 
 #ifdef AERONET_POSIX
+#ifndef AERONET_IO_URING
 #include <sys/epoll.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -107,11 +109,14 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   loop.del(readEnd.fd());  // invalid del; should log but not throw
 
   EXPECT_TRUE(loop.add(EventLoop::EventFd{readEnd.fd(), EventIn}));  // valid add
-  EXPECT_FALSE(loop.add(EventLoop::EventFd{-1, EventIn}));           // invalid add; should log and return false
+#ifndef AERONET_IO_URING
+  // With io_uring, add/mod/addOrThrow enqueue SQEs and never fail synchronously for invalid fds.
+  EXPECT_FALSE(loop.add(EventLoop::EventFd{-1, EventIn}));  // invalid add; should log and return false
   EXPECT_THROW(loop.addOrThrow(EventLoop::EventFd{-1, EventIn}),
                std::system_error);  // invalid addOrThrow; should throw
 
   EXPECT_FALSE(loop.mod(EventLoop::EventFd{-1, EventIn}));  // invalid mod; should log and return false
+#endif
 }
 
 TEST(EventLoopTest, MoveConstructorAndAssignment) {
@@ -180,17 +185,21 @@ TEST(EventLoopTest, NoShrinkPolicy) {
   }
 }
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails_BadFlags) {
   test::EventLoopHookGuard guard;
   test::SetEpollCreateActions({test::EpollCreateFail(EINVAL)});
   EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::runtime_error);
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
   test::EventLoopHookGuard guard;
   test::SetEpollCreateActions({test::EpollCreateFail(error::kTooManyFiles)});
   EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::runtime_error);
 }
+#endif
 
 TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
   test::EventLoopHookGuard guard;
@@ -201,6 +210,7 @@ TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
   EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::bad_alloc);
 }
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(error::kInterrupted)});
@@ -209,7 +219,9 @@ TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
   EXPECT_NE(events.data(), nullptr);
   EXPECT_TRUE(events.empty());
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, AdaptivePollTimeoutIgnoresInterruptedPoll) {
   test::EventLoopHookGuard guard;
   // The interrupted poll must not count toward the idle-backoff threshold (4 consecutive idle
@@ -234,7 +246,9 @@ TEST(EventLoopTest, AdaptivePollTimeoutIgnoresInterruptedPoll) {
   EXPECT_TRUE(loop.poll().empty());
   EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(EIO)});
@@ -243,7 +257,9 @@ TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
   EXPECT_EQ(events.data(), nullptr);
   EXPECT_TRUE(events.empty());
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   test::EventLoopHookGuard guard;
   EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
@@ -270,7 +286,9 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   EXPECT_EQ(callbacks, static_cast<int>(eventsSpan.size()));
   EXPECT_EQ(loop.capacity(), initialCapacity);
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   test::EventLoopHookGuard guard;
   EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
@@ -287,7 +305,9 @@ TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   EXPECT_EQ(span.size(), initialCapacity);
   EXPECT_EQ(loop.capacity(), initialCapacity * 2);
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, AdaptivePollTimeoutSpinsAfterSaturation) {
   test::EventLoopHookGuard guard;
   // minTimeout=0.0f → 0ms, maxTimeout=16.0f → 16*5=80ms.
@@ -387,7 +407,9 @@ TEST(EventLoopTest, AdaptivePollTimeoutResetsOnNormalLoad) {
   EXPECT_EQ(span.size(), 1U);
   EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
 }
+#endif
 
+#ifndef AERONET_IO_URING
 TEST(EventLoopTest, ModFailures) {
   test::EventLoopHookGuard guard;
   EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
@@ -404,3 +426,4 @@ TEST(EventLoopTest, ModFailures) {
   test::FailAllEpollCtlMod(EACCES);
   EXPECT_FALSE(loop.mod(EventLoop::EventFd{44, EventIn}));
 }
+#endif

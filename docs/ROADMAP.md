@@ -27,6 +27,15 @@
 Status: repository-wide source audit completed on 2026-07-22; the opportunities below are not yet implemented or
 proven faster. They are ordered by expected leverage, not by unverified percentage estimates.
 
+- **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
+- **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
+- Enforce backpressure correctness to avoid overload and wasted work.
+- **Scatter-write HTTP/2 DATA frames** - build the 9-byte frame header and the body slice as a `writev` gather instead of copying the payload behind the header, mirroring the HTTP/1.1 head+body scatter write. Removes a copy on the HTTP/2 hot send path.
+- Focus on cache locality in hot paths; measure before/after.
+- Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
+- `io_uring` backend follow-ups. The proactor design (multishot accept, async recv into `inBuffer`, async send from `outBuffer`, batched single-`io_uring_enter` loop iterations, drain-safe teardown — see FEATURES.md) is implemented and beats the epoll backend by ~30 % requests/s per core on the `static` scenario. Remaining opportunities: **proactor-mode `HttpClient`** (the client's event loop already runs on the ring for readiness waits, but its reads/writes are synchronous syscalls; converting the request path to async recv/send would mainly benefit high-concurrency pooled usage), **multishot recv with provided buffer rings** (`IORING_RECVSEND_BUNDLE` on 6.10+) to eliminate per-request recv re-arms, **registered files** (`IORING_FILE_INDEX_ALLOC` direct-descriptor accept) to skip per-op fd table lookups, **`IORING_OP_SEND_ZC`** for large zerocopy responses (dual-CQE handling), and re-enabling `IORING_OP_SPLICE` file transfer with per-connection pipe pairs (currently `sendfile()` is used; the shared-pipe variant had backpressure issues).
+- **Pre-computed static file response headers** - response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
+
 #### P1 - copies, allocations and asymptotic hot paths
 
 - **HTTP/2 outbound frame representation** - `Http2Connection::sendData()` currently copies every payload behind a

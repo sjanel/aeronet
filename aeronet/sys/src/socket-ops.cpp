@@ -237,6 +237,14 @@ int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {
 #endif
 }
 
+bool ShutdownRead(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  return ::shutdown(fd, SD_RECEIVE) == 0;
+#else
+  return ::shutdown(fd, SHUT_RD) == 0;
+#endif
+}
+
 bool ShutdownWrite(NativeHandle fd) noexcept {
 #ifdef AERONET_WINDOWS
   return ::shutdown(fd, SD_SEND) == 0;

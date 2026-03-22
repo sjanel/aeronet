@@ -417,7 +417,27 @@ for each scenario/server combination. The table is derived directly from `/proc/
 
 ### CPU And Process Pinning
 
-For repeatable, low-variance measurements on modern hybrid CPUs (for example 12th Gen Intel i7 with P/E cores), follow these steps to inspect, set, and pin CPU behavior before running benchmarks.
+`run_benchmarks.py` pins the server and the load generator automatically, and the pinning is
+**topology-aware** when `/sys/devices/system/cpu/*/topology` is readable: the server gets one
+logical CPU per *physical* core (fastest cores first on hybrid P/E parts, SMT siblings left
+idle so each server thread owns a full core), and wrk/h2load runs on the remaining physical
+cores, never sharing a core with the server. Naive contiguous ranges (`0-4` / `5-9`) are
+wrong on SMT machines — logical CPUs 2k/2k+1 are hyperthread siblings, so "5 CPUs" is really
+2.5 cores and the two ranges collide on a shared physical core, which both distorts the
+comparison and adds large run-to-run variance. When topology information is unavailable the
+harness falls back to contiguous ranges; `--no-cpu-pin` disables pinning entirely.
+
+Two residual noise sources remain on laptop-class hardware even with correct pinning:
+**thermal throttling** (a 12th-gen H-series package reaches ~90 °C under sustained load and
+progressively sheds turbo frequency, so back-to-back runs get slower until steady state — on
+such machines prefer short durations with `--repeat 3` over one long run, and disable turbo
+for determinism) and **load-generator saturation** (if wrk's cores are slower than the
+server's, all servers converge to wrk's maximum offered load and differences hide in server
+CPU utilization rather than RPS — reduce `--threads` until the server, not wrk, is the
+bottleneck).
+
+For manual runs outside the harness, follow these steps to inspect, set, and pin CPU behavior
+before benchmarking.
 
 - **Inspect CPU topology and max frequencies**: identify P-cores (high-frequency) vs E-cores.
 

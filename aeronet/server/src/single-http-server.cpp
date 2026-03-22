@@ -17,8 +17,11 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/accept-callouts.hpp"
 #include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
@@ -93,6 +96,19 @@
 namespace aeronet {
 
 namespace {
+
+// Drain target for protocol-handler output (HTTP/2 / WebSocket frames): while an async ring
+// send is in flight the kernel reads from outBuffer and an append could reallocate the span
+// under it, so newly produced frames are staged in pendingOutBuffer instead (promoted and
+// submitted by handleAsyncSendCompletion once the in-flight span drains).
+HttpMessageData& ProtocolOutput(ConnectionState& state) noexcept {
+#ifdef AERONET_IO_URING
+  if (state.asyncSendInFlight) {
+    return state.pendingOutBuffer;
+  }
+#endif
+  return state.outBuffer;
+}
 
 // Snapshot of immutable HttpServerConfig fields that require socket rebind or structural reinitialization.
 // These fields are captured before allowing config updates and silently restored afterward to prevent
@@ -222,6 +238,21 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(!state.waitingWritable);
+  // For async-recv connections there is no multishot poll registered; arm a one-shot
+  // poll that fires on EventOut.  When fired, the dispatcher will invoke
+  // handleWritableClient and writability is auto-deregistered (single-shot).
+  if (state.usesAsyncRecv) {
+    if (_eventLoop.submitPollOnce(cnxIt->fd(), EventOut)) [[likely]] {
+      state.waitingWritable = true;
+      ++_stats.deferredWriteEvents;
+      return true;
+    }
+    ++_stats.epollModFailures;
+    state.outBuffer.clear();
+    state.tunnelOrFileBuffer.clear();
+    state.requestDrainAndClose();
+    return false;
+  }
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
     state.waitingWritable = true;
     ++_connectionSweepState.writableConnections;
@@ -241,6 +272,12 @@ bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
 bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(state.waitingWritable);
+  // For async-recv: the one-shot writability poll auto-deregistered when it fired,
+  // so all we have to do is clear the bookkeeping flag.
+  if (state.usesAsyncRecv) {
+    state.waitingWritable = false;
+    return true;
+  }
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
     forgetWritableInterest(state);
     return true;
@@ -330,8 +367,9 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     // Consume processed bytes from input buffer
     pState->inBuffer.erase_front(result.bytesConsumed);
 
-    // Queue any pending output from the handler into outBuffer (no socket I/O yet)
-    if (handler.drainOutputBuffer(pState->outBuffer)) {
+    // Queue any pending output from the handler into outBuffer (or pendingOutBuffer while an
+    // async ring send owns outBuffer) — no socket I/O yet.
+    if (handler.drainOutputBuffer(ProtocolOutput(*pState))) {
       hasAccumulatedOutput = true;
     }
 
@@ -344,7 +382,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
         // If no bytes consumed, we need more data — flush and return
         if (result.bytesConsumed == 0) {
           if (hasAccumulatedOutput) {
-            flushOutbound(cnxIt);
+            flushProtocolOutput(cnxIt);
           }
           return pState->isAnyCloseRequested();
         }
@@ -358,7 +396,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
       case ProtocolProcessResult::Action::Close:
         // Protocol wants to close gracefully — flush GOAWAY etc. before closing
         if (hasAccumulatedOutput) {
-          flushOutbound(cnxIt);
+          flushProtocolOutput(cnxIt);
         }
         pState->requestDrainAndClose();
         return true;
@@ -366,7 +404,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
       case ProtocolProcessResult::Action::CloseImmediate:
         // Protocol error — flush any error frames then close immediately
         if (hasAccumulatedOutput) {
-          flushOutbound(cnxIt);
+          flushProtocolOutput(cnxIt);
         }
         log::warn("Protocol handler reported error");
         pState->requestDrainAndClose();
@@ -374,9 +412,10 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     }
   }
 
-  // Batch-flush all accumulated output frames in a single transport write.
+  // Batch-flush all accumulated output frames: one async ring send on eligible io_uring
+  // connections, otherwise a single synchronous transport write.
   if (hasAccumulatedOutput) {
-    flushOutbound(cnxIt);
+    flushProtocolOutput(cnxIt);
   }
 
   return pState->isAnyCloseRequested();
@@ -503,9 +542,11 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       state.protocol = ProtocolType::Http2;
       installH2TunnelBridge(cnxIt->fd(), state);
 
-      // Queue the upgrade response
+      // Queue the upgrade response. No async send can be in flight here (pipelined request
+      // parsing is gated on an empty outBuffer), so appending directly to outBuffer is safe;
+      // flushProtocolOutput then sends it through the ring on eligible connections.
       state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
-      flushOutbound(cnxIt);
+      flushProtocolOutput(cnxIt);
 
       log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->fd());
 
@@ -553,9 +594,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         state.protocolHandler = std::move(wsHandler);
         state.protocol = ProtocolType::WebSocket;
 
-        // Queue the upgrade response
+        // Queue the upgrade response (same reasoning as the h2c upgrade above: outBuffer is
+        // necessarily free of in-flight async sends here).
         state.outBuffer.append(upgrade::BuildWebSocketUpgradeResponse(upgradeValidation));
-        flushOutbound(cnxIt);
+        flushProtocolOutput(cnxIt);
 
         ++state.requestsServed;
         ++_stats.totalRequestsServed;
@@ -1126,7 +1168,16 @@ void SingleHttpServer::eventLoop() {
   } else if (!events.empty()) {
     for (auto event : events) {
       const auto fd = event.fd;
-      if (fd == _listenSocket.fd()) {
+      if (event.eventBmp & EventAccept) {
+        // io_uring completion-based accept: fd is already the accepted socket
+        // (SOCK_NONBLOCK | SOCK_CLOEXEC already set by the kernel). The multishot accept
+        // does not capture the peer address, so fetch it explicitly for client-address
+        // formatting and zerocopy decisions.
+        AeronetOnConnectionAccepted(fd);
+        sockaddr_storage peerAddress{};
+        GetPeerAddress(fd, peerAddress);
+        setupAcceptedConnection(Connection(BaseFd(fd)), peerAddress);
+      } else if (fd == _listenSocket.fd()) {
         // Always attempt to accept new connections when the listener is signaled.
         // The lifecycle controls higher-level acceptance semantics; accepting
         // here is safe and allows probes to connect during drain.
@@ -1155,12 +1206,36 @@ void SingleHttpServer::eventLoop() {
         }
 
         ConnectionState& eventState = _connections.connectionState(cnxIt);
+#ifdef AERONET_IO_URING
+        // Parked connection: closed from the server's point of view; consume the terminal
+        // recv/send CQEs so its buffers can finally be released. No other processing.
+        if (finishParkedConnectionCqe(cnxIt, bmp, event.bytesAvailable)) [[unlikely]] {
+          continue;
+        }
+#endif
         eventState.lastActivity = now;
         refreshKeepAliveDeadline(cnxIt);
 
         CloseStatus closeStatus = CloseStatus::Keep;
         if ((bmp & EventOut) != 0) {
+          // For async-recv connections, the writability poll is single-shot and the kernel
+          // auto-deregisters once it fires.  Clear waitingWritable BEFORE handleWritableClient
+          // so that downstream flush logic can re-arm submitPollOnce when a partial write occurs.
+          auto& cs = _connections.connectionState(cnxIt);
+          if (cs.usesAsyncRecv) {
+            cs.waitingWritable = false;
+          }
           closeStatus = handleWritableClient(cnxIt);
+        }
+#ifdef AERONET_IO_URING
+        if ((bmp & EventSendComplete) != 0) {
+          closeStatus = std::max(handleAsyncSendCompletion(cnxIt, event.bytesAvailable), closeStatus);
+        }
+#endif
+        if ((bmp & EventDataArrived) != 0) {
+#ifdef AERONET_IO_URING
+          closeStatus = std::max(handleAsyncRecvCompletion(cnxIt, event.bytesAvailable), closeStatus);
+#endif
         }
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
@@ -1292,9 +1367,9 @@ void SingleHttpServer::updateMaintenanceTimer() {
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
 #ifndef AERONET_WINDOWS
-    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
+    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) / io_uring cancel are kernel-level thread-safe,
     // so removing the fd from the event loop while the poll thread is blocked is fine.
-    _eventLoop.del(_listenSocket.fd());
+    _eventLoop.cancelAccept(_listenSocket.fd());
 #endif
     // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
     // Calling it from a different thread while WSAPoll() is blocked is a data race.
@@ -1317,6 +1392,37 @@ void SingleHttpServer::closeAllConnections() {
     if (*cnxIt) {
       closeConnection(cnxIt);
     }
+  }
+#endif
+#ifdef AERONET_IO_URING
+  // Connections with async recv/send CQEs in flight were parked by releaseConnection: the
+  // kernel still references their buffers. Drive the ring until the terminal CQEs are
+  // harvested (their sockets are already shut down, so they complete at the first enter),
+  // otherwise the buffers would be freed while the kernel can still touch them.
+  for (int attempt = 0; attempt < 16 && !_connections.empty(); ++attempt) {
+    if (attempt == 4) {
+      // Give pending sends a few rounds to deliver their queued output, then abort them —
+      // the server is stopping and a peer that stopped reading must not delay shutdown.
+      for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
+        if (*cnxIt) {
+          ShutdownReadWrite(cnxIt->fd());
+        }
+      }
+    }
+    for (const auto event : _eventLoop.poll()) {
+      if ((event.eventBmp & EventAccept) != 0) {
+        // Stray accept raced with listener shutdown; close the orphaned fd.
+        _eventLoop.submitClose(event.fd);
+        continue;
+      }
+      const auto cnxIt = _connections.iterator(event.fd);
+      if (IsValid(_connections, cnxIt)) {
+        finishParkedConnectionCqe(cnxIt, event.eventBmp, event.bytesAvailable);
+      }
+    }
+  }
+  if (!_connections.empty()) [[unlikely]] {
+    log::warn("{} connection(s) still awaiting io_uring CQEs at shutdown", _connections.size());
   }
 #endif
 }
@@ -1626,8 +1732,8 @@ void SingleHttpServer::applyPendingUpdates() {
             auto* pH2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
             if (pH2Handler->resumeAsyncTaskByHandle(cb.handle)) {
               // Flush any pending output generated by the completed async handler
-              if (pH2Handler->drainOutputBuffer(state.outBuffer)) {
-                flushOutbound(it);
+              if (pH2Handler->drainOutputBuffer(ProtocolOutput(state))) {
+                flushProtocolOutput(it);
               }
             }
             continue;
@@ -1786,7 +1892,7 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
 
   // Immediately flush the server preface (SETTINGS frame) that was queued during handler creation
   // For TLS ALPN "h2", the server must send SETTINGS before the client sends any data
-  state.protocolHandler->drainOutputBuffer(state.outBuffer);
+  state.protocolHandler->drainOutputBuffer(ProtocolOutput(state));
 }
 
 NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host,
@@ -1863,8 +1969,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionIt
     }
 
     // Flush the HTTP/2 handler's output through the client connection.
-    if (pH2Handler->drainOutputBuffer(peerState.outBuffer)) {
-      flushOutbound(peerIt);
+    if (pH2Handler->drainOutputBuffer(ProtocolOutput(peerState))) {
+      flushProtocolOutput(peerIt);
     }
 
     // If we hit EAGAIN, we are done for now.
