@@ -93,6 +93,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   EXPECT_TRUE(echoed.contains(payload));
 
   // now simulate some epoll mod failures, server should be able to recover from these
+#ifndef AERONET_IO_URING
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
   try {
@@ -107,6 +108,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
     // tunneled data survives fault injection.
     log::error("Caught exception during send/recv with epoll_ctl MOD failures: {}", ex.what());
   }
+#endif
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {

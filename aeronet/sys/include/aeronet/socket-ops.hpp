@@ -98,6 +98,11 @@ uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) n
 // Returns the number of bytes sent, or -1 on error (errno is set).
 int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept;
 
+// Shutdown the read half of a socket connection (pending reads complete with EOF;
+// buffered outbound data can still be delivered).
+// Returns true on success, false on error (errno is set).
+bool ShutdownRead(NativeHandle fd) noexcept;
+
 // Shutdown the write half of a socket connection.
 // Returns true on success, false on error (errno is set).
 bool ShutdownWrite(NativeHandle fd) noexcept;
