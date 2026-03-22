@@ -72,6 +72,8 @@ struct Ipv4Endpoint {
   uint16_t port{0};
 };
 
+#ifndef AERONET_IO_URING
+
 bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
@@ -220,6 +222,8 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
   }
   return false;
 }
+
+#endif
 
 }  // namespace
 
@@ -1417,6 +1421,10 @@ TEST(SingleHttpServer, MultipleResponseMiddleware) {
   ts.router() = Router();  // Clear middlewares for other tests
 }
 
+#ifndef AERONET_IO_URING
+// The following tests inject epoll_ctl / epoll_wait failures via LD_PRELOAD hooks.
+// They are not applicable to the io_uring backend which does not use epoll.
+
 // Test epoll_ctl MOD failure handling - simulates EBADF (benign) error
 // This test verifies that when epoll_ctl MOD operations fail, the server handles
 // them gracefully. While the normal HTTP request/response flow may not always trigger
@@ -1541,6 +1549,7 @@ TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
   ASSERT_TRUE(WaitForPeerClosedNonBlocking(clientFd, 1s));
   test::ResetIoActions();
 }
+#endif  // !AERONET_IO_URING
 
 // =============================================================================
 // Http1WriterTransport coverage tests
@@ -1576,6 +1585,10 @@ TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
   bool firstWriteOk = false;
   bool secondWriteOk = true;
 
+  // Record accept count before creating localTs so we can wait for its readiness-probe
+  // accept to be fully processed (io_uring multishot accept is asynchronous).
+  const auto prevAcceptCount = test::g_accept_count.load(std::memory_order_acquire);
+
   test::TestServer localTs(TestServerConfig());
   localTs.router().setDefault([&firstWriteOk, &secondWriteOk](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
@@ -1584,6 +1597,15 @@ TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
     secondWriteOk = writer.writeBody("second-chunk");
     writer.end();
   });
+
+  // Wait for the readiness-probe accept to be processed before pushing install actions.
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (test::g_accept_count.load(std::memory_order_acquire) > prevAcceptCount) {
+      break;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
 
   // Inject write failure after the first writev (headers + first chunk)
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{

@@ -17,8 +17,11 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/accept-callouts.hpp"
 #include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
@@ -219,6 +222,21 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
 bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(!state.waitingWritable);
+  // For async-recv connections there is no multishot poll registered; arm a one-shot
+  // poll that fires on EventOut.  When fired, the dispatcher will invoke
+  // handleWritableClient and writability is auto-deregistered (single-shot).
+  if (state.usesAsyncRecv) {
+    if (_eventLoop.submitPollOnce(cnxIt->fd(), EventOut)) [[likely]] {
+      state.waitingWritable = true;
+      ++_stats.deferredWriteEvents;
+      return true;
+    }
+    ++_stats.epollModFailures;
+    state.outBuffer.clear();
+    state.tunnelOrFileBuffer.clear();
+    state.requestDrainAndClose();
+    return false;
+  }
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
     state.waitingWritable = true;
     ++_connectionSweepState.writableConnections;
@@ -238,6 +256,12 @@ bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
 bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(state.waitingWritable);
+  // For async-recv: the one-shot writability poll auto-deregistered when it fired,
+  // so all we have to do is clear the bookkeeping flag.
+  if (state.usesAsyncRecv) {
+    state.waitingWritable = false;
+    return true;
+  }
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
     forgetWritableInterest(state);
     return true;
@@ -1117,7 +1141,12 @@ void SingleHttpServer::eventLoop() {
   } else if (!events.empty()) {
     for (auto event : events) {
       const auto fd = event.fd;
-      if (fd == _listenSocket.fd()) {
+      if (event.eventBmp & EventAccept) {
+        // io_uring completion-based accept: fd is already the accepted socket
+        // (SOCK_NONBLOCK | SOCK_CLOEXEC already set by the kernel).
+        AeronetOnConnectionAccepted(fd);
+        setupAcceptedConnection(Connection(BaseFd(fd)));
+      } else if (fd == _listenSocket.fd()) {
         // Always attempt to accept new connections when the listener is signaled.
         // The lifecycle controls higher-level acceptance semantics; accepting
         // here is safe and allows probes to connect during drain.
@@ -1151,7 +1180,19 @@ void SingleHttpServer::eventLoop() {
 
         CloseStatus closeStatus = CloseStatus::Keep;
         if ((bmp & EventOut) != 0) {
+          // For async-recv connections, the writability poll is single-shot and the kernel
+          // auto-deregisters once it fires.  Clear waitingWritable BEFORE handleWritableClient
+          // so that downstream flush logic can re-arm submitPollOnce when a partial write occurs.
+          auto& cs = _connections.connectionState(cnxIt);
+          if (cs.usesAsyncRecv) {
+            cs.waitingWritable = false;
+          }
           closeStatus = handleWritableClient(cnxIt);
+        }
+        if ((bmp & EventDataArrived) != 0) {
+#ifdef AERONET_IO_URING
+          closeStatus = std::max(handleAsyncRecvCompletion(cnxIt, event.bytesAvailable), closeStatus);
+#endif
         }
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
@@ -1283,9 +1324,9 @@ void SingleHttpServer::updateMaintenanceTimer() {
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
 #ifndef AERONET_WINDOWS
-    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
+    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) / io_uring cancel are kernel-level thread-safe,
     // so removing the fd from the event loop while the poll thread is blocked is fine.
-    _eventLoop.del(_listenSocket.fd());
+    _eventLoop.cancelAccept(_listenSocket.fd());
 #endif
     // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
     // Calling it from a different thread while WSAPoll() is blocked is a data race.

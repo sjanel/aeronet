@@ -50,9 +50,13 @@ class EventLoop {
 
   struct EventFd {
     constexpr EventFd(NativeHandle fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
+#if !defined(AERONET_LINUX) || defined(AERONET_IO_URING)
+    EventFd(NativeHandle fd, EventBmp eventBmp, int32_t bytesAvailable)
+        : eventBmp(eventBmp), fd(fd), bytesAvailable(bytesAvailable) {}
+#endif
 
     EventBmp eventBmp;
-#ifdef AERONET_LINUX
+#if defined(AERONET_LINUX) && !defined(AERONET_IO_URING)
     // Layout mirrors epoll_event exactly; sizes derived from epoll_event via offsetof/sizeof.
     // The static_assert in event-loop.cpp validates the result at compile time.
     [[no_unique_address]] detail::EpollPad<offsetof(epoll_event, data.fd) - sizeof(EventBmp)> _pre_fd_pad;
@@ -61,6 +65,11 @@ class EventLoop {
         _post_fd_pad;
 #else
     NativeHandle fd;
+#ifdef AERONET_POSIX
+    // Number of bytes ready in the connection's recv buffer when EventDataArrived is set.
+    // Negative values reserved for future use; zero means orderly EOF when EventDataArrived is set.
+    int32_t bytesAvailable{0};
+#endif
 #endif
   };
 
@@ -100,6 +109,43 @@ class EventLoop {
   // Log on error.
   void del(NativeHandle fd);
 
+  // Submit a completion-based accept on the given listen socket.
+  // On io_uring: submits IORING_OP_ACCEPT (multishot). Accepted fds are delivered as
+  //   EventFd{newFd, EventAccept} in subsequent poll() calls.
+  // On other backends: equivalent to add(EventFd{listenFd, EventIn}) — caller must
+  //   still call accept() when the listen fd becomes readable.
+  // Returns true on success.
+  [[nodiscard]] bool submitAccept(NativeHandle listenFd);
+
+  // Cancel a previously submitted multishot accept on the given listen socket.
+  // On io_uring: cancels the outstanding IORING_OP_ACCEPT SQE.
+  // On other backends: equivalent to del(listenFd).
+  void cancelAccept(NativeHandle listenFd);
+
+  // Close an fd asynchronously.
+  // On io_uring: queues IORING_OP_CLOSE (non-blocking, batched with next poll cycle).
+  //   The caller must have released ownership of the fd (e.g. via Connection::release())
+  //   to prevent double-close from RAII destructors.
+  // On other backends: calls ::close(fd) synchronously.
+  void submitClose(NativeHandle fd);
+
+  // Submit an asynchronous recv (io_uring proactor mode) for the given fd into the user-provided
+  // buffer.  When data arrives, the next poll() returns an EventFd with `EventDataArrived` set
+  // and `bytesAvailable` equal to the number of bytes the kernel wrote into `buf`
+  // (0 means orderly EOF, negative reserved). The caller must keep `buf` valid until the
+  // corresponding CQE is harvested.
+  // Returns true if the SQE was queued successfully.  Only available on io_uring backend;
+  // other backends return false (caller must use add()/poll-based reads).
+  [[nodiscard]] bool submitRecv(NativeHandle fd, char* buf, std::size_t len);
+
+  // Submit a single-shot poll (io_uring proactor mode) for the given fd and event mask.
+  // Used by callers that registered the fd via submitRecv() (and thus do NOT have a
+  // multishot poll active) to wait for writability when a write would block.
+  // The CQE is delivered as a normal poll EventFd in the next poll() and the wait is
+  // automatically deregistered.
+  // Returns true on success.  On non-io_uring backends, returns false.
+  [[nodiscard]] bool submitPollOnce(NativeHandle fd, EventBmp mask);
+
   // Polls for ready events up to the poll timeout.
   //
   // Returns a span over an internal, reusable buffer (no allocations on the hot path).
@@ -121,11 +167,26 @@ class EventLoop {
   // Update the fixed or adaptive poll timeout policy.
   void updatePollTimeoutPolicy(PollTimeoutPolicy timeoutPolicy) { _timeout = AdaptivePollTimeout(timeoutPolicy); }
 
+  // Returns an opaque pointer to the I/O io_uring ring (for data-path read/write/splice/send_zc).
+  // Returns nullptr when io_uring is not active.
+  [[nodiscard]] void* ioRing() const noexcept;
+
+  // Returns the read end of the internal splice pipe (for IORING_OP_SPLICE sendfile replacement).
+  // Returns kInvalidHandle when io_uring is not active.
+  [[nodiscard]] NativeHandle splicePipeRead() const noexcept;
+
+  // Returns the write end of the internal splice pipe (for IORING_OP_SPLICE sendfile replacement).
+  // Returns kInvalidHandle when io_uring is not active.
+  [[nodiscard]] NativeHandle splicePipeWrite() const noexcept;
+
  private:
   uint32_t _nbAllocatedEvents = 0;
   AdaptivePollTimeout _timeout;
   BaseFd _baseFd;
   void* _pEvents = nullptr;
+#ifdef AERONET_IO_URING
+  void* _pRing = nullptr;  // heap-allocated struct io_uring for event notifications (poll/accept/cancel/close)
+#endif
 #ifdef AERONET_WINDOWS
   void* _pPollFds = nullptr;   // WSAPOLLFD registration array for WSAPoll()
   uint32_t _nbRegistered = 0;  // number of fds currently registered

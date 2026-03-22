@@ -27,11 +27,13 @@
 - **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
 - **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
 - Enforce backpressure correctness to avoid overload and wasted work.
+- Focus on cache locality in hot paths; measure before/after.
+- Profile and optimize HTTP/2 HPACK decoding (currently identified as optimization candidate).
+- `io_uring` support for Linux: Phase 1 (readiness-based poll replacement), Phase 2 (data I/O: recv/send/sendmsg via dedicated Ring B, zerocopy send_zc/sendmsg_zc, per-fd callout for test compatibility), and Phase 3 (SQE batching + async close, E2E benchmarks) are implemented. Splice file transfer (`IORING_OP_SPLICE`) is implemented but disabled due to shared-pipe backpressure issues with non-blocking sockets; regular `sendfile()` is used instead. Future work: registered files (`IORING_REGISTER_FILES`), registered buffers (`IORING_REGISTER_BUFFERS`), per-connection pipe pairs for splice re-enablement.
 
 #### Low priority / specialized
 
 - **Pre-computed static file response headers** - response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
-- `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
 #### Benchmark gaps
 

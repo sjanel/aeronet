@@ -13,6 +13,12 @@ target_link_libraries(aeronet_sys
     PUBLIC aeronet_tech
 )
 
+if(AERONET_ENABLE_IO_URING)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(URING REQUIRED IMPORTED_TARGET liburing)
+    target_link_libraries(aeronet_sys PUBLIC PkgConfig::URING)
+endif()
+
 if(WIN32)
     target_link_libraries(aeronet_sys PUBLIC ws2_32 mswsock)
 endif()

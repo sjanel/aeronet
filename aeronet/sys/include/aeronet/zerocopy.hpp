@@ -89,6 +89,17 @@ ZeroCopyEnableResult EnableZeroCopy(NativeHandle fd) noexcept;
 /// @return Number of completions processed (may be 0 if none ready)
 std::size_t PollZeroCopyCompletions(NativeHandle fd, ZeroCopyState& state) noexcept;
 
+#ifdef AERONET_IO_URING
+/// io_uring SEND_ZC-based zerocopy send (single buffer).
+/// Waits synchronously for both send completion and buffer notification CQEs.
+/// Returns bytes sent (>= 0) or -1 on error (errno set).
+[[nodiscard]] int64_t IoUringSendZc(void* ioRing, NativeHandle fd, std::string_view data) noexcept;
+
+/// io_uring SEND_ZC-based zerocopy send (scatter-gather, two buffers).
+[[nodiscard]] int64_t IoUringSendZc(void* ioRing, NativeHandle fd, std::string_view firstBuf,
+                                    std::string_view secondBuf) noexcept;
+#endif
+
 #else
 // Non-Linux stubs - zerocopy is Linux-specific
 

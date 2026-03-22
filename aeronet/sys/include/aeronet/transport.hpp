@@ -100,9 +100,10 @@ class ITransport {
 
 // Plain transport directly operates on a non-blocking fd.
 // Supports optional MSG_ZEROCOPY for large payloads on Linux.
+// When io_uring is enabled, read/write operations are submitted through a dedicated I/O ring.
 class PlainTransport final : public ITransport {
  public:
-  PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy);
+  PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy, void* ioRing = nullptr);
 
   TransportResult read(char* buf, std::size_t len) override;
 
@@ -110,6 +111,11 @@ class PlainTransport final : public ITransport {
 
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
+
+#ifdef AERONET_IO_URING
+ private:
+  void* _ioRing = nullptr;  // opaque io_uring I/O ring pointer (nullptr = use direct syscalls)
+#endif
 };
 
 }  // namespace aeronet
