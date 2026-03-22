@@ -362,7 +362,9 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
   }
 #endif
 
-  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
+  if (!_eventLoop.submitAccept(listenFd)) {
+    throw std::runtime_error("EventLoop submitAccept failed");
+  }
   _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
 
   updateMaintenanceTimer();
@@ -380,6 +382,10 @@ bool SingleHttpServer::prepareRun() {
   if (!_listenSocket) {
     initListener();
   }
+  // prepareRun executes on the polling thread: rebind the event loop if a restarted server
+  // reuses its listener + EventLoop from a previous run on another thread (io_uring rings
+  // are bound to their first submitter thread).
+  _eventLoop.prepareForLoopThread();
   if (!isInMultiHttpServer()) {
     // In MultiHttpServer, logging is done at that level instead.
     log::info("Server running on port :{}", port());
@@ -415,6 +421,9 @@ void SingleHttpServer::runStarted() {
   while (_lifecycle.isActive()) {
     eventLoop();
   }
+#ifdef AERONET_IO_URING
+  drainRingAtLoopExit();
+#endif
 }
 
 void SingleHttpServer::run() {
@@ -445,6 +454,9 @@ void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
   // A predicate can become true after eventLoop() returns, bypassing the teardown normally performed inside it.
   // Close all network resources before leaving runUntil() on every platform. This must remain on the event-loop
   // thread because Windows WSAPoll registrations cannot be mutated safely by the controller thread.
+#ifdef AERONET_IO_URING
+  drainRingAtLoopExit();
+#endif
   if (_lifecycle.isActive()) {
     closeListener();
     closeAllConnections();

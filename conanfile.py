@@ -37,6 +37,7 @@ class AeronetConan(ConanFile):
         "with_zstd": [True, False],
         "with_opentelemetry": [True, False],
         "with_glaze": [True, False],
+        "with_io_uring": [True, False],
     }
     default_options = {
         "shared": False,
@@ -49,6 +50,7 @@ class AeronetConan(ConanFile):
         "with_zstd": False,
         "with_opentelemetry": False,
         "with_glaze": False,
+        "with_io_uring": False,
     }
     exports_sources = (
         "CMakeLists.txt",
@@ -85,6 +87,9 @@ class AeronetConan(ConanFile):
         )
         tc.variables["AERONET_ENABLE_GLAZE"] = (
             "ON" if self.options.with_glaze else "OFF"
+        )
+        tc.variables["AERONET_ENABLE_IO_URING"] = (
+            "ON" if self.options.with_io_uring else "OFF"
         )
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
@@ -127,6 +132,8 @@ class AeronetConan(ConanFile):
             self.requires("protobuf/[~5.27]")
         if self.options.with_glaze:
             self.requires("glaze/7.0.2")
+        if self.options.with_io_uring:
+            self.requires("liburing/[~2.5]")
 
     def package(self):
         cm = CMake(self)
