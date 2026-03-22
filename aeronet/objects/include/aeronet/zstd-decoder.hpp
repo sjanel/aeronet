@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string_view>
 
+#include "aeronet/buffer-cache.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -27,6 +28,7 @@ class ZstdDecoderContext {
   void init();
 
  private:
+  internal::BufferCache _cache;
   void* _pState{};
 };
 
