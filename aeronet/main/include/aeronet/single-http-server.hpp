@@ -455,6 +455,7 @@ class SingleHttpServer {
   void sweepIdleConnections();
   void applyPendingUpdates();
   void acceptNewConnections();
+  void setupAcceptedConnection(Connection cnx);
 
   enum class CloseStatus : uint8_t { Keep, Close };
 
@@ -462,6 +463,17 @@ class SingleHttpServer {
   CloseStatus handleWritableClient(ConnectionIt cnxIt);
   // Returns true if connection has been closed, false otherwise.
   CloseStatus handleReadableClient(ConnectionIt cnxIt);
+
+  // Process the completion of an io_uring async recv: updates inBuffer with the bytes the
+  // kernel deposited (or schedules close on EOF/error), runs the input pipeline, and re-arms
+  // a new recv SQE if the connection is kept alive.
+  CloseStatus handleAsyncRecvCompletion(ConnectionIt cnxIt, int32_t bytesAvailable);
+
+  // Re-submit an async recv SQE for an already-armed connection (caller must have ensured
+  // state.usesAsyncRecv == true and that no other recv is currently in flight).
+  // Returns true if submission succeeded; on failure the connection has been transitioned to
+  // synchronous reads with multishot poll registered.
+  bool armAsyncRecv(ConnectionIt cnxIt);
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.

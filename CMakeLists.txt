@@ -163,6 +163,18 @@ option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)
 option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
 option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ON)
 
+# Linux-only: use io_uring instead of epoll for the event loop.
+# Requires liburing and Linux kernel >= 5.19.
+# Enabled by default in Release builds for optimal performance.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_IO_URING_DEFAULT ON)
+  else()
+    set(_IO_URING_DEFAULT OFF)
+  endif()
+  option(AERONET_ENABLE_IO_URING "Use io_uring instead of epoll for the Linux event loop" ${_IO_URING_DEFAULT})
+endif()
+
 # zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
 # You can disable it in favor of classic zlib by setting this option to OFF.
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)

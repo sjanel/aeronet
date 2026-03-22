@@ -185,6 +185,14 @@ struct ConnectionState {
   bool shutdownWritePending{false};  // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
   bool eofReceived{false};           // true when transportRead returned 0 (EOF)
   bool corkable{false};              // true when TCP_NODELAY is active; enables TCP_CORK coalescing
+  // True when this connection consumes inbound data via io_uring async recv (proactor).
+  // When true, the event loop has neither registered a multishot poll nor performs synchronous
+  // transport reads on this fd; instead a recv SQE is submitted, and EventDataArrived CQEs are
+  // delivered to the dispatcher.
+  bool usesAsyncRecv{false};
+  // True when an async recv SQE is currently in flight in the kernel for this connection.
+  // Used to avoid double-submission and to know when it is safe to grow inBuffer capacity.
+  bool asyncRecvInFlight{false};
 
   // Current protocol type. Http11 by default, changes after successful upgrade.
   ProtocolType protocol{ProtocolType::Http11};

@@ -241,219 +241,254 @@ void SingleHttpServer::acceptNewConnections() {
   // will be accepted on the next EPOLLIN on the listen socket.
   const auto maxAcceptBatch = _config.maxAcceptBatchSize;
   assert(maxAcceptBatch > 0);
-  for (decltype(_config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch;) {
+  for (decltype(_config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch; ++accepted) {
     Connection cnx(_listenSocket);
     if (!cnx) {
       // no more waiting connections
       break;
     }
-    const auto cnxFd = cnx.fd();
-    bool tcpNoDelayActive = false;
-    if (_config.tcpNoDelay == TcpNoDelayMode::Enabled) {
-      if (SetTcpNoDelay(cnxFd)) [[likely]] {
-        tcpNoDelayActive = true;
-      } else {
-        const auto err = LastSystemError();
-        log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", cnxFd, err);
-        _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
-      }
+    setupAcceptedConnection(std::move(cnx));
+  }
+}
+
+void SingleHttpServer::setupAcceptedConnection(Connection cnx) {
+  const auto cnxFd = cnx.fd();
+  bool tcpNoDelayActive = false;
+  if (_config.tcpNoDelay == TcpNoDelayMode::Enabled) {
+    if (SetTcpNoDelay(cnxFd)) [[likely]] {
+      tcpNoDelayActive = true;
+    } else {
+      const auto err = LastSystemError();
+      log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", cnxFd, err);
+      _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
     }
+  }
+  // Decide read strategy up-front so we don't waste a poll registration we'd immediately tear down.
+  // Async-recv (io_uring proactor) is used for non-TLS connections to avoid per-event read syscalls.
+#if defined(AERONET_IO_URING) && defined(AERONET_ENABLE_OPENSSL)
+  const bool wantsAsyncRecv = !_tls.ctxHolder;
+#elif defined(AERONET_IO_URING)
+  constexpr bool wantsAsyncRecv = true;
+#else
+  constexpr bool wantsAsyncRecv = false;
+#endif
+  if (!wantsAsyncRecv) {
     if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
       _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
-      continue;
+      return;
     }
+  }
 
-    auto cnxIt = _connections.emplace(std::move(cnx));
+  auto cnxIt = _connections.emplace(std::move(cnx));
 
-    _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
+  _telemetry.counterAdd("aeronet.connections.accepted", 1UL);
 
-    ConnectionState& state = _connections.connectionState(cnxIt);
+  ConnectionState& state = _connections.connectionState(cnxIt);
 
-    state.initializeStateNewConnection(_config, cnxFd, _compressionState);
+  state.initializeStateNewConnection(_config, cnxFd, _compressionState);
 
-    // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
-    state.corkable = tcpNoDelayActive;
+  // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
+  state.corkable = tcpNoDelayActive;
 
-    ZerocopyMode zerocopyMode = _config.zerocopyMode;
-    if (!state.zerocopyRequested) {
-      zerocopyMode = ZerocopyMode::Disabled;
-    }
+  ZerocopyMode zerocopyMode = _config.zerocopyMode;
+  if (!state.zerocopyRequested) {
+    zerocopyMode = ZerocopyMode::Disabled;
+  }
 
 #ifdef AERONET_ENABLE_OPENSSL
-    if (_tls.ctxHolder) {
-      // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
-      // Rejections happen before allocating OpenSSL objects.
-      if (_config.tls.maxConcurrentHandshakes != 0 && _tls.handshakesInFlight >= _config.tls.maxConcurrentHandshakes)
-          [[unlikely]] {
-        ++_tls.metrics.handshakesRejectedConcurrency;
-        IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedConcurrency);
-        EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
-                              kTlsHandshakeFailureReasonRejectedConcurrency);
-        closeConnection(cnxIt);
-        continue;
-      }
-      if (_config.tls.handshakeRateLimitPerSecond != 0) {
-        const auto burst = (_config.tls.handshakeRateLimitBurst != 0) ? _config.tls.handshakeRateLimitBurst
-                                                                      : _config.tls.handshakeRateLimitPerSecond;
-        const auto now = state.lastActivity;
-        if (_tls.rateLimitLastRefill.time_since_epoch().count() == 0) {
-          _tls.rateLimitLastRefill = now;
-          _tls.rateLimitTokens = burst;
-        }
-        const auto elapsed = now - _tls.rateLimitLastRefill;
-        const auto addIntervals = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-        if (addIntervals > 0) {
-          const uint32_t addTokens = static_cast<uint32_t>(addIntervals) * _config.tls.handshakeRateLimitPerSecond;
-          _tls.rateLimitTokens = std::min(burst, _tls.rateLimitTokens + addTokens);
-          _tls.rateLimitLastRefill += std::chrono::seconds{addIntervals};
-        }
-        if (_tls.rateLimitTokens == 0) [[unlikely]] {
-          ++_tls.metrics.handshakesRejectedRateLimit;
-          IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedRateLimit);
-          EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
-                                kTlsHandshakeFailureReasonRejectedRateLimit);
-          closeConnection(cnxIt);
-          continue;
-        }
-        --_tls.rateLimitTokens;
-      }
-
-      state.tlsContextKeepAlive = _tls.ctxHolder;
-      state.tlsHandshakeInFlight = true;
-      state.tlsHandshakeObserver = {};
-      state.tlsHandshakeEventEmitted = false;
-
-      SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tls.ctxHolder->raw());
-      SslPtr sslPtr(AeronetSslNew(ctx), ::SSL_free);
-      if (sslPtr.get() == nullptr) [[unlikely]] {
-        log::error("SSL_new failed for fd # {}", cnxFd);
-        FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
-                             kTlsHandshakeFailureReasonSslNewFailed);
-        closeConnection(cnxIt);
-        continue;
-      }
-
-      // Install per-connection observer for OpenSSL callbacks.
-      if (SetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(sslPtr.get()), &state.tlsHandshakeObserver) != 1)
-          [[unlikely]] {
-        log::error("SSL_set_ex_data failed to install TLS handshake observer for fd # {}", cnxFd);
-        // Treat this as a handshake failure: record metrics, emit event, and close the connection.
-        FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
-                             kTlsHandshakeFailureReasonSetExDataFailed);
-        closeConnection(cnxIt);
-        continue;
-      }
-
-      // OpenSSL's SSL_set_fd takes int; on Windows SOCKET is UINT_PTR but the value
-      // round-trips safely through int for sockets allocated by the OS.
-      if (AeronetSslSetFd(sslPtr.get(), static_cast<int>(cnxFd)) != 1) [[unlikely]] {  // associate
-        log::error("SSL_set_fd failed for fd # {}", cnxFd);
-        FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
-                             kTlsHandshakeFailureReasonSslSetFdFailed);
-        closeConnection(cnxIt);
-        continue;
-      }
-      // Enable partial writes: SSL_write will return after writing some data rather than
-      // trying to write everything. This is crucial for non-blocking I/O performance.
-      SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-      ::SSL_set_accept_state(sslPtr.get());
-      state.transport = std::make_unique<TlsTransport>(std::move(sslPtr), _config.zerocopyMinBytes);
-      state.tlsInfo.handshakeStart = state.lastActivity;
-      ++_tls.handshakesInFlight;
-    } else {
-      state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
-    }
-#else
-    state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
-#endif
-    ConnectionState* pCnx = &state;
-    std::size_t bytesReadThisEvent = 0;
-    while (true) {
-      const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
-      assert(chunkSize > 0);
-      const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
-      // Check for handshake completion
-      // If the TLS handshake completed during the preceding transportRead, finalize it
-      // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
-      // metrics/state. This must be done even if the same read later returns an error or
-      // EOF - the handshake result is valuable and should be recorded before any
-      // connection teardown logic runs.
-      // Note: this is a transition action (handshakePending -> done) rather than a
-      // normal successful-read action, so it intentionally runs prior to evaluating
-      // transport error/EOF handling below.
-      if (finalizeTlsHandshakeIfReady(cnxFd, *pCnx)) {
-        closeConnection(cnxIt);
-        pCnx = nullptr;
-        break;
-      }
-      if (pCnx->waitingForBody && bytesRead > 0) {
-        pCnx->bodyLastActivityMs = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - pCnx->headerStartTp).count());
-      }
-      // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
-      if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
-        if (want == TransportHint::Error) [[unlikely]] {
-          log::error("Closing connection fd # {} bytesRead={} want={} err={}", cnxFd, bytesRead, static_cast<int>(want),
-                     LastSystemError());
-#ifdef AERONET_ENABLE_OPENSSL
-          if (_tls.ctxHolder) {
-            auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
-            if (tlsTr != nullptr) {
-              const SSL* ssl = tlsTr->rawSsl();
-              if (ssl != nullptr) {
-                const char* ver = ::SSL_get_version(ssl);
-                const char* cipher = ::SSL_get_cipher_name(ssl);
-                log::error("TLS state fd # {} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
-                           (cipher != nullptr) ? cipher : "?");
-              }
-              tlsTr->logErrorIfAny();
-            }
-          }
-#endif
-        }
-
-#ifdef AERONET_ENABLE_OPENSSL
-        CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
-                       want);
-#endif
-        closeConnection(cnxIt);
-        pCnx = nullptr;
-        break;
-      }
-      if (want != TransportHint::None) {
-        // Transport indicates we should wait for readability or writability before continuing.
-        // Adjust epoll interest if TLS handshake needs write readiness
-        if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventRdHup | EventEt});
-        }
-        break;
-      }
-      bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
-      _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-      if (bytesRead < chunkSize) {
-        // For TLS transports: OpenSSL may hold already-decrypted data in its
-        // internal buffer that the kernel socket no longer signals via epoll
-        // (critical with EPOLLET).  Continue reading if the transport reports
-        // pending data — otherwise the server would stall until the peer sends
-        // more, causing severe throughput degradation with few connections.
-        if (!pCnx->transport->hasPendingReadData()) {
-          break;
-        }
-      }
-      if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
-        break;
-      }
-    }
-    if (pCnx == nullptr) {
-      continue;
-    }
-
-    const bool closeNow = processConnectionInput(cnxIt);
-    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
+  if (_tls.ctxHolder) {
+    // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
+    // Rejections happen before allocating OpenSSL objects.
+    if (_config.tls.maxConcurrentHandshakes != 0 && _tls.handshakesInFlight >= _config.tls.maxConcurrentHandshakes)
+        [[unlikely]] {
+      ++_tls.metrics.handshakesRejectedConcurrency;
+      IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedConcurrency);
+      EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
+                            kTlsHandshakeFailureReasonRejectedConcurrency);
       closeConnection(cnxIt);
+      return;
+    }
+    if (_config.tls.handshakeRateLimitPerSecond != 0) {
+      const auto burst = (_config.tls.handshakeRateLimitBurst != 0) ? _config.tls.handshakeRateLimitBurst
+                                                                    : _config.tls.handshakeRateLimitPerSecond;
+      const auto now = state.lastActivity;
+      if (_tls.rateLimitLastRefill.time_since_epoch().count() == 0) {
+        _tls.rateLimitLastRefill = now;
+        _tls.rateLimitTokens = burst;
+      }
+      const auto elapsed = now - _tls.rateLimitLastRefill;
+      const auto addIntervals = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+      if (addIntervals > 0) {
+        const uint32_t addTokens = static_cast<uint32_t>(addIntervals) * _config.tls.handshakeRateLimitPerSecond;
+        _tls.rateLimitTokens = std::min(burst, _tls.rateLimitTokens + addTokens);
+        _tls.rateLimitLastRefill += std::chrono::seconds{addIntervals};
+      }
+      if (_tls.rateLimitTokens == 0) [[unlikely]] {
+        ++_tls.metrics.handshakesRejectedRateLimit;
+        IncrementTlsFailureReason(_tls.metrics, kTlsHandshakeFailureReasonRejectedRateLimit);
+        EmitTlsHandshakeEvent(state.tlsInfo, _callbacks.tlsHandshake, TlsHandshakeEvent::Result::Rejected, cnxFd,
+                              kTlsHandshakeFailureReasonRejectedRateLimit);
+        closeConnection(cnxIt);
+        return;
+      }
+      --_tls.rateLimitTokens;
     }
 
-    ++accepted;
+    state.tlsContextKeepAlive = _tls.ctxHolder;
+    state.tlsHandshakeInFlight = true;
+    state.tlsHandshakeObserver = {};
+    state.tlsHandshakeEventEmitted = false;
+
+    SSL_CTX* ctx = reinterpret_cast<SSL_CTX*>(_tls.ctxHolder->raw());
+    SslPtr sslPtr(AeronetSslNew(ctx), ::SSL_free);
+    if (sslPtr.get() == nullptr) [[unlikely]] {
+      log::error("SSL_new failed for fd # {}", cnxFd);
+      FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd, kTlsHandshakeFailureReasonSslNewFailed);
+      closeConnection(cnxIt);
+      return;
+    }
+
+    // Install per-connection observer for OpenSSL callbacks.
+    if (SetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(sslPtr.get()), &state.tlsHandshakeObserver) != 1)
+        [[unlikely]] {
+      log::error("SSL_set_ex_data failed to install TLS handshake observer for fd # {}", cnxFd);
+      // Treat this as a handshake failure: record metrics, emit event, and close the connection.
+      FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
+                           kTlsHandshakeFailureReasonSetExDataFailed);
+      closeConnection(cnxIt);
+      return;
+    }
+
+    // OpenSSL's SSL_set_fd takes int; on Windows SOCKET is UINT_PTR but the value
+    // round-trips safely through int for sockets allocated by the OS.
+    if (AeronetSslSetFd(sslPtr.get(), static_cast<int>(cnxFd)) != 1) [[unlikely]] {  // associate
+      log::error("SSL_set_fd failed for fd # {}", cnxFd);
+      FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
+                           kTlsHandshakeFailureReasonSslSetFdFailed);
+      closeConnection(cnxIt);
+      return;
+    }
+    // Enable partial writes: SSL_write will return after writing some data rather than
+    // trying to write everything. This is crucial for non-blocking I/O performance.
+    SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    ::SSL_set_accept_state(sslPtr.get());
+    state.transport = std::make_unique<TlsTransport>(std::move(sslPtr), _config.zerocopyMinBytes);
+    state.tlsInfo.handshakeStart = state.lastActivity;
+    ++_tls.handshakesInFlight;
+  } else {
+    state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+  }
+#else
+  state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+#endif
+
+#ifdef AERONET_IO_URING
+  // ----- Async recv (io_uring proactor) path -----
+  // For non-TLS connections, submit a single-shot async recv SQE: data lands directly in
+  // inBuffer with a single CQE round-trip per chunk and no per-event read syscall.  TLS
+  // keeps the synchronous read loop because OpenSSL must drive the handshake state machine.
+  if (wantsAsyncRecv) {
+    const std::size_t chunkSize = _config.computeReadChunkSize(0);
+    state.inBuffer.ensureAvailableCapacityExponential(chunkSize);
+    const auto avail = state.inBuffer.capacity() - state.inBuffer.size();
+    if (_eventLoop.submitRecv(cnxFd, state.inBuffer.data() + state.inBuffer.size(), avail)) [[likely]] {
+      state.usesAsyncRecv = true;
+      state.asyncRecvInFlight = true;
+      return;
+    }
+    // Fallback: register multishot poll and continue with the sync read loop.
+    if (!_eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
+      _telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
+      closeConnection(cnxIt);
+      return;
+    }
+  }
+#endif
+
+  ConnectionState* pCnx = &state;
+  std::size_t bytesReadThisEvent = 0;
+  while (true) {
+    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
+    assert(chunkSize > 0);
+    const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
+    // Check for handshake completion
+    // If the TLS handshake completed during the preceding transportRead, finalize it
+    // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
+    // metrics/state. This must be done even if the same read later returns an error or
+    // EOF - the handshake result is valuable and should be recorded before any
+    // connection teardown logic runs.
+    // Note: this is a transition action (handshakePending -> done) rather than a
+    // normal successful-read action, so it intentionally runs prior to evaluating
+    // transport error/EOF handling below.
+    if (finalizeTlsHandshakeIfReady(cnxFd, *pCnx)) {
+      closeConnection(cnxIt);
+      pCnx = nullptr;
+      break;
+    }
+    if (pCnx->waitingForBody && bytesRead > 0) {
+      pCnx->bodyLastActivityMs = static_cast<uint32_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - pCnx->headerStartTp).count());
+    }
+    // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
+    if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
+      if (want == TransportHint::Error) [[unlikely]] {
+        log::error("Closing connection fd # {} bytesRead={} want={} err={}", cnxFd, bytesRead, static_cast<int>(want),
+                   LastSystemError());
+#ifdef AERONET_ENABLE_OPENSSL
+        if (_tls.ctxHolder) {
+          auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
+          if (tlsTr != nullptr) {
+            const SSL* ssl = tlsTr->rawSsl();
+            if (ssl != nullptr) {
+              const char* ver = ::SSL_get_version(ssl);
+              const char* cipher = ::SSL_get_cipher_name(ssl);
+              log::error("TLS state fd # {} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
+                         (cipher != nullptr) ? cipher : "?");
+            }
+            tlsTr->logErrorIfAny();
+          }
+        }
+#endif
+      }
+
+#ifdef AERONET_ENABLE_OPENSSL
+      CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, cnxFd, want);
+#endif
+      closeConnection(cnxIt);
+      pCnx = nullptr;
+      break;
+    }
+    if (want != TransportHint::None) {
+      // Transport indicates we should wait for readability or writability before continuing.
+      // Adjust epoll interest if TLS handshake needs write readiness
+      if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
+        pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventRdHup | EventEt});
+      }
+      break;
+    }
+    bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
+    _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
+    if (bytesRead < chunkSize) {
+      // For TLS transports: OpenSSL may hold already-decrypted data in its
+      // internal buffer that the kernel socket no longer signals via epoll
+      // (critical with EPOLLET).  Continue reading if the transport reports
+      // pending data — otherwise the server would stall until the peer sends
+      // more, causing severe throughput degradation with few connections.
+      if (!pCnx->transport->hasPendingReadData()) {
+        break;
+      }
+    }
+    if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
+      break;
+    }
+  }
+  if (pCnx == nullptr) {
+    return;
+  }
+
+  const bool closeNow = processConnectionInput(cnxIt);
+  if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
+    closeConnection(cnxIt);
   }
 }
 
@@ -489,6 +524,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #else
         _connections.recycleOrRelease(peerIt, _config.maxCachedConnections);
 #endif
+        _eventLoop.submitClose(peerFd);
 #ifdef AERONET_WINDOWS
         // bytell_hash_map::erase() can relocate chain-tail elements into the
         // erased slot, invalidating any iterator that pointed at the moved entry.
@@ -518,6 +554,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #else
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections);
 #endif
+  _eventLoop.submitClose(cfd);
 
 #ifdef AERONET_ENABLE_HTTP2
   // Close tunnel upstream fds after the HTTP/2 connection has been released.
@@ -534,6 +571,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #else
       _connections.recycleOrRelease(upIt, _config.maxCachedConnections);
 #endif
+      _eventLoop.submitClose(upFd);
     }
   }
 #endif
@@ -704,6 +742,103 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     flushOutbound(cnxIt);
   }
   return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+}
+
+bool SingleHttpServer::armAsyncRecv(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  assert(state.usesAsyncRecv);
+  assert(!state.asyncRecvInFlight);
+  const auto fd = cnxIt->fd();
+  const std::size_t chunkSize = _config.computeReadChunkSize(0);
+  state.inBuffer.ensureAvailableCapacityExponential(chunkSize);
+  const auto avail = state.inBuffer.capacity() - state.inBuffer.size();
+  if (avail == 0) [[unlikely]] {
+    // Buffer cap reached; drop async path so backpressure / sync path can decide.
+    state.usesAsyncRecv = false;
+    if (!_eventLoop.add(EventLoop::EventFd{fd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
+      return false;
+    }
+    return true;
+  }
+  if (_eventLoop.submitRecv(fd, state.inBuffer.data() + state.inBuffer.size(), avail)) [[likely]] {
+    state.asyncRecvInFlight = true;
+    return true;
+  }
+  // SQ full or backend unsupported: fall back to multishot poll for this connection.
+  state.usesAsyncRecv = false;
+  if (!_eventLoop.add(EventLoop::EventFd{fd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
+    return false;
+  }
+  return true;
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::handleAsyncRecvCompletion(ConnectionIt cnxIt, int32_t bytesAvailable) {
+  ConnectionState* pCnx = _connections.pConnectionState(cnxIt);
+  assert(pCnx != nullptr);
+  assert(pCnx->usesAsyncRecv);
+  pCnx->asyncRecvInFlight = false;
+
+  if (bytesAvailable <= 0) {
+    pCnx->eofReceived = true;
+#ifdef AERONET_ENABLE_OPENSSL
+    CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, cnxIt->fd());
+#endif
+    return CloseStatus::Close;
+  }
+
+  // The kernel deposited bytesAvailable bytes at inBuffer.data() + inBuffer.size()
+  // (the tail location captured at the time of submitRecv()).  Advance the size to
+  // make those bytes visible to the parser.
+  pCnx->inBuffer.addSize(static_cast<std::size_t>(bytesAvailable));
+  _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesAvailable));
+
+  if (pCnx->waitingForBody) {
+    pCnx->bodyLastActivityMs = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(_connections.now - pCnx->headerStartTp).count());
+  }
+
+  const auto fd = cnxIt->fd();
+  if (processConnectionInput(cnxIt)) {
+    return CloseStatus::Close;
+  }
+
+  // processConnectionInput may have invalidated the iterator; re-resolve.
+  cnxIt = _connections.iterator(fd);
+  if (!IsValid(_connections, cnxIt)) [[unlikely]] {
+    return CloseStatus::Close;
+  }
+  pCnx = _connections.pConnectionState(cnxIt);
+  assert(pCnx != nullptr);
+
+  if (!pCnx->protocolHandler && pCnx->parsingHeaders && pCnx->inBuffer.size() > _config.maxHeaderBytes) {
+    emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
+    return CloseStatus::Close;
+  }
+  if (_config.headerReadTimeout.count() > 0 && pCnx->parsingHeaders) {
+    if (_connections.now - pCnx->headerStartTp > _config.headerReadTimeout) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
+      return CloseStatus::Close;
+    }
+  }
+
+  if (pCnx->canCloseConnectionForDrain()) {
+    return CloseStatus::Close;
+  }
+
+  // Tunneling transitions: forwarding loop expects synchronous reads via transport.
+  // Drop async-recv and fall back to multishot poll for this connection.
+  if (pCnx->isTunneling()) {
+    pCnx->usesAsyncRecv = false;
+    if (!_eventLoop.add(EventLoop::EventFd{fd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
+      return CloseStatus::Close;
+    }
+    return CloseStatus::Keep;
+  }
+
+  if (!armAsyncRecv(cnxIt)) {
+    return CloseStatus::Close;
+  }
+  return CloseStatus::Keep;
 }
 
 // ============================================================================

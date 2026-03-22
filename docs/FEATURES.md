@@ -2,7 +2,7 @@
 
 Single consolidated reference for **aeronet** features.
 
-> **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (WSAPoll).
+> **Platform support:** aeronet runs on **Linux** (primary, epoll or io_uring), **macOS** (kqueue), and **Windows** (WSAPoll).
 > Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
 
 ## Index
@@ -249,6 +249,18 @@ Behavior summary
 - [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
 - [x] HTTP/2 benchmarks using [h2load](https://nghttp2.org/documentation/h2load-howto.html) (nghttp2). Supports both h2c (cleartext) and h2-tls modes via `run_benchmarks.py --protocol h2c|h2-tls`. All existing benchmark scenarios are supported. Competitor servers (drogon, axum, undertow, go, python/hypercorn) are updated for HTTP/2. Internal micro-benchmarks for HPACK, frame parsing, and flow control are also included. See `benchmarks/scripted-servers/README.md` and `.github/workflows/benchmarks-h2.yml`.
 - [x] WebSocket benchmarks using [k6](https://k6.io/) and optionally [websocket-bench](https://github.com/matttomasetti/websocket-bench). Six scenarios (echo-small, echo-medium, mix text+binary, ping-pong, connection churn, compression) compare aeronet, uWebSockets, and Drogon via a `/ws` echo endpoint. Orchestrated by `run_ws_benchmarks.py`. See `benchmarks/scripted-servers/README.md`.
+- [x] `io_uring` event loop backend *(Linux-only, kernel ≥ 5.19)*. Automatically detected at build time via `AERONET_IO_URING`. Replaces epoll with io_uring for lower-latency event dispatch. Uses a dual-ring architecture: Ring A for events, Ring B for data I/O. Key features:
+  - **Readiness-based poll** (`IORING_OP_POLL_ADD`): single-shot polls with deferred re-arm and per-fd 16-bit generation counters for ABA safety.
+  - **Multishot accept** (`IORING_OP_ACCEPT` with `IORING_ACCEPT_MULTISHOT`): the kernel accepts connections directly, bypassing libc `accept4()`. Automatic resubmission on multishot termination.
+  - **SQE batching**: all SQE submissions (add/mod/del/rearm) are deferred to a single `io_uring_submit()` per poll cycle, reducing syscall overhead from O(events) to O(1).
+  - **Async close** (`IORING_OP_CLOSE`): connection fd close is submitted via io_uring for non-blocking teardown; `cancelAccept` and `submitClose` submit immediately to ensure prompt resource release on shutdown paths.
+  - **Async recv proactor** (`IORING_OP_RECV`): plain (non-TLS) HTTP connections submit a single-shot `recv` SQE per chunk; the kernel deposits incoming bytes directly into the per-connection `inBuffer` and delivers an `EventDataArrived` CQE to the dispatcher. Eliminates the per-event `read()` syscall and removes the multishot poll registration for these connections. One-shot poll (`IORING_OP_POLL_ADD`) handles writability backpressure. TLS continues to use the synchronous read loop because OpenSSL must drive the handshake state machine. Measured impact on `aeronet-bench-server` (1 thread, 64 connections): **+38 % throughput** (143K → 198K req/s) and **−36 % avg latency** (444 µs → 285 µs) versus poll-based reads.
+  - **SQPOLL ring setup**: when supported, the ring is created with `IORING_SETUP_SQPOLL | IORING_SETUP_SINGLE_ISSUER` (kernel-side submission queue polling) so submissions skip the `io_uring_enter` syscall in the steady state. Falls back to `SINGLE_ISSUER | DEFER_TASKRUN`, then to `COOP_TASKRUN`, then to no flags if the kernel rejects them.
+  - **io_uring data I/O** (Ring B): `PlainTransport` read and write operations use `io_uring_prep_recv` / `io_uring_prep_send` / `io_uring_prep_sendmsg` with `MSG_DONTWAIT` through a dedicated second ring, bypassing libc `read()`/`write()`/`writev()` syscall overhead. Falls back to direct syscalls when io_uring is disabled per-fd (e.g., for test error injection).
+  - **io_uring zerocopy send** (`io_uring_prep_send_zc` / `io_uring_prep_sendmsg_zc`): when zerocopy mode is enabled for a connection, send operations use io_uring's zerocopy submission instead of `MSG_ZEROCOPY` sendmsg; handles dual-CQE completion (send + notification).
+  - **Per-fd io_uring callout** (`AeronetUseIoRingForFd`): weak-symbol callback that allows tests to disable io_uring data I/O per-fd, enabling existing syscall-intercepting test infrastructure to inject errors on specific connections.
+  - Transparent fallback to epoll on non-io_uring builds.
+  - Tests: all 125 tests pass with io_uring enabled. See `transport_test`, `sendfile_test`, `http-range_test`. Benchmark: `benchmarks/internal/event-loop-uring_bench.cpp`.
 
 ### Memory Management & std::string_view Safety
 

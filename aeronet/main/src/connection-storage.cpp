@@ -58,7 +58,9 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   // destructor (~BaseFd) closes the socket automatically.
   _activeConnections.erase(cnxIt._it);
 #else
-  _activeConnections[connectionIdx].close();
+  // Release ownership without closing — the caller will close via
+  // EventLoop::submitClose().
+  _activeConnections[connectionIdx].release();
   _activeConnectionStates[connectionIdx] = nullptr;
 
   --_nbActiveConnections;
