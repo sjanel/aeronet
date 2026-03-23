@@ -2,6 +2,7 @@
 
 #ifdef AERONET_POSIX
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
@@ -77,6 +78,53 @@ EchoServer startEchoServer() {
     try {
       BaseFd clientFd;
       while (true) {
+        if (stopFlag->load(std::memory_order_acquire)) {
+          return;
+        }
+
+        bool readable = false;
+#ifdef AERONET_WINDOWS
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(static_cast<SOCKET>(fd), &readSet);
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 250 * 1000;
+        int ret = ::select(0, &readSet, nullptr, nullptr, &tv);
+        if (ret > 0) {
+          readable = true;
+        } else if (ret == 0) {
+          continue;
+        } else {
+          log::debug("Echo server select() error: {}", LastSystemError());
+          return;
+        }
+#else
+        struct pollfd pfd{};  // NOLINT(misc-include-cleaner)
+        pfd.fd = fd;
+        pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        int ret = ::poll(&pfd, 1, 250);
+        if (ret > 0) {
+          readable = true;
+        } else if (ret == 0) {
+          continue;
+        } else {
+          auto err = LastSystemError();
+          if (err == error::kInterrupted) {
+            continue;
+          }
+          if (err == EBADF || err == EINVAL) {
+            return;
+          }
+          return;
+        }
+#endif
+
+        if (!readable) {
+          continue;
+        }
+
         clientFd = BaseFd(::accept(fd, nullptr, nullptr));
         if (clientFd.fd() != kInvalidHandle) {
           break;
@@ -86,17 +134,11 @@ EchoServer startEchoServer() {
           return;
         }
 #ifdef AERONET_POSIX
-        if (err == error::kTimedOut || err == error::kWouldBlock) {
-          continue;
-        }
         // EBADF / EINVAL: socket was closed before accept (normal shutdown).
         if (err == EBADF || err == EINVAL) {
           return;
         }
 #elifdef AERONET_WINDOWS
-        if (err == error::kTimedOut) {
-          continue;
-        }
         // On Windows, closesocket() on the listen socket while accept() is blocked wakes
         // accept() with WSAEINTR (interrupted), WSAEINVAL (invalid socket), or WSAENOTSOCK
         // (socket already closed). Treat all of these as a clean server shutdown.
@@ -106,8 +148,8 @@ EchoServer startEchoServer() {
 #endif
         // ECONNABORTED: connection was reset before accept
         // (can occur on macOS/Windows under load or during test teardown).
-        if (err == error::kConnectionAborted) {
-          return;
+        if (err == error::kConnectionAborted || err == error::kWouldBlock || err == error::kTimedOut) {
+          continue;
         }
         return;  // unexpected error — exit gracefully instead of throwing
       }
