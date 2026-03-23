@@ -271,7 +271,6 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
     if (result.hasError()) {
       // Still failed, give up
       throw std::runtime_error("Encoding chunk failed");
-      return {};
     }
 
     compressed.addSize(result.written());
