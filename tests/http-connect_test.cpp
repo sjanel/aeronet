@@ -16,6 +16,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -50,9 +51,9 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   (void)kSigpipeIgnored;  // Ensure SIGPIPE is ignored during this test
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
-  auto [sock, port] = test::startEchoServer();
+  auto echoSrv = test::startEchoServer();
   // Build CONNECT request to our upstream
-  std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, std::chrono::milliseconds{10000});
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, 93UL);
@@ -137,14 +138,14 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   test::TestServer ts{HttpServerConfig{}};
 
   // Start an echo server to act as upstream
-  auto [sock, port] = test::startEchoServer();
+  auto echoSrv = test::startEchoServer();
 
   {
     test::ClientConnection client(ts.port());
     NativeHandle fd = client.fd();
 
     // Establish the CONNECT tunnel
-    std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     ASSERT_GT(fd, 0);
     test::sendAll(fd, req, 5000ms);
     auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
@@ -183,13 +184,13 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   test::TestServer ts{HttpServerConfig{}};
 
   // Start an echo server to act as upstream
-  auto [sock, port] = test::startEchoServer();
+  auto echoSrv = test::startEchoServer();
 
   test::ClientConnection client(ts.port());
   NativeHandle fd = client.fd();
 
   // Establish the CONNECT tunnel
-  std::string req = "CONNECT 127.0.0.1:" + std::to_string(port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, 5000ms);
   auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);

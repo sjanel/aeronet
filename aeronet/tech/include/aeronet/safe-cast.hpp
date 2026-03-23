@@ -15,8 +15,9 @@ constexpr ToT SafeCast(FromT value) {
     }
   }
   if constexpr (sizeof(ToT) < sizeof(FromT) ||
-                (sizeof(ToT) == sizeof(FromT) && std::is_unsigned_v<ToT> && std::is_signed_v<FromT>)) {
-    if (static_cast<std::make_unsigned_t<FromT>>(value) > std::numeric_limits<ToT>::max()) [[unlikely]] {
+                (sizeof(ToT) == sizeof(FromT) && std::is_signed_v<FromT> && std::is_unsigned_v<ToT>)) {
+    if (static_cast<std::make_unsigned_t<ToT>>(std::numeric_limits<ToT>::max()) <
+        static_cast<std::make_unsigned_t<FromT>>(value)) [[unlikely]] {
       throw std::overflow_error("value exceeds target type maximum");
     }
   }

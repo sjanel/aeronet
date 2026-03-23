@@ -1044,6 +1044,11 @@ TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
   EXPECT_TRUE(response.contains("/unmatched-path")) << response;
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
+
 // Test async handler exception during task creation (before coroutine starts)
 TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-throw-std", [](HttpRequest&) -> RequestTask<HttpResponse> {
@@ -1051,9 +1056,6 @@ TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
     throw std::runtime_error("Task creation failed");
     // Note: co_return would make this a coroutine, but throw happens first,
     // before coroutine frame is created, so exception is caught in dispatchAsyncHandler
-#ifdef _MSC_VER
-#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
-#endif
     co_return HttpResponse(http::StatusCodeOK);
   });
 
@@ -1068,9 +1070,6 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE entering coroutine body - caught by dispatchAsyncHandler
                                    throw 42;  // Non-std exception
-#ifdef _MSC_VER
-#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
-#endif
                                    co_return HttpResponse(http::StatusCodeOK);
                                  });
 
@@ -1078,6 +1077,10 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
   EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Unknown error")) << response;
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // Test async handler returning invalid task
 TEST(HttpRouting, AsyncHandlerReturnsInvalidTask) {
