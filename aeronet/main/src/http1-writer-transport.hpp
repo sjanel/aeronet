@@ -141,7 +141,11 @@ class Http1WriterTransport final : public IWriterTransport {
 
   [[nodiscard]] bool isAlive() const override {
     auto cnxIt = _server->_connections.iterator(_fd);
+#ifdef AERONET_WINDOWS
     if (cnxIt == _server->_connections.end()) {
+#else
+    if (!*cnxIt) {
+#endif
       return false;
     }
     return !_server->_connections.connectionState(cnxIt).isAnyCloseRequested();
@@ -152,7 +156,11 @@ class Http1WriterTransport final : public IWriterTransport {
  private:
   bool enqueue(HttpResponseData responseData) {
     auto cnxIt = _server->_connections.iterator(_fd);
+#ifdef AERONET_WINDOWS
     if (cnxIt == _server->_connections.end()) {
+#else
+    if (!*cnxIt) {
+#endif
       return false;
     }
     _server->queueData(cnxIt, std::move(responseData));

@@ -26,7 +26,6 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"
-#include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -37,9 +36,12 @@ EchoServer::EchoServer(Socket sock, uint16_t pt, std::shared_ptr<std::atomic<boo
 
 EchoServer::~EchoServer() {
   if (stopFlag) {
-    stopFlag->store(true, std::memory_order_relaxed);
+    stopFlag->store(true, std::memory_order_release);
   }
-  listenSocket.close();  // unblock accept() if the thread is still waiting
+  // Do NOT close listenSocket here — the raw fd captured by the echo thread could be
+  // reused by the OS after close, causing accept() on a wrong socket.  The accept timeout
+  // (250 ms) + stop flag is sufficient to wake the thread.  The Socket member destructor
+  // runs after the thread is joined, so the fd stays valid until then.
   if (echoThread.joinable()) {
     echoThread.join();
   }
@@ -72,90 +74,97 @@ EchoServer startEchoServer() {
   auto stopFlag = std::make_shared<std::atomic<bool>>(false);
 
   std::thread echoThread([fd = listenSock.fd(), stopFlag]() {
-    BaseFd clientFd;
-    while (true) {
-      clientFd = BaseFd(::accept(fd, nullptr, nullptr));
-      if (clientFd.fd() != kInvalidHandle) {
-        break;
-      }
-      const auto err = LastSystemError();
-      if (stopFlag->load(std::memory_order_relaxed)) {
-        return;
-      }
-#ifdef AERONET_POSIX
-      if (err == error::kTimedOut || err == error::kWouldBlock) {
-        continue;
-      }
-      // EBADF / EINVAL: socket was closed before accept (normal shutdown).
-      if (err == EBADF || err == EINVAL) {
-        return;
-      }
-#elifdef AERONET_WINDOWS
-      if (err == error::kTimedOut) {
-        continue;
-      }
-      // On Windows, closesocket() on the listen socket while accept() is blocked wakes
-      // accept() with WSAEINTR (interrupted), WSAEINVAL (invalid socket), or WSAENOTSOCK
-      // (socket already closed). Treat all of these as a clean server shutdown.
-      if (err == WSAEINTR || err == WSAEINVAL || err == WSAENOTSOCK) {
-        return;
-      }
-#endif
-      // ECONNABORTED: connection was reset before accept
-      // (can occur on macOS/Windows under load or during test teardown).
-      if (err == error::kConnectionAborted) {
-        return;
-      }
-      ThrowSystemError("Error from ::accept");
-    }
-    // Break out after a bounded idle period with no traffic.
-    setRecvTimeout(clientFd.fd(), std::chrono::milliseconds{250});
-    const auto maxIdle = std::chrono::seconds{3};
-    auto idleDeadline = std::chrono::steady_clock::now() + maxIdle;
-    char buf[16384];
-
-    while (true) {
-      const auto recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
-      if (recvBytes == -1) {
+    try {
+      BaseFd clientFd;
+      while (true) {
+        clientFd = BaseFd(::accept(fd, nullptr, nullptr));
+        if (clientFd.fd() != kInvalidHandle) {
+          break;
+        }
         const auto err = LastSystemError();
-#ifdef AERONET_WINDOWS
-        if (err == error::kTimedOut) {
-          if (stopFlag->load(std::memory_order_relaxed) || std::chrono::steady_clock::now() >= idleDeadline) {
-            break;
-          }
-          continue;
+        if (stopFlag->load(std::memory_order_acquire)) {
+          return;
         }
-        if (err == error::kConnectionReset || err == WSAENOTCONN) {
-          break;
-        }
-#else
-        if (err == error::kInterrupted) {
-          continue;
-        }
+#ifdef AERONET_POSIX
         if (err == error::kTimedOut || err == error::kWouldBlock) {
-          if (stopFlag->load(std::memory_order_relaxed) || std::chrono::steady_clock::now() >= idleDeadline) {
-            break;
-          }
           continue;
         }
-        if (err == error::kConnectionReset || err == ENOTCONN || err == EBADF) {
-          log::error("Echo server recv returned {}, exiting echo loop", SystemErrorMessage(err));
-          break;
+        // EBADF / EINVAL: socket was closed before accept (normal shutdown).
+        if (err == EBADF || err == EINVAL) {
+          return;
+        }
+#elifdef AERONET_WINDOWS
+        if (err == error::kTimedOut) {
+          continue;
+        }
+        // On Windows, closesocket() on the listen socket while accept() is blocked wakes
+        // accept() with WSAEINTR (interrupted), WSAEINVAL (invalid socket), or WSAENOTSOCK
+        // (socket already closed). Treat all of these as a clean server shutdown.
+        if (err == WSAEINTR || err == WSAEINVAL || err == WSAENOTSOCK) {
+          return;
         }
 #endif
-        ThrowSystemError("Error from ::recv");
+        // ECONNABORTED: connection was reset before accept
+        // (can occur on macOS/Windows under load or during test teardown).
+        if (err == error::kConnectionAborted) {
+          return;
+        }
+        return;  // unexpected error — exit gracefully instead of throwing
       }
-      if (recvBytes == 0) {
-        break;
-      }
-      idleDeadline = std::chrono::steady_clock::now() + maxIdle;
+      // Break out after a bounded idle period with no traffic.
+      setRecvTimeout(clientFd.fd(), std::chrono::milliseconds{250});
+      const auto maxIdle = std::chrono::seconds{3};
+      auto idleDeadline = std::chrono::steady_clock::now() + maxIdle;
+      char buf[16384];
 
-      try {
-        sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
-      } catch (const std::exception& ex) {
-        log::error("Echo server sendAll failed: {}", ex.what());
-        break;
+      while (true) {
+        const auto recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
+        if (recvBytes == -1) {
+          const auto err = LastSystemError();
+#ifdef AERONET_WINDOWS
+          if (err == error::kTimedOut) {
+            if (stopFlag->load(std::memory_order_acquire) || std::chrono::steady_clock::now() >= idleDeadline) {
+              break;
+            }
+            continue;
+          }
+          if (err == error::kConnectionReset || err == WSAENOTCONN) {
+            break;
+          }
+#else
+          if (err == error::kInterrupted) {
+            continue;
+          }
+          if (err == error::kTimedOut || err == error::kWouldBlock) {
+            if (stopFlag->load(std::memory_order_acquire) || std::chrono::steady_clock::now() >= idleDeadline) {
+              break;
+            }
+            continue;
+          }
+          if (err == error::kConnectionReset || err == ENOTCONN || err == EBADF) {
+            break;
+          }
+#endif
+          break;  // unexpected error — exit gracefully instead of throwing
+        }
+        if (recvBytes == 0) {
+          break;
+        }
+        idleDeadline = std::chrono::steady_clock::now() + maxIdle;
+
+        try {
+          sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
+          // Reset idle deadline after successful send — time spent blocked in
+          // ::send() (due to TCP backpressure on small-buffer platforms like
+          // macOS/Windows) is NOT idle time and must not count towards maxIdle.
+          idleDeadline = std::chrono::steady_clock::now() + maxIdle;
+        } catch (const std::exception& ex) {
+          log::error("Exception in echo server thread while sending data: {}", ex.what());
+          break;
+        }
       }
+    } catch (const std::exception& ex) {
+      log::error("Exception in echo server thread: {}", ex.what());
     }
   });
 

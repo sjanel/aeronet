@@ -570,11 +570,10 @@ TEST(HttpTlsHandshakeTest, TrustStoreUpdateEnablesMutualTlsForNewConnections) {
     EXPECT_TRUE(resp.empty());
   }
 
-  // Update trust store at runtime.
-  ts.server.postConfigUpdate([clientCertPem](HttpServerConfig& cfg) {
+  // Update trust store at runtime (synchronous — waits for the event loop to apply the change).
+  ts.postConfigUpdate([clientCertPem](HttpServerConfig& cfg) {
     cfg.tls.withoutTlsTrustedClientCert().withTlsTrustedClientCert(clientCertPem);
   });
-  std::this_thread::sleep_for(ts.server.config().pollInterval + 100us);
 
   {
     test::TlsClient::Options opt;

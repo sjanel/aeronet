@@ -86,7 +86,7 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
     uint32_t streamId = client.connect(authority);
     ASSERT_GT(streamId, 0);
 
-#if defined(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS) || defined(AERONET_WINDOWS)
+#if defined(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS)
     std::string payload(1024UL * 1024, 'a');
 #else
     std::string payload(16UL << 20, 'a');
