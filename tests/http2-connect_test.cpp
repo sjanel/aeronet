@@ -12,9 +12,9 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
-#include "aeronet/test_util.hpp"
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -24,8 +24,8 @@ TEST(Http2ConnectTest, BasicTunneling) {
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
-  auto [sock, port] = test::startEchoServer();
-  std::string authority = "127.0.0.1:" + std::to_string(port);
+  auto echoSrv = test::startEchoServer();
+  std::string authority = "127.0.0.1:" + std::to_string(echoSrv.port);
 
   uint32_t streamId = client.connect(authority);
   ASSERT_GT(streamId, 0);
@@ -57,8 +57,8 @@ TEST(Http2ConnectTest, AllowlistRejectsTarget) {
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
-  auto [sock, port] = test::startEchoServer();
-  std::string authority = "127.0.0.1:" + std::to_string(port);
+  auto echoSrv = test::startEchoServer();
+  std::string authority = "127.0.0.1:" + std::to_string(echoSrv.port);
 
   uint32_t streamId = client.connect(authority);
   EXPECT_EQ(streamId, 0);  // Should be rejected (403 Forbidden)
@@ -80,8 +80,8 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
     test::TlsHttp2Client client(ts.port(), clientCfg);
     ASSERT_TRUE(client.isConnected());
 
-    auto [sock, port] = test::startEchoServer();
-    std::string authority = "127.0.0.1:" + std::to_string(port);
+    auto echoSrv = test::startEchoServer();
+    std::string authority = "127.0.0.1:" + std::to_string(echoSrv.port);
 
     uint32_t streamId = client.connect(authority);
     ASSERT_GT(streamId, 0);

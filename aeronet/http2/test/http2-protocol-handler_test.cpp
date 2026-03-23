@@ -827,7 +827,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
 
   MockTunnelBridge bridge;
   bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
-  bridge.onClose = [&](int) { closeCalled = true; };
+  bridge.onClose = [&](NativeHandle) { closeCalled = true; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
@@ -862,7 +862,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
 
   MockTunnelBridge bridge;
   bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
-  bridge.onWrite = [&](int, std::span<const std::byte> data) {
+  bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     allWrittenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
   loop.handler.setTunnelBridge(&bridge);
@@ -915,7 +915,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
 
   MockTunnelBridge bridge;
   bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
-  bridge.onWrite = [&](int, std::span<const std::byte> data) {
+  bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
   loop.handler.setTunnelBridge(&bridge);
@@ -3604,7 +3604,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    int result = co_await req.deferWork([]() { return 42; });
+    const int result = co_await req.deferWork([]() { return 42; });
     co_return HttpResponse(200, std::to_string(result));
   });
 
@@ -3662,7 +3662,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   router
       .setPath(http::Method::GET, "/async-defer-cors",
                [](HttpRequest& req) -> RequestTask<HttpResponse> {
-                 int result = co_await req.deferWork([]() { return 99; });
+                 const int result = co_await req.deferWork([]() { return 99; });
                  co_return HttpResponse(200, std::to_string(result));
                })
       .cors(std::move(cors))
@@ -3704,6 +3704,11 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), "x-after-mw"), "done");
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
+
 TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   Router router;
   std::coroutine_handle<> capturedHandle;
@@ -3712,6 +3717,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   router.setPath(http::Method::GET, "/async-defer-throw", [](HttpRequest& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([]() { return 1; });
     throw std::runtime_error("post-defer explosion");
+    co_return HttpResponse(200);
   });
 
   Http2ProtocolLoopback loop(router);
@@ -3746,14 +3752,61 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "500");
 }
 
+TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletion) {
+  Router router;
+  std::coroutine_handle<> capturedHandle;
+  std::atomic<bool> callbackFired{false};
+
+  router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    (void)co_await req.deferWork([]() { return 1; });
+    throw 42;
+    co_return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.handler.setAsyncPostCallback(
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
+        capturedHandle = handle;
+        callbackFired.store(true, std::memory_order_release);
+      });
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/async-defer-throw-int"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!callbackFired.load(std::memory_order_acquire)) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  // Resume — coroutine throws a non-std::exception (int), caught by catch(...)
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "500");
+}
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
 TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndCompletes) {
   Router router;
   std::coroutine_handle<> capturedHandle;
   std::atomic<int> callbackCount{0};
 
   router.setPath(http::Method::GET, "/async-double-defer", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    int r1 = co_await req.deferWork([]() { return 10; });
-    int r2 = co_await req.deferWork([]() { return 20; });
+    const int r1 = co_await req.deferWork([]() { return 10; });
+    const int r2 = co_await req.deferWork([]() { return 20; });
     co_return HttpResponse(200, std::to_string(r1 + r2));
   });
 
@@ -3806,48 +3859,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
     }
   }
   EXPECT_EQ(receivedData, "30");
-}
-
-TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletion) {
-  Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
-
-  router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    (void)co_await req.deferWork([]() { return 1; });
-    throw 42;
-  });
-
-  Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
-  loop.connect();
-
-  RawChars hdrs;
-  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
-  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
-  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-  hdrs.append(MakeHttp1HeaderLine(":path", "/async-defer-throw-int"));
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
-    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-
-  // Resume — coroutine throws a non-std::exception (int), caught by catch(...)
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
-
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "500");
 }
 
 #endif

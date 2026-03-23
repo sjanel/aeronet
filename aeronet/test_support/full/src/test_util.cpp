@@ -4,7 +4,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>  // NOLINT(misc-include-cleaner) used by timeval
-#include <unistd.h>
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -28,7 +27,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -38,7 +36,6 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
-#include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -262,106 +259,6 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
 
   sendAll(fd, raw);
   return recvUntilClosed(fd);
-}
-
-std::pair<Socket, uint16_t> startEchoServer() {
-  Socket listenSock(Socket::Type::Stream);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;  // ephemeral
-  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ThrowSystemError("Error from ::bind");
-  }
-  if (::listen(listenSock.fd(), 1) == -1) {
-    ThrowSystemError("Error from ::listen");
-  }
-  sockaddr_in actual{};
-  socklen_t alen = sizeof(actual);
-  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr*>(&actual), &alen) != 0) {
-    ThrowSystemError("Error from ::getsockname");
-  }
-
-  uint16_t port = ntohs(actual.sin_port);
-
-  std::thread([fd = listenSock.fd()]() {
-    BaseFd clientFd(::accept(fd, nullptr, nullptr));
-    if (clientFd.fd() == kInvalidHandle) {
-      const auto err = LastSystemError();
-      // EBADF / EINVAL: socket was closed before accept (normal shutdown).
-      // ECONNABORTED / WSAECONNABORTED: connection was reset before accept
-      // (can occur on macOS/Windows under load or during test teardown).
-      if (err == error::kConnectionAborted) {
-        return;
-      }
-#ifdef AERONET_POSIX
-      if (err == EBADF || err == EINVAL) {
-        return;
-      }
-#elifdef AERONET_WINDOWS
-      // On Windows, closesocket() on the listen socket while accept() is blocked wakes
-      // accept() with WSAEINTR (interrupted), WSAEINVAL (invalid socket), or WSAENOTSOCK
-      // (socket already closed). Treat all of these as a clean server shutdown.
-      if (err == WSAEINTR || err == WSAEINVAL || err == WSAENOTSOCK) {
-        return;
-      }
-#endif
-      ThrowSystemError("Error from ::accept");
-    }
-    // Detached helper threads must not be able to keep the test process alive
-    // indefinitely if tunnel teardown stalls. Break out after a bounded idle
-    // period with no traffic.
-    setRecvTimeout(clientFd.fd(), std::chrono::milliseconds{250});
-    const auto maxIdle = std::chrono::seconds{3};
-    auto idleDeadline = std::chrono::steady_clock::now() + maxIdle;
-    char buf[16384];
-
-    while (true) {
-      const auto recvBytes = ::recv(clientFd.fd(), buf, static_cast<int>(sizeof(buf)), 0);
-      if (recvBytes == -1) {
-        const auto err = LastSystemError();
-#ifdef AERONET_WINDOWS
-        if (err == error::kTimedOut) {
-          if (std::chrono::steady_clock::now() >= idleDeadline) {
-            break;
-          }
-          continue;
-        }
-        if (err == error::kConnectionReset || err == WSAENOTCONN) {
-          break;
-        }
-#else
-        if (err == error::kInterrupted) {
-          continue;
-        }
-        if (err == error::kTimedOut || err == error::kWouldBlock) {
-          if (std::chrono::steady_clock::now() >= idleDeadline) {
-            break;
-          }
-          continue;
-        }
-        if (err == error::kConnectionReset || err == ENOTCONN || err == EBADF) {
-          log::error("Echo server recv returned {}, exiting echo loop", SystemErrorMessage(err));
-          break;
-        }
-#endif
-        ThrowSystemError("Error from ::recv");
-      }
-      if (recvBytes == 0) {
-        break;
-      }
-      idleDeadline = std::chrono::steady_clock::now() + maxIdle;
-
-      try {
-        sendAll(clientFd.fd(), std::string_view(buf, static_cast<std::size_t>(recvBytes)));
-      } catch (const std::exception& ex) {
-        log::error("Echo server sendAll failed: {}", ex.what());
-        break;
-      }
-    }
-  }).detach();
-
-  return std::make_pair(std::move(listenSock), port);
 }
 
 namespace {
