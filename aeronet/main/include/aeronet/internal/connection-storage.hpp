@@ -109,6 +109,14 @@ class ConnectionStorage {
 
   [[nodiscard]] auto nbCachedConnections() const noexcept { return _cachedConnectionStates.size(); }
 
+  [[nodiscard]] bool empty() const noexcept {
+#ifdef AERONET_WINDOWS
+    return _activeConnections.empty();
+#else
+    return _nbActiveConnections == 0;
+#endif
+  }
+
   ConnectionIt begin() {
 #ifdef AERONET_WINDOWS
     return ConnectionIt(_activeConnections.begin());
@@ -132,14 +140,6 @@ class ConnectionStorage {
     return _activeConnections.begin() + (fd - 1);
 #endif
   }
-
-  // Check whether a ConnectionIt points to a valid active connection.
-  // POSIX: checks the vector slot is occupied. Windows: checks the iterator was found in the map.
-#ifdef AERONET_WINDOWS
-  [[nodiscard]] bool active(ConnectionIt cnxIt) const { return cnxIt._it != _activeConnections.end(); }
-#else
-  [[nodiscard]] static bool active(ConnectionIt cnxIt) { return static_cast<bool>(*cnxIt); }
-#endif
 
   [[nodiscard]] std::size_t size() const {
 #ifdef AERONET_WINDOWS
