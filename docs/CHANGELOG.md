@@ -2,7 +2,7 @@
 
 All notable changes to aeronet are documented in this file.
 
-## [Unreleased]
+## [1.2.0] - 2026-03-23
 
 `aeronet` is now available for:
 

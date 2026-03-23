@@ -77,10 +77,6 @@ std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout = std::chro
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
-// Start a simple echo server bound to loopback on an ephemeral port. Returns the port or throw std::system_error on
-// error.
-std::pair<Socket, uint16_t> startEchoServer();
-
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
 bool noBodyAfterHeaders(std::string_view raw);

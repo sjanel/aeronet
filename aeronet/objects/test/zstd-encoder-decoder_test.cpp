@@ -224,13 +224,13 @@ TEST(ZstdEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
   EXPECT_LE(result.written(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
   while (true) {
-    const auto result = ctx->end(tailOut.capacity(), tailOut.data());
+    result = ctx->end(tailOut.capacity(), tailOut.data());
     ASSERT_FALSE(result.hasError());
     if (result.written() == 0) {
       break;
