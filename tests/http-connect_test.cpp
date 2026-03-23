@@ -99,9 +99,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
-  std::string req = "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n";
-  ASSERT_GT(fd, 0);
-  test::sendAll(fd, req);
+  test::sendAll(fd, "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n");
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   // Expect 502 Bad Gateway or connection close
   ASSERT_TRUE(resp.contains("502") || resp.empty());
@@ -114,10 +112,7 @@ TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
     cfg.withConnectAllowlist(list.begin(), list.end());
   });
 
-  std::string req = "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-
-  ASSERT_GT(fd, 0);
-  test::sendAll(fd, req);
+  test::sendAll(fd, "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
 }
