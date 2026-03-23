@@ -1,6 +1,6 @@
 {
   "name": "aeronet",
-  "version-string": "1.2.0",
+  "version-string": "1.3.0",
   "description": "C++ HTTP server library with built-in HTTP/2, WebSocket, OpenTelemetry, compression, and more",
   "homepage": "https://github.com/sjanel/aeronet",
   "license": "MIT",
