@@ -503,7 +503,9 @@ class SingleHttpServer {
   bool forwardTunnelData(ConnectionIt targetIt, RawChars& sourceBuffer);
 
   /// Half-close the write side of a tunnel peer, deferring if data is still buffered.
-  void shutdownTunnelPeerWrite(ConnectionIt peerIt);
+  /// Returns true if tunnel is fully closed after this call, false if the peer is still open (either because it was
+  /// already half-closed or because we deferred close until buffered data is flushed).
+  bool shutdownTunnelPeerWrite(ConnectionIt peerIt);
 
   CloseStatus readTunnelData(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent, bool& hitEagain);
   CloseStatus handleInTunneling(ConnectionIt cnxIt);

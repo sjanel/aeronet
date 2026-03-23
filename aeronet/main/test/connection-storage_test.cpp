@@ -148,6 +148,7 @@ TEST(ConnectionStorage, ShrinkToFitTrimsTrailingNulls) {
   storage.shrink_to_fit();
 
   EXPECT_EQ(storage.size(), 7U);
+  EXPECT_FALSE(storage.empty());
 }
 
 TEST(ConnectionStorage, ShrinkToFitShrinksLargeCapacity) {

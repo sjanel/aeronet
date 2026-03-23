@@ -1036,9 +1036,9 @@ void SingleHttpServer::eventLoop() {
         const auto bmp = event.eventBmp;
         const auto cnxIt = _connections.iterator(fd);
 #ifdef AERONET_WINDOWS
-        if (!_connections.active(cnxIt)) [[unlikely]] {
+        if (cnxIt == _connections.end()) [[unlikely]] {
 #else
-        if (!internal::ConnectionStorage::active(cnxIt)) [[unlikely]] {
+        if (!*cnxIt) [[unlikely]] {
 #endif
           log::warn("fd # {} not found (stale epoll event or race)", fd);
           // Remove stale entry from the event-loop poller so it doesn't keep firing.
@@ -1059,7 +1059,16 @@ void SingleHttpServer::eventLoop() {
           closeStatus = std::max(handleReadableClient(cnxIt), closeStatus);
         }
         if (closeStatus == CloseStatus::Close) {
-          closeConnection(_connections.iterator(fd));
+          // A handler (e.g. shutdownTunnelPeerWrite) may have already recycled
+          // this connection via a nested closeConnection call. Guard against that.
+          const auto finalIt = _connections.iterator(fd);
+#ifdef AERONET_WINDOWS
+          if (finalIt != _connections.end()) {
+#else
+          if (*finalIt) {
+#endif
+            closeConnection(finalIt);
+          }
         }
       }
     }
@@ -1165,7 +1174,7 @@ void SingleHttpServer::closeListener() noexcept {
 
 void SingleHttpServer::closeAllConnections() {
 #ifdef AERONET_WINDOWS
-  while (_connections.begin() != _connections.end()) {
+  while (!_connections.empty()) {
     closeConnection(_connections.begin());
   }
 #else
@@ -1416,9 +1425,12 @@ void SingleHttpServer::applyPendingUpdates() {
           }
         }
 
-        // Use O(1) hash map lookup with the connection fd
         auto it = _connections.iterator(cb.connectionFd);
+#ifdef AERONET_WINDOWS
         if (it != _connections.end()) {
+#else
+        if (*it) {
+#endif
           ConnectionState& state = _connections.connectionState(it);
 #ifdef AERONET_ENABLE_HTTP2
           // For HTTP/2 connections, delegate to the protocol handler which tracks per-stream async state.
@@ -1446,8 +1458,14 @@ void SingleHttpServer::applyPendingUpdates() {
           // On platforms without a real timer fd (Windows, macOS), sweep maintenance may not
           // run often enough, causing Connection: close requests to linger.
           it = _connections.iterator(cb.connectionFd);
-          if (it != _connections.end() && _connections.connectionState(it).canCloseConnectionForDrain()) {
-            closeConnection(it);
+#ifdef AERONET_WINDOWS
+          if (it != _connections.end()) {
+#else
+          if (*it) {
+#endif
+            if (_connections.connectionState(it).canCloseConnectionForDrain()) {
+              closeConnection(it);
+            }
           }
         }
       } catch (const std::exception& ex) {
@@ -1488,7 +1506,11 @@ class H2TunnelBridge final : public ITunnelBridge {
 
   void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
     auto upIt = _server._connections.iterator(upstreamFd);
-    if (upIt == _server._connections.end()) [[unlikely]] {
+#ifdef AERONET_WINDOWS
+    if (upIt == _server._connections.end()) {
+#else
+    if (!*upIt) {
+#endif
       return;
     }
     if (!_server.forwardTunnelData(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size())))
@@ -1499,14 +1521,22 @@ class H2TunnelBridge final : public ITunnelBridge {
 
   void shutdownTunnelWrite(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.iterator(upstreamFd);
+#ifdef AERONET_WINDOWS
     if (upIt != _server._connections.end()) {
+#else
+    if (*upIt) {
+#endif
       _server.shutdownTunnelPeerWrite(upIt);
     }
   }
 
   void closeTunnel(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.iterator(upstreamFd);
+#ifdef AERONET_WINDOWS
     if (upIt == _server._connections.end()) {
+#else
+    if (!*upIt) {
+#endif
       return;
     }
     ConnectionState& state = _server._connections.connectionState(upIt);
@@ -1518,7 +1548,11 @@ class H2TunnelBridge final : public ITunnelBridge {
 
   void onTunnelWindowUpdate(NativeHandle upstreamFd) override {
     auto upIt = _server._connections.iterator(upstreamFd);
+#ifdef AERONET_WINDOWS
     if (upIt != _server._connections.end()) {
+#else
+    if (*upIt) {
+#endif
       // If we have buffered data from upstream, try to inject it now that the window opened.
       ConnectionState& state = _server._connections.connectionState(upIt);
       if (!state.inBuffer.empty() || state.eofReceived) {
@@ -1599,7 +1633,7 @@ NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t str
 
   // Additionally set the HTTP/2 stream id on the upstream state.
   auto upIt = _connections.iterator(upstreamFd);
-  assert(upIt != _connections.end());
+  assert(upIt != _connections.end() && *upIt);
   ConnectionState& state = _connections.connectionState(upIt);
   state.peerStreamId = streamId;
 
@@ -1611,7 +1645,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionIt
 
   // Find the client HTTP/2 connection via peerFd.
   auto peerIt = _connections.iterator(state.peerFd);
+#ifdef AERONET_WINDOWS
   if (peerIt == _connections.end()) [[unlikely]] {
+#else
+  if (!*peerIt) [[unlikely]] {
+#endif
     return CloseStatus::Close;
   }
 

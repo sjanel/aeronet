@@ -103,7 +103,7 @@ void SingleHttpServer::sweepIdleConnections() {
   while (cnxIt != _connections.end()) {
 #else
   for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
-    if (!internal::ConnectionStorage::active(cnxIt)) {
+    if (!*cnxIt) {
       continue;
     }
 #endif
@@ -448,7 +448,11 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   const auto peerFd = state.peerFd;
   if (peerFd != kInvalidHandle) {
     auto peerIt = _connections.iterator(peerFd);
+#ifdef AERONET_WINDOWS
     if (peerIt != _connections.end()) [[likely]] {
+#else
+    if (*peerIt) [[likely]] {
+#endif
       ConnectionState& peerConnectionState = _connections.connectionState(peerIt);
 #ifdef AERONET_ENABLE_HTTP2
       if (state.peerStreamId != 0) {
@@ -504,7 +508,11 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   // Set peerFd = -1 on each to prevent them from trying to close the already-released peer.
   for (const auto& [upFd, streamId] : tunnelUpstreamFds) {
     auto upIt = _connections.iterator(upFd);
+#ifdef AERONET_WINDOWS
     if (upIt != _connections.end()) {
+#else
+    if (*upIt) {
+#endif
       ConnectionState& upState = _connections.connectionState(upIt);
       upState.peerFd = kInvalidHandle;
       upState.peerStreamId = 0;
@@ -531,7 +539,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
     if (err != 0) {
       // Upstream connect failed. Attempt to notify the client side (peerFd) and close this upstream.
       const auto peerIt = _connections.iterator(state.peerFd);
+#ifdef AERONET_WINDOWS
       if (peerIt != _connections.end()) {
+#else
+      if (*peerIt) {
+#endif
 #ifdef AERONET_ENABLE_HTTP2
         if (state.peerStreamId != 0) {
           // HTTP/2 tunnel upstream: RST_STREAM the tunnel stream
@@ -788,16 +800,18 @@ bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, RawChars& source
   return true;
 }
 
-void SingleHttpServer::shutdownTunnelPeerWrite(ConnectionIt peerIt) {
+bool SingleHttpServer::shutdownTunnelPeerWrite(ConnectionIt peerIt) {
   ConnectionState& peer = _connections.connectionState(peerIt);
   peer.shutdownWritePending = true;
   if (peer.tunnelOrFileBuffer.empty()) {
     if (!ShutdownWrite(peerIt->fd())) {
       log::warn("Failed to shutdown write for peer fd # {}", peerIt->fd());
       closeConnection(peerIt);
+      return true;  // peerIt and its peer are now recycled — do not touch state
     }
     peer.shutdownWritePending = false;
   }
+  return false;
 }
 
 // ============================================================================
@@ -837,6 +851,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt cnxIt) {
+  const auto selfFd = cnxIt->fd();
   ConnectionState& state = _connections.connectionState(cnxIt);
   std::size_t bytesReadThisEvent = 0;
   bool hitEagain = false;
@@ -847,19 +862,29 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
   if (state.inBuffer.empty()) {
     if (state.eofReceived) {
       auto peerIt = _connections.iterator(state.peerFd);
+#ifdef AERONET_WINDOWS
       if (peerIt != _connections.end()) {
-        shutdownTunnelPeerWrite(peerIt);
+#else
+      if (*peerIt) {
+#endif
+        if (shutdownTunnelPeerWrite(peerIt)) {
+          return CloseStatus::Keep;  // peer closed and cleaned up
+        }
       }
       // We don't close the connection immediately, we wait for the peer to close it
       // or for the keep-alive timeout to trigger.
       // But we can stop reading from this side.
-      (void)_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventOut | EventRdHup | EventEt});
+      (void)_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt});
     }
     return CloseStatus::Keep;
   }
 
   auto peerIt = _connections.iterator(state.peerFd);
+#ifdef AERONET_WINDOWS
   if (peerIt == _connections.end()) [[unlikely]] {
+#else
+  if (!*peerIt) [[unlikely]] {
+#endif
     return CloseStatus::Close;
   }
 
@@ -869,8 +894,10 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
   }
 
   if (state.eofReceived) {
-    shutdownTunnelPeerWrite(peerIt);
-    (void)_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventOut | EventRdHup | EventEt});
+    if (shutdownTunnelPeerWrite(peerIt)) {
+      return CloseStatus::Keep;  // already cleaned up
+    }
+    (void)_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt});
   }
   return CloseStatus::Keep;
 }
