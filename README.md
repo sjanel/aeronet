@@ -22,7 +22,7 @@
 - **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
-- **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (IOCP) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
+- **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
 ### Performance at a glance
 
@@ -280,7 +280,7 @@ The following focused docs expand each area without cluttering the high‑level 
 - [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
 - [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
 - [Routing patterns & path parameters](docs/FEATURES.md#routing-patterns--path-parameters)
-- [HttpServer Lifecycle](docs/FEATURES.md#multihttpserver--lifecycle)
+- [HttpServer Lifecycle](docs/FEATURES.md#httpserver-lifecycle)
 - [TLS Features](docs/FEATURES.md#tls-features)
 
 If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics.
@@ -856,7 +856,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 |----------|--------|-------------|-------|
 | **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile`. Tested on **Ubuntu** and **Alpine** in the CI. |
 | **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
-| **Windows** (x64, MSVC) | Supported | IOCP | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+| **Windows** (x64, MSVC) | Supported | WSAPoll | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
 
 Linux-only features (gracefully disabled on other platforms):
 
