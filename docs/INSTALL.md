@@ -8,7 +8,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 
 | Component | Minimum / Tested | Notes |
 | --------- | ---------------- | ----- |
-| OS | Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64) | Linux is primary (epoll); macOS uses kqueue; Windows uses IOCP |
+| OS | Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64) | Linux is primary (epoll); macOS uses kqueue; Windows uses WSAPoll |
 | CMake | 3.28+ | Enforced at configure time |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
 | Clang | 21.x | Earlier might work, not guaranteed |

@@ -2,7 +2,7 @@
 
 Single consolidated reference for **aeronet** features.
 
-> **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (IOCP).
+> **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (WSAPoll).
 > Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
 
 ## Index
@@ -90,7 +90,7 @@ Where to look: see the "Compression & Negotiation" section for full details and 
 ### Methods & special semantics
 
 - [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3)
-- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TracePolicy`
+- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TraceMethodPolicy`
 - [x] CONNECT method support — proxy-style TCP tunneling to an upstream host:port target.
 
 Where to look: see the "OPTIONS & TRACE behavior" subsection below.
@@ -125,16 +125,16 @@ Where to look: see the "Status & error handling" notes and parser error descript
 TRACE semantics and safety:
 
 - TRACE, when allowed, echoes the received request (start-line, headers and body) back with `Content-Type: message/http` so it can be used for debugging loopback-style probes as per RFC 7231 §4.3.2.
-- The server exposes a `TracePolicy` in `HttpServerConfig` with the following values:
+- The server exposes a `TraceMethodPolicy` in `HttpServerConfig` with the following values:
   - `Disabled` — TRACE disallowed (default).
-  - `Enabled` — TRACE allowed on both plaintext and TLS connections.
+  - `EnabledPlainAndTLS` — TRACE allowed on both plaintext and TLS connections.
   - `EnabledPlainOnly` — TRACE allowed on plaintext connections only; rejected on TLS.
 
-Server enforcement uses the per-request TLS indicator (e.g. `HttpRequest::tlsVersion()` being non-empty for TLS) to make the decision when `TracePolicy` is one of the TLS-bound options. For backward compatibility the config also provides `withEnableTrace(bool)` as a convenience that maps `true` to `Enabled` and `false` to `Disabled`.
+Server enforcement uses the per-request TLS indicator (e.g. `HttpRequest::tlsVersion()` being non-empty for TLS) to make the decision when `TraceMethodPolicy` is one of the TLS-bound options. Use `withTracePolicy(TraceMethodPolicy)` to configure the policy programmatically.
 
 Use cases:
 
-- If you deploy behind TLS-terminating proxies and want to avoid exposing TRACE responses over TLS endpoints, set `TracePolicy::EnabledPlainOnly`.
+- If you deploy behind TLS-terminating proxies and want to avoid exposing TRACE responses over TLS endpoints, set `TraceMethodPolicy::EnabledPlainOnly`.
   
 Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed — the policy set is now intentionally smaller and focuses
 on disabling TRACE entirely, allowing it everywhere, or allowing it only on plaintext.
@@ -231,7 +231,7 @@ Behavior summary
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
-- [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, IOCP on Windows)
+- [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, WSAPoll on Windows)
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
@@ -1673,7 +1673,7 @@ router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
 
 ## Construction Model (RAII & Ephemeral Ports)
 
-`SingleHttpServer` binds, configures the listening socket and registers it with the platform I/O backend (epoll on Linux, kqueue on macOS, IOCP on Windows) inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
+`SingleHttpServer` binds, configures the listening socket and registers it with the platform I/O backend (epoll on Linux, kqueue on macOS, WSAPoll on Windows) inside its constructor (RAII). If you request an ephemeral port (`port = 0`), the kernel-assigned port is immediately available via `server.port()` after construction (no separate setup step).
 
 Why RAII:
 
@@ -1999,7 +1999,7 @@ Testing guidance:
 - Use `withTlsCertKeyMemory` with ephemeral self-signed test certificates (see test helper) to avoid filesystem dependencies.
 - For ALPN strict tests, provide a protocol set that intentionally does not match to exercise mismatch counter.
 
-Roadmap (see also table above): SNI routing, hot reload of cert/key, OCSP / revocation checks.
+Roadmap (see also table above): OCSP stapling / revocation checks.
 
 ### TLS Session Tickets
 
@@ -2092,10 +2092,9 @@ See `examples/tls-session-tickets.cpp` for a complete working example.
 
 ### TRACE method policy
 
-The server exposes a configurable `TracePolicy` to control handling of the HTTP `TRACE` method. Use
+The server exposes a configurable `TraceMethodPolicy` to control handling of the HTTP `TRACE` method. Use
 `HttpServerConfig::withTracePolicy(...)` to choose one of:
 
-- `Disabled` (default) — reject TRACE (405).
 - `Disabled` (default) — reject TRACE (405).
 - `EnabledPlainAndTLS` — allow TRACE and echo the received request message (RFC 7231 §4.3) on both plaintext and TLS.
 - `EnabledPlainOnly` — allow TRACE on plaintext connections only; reject when the request arrived over TLS.
@@ -2107,15 +2106,14 @@ Quick reference matrix:
 | Policy | Plaintext TRACE | TLS TRACE | Description |
 |--------|-----------------|-----------|-------------|
 | Disabled | Rejected (405) | Rejected (405) | Default safe option — TRACE not allowed |
-| Enabled  | Allowed (echo)  | Allowed (echo) | TRACE permitted on all transports |
 | EnabledPlainOnly | Allowed (echo)  | Rejected (405) | Useful when TLS endpoints must not expose request echoes |
 | EnabledPlainAndTLS  | Allowed (echo)  | Allowed (echo)  | TRACE allowed on both plaintext and TLS |
 
 Examples:
 
-- To disable TRACE entirely (default): `cfg.withTracePolicy(HttpServerConfig::TracePolicy::Disabled);`
-To allow TRACE only on plaintext: `cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainOnly);`
-To allow TRACE on both plaintext and TLS: `cfg.withTracePolicy(HttpServerConfig::TracePolicy::EnabledPlainAndTLS);`
+- To disable TRACE entirely (default): `cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled);`
+- To allow TRACE only on plaintext: `cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);`
+- To allow TRACE on both plaintext and TLS: `cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);`
 
 ## Streaming Responses (Chunked / Incremental)
 
@@ -2140,7 +2138,7 @@ Backpressure & buffering:
 - Unified outbound queue for both fixed & streaming; immediate write path used when queue empty, else bytes accumulate and event-driven write-readiness notification drives flushing.
 - Exceeding `maxOutboundBufferBytes` marks connection to close after pending data flush (subsequent `write()` yields false).
 
-Limitations (current phase): no trailer support; compression integration limited to buffered activation decision; inbound streaming decompression not yet implemented.
+Limitations (current phase): compression integration limited to buffered activation decision; request body streaming (chunked delivery to handler as it arrives) not yet implemented.
 
 Example:
 
@@ -3036,6 +3034,6 @@ curl --http2 http://localhost:8080/hello
 
 ## Future Expansions
 
-Planned / potential: TLS hot reload & SNI, richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
+Planned / potential: richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
 
 - [ ] Additional OpenTelemetry instrumentation (histograms, gauges)

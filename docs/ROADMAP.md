@@ -1,16 +1,5 @@
 # aeronet Roadmap — Planned / Not Implemented
 
-## Recently completed
-
-- **Cross-platform error abstraction & platform hardening**: Unified all raw `errno`/`WSAGetLastError()`/`strerror()` usage behind portable helpers in `system-error.hpp` (`LastSystemError`, `SystemErrorMessage`, `ThrowSystemError`, and `error::k*` constants). Fixed several platform-specific correctness issues: `SO_NOSIGPIPE` on macOS, `BaseFd` handle-kind discrimination on Windows, `FormatMessageA` for Winsock error codes, `TransmitFile` parameter types, `SO_REUSEPORT` on macOS 12+. See changelog for details.
-- **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2. Each stream owns its async task independently; when a coroutine suspends, other streams on the same connection continue to make progress. Previously HTTP/2 drained coroutines synchronously, blocking all streams.
-- **Formal security review of HTTP/2 frame handling and state machines**: Comprehensive code audit of ~4700 lines across 11 files covering frame parsing, connection/stream state machines, HPACK codec, flow control, and CONNECT tunneling. Identified 5 actionable findings (CONTINUATION accumulation limit, stream recv-window overflow check, HPACK integer decode overflow tightening, SETTINGS silent truncation logging, priority flood mitigation). See commit history and inline comments for details.
-- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close. See [http2-protocol-handler.hpp](../aeronet/http2/include/aeronet/http2-protocol-handler.hpp) and [tests](../aeronet/http2/test/http2-protocol-handler_test.cpp).
-- **Direct compression**: Inline body streaming compression at `body()` / `bodyAppend()` time via `DirectCompressionMode`. Eliminates a separate compression pass at finalization for eligible inline bodies.
-- `makeResponse` helpers from the handlers to reduce memory moves by adding all global headers at once.
-- `MSG_ZEROCOPY` support for large payloads on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`. Threshold is 16KB. See [zerocopy.hpp](../aeronet/sys/include/aeronet/zerocopy.hpp). Now supports kTLS connections by bypassing OpenSSL's SSL_write and using sendmsg() directly on the kTLS socket.
-- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range): Full `206 Partial Content` with `multipart/byteranges` MIME body. Ranges are sorted, coalesced, and safety-limited (`maxMultipartRanges`, `maxMultipartBodySize`). See `StaticFileHandler` and `StaticFileConfig`.
-
 ## High priority
 
 - **HTTP/2 Performance Optimization & Testing** (h2load benchmarks):
@@ -22,13 +11,12 @@
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
-  - MacOS even load balancer of event loop back traffic with SO_REUSEPORT (currently all goes to last bound socket)
 
 ## Medium priority
+
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
-- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range)
-- **Structured logging / pluggable sinks** - Basic logging functional; advanced hooks allow custom formatters/destinations
+- **Structured logging / pluggable sinks** - Basic logging functional; spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
   (Content-Encoding + compressed Content-Length) when desired.
@@ -52,7 +40,7 @@
 - **Fuzz Harness Integration** - libFuzzer targets for HTTP/1.1 and HTTP/2 parsing
 - **OCSP Stapling & Advanced TLS** - Passive stapling with cached responses, CRL hooks, key logging (debug only)
 - **Per-SNI mTLS Policies** - Different client cert requirements per SNI hostname
-- **Advanced Metrics** - Histogram/percentile latency buckets, per-route stats
+- **Advanced Metrics** - ~~Histogram/percentile latency buckets~~ ✔ (implemented via `TelemetryContext::histogram()` + `TelemetryConfig::addHistogramBuckets()`); per-route stats not yet implemented
 
 ### TLS enhancements (detailed roadmap)
 
@@ -60,7 +48,7 @@
 
 - OCSP stapling (passive, cached)
 - Optional CRL / revocation hooks
-- Histogram / percentile metrics
+- ~~Histogram / percentile metrics~~ ✔
 - Key log (debug only)
 - Security hardening audits (zeroization, memory scrub confirmations)
 
