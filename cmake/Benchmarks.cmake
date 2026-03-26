@@ -5,6 +5,8 @@ option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative
 option(AERONET_BENCH_ENABLE_PISTACHE "Build pistache benchmark server if pistache is found" ON)
 option(AERONET_BENCH_ENABLE_CROW "Build Crow benchmark server (CrowCpp/Crow)" ON)
 
+option(AERONET_BENCH_ENABLE_UWEBSOCKETS "Fetch and build uWebSockets for comparative WebSocket benchmarks" ON)
+
 include(FetchContent)
 
 # Google Benchmark
@@ -61,6 +63,22 @@ if(AERONET_BENCH_ENABLE_HTTPLIB)
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(cpp_httplib)
+endif()
+
+if(AERONET_BENCH_ENABLE_UWEBSOCKETS)
+  FetchContent_Declare(
+    uwebsockets
+    GIT_REPOSITORY https://github.com/uNetworking/uWebSockets.git
+    GIT_TAG        v20.76.0
+    GIT_SHALLOW    TRUE
+  )
+  FetchContent_Declare(
+    usockets
+    GIT_REPOSITORY https://github.com/uNetworking/uSockets.git
+    GIT_TAG        v0.8.8
+    GIT_SHALLOW    TRUE
+  )
+  FetchContent_MakeAvailable(uwebsockets usockets)
 endif()
 
 # Resolve benchmark root (directory containing benchmark sources)

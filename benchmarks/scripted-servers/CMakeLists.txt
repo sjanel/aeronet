@@ -126,6 +126,38 @@ else()
   message(STATUS "[aeronet][bench] Crow benchmark server disabled (AERONET_BENCH_ENABLE_CROW=${AERONET_BENCH_ENABLE_CROW})")
 endif()
 
+## uWebSockets benchmark server (WebSocket-only comparison target)
+if(AERONET_BENCH_ENABLE_UWEBSOCKETS AND DEFINED uwebsockets_SOURCE_DIR AND DEFINED usockets_SOURCE_DIR)
+  # uSockets is pure C — enable C compiler
+  enable_language(C)
+
+  # Build uSockets as a static library (it is not a CMake project)
+  file(GLOB USOCKETS_SOURCES "${usockets_SOURCE_DIR}/src/*.c")
+  list(APPEND USOCKETS_SOURCES "${usockets_SOURCE_DIR}/src/eventing/epoll_kqueue.c")
+  add_library(usockets_static STATIC ${USOCKETS_SOURCES})
+  target_include_directories(usockets_static PUBLIC "${usockets_SOURCE_DIR}/src")
+  # uSockets needs LIBUS_NO_SSL unless we link OpenSSL
+  target_compile_definitions(usockets_static PUBLIC LIBUS_NO_SSL)
+  set_target_properties(usockets_static PROPERTIES FOLDER "benchmarks/deps")
+
+  AeronetAddProjectExecutable(uwebsockets-bench-server uwebsockets_server.cpp)
+  target_include_directories(uwebsockets-bench-server PRIVATE
+    "${uwebsockets_SOURCE_DIR}/src"
+    "${usockets_SOURCE_DIR}/src"
+  )
+  target_link_libraries(uwebsockets-bench-server PRIVATE usockets_static z)
+  set_target_properties(uwebsockets-bench-server PROPERTIES FOLDER "benchmarks/servers")
+
+  if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_property(TARGET uwebsockets-bench-server PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "[aeronet][bench] LTO enabled for uwebsockets-bench-server")
+  endif()
+
+  message(STATUS "[aeronet][bench] uWebSockets benchmark server enabled (built from source)")
+else()
+  message(STATUS "[aeronet][bench] uWebSockets benchmark server disabled (AERONET_BENCH_ENABLE_UWEBSOCKETS=${AERONET_BENCH_ENABLE_UWEBSOCKETS})")
+endif()
+
 # Copy Lua scripts and runner to build directory for convenience
 set(SCRIPTED_SERVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(SCRIPTED_SERVERS_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -147,6 +179,20 @@ endif()
 file(CREATE_LINK
   ${SCRIPTED_SERVERS_DIR}/run_benchmarks.py
   ${SCRIPTED_SERVERS_BUILD_DIR}/run_benchmarks.py
+  SYMBOLIC
+)
+
+# Symlink WebSocket runner script so it is invokable from the build directory
+file(CREATE_LINK
+  ${SCRIPTED_SERVERS_DIR}/run_ws_benchmarks.py
+  ${SCRIPTED_SERVERS_BUILD_DIR}/run_ws_benchmarks.py
+  SYMBOLIC
+)
+
+# Symlink WebSocket HTML renderer
+file(CREATE_LINK
+  ${SCRIPTED_SERVERS_DIR}/render_ws_benchmarks_html.py
+  ${SCRIPTED_SERVERS_BUILD_DIR}/render_ws_benchmarks_html.py
   SYMBOLIC
 )
 
@@ -179,5 +225,10 @@ if(TARGET crow-bench-server)
   add_dependencies(run-scripted-benchmarks crow-bench-server)
 endif()
 
+if(TARGET uwebsockets-bench-server)
+  add_dependencies(run-scripted-benchmarks uwebsockets-bench-server)
+endif()
+
 message(STATUS "[aeronet][bench] Scripted server benchmarks configured")
 message(STATUS "[aeronet][bench] After building, run: cd ${SCRIPTED_SERVERS_BUILD_DIR} && ./run_benchmarks.py")
+message(STATUS "[aeronet][bench] WebSocket benchmarks: cd ${SCRIPTED_SERVERS_BUILD_DIR} && ./run_ws_benchmarks.py")

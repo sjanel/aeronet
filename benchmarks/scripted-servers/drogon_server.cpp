@@ -3,6 +3,7 @@
 // Implements the same endpoints as aeronet_server.cpp for fair comparison.
 // Requires AERONET_BENCH_ENABLE_DROGON=ON during CMake configuration.
 
+#include <drogon/WebSocketController.h>
 #include <drogon/drogon.h>
 
 #include <algorithm>
@@ -47,6 +48,26 @@ drogon::ContentType GetContentType(std::string_view path) {
 }
 
 }  // namespace
+
+// ============================================================
+// WebSocket: /ws - Echo endpoint for WebSocket benchmarks
+// ============================================================
+class EchoBenchWebSocket : public drogon::WebSocketController<EchoBenchWebSocket> {
+ public:
+  void handleNewMessage(const drogon::WebSocketConnectionPtr& conn, std::string&& message,
+                        const drogon::WebSocketMessageType& type) override {
+    if (type == drogon::WebSocketMessageType::Text || type == drogon::WebSocketMessageType::Binary) {
+      conn->send(message, type);
+    }
+  }
+  void handleNewConnection(const drogon::HttpRequestPtr& /*req*/,
+                           const drogon::WebSocketConnectionPtr& /*conn*/) override {}
+  void handleConnectionClosed(const drogon::WebSocketConnectionPtr& /*conn*/) override {}
+
+  WS_PATH_LIST_BEGIN
+  WS_PATH_ADD("/ws");
+  WS_PATH_LIST_END
+};
 
 int main(int argc, char* argv[]) {
   bench::BenchConfig benchCfg(8081, argc, argv);
