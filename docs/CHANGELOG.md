@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Other
+
+- Added **WebSocket** benchmarks to CI pipeline with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon.
+
 ## [1.2.0] - 2026-03-23
 
 `aeronet` is now available for:
@@ -11,11 +15,11 @@ All notable changes to aeronet are documented in this file.
 - **macOS** with a kqueue-based event loop backend.
 - **Windows** with an WSAPoll-based event loop backend.
 
-### Breaking changes
+### 1.2.0 Breaking changes
 
 - `HttpServerConfig::tcpNoDelay` becomes an enum with `Auto` mode added instead of a simple boolean. The default value is `Auto` to activate `TCP_NODELAY` for HTTP/2 with TLS connections that benefit the most from it, while keeping it disabled for other connections. `HttpServerConfig::withTcpNoDelay()` stays unchanged.
 
-### Bug fixes
+### 1.2.0 Bug fixes
 
 - `HTTP/2`: Fix `:path` header parsing to correctly extract query parameters mirroring HTTP/1.1 parsing behavior and perform in-place percent-decoding of both path and queries.
 - `Router`: Fix an assertion failure crash when a requested path shares a prefix with a registered path but diverges at a segment that does not match any registered child or wildcard.
@@ -27,14 +31,14 @@ All notable changes to aeronet are documented in this file.
 - Fix race condition in multi threaded HttpServer when calling `stop()`.
 - Do not sweep tunnel connections
 
-### New features
+### 1.2.0 New features
 
 - **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close.
 - **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2, just like HTTP/1.1. Previously, HTTP/2 async handlers were drained synchronously in a tight loop, blocking all other streams on the connection while a `deferWork` operation was in progress. Each HTTP/2 stream now owns its async task independently; when a coroutine suspends, other streams on the same connection continue to be processed.
 - **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range): Full `206 Partial Content` with `multipart/byteranges` MIME body. Ranges are sorted, coalesced, and safety-limited (`maxMultipartRanges`, `maxMultipartBodySize`). See `StaticFileHandler` and `StaticFileConfig`.
 - `StreamingHandler` now fully supports **HTTP/2**
 
-### Improvements
+### 1.2.0 Improvements
 
 - Replaced connections map with a simple vector, where the index of a connection object is simply indexed by its fd value.
 - Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
@@ -54,7 +58,7 @@ All notable changes to aeronet are documented in this file.
 - Optimized hpack HTTP/2 static header name lookup by using binary search instead of linear search.
 - Update metrics in HTTP/2
 
-### Other
+### 1.2.0 Other
 
 - Migrated from classic **zlib** to **zlib-ng** (native mode) for gzip/deflate compression and decompression. zlib-ng provides SIMD-optimized deflate/inflate with identical wire-format compatibility (RFC 1950/1951/1952). The migration covers the core encoder/decoder, **WebSocket** permessage-deflate, and scripted benchmark servers (C++ helpers and Rust `flate2` backend). The compile flag `AERONET_ENABLE_ZLIBNG` can be set to `OFF` to stay with classic zlib if needed, but zlib-ng is now the default and recommended option for better performance.
 - Bumped `zlib` dependency to version **1.3.2**.

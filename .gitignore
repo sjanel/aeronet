@@ -11,6 +11,7 @@ benchmarks/scripted-servers/static/image.bin
 benchmarks/scripted-servers/static/medium.bin
 benchmarks/scripted-servers/static/large.bin
 **/*.class
+ws-results/
 
 # IDE / editor
 .idea/

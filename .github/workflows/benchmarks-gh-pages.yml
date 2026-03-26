@@ -316,12 +316,120 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------ #
+  # WebSocket bench: k6-based WebSocket scenarios.                      #
+  # ------------------------------------------------------------------ #
+  bench-ws:
+    name: WS Bench
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+
+      - name: Install k6
+        run: |
+          K6_VERSION=v0.55.0
+          curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
+            | tar xzf - --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
+          k6 version
+
+      - name: Install GCC 13
+        run: sudo apt-get install -y gcc-13 g++-13
+
+      - name: Set compiler environment
+        run: |
+          echo "CC=gcc-13" >> $GITHUB_ENV
+          echo "CXX=g++-13" >> $GITHUB_ENV
+
+      - name: Configure build
+        run: |
+          ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAERONET_BUILD_TESTS=OFF \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_BENCHMARKS=ON \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_ENABLE_SPDLOG=ON \
+            -DAERONET_ENABLE_OPENSSL=ON \
+            -DAERONET_ENABLE_HTTP2=ON \
+            -DAERONET_ENABLE_BROTLI=ON \
+            -DAERONET_ENABLE_ZLIB=ON \
+            -DAERONET_ENABLE_ZSTD=ON \
+            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
+
+      - name: Build
+        run: cmake --build build-pages --parallel
+
+      - name: Run WebSocket benchmarks
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        run: |
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          VUS=50
+          WARMUP=5s
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+          else
+            # pull_request and non-main pushes
+            DUR=5s
+            WARMUP=2s
+            VUS=10
+          fi
+
+          echo "WS bench: dur=$DUR vus=$VUS warmup=$WARMUP"
+
+          ./run_ws_benchmarks.py \
+            --vus "$VUS" \
+            --duration "$DUR" \
+            --warmup "$WARMUP" \
+            --output ./ws-results
+
+      - name: Upload WS results
+        uses: actions/upload-artifact@v7
+        with:
+          name: ws-bench-results
+          path: build-pages/benchmarks/scripted-servers/ws-results/ws_benchmark_latest.json
+          retention-days: 3
+
+      - name: Upload WS badge
+        uses: actions/upload-artifact@v7
+        with:
+          name: ws-bench-badge
+          path: build-pages/benchmarks/scripted-servers/ws-results/ws_benchmark_badge.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Upload WS HTML report
+        uses: actions/upload-artifact@v7
+        with:
+          name: ws-bench-html
+          path: build-pages/benchmarks/scripted-servers/ws-results/ws_benchmark_*.html
+          retention-days: 3
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ #
   # Publish: aggregate all benchmark results and deploy to gh-pages.    #
   # ------------------------------------------------------------------ #
   publish:
     name: Publish Pages
     runs-on: ubuntu-latest
-    needs: [bench, bench-h2]
+    needs: [bench, bench-h2, bench-ws]
     if: always() && !cancelled()
     steps:
       - name: Checkout current main
@@ -399,6 +507,28 @@ jobs:
           if [[ -f /tmp/bench-artifacts/h2-bench-badge-h2c/benchmark_badge.json ]]; then
             cp /tmp/bench-artifacts/h2-bench-badge-h2c/benchmark_badge.json /tmp/site/benchmarks/h2/benchmark_badge_h2c.json
           fi
+
+          # --- WebSocket results ---
+          mkdir -p /tmp/site/benchmarks/ws
+          WS_JSON="/tmp/bench-artifacts/ws-bench-results/ws_benchmark_latest.json"
+          if [[ -f "$WS_JSON" ]]; then
+            cp "$WS_JSON" /tmp/site/benchmarks/ws/ws_benchmark_latest.json
+            python3 benchmarks/scripted-servers/render_ws_benchmarks_html.py \
+              --input "$WS_JSON" \
+              --output /tmp/site/benchmarks/ws/index.html
+          else
+            echo "WARNING: No WebSocket benchmark results found; skipping render"
+          fi
+
+          # Copy WS badge if available
+          if [[ -f /tmp/bench-artifacts/ws-bench-badge/ws_benchmark_badge.json ]]; then
+            cp /tmp/bench-artifacts/ws-bench-badge/ws_benchmark_badge.json /tmp/site/benchmarks/ws/ws_benchmark_badge.json
+          fi
+
+          # Copy WS HTML report if available
+          for f in /tmp/bench-artifacts/ws-bench-html/ws_benchmark_*.html; do
+            [[ -f "$f" ]] && cp "$f" /tmp/site/benchmarks/ws/ || true
+          done
 
       - name: Publish site snapshot to gh-pages
         if: ${{ github.event_name != 'pull_request' }}

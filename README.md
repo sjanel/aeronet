@@ -10,6 +10,7 @@
 [![H1 Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/)
 [![H2 h2c Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fh2%2Fbenchmark_badge_h2c.json)](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html)
 [![H2 TLS Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fh2%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
+[![WS Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fws%2Fws_benchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/ws/)
 [![Release](https://img.shields.io/github/v/release/sjanel/aeronet?style=flat-square)](https://github.com/sjanel/aeronet/releases/latest)
 
 ## Why aeronet?
@@ -26,7 +27,7 @@
 
 ### Performance at a glance
 
-`aeronet` is designed to be **very fast**, optimized for **Linux**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1) and [h2load](https://nghttp2.org/documentation/h2load-howto.html)-based benchmarks (HTTP/2) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), [Crow](https://github.com/CrowCpp/Crow), a [Rust Axum server](https://docs.rs/axum/latest/axum/), [Undertow in Java](https://github.com/undertow-io/undertow), Go and Python), `aeronet`:
+`aeronet` is designed to be **very fast**, optimized for **Linux**. In our automated [wrk](https://github.com/wg/wrk)-based benchmarks (HTTP/1.1), [h2load](https://nghttp2.org/documentation/h2load-howto.html)-based benchmarks (HTTP/2), and [k6](https://k6.io/)-based benchmarks (WebSocket) against other popular frameworks (run in CI against a fixed set of competitors such as [drogon](https://github.com/drogonframework/drogon), [pistache](https://github.com/pistacheio/pistache), [Crow](https://github.com/CrowCpp/Crow), a [Rust Axum server](https://docs.rs/axum/latest/axum/), [Undertow in Java](https://github.com/undertow-io/undertow), Go and Python), `aeronet`:
 
 - Achieves the **highest requests/sec** in most scenarios
 - Consistently delivers **lower average latency** in those same scenarios
@@ -34,7 +35,7 @@
 
 You can inspect the latest benchmark tables generated on `main` from the CI **benchmarks** job and detailed methodology here:
 
-- [Latest CI benchmarks (HTTP/1.1 and HTTP/2)](https://github.com/sjanel/aeronet/actions/workflows/benchmarks-gh-pages.yml?query=branch%3Amain)
+- [Latest CI benchmarks (HTTP/1.1, HTTP/2, WebSocket)](https://github.com/sjanel/aeronet/actions/workflows/benchmarks-gh-pages.yml?query=branch%3Amain)
 - [Benchmark scenarios and methodology](benchmarks/scripted-servers/README.md)
 
 You can browse the latest rendered benchmark tables directly on GitHub Pages:
@@ -42,6 +43,7 @@ You can browse the latest rendered benchmark tables directly on GitHub Pages:
 - [HTTP/1.1 Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/)
 - [HTTP/2 clear-text Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html)
 - [HTTP/2 TLS Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
+- [WebSocket Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/ws/)
 
 ## Minimal Examples
 

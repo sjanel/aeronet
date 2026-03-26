@@ -7,6 +7,7 @@
   - h2load-based load testing scenarios (concurrent streams, various payload sizes)
   - Performance regression detection in CI
   - Identify and optimize hot paths in HPACK, flow control, and frame processing
+- **WebSocket Performance Benchmarks** ✅ — Implemented via `run_ws_benchmarks.py` with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon. See `benchmarks/scripted-servers/README.md`.
 - **Security Hardening Audit**:
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
