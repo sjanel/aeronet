@@ -344,6 +344,35 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
   }
 }
 
+TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAngleBracketsAndQuote) {
+  const auto dirPath = tmpDir.dirPath() / "assets";
+  std::filesystem::create_directories(dirPath);
+
+  writeFileWithSize(dirPath / "a<angle>.txt", 1);
+  writeFileWithSize(dirPath / "b\"quote.txt", 1);
+
+  // <, >, and " are forbidden filename characters on Windows; skip if creation failed
+  std::error_code ec;
+  if (!std::filesystem::exists(dirPath / "a<angle>.txt", ec) || ec) {
+    GTEST_SKIP() << "Filenames with <, >, \" are not supported on this platform";
+  }
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+
+  buildReq("assets/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+
+  const std::string_view body = resp.bodyInMemory();
+  EXPECT_TRUE(body.contains("a&lt;angle&gt;.txt"));
+  EXPECT_TRUE(body.contains("b&quot;quote.txt"));
+}
+
 TEST_F(StaticFileHandlerTest, DirectoryListingFormatsLargeSizesWithoutDecimals) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directories(dirPath);
