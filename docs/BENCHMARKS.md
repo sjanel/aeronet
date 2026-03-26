@@ -1,20 +1,60 @@
 # aeronet Benchmarks
 
-This document describes the purpose, scope, and usage of the optional benchmarking
+This document describes the purpose, scope, and usage of the benchmarking
 suite for aeronet.
 
 ## Goals
 
-- Track performance regressions for core HTTP request handling and (later) streaming/TLS.
+- Track performance regressions for core HTTP and WebSocket request handling.
 - Provide comparative harnesses against other C++ HTTP frameworks (planned: oatpp, drogon).
-- Keep CI lightweight: benchmarks are **not** built in CI by default.
-- Offer reproducible local runs with JSON output for ad‑hoc analysis.
+- Keep CI benchmark runs reproducible with pinned tooling and generated artifacts.
+- Offer reproducible local runs with JSON + HTML output for ad-hoc analysis.
 
 ## Non‑Goals (Current Phase)
 
-- Producing authoritative cross‑platform numbers (cloud CI noise is high).
+- Producing authoritative cross-platform numbers (cloud CI noise is high).
 - Shipping benchmark binaries in packages.
 - Providing full-feature client load generation (wrk/vegeta do that better externally).
+
+## CI and GitHub Pages
+
+Benchmark CI is executed by `.github/workflows/benchmarks-gh-pages.yml`.
+
+It runs:
+
+- HTTP/1.1 benchmarks (wrk)
+- HTTP/2 benchmarks (h2load, h2c + h2-tls)
+- WebSocket benchmarks (k6)
+
+The same workflow publishes rendered dashboards and badge endpoint JSON files to GitHub Pages:
+
+- HTTP/1.1: `https://sjanel.github.io/aeronet/benchmarks/`
+- HTTP/2 h2c: `https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html`
+- HTTP/2 TLS: `https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html`
+- WebSocket: `https://sjanel.github.io/aeronet/benchmarks/ws/`
+
+For WebSocket runs, if aeronet reports benchmark check failures/errors, the benchmark CI job fails by design.
+
+## WebSocket Benchmarks
+
+The WebSocket scripted benchmark harness lives under `benchmarks/scripted-servers/` and is driven by:
+
+- `run_ws_benchmarks.py` (orchestration)
+- k6 scenario scripts under `benchmarks/scripted-servers/k6/`
+- `render_ws_benchmarks_html.py` (dashboard generation)
+
+Run locally from the benchmark build directory:
+
+```bash
+./run_ws_benchmarks.py --duration 30s --vus 50 --output ./ws-results
+```
+
+Artifacts produced:
+
+- Timestamped JSON summary: `ws_benchmark_*.json`
+- Stable JSON pointer for CI/artifacts: `ws_benchmark_latest.json`
+- HTML report: `ws_benchmark_*.html`
+- Shields badge payload: `ws_benchmark_badge.json`
 
 ## Build Activation
 
