@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -270,6 +271,29 @@ int main(int argc, char* argv[]) {
                    std::string_view action = params.find("action")->second;
                    return req.makeResponse(std::format("resource={},item={},action={}", resource, item, action));
                  });
+
+  // ============================================================
+  // WebSocket: /ws - Echo endpoint for WebSocket benchmarks
+  // Echoes back text and binary messages verbatim
+  // ============================================================
+#ifdef AERONET_ENABLE_WEBSOCKET
+  router.setWebSocket("/ws", WebSocketEndpoint::WithFactory([](const HttpRequest& /*req*/) {
+                        auto handler = std::make_unique<websocket::WebSocketHandler>();
+                        websocket::WebSocketHandler* hp = handler.get();
+                        handler->setCallbacks(websocket::WebSocketCallbacks{
+                            .onMessage =
+                                [hp](std::span<const std::byte> payload, bool isBinary) {
+                                  if (isBinary) {
+                                    hp->sendBinary(payload);
+                                  } else {
+                                    hp->sendText({reinterpret_cast<const char*>(payload.data()), payload.size()});
+                                  }
+                                },
+                        });
+                        return handler;
+                      }));
+  std::cout << "WebSocket echo endpoint registered at /ws\n";
+#endif
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
             << " threads\n";

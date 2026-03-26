@@ -274,6 +274,7 @@ All servers implement identical endpoints:
 | `/*` | GET | Static file serving (aeronet only, with `--static DIR`) |
 | `/r{N}` | GET | Routing test routes (aeronet only, with `--routes N`) |
 | `/users/{id}/posts/{post}` | GET | Pattern-matched route (aeronet only) |
+| `/ws` | WS | WebSocket echo endpoint (aeronet, drogon, uwebsockets) |
 
 ### Supported Servers
 
@@ -281,6 +282,7 @@ All servers implement identical endpoints:
 |--------|----------|------|-------|
 | aeronet | C++ | `aeronet_server.cpp` | Primary benchmark target |
 | drogon | C++ | `drogon_server.cpp` | Popular C++ async framework |
+| uwebsockets | C++ | `uwebsockets_server.cpp` | High-perf WebSocket-first framework |
 | pistache | C++ | `pistache_server.cpp` | REST framework for C++ |
 | crow | C++ | `crow_server.cpp` | Header-only C++ microframework |
 | rust | Rust | `rust_server/` | axum async framework |
@@ -468,6 +470,73 @@ Notes:
 - If `run_benchmarks.py` starts servers for you, prefer starting the server manually pinned (as above) and point the runner at the running server to ensure pinning takes effect.
 - If you want automation, consider a small wrapper script that sets governor, pins processes, warms, runs the bench, and restores settings afterwards.
 
+## WebSocket Benchmarks
+
+A separate orchestrator (`run_ws_benchmarks.py`) drives WebSocket-specific scenarios using
+[k6](https://k6.io/) for realistic load profiles and optionally
+[websocket-bench](https://github.com/matttomasetti/websocket-bench) for raw throughput.
+
+### Prerequisites
+
+```bash
+# Install k6
+# macOS
+brew install k6
+# Linux (snap)
+sudo snap install k6
+# or see https://k6.io/docs/get-started/installation/
+
+# (Optional) Install websocket-bench
+go install github.com/matttomasetti/websocket-bench@latest
+```
+
+### WS Scenarios (k6)
+
+| Scenario | Script | Description |
+|----------|--------|-------------|
+| echo-small | `k6/ws_echo_small.js` | 128B text echo, measures RTT under load |
+| echo-medium | `k6/ws_echo_medium.js` | 2KB payload echo, higher bandwidth |
+| mix | `k6/ws_mix_text_binary.js` | Alternating text + binary frames |
+| ping-pong | `k6/ws_ping_pong.js` | Control-frame RTT (ping/pong latency) |
+| churn | `k6/ws_churn.js` | Rapid connect → send → close cycles |
+| compression | `k6/ws_compression.js` | Compressible JSON payloads (permessage-deflate comparison) |
+
+### Running WebSocket Benchmarks
+
+```bash
+# Full suite — all servers, all scenarios
+./run_ws_benchmarks.py
+
+# Quick smoke test (5s, 10 VUs)
+./run_ws_benchmarks.py --smoke
+
+# Specific servers/scenarios
+./run_ws_benchmarks.py --server aeronet,uwebsockets --scenario echo-small,churn
+
+# With raw throughput via websocket-bench
+./run_ws_benchmarks.py --websocket-bench
+
+# Custom parameters
+./run_ws_benchmarks.py --vus 100 --duration 60s --threads 4 --output ./my-results
+
+# Render HTML report from a JSON run (interactive charts)
+python3 ./render_ws_benchmarks_html.py --input ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.json --output ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.html
+```
+
+Each `run_ws_benchmarks.py` execution now automatically generates:
+
+- text summary (`ws_benchmark_*.txt`)
+- machine-readable JSON (`ws_benchmark_*.json`)
+- HTML report with charts (`ws_benchmark_*.html`)
+
+### WS Server Support
+
+| Server | Port | WebSocket `/ws` |
+|--------|------|-----------------|
+| aeronet | 8080 | Yes |
+| drogon | 8081 | Yes |
+| uwebsockets | 8088 | Yes |
+
 ## Adding New Servers
 
 1. Create a new server file (e.g., `newserver_server.cpp`)
@@ -480,6 +549,6 @@ Notes:
 - [x] Add HTTP/2 scenarios (h2load) — h2c and h2-tls modes via `--protocol`
 - [x] Add TLS benchmarks — h2-tls mode, self-signed certs generated at runtime
 - [ ] Integrate with CI for regression detection
-- [ ] WebSocket scenarios
+- [x] WebSocket scenarios (k6 + websocket-bench, see below)
 - [ ] Add streaming/chunked benchmark when comparable APIs exist across frameworks
 - [ ] Add automatic compression / decompression benchmarks for frameworks that support it
