@@ -26,7 +26,6 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
-#include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -523,7 +522,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
       if (pCorsPolicy != nullptr) {
         (void)pCorsPolicy->applyToResponse(request, corsResp);
       }
-      internal::PrefinalizeHttpResponse(request, corsResp, isHead, *_pCompressionState, *_pTelemetryContext);
+      request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
       corsResp.finalizeForHttp2();
       const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHead);
       if (err != ErrorCode::NoError) [[unlikely]] {
@@ -605,7 +604,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
     if (pCorsPolicy != nullptr) {
       (void)pCorsPolicy->applyToResponse(request, *globalResult);
     }
-    internal::PrefinalizeHttpResponse(request, *globalResult, isHead, *_pCompressionState, *_pTelemetryContext);
+    request.prefinalizeHttpResponse(*globalResult, *_pTelemetryContext);
     globalResult->finalizeForHttp2();
     const auto middlewareStatus = globalResult->status();
     ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
@@ -694,7 +693,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
     HttpResponse resp = reply(request, routingResult);
 
-    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
+    request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
 
     resp.finalizeForHttp2();
 
@@ -1070,7 +1069,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
       (void)pending.pCorsPolicy->applyToResponse(request, resp);
     }
 
-    internal::PrefinalizeHttpResponse(request, resp, isHead, *_pCompressionState, *_pTelemetryContext);
+    request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
     resp.finalizeForHttp2();
 
     respStatusCode = resp.status();

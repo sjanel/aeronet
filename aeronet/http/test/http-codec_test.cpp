@@ -149,9 +149,9 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   HttpResponse resp2(http::StatusCodeOK);
   resp2.body(body, http::ContentTypeTextPlain);
 #ifdef AERONET_ENABLE_ZLIB
-  HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2);
+  EXPECT_EQ(HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2), CompressResponseResult::Compressed);
 #else
-  EXPECT_THROW(HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2), std::invalid_argument);
+  EXPECT_EQ(HttpCodec::TryCompressResponse(state, Encoding::gzip, resp2), CompressResponseResult::Error);
 #endif
 
   // If encoders present, compression should be applied (Content-Encoding set). Otherwise no-op.
@@ -926,11 +926,11 @@ TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder
   }
 #endif
 
-  // The API should throw when asked to encode with Encoding::none
-  EXPECT_THROW(state.encodeFull(Encoding::none, plain, 1024UL, nullptr), std::invalid_argument);
-  EXPECT_THROW(state.encodeFull(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)), plain, 1024UL,
-                                nullptr),
-               std::invalid_argument);
+  // The API should return an error when asked to encode with Encoding::none
+  EXPECT_TRUE(state.encodeFull(Encoding::none, plain, 1024UL, nullptr).hasError());
+  EXPECT_TRUE(
+      state.encodeFull(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)), plain, 1024UL, nullptr)
+          .hasError());
 }
 
 TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncoder) {
@@ -1073,13 +1073,11 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
 #endif
 
   // Invalid encodings throw (per API)
-  EXPECT_THROW(state.makeContext(Encoding::none), std::invalid_argument);
-  EXPECT_THROW(state.makeContext(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))),
-               std::invalid_argument);
+  EXPECT_EQ(state.makeContext(Encoding::none), nullptr);
+  EXPECT_EQ(state.makeContext(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
 
-  EXPECT_THROW(state.context(Encoding::none), std::invalid_argument);
-  EXPECT_THROW(state.context(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))),
-               std::invalid_argument);
+  EXPECT_EQ(state.context(Encoding::none), nullptr);
+  EXPECT_EQ(state.context(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
 }
 
 #ifdef AERONET_ENABLE_ZLIB
