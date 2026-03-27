@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### Other
 
 - Added **WebSocket** benchmarks to CI pipeline with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon.
+- Fix test `http2-protocol-handler_test` when `AERONET_ENABLE_ZLIB` is off and `AERONET_ENABLE_HTTP2` is on.
 
 ## [1.2.0] - 2026-03-23
 
