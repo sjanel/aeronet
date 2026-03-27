@@ -21,6 +21,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
@@ -34,6 +35,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/template-constants.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
 #include "http-method-parse.hpp"
@@ -288,6 +290,37 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   _headPinned = false;
 
   return http::StatusCodeOK;
+}
+
+void HttpRequest::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
+  if (method() == http::Method::HEAD) {
+    return;
+  }
+  if (response.status() == http::StatusCodeNotFound && !response.hasBody()) {
+    response.bodyStatic(k404NotFoundTemplate2, http::ContentTypeTextHtml);
+  }
+
+  const Encoding encoding = responsePossibleEncoding();
+
+  if (response.hasBodyInMemory() && encoding != Encoding::none) {
+    const internal::CompressResponseResult result =
+        internal::HttpCodec::TryCompressResponse(*_pCompressionState, encoding, response);
+
+    switch (result) {
+      case internal::CompressResponseResult::Uncompressed:
+        break;
+      case internal::CompressResponseResult::Compressed:
+        telemetryContext.counterAdd("aeronet.http_responses.compression.total", 1);
+        break;
+      case internal::CompressResponseResult::ExceedsMaxRatio:
+        telemetryContext.counterAdd("aeronet.http_responses.compression.exceeds_max_ratio_total", 1);
+        break;
+      default:
+        assert(result == internal::CompressResponseResult::Error);
+        telemetryContext.counterAdd("aeronet.http_responses.compression.errors_total", 1);
+        break;
+    }
+  }
 }
 
 void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams) {

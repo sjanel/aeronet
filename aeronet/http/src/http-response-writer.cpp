@@ -179,11 +179,9 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     const auto written = result.written();
     if (written > 0) {
       compressedBuffer.setSize(written);
-      if (!_head) {
-        if (!_transport->emitData({compressedBuffer.data(), compressedBuffer.size()})) {
-          _state = State::Failed;
-          return false;
-        }
+      if (!_head && !_transport->emitData(compressedBuffer)) {
+        _state = State::Failed;
+        return false;
       }
 #ifndef NDEBUG
       _bytesWritten += written;
@@ -193,12 +191,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   }
 
   // Uncompressed path
-  if (!_head) {
-    if (!_transport->emitData(data)) {
-      _state = State::Failed;
-      log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
-      return false;
-    }
+  if (!_head && !_transport->emitData(data)) {
+    _state = State::Failed;
+    log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
+    return false;
   }
 #ifndef NDEBUG
   _bytesWritten += data.size();
@@ -267,16 +263,14 @@ void HttpResponseWriter::end() {
       }
       last.addSize(written);
     }
-    if (!last.empty() && !_head) {
-      if (!_transport->emitData({last.data(), last.size()})) {
-        _state = State::Failed;
-        return;
-      }
+    if (!_head && !last.empty() && !_transport->emitData(last)) {
+      _state = State::Failed;
+      return;
     }
   } else {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
-    if (!_preCompressBuffer.empty() && !_head) {
-      if (!_transport->emitData({_preCompressBuffer.data(), _preCompressBuffer.size()})) {
+    if (!_head && !_preCompressBuffer.empty()) {
+      if (!_transport->emitData(_preCompressBuffer)) {
         _state = State::Failed;
         return;
       }
@@ -293,10 +287,8 @@ void HttpResponseWriter::end() {
   _state = State::Ended;
 #ifndef NDEBUG
   // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (_declaredLength != 0 && !_head) {
-    if (!_compressionActivated || _compressionFormat == Encoding::none) {
-      assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
-    }
+  if (!_head && _declaredLength != 0 && (!_compressionActivated || _compressionFormat == Encoding::none)) {
+    assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
   }
 #endif
 }
@@ -352,11 +344,9 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   }
 
   _preCompressBuffer.clear();
-  if (written > 0 && !_head) {
-    if (!_transport->emitData({compressedBuffer.data(), compressedBuffer.size()})) {
-      _state = State::Failed;
-      return false;
-    }
+  if (!_head && written > 0 && !_transport->emitData(compressedBuffer)) {
+    _state = State::Failed;
+    return false;
   }
   return true;
 }
