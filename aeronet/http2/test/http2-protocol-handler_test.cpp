@@ -3222,8 +3222,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write >1024 bytes (default minBytes) to trigger compression activation
-                   const std::string chunk(2048, 'A');
-                   writer.writeBody(chunk);
+                   writer.writeBody(std::string(2048, 'A'));
                    writer.end();
                  }});
 
@@ -3243,9 +3242,14 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+#ifdef AERONET_ENABLE_ZLIB
   // Compression should have activated — content-encoding: gzip must be present
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-encoding"), "gzip");
   EXPECT_TRUE(HasHeader(loop.clientHeaders[0], "vary", "accept-encoding"));
+#else
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-encoding"), "");
+  EXPECT_FALSE(HasHeader(loop.clientHeaders[0], "vary", "accept-encoding"));
+#endif
 
   // Compressed data should be smaller than the original 2048 bytes
   std::size_t totalReceived = 0;
@@ -3255,7 +3259,11 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
     }
   }
   EXPECT_GT(totalReceived, 0U);
+#ifdef AERONET_ENABLE_ZLIB
   EXPECT_LT(totalReceived, 2048U);
+#else
+  EXPECT_EQ(totalReceived, 2048U);
+#endif
 }
 
 // ============== Streaming Handler with Compression (below threshold — identity fallback) ==============
@@ -3335,7 +3343,13 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedMultiChunkAboveThreshold) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+#ifdef AERONET_ENABLE_ZLIB
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-encoding"), "gzip");
+  EXPECT_TRUE(HasHeader(loop.clientHeaders[0], "vary", "accept-encoding"));
+#else
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-encoding"), "");
+  EXPECT_FALSE(HasHeader(loop.clientHeaders[0], "vary", "accept-encoding"));
+#endif
 }
 
 // ============== Streaming Handler contentLength/status after headers sent ==============
