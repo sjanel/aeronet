@@ -70,9 +70,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   }
 
   bool emitData(std::string_view data) override {
-    if (data.empty() || _isHead) {
-      return true;
-    }
+    assert(!data.empty() && !_isHead);
 
     // If we already have buffered data from a previous flow-control stall, just append.
     if (!_pendingBuffer.empty()) {
