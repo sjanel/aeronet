@@ -8,7 +8,6 @@
 #include <cstring>
 #include <limits>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -256,7 +255,7 @@ EncoderResult ResponseCompressionState::encodeFull([[maybe_unused]] Encoding enc
     return zstdEncoder.encodeFull(data, availableCapacity, buf);
   }
 #endif
-  throw std::invalid_argument("Unsupported encoding for encodeFull");
+  return EncoderResult(EncoderResult::Error::CompressionError);
 }
 
 EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
@@ -278,7 +277,8 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
     return zstdEncoder.makeContext();
   }
 #endif
-  throw std::invalid_argument("Unsupported encoding for makeContext");
+  // should not happen
+  return nullptr;
 }
 
 EncoderContext* ResponseCompressionState::context([[maybe_unused]] Encoding encoding) {
@@ -297,7 +297,8 @@ EncoderContext* ResponseCompressionState::context([[maybe_unused]] Encoding enco
     return zstdEncoder.context();
   }
 #endif
-  throw std::invalid_argument("Unsupported encoding for makeContext");
+  // should not happen
+  return nullptr;
 }
 
 namespace {
@@ -343,15 +344,17 @@ std::size_t MinEncodeChunkAllocSize(Encoding encoding) {
 
 CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding,
                                                       HttpResponse& resp) {
+  if (resp.hasContentEncoding()) {
+    return CompressResponseResult::Uncompressed;
+  }
+
   const std::size_t bodySz = resp.bodyInMemoryLength();
   const CompressionConfig& compressionConfig = *compressionState.pCompressionConfig;
 
   if (bodySz < compressionConfig.minBytes) {
     return CompressResponseResult::Uncompressed;
   }
-  if (resp.hasContentEncoding()) {
-    return CompressResponseResult::Uncompressed;
-  }
+
   if (!compressionConfig.contentTypeAllowList.empty()) {
     const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
     if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
@@ -383,6 +386,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   const bool addVaryHeaderLine = varyResult.absent();
   const std::size_t additionalVaryLen =
       ComputeAdditionalVaryLength(needVaryAcceptEncoding, addVaryHeaderLine, hasVaryHeader);
+
   const std::size_t contentEncodingHeaderLineSz =
       HttpResponse::HeaderSize(http::ContentEncoding.size(), contentEncodingStr.size());
 
@@ -391,7 +395,6 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   const auto nCharsMaxCompressedSize = nchars(maxCompressedBytes);
   const std::size_t contentTypeLinePos = static_cast<std::size_t>(resp.getContentTypeHeaderLinePtr() - pData);
   const std::size_t contentLengthLinePos = static_cast<std::size_t>(resp.getContentLengthHeaderLinePtr() - pData);
-
   const std::size_t oldDataSz = resp._data.size();
 
   // Reserve once (no realloc after we start reading internal body).
@@ -400,8 +403,9 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   //   - temp compressed output (capped by maxCompressedBytes + 1)
   //   - final compressed output (capped by maxCompressedBytes)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const auto contentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
-  const auto upperContentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsMaxCompressedSize);
+  const std::size_t contentLengthLineLen = HttpResponse::HeaderSize(http::ContentLength.size(), nCharsBodySz);
+  const std::size_t upperContentLengthLineLen =
+      HttpResponse::HeaderSize(http::ContentLength.size(), nCharsMaxCompressedSize);
 
   static_assert(
       HttpResponse::HeaderSize(http::ContentEncoding.size(), 1U) >= std::numeric_limits<std::size_t>::digits10 + 1,
@@ -416,7 +420,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   const std::size_t initialCompressedBytes = std::min<std::size_t>(maxCompressedBytes, initialCompressionBufferLimit);
   const std::size_t initialNeededCapacity = oldDataSz + initialCompressedBytes + headersShift + capturedTrailerGrowth;
 
-  resp._data.reserve(initialNeededCapacity);
+  resp.reserve(initialNeededCapacity);
 
   // Note: we are before the finalization of the HttpResponse here, so there is no Transfer-Encoding: chunked case to
   // worry about (with tail \r\n0\r\n[trailers]\r\n). The trailers are directly after the body if they exist (not even a
@@ -462,7 +466,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
         const auto oldDataSz = resp._data.size();
         resp._data.setSize(bodyCompStartPos + totalCompSize);
 #endif
-        resp._data.reserve(newTotalCapacity);
+        resp.reserve(newTotalCapacity);
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
         resp._data.setSize(oldDataSz);
 #endif
@@ -535,12 +539,11 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   // For captured bodies (and trailers), we can use memcpy because the buffers do not overlap.
   if (trailersSz != 0) {
     const char* pTrailers = resp.trailersFlatView().data();
-    char* pDest;
     if (hasBodyCaptured) {
-      pDest = resp._data.data() + bodyCompStartPos + totalCompSize;
+      char* pDest = resp._data.data() + bodyCompStartPos + totalCompSize;
       std::memcpy(pDest, pTrailers, trailersSz);
     } else {
-      pDest = resp._data.data() + (pTrailers - resp._data.data()) + headersShift + totalCompSize - bodySz;
+      char* pDest = resp._data.data() + (pTrailers - resp._data.data()) + headersShift + totalCompSize - bodySz;
       std::memmove(pDest, pTrailers, trailersSz);
     }
   }
@@ -551,7 +554,6 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   //  For captured bodies:
   //   [headers][content-type][content-length][CRLF][<headersShift>][compressed body][trailers]
   //   [uncompressed body]
-
   const auto newBodyStartPos = resp.bodyStartPos() + headersShift;
   if (!hasBodyCaptured) {
     // Move body to its final position (after the reserved tail and after the potential headers inserted for Vary and
@@ -576,7 +578,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   // the number of chars of the declared max compressed size (worst case).
   [[maybe_unused]] const auto tcRes = std::to_chars(out - nCharsMaxCompressedSize, out, totalCompSize);
   assert(tcRes.ec == std::errc{});
-  std::fill(tcRes.ptr, out, ' ');  // pad with spaces if needed
+  std::memset(tcRes.ptr, ' ', static_cast<std::size_t>(out - tcRes.ptr));  // pad with spaces if needed
   out -= nCharsMaxCompressedSize;
 
   // Write '\r\nContent-Length: ' just before the new Content-Length value.

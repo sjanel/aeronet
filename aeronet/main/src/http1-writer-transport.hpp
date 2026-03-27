@@ -85,11 +85,7 @@ class Http1WriterTransport final : public IWriterTransport {
   }
 
   bool emitData(std::string_view data) override {
-    if (data.empty()) {
-      return true;
-    }
-
-    HttpResponseData responseData;
+    assert(!data.empty());
 
     if (_chunked) {
       // Format: hex-size\r\ndata\r\n
@@ -103,12 +99,9 @@ class Http1WriterTransport final : public IWriterTransport {
       insertPtr = Append(http::CRLF, insertPtr);
       chunkBuffer.setSize(totalSize);
 
-      responseData = HttpResponseData(std::move(chunkBuffer));
-    } else {
-      responseData = HttpResponseData(RawChars(data));
+      return enqueue(HttpResponseData(std::move(chunkBuffer)));
     }
-
-    return enqueue(std::move(responseData));
+    return enqueue(HttpResponseData(RawChars(data)));
   }
 
   bool emitEnd(RawChars trailers) override {

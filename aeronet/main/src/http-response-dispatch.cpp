@@ -14,7 +14,6 @@
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
-#include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
@@ -129,9 +128,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   ++state.requestsServed;
   ++_stats.totalRequestsServed;
 
-  const bool isHead = (request.method() == http::Method::HEAD);
-
-  internal::PrefinalizeHttpResponse(request, resp, isHead, _compressionState, _telemetry);
+  request.prefinalizeHttpResponse(resp, _telemetry);
 
   const bool keepAlive =
       request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
@@ -142,7 +139,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
   opts.close(!keepAlive);
   opts.addTrailerHeader(_config.addTrailerHeader);
-  opts.headMethod(isHead);
+  opts.headMethod(request.method() == http::Method::HEAD);
 
   queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));

@@ -12,9 +12,6 @@
 #include <type_traits>
 #include <utility>
 
-#include "aeronet/encoding.hpp"
-#include "aeronet/log.hpp"
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
@@ -23,12 +20,14 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -531,6 +530,8 @@ class HttpRequest {
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
   http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
+
+  void prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext);
 
   void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
 

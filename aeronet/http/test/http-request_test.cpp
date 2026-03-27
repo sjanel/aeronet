@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/sys-test-support.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
@@ -33,7 +35,6 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-response-prefinalize.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -123,6 +124,10 @@ class HttpRequestTest : public ::testing::Test {
   void setResponsePossibleEncoding(Encoding encoding) { req._responsePossibleEncoding = encoding; }
 
   void setCompressionState(internal::ResponseCompressionState* state) { req._pCompressionState = state; }
+
+  void prefinalizeResponse(HttpResponse& resp, tracing::TelemetryContext& telemetryContext) {
+    req.prefinalizeHttpResponse(resp, telemetryContext);
+  }
 
   // Test helpers that require friend access to HttpRequest private members
   struct FakeSpan : public tracing::Span {
@@ -240,23 +245,24 @@ TEST_F(HttpRequestTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
 
 #ifdef AERONET_POSIX
 TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
+  compressionConfig.minBytes = 1U;
+  compressionConfig.maxCompressRatio = 0.01F;
+  compressionState = internal::ResponseCompressionState(compressionConfig);
+  setCompressionState(&compressionState);
+
   for (Encoding encoding : test::SupportedEncodings()) {
     test::UnixDogstatsdSink sink;
     TelemetryConfig tcfg;
     tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
     tracing::TelemetryContext telemetryContext(tcfg);
 
-    compressionConfig.minBytes = 1U;
-    compressionConfig.maxCompressRatio = 0.01F;
-    compressionState = internal::ResponseCompressionState(compressionConfig);
-    setCompressionState(&compressionState);
     setResponsePossibleEncoding(encoding);
 
     HttpResponse resp(http::StatusCodeOK);
     auto body = test::MakeRandomPayload(2 << 10);
     resp.body(body, http::ContentTypeTextPlain);
 
-    internal::PrefinalizeHttpResponse(req, resp, false, compressionState, telemetryContext);
+    prefinalizeResponse(resp, telemetryContext);
 
     EXPECT_EQ(sink.recvMessage(), "svc.aeronet.http_responses.compression.exceeds_max_ratio_total:1|c");
   }
