@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebSocket Benchmark Report</title>
+  <style>
+    :root {
+      --bg:#0d1117;
+      --panel:#161b22;
+      --muted:#8b949e;
+      --text:#c9d1d9;
+      --accent:#58a6ff;
+      --good:#3fb950;
+      --warn:#d29922;
+      --bad:#f85149;
+      --line:#30363d;
+    }
+    body {font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); margin:0;}
+    .wrap {max-width:1200px; margin:28px auto; padding:0 18px;}
+    h1 {margin:0 0 14px 0; font-size:1.55rem;}
+    .meta {display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:16px;}
+    .card {background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px;}
+    .card span {display:block; color:var(--muted); font-size:0.85rem;}
+    .card strong {display:block; margin-top:4px; font-size:1rem;}
+    .section {background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:14px;}
+    .controls {display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;}
+    select {background:#0b1220; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 8px;}
+    table {width:100%; border-collapse:collapse;}
+    th, td {padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; font-size:0.92rem;}
+    th {color:#9fb3c8;}
+    td.na {color:var(--muted);}
+    .chart {height:320px; position:relative;}
+    .legend {display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 0 0; color:var(--muted); font-size:0.85rem;}
+    .dot {display:inline-block; width:10px; height:10px; border-radius:999px; margin-right:6px;}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>WebSocket Benchmarks</h1>
+  <div class="meta">
+    <div class="card"><span>Timestamp</span><strong>2026-03-28T08:54:41</strong></div>
+    <div class="card"><span>Servers</span><strong>aeronet, uwebsockets, drogon</strong></div>
+    <div class="card"><span>VUs</span><strong>50</strong></div>
+    <div class="card"><span>Duration</span><strong>30s</strong></div>
+  </div>
+
+  <div class="section">
+    <div class="controls">
+      <label>Metric
+        <select id="metric">
+          <option value="rate">Throughput (/s)</option>
+          <option value="p95">Latency p95 (ms)</option>
+        </select>
+      </label>
+      <label>Scenario
+        <select id="scenario">
+          <option value="all">All scenarios</option>
+          <option value="echo-small">echo-small</option><option value="echo-medium">echo-medium</option><option value="mix">mix</option><option value="ping-pong">ping-pong</option><option value="churn">churn</option><option value="compression">compression</option>
+        </select>
+      </label>
+    </div>
+    <div class="chart" id="chart"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="section">
+    <h3 style="margin-top:0">Per-scenario summary</h3>
+    <table>
+      <thead><tr><th>Scenario</th><th>aeronet</th><th>uwebsockets</th><th>drogon</th></tr></thead>
+      <tbody><tr><td>echo-small</td><td>p95=0.000ms, 3,933/s</td><td>p95=0.000ms, 3,723/s</td><td>p95=0.000ms, 3,897/s</td></tr>
+<tr><td>echo-medium</td><td>p95=0.000ms, 2,288/s</td><td>p95=0.000ms, 2,246/s</td><td>p95=0.000ms, 2,284/s</td></tr>
+<tr><td>mix</td><td>p95=0.000ms, 2,937/s</td><td>p95=0.000ms, 2,849/s</td><td>p95=0.000ms, 2,909/s</td></tr>
+<tr><td>ping-pong</td><td>p95=0.000ms, 969/s</td><td>p95=0.000ms, 966/s</td><td>p95=0.000ms, 968/s</td></tr>
+<tr><td>churn</td><td>p95=14.000ms, 7,598/s</td><td>p95=12.000ms, 7,911/s</td><td>p95=14.000ms, 7,227/s</td></tr>
+<tr><td>compression</td><td>p95=0.000ms, 2,293/s</td><td>p95=0.000ms, 2,247/s</td><td>p95=0.000ms, 2,288/s</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<script>
+const payload = {"servers": ["aeronet", "uwebsockets", "drogon"], "scenarios": ["echo-small", "echo-medium", "mix", "ping-pong", "churn", "compression"], "p95": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [14.0, 12.0, 14.0], [0.0, 0.0, 0.0]], "rate": [[3932.682169075173, 3722.6342417901483, 3896.657838361375], [2287.698279443869, 2246.280155939187, 2283.6795655619503], [2937.0927321476734, 2849.440365109528, 2908.8749997832297], [969.2451769492719, 966.1631887667401, 968.3196485439692], [7598.327602482103, 7911.4757116230285, 7226.9753221884275], [2293.2221436912014, 2247.42516177169, 2288.341957768867]]};
+const colors = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#a371f7", "#ff7b72"];
+
+function aggregateByServer(matrix, scenarios) {
+  const out = new Array(payload.servers.length).fill(null).map(() => []);
+  scenarios.forEach((sc) => {
+    const idx = payload.scenarios.indexOf(sc);
+    if (idx < 0) return;
+    matrix[idx].forEach((v, sidx) => {
+      if (typeof v === 'number') out[sidx].push(v);
+    });
+  });
+  return out.map(arr => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null);
+}
+
+function barChart(values, labels, title, lowerIsBetter) {
+  const root = document.getElementById('chart');
+  root.innerHTML = '';
+  const valid = values.filter(v => typeof v === 'number' && isFinite(v));
+  const max = valid.length ? Math.max(...valid) : 1;
+  const min = valid.length ? Math.min(...valid) : 0;
+  const width = root.clientWidth || 1000;
+  const height = root.clientHeight || 320;
+  const pad = {l:60, r:20, t:30, b:40};
+  const innerW = width - pad.l - pad.r;
+  const innerH = height - pad.t - pad.b;
+  const barW = Math.max(30, innerW / Math.max(1, labels.length * 1.7));
+  const gap = barW * 0.7;
+
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  svg += `<text x="${pad.l}" y="18" fill="#8b949e" font-size="13">${title}</text>`;
+  svg += `<line x1="${pad.l}" y1="${pad.t+innerH}" x2="${pad.l+innerW}" y2="${pad.t+innerH}" stroke="#30363d"/>`;
+
+  labels.forEach((label, i) => {
+    const value = values[i];
+    const x = pad.l + i * (barW + gap) + gap/2;
+    if (typeof value === 'number' && isFinite(value)) {
+      const h = max > 0 ? (value / max) * innerH : 0;
+      const y = pad.t + innerH - h;
+      const best = lowerIsBetter ? (value === min) : (value === max);
+      const stroke = best ? '#ffffff' : 'none';
+      svg += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(1, h)}" fill="${colors[i % colors.length]}" stroke="${stroke}"/>`;
+      svg += `<text x="${x + barW/2}" y="${y - 6}" text-anchor="middle" fill="#c9d1d9" font-size="12">${value.toFixed(3)}</text>`;
+    } else {
+      svg += `<text x="${x + barW/2}" y="${pad.t + innerH - 6}" text-anchor="middle" fill="#8b949e" font-size="12">n/a</text>`;
+    }
+    svg += `<text x="${x + barW/2}" y="${pad.t + innerH + 16}" text-anchor="middle" fill="#8b949e" font-size="12">${label}</text>`;
+  });
+
+  svg += `</svg>`;
+  root.innerHTML = svg;
+
+  const legend = document.getElementById('legend');
+  legend.innerHTML = labels.map((label, i) =>
+    `<span><span class="dot" style="background:${colors[i % colors.length]}"></span>${label}</span>`
+  ).join('');
+}
+
+function render() {
+  const metric = document.getElementById('metric').value;
+  const selected = document.getElementById('scenario').value;
+  const scenarios = selected === 'all' ? payload.scenarios : [selected];
+  if (metric === 'rate') {
+    const values = aggregateByServer(payload.rate, scenarios);
+    barChart(values, payload.servers, 'Average throughput across selected scenarios (/s)', false);
+  } else {
+    const values = aggregateByServer(payload.p95, scenarios);
+    barChart(values, payload.servers, 'Average p95 latency across selected scenarios (ms)', true);
+  }
+}
+
+document.getElementById('metric').addEventListener('change', render);
+document.getElementById('scenario').addEventListener('change', render);
+render();
+</script>
+</body>
+</html>
