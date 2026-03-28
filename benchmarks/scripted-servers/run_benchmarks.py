@@ -81,10 +81,9 @@ class BenchmarkRunner:
         "python": 8084,
         "rust": 8086,
         "crow": 8087,
-        "uwebsockets": 8088,
     }
 
-    SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "uwebsockets", "rust", "undertow", "go", "python"]
+    SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "rust", "undertow", "go", "python"]
 
     # Servers that support HTTP/2 benchmarks (pistache, crow & drogon lack H2 server support)
     H2_SERVER_ORDER = ["aeronet", "rust", "undertow", "go", "python"]
@@ -324,7 +323,7 @@ class BenchmarkRunner:
         self, name: str, extra_args: Optional[Sequence[str]]
     ) -> Tuple[List[str], Optional[Path]]:
         extra_args = list(extra_args or [])
-        if name in {"aeronet", "drogon", "pistache", "crow", "uwebsockets"}:
+        if name in {"aeronet", "drogon", "pistache", "crow"}:
             binary = self.build_dir / f"{name}-bench-server"
             if not binary.is_file():
                 raise BenchmarkError(f"Binary not found for {name}: {binary}")
