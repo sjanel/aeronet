@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render static HTML charts from benchmark JSON files for GitHub Pages.
 
+Supports both HTTP (wrk/h2load) and WebSocket (k6) benchmark formats.
 Supports multiple input files (e.g. different connection-count runs) and
 renders tabs to switch between them.  Falls back gracefully to a single
 run when only one file is provided.
@@ -141,47 +142,107 @@ def _build_table(
 """
 
 
+def _is_websocket(summary: Dict[str, Any]) -> bool:
+    return summary.get("benchmark_type") == "websocket"
+
+
+# ------ Metric definitions per benchmark type ------------------------------ #
+
+# Each metric is (key, data_key, filter_metric, chart_title, axis_label,
+#                  scale_type, log_min, format_metric, table_label, lower_is_better)
+_HTTP_METRICS = [
+    ("rps", "rps", "rps", "Requests/sec (RPS)", "Requests/sec",
+     "linear", 0, "rps", "Requests/sec", False),
+    ("latency", "latency", "latency", "Avg Latency (ms)", "Latency (ms)",
+     "logarithmic", 1e-4, "latency", "Latency", True),
+    ("transfer", "transfer", "transfer", "Data transferred (MB)", "Transfer (MB)",
+     "logarithmic", 1e-3, "transfer", "Throughput", False),
+    ("memory_rss", "memory_rss", "memory", "Memory RSS (MB)", "RSS (MB) (log scale)",
+     "logarithmic", 1e-2, "memory", "Memory", True),
+    ("memory_peak", "memory_peak", "memory", "Memory Peak (MB)", "Peak (MB) (log scale)",
+     "logarithmic", 1e-2, "memory", None, True),
+]
+
+_WS_METRICS = [
+    ("rps", "rps", "rps", "Messages/sec", "Messages/sec",
+     "linear", 0, "rps", "Messages/sec", False),
+    ("latency", "latency", "latency", "Latency p95 (ms)", "Latency p95 (ms)",
+     "logarithmic", 1e-4, "latency", "Latency p95", True),
+]
+
+
+def _get_metrics(summary: Dict[str, Any]) -> list:
+    return _WS_METRICS if _is_websocket(summary) else _HTTP_METRICS
+
+
 def _build_chart_payload(
     servers: List[str],
     scenarios: List[str],
     results: Dict[str, Any],
+    metrics: list,
 ) -> Dict[str, Any]:
     """Build a JS-friendly chart payload with numeric values."""
     units = {"latency": "ms", "transfer": "MB"}
+
+    # Collect all data_keys from metric definitions
+    data_keys = [m[1] for m in metrics]
+
     payload: Dict[str, Any] = {
         "servers": servers,
         "scenarios": [],
         "units": units,
     }
+
+    # Build chartDefs for JS chart initialization
+    chart_defs = []
+    for key, data_key, filter_metric, chart_title, axis_label, scale_type, log_min, format_metric, _tbl, _lib in metrics:
+        canvas_id = f"chart-{key.replace('_', '-')}"
+        chart_defs.append({
+            "canvasId": canvas_id,
+            "dataKey": data_key,
+            "filterMetric": filter_metric,
+            "chartTitle": chart_title,
+            "axisLabel": axis_label,
+            "scaleType": scale_type,
+            "logMin": log_min,
+            "formatMetric": format_metric,
+        })
+    payload["chartDefs"] = chart_defs
+
     for scenario in scenarios:
         scen = results.get(scenario, {})
-        numeric: Dict[str, Any] = {
-            "name": scenario,
-            "rps": [],
-            "latency": [],
-            "transfer": [],
-            "memory_rss": [],
-            "memory_peak": [],
-        }
-        for srv in servers:
-            numeric["rps"].append(
-                _parse_metric_value(scen.get("rps", {}).get(srv), "rps")
-            )
-            numeric["latency"].append(
-                _parse_metric_value(scen.get("latency", {}).get(srv), "latency")
-            )
-            numeric["transfer"].append(
-                _parse_metric_value(scen.get("transfer", {}).get(srv), "transfer")
-            )
-            mem_dict = scen.get("memory", {}).get(srv, {})
-            if isinstance(mem_dict, dict):
-                numeric["memory_rss"].append(mem_dict.get("rss_mb"))
-                numeric["memory_peak"].append(mem_dict.get("peak_mb"))
+        numeric: Dict[str, Any] = {"name": scenario}
+
+        for _key, data_key, *_ in metrics:
+            if data_key in ("memory_rss", "memory_peak"):
+                vals = []
+                for srv in servers:
+                    mem_dict = scen.get("memory", {}).get(srv, {})
+                    if isinstance(mem_dict, dict):
+                        vals.append(mem_dict.get("rss_mb" if data_key == "memory_rss" else "peak_mb"))
+                    else:
+                        vals.append(None)
+                numeric[data_key] = vals
             else:
-                numeric["memory_rss"].append(None)
-                numeric["memory_peak"].append(None)
+                numeric[data_key] = [
+                    _parse_metric_value(scen.get(data_key, {}).get(srv), data_key)
+                    for srv in servers
+                ]
+
         payload["scenarios"].append(numeric)
     return payload
+
+
+def _build_chart_cards_html(metrics: list) -> str:
+    """Generate HTML for chart cards based on available metrics."""
+    parts = []
+    for key, _data_key, filter_metric, chart_title, *_ in metrics:
+        canvas_id = f"chart-{key.replace('_', '-')}"
+        parts.append(f"""<div class="chart-card" data-metric="{_esc(filter_metric)}">
+          <h3 style="margin:.25rem 0">{_esc(chart_title)}</h3>
+          <div class="chart-shell"><canvas id="{canvas_id}"></canvas></div>
+        </div>""")
+    return "\n        ".join(parts)
 
 
 def _conn_label(summary: Dict[str, Any]) -> str:
@@ -205,7 +266,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 
     Each summary corresponds to a different run configuration (e.g. different
     connection counts).  A connection-count selector is shown when there are
-    multiple summaries.
+    multiple summaries.  Supports both HTTP and WebSocket benchmark data.
     """
     first = summaries[0]
     threads = first.get("threads")
@@ -213,6 +274,8 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
     warmup = first.get("warmup")
     protocol = first.get("protocol", "http1")
     tool = first.get("tool", "wrk")
+    is_ws = _is_websocket(first)
+    metrics = _get_metrics(first)
 
     # Build per-config payloads ------------------------------------------------
     configs: List[Dict[str, Any]] = []
@@ -223,12 +286,16 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
         label = _conn_label(summary)
         conns = summary.get("connections")
 
-        rps_table = _build_table(servers, scenarios, results, "rps", lower_is_better=False)
-        latency_table = _build_table(servers, scenarios, results, "latency", lower_is_better=True)
-        transfer_table = _build_table(servers, scenarios, results, "transfer", lower_is_better=False)
-        memory_table = _build_table(servers, scenarios, results, "memory", lower_is_better=True)
+        # Build tables for each metric that has a table_label
+        tables: Dict[str, str] = {}
+        for key, _dkey, _fmetric, _ctitle, _alabel, _stype, _lmin, _fmetric2, table_label, lower_is_better in metrics:
+            if table_label is not None:
+                tables[key] = _build_table(
+                    servers, scenarios, results, key,
+                    lower_is_better=lower_is_better,
+                )
 
-        chart_payload = _build_chart_payload(servers, scenarios, results)
+        chart_payload = _build_chart_payload(servers, scenarios, results, metrics)
 
         scenario_options = ['<option value="all" selected>All scenarios</option>']
         scenario_options.extend(
@@ -238,10 +305,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
         configs.append({
             "label": label,
             "connections": conns,
-            "rps_table": rps_table,
-            "latency_table": latency_table,
-            "transfer_table": transfer_table,
-            "memory_table": memory_table,
+            "tables": tables,
             "chart_payload": chart_payload,
             "scenario_options_html": "\n".join(scenario_options),
         })
@@ -260,57 +324,91 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 </label>
 """
 
-    # Build table tabs per config (hidden via JS)
+    # Build table tabs per config
+    # Collect metrics that have table labels
+    table_metrics = [
+        (key, table_label)
+        for key, _dkey, _fmetric, _ctitle, _alabel, _stype, _lmin, _fmetric2, table_label, _lib in metrics
+        if table_label is not None
+    ]
+
     table_tabs_parts = []
     for idx, cfg in enumerate(configs):
         display = "block" if idx == 0 else "none"
+        first_metric_key = table_metrics[0][0] if table_metrics else "rps"
+
+        tab_buttons = []
+        tab_contents = []
+        for mi, (mkey, mlabel) in enumerate(table_metrics):
+            active = " active" if mi == 0 else ""
+            tab_buttons.append(
+                f'<button class="table-tab{active}" data-table="{mkey}">{_esc(mlabel)}</button>'
+            )
+            show = "block" if mi == 0 else "none"
+            tab_contents.append(
+                f'<div class="table-content" id="table-{mkey}-{idx}" '
+                f'style="display: {show};">{cfg["tables"].get(mkey, "")}</div>'
+            )
+
         table_tabs_parts.append(f"""
 <div class="conn-config-tables" data-conn-idx="{idx}" style="display:{display}">
   <div class="table-tabs">
     <div class="tabs-nav">
-      <button class="table-tab active" data-table="rps">Requests/sec</button>
-      <button class="table-tab" data-table="latency">Latency</button>
-      <button class="table-tab" data-table="throughput">Throughput</button>
-      <button class="table-tab" data-table="memory">Memory</button>
+      {''.join(tab_buttons)}
     </div>
-    <div class="table-content" id="table-rps-{idx}" style="display: block;">{cfg["rps_table"]}</div>
-    <div class="table-content" id="table-latency-{idx}" style="display: none;">{cfg["latency_table"]}</div>
-    <div class="table-content" id="table-throughput-{idx}" style="display: none;">{cfg["transfer_table"]}</div>
-    <div class="table-content" id="table-memory-{idx}" style="display: none;">{cfg["memory_table"]}</div>
+    {''.join(tab_contents)}
   </div>
 </div>
 """)
     table_tabs_html = "\n".join(table_tabs_parts)
 
-    h2_streams = first.get("h2_streams")
-    protocol_display = protocol.upper().replace("H2C", "H2C (cleartext)").replace("H2-TLS", "H2 over TLS")
-    meta_cards = f"""
+    # Meta cards
+    if is_ws:
+        vus = first.get("vus")
+        meta_cards = f"""
+<div class="meta-cards">
+  <div><span>Protocol</span><strong>WebSocket</strong></div>
+  <div><span>Tool</span><strong>{_esc(tool)}</strong></div>
+  <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
+  <div><span>VUs</span><strong>{_esc(str(vus))}</strong></div>
+  <div><span>Duration</span><strong>{_esc(str(duration))}</strong></div>
+  <div><span>Warmup</span><strong>{_esc(str(warmup))}</strong></div>
+</div>
+"""
+    else:
+        h2_streams = first.get("h2_streams")
+        protocol_display = protocol.upper().replace("H2C", "H2C (cleartext)").replace("H2-TLS", "H2 over TLS")
+        meta_cards = f"""
 <div class="meta-cards">
   <div><span>Protocol</span><strong>{_esc(protocol_display)}</strong></div>
   <div><span>Tool</span><strong>{_esc(tool)}</strong></div>
   <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
   <div><span>{_esc(tool)} duration</span><strong>{_esc(str(duration))}</strong></div>
   <div><span>{_esc(tool)} warmup</span><strong>{_esc(str(warmup))}</strong></div>"""
-    if h2_streams is not None:
-        meta_cards += f"""
+        if h2_streams is not None:
+            meta_cards += f"""
   <div><span>H2 Streams/conn</span><strong>{h2_streams}</strong></div>"""
-    meta_cards += """
+        meta_cards += """
 </div>
 """
 
     scenario_options_html = configs[0]["scenario_options_html"]
 
-    metric_labels = [
-        ("all", "All metrics"),
-        ("rps", "Requests/sec (RPS)"),
-        ("latency", "Avg Latency (ms)"),
-        ("transfer", "Data transferred (MB)"),
-        ("memory", "Memory Usage (RSS & Peak)"),
-    ]
+    # Collect unique filter_metric values for metric filter options
+    seen_filter_metrics: List[str] = []
+    metric_labels_list = [("all", "All metrics")]
+    for _key, _dkey, filter_metric, chart_title, *_ in metrics:
+        if filter_metric not in seen_filter_metrics:
+            seen_filter_metrics.append(filter_metric)
+            metric_labels_list.append((filter_metric, chart_title))
+
     metric_options_html = "\n".join(
-        f'<option value="{key}"{" selected" if key == "rps" else ""}>{label}</option>'
-        for key, label in metric_labels
+        f'<option value="{key}"{" selected" if key == "rps" else ""}>{_esc(label)}</option>'
+        for key, label in metric_labels_list
     )
+
+    # Build chart cards HTML
+    chart_cards_html = _build_chart_cards_html(metrics)
 
     # Build the JS configs array
     configs_json_list = []
@@ -325,6 +423,9 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
         raise FileNotFoundError(f"Template file not found: {tpl_path}")
     tpl = tpl_path.read_text(encoding="utf-8")
 
+    # Page title
+    page_title = "WebSocket Benchmarks" if is_ws else "aeronet Benchmarks"
+
     html_out = (
         tpl.replace("__TABLE_TABS_HTML__", table_tabs_html)
         .replace("__PAYLOAD_JSON__", configs_js)
@@ -332,6 +433,8 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
         .replace("__SCENARIO_OPTIONS__", scenario_options_html)
         .replace("__METRIC_OPTIONS__", metric_options_html)
         .replace("__CONN_SELECTOR__", conn_selector_html)
+        .replace("__CHART_CARDS_HTML__", chart_cards_html)
+        .replace(">aeronet Benchmarks <", f">{_esc(page_title)} <")
     )
     return html_out
 

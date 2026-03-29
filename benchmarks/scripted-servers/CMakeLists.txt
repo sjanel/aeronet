@@ -189,10 +189,10 @@ file(CREATE_LINK
   SYMBOLIC
 )
 
-# Symlink WebSocket HTML renderer
+# Symlink shared benchmark utilities
 file(CREATE_LINK
-  ${SCRIPTED_SERVERS_DIR}/render_ws_benchmarks_html.py
-  ${SCRIPTED_SERVERS_BUILD_DIR}/render_ws_benchmarks_html.py
+  ${SCRIPTED_SERVERS_DIR}/bench_utils.py
+  ${SCRIPTED_SERVERS_BUILD_DIR}/bench_utils.py
   SYMBOLIC
 )
 
