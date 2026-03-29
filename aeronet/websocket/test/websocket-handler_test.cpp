@@ -275,7 +275,7 @@ TEST_F(WebSocketHandlerTest, ControlFrameDuringFragment) {
 
   // Receive a ping during fragmentation
   RawBytes pingFrame;
-  BuildFrame(pingFrame, Opcode::Ping, sv_bytes(std::string_view("ping", 4)), true, false);
+  BuildFrame(pingFrame, Opcode::Ping, sv_bytes("ping"), true, false);
   auto pingResult = process(pingFrame);
 
   EXPECT_EQ(pingResult.action, ProtocolProcessResult::Action::ResponseReady);
@@ -1280,11 +1280,308 @@ TEST_F(WebSocketHandlerTest, CloseTimeout_NotTimedOutAfterCloseComplete) {
   EXPECT_FALSE(handler->hasCloseTimedOut());
 }
 
+// ============================================================================
+// Input buffer offset and compaction tests
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, InputBufferResetAfterFullConsumption) {
+  // 1. Send incomplete frame → saved into _inputBuffer
+  auto frame1 = BuildUnmaskedFrame(Opcode::Text, "Hello");
+  RawBytes partial;
+  partial.append(frame1.data(), 3);
+  auto result = process(partial);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 0);
+
+  // 2. Send remainder → _inputBuffer has data and is fully consumed
+  RawBytes rest;
+  rest.append(frame1.data() + 3, frame1.size() - 3);
+  result = process(rest);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, "Hello");
+
+  // 3. Send another incomplete frame → hits the "previous data fully consumed, reset" branch
+  auto frame2 = BuildUnmaskedFrame(Opcode::Text, "World");
+  RawBytes partial2;
+  partial2.append(frame2.data(), 3);
+  result = process(partial2);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+
+  // 4. Complete it
+  RawBytes rest2;
+  rest2.append(frame2.data() + 3, frame2.size() - 3);
+  result = process(rest2);
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(lastMessage, "World");
+}
+
+TEST_F(WebSocketHandlerTest, InputBufferOffsetAdvancementWithoutMemmove) {
+  // Build a complete frame (small) + an incomplete second frame
+  auto frame1 = BuildUnmaskedFrame(Opcode::Text, "A");
+  auto frame2 = BuildUnmaskedFrame(Opcode::Text, "B");
+
+  // 1. Send incomplete data so _inputBuffer gets populated
+  RawBytes initial;
+  initial.append(frame1.data(), frame1.size() - 1);
+  process(initial);
+  EXPECT_EQ(messageCount, 0);
+
+  // 2. Send the rest of frame1 + full frame2 + an incomplete frame3 header
+  auto frame3 = BuildUnmaskedFrame(Opcode::Text, "CCC");
+  RawBytes batch;
+  batch.append(frame1.data() + (frame1.size() - 1), 1);
+  batch.append(frame2.data(), frame2.size());
+  batch.append(frame3.data(), 1);  // Only 1 byte of frame3 header → incomplete
+  auto result = process(batch);
+
+  // frame1 and frame2 should be consumed, frame3 is incomplete
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+
+  // 3. Finish frame3
+  RawBytes frame3Rest;
+  frame3Rest.append(frame3.data() + 1, frame3.size() - 1);
+  result = process(frame3Rest);
+  EXPECT_EQ(messageCount, 3);
+  EXPECT_EQ(lastMessage, "CCC");
+}
+
+TEST_F(WebSocketHandlerTest, InputBufferCompactionWhenOffsetExceedsHalf) {
+  // We need _inputBuffer to hold data, consume most of it, and leave a small
+  // incomplete remainder so that _inputBufferOffset > size/2, triggering compaction.
+
+  // Build a large first frame + a tiny second frame that will be split.
+  std::string largePayload(200, 'X');
+  auto frame1 = BuildUnmaskedFrame(Opcode::Text, largePayload);
+  auto frame2 = BuildUnmaskedFrame(Opcode::Text, "Z");
+
+  // 1. Send most of frame1 (incomplete) to populate _inputBuffer
+  RawBytes initial;
+  initial.append(frame1.data(), frame1.size() - 1);
+  process(initial);
+  EXPECT_EQ(messageCount, 0);
+
+  // 2. Send last byte of frame1 + beginning of frame2 (1 byte only)
+  //    _inputBuffer now: [initial | lastByte | 1byte_of_frame2]
+  //    After consuming frame1, offset ~ frame1.size() which is > half of total
+  RawBytes batch;
+  batch.append(frame1.data() + frame1.size() - 1, 1);
+  batch.append(frame2.data(), 1);  // 1 byte → incomplete frame2
+  auto result = process(batch);
+
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, largePayload);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+
+  // 3. Send rest of frame2
+  RawBytes frame2Rest;
+  frame2Rest.append(frame2.data() + 1, frame2.size() - 1);
+  result = process(frame2Rest);
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(lastMessage, "Z");
+}
+
 TEST_F(WebSocketHandlerTest, ForceCloseOnTimeout_NoOpIfNotClosing) {
   // forceCloseOnTimeout should do nothing if not in CloseSent state
   handler->forceCloseOnTimeout();
   EXPECT_FALSE(handler->isClosing());
   EXPECT_FALSE(handler->isCloseComplete());
 }
+
+// ============================================================================
+// Callback-not-set branch coverage tests
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, ProtocolErrorWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  // Reserved opcode triggers ProtocolError
+  RawBytes frame;
+  frame.push_back(std::byte{0x83});  // FIN=1, opcode=3 (reserved)
+  frame.push_back(std::byte{0x00});
+
+  auto result = testHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, PayloadTooLargeWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxFrameSize = 100;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  RawBytes frame;
+  frame.push_back(std::byte{0x82});  // FIN=1, opcode=binary
+  frame.push_back(std::byte{127});   // 64-bit length indicator
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x01});
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x00});
+  frame.push_back(std::byte{0x00});
+
+  auto result = testHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, UnexpectedContinuationWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  auto frame = BuildUnmaskedFrame(Opcode::Continuation, "data", true);
+  auto result = testHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, ExpectedContinuationWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  // Start a fragment
+  auto frag1 = BuildUnmaskedFrame(Opcode::Text, "Start", false);
+  (void)testHandler->processInput(buf_bytes(frag1), dummyState);
+  auto newMsg = BuildUnmaskedFrame(Opcode::Binary, "New", true);
+  auto result = testHandler->processInput(buf_bytes(newMsg), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, InvalidUtf8WithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  std::array<char, 2> invalidUtf8 = {'\xC0', '\x80'};
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, container_bytes(invalidUtf8), true, false);
+
+  auto result = testHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, MessageTooLargeWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 100;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  std::string largePayload(60, 'X');
+  auto frag1 = BuildUnmaskedFrame(Opcode::Text, largePayload, false);
+  (void)testHandler->processInput(buf_bytes(frag1), dummyState);
+
+  auto frag2 = BuildUnmaskedFrame(Opcode::Continuation, largePayload, true);
+  auto result = testHandler->processInput(buf_bytes(frag2), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, PongWithoutOnPongCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  auto testHandler = std::make_unique<WebSocketHandler>(config);
+
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Pong, sv_bytes("pong"), true, false);
+
+  auto result = testHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+}
+
+// ============================================================================
+// UTF-8 validation edge case: 5-byte lead and SIMD path
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, Utf8Invalid5ByteLeadByte) {
+  // 0xF8 starts a 5-byte sequence which is invalid in RFC 3629 UTF-8
+  std::array<char, 5> invalid5byte = {'\xF8', '\x80', '\x80', '\x80', '\x80'};
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, container_bytes(invalid5byte), true, false);
+
+  auto result = process(frame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+TEST_F(WebSocketHandlerTest, Utf8InvalidWithinSimdChunk) {
+  // 15 ASCII bytes + invalid 5-byte lead (0xF8) within a SIMD 16-byte window
+  std::string data(15, 'A');
+  data += '\xF8';
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, sv_bytes(data), true, false);
+
+  auto result = process(frame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+// ============================================================================
+// sendClose when already closed
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, SendCloseWhenAlreadyClosed) {
+  handler->onTransportClosing();
+  EXPECT_TRUE(handler->isCloseComplete());
+
+  EXPECT_FALSE(handler->sendClose(CloseCode::Normal, "too late"));
+}
+
+// ============================================================================
+// Compression: client-side send and decompression failure without callback
+// ============================================================================
+
+#ifdef AERONET_ENABLE_ZLIB
+
+TEST_F(WebSocketHandlerTest, ClientSideSendWithCompression) {
+  WebSocketConfig config;
+  config.isServerSide = false;  // Client side masks output
+  DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = false,
+      .clientNoContextTakeover = false,
+  };
+
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+
+  std::string largeText(500, 'X');
+  EXPECT_TRUE(compressHandler->sendText(largeText));
+
+  auto output = compressHandler->getPendingOutput();
+  ASSERT_GE(output.size(), 2);
+  // Client-side: mask bit should be set
+  EXPECT_TRUE((static_cast<uint8_t>(output[1]) & 0x80) != 0);
+  // RSV1 should be set (compressed)
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x40);
+}
+
+TEST_F(WebSocketHandlerTest, DecompressionFailureWithoutOnErrorCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = false,
+      .clientNoContextTakeover = false,
+  };
+
+  // No onError callback
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+
+  // Frame with RSV1 (compressed) but invalid deflate data
+  RawBytes frame;
+  frame.push_back(std::byte{0xC1});                              // FIN=1, RSV1=1, opcode=Text
+  frame.push_back(std::byte{0x05});                              // MASK=0, length=5
+  frame.append(reinterpret_cast<const std::byte*>("XXXXX"), 5);  // Invalid deflate data
+
+  auto result = compressHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+#endif  // AERONET_ENABLE_ZLIB
 
 }  // namespace aeronet::websocket
