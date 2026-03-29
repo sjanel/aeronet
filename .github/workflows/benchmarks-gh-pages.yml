@@ -513,7 +513,7 @@ jobs:
           WS_JSON="/tmp/bench-artifacts/ws-bench-results/ws_benchmark_latest.json"
           if [[ -f "$WS_JSON" ]]; then
             cp "$WS_JSON" /tmp/site/benchmarks/ws/ws_benchmark_latest.json
-            python3 benchmarks/scripted-servers/render_ws_benchmarks_html.py \
+            python3 benchmarks/scripted-servers/render_benchmarks_html.py \
               --input "$WS_JSON" \
               --output /tmp/site/benchmarks/ws/index.html
           else

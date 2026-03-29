@@ -72,6 +72,8 @@ class WsBenchmarkRunner:
         self.duration = args.duration
         self.warmup = args.warmup
         self.session_duration_ms = args.session_duration_ms
+        self.k6_instances = args.k6_instances
+        self.pipeline_depth = args.pipeline_depth
 
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +209,6 @@ class WsBenchmarkRunner:
         ws_url = f"ws://127.0.0.1:{port}/ws"
         script = self.script_dir / K6_SCENARIOS[scenario]
         if not script.is_file():
-            # Try build dir
             script = self.build_dir / K6_SCENARIOS[scenario]
         if not script.is_file():
             return RunResult(
@@ -218,52 +219,158 @@ class WsBenchmarkRunner:
                 raw_output=f"Script not found: {K6_SCENARIOS[scenario]}",
             )
 
-        json_out = self.output_dir / f"k6_{server}_{scenario}.json"
-        env = os.environ.copy()
-        env.update({
+        n_instances = max(1, self.k6_instances)
+        vus_per = max(1, self.vus // n_instances)
+
+        # Build common env
+        base_env = os.environ.copy()
+        base_env.update({
             "WS_URL": ws_url,
-            "VUS": str(self.vus),
             "DURATION": self.duration,
             "SESSION_DURATION_MS": str(self.session_duration_ms),
         })
+        if self.pipeline_depth > 0:
+            base_env["PIPELINE_DEPTH"] = str(self.pipeline_depth)
 
-        cmd = [
-            "k6", "run",
-            "--summary-export", str(json_out),
-            "--quiet",
-            str(script),
+        # Limit Go threads per instance so k6 doesn't steal server CPU
+        cpu_count = os.cpu_count() or 1
+        client_cores = max(1, cpu_count - (self.args.threads if hasattr(self.args, "threads") else cpu_count // 2))
+        gomaxprocs = max(2, client_cores // n_instances)
+        base_env["GOMAXPROCS"] = str(gomaxprocs)
+
+        # Launch parallel k6 instances
+        procs: List[subprocess.Popen] = []
+        json_files: List[Path] = []
+        for idx in range(n_instances):
+            json_out = self.output_dir / f"k6_{server}_{scenario}_{idx}.json"
+            json_files.append(json_out)
+            env = base_env.copy()
+            env["VUS"] = str(vus_per)
+            cmd = [
+                "k6", "run",
+                "--summary-export", str(json_out),
+                "--quiet",
+                str(script),
+            ]
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                )
+                procs.append(proc)
+            except FileNotFoundError:
+                # Kill already started instances
+                for pp in procs:
+                    pp.kill()
+                    pp.wait()
+                return RunResult(
+                    scenario=scenario,
+                    server=server,
+                    tool="k6",
+                    success=False,
+                    raw_output="k6 binary not found. Install: https://k6.io/docs/get-started/installation/",
+                )
+
+        # Wait for all instances to finish
+        outputs: List[str] = []
+        all_success = True
+        for proc in procs:
+            try:
+                stdout, stderr = proc.communicate(timeout=300)
+                outputs.append(stdout.decode(errors="replace") + stderr.decode(errors="replace"))
+                if proc.returncode != 0:
+                    all_success = False
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                outputs.append("k6 instance timed out after 300s")
+                all_success = False
+
+        # Aggregate results from all instances
+        metrics = self._aggregate_k6_jsons(json_files)
+
+        # Clean up per-instance files, keep a merged summary
+        merged_json = self.output_dir / f"k6_{server}_{scenario}.json"
+        if metrics:
+            with open(merged_json, "w") as fp:
+                json.dump({"metrics": metrics, "_k6_instances": n_instances}, fp, indent=2)
+        for jf in json_files:
+            try:
+                jf.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return RunResult(
+            scenario=scenario,
+            server=server,
+            tool="k6",
+            metrics=metrics,
+            raw_output="\n".join(outputs),
+            success=all_success,
+        )
+
+    @staticmethod
+    def _aggregate_k6_jsons(json_paths: List[Path]) -> Dict[str, Any]:
+        """Merge results from parallel k6 instances."""
+        all_metrics = [
+            WsBenchmarkRunner._parse_k6_json(p)
+            for p in json_paths if p.is_file()
         ]
+        all_metrics = [m for m in all_metrics if m]
+        if not all_metrics:
+            return {}
+        if len(all_metrics) == 1:
+            return all_metrics[0]
 
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, env=env, timeout=300
-            )
-            output = result.stdout + result.stderr
-            metrics = self._parse_k6_json(json_out)
-            return RunResult(
-                scenario=scenario,
-                server=server,
-                tool="k6",
-                metrics=metrics,
-                raw_output=output,
-                success=result.returncode == 0,
-            )
-        except subprocess.TimeoutExpired:
-            return RunResult(
-                scenario=scenario,
-                server=server,
-                tool="k6",
-                success=False,
-                raw_output="k6 timed out after 300s",
-            )
-        except FileNotFoundError:
-            return RunResult(
-                scenario=scenario,
-                server=server,
-                tool="k6",
-                success=False,
-                raw_output="k6 binary not found. Install: https://k6.io/docs/get-started/installation/",
-            )
+        merged: Dict[str, Any] = {}
+
+        # Counter keys: sum count and rate across instances
+        counter_keys = (
+            "ws_messages_sent", "ws_messages_received",
+            "ws_msgs_sent", "ws_msgs_received",
+            "ws_pings_sent", "ws_pongs_received",
+            "ws_connections_opened", "ws_connections_closed",
+            "ws_sessions", "iterations", "data_sent", "data_received",
+        )
+        for key in counter_keys:
+            values = [m[key] for m in all_metrics if key in m]
+            if values:
+                merged[key] = {
+                    "count": sum(v.get("count", 0) for v in values),
+                    "rate": sum(v.get("rate", 0) for v in values),
+                }
+
+        # Trend keys: avg/med averaged, percentiles/max take worst case
+        trend_keys = (
+            "ws_echo_rtt_ms", "ws_ping_rtt_ms", "ws_connection_lifetime_ms",
+            "ws_connecting", "ws_session_duration", "iteration_duration",
+        )
+        for key in trend_keys:
+            values = [m[key] for m in all_metrics if key in m]
+            if values:
+                nn = len(values)
+                merged[key] = {
+                    "avg": sum(v.get("avg", 0) for v in values) / nn,
+                    "med": sum(v.get("med", 0) for v in values) / nn,
+                    "p90": max(v.get("p90", 0) for v in values),
+                    "p95": max(v.get("p95", 0) for v in values),
+                    "p99": max(v.get("p99", 0) for v in values),
+                    "min": min(v.get("min", float("inf")) for v in values),
+                    "max": max(v.get("max", 0) for v in values),
+                }
+
+        # Checks: sum passes and fails
+        check_values = [m["checks"] for m in all_metrics if "checks" in m]
+        if check_values:
+            total_passes = sum(v.get("passes", 0) for v in check_values)
+            total_fails = sum(v.get("fails", 0) for v in check_values)
+            total = total_passes + total_fails
+            merged["checks"] = {
+                "passes": total_passes,
+                "fails": total_fails,
+                "value": (total_passes / total * 100) if total > 0 else 0,
+            }
+
+        return merged
 
     @staticmethod
     def _metric_counter(metrics: Dict[str, Any], key: str) -> Optional[Dict[str, float]]:
@@ -366,6 +473,7 @@ class WsBenchmarkRunner:
             "ws_msgs_sent",
             "ws_messages_received",
             "ws_msgs_received",
+            "ws_pings_sent",
             "ws_sessions",
         ):
             value = metrics.get(key)
@@ -454,6 +562,7 @@ class WsBenchmarkRunner:
         print(f"  Servers:   {', '.join(self.servers_to_test)}")
         print(f"  Scenarios: {', '.join(self.scenarios_to_test)}")
         print(f"  VUs: {self.vus}, Duration: {self.duration}")
+        print(f"  k6 instances: {self.k6_instances}, Pipeline depth: {self.pipeline_depth}")
         print(f"  Results:   {self.output_dir}\n")
 
         try:
@@ -508,7 +617,9 @@ class WsBenchmarkRunner:
 
         # k6 scenarios
         if k6_ok:
-            for scenario in self.scenarios_to_test:
+            for idx, scenario in enumerate(self.scenarios_to_test):
+                if idx > 0:
+                    time.sleep(2)  # Cooldown between scenarios
                 print(f"  Running k6: {scenario} ...", end=" ", flush=True)
                 result = self._run_k6(server, scenario)
                 self.results.append(result)
@@ -559,56 +670,57 @@ class WsBenchmarkRunner:
 
     # ----------------------- Output --------------------------------------- #
 
-    def _print_results(self) -> None:
-        print(f"\n{'=' * 70}")
-        print("  WEBSOCKET BENCHMARK RESULTS")
-        print(f"{'=' * 70}")
-
-        # Group by scenario
-        scenarios_seen = []
+    def _build_results_dicts(self) -> tuple:
+        """Build (rps_dict, latency_dict) keyed by (server, scenario) for TablePrinter."""
+        rps_data: Dict[tuple, str] = {}
+        latency_data: Dict[tuple, str] = {}
         for res in self.results:
-            key = (res.tool, res.scenario)
-            if key not in scenarios_seen:
-                scenarios_seen.append(key)
+            if not res.success:
+                continue
+            key = (res.server, res.scenario)
+            rate = self._primary_throughput_rate(res.metrics)
+            rtt = self._primary_latency(res.metrics)
+            if isinstance(rate, (int, float)):
+                rps_data[key] = f"{int(rate):,}"
+            if rtt:
+                p95 = rtt.get("p95", 0)
+                if isinstance(p95, (int, float)):
+                    latency_data[key] = f"{p95:.3f}ms"
+        return rps_data, latency_data
 
-        servers = self.servers_to_test
+    def _print_results(self) -> None:
+        from bench_utils import TablePrinter  # noqa: local import
 
-        # Header
-        hdr = f"{'Scenario':<20}"
-        for srv in servers:
-            hdr += f" {srv:<16}"
-        print(hdr)
-        print("-" * len(hdr))
+        rps_data, latency_data = self._build_results_dicts()
 
-        for tool, scenario in scenarios_seen:
-            label = f"[{tool}] {scenario}"
-            row = f"{label:<20}"
-            for srv in servers:
-                match = next(
-                    (r for r in self.results
-                     if r.server == srv and r.scenario == scenario and r.tool == tool),
-                    None,
-                )
-                if match is None or not match.success:
-                    row += f" {'—':<16}"
-                    continue
-                rtt = self._primary_latency(match.metrics)
-                rate = self._primary_throughput_rate(match.metrics)
-                mps = match.metrics.get("messages_per_sec")
-                if rtt:
-                    p95 = rtt.get("p95", 0)
-                    if isinstance(rate, (int, float)):
-                        cell = f"p95={p95:.3f} {rate:,.0f}/s"
-                    else:
-                        cell = f"p95={p95:.3f}ms"
-                elif mps:
-                    cell = f"{mps:,.0f} msg/s"
-                else:
-                    cell = "OK"
-                row += f" {cell:<16}"
-            print(row)
+        # Only include k6 scenarios in the table
+        scenarios = []
+        for res in self.results:
+            if res.scenario not in scenarios:
+                scenarios.append(res.scenario)
+
+        printer = TablePrinter(
+            servers=self.servers_to_test,
+            scenarios=scenarios,
+            metrics=[
+                (
+                    "WEBSOCKET THROUGHPUT",
+                    "(Messages/sec – higher is better)",
+                    rps_data,
+                    True,
+                ),
+                (
+                    "WEBSOCKET LATENCY",
+                    "(p95 RTT – lower is better)",
+                    latency_data,
+                    False,
+                ),
+            ],
+        )
+        printer.print_all()
 
         # Write to file
+        servers = self.servers_to_test
         with open(self.result_file, "w") as fp:
             fp.write(f"WebSocket Benchmark Results\n")
             fp.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -619,9 +731,9 @@ class WsBenchmarkRunner:
                 fp.write(json.dumps(res.metrics) + "\n")
 
     def _write_html(self) -> None:
-        renderer = self.script_dir / "render_ws_benchmarks_html.py"
+        renderer = self.script_dir / "render_benchmarks_html.py"
         if not renderer.is_file():
-            print("WARNING: render_ws_benchmarks_html.py not found, skipping HTML report generation")
+            print("WARNING: render_benchmarks_html.py not found, skipping HTML report generation")
             return
         try:
             subprocess.run(
@@ -643,24 +755,40 @@ class WsBenchmarkRunner:
                 print(exc.stderr.strip())
 
     def _write_json(self) -> None:
+        # Build unified dict-based results (same structure as HTTP benchmarks)
+        results_dict: Dict[str, Any] = {}
+        for res in self.results:
+            entry = results_dict.setdefault(res.scenario, {
+                "rps": {},
+                "latency": {},
+            })
+            if not res.success:
+                continue
+            rate = self._primary_throughput_rate(res.metrics)
+            rtt = self._primary_latency(res.metrics)
+            if isinstance(rate, (int, float)):
+                entry["rps"][res.server] = round(rate, 1)
+            if rtt:
+                p95 = rtt.get("p95")
+                if isinstance(p95, (int, float)):
+                    entry["latency"][res.server] = f"{p95:.3f}ms"
+
+        # Collect unique scenarios in order
+        scenarios: List[str] = []
+        for res in self.results:
+            if res.scenario not in scenarios:
+                scenarios.append(res.scenario)
+
         data = {
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "config": {
-                "vus": self.vus,
-                "duration": self.duration,
-                "servers": self.servers_to_test,
-                "scenarios": self.scenarios_to_test,
-            },
-            "results": [
-                {
-                    "server": r.server,
-                    "scenario": r.scenario,
-                    "tool": r.tool,
-                    "success": r.success,
-                    "metrics": r.metrics,
-                }
-                for r in self.results
-            ],
+            "benchmark_type": "websocket",
+            "tool": "k6",
+            "threads": self.args.threads,
+            "vus": self.vus,
+            "duration": self.duration,
+            "warmup": self.warmup,
+            "servers": self.servers_to_test,
+            "scenarios": scenarios,
+            "results": results_dict,
         }
         with open(self.json_file, "w") as fp:
             json.dump(data, fp, indent=2)
@@ -731,6 +859,11 @@ class WsBenchmarkRunner:
 def parse_args() -> argparse.Namespace:
     cpu_count = os.cpu_count() or 1
     default_threads = max(1, cpu_count // 2)
+    # WS workloads need substantial concurrency to saturate server threads.
+    # Keep a floor above tiny runs while scaling with thread count.
+    default_vus = max(100, default_threads * 64)
+    # Run enough k6 instances to use remaining CPU cores.
+    default_k6_instances = max(1, min(cpu_count - default_threads, 4))
 
     parser = argparse.ArgumentParser(
         description="Run WebSocket benchmarks across frameworks using k6 and websocket-bench"
@@ -743,7 +876,15 @@ def parse_args() -> argparse.Namespace:
         "--scenario", default="all",
         help=f"Comma-separated scenarios ({','.join(K6_SCENARIOS)}) or 'all'",
     )
-    parser.add_argument("--vus", type=int, default=50, help="Virtual users (k6) / connections")
+    parser.add_argument(
+        "--vus",
+        type=int,
+        default=default_vus,
+        help=(
+            "Virtual users (k6) / connections "
+            f"(default: {default_vus}, derived from --threads={default_threads})"
+        ),
+    )
     parser.add_argument("--duration", default="30s", help="Test duration per scenario")
     parser.add_argument("--warmup", default="5s", help="Warmup duration per server")
     parser.add_argument("--session-duration-ms", type=int, default=10000, help="WS session lifetime in ms")
@@ -752,6 +893,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--websocket-bench", action="store_true", default=False,
         help="Also run websocket-bench for raw throughput measurement",
+    )
+    parser.add_argument(
+        "--k6-instances",
+        type=int,
+        default=default_k6_instances,
+        help=(
+            "Parallel k6 processes to maximise client-side throughput "
+            f"(default: {default_k6_instances})"
+        ),
+    )
+    parser.add_argument(
+        "--pipeline-depth",
+        type=int,
+        default=1,
+        help=(
+            "In-flight messages per VU (0 = timer mode, >0 = send-on-receive). "
+            "Higher values better saturate server threads (default: 1)"
+        ),
     )
     parser.add_argument(
         "--smoke", action="store_true", default=False,
@@ -767,6 +926,8 @@ def main() -> None:
         args.duration = "5s"
         args.warmup = "2s"
         args.session_duration_ms = 3000
+        args.k6_instances = 1
+        args.pipeline_depth = 0
 
     runner = WsBenchmarkRunner(args)
     try:

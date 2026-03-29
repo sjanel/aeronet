@@ -12,6 +12,7 @@ const pingRtt = new Trend('ws_ping_rtt_ms');
 const BASE_URL = __ENV.WS_URL || 'ws://127.0.0.1:8080/ws';
 const PING_INTERVAL_MS = parseInt(__ENV.PING_INTERVAL_MS || '50');
 const SESSION_DURATION_MS = parseInt(__ENV.SESSION_DURATION_MS || '10000');
+const PIPELINE_DEPTH = parseInt(__ENV.PIPELINE_DEPTH || '0');
 
 export const options = {
   scenarios: {
@@ -27,20 +28,34 @@ export const options = {
 };
 
 export default function() {
+  let lastPing = 0;
+
   const res = ws.connect(BASE_URL, {}, function(socket) {
     socket.on('open', () => {
-      socket.setInterval(() => {
-        socket.locals = socket.locals || {};
-        socket.locals.lastPing = Date.now();
-        socket.ping();
-        pingSent.add(1);
-      }, PING_INTERVAL_MS);
+      if (PIPELINE_DEPTH > 0) {
+        lastPing = Date.now();
+        for (let i = 0; i < PIPELINE_DEPTH; i++) {
+          socket.ping();
+          pingSent.add(1);
+        }
+      } else {
+        socket.setInterval(() => {
+          lastPing = Date.now();
+          socket.ping();
+          pingSent.add(1);
+        }, PING_INTERVAL_MS);
+      }
     });
 
     socket.on('pong', () => {
       pongRecv.add(1);
-      if (socket.locals && socket.locals.lastPing) {
-        pingRtt.add(Date.now() - socket.locals.lastPing);
+      if (lastPing > 0) {
+        pingRtt.add(Date.now() - lastPing);
+      }
+      if (PIPELINE_DEPTH > 0) {
+        lastPing = Date.now();
+        socket.ping();
+        pingSent.add(1);
       }
     });
 

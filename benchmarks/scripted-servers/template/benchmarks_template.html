@@ -76,26 +76,7 @@
           </label>
         </div>
         <div class="charts" id="charts-grid">
-          <div class="chart-card" data-metric="rps">
-          <h3 style="margin:.25rem 0">Requests/sec (RPS)</h3>
-          <div class="chart-shell"><canvas id="chart-rps"></canvas></div>
-        </div>
-        <div class="chart-card" data-metric="latency">
-          <h3 style="margin:.25rem 0">Avg Latency (ms)</h3>
-          <div class="chart-shell"><canvas id="chart-latency"></canvas></div>
-        </div>
-        <div class="chart-card" data-metric="transfer">
-          <h3 style="margin:.25rem 0">Data transferred (MB)</h3>
-          <div class="chart-shell"><canvas id="chart-transfer"></canvas></div>
-        </div>
-        <div class="chart-card" data-metric="memory">
-          <h3 style="margin:.25rem 0">Memory RSS (MB)</h3>
-          <div class="chart-shell"><canvas id="chart-memory-rss"></canvas></div>
-        </div>
-        <div class="chart-card" data-metric="memory">
-          <h3 style="margin:.25rem 0">Memory Peak (MB)</h3>
-          <div class="chart-shell"><canvas id="chart-memory-peak"></canvas></div>
-        </div>
+          __CHART_CARDS_HTML__
         </div>
       </section>
 
@@ -222,82 +203,28 @@
       try { Chart.register(ChartDataLabels); } catch (e) { /* ignore if already registered */ }
     }
 
-    const rpsChart = new Chart(document.getElementById('chart-rps'), {
-      type: 'bar',
-      data: buildChartData('rps', 'all'),
-      options: baseOptions('rps', {
-        x: { ticks: { autoSkip: false } },
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: 'Requests/sec' },
-          ticks: { callback: value => formatValue(value, 'rps') },
-        }
-      }, false)
+    // Dynamic chart initialization from payload
+    const chartDefs = payload.chartDefs || [];
+    const chartEntries = [];
+    chartDefs.forEach(def => {
+      const canvas = document.getElementById(def.canvasId);
+      if (!canvas) return;
+      const card = canvas.closest('.chart-card');
+      const scaleType = def.scaleType || 'linear';
+      const yOpts = { title: { display: true, text: def.axisLabel || '' }, ticks: { callback: value => formatValue(value, def.formatMetric || def.dataKey) } };
+      if (scaleType === 'logarithmic') {
+        yOpts.type = 'logarithmic';
+        yOpts.min = Math.max(minPositive(def.dataKey) / 1.5, def.logMin || 1e-4);
+      } else {
+        yOpts.beginAtZero = true;
+      }
+      const chart = new Chart(canvas, {
+        type: 'bar',
+        data: buildChartData(def.dataKey, 'all'),
+        options: baseOptions(def.formatMetric || def.dataKey, { x: { ticks: { autoSkip: false } }, y: yOpts }, false),
+      });
+      chartEntries.push({ metric: def.filterMetric, chart, card, dataKey: def.dataKey });
     });
-
-    const latencyChart = new Chart(document.getElementById('chart-latency'), {
-      type: 'bar',
-      data: buildChartData('latency', 'all'),
-      options: baseOptions('latency', {
-        x: { ticks: { autoSkip: false } },
-        y: {
-          type: 'logarithmic',
-          min: Math.max(minPositive('latency') / 1.5, 1e-4),
-          title: { display: true, text: `Latency (${units.latency || 'ms'})` },
-          ticks: { callback: value => formatValue(value, 'latency') },
-        }
-      }, false)
-    });
-
-    const transferChart = new Chart(document.getElementById('chart-transfer'), {
-      type: 'bar',
-      data: buildChartData('transfer', 'all'),
-      options: baseOptions('transfer', {
-        x: { ticks: { autoSkip: false } },
-        y: {
-          type: 'logarithmic',
-          min: Math.max(minPositive('transfer') / 1.5, 1e-3),
-          title: { display: true, text: `Transfer (${units.transfer || 'MB'})` },
-          ticks: { callback: value => formatValue(value, 'transfer') },
-        }
-      }, false)
-    });
-
-    const memoryRssChart = new Chart(document.getElementById('chart-memory-rss'), {
-      type: 'bar',
-      data: buildChartData('memory_rss', 'all'),
-      options: baseOptions('memory', {
-        x: { ticks: { autoSkip: false } },
-        y: {
-          type: 'logarithmic',
-          min: Math.max(minPositive('memory_rss') / 1.5, 1e-2),
-          title: { display: true, text: 'RSS (MB) (log scale)' },
-          ticks: { callback: value => formatValue(value, 'memory') },
-        }
-      }, false)
-    });
-
-    const memoryPeakChart = new Chart(document.getElementById('chart-memory-peak'), {
-      type: 'bar',
-      data: buildChartData('memory_peak', 'all'),
-      options: baseOptions('memory', {
-        x: { ticks: { autoSkip: false } },
-        y: {
-          type: 'logarithmic',
-          min: Math.max(minPositive('memory_peak') / 1.5, 1e-2),
-          title: { display: true, text: 'Peak (MB) (log scale)' },
-          ticks: { callback: value => formatValue(value, 'memory') },
-        }
-      }, false)
-    });
-
-    const chartEntries = [
-      { metric: 'rps', chart: rpsChart, card: document.querySelector('.chart-card[data-metric="rps"]') },
-      { metric: 'latency', chart: latencyChart, card: document.querySelector('.chart-card[data-metric="latency"]') },
-      { metric: 'transfer', chart: transferChart, card: document.querySelector('.chart-card[data-metric="transfer"]') },
-      { metric: 'memory', chart: memoryRssChart, card: document.querySelectorAll('.chart-card[data-metric="memory"]')[0] },
-      { metric: 'memory', chart: memoryPeakChart, card: document.querySelectorAll('.chart-card[data-metric="memory"]')[1] },
-    ];
 
     function switchConfig(idx) {
       currentConfigIdx = idx;
@@ -326,10 +253,7 @@
       chartEntries.forEach(entry => {
         const showCard = activeMetric ? entry.metric === activeMetric : true;
         entry.card.classList.toggle('hidden', !showCard);
-        const chartMetric = entry.chart.canvas.id === 'chart-memory-rss' ? 'memory_rss'
-                          : entry.chart.canvas.id === 'chart-memory-peak' ? 'memory_peak'
-                          : entry.metric;
-        const nextData = buildChartData(chartMetric, scenarioValue);
+        const nextData = buildChartData(entry.dataKey, scenarioValue);
         entry.chart.data.labels = nextData.labels;
         entry.chart.data.datasets = nextData.datasets;
         if (entry.chart.options.plugins.datalabels) {
