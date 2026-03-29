@@ -520,7 +520,7 @@ go install github.com/matttomasetti/websocket-bench@latest
 ./run_ws_benchmarks.py --vus 100 --duration 60s --threads 4 --output ./my-results
 
 # Render HTML report from a JSON run (interactive charts)
-python3 ./render_ws_benchmarks_html.py --input ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.json --output ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.html
+python3 ./render_benchmarks_html.py --input ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.json --output ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.html
 ```
 
 Each `run_ws_benchmarks.py` execution now automatically generates:
