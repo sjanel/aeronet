@@ -1388,12 +1388,30 @@ class BenchmarkRunner:
     def _print_results_table(self) -> None:
         if not self.results_rps:
             return
+        from bench_utils import TablePrinter  # noqa: local import
         print_results = TablePrinter(
             self.servers_to_test,
             self.scenarios_to_test,
-            self.results_rps,
-            self.results_latency,
-            self.results_transfer,
+            metrics=[
+                (
+                    "BENCHMARK RESULTS COMPARISON",
+                    "(Successful responses/sec - higher is better)",
+                    self.results_rps,
+                    True,
+                ),
+                (
+                    "LATENCY COMPARISON",
+                    "(Timeout-adjusted average - lower is better)",
+                    self.results_latency,
+                    False,
+                ),
+                (
+                    "TRANSFER RATE COMPARISON",
+                    "(Data throughput - higher is better)",
+                    self.results_transfer,
+                    True,
+                ),
+            ],
         )
         print_results.print_all()
 
@@ -1836,132 +1854,7 @@ class BenchmarkRunner:
 
 # ------------------------------ Table printer ------------------------------ #
 
-
-def format_rps(value: Optional[str]) -> str:
-    if not value or value == "-":
-        return "-"
-    try:
-        return f"{int(float(value)):,}"
-    except ValueError:
-        return value
-
-
-class TablePrinter:
-    def __init__(
-        self,
-        servers: List[str],
-        scenarios: List[str],
-        rps: Dict[Tuple[str, str], str],
-        latency: Dict[Tuple[str, str], str],
-        transfer: Dict[Tuple[str, str], str],
-    ) -> None:
-        self.servers = servers
-        self.scenarios = scenarios
-        self.rps = rps
-        self.latency = latency
-        self.transfer = transfer
-
-    def print_all(self) -> None:
-        self._print_box(
-            "BENCHMARK RESULTS COMPARISON",
-            "(Successful responses/sec - higher is better)",
-            self.rps,
-            higher_is_better=True,
-        )
-        self._print_box(
-            "LATENCY COMPARISON",
-            "(Timeout-adjusted average - lower is better)",
-            self.latency,
-            higher_is_better=False,
-        )
-        self._print_box(
-            "TRANSFER RATE COMPARISON",
-            "(Data throughput - higher is better)",
-            self.transfer,
-            higher_is_better=True,
-        )
-
-    def _print_box(
-        self,
-        title: str,
-        subtitle: str,
-        data: Dict[Tuple[str, str], str],
-        higher_is_better: bool,
-    ) -> None:
-        scenario_width = 12
-        cell_width = 14
-        win_width = 10
-        interior = (
-            scenario_width + 3 + len(self.servers) * (cell_width + 3) + win_width + 2
-        )
-        border = "═" * interior
-        print("╔" + border + "╗")
-        for text in (title, subtitle):
-            left = (interior - len(text)) // 2
-            right = interior - len(text) - left
-            print(f"║{' ' * left}{text}{' ' * right}║")
-        print("╠" + border + "╣")
-        header = [f"║ {'Scenario':<{scenario_width}} │"]
-        for srv in self.servers:
-            header.append(f" {srv:<{cell_width}} │")
-        label = "Winner" if higher_is_better else "Best"
-        header.append(f" {label:<{win_width}} ║")
-        print("".join(header))
-        print("╠" + border + "╣")
-        for scenario in self.scenarios:
-            row = [f"║ {scenario:<{scenario_width}} │"]
-            best_server = self._best_server(scenario, data, higher_is_better)
-            for srv in self.servers:
-                val = data.get((srv, scenario), "-")
-                display = val
-                cell = f" {display:<{cell_width}} │"
-                if srv == best_server and display != "-":
-                    truncated = display[: cell_width - 2]
-                    cell = f" {truncated:<{cell_width - 2}} \033[1;32m★\033[0m │"
-                row.append(cell)
-            row.append(f" {best_server or '-':<{win_width}} ║")
-            print("".join(row))
-        print("╚" + border + "╝\n")
-
-    def _best_server(
-        self, scenario: str, data: Dict[Tuple[str, str], str], higher_is_better: bool
-    ) -> str:
-        cmp_value = None
-        best_name = ""
-        for srv in self.servers:
-            val = data.get((srv, scenario))
-            if not val or val == "-":
-                continue
-            numeric = self._to_numeric(val, higher_is_better)
-            if numeric is None:
-                continue
-            if cmp_value is None or (
-                numeric > cmp_value if higher_is_better else numeric < cmp_value
-            ):
-                cmp_value = numeric
-                best_name = srv
-        return best_name
-
-    @staticmethod
-    def _to_numeric(value: str, higher_is_better: bool) -> Optional[float]:
-        try:
-            if any(value.endswith(unit) for unit in ("us", "ms", "s")):
-                suffix = "".join(ch for ch in value if not ch.isdigit() and ch != ".")
-                number = float("".join(ch for ch in value if ch.isdigit() or ch == "."))
-                scale = {"us": 1, "ms": 1000, "s": 1_000_000}.get(suffix, 1)
-                microseconds = number * scale
-                return microseconds
-            if any(value.endswith(unit) for unit in ("KB", "MB", "GB")):
-                suffix = "".join(ch for ch in value if not ch.isdigit() and ch != ".")
-                number = float("".join(ch for ch in value if ch.isdigit() or ch == "."))
-                scale = {"B": 1, "KB": 1024, "MB": 1_048_576, "GB": 1_073_741_824}.get(
-                    suffix, 1
-                )
-                bytes_value = number * scale
-                return bytes_value
-            return float(value)
-        except ValueError:
-            return None
+from bench_utils import TablePrinter, format_rps  # noqa: E402
 
 
 # ------------------------------- CLI parsing ------------------------------- #

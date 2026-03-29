@@ -13,6 +13,9 @@ const BASE_URL = __ENV.WS_URL || 'ws://127.0.0.1:8080/ws';
 const MSG_INTERVAL_MS = parseInt(__ENV.MSG_INTERVAL_MS || '10');
 const SESSION_DURATION_MS = parseInt(__ENV.SESSION_DURATION_MS || '10000');
 const PAYLOAD_SIZE = parseInt(__ENV.PAYLOAD_SIZE || '128');
+// Pipeline depth > 0 activates tight-loop mode: send initial burst then
+// immediately send on each received echo.  Maximises server saturation.
+const PIPELINE_DEPTH = parseInt(__ENV.PIPELINE_DEPTH || '0');
 
 // Pre-generate a deterministic payload
 const PAYLOAD = 'A'.repeat(PAYLOAD_SIZE);
@@ -31,22 +34,34 @@ export const options = {
 };
 
 export default function() {
+  let lastSend = 0;
+
   const res = ws.connect(BASE_URL, {}, function(socket) {
     socket.on('open', () => {
-      socket.setInterval(() => {
-        const start = Date.now();
-        socket.send(PAYLOAD);
-        msgSent.add(1);
-        // Store send timestamp for RTT calculation
-        socket.locals = socket.locals || {};
-        socket.locals.lastSend = start;
-      }, MSG_INTERVAL_MS);
+      if (PIPELINE_DEPTH > 0) {
+        lastSend = Date.now();
+        for (let i = 0; i < PIPELINE_DEPTH; i++) {
+          socket.send(PAYLOAD);
+          msgSent.add(1);
+        }
+      } else {
+        socket.setInterval(() => {
+          lastSend = Date.now();
+          socket.send(PAYLOAD);
+          msgSent.add(1);
+        }, MSG_INTERVAL_MS);
+      }
     });
 
     socket.on('message', (_data) => {
       msgRecv.add(1);
-      if (socket.locals && socket.locals.lastSend) {
-        rtt.add(Date.now() - socket.locals.lastSend);
+      if (lastSend > 0) {
+        rtt.add(Date.now() - lastSend);
+      }
+      if (PIPELINE_DEPTH > 0) {
+        lastSend = Date.now();
+        socket.send(PAYLOAD);
+        msgSent.add(1);
       }
     });
 
