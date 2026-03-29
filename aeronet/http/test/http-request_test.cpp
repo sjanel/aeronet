@@ -18,8 +18,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/sys-test-support.hpp"
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>

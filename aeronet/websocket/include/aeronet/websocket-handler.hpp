@@ -124,12 +124,14 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Send a text message.
   /// @param text UTF-8 encoded text message
   /// @return true if queued successfully, false if connection is closing
-  bool sendText(std::string_view text);
+  bool sendText(std::string_view text) {
+    return sendData(Opcode::Text, std::span(reinterpret_cast<const std::byte*>(text.data()), text.size()));
+  }
 
   /// Send a binary message.
   /// @param data Binary data to send
   /// @return true if queued successfully, false if connection is closing
-  bool sendBinary(std::span<const std::byte> data);
+  bool sendBinary(std::span<const std::byte> data) { return sendData(Opcode::Binary, data); }
 
   /// Send a Ping frame.
   /// @param payload Optional payload (max 125 bytes)
@@ -212,6 +214,9 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Queue a frame for sending.
   void queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin = true);
 
+  /// Send a data message with optional compression.
+  bool sendData(Opcode opcode, std::span<const std::byte> payload);
+
   WebSocketConfig _config;
   WebSocketCallbacks _callbacks;
   std::unique_ptr<DeflateContext> _deflateContext;          // Compression context (null if not negotiated)
@@ -221,6 +226,7 @@ class WebSocketHandler final : public IProtocolHandler {
   MessageState _message;                                    // Current message being assembled
   RawBytes _inputBuffer;                                    // Carry-over from incomplete frames
   RawBytes _compressBuffer;                                 // Temporary buffer for compression/decompression
+  std::size_t _inputBufferOffset{0};                        // Offset into _inputBuffer for unconsumed data
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
   bool _messageCompressed{false};  // True if current message was received with RSV1 set

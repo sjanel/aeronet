@@ -1,10 +1,17 @@
 #include "aeronet/websocket-frame.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 #include <string_view>
+
+#ifdef __SSE2__
+#include <emmintrin.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-constants.hpp"
@@ -202,18 +209,36 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
 }
 
 void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
-  // XOR each byte with the corresponding masking key byte (rotating)
-  // Optimized version processes 8 bytes at a time when possible
+  // XOR each byte with the repeating 4-byte masking key.
+  // Uses 128-bit SIMD (SSE2 on x86_64, NEON on aarch64), with a 64-bit fallback.
+  // ApplyMask is always called starting at mask position 0, so the broadcast
+  // of the 32-bit key into wider registers needs no rotation.
   const std::size_t sz = data.size();
   auto* bytes = data.data();
-
-  // Create a 64-bit mask for bulk processing
-  // Note: we need the mask to match byte positions in memory, not a specific endianness.
-  // Since we're using memcpy (which preserves byte order), construct mask as bytes would appear.
   std::size_t idx = 0;
+
+#ifdef __SSE2__
+  if (sz >= 16) {
+    // Broadcast 4-byte key into all four 32-bit lanes
+    const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
+    for (; idx + 16 <= sz; idx += 16) {
+      __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
+    }
+  }
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  if (sz >= 16) {
+    // Broadcast 4-byte key into all four 32-bit lanes
+    const uint8x16_t mask128 = vreinterpretq_u8_u32(vdupq_n_u32(maskingKey));
+    for (; idx + 16 <= sz; idx += 16) {
+      uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(bytes + idx));
+      vst1q_u8(reinterpret_cast<uint8_t*>(bytes + idx), veorq_u8(chunk, mask128));
+    }
+  }
+#else
+  // 64-bit scalar fallback for architectures without 128-bit SIMD
   if (sz >= 8) {
     const uint64_t mask64 = static_cast<uint64_t>(maskingKey) | (static_cast<uint64_t>(maskingKey) << 32);
-
     for (; idx + 8 <= sz; idx += 8) {
       uint64_t chunk;
       std::memcpy(&chunk, bytes + idx, sizeof(chunk));
@@ -221,27 +246,34 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
       std::memcpy(bytes + idx, &chunk, sizeof(chunk));
     }
   }
+#endif
+
+  // Trailing bytes (at most 15 for SIMD paths, 7 for 64-bit path)
   for (; idx < sz; ++idx) {
     bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3) * 8)) & 0xFF);
   }
 }
 
-void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin, bool shouldMask,
-                MaskingKey maskingKey, bool rsv1) {
-  const std::size_t payloadSize = payload.size();
+namespace {
 
+inline void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, bool fin, bool shouldMask,
+                             MaskingKey maskingKey, bool rsv1) {
   // Calculate header size
   std::size_t headerSize = kMinFrameHeaderSize;
-  if (payloadSize >= static_cast<uint64_t>(kPayloadLen64)) {
+
+  if (payloadSize < static_cast<uint64_t>(kPayloadLen16)) {
+    ++headerSize;
+  } else if (payloadSize <= 0xFFFF) {
+    headerSize += 3;
+  } else {
     headerSize += 8;
-  } else if (payloadSize >= static_cast<uint64_t>(kPayloadLen16)) {
-    headerSize += 2;
   }
+
   if (shouldMask) {
     headerSize += kMaskingKeySize;
   }
 
-  output.reserve(output.size() + headerSize + payloadSize);
+  output.ensureAvailableCapacity(headerSize + payloadSize);
 
   // First byte: FIN | RSV1-3 | Opcode
   std::byte byte0 = static_cast<std::byte>(opcode);
@@ -251,7 +283,7 @@ void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payl
   if (rsv1) {
     byte0 |= kRsv1Bit;
   }
-  output.push_back(byte0);
+  output.unchecked_push_back(byte0);
 
   // Second byte: MASK | Payload length (7 bits or indicator)
   std::byte byte1{};
@@ -261,61 +293,79 @@ void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payl
 
   if (payloadSize < static_cast<uint64_t>(kPayloadLen16)) {
     byte1 |= static_cast<std::byte>(payloadSize);
-    output.push_back(byte1);
+    output.unchecked_push_back(byte1);
   } else if (payloadSize <= 0xFFFF) {
     byte1 |= kPayloadLen16;
-    output.push_back(byte1);
+    output.unchecked_push_back(byte1);
     // 16-bit big-endian length
-    output.push_back(static_cast<std::byte>((payloadSize >> 8) & 0xFF));
-    output.push_back(static_cast<std::byte>(payloadSize & 0xFF));
+    output.unchecked_push_back(static_cast<std::byte>((payloadSize >> 8) & 0xFF));
+    output.unchecked_push_back(static_cast<std::byte>(payloadSize & 0xFF));
   } else {
     byte1 |= kPayloadLen64;
-    output.push_back(byte1);
+    output.unchecked_push_back(byte1);
     // 64-bit big-endian length
     for (int idx = 7; idx >= 0; --idx) {
-      output.push_back(static_cast<std::byte>((payloadSize >> (idx * 8)) & 0xFF));
+      output.unchecked_push_back(static_cast<std::byte>((payloadSize >> (idx * 8)) & 0xFF));
     }
   }
 
   // Masking key (if masking)
   if (shouldMask) {
-    output.append(reinterpret_cast<const std::byte*>(&maskingKey), kMaskingKeySize);
+    output.unchecked_append(reinterpret_cast<const std::byte*>(&maskingKey), kMaskingKeySize);
   }
+}
 
+inline void AppendFramePayload(RawBytes& output, std::span<const std::byte> payload, bool shouldMask,
+                               MaskingKey maskingKey) {
   // Payload (masked if needed)
   if (!payload.empty()) {
+    const std::size_t payloadSize = payload.size();
+    output.unchecked_append(payload.data(), payloadSize);
     if (shouldMask) {
-      // Need to mask the payload before appending
-      const std::size_t payloadStart = output.size();
-      output.append(payload.data(), payloadSize);
-      ApplyMask(std::as_writable_bytes(std::span(output.data() + payloadStart, payloadSize)), maskingKey);
-    } else {
-      output.append(payload.data(), payloadSize);
+      ApplyMask(std::as_writable_bytes(std::span(output.end() - payloadSize, payloadSize)), maskingKey);
     }
   }
+}
+
+}  // namespace
+
+void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin, bool shouldMask,
+                MaskingKey maskingKey, bool rsv1) {
+  const std::size_t payloadSize = payload.size();
+
+  BuildFrameHeader(output, opcode, payloadSize, fin, shouldMask, maskingKey, rsv1);
+  AppendFramePayload(output, payload, shouldMask, maskingKey);
 }
 
 void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, bool shouldMask,
                      MaskingKey maskingKey) {
   // Close frame payload: 2-byte status code (big-endian) + optional reason
-  RawBytes closePayload;
-
+  std::size_t payloadSize = 0;
+  std::size_t reasonLen = 0;
   if (code != CloseCode::NoStatusReceived) {
-    const auto codeVal = static_cast<uint16_t>(code);
-    closePayload.push_back(static_cast<std::byte>((codeVal >> 8) & 0xFF));
-    closePayload.push_back(static_cast<std::byte>(codeVal & 0xFF));
-
-    if (!reason.empty()) {
+    if (reason.empty()) {
+      payloadSize = 2UL;
+    } else {
       // Truncate reason if it would exceed control frame limit
       const std::size_t maxReasonLen = kMaxControlFramePayload - 2;
-      if (reason.size() > maxReasonLen) {
-        reason = reason.substr(0, maxReasonLen);
-      }
-      closePayload.append(std::as_bytes(std::span(reason)));
+      reasonLen = std::min(reason.size(), maxReasonLen);
+      payloadSize = 2UL + reasonLen;
     }
   }
 
-  BuildFrame(output, Opcode::Close, std::span<const std::byte>(closePayload), true, shouldMask, maskingKey);
+  BuildFrameHeader(output, Opcode::Close, payloadSize, true, shouldMask, maskingKey, false);
+
+  if (payloadSize != 0) {
+    const auto codeVal = static_cast<uint16_t>(code);
+
+    output.unchecked_push_back(static_cast<std::byte>((codeVal >> 8) & 0xFF));
+    output.unchecked_push_back(static_cast<std::byte>(codeVal & 0xFF));
+
+    output.unchecked_append(reinterpret_cast<const std::byte*>(reason.data()), reasonLen);
+    if (shouldMask) {
+      ApplyMask(std::as_writable_bytes(std::span(output.end() - payloadSize, payloadSize)), maskingKey);
+    }
+  }
 }
 
 ClosePayload ParseClosePayload(std::span<const std::byte> payload) {
