@@ -50,7 +50,8 @@ drogon::ContentType GetContentType(std::string_view path) {
 }  // namespace
 
 // ============================================================
-// WebSocket: /ws - Echo endpoint for WebSocket benchmarks
+// WebSocket: /ws-uncompressed - Echo endpoint for WebSocket benchmarks
+// Drogon does not support permessage-deflate, so only the uncompressed endpoint is provided.
 // ============================================================
 class EchoBenchWebSocket : public drogon::WebSocketController<EchoBenchWebSocket> {
  public:
@@ -65,7 +66,7 @@ class EchoBenchWebSocket : public drogon::WebSocketController<EchoBenchWebSocket
   void handleConnectionClosed(const drogon::WebSocketConnectionPtr& /*conn*/) override {}
 
   WS_PATH_LIST_BEGIN
-  WS_PATH_ADD("/ws");
+  WS_PATH_ADD("/ws-uncompressed");
   WS_PATH_LIST_END
 };
 
