@@ -11,7 +11,7 @@
 #include <emmintrin.h>
 #endif
 
-#if defined(__AVX2__)
+#ifdef __AVX2__
 #include <immintrin.h>
 #endif
 

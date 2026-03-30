@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## [Unreleased]
 
+### Improvements
+
+- Optimized WebSocket frame building by removing some copies and allocations.
+
 ### Other
 
 - Added **WebSocket** benchmarks to CI pipeline with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon.

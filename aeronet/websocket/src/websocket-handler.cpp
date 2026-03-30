@@ -1,16 +1,24 @@
 #include "aeronet/websocket-handler.hpp"
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
+
+#ifdef __SSE2__
+#include <emmintrin.h>
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/websocket-constants.hpp"
@@ -39,9 +47,10 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
   ProtocolProcessResult result;
 
   // Append new data to any carry-over from previous call
-  if (!_inputBuffer.empty()) {
+  if (_inputBufferOffset < _inputBuffer.size()) {
     _inputBuffer.append(data);
-    data = _inputBuffer;
+    data =
+        std::span<const std::byte>(_inputBuffer.data() + _inputBufferOffset, _inputBuffer.size() - _inputBufferOffset);
   }
 
   std::size_t totalConsumed = 0;
@@ -55,9 +64,15 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       // Need more data - save remainder for next call
       if (_inputBuffer.empty()) {
         _inputBuffer.append(data);
+        _inputBufferOffset = 0;
       } else {
-        // Shift remaining data to front
-        _inputBuffer.erase_front(totalConsumed);
+        // Advance offset instead of memmove
+        _inputBufferOffset += totalConsumed;
+        // Compact if offset exceeds half the buffer to avoid unbounded growth
+        if (_inputBufferOffset > _inputBuffer.size() / 2) {
+          _inputBuffer.erase_front(_inputBufferOffset);
+          _inputBufferOffset = 0;
+        }
       }
       result.bytesConsumed = totalConsumed;
       return result;
@@ -106,26 +121,25 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
 
   // All data consumed
   _inputBuffer.clear();
+  _inputBufferOffset = 0;
   result.bytesConsumed = totalConsumed;
   return result;
 }
 
 ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& frame) {
-  // Unmask payload if needed (creates a copy)
-  std::span<const std::byte> payload = frame.payload;
-  RawBytes unmaskedPayload;
-
-  if (frame.header.masked) {
-    unmaskedPayload.append(payload);
-    ApplyMask(unmaskedPayload, frame.header.maskingKey);
-    payload = unmaskedPayload;
-  }
-
-  // Dispatch based on opcode type
   if (IsControlFrame(frame.header.opcode)) {
+    // Control frames max 125 bytes - unmask on stack
+    std::span<const std::byte> payload = frame.payload;
+    std::array<std::byte, kMaxControlFramePayload> controlBuf;
+    if (frame.header.masked && !payload.empty()) {
+      std::memcpy(controlBuf.data(), payload.data(), payload.size());
+      ApplyMask(std::span<std::byte>(controlBuf.data(), payload.size()), frame.header.maskingKey);
+      payload = std::span<const std::byte>(controlBuf.data(), payload.size());
+    }
     return handleControlFrame(frame.header, payload);
   }
-  return handleDataFrame(frame.header, payload);
+  // Data frames: pass raw payload, unmasking happens in-place in message buffer
+  return handleDataFrame(frame.header, frame.payload);
 }
 
 ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& header, std::span<const std::byte> payload) {
@@ -174,8 +188,12 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     return result;
   }
 
-  // Append payload to message buffer
+  // Append payload to message buffer and unmask in-place (avoids extra copy)
+  const auto prevSize = _message.buffer.size();
   _message.buffer.append(payload);
+  if (header.masked && !payload.empty()) {
+    ApplyMask(std::span<std::byte>(_message.buffer.data() + prevSize, payload.size()), header.maskingKey);
+  }
 
   // If FIN bit is set, message is complete
   if (header.fin) {
@@ -210,7 +228,9 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       result.action = ProtocolProcessResult::Action::Continue;
       break;
 
-    case Opcode::Close: {
+    default: {
+      // Opcode::Close
+      assert(header.opcode == Opcode::Close);
       const auto closeInfo = ParseClosePayload(payload);
 
       if (_closeState == CloseState::Open) {
@@ -231,10 +251,6 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       }
       break;
     }
-
-    default:
-      // Unknown control opcode - should not reach here via public API; throw for visibility
-      throw std::logic_error("handleControlFrame: unexpected control opcode encountered");
   }
 
   return result;
@@ -242,72 +258,110 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
 
 namespace {
 
+/// Validate a single multibyte UTF-8 sequence starting at *ptr.
+/// @param ptr  Points to 1 byte past the lead byte on entry; advanced past the full sequence on success.
+/// @param end  One-past-end of the buffer.
+/// @param lead The leading byte of the sequence (already consumed).
+/// @return true if the sequence is valid.
+bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t lead) {
+  std::size_t remaining;
+  uint32_t codepoint;
+  uint32_t minCodepoint;
+
+  if ((lead & 0xE0) == 0xC0) {
+    remaining = 1;
+    codepoint = lead & 0x1F;
+    minCodepoint = 0x80;
+  } else if ((lead & 0xF0) == 0xE0) {
+    remaining = 2;
+    codepoint = lead & 0x0F;
+    minCodepoint = 0x800;
+  } else if ((lead & 0xF8) == 0xF0) {
+    remaining = 3;
+    codepoint = lead & 0x07;
+    minCodepoint = 0x10000;
+  } else {
+    return false;
+  }
+
+  if (ptr + remaining > end) {
+    return false;
+  }
+
+  for (std::size_t idx = 0; idx < remaining; ++idx) {
+    uint8_t byte = *ptr++;
+    if ((byte & 0xC0) != 0x80) {
+      return false;
+    }
+    codepoint = (codepoint << 6) | (byte & 0x3F);
+  }
+
+  if (codepoint < minCodepoint) {
+    return false;
+  }
+  if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
+    return false;
+  }
+  return codepoint <= 0x10FFFF;
+}
+
 /// Validate UTF-8 encoding for text messages.
+/// Uses SIMD to fast-skip all-ASCII chunks (16 bytes at a time).
 /// @return true if valid UTF-8, false otherwise
 bool ValidateUtf8(std::span<const std::byte> data) {
-  // UTF-8 validation state machine
-  // See RFC 3629 for UTF-8 encoding rules
+  if (data.empty()) {
+    return true;
+  }
   const auto* ptr = reinterpret_cast<const uint8_t*>(data.data());
   const auto* end = ptr + data.size();
 
-  while (ptr < end) {
-    uint8_t byte = *ptr++;
-
-    if (byte <= 0x7F) {
-      // ASCII - single byte
+#ifdef __SSE2__
+  // Fast-scan 16 bytes at a time: if all bytes are ASCII (high bit=0), skip the whole chunk.
+  while (ptr + 16 <= end) {
+    __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr));
+    int mask = _mm_movemask_epi8(chunk);
+    if (mask == 0) {
+      // All 16 bytes are ASCII
+      ptr += 16;
       continue;
     }
-
-    std::size_t remaining = 0;
-    uint32_t codepoint = 0;
-    uint32_t minCodepoint = 0;
-
-    if ((byte & 0xE0) == 0xC0) {
-      // 2-byte sequence
-      remaining = 1;
-      codepoint = byte & 0x1F;
-      minCodepoint = 0x80;
-    } else if ((byte & 0xF0) == 0xE0) {
-      // 3-byte sequence
-      remaining = 2;
-      codepoint = byte & 0x0F;
-      minCodepoint = 0x800;
-    } else if ((byte & 0xF8) == 0xF0) {
-      // 4-byte sequence
-      remaining = 3;
-      codepoint = byte & 0x07;
-      minCodepoint = 0x10000;
-    } else {
-      // Invalid leading byte
+    // At least one non-ASCII byte — find it and validate the multibyte sequence
+    auto offset = static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+    ptr += offset;
+    uint8_t lead = *ptr++;
+    if (!ValidateMultibyteSequence(ptr, end, lead)) {
       return false;
     }
-
-    if (ptr + remaining > end) {
-      // Incomplete sequence at end
+  }
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
+  while (ptr + 16 <= end) {
+    uint8x16_t chunk = vld1q_u8(ptr);
+    // Check if any byte has the high bit set (>= 0x80)
+    if (vmaxvq_u8(chunk) < 0x80) {
+      ptr += 16;
+      continue;
+    }
+    // Find first non-ASCII byte via scalar scan within this 16-byte window
+    while (ptr < end && *ptr <= 0x7F) {
+      ++ptr;
+    }
+    if (ptr >= end) {
+      break;
+    }
+    uint8_t lead = *ptr++;
+    if (!ValidateMultibyteSequence(ptr, end, lead)) {
       return false;
     }
+  }
+#endif
 
-    for (std::size_t idx = 0; idx < remaining; ++idx) {
-      byte = *ptr++;
-      if ((byte & 0xC0) != 0x80) {
-        // Invalid continuation byte
-        return false;
-      }
-      codepoint = (codepoint << 6) | (byte & 0x3F);
+  // Scalar tail (< 16 bytes remaining, or no SIMD)
+  while (ptr < end) {
+    uint8_t byte = *ptr++;
+    if (byte <= 0x7F) {
+      continue;
     }
-
-    // Check for overlong encoding
-    if (codepoint < minCodepoint) {
-      return false;
-    }
-
-    // Check for surrogate pairs (invalid in UTF-8)
-    if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
-      return false;
-    }
-
-    // Check for out of range
-    if (codepoint > 0x10FFFF) {
+    if (!ValidateMultibyteSequence(ptr, end, byte)) {
       return false;
     }
   }
@@ -398,68 +452,44 @@ void WebSocketHandler::onTransportClosing() {
   _message.inProgress = false;
   _message.buffer.clear();
   _inputBuffer.clear();
+  _inputBufferOffset = 0;
 }
 
+namespace {
+
+/// Generate a random masking key for client-side frames (RFC 6455 §10.3).
+MaskingKey GenerateRandomMaskingKey() {
+  thread_local std::mt19937 rng(std::random_device{}());
+  return static_cast<MaskingKey>(rng());
+}
+
+}  // namespace
+
 void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin) {
-  // Server should NOT mask outgoing frames
-  bool shouldMask = !_config.isServerSide;
-
-  // For simplicity, we use a zero mask when not masking
-  // In a real client implementation, we'd generate random masking keys
-  MaskingKey mask{};
-
+  const bool shouldMask = !_config.isServerSide;
+  const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
 }
 
-bool WebSocketHandler::sendText(std::string_view text) {
-  if (_closeState != CloseState::Open) {
-    return false;
-  }
-
-  auto textSpan = std::as_bytes(std::span(text.data(), text.size()));
-
-  // Try to compress if compression is enabled and payload is large enough
-  if (_deflateContext && !_deflateContext->shouldSkipCompression(text.size())) {
-    _compressBuffer.clear();
-    const char* errMsg = _deflateContext->compress(textSpan, _compressBuffer);
-    if (errMsg == nullptr) {
-      // Only use compressed data if it's smaller
-      if (_compressBuffer.size() < text.size()) {
-        auto compressedSpan = std::as_bytes(std::span(_compressBuffer.data(), _compressBuffer.size()));
-        bool shouldMask = !_config.isServerSide;
-        MaskingKey mask{};
-        BuildFrame(_outputBuffer, Opcode::Text, compressedSpan, true, shouldMask, mask, true);  // RSV1=true
-        return true;
-      }
-    }
-  }
-
-  queueFrame(Opcode::Text, textSpan);
-  return true;
-}
-
-bool WebSocketHandler::sendBinary(std::span<const std::byte> data) {
+bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payload) {
   if (_closeState != CloseState::Open) {
     return false;
   }
 
   // Try to compress if compression is enabled and payload is large enough
-  if (_deflateContext && !_deflateContext->shouldSkipCompression(data.size())) {
+  if (_deflateContext && !_deflateContext->shouldSkipCompression(payload.size())) {
     _compressBuffer.clear();
-    const char* errMsg = _deflateContext->compress(data, _compressBuffer);
-    if (errMsg == nullptr) {
-      // Only use compressed data if it's smaller
-      if (_compressBuffer.size() < data.size()) {
-        auto compressedSpan = std::as_bytes(std::span(_compressBuffer.data(), _compressBuffer.size()));
-        bool shouldMask = !_config.isServerSide;
-        MaskingKey mask{};
-        BuildFrame(_outputBuffer, Opcode::Binary, compressedSpan, true, shouldMask, mask, true);  // RSV1=true
-        return true;
-      }
+    const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
+    if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
+      const bool shouldMask = !_config.isServerSide;
+      const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
+      BuildFrame(_outputBuffer, opcode, std::span<const std::byte>(_compressBuffer.data(), _compressBuffer.size()),
+                 true, shouldMask, mask, true);
+      return true;
     }
   }
 
-  queueFrame(Opcode::Binary, data);
+  queueFrame(opcode, payload);
   return true;
 }
 
@@ -496,7 +526,9 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
     return false;
   }
 
-  BuildCloseFrame(_outputBuffer, code, reason, !_config.isServerSide);
+  const bool shouldMask = !_config.isServerSide;
+  const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
+  BuildCloseFrame(_outputBuffer, code, reason, shouldMask, mask);
 
   if (_closeState == CloseState::Open) {
     _closeState = CloseState::CloseSent;
