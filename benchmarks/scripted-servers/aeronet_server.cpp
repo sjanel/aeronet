@@ -273,26 +273,46 @@ int main(int argc, char* argv[]) {
                  });
 
   // ============================================================
-  // WebSocket: /ws - Echo endpoint for WebSocket benchmarks
-  // Echoes back text and binary messages verbatim
+  // WebSocket: /ws-uncompressed - Echo without permessage-deflate
   // ============================================================
 #ifdef AERONET_ENABLE_WEBSOCKET
-  router.setWebSocket("/ws", WebSocketEndpoint::WithFactory([](const HttpRequest& /*req*/) {
-                        auto handler = std::make_unique<websocket::WebSocketHandler>();
-                        websocket::WebSocketHandler* hp = handler.get();
-                        handler->setCallbacks(websocket::WebSocketCallbacks{
-                            .onMessage =
-                                [hp](std::span<const std::byte> payload, bool isBinary) {
-                                  if (isBinary) {
-                                    hp->sendBinary(payload);
-                                  } else {
-                                    hp->sendText({reinterpret_cast<const char*>(payload.data()), payload.size()});
-                                  }
-                                },
-                        });
-                        return handler;
-                      }));
-  std::cout << "WebSocket echo endpoint registered at /ws\n";
+  auto makeEchoFactory = [](websocket::WebSocketConfig cfg) -> WebSocketHandlerFactory {
+    return [cfg = std::move(cfg)](const HttpRequest& /*req*/) {
+      auto handler = std::make_unique<websocket::WebSocketHandler>(cfg);
+      websocket::WebSocketHandler* hp = handler.get();
+      handler->setCallbacks(websocket::WebSocketCallbacks{
+          .onMessage =
+              [hp](std::span<const std::byte> payload, bool isBinary) {
+                if (isBinary) {
+                  hp->sendBinary(payload);
+                } else {
+                  hp->sendText({reinterpret_cast<const char*>(payload.data()), payload.size()});
+                }
+              },
+      });
+      return handler;
+    };
+  };
+
+  {
+    websocket::WebSocketConfig noDeflate;
+    noDeflate.deflateConfig.enabled = false;
+    auto ep = WebSocketEndpoint::WithFactory(makeEchoFactory(noDeflate));
+    ep.config = noDeflate;
+    router.setWebSocket("/ws-uncompressed", std::move(ep));
+  }
+
+  // ============================================================
+  // WebSocket: /ws-compressed - Echo with permessage-deflate
+  // ============================================================
+  {
+    websocket::WebSocketConfig withDeflate;
+    withDeflate.deflateConfig.enabled = true;
+    auto ep = WebSocketEndpoint::WithFactory(makeEchoFactory(withDeflate));
+    ep.config = withDeflate;
+    router.setWebSocket("/ws-compressed", std::move(ep));
+  }
+  std::cout << "WebSocket echo endpoints registered at /ws-uncompressed and /ws-compressed\n";
 #endif
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
