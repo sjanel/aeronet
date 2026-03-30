@@ -36,6 +36,14 @@ K6_SCENARIOS: Dict[str, str] = {
     "compression": "k6/ws_compression.js",
 }
 
+# Scenarios that use the /ws-compressed endpoint (permessage-deflate).
+# All other scenarios use /ws-uncompressed.
+COMPRESSED_SCENARIOS = {"compression"}
+
+# Servers that support the /ws-compressed endpoint.
+# Drogon does not implement permessage-deflate.
+COMPRESSION_CAPABLE_SERVERS = {"aeronet", "uwebsockets"}
+
 SERVER_PORTS: Dict[str, int] = {
     "aeronet": 8080,
     "drogon": 8081,
@@ -170,7 +178,7 @@ class WsBenchmarkRunner:
             return True
         port = SERVER_PORTS[name]
         binary = self._server_binary(name)
-        cmd = [str(binary), "--port", str(port), "--threads", str(self.args.threads)]
+        cmd = [str(binary), "--port", str(port), "--threads", str(int((self.args.threads + 3) / 4))]
         log_path = self.output_dir / f"{name}_server.log"
         log_fp = open(log_path, "w")
         proc = subprocess.Popen(
@@ -206,7 +214,8 @@ class WsBenchmarkRunner:
 
     def _run_k6(self, server: str, scenario: str) -> RunResult:
         port = SERVER_PORTS[server]
-        ws_url = f"ws://127.0.0.1:{port}/ws"
+        ws_path = "/ws-compressed" if scenario in COMPRESSED_SCENARIOS else "/ws-uncompressed"
+        ws_url = f"ws://127.0.0.1:{port}{ws_path}"
         script = self.script_dir / K6_SCENARIOS[scenario]
         if not script.is_file():
             script = self.build_dir / K6_SCENARIOS[scenario]
@@ -487,7 +496,7 @@ class WsBenchmarkRunner:
 
     def _run_ws_bench(self, server: str) -> RunResult:
         port = SERVER_PORTS[server]
-        ws_url = f"ws://127.0.0.1:{port}/ws"
+        ws_url = f"ws://127.0.0.1:{port}/ws-uncompressed"
 
         cmd = [
             "websocket-bench", "-c", str(self.vus),
@@ -605,7 +614,7 @@ class WsBenchmarkRunner:
                 port = SERVER_PORTS[server]
                 env = os.environ.copy()
                 env.update({
-                    "WS_URL": f"ws://127.0.0.1:{port}/ws",
+                    "WS_URL": f"ws://127.0.0.1:{port}/ws-uncompressed",
                     "VUS": str(max(1, self.vus // 4)),
                     "DURATION": self.warmup,
                     "SESSION_DURATION_MS": "3000",
@@ -618,6 +627,10 @@ class WsBenchmarkRunner:
         # k6 scenarios
         if k6_ok:
             for idx, scenario in enumerate(self.scenarios_to_test):
+                # Skip compressed scenarios for servers that don't support it
+                if scenario in COMPRESSED_SCENARIOS and server not in COMPRESSION_CAPABLE_SERVERS:
+                    print(f"  Skipping k6: {scenario} ({server} does not support WS compression)")
+                    continue
                 if idx > 0:
                     time.sleep(2)  # Cooldown between scenarios
                 print(f"  Running k6: {scenario} ...", end=" ", flush=True)

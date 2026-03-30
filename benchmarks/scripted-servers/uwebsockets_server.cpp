@@ -1,6 +1,6 @@
 // uwebsockets_server.cpp - uWebSockets benchmark server for WebSocket testing
 //
-// Implements the /ws echo endpoint plus minimal HTTP endpoints for health checks.
+// Implements /ws-uncompressed and /ws-compressed echo endpoints plus minimal HTTP endpoints for health checks.
 // Requires AERONET_BENCH_ENABLE_UWEBSOCKETS=ON during CMake configuration.
 //
 // NOTE: we deliberately avoid including scripted-servers-helpers.hpp here
@@ -46,44 +46,49 @@ struct UwsConfig {
   }
 };
 
-}  // namespace
-
-int main(int argc, char* argv[]) {
-  UwsConfig cfg(8088, argc, argv);
-
+void RunWorker(uint16_t port, uint32_t numThreads, bool printBanner) {
   uWS::App app;
 
-  // ============================================================
-  // Endpoint: /ping - Health check for benchmark runner
-  // ============================================================
   app.get("/ping", [](auto* res, auto* /*req*/) { res->end("pong"); });
 
-  // ============================================================
-  // Endpoint: /status - JSON health check
-  // ============================================================
-  app.get("/status", [numThreads = cfg.numThreads](auto* res, auto* /*req*/) {
+  const std::string body = R"({"server":"uwebsockets","threads":)" + std::to_string(numThreads) + R"(,"status":"ok"})";
+  app.get("/status", [body](auto* res, auto* /*req*/) {
     res->writeHeader("Content-Type", "application/json");
-    std::string body = R"({"server":"uwebsockets","threads":)" + std::to_string(numThreads) + R"(,"status":"ok"})";
     res->end(body);
   });
 
-  // ============================================================
-  // WebSocket: /ws - Echo endpoint for WebSocket benchmarks
-  // Echoes back text and binary messages verbatim
-  // ============================================================
+  // /ws-uncompressed — no permessage-deflate, used by all non-compression scenarios
   app.ws<PerSocketData>(
-      "/ws", uWS::TemplatedApp<false>::WebSocketBehavior<PerSocketData>{
-                 .compression = uWS::DISABLED,
-                 .maxPayloadLength = 64 * 1024 * 1024,  // 64 MiB, matching aeronet default
-                 .idleTimeout = 0,                      // No timeout for benchmarks
-                 .maxBackpressure = 1024 * 1024,
-                 .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) { ws->send(message, opCode); },
-             });
+      "/ws-uncompressed",
+      uWS::TemplatedApp<false>::WebSocketBehavior<PerSocketData>{
+          .compression = uWS::DISABLED,
+          .maxPayloadLength = 64 * 1024 * 1024,
+          .idleTimeout = 0,
+          .maxBackpressure = 1024 * 1024,
+          .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
+            ws->send(message, opCode);
+          },
+      });
 
-  app.listen(cfg.port, [port = cfg.port, numThreads = cfg.numThreads](auto* listenSocket) {
+  // /ws-compressed — permessage-deflate enabled, used by the compression scenario
+  app.ws<PerSocketData>(
+      "/ws-compressed",
+      uWS::TemplatedApp<false>::WebSocketBehavior<PerSocketData>{
+          .compression = static_cast<uWS::CompressOptions>(uWS::DEDICATED_COMPRESSOR | uWS::DEDICATED_DECOMPRESSOR),
+          .maxPayloadLength = 64 * 1024 * 1024,
+          .idleTimeout = 0,
+          .maxBackpressure = 1024 * 1024,
+          .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
+            ws->send(message, opCode, true);
+          },
+      });
+
+  app.listen(port, [port, numThreads, printBanner](auto* listenSocket) {
     if (listenSocket) {
-      std::cout << "uWebSockets benchmark server starting on port " << port << " with " << numThreads << " threads\n";
-      std::cout << "WebSocket echo endpoint registered at /ws\n";
+      if (printBanner) {
+        std::cout << "uWebSockets benchmark server starting on port " << port << " with " << numThreads << " threads\n";
+        std::cout << "WebSocket echo endpoints registered at /ws-uncompressed and /ws-compressed\n";
+      }
     } else {
       std::cerr << "Failed to listen on port " << port << "\n";
       std::exit(1);
@@ -91,6 +96,27 @@ int main(int argc, char* argv[]) {
   });
 
   app.run();
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  UwsConfig cfg(8088, argc, argv);
+
+  // Spawn numThreads-1 background threads; the main thread acts as the last worker.
+  // Each thread creates its own uWS::App and calls listen() on the same port —
+  // uSockets sets SO_REUSEPORT so the OS load-balances incoming connections.
+  std::vector<std::thread> threads;
+  threads.reserve(cfg.numThreads - 1);
+  for (uint32_t i = 1; i < cfg.numThreads; ++i) {
+    threads.emplace_back([&cfg]() { RunWorker(cfg.port, cfg.numThreads, /*printBanner=*/false); });
+  }
+
+  RunWorker(cfg.port, cfg.numThreads, /*printBanner=*/true);
+
+  for (auto& t : threads) {
+    t.join();
+  }
 
   return 0;
 }
