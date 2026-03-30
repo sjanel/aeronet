@@ -19,8 +19,10 @@
 #endif
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
+#include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"

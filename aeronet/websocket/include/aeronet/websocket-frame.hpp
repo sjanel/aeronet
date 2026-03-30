@@ -42,7 +42,7 @@ struct FrameParseResult {
   FrameHeader header;
   std::span<const std::byte> payload;  // View into input buffer (empty if incomplete)
   std::size_t bytesConsumed{0};        // Total bytes consumed (header + payload)
-  std::string_view errorMessage;       // Populated on ProtocolError
+  const char* errorMessage{nullptr};   // Populated on ProtocolError
 };
 
 /// Parse a WebSocket frame from raw bytes.
