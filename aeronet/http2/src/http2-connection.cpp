@@ -233,11 +233,10 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   }
   _connectionSendWindow -= static_cast<int32_t>(dataSize);
 
-  // Transition stream state
+  // canSend() above already ensures the stream is Open or HalfClosedRemote,
+  // which are exactly the states onSendData() handles — so this cannot fail.
   ErrorCode err = stream->onSendData(endStream);
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    return err;
-  }
+  assert(err == ErrorCode::NoError);
 
   // Write frame (may need to split if larger than max frame size)
   if (data.empty()) {
@@ -435,10 +434,10 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     return streamError(header.streamId, ErrorCode::FlowControlError, "Stream flow control exceeded");
   }
 
+  // canReceive() above already ensures the stream is Open or HalfClosedLocal,
+  // which are exactly the states onRecvData() handles — so this cannot fail.
   ErrorCode err = it->second.onRecvData(frame.endStream);
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(header.streamId, err, "Invalid stream state for DATA");
-  }
+  assert(err == ErrorCode::NoError);
 
   // Invoke callback
   if (_onData) {
@@ -500,7 +499,9 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
       }
     }
 
-    if (!canCreateStreams()) [[unlikely]] {
+    // For peer-created streams, enforce OUR max concurrent streams limit
+    // (not _peerSettings which limits streams WE initiate).
+    if (_activeStreamCount >= _localSettings.maxConcurrentStreams) [[unlikely]] {
       _streams.erase(it);
       return connectionError(ErrorCode::ProtocolError, "Max concurrent streams exceeded");
     }
