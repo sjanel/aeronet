@@ -203,4 +203,14 @@ class ConnectionStorage {
   vector<ConnectionState*> _cachedConnectionStates;  // cache of closed ConnectionState objects for reuse
 };
 
+// Check whether an iterator references a live connection. Hides the platform-specific
+// validity test (flat_hash_map end-check on Windows, implicit bool on POSIX).
+[[nodiscard]] inline bool IsValid([[maybe_unused]] ConnectionStorage& storage, ConnectionStorage::ConnectionIt cnxIt) {
+#ifdef AERONET_WINDOWS
+  return cnxIt != storage.end();
+#else
+  return static_cast<bool>(*cnxIt);
+#endif
+}
+
 }  // namespace aeronet::internal
