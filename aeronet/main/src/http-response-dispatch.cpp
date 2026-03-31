@@ -422,8 +422,6 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
 #endif
         // Continue loop to send more
         break;
-      case ConnectionState::FileResult::Code::Error:
-        return;  // Error, stop
       case ConnectionState::FileResult::Code::WouldBlock:
         if (res.enableWritable && !state.waitingWritable) {
           // The helper reports WouldBlock; enable writable interest so we can resume later.
@@ -444,9 +442,11 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
             break;
           }
         }
-        return;  // Would block, wait for next writable event
+        // Would block, wait for next writable event
+        return;
       default:
-        std::unreachable();
+        assert(res.code == ConnectionState::FileResult::Code::Error);
+        return;  // Error, stop
     }
   }
 }

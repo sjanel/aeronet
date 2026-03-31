@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### Bug fixes
 
 - HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
+- HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
 
 ### Improvements
 
