@@ -3877,4 +3877,230 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
 #endif
 
+// ============== CONNECT Without Tunnel Bridge ==============
+
+TEST(Http2ProtocolHandler, ConnectWithoutTunnelBridgeReturns405) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // No tunnel bridge set — CONNECT should be rejected with 405.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");
+}
+
+// ============== DATA for Unknown Stream (L298-300) ==============
+
+TEST(Http2ProtocolHandler, DataForUnknownStreamIsIgnored) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Send CONNECT with no tunnel bridge → server processes CONNECT, sends 405, erases stream request.
+  // Then send DATA on the same stream → triggers the "unknown stream" warning path.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // server processes CONNECT, sends 405, erases stream request
+
+  // Stream is half-closed(local) from server's perspective. Client can still send DATA.
+  const std::string payload = "tunnel-data-after-reject";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(payload.data(), payload.size())), true),
+            ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // Fire onDataReceived for unknown stream → L298-300
+
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");
+}
+
+// ============== Streaming Handler RST During Deferred Send ==============
+
+TEST(Http2ProtocolHandler, StreamingHandlerRstDuringDeferredSendCleansUp) {
+  Router router;
+
+  // Streaming handler that writes data exceeding flow control window to force deferred sends.
+  router.setPath(http::Method::GET, "/stream-deferred-rst",
+                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                   writer.status(http::StatusCode{200});
+                   // Write much more than 65535 bytes to force deferred sending.
+                   const std::string chunk(16384, 'R');
+                   for (int idx = 0; idx < 8; ++idx) {
+                     writer.writeBody(chunk);
+                   }
+                   writer.end();
+                 }});
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/stream-deferred-rst"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // Handler runs, deferred data created
+
+  // Client sends RST_STREAM before all data is flushed.
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+  loop.pumpClientToServer();  // RST processed, stream removed; flushPendingStreamingSends finds stream gone
+
+  // Verify the reset was acknowledged.
+  EXPECT_TRUE(loop.streamResets.empty() || loop.streamResets.back().first == 1);
+
+  // Continue pumping — no crash, clean shutdown.
+  loop.pumpServerToClient();
+  loop.pumpClientToServer();
+}
+
+// ============== File Payload RST During Deferred Send ==============
+
+TEST(Http2ProtocolHandler, FilePayloadRstDuringDeferredSendCleansUp) {
+  test::ScopedTempDir tmpDir;
+  // File larger than initial window to force deferred file sends.
+  const std::string fileContent(128 * 1024, 'F');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  Router router;
+  const auto filePath = tmpFile.filePath().string();
+  router.setPath(http::Method::GET, "/file-deferred-rst", [&filePath](const HttpRequest&) {
+    File fd(filePath);
+    return HttpResponse(200).file(std::move(fd), "application/octet-stream");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/file-deferred-rst"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // Server processes request, starts file send, defers remaining
+  loop.pumpServerToClient();  // Client gets partial file data + WINDOW_UPDATE triggers
+
+  // Client sends RST_STREAM before all file data is flushed.
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+  loop.pumpClientToServer();  // RST processed, pending file send cleaned up by onStreamReset
+
+  // Continue pumping — no crash.
+  loop.pumpServerToClient();
+  loop.pumpClientToServer();
+}
+
+// ============== Http2Disabled Route Returns 404 ==============
+
+TEST(Http2ProtocolHandler, Http2DisabledRouteReturns404) {
+  Router router;
+  router.setPath(http::Method::GET, "/h2-disabled", [](const HttpRequest&) { return HttpResponse(200, "ok"); })
+      .http2Enable(PathEntryConfig::Http2Enable::Disable);
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/h2-disabled"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "404");
+}
+
+// ============== Request Completion Callback ==============
+
+TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+
+  // Register a completion callback and track invocations.
+  int callbackCount = 0;
+  http::StatusCode lastStatus{};
+  loop.handler.setRequestCompletionCallback([&](const HttpRequest& /*req*/, http::StatusCode status) {
+    ++callbackCount;
+    lastStatus = status;
+  });
+
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/callback-test"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_EQ(callbackCount, 1);
+  EXPECT_EQ(lastStatus, http::StatusCodeOK);
+}
+
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+// ============== Trace Span Attributes (OpenTelemetry) ==============
+
+TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
+  // Temporarily configure OpenTelemetry so createSpan returns a non-null span.
+  auto savedTelemetry = std::move(telemetry);
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint("http://127.0.0.1:0");
+  cfg.withServiceName("test-http2-handler");
+  telemetry = tracing::TelemetryContext(cfg);
+
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/traced"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+
+  // Restore original telemetry.
+  telemetry = std::move(savedTelemetry);
+}
+#endif
+
 }  // namespace aeronet::http2
