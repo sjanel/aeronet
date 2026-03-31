@@ -133,7 +133,7 @@ class SingleHttpServer {
     AsyncHandle& operator=(AsyncHandle&&) noexcept = default;
 
     // Destructor automatically stops and joins the background thread (RAII)
-    ~AsyncHandle();
+    ~AsyncHandle() { stop(); }
 
     // Stop the background event loop and join the thread (blocking).
     // Safe to call multiple times; subsequent calls are no-ops.
@@ -306,7 +306,7 @@ class SingleHttpServer {
   //   // ... server runs in background ...
   //   handle.stop();  // or let destructor handle it
   //   handle.rethrowIfError();
-  [[nodiscard]] AsyncHandle startDetached();
+  [[nodiscard]] AsyncHandle startDetached() { return launchDetached(); }
 
   // startDetachedAndStopWhen():
   //   Like startDetached(), but the event loop will also terminate when the provided predicate returns true.
@@ -419,6 +419,9 @@ class SingleHttpServer {
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void prepareRun();
 
+  // Shared implementation for startDetached / startDetachedAndStopWhen / startDetachedWithStopToken.
+  AsyncHandle launchDetached(std::function<bool()> extraPredicate = {});
+
   void eventLoop();
   void sweepIdleConnections();
   void applyPendingUpdates();
@@ -470,6 +473,10 @@ class SingleHttpServer {
   // Used when kTLS is not available and file data must be encrypted in user-space.
   // Returns true if the caller should return early because the buffer is still non-empty.
   bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
+
+  // Drain pending output from a protocol handler into a ConnectionState's outBuffer.
+  // Returns true if any data was buffered (caller decides whether to flushOutbound).
+  static bool bufferProtocolHandlerOutput(IProtocolHandler& handler, ConnectionState& state);
 
   void closeConnection(ConnectionIt cnxIt);
 
@@ -525,6 +532,11 @@ class SingleHttpServer {
   // consistently. Return true on success, false on failure (caller should handle close).
   bool enableWritableInterest(ConnectionIt cnxIt);
   bool disableWritableInterest(ConnectionIt cnxIt);
+
+  // Finalize a TLS handshake if it just completed: emit metrics/events, set up HTTP/2
+  // if ALPN negotiated "h2", and mark the connection as TLS-established.
+  // Returns true if the connection requested close (caller should close/return).
+  bool finalizeTlsHandshakeIfReady(NativeHandle fd, ConnectionState& state);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;

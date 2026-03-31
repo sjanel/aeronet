@@ -64,8 +64,6 @@ class LifecycleTrackerGuard {
 SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
 
-SingleHttpServer::AsyncHandle::~AsyncHandle() { stop(); }
-
 void SingleHttpServer::AsyncHandle::stop() noexcept {
   if (_thread.joinable()) {
     _thread.request_stop();
@@ -350,15 +348,15 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
 
 void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
-SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
+SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<bool()> extraPredicate) {
   if (_lifecycle.isActive()) {
     throw std::logic_error("Server is already running");
   }
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
-  return {std::jthread([this, errorPtr](const std::stop_token& st) {
+  return {std::jthread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
             try {
-              runUntil([&st]() { return st.stop_requested(); });
+              runUntil([&st, &pred]() { return st.stop_requested() || (pred && pred()); });
             } catch (const std::exception& ex) {
               log::error("Event loop thread exiting due to exception: {}", ex.what());
               *errorPtr = std::current_exception();
@@ -371,43 +369,11 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetached() {
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
-  if (_lifecycle.isActive()) {
-    throw std::logic_error("Server is already running");
-  }
-  auto errorPtr = std::make_shared<std::exception_ptr>();
-
-  return {std::jthread([this, pred = std::move(predicate), errorPtr](const std::stop_token& st) {
-            try {
-              runUntil([&st, &pred]() { return st.stop_requested() || pred(); });
-            } catch (const std::exception& ex) {
-              log::error("Event loop thread exiting due to exception: {}", ex.what());
-              *errorPtr = std::current_exception();
-            } catch (...) {
-              log::error("Event loop thread exiting due to unknown exception");
-              *errorPtr = std::current_exception();
-            }
-          }),
-          std::move(errorPtr)};
+  return launchDetached(std::move(predicate));
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::stop_token token) {
-  if (_lifecycle.isActive()) {
-    throw std::logic_error("Server is already running");
-  }
-  auto errorPtr = std::make_shared<std::exception_ptr>();
-
-  return {std::jthread([this, token = std::move(token), errorPtr](const std::stop_token& st) {
-            try {
-              runUntil([&st, &token]() { return st.stop_requested() || token.stop_requested(); });
-            } catch (const std::exception& ex) {
-              log::error("Event loop thread exiting due to exception: {}", ex.what());
-              *errorPtr = std::current_exception();
-            } catch (...) {
-              log::error("Event loop thread exiting due to unknown exception");
-              *errorPtr = std::current_exception();
-            }
-          }),
-          std::move(errorPtr)};
+  return launchDetached([token = std::move(token)]() { return token.stop_requested(); });
 }
 
 void SingleHttpServer::stop() noexcept {
