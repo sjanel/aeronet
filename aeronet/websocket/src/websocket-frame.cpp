@@ -258,14 +258,16 @@ namespace {
 
 inline void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, bool fin, bool shouldMask,
                              MaskingKey maskingKey, bool rsv1) {
-  // Calculate header size
+  // Calculate exact header size:
+  //   2 bytes minimum (byte0 + byte1)
+  //   +2 bytes if payload requires 16-bit extended length (126–65535)
+  //   +8 bytes if payload requires 64-bit extended length (>65535)
+  //   +4 bytes masking key (if shouldMask)
   std::size_t headerSize = kMinFrameHeaderSize;
 
-  if (payloadSize < static_cast<uint64_t>(kPayloadLen16)) {
-    ++headerSize;
-  } else if (payloadSize <= 0xFFFF) {
-    headerSize += 3;
-  } else {
+  if (payloadSize >= static_cast<uint64_t>(kPayloadLen16) && payloadSize <= 0xFFFF) {
+    headerSize += 2;
+  } else if (payloadSize > 0xFFFF) {
     headerSize += 8;
   }
 

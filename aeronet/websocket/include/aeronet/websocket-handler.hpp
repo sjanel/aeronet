@@ -106,9 +106,11 @@ class WebSocketHandler final : public IProtocolHandler {
 
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) override;
 
-  [[nodiscard]] bool hasPendingOutput() const noexcept override;
+  [[nodiscard]] bool hasPendingOutput() const noexcept override { return _outputOffset < _outputBuffer.size(); }
 
-  [[nodiscard]] std::span<const std::byte> getPendingOutput() override;
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() override {
+    return {_outputBuffer.begin() + _outputOffset, _outputBuffer.end()};
+  }
 
   void onOutputWritten(std::size_t bytesWritten) override;
 
@@ -208,7 +210,7 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Handle a control frame (Ping, Pong, Close).
   ProtocolProcessResult handleControlFrame(const FrameHeader& header, std::span<const std::byte> payload);
 
-  /// Complete a message (called when FIN=1).
+  /// Complete a message (called when FIN=1 after fragment reassembly or decompression).
   ProtocolProcessResult completeMessage();
 
   /// Queue a frame for sending.
