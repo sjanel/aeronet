@@ -27,235 +27,6 @@
 
 namespace aeronet::websocket {
 
-WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
-                                   std::optional<DeflateNegotiatedParams> deflateParams)
-    : _config(std::move(config)), _callbacks(std::move(callbacks)) {
-  _config.validate();
-  if (deflateParams.has_value()) {
-    _deflateContext = std::make_unique<DeflateContext>(*deflateParams, _config.deflateConfig, _config.isServerSide);
-  }
-}
-
-WebSocketHandler::~WebSocketHandler() = default;
-
-WebSocketHandler::WebSocketHandler(WebSocketHandler&&) noexcept = default;
-WebSocketHandler& WebSocketHandler::operator=(WebSocketHandler&&) noexcept = default;
-
-void WebSocketHandler::setCallbacks(WebSocketCallbacks callbacks) { _callbacks = std::move(callbacks); }
-
-ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data, ConnectionState& /*state*/) {
-  ProtocolProcessResult result;
-
-  // Append new data to any carry-over from previous call
-  if (_inputBufferOffset < _inputBuffer.size()) {
-    _inputBuffer.append(data);
-    data =
-        std::span<const std::byte>(_inputBuffer.data() + _inputBufferOffset, _inputBuffer.size() - _inputBufferOffset);
-  }
-
-  std::size_t totalConsumed = 0;
-  const bool allowRsv1 = (_deflateContext != nullptr);
-
-  // Process as many complete frames as possible
-  while (!data.empty()) {
-    auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
-
-    if (frameResult.status == FrameParseResult::Status::Incomplete) {
-      // Need more data - save remainder for next call
-      if (_inputBuffer.empty()) {
-        _inputBuffer.append(data);
-        _inputBufferOffset = 0;
-      } else {
-        // Advance offset instead of memmove
-        _inputBufferOffset += totalConsumed;
-        // Compact if offset exceeds half the buffer to avoid unbounded growth
-        if (_inputBufferOffset > _inputBuffer.size() / 2) {
-          _inputBuffer.erase_front(_inputBufferOffset);
-          _inputBufferOffset = 0;
-        }
-      }
-      result.bytesConsumed = totalConsumed;
-      return result;
-    }
-
-    if (frameResult.status == FrameParseResult::Status::ProtocolError) {
-      // Protocol violation - close with error
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, frameResult.errorMessage);
-      }
-      sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
-      result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = totalConsumed;
-      return result;
-    }
-
-    if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::MessageTooBig, "Frame payload too large");
-      }
-      sendClose(CloseCode::MessageTooBig, "Frame payload too large");
-      result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = totalConsumed;
-      return result;
-    }
-
-    // Frame complete - process it
-    auto frameProcessResult = processFrame(frameResult);
-
-    totalConsumed += frameResult.bytesConsumed;
-    data = data.subspan(frameResult.bytesConsumed);
-
-    // Check if we need to stop processing
-    if (frameProcessResult.action == ProtocolProcessResult::Action::Close ||
-        frameProcessResult.action == ProtocolProcessResult::Action::CloseImmediate) {
-      result.action = frameProcessResult.action;
-      result.bytesConsumed = totalConsumed;
-      _inputBuffer.clear();
-      return result;
-    }
-
-    if (frameProcessResult.action == ProtocolProcessResult::Action::ResponseReady) {
-      result.action = ProtocolProcessResult::Action::ResponseReady;
-    }
-  }
-
-  // All data consumed
-  _inputBuffer.clear();
-  _inputBufferOffset = 0;
-  result.bytesConsumed = totalConsumed;
-  return result;
-}
-
-ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& frame) {
-  if (IsControlFrame(frame.header.opcode)) {
-    // Control frames max 125 bytes - unmask on stack
-    std::span<const std::byte> payload = frame.payload;
-    std::array<std::byte, kMaxControlFramePayload> controlBuf;
-    if (frame.header.masked && !payload.empty()) {
-      std::memcpy(controlBuf.data(), payload.data(), payload.size());
-      ApplyMask(std::span<std::byte>(controlBuf.data(), payload.size()), frame.header.maskingKey);
-      payload = std::span<const std::byte>(controlBuf.data(), payload.size());
-    }
-    return handleControlFrame(frame.header, payload);
-  }
-  // Data frames: pass raw payload, unmasking happens in-place in message buffer
-  return handleDataFrame(frame.header, frame.payload);
-}
-
-ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& header, std::span<const std::byte> payload) {
-  ProtocolProcessResult result;
-
-  if (header.opcode == Opcode::Continuation) {
-    // Continuation frame - must be in a fragmented message
-    if (!_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Unexpected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Unexpected continuation frame");
-      result.action = ProtocolProcessResult::Action::Close;
-      return result;
-    }
-  } else {
-    // Text or Binary - must NOT be in a fragmented message
-    if (_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Expected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Expected continuation frame");
-      result.action = ProtocolProcessResult::Action::Close;
-      return result;
-    }
-
-    // Start new message
-    _message.opcode = header.opcode;
-    _message.inProgress = true;
-    _message.buffer.clear();
-
-    // Per RFC 7692: RSV1 is set only on the first frame of a compressed message
-    _messageCompressed = header.rsv1;
-  }
-
-  // Check message size limit
-  std::size_t newSize = _message.buffer.size() + payload.size();
-  if (_config.maxMessageSize > 0 && newSize > _config.maxMessageSize) {
-    if (_callbacks.onError) {
-      _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
-    }
-    sendClose(CloseCode::MessageTooBig, "Message too large");
-    result.action = ProtocolProcessResult::Action::Close;
-    _message.inProgress = false;
-    _message.buffer.clear();
-    return result;
-  }
-
-  // Append payload to message buffer and unmask in-place (avoids extra copy)
-  const auto prevSize = _message.buffer.size();
-  _message.buffer.append(payload);
-  if (header.masked && !payload.empty()) {
-    ApplyMask(std::span<std::byte>(_message.buffer.data() + prevSize, payload.size()), header.maskingKey);
-  }
-
-  // If FIN bit is set, message is complete
-  if (header.fin) {
-    return completeMessage();
-  }
-
-  // More fragments expected
-  result.action = ProtocolProcessResult::Action::Continue;
-  return result;
-}
-
-ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& header,
-                                                           std::span<const std::byte> payload) {
-  ProtocolProcessResult result;
-
-  switch (header.opcode) {
-    case Opcode::Ping:
-      // Respond with Pong containing same payload
-      sendPong(payload);
-      result.action = ProtocolProcessResult::Action::ResponseReady;
-
-      if (_callbacks.onPing) {
-        _callbacks.onPing(payload);
-      }
-      break;
-
-    case Opcode::Pong:
-      // Informational only
-      if (_callbacks.onPong) {
-        _callbacks.onPong(payload);
-      }
-      result.action = ProtocolProcessResult::Action::Continue;
-      break;
-
-    default: {
-      // Opcode::Close
-      assert(header.opcode == Opcode::Close);
-      const auto closeInfo = ParseClosePayload(payload);
-
-      if (_closeState == CloseState::Open) {
-        // Peer initiated close - respond with Close
-        _closeState = CloseState::CloseReceived;
-        _closeCode = closeInfo.code;
-        sendClose(closeInfo.code, closeInfo.reason);
-        _closeState = CloseState::Closed;
-        result.action = ProtocolProcessResult::Action::ResponseReady;
-      } else if (_closeState == CloseState::CloseSent) {
-        // We initiated, peer responded - handshake complete
-        _closeState = CloseState::Closed;
-        result.action = ProtocolProcessResult::Action::Close;
-      }
-
-      if (_callbacks.onClose) {
-        _callbacks.onClose(closeInfo.code, closeInfo.reason);
-      }
-      break;
-    }
-  }
-
-  return result;
-}
-
 namespace {
 
 /// Validate a single multibyte UTF-8 sequence starting at *ptr.
@@ -371,6 +142,278 @@ bool ValidateUtf8(std::span<const std::byte> data) {
 
 }  // namespace
 
+WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
+                                   std::optional<DeflateNegotiatedParams> deflateParams)
+    : _config(std::move(config)), _callbacks(std::move(callbacks)) {
+  _config.validate();
+  if (deflateParams.has_value()) {
+    _deflateContext = std::make_unique<DeflateContext>(*deflateParams, _config.deflateConfig, _config.isServerSide);
+  }
+}
+
+WebSocketHandler::~WebSocketHandler() = default;
+
+WebSocketHandler::WebSocketHandler(WebSocketHandler&&) noexcept = default;
+WebSocketHandler& WebSocketHandler::operator=(WebSocketHandler&&) noexcept = default;
+
+void WebSocketHandler::setCallbacks(WebSocketCallbacks callbacks) { _callbacks = std::move(callbacks); }
+
+ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data,
+                                                     [[maybe_unused]] ConnectionState& state) {
+  ProtocolProcessResult result;
+
+  // Append new data to any carry-over from previous call
+  if (_inputBufferOffset < _inputBuffer.size()) {
+    _inputBuffer.append(data);
+    data = {_inputBuffer.begin() + _inputBufferOffset, _inputBuffer.end()};
+  }
+
+  std::size_t totalConsumed = 0;
+  const bool allowRsv1 = (_deflateContext != nullptr);
+
+  // Process as many complete frames as possible
+  while (!data.empty()) {
+    auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
+
+    if (frameResult.status == FrameParseResult::Status::Incomplete) {
+      // Need more data - save remainder for next call
+      if (_inputBuffer.empty()) {
+        _inputBuffer.append(data);
+        _inputBufferOffset = 0;
+      } else {
+        // Advance offset instead of memmove
+        _inputBufferOffset += totalConsumed;
+        // Compact if offset exceeds half the buffer to avoid unbounded growth
+        if (_inputBufferOffset > _inputBuffer.size() / 2) {
+          _inputBuffer.erase_front(_inputBufferOffset);
+          _inputBufferOffset = 0;
+        }
+      }
+      result.bytesConsumed = totalConsumed;
+      return result;
+    }
+
+    if (frameResult.status == FrameParseResult::Status::ProtocolError) {
+      // Protocol violation - close with error
+      if (_callbacks.onError) {
+        _callbacks.onError(CloseCode::ProtocolError, frameResult.errorMessage);
+      }
+      sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
+      result.action = ProtocolProcessResult::Action::Close;
+      result.bytesConsumed = totalConsumed;
+      return result;
+    }
+
+    if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
+      if (_callbacks.onError) {
+        _callbacks.onError(CloseCode::MessageTooBig, "Frame payload too large");
+      }
+      sendClose(CloseCode::MessageTooBig, "Frame payload too large");
+      result.action = ProtocolProcessResult::Action::Close;
+      result.bytesConsumed = totalConsumed;
+      return result;
+    }
+
+    // Frame complete - process it
+    auto frameProcessResult = processFrame(frameResult);
+
+    totalConsumed += frameResult.bytesConsumed;
+    data = data.subspan(frameResult.bytesConsumed);
+
+    // Check if we need to stop processing
+    // processFrame() never returns CloseImmediate in the WebSocket protocol (only HTTP/2 does)
+    assert(frameProcessResult.action != ProtocolProcessResult::Action::CloseImmediate);
+    if (frameProcessResult.action == ProtocolProcessResult::Action::Close) {
+      result.action = frameProcessResult.action;
+      result.bytesConsumed = totalConsumed;
+      _inputBuffer.clear();
+      return result;
+    }
+
+    if (frameProcessResult.action == ProtocolProcessResult::Action::ResponseReady) {
+      result.action = ProtocolProcessResult::Action::ResponseReady;
+    }
+  }
+
+  // All data consumed
+  _inputBuffer.clear();
+  _inputBufferOffset = 0;
+  result.bytesConsumed = totalConsumed;
+  return result;
+}
+
+ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& frame) {
+  if (IsControlFrame(frame.header.opcode)) {
+    // Control frames max 125 bytes - unmask on stack
+    std::span<const std::byte> payload = frame.payload;
+    std::array<std::byte, kMaxControlFramePayload> controlBuf;
+    if (frame.header.masked && !payload.empty()) {
+      std::memcpy(controlBuf.data(), payload.data(), payload.size());
+      ApplyMask(std::span<std::byte>(controlBuf.data(), payload.size()), frame.header.maskingKey);
+      payload = std::span<const std::byte>(controlBuf.data(), payload.size());
+    }
+    return handleControlFrame(frame.header, payload);
+  }
+  // Data frames: pass raw payload, unmasking happens in-place in message buffer
+  return handleDataFrame(frame.header, frame.payload);
+}
+
+ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& header, std::span<const std::byte> payload) {
+  ProtocolProcessResult result;
+
+  if (header.opcode == Opcode::Continuation) {
+    // Continuation frame - must be in a fragmented message
+    if (!_message.inProgress) {
+      if (_callbacks.onError) {
+        _callbacks.onError(CloseCode::ProtocolError, "Unexpected continuation frame");
+      }
+      sendClose(CloseCode::ProtocolError, "Unexpected continuation frame");
+      result.action = ProtocolProcessResult::Action::Close;
+      return result;
+    }
+  } else {
+    // Text or Binary - must NOT be in a fragmented message
+    if (_message.inProgress) {
+      if (_callbacks.onError) {
+        _callbacks.onError(CloseCode::ProtocolError, "Expected continuation frame");
+      }
+      sendClose(CloseCode::ProtocolError, "Expected continuation frame");
+      result.action = ProtocolProcessResult::Action::Close;
+      return result;
+    }
+
+    // Fast path: single complete non-fragmented non-compressed frame.
+    // Bypass the message reassembly buffer entirely — unmask the payload in-place
+    // and deliver directly to the callback without any extra allocation or copy.
+    // Safety: 'payload' is a view into the caller's TCP receive buffer (pState->inBuffer),
+    // which is mutable memory cast to const at the call site. Modifying it here is safe
+    // because the buffer will be consumed (erased) immediately after processInput returns.
+    if (header.fin && _deflateContext == nullptr) {
+      if (_config.maxMessageSize > 0 && payload.size() > _config.maxMessageSize) {
+        if (_callbacks.onError) {
+          _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
+        }
+        sendClose(CloseCode::MessageTooBig, "Message too large");
+        result.action = ProtocolProcessResult::Action::Close;
+        return result;
+      }
+      if (header.masked && !payload.empty()) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        ApplyMask(std::span<std::byte>(const_cast<std::byte*>(payload.data()), payload.size()), header.maskingKey);
+      }
+
+      /// Deliver a single complete non-fragmented non-compressed frame directly to the callback
+      /// without copying the payload through the message buffer (zero-copy fast path).
+      /// The payload must already be unmasked when this is called.
+      if (header.opcode == Opcode::Text) {
+        if (!ValidateUtf8(payload)) {
+          if (_callbacks.onError) {
+            _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          }
+          sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          result.action = ProtocolProcessResult::Action::Close;
+          return result;
+        }
+      }
+
+      if (_callbacks.onMessage) {
+        _callbacks.onMessage(payload, header.opcode == Opcode::Binary);
+      }
+
+      result.action = ProtocolProcessResult::Action::Continue;
+      return result;
+    }
+
+    // Fragmented or compressed message: start accumulating in message buffer
+    _message.opcode = header.opcode;
+    _message.inProgress = true;
+    _message.buffer.clear();
+
+    // Per RFC 7692: RSV1 is set only on the first frame of a compressed message
+    _messageCompressed = header.rsv1;
+  }
+
+  // Check message size limit (fragmented / compressed path)
+  std::size_t newSize = _message.buffer.size() + payload.size();
+  if (_config.maxMessageSize > 0 && newSize > _config.maxMessageSize) {
+    if (_callbacks.onError) {
+      _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
+    }
+    sendClose(CloseCode::MessageTooBig, "Message too large");
+    result.action = ProtocolProcessResult::Action::Close;
+    _message.inProgress = false;
+    _message.buffer.clear();
+    return result;
+  }
+
+  // Append payload to message buffer and unmask in-place (avoids extra copy)
+  const auto prevSize = _message.buffer.size();
+  _message.buffer.append(payload);
+  if (header.masked && !payload.empty()) {
+    ApplyMask(std::span<std::byte>(_message.buffer.data() + prevSize, payload.size()), header.maskingKey);
+  }
+
+  // If FIN bit is set, message is complete
+  if (header.fin) {
+    return completeMessage();
+  }
+
+  // More fragments expected
+  result.action = ProtocolProcessResult::Action::Continue;
+  return result;
+}
+
+ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& header,
+                                                           std::span<const std::byte> payload) {
+  ProtocolProcessResult result;
+
+  switch (header.opcode) {
+    case Opcode::Ping:
+      // Respond with Pong containing same payload
+      sendPong(payload);
+      result.action = ProtocolProcessResult::Action::ResponseReady;
+
+      if (_callbacks.onPing) {
+        _callbacks.onPing(payload);
+      }
+      break;
+
+    case Opcode::Pong:
+      // Informational only
+      if (_callbacks.onPong) {
+        _callbacks.onPong(payload);
+      }
+      result.action = ProtocolProcessResult::Action::Continue;
+      break;
+
+    default: {
+      // Opcode::Close
+      assert(header.opcode == Opcode::Close);
+      const auto closeInfo = ParseClosePayload(payload);
+
+      if (_closeState == CloseState::Open) {
+        // Peer initiated close - respond with Close
+        _closeState = CloseState::CloseReceived;
+        _closeCode = closeInfo.code;
+        sendClose(closeInfo.code, closeInfo.reason);
+        _closeState = CloseState::Closed;
+        result.action = ProtocolProcessResult::Action::ResponseReady;
+      } else if (_closeState == CloseState::CloseSent) {
+        // We initiated, peer responded - handshake complete
+        _closeState = CloseState::Closed;
+        result.action = ProtocolProcessResult::Action::Close;
+      }
+
+      if (_callbacks.onClose) {
+        _callbacks.onClose(closeInfo.code, closeInfo.reason);
+      }
+      break;
+    }
+  }
+
+  return result;
+}
+
 ProtocolProcessResult WebSocketHandler::completeMessage() {
   ProtocolProcessResult result;
 
@@ -422,13 +465,6 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 
   result.action = ProtocolProcessResult::Action::Continue;
   return result;
-}
-
-bool WebSocketHandler::hasPendingOutput() const noexcept { return _outputOffset < _outputBuffer.size(); }
-
-std::span<const std::byte> WebSocketHandler::getPendingOutput() {
-  assert(_outputOffset <= _outputBuffer.size());
-  return {_outputBuffer.begin() + _outputOffset, _outputBuffer.end()};
 }
 
 void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
