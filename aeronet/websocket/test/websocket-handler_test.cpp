@@ -954,7 +954,408 @@ TEST_F(WebSocketHandlerTest, CloseInitiatedThenReceived) {
 // RSV1 with compression tests
 // ============================================================================
 
+// ============================================================================
+// Single-frame message too large (fast-path maxMessageSize check)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, SingleFrameMessageTooLarge) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 10;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+
+  handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  auto frame = BuildUnmaskedFrame(Opcode::Text, "This exceeds ten bytes limit");
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+  EXPECT_EQ(lastErrorMessage, "Message too large");
+  EXPECT_TRUE(handler->hasPendingOutput());
+}
+
+TEST_F(WebSocketHandlerTest, SingleFrameMessageTooLargeWithoutOnError) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 10;
+
+  handler = std::make_unique<WebSocketHandler>(config);
+
+  auto frame = BuildUnmaskedFrame(Opcode::Text, "This exceeds ten bytes limit");
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+TEST_F(WebSocketHandlerTest, SingleFrameBinaryMessageTooLarge) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 5;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+
+  handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  auto frame = BuildUnmaskedFrame(Opcode::Binary, "123456789");
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+}
+
+TEST_F(WebSocketHandlerTest, SingleFrameMessageExactlyAtLimit) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 5;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> payload, bool /*isBinary*/) {
+    lastMessage = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    messageCount++;
+  };
+
+  handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  auto frame = BuildUnmaskedFrame(Opcode::Text, "Hello");
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, "Hello");
+}
+
+// ============================================================================
+// maxMessageSize = 0 (unlimited) on fast path
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, MaxMessageSizeZeroAllowsAnySize) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 0;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> payload, bool /*isBinary*/) {
+    lastMessage = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    messageCount++;
+  };
+
+  handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  std::string largePayload(10000, 'X');
+  auto frame = BuildUnmaskedFrame(Opcode::Binary, largePayload);
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage.size(), 10000);
+}
+
+// ============================================================================
+// Fast path without onMessage callback
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, SingleFrameWithoutOnMessageCallback) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+
+  handler = std::make_unique<WebSocketHandler>(config);
+
+  auto frame = BuildUnmaskedFrame(Opcode::Text, "Hello");
+  auto result = process(frame);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+}
+
+// ============================================================================
+// Truncated multibyte UTF-8 at end of buffer (ValidateMultibyteSequence)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, Utf8TruncatedTwoByteAtEnd) {
+  // 2-byte lead (0xC2) at end of buffer with no continuation byte
+  // Hits: ValidateMultibyteSequence ptr + remaining > end
+  std::string data = "Hello";
+  data += '\xC2';
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, sv_bytes(data), true, false);
+
+  auto result = process(frame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+TEST_F(WebSocketHandlerTest, Utf8TruncatedThreeByteAtEnd) {
+  // 3-byte lead (0xE0) with only one continuation byte instead of two
+  std::string data = "AB";
+  data += '\xE0';
+  data += '\xA0';
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, sv_bytes(data), true, false);
+
+  auto result = process(frame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+TEST_F(WebSocketHandlerTest, Utf8TruncatedFourByteAtEnd) {
+  // 4-byte lead (0xF0) with only two continuation bytes instead of three
+  std::string data = "X";
+  data += '\xF0';
+  data += '\x90';
+  data += '\x80';
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, sv_bytes(data), true, false);
+
+  auto result = process(frame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+// ============================================================================
+// Fragmented text with invalid UTF-8 (completeMessage path)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, FragmentedTextWithInvalidUtf8) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+
+  handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  auto frag1 = BuildUnmaskedFrame(Opcode::Text, "Hello ", false);
+  process(frag1);
+
+  std::string invalidPayload;
+  invalidPayload += '\xC0';
+  invalidPayload += '\x80';
+  auto frag2 = BuildUnmaskedFrame(Opcode::Continuation, invalidPayload, true);
+  auto result = process(frag2);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(lastErrorMessage, "Invalid UTF-8 in text message");
+}
+
+TEST_F(WebSocketHandlerTest, FragmentedTextWithInvalidUtf8WithoutOnError) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+
+  handler = std::make_unique<WebSocketHandler>(config);
+
+  auto frag1 = BuildUnmaskedFrame(Opcode::Text, "Hello ", false);
+  (void)handler->processInput(buf_bytes(frag1), dummyState);
+
+  std::string invalidPayload;
+  invalidPayload += '\xC0';
+  invalidPayload += '\x80';
+  auto frag2 = BuildUnmaskedFrame(Opcode::Continuation, invalidPayload, true);
+  auto result = handler->processInput(buf_bytes(frag2), dummyState);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+}
+
+// ============================================================================
+// Server-side masked fragmented frames (covers masked data frame path)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, ServerSideReceivesMaskedFragmentedMessage) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> payload, bool /*isBinary*/) {
+    lastMessage = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    messageCount++;
+  };
+
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  auto frag1 = BuildMaskedFrame(Opcode::Text, "Hello ", false);
+  (void)serverHandler->processInput(buf_bytes(frag1), dummyState);
+
+  auto frag2 = BuildMaskedFrame(Opcode::Continuation, "World!", true);
+  auto result = serverHandler->processInput(buf_bytes(frag2), dummyState);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, "Hello World!");
+}
+
+// ============================================================================
+// Masked empty control frame (server-side, covers branch False for masked &&
+// !payload.empty())
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, ServerSideReceivesMaskedEmptyPing) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onPing = [this](std::span<const std::byte> payload) {
+    lastPingPayload = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    pingCount++;
+  };
+
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  RawBytes frame;
+  MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
+  BuildFrame(frame, Opcode::Ping, {}, true, true, mask);
+
+  auto result = serverHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::ResponseReady);
+  EXPECT_EQ(pingCount, 1);
+  EXPECT_TRUE(lastPingPayload.empty());
+}
+
+// ============================================================================
+// Server-side masked ping with non-empty payload (covers control frame unmasking path)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, ServerSideReceivesMaskedPingWithPayload) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onPing = [this](std::span<const std::byte> payload) {
+    lastPingPayload = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    pingCount++;
+  };
+
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  RawBytes frame;
+  MaskingKey mask = MakeMask(0xAA, 0xBB, 0xCC, 0xDD);
+  BuildFrame(frame, Opcode::Ping, sv_bytes("PING"), true, true, mask);
+
+  auto result = serverHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::ResponseReady);
+  EXPECT_EQ(pingCount, 1);
+  EXPECT_EQ(lastPingPayload, "PING");
+}
+
+// ============================================================================
+// Server-side receives masked empty text message (single-frame fast path, empty payload)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, ServerSideReceivesMaskedEmptyTextMessage) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
+    lastMessageBinary = isBinary;
+    lastMessage = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    messageCount++;
+  };
+
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+
+  RawBytes frame;
+  MaskingKey mask = MakeMask(0x11, 0x22, 0x33, 0x44);
+  BuildFrame(frame, Opcode::Text, {}, true, true, mask);
+
+  auto result = serverHandler->processInput(buf_bytes(frame), dummyState);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_TRUE(lastMessage.empty());
+  EXPECT_FALSE(lastMessageBinary);
+}
+
 #ifdef AERONET_ENABLE_ZLIB
+
+// ============================================================================
+// Compressed text with invalid UTF-8 after decompression (completeMessage)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, CompressedTextWithInvalidUtf8) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = false,
+      .clientNoContextTakeover = false,
+  };
+
+  WebSocketCallbacks callbacks;
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
+
+  // Compress invalid UTF-8 data
+  DeflateContext ctx(deflateParams, DeflateConfig{}, false);
+  std::string invalidUtf8;
+  invalidUtf8 += "Hello ";
+  invalidUtf8 += '\xC0';
+  invalidUtf8 += '\x80';
+  RawBytes compressed;
+  ASSERT_EQ(ctx.compress(sv_bytes(invalidUtf8), compressed), nullptr);
+
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, buf_bytes(compressed), true, false, MaskingKey{}, true);
+
+  auto result = compressHandler->processInput(buf_bytes(frame), dummyState);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(lastErrorMessage, "Invalid UTF-8 in text message");
+}
+
+// ============================================================================
+// Compression produces output larger than input (fallback to uncompressed)
+// ============================================================================
+
+TEST_F(WebSocketHandlerTest, CompressionFallbackWhenNotBeneficial) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+  config.deflateConfig.minCompressSize = 16;
+  DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = true,
+  };
+
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+
+  // High-entropy data that doesn't compress well; >= minCompressSize so compression is attempted.
+  // With noContextTakeover, deflate overhead exceeds savings for small incompressible data.
+  std::string incompressible;
+  for (int ch = 0; ch < 17; ++ch) {
+    incompressible += static_cast<char>(ch * 37 + 97);
+  }
+  EXPECT_TRUE(compressHandler->sendText(incompressible));
+
+  auto output = compressHandler->getPendingOutput();
+  // First byte should NOT have RSV1 set (fell back to uncompressed)
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x00);
+}
 
 TEST_F(WebSocketHandlerTest, RSV1AcceptedWithCompression) {
   // Create handler with deflate compression enabled
