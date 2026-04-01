@@ -21,6 +21,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/tcp-cork-guard.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -180,6 +181,10 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpRespon
   const auto bufferedSz = httpResponseData.remainingSize();
 
   if (state.outBuffer.empty()) {
+    // Cork the socket to coalesce header + body into fewer TCP segments.
+    // The guard uncorks on scope exit, flushing any accumulated data.
+    const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
+
     // Plain TCP path: try immediate write optimization
     const auto [written, want] = state.transportWrite(httpResponseData);
     switch (want) {
@@ -243,6 +248,10 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   state.releaseCompletedZerocopyBuffers();
 
   const NativeHandle fd = cnxIt->fd();
+
+  // Cork the socket to coalesce buffered writes into fewer TCP segments.
+  const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
+
   while (!state.outBuffer.empty()) {
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
     want = stepWant;
