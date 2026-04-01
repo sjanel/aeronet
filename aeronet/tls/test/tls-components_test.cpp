@@ -1106,6 +1106,42 @@ TEST(TlsTransportTest, PollZerocopyCompletionsWithFdNoCompletions) {
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
 }
 
+TEST(TlsContextTest, NoCertOrKeyConfigThrows) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  // No cert/key PEM or file paths set — should throw "Certificate or key file path missing"
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+}
+
+TEST(TlsTransportTest, HasPendingReadDataFalseInitially) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  // No data written yet — nothing pending
+  EXPECT_FALSE(transport.hasPendingReadData());
+}
+
+TEST(TlsTransportTest, HasPendingReadDataAfterPartialRead) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  // Client writes a large payload that becomes a single TLS record
+  const std::string payload(2000, 'X');
+  const int written = ::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size()));
+  ASSERT_EQ(written, static_cast<int>(payload.size()));
+
+  // Server reads only a small portion — rest stays buffered in SSL
+  char buf[16]{};
+  auto readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  EXPECT_EQ(readRes.bytesProcessed, sizeof(buf));
+
+  // OpenSSL decrypted the full record; remaining data is pending
+  EXPECT_TRUE(transport.hasPendingReadData());
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
 
 TEST(TlsContextTest, TlsContextBadAlloc) {

@@ -347,27 +347,10 @@ void SingleHttpServer::acceptNewConnections() {
       // Note: this is a transition action (handshakePending -> done) rather than a
       // normal successful-read action, so it intentionally runs prior to evaluating
       // transport error/EOF handling below.
-      if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
-#ifdef AERONET_ENABLE_OPENSSL
-        // Use per-connection preference determined at accept time
-        pCnx->finalizeAndEmitTlsHandshakeIfNeeded(cnxFd, _callbacks.tlsHandshake, _tls.metrics, _config.tls);
-        if (pCnx->tlsHandshakeInFlight) {
-          pCnx->tlsHandshakeInFlight = false;
-          --_tls.handshakesInFlight;
-        }
-#ifdef AERONET_ENABLE_HTTP2
-        // Check for HTTP/2 via ALPN negotiation ("h2")
-        if (_config.http2.enable && pCnx->tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-          setupHttp2Connection(cnxFd, _config.tcpNoDelay, *pCnx);
-        }
-#endif
-        if (pCnx->isAnyCloseRequested()) {
-          closeConnection(cnxIt);
-          pCnx = nullptr;
-          break;
-        }
-#endif
-        pCnx->tlsEstablished = true;
+      if (finalizeTlsHandshakeIfReady(cnxFd, *pCnx)) {
+        closeConnection(cnxIt);
+        pCnx = nullptr;
+        break;
       }
       if (pCnx->waitingForBody && bytesRead > 0) {
         pCnx->bodyLastActivity = state.lastActivity;
@@ -448,11 +431,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   const auto peerFd = state.peerFd;
   if (peerFd != kInvalidHandle) {
     auto peerIt = _connections.iterator(peerFd);
-#ifdef AERONET_WINDOWS
-    if (peerIt != _connections.end()) [[likely]] {
-#else
-    if (*peerIt) [[likely]] {
-#endif
+    if (IsValid(_connections, peerIt)) [[likely]] {
       ConnectionState& peerConnectionState = _connections.connectionState(peerIt);
 #ifdef AERONET_ENABLE_HTTP2
       if (state.peerStreamId != 0) {
@@ -508,11 +487,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   // Set peerFd = -1 on each to prevent them from trying to close the already-released peer.
   for (const auto& [upFd, streamId] : tunnelUpstreamFds) {
     auto upIt = _connections.iterator(upFd);
-#ifdef AERONET_WINDOWS
-    if (upIt != _connections.end()) {
-#else
-    if (*upIt) {
-#endif
+    if (IsValid(_connections, upIt)) {
       ConnectionState& upState = _connections.connectionState(upIt);
       upState.peerFd = kInvalidHandle;
       upState.peerStreamId = 0;
@@ -527,6 +502,26 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #endif
 }
 
+bool SingleHttpServer::finalizeTlsHandshakeIfReady(NativeHandle fd, ConnectionState& state) {
+  if (state.tlsEstablished || !state.transport->handshakeDone()) {
+    return false;
+  }
+#ifdef AERONET_ENABLE_OPENSSL
+  state.finalizeAndEmitTlsHandshakeIfNeeded(fd, _callbacks.tlsHandshake, _tls.metrics, _config.tls);
+  if (state.tlsHandshakeInFlight) {
+    state.tlsHandshakeInFlight = false;
+    --_tls.handshakesInFlight;
+  }
+#ifdef AERONET_ENABLE_HTTP2
+  if (_config.http2.enable && state.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
+    setupHttp2Connection(fd, _config.tcpNoDelay, state);
+  }
+#endif
+#endif
+  state.tlsEstablished = true;
+  return state.isAnyCloseRequested();
+}
+
 SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 
@@ -539,11 +534,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
     if (err != 0) {
       // Upstream connect failed. Attempt to notify the client side (peerFd) and close this upstream.
       const auto peerIt = _connections.iterator(state.peerFd);
-#ifdef AERONET_WINDOWS
-      if (peerIt != _connections.end()) {
-#else
-      if (*peerIt) {
-#endif
+      if (IsValid(_connections, peerIt)) {
 #ifdef AERONET_ENABLE_HTTP2
         if (state.peerStreamId != 0) {
           // HTTP/2 tunnel upstream: RST_STREAM the tunnel stream
@@ -616,21 +607,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     pCnx = _connections.pConnectionState(fd);
 
     const auto [count, want] = pCnx->transportRead(chunkSize);
-    if (!pCnx->tlsEstablished && pCnx->transport->handshakeDone()) {
-#ifdef AERONET_ENABLE_OPENSSL
-      pCnx->finalizeAndEmitTlsHandshakeIfNeeded(fd, _callbacks.tlsHandshake, _tls.metrics, _config.tls);
-#endif
-      pCnx->tlsEstablished = true;
-#ifdef AERONET_ENABLE_HTTP2
-      // Check for HTTP/2 via ALPN negotiation ("h2")
-      if (_config.http2.enable && pCnx->tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-        setupHttp2Connection(fd, _config.tcpNoDelay, *pCnx);
-      }
-#endif
-
-      if (pCnx->isAnyCloseRequested()) {
-        return CloseStatus::Close;
-      }
+    if (finalizeTlsHandshakeIfReady(fd, *pCnx)) {
+      return CloseStatus::Close;
     }
     if (pCnx->waitingForBody && count > 0) {
       pCnx->bodyLastActivity = _connections.now;
@@ -862,11 +840,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
   if (state.inBuffer.empty()) {
     if (state.eofReceived) {
       auto peerIt = _connections.iterator(state.peerFd);
-#ifdef AERONET_WINDOWS
-      if (peerIt != _connections.end()) {
-#else
-      if (*peerIt) {
-#endif
+      if (IsValid(_connections, peerIt)) {
         if (shutdownTunnelPeerWrite(peerIt)) {
           return CloseStatus::Keep;  // peer closed and cleaned up
         }
@@ -880,11 +854,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
   }
 
   auto peerIt = _connections.iterator(state.peerFd);
-#ifdef AERONET_WINDOWS
-  if (peerIt == _connections.end()) [[unlikely]] {
-#else
-  if (!*peerIt) [[unlikely]] {
-#endif
+  if (!IsValid(_connections, peerIt)) [[unlikely]] {
     return CloseStatus::Close;
   }
 
