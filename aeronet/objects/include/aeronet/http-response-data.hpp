@@ -59,7 +59,7 @@ class HttpResponseData {
 
   void append(std::string_view data) {
     if (_capturedBody.empty()) {
-      _headAndOptionalBody.append(data);
+      _headAndOptionalBody.append(data.data(), data.size());
     } else {
       _capturedBody.append(data);
     }

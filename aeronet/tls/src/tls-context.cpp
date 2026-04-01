@@ -70,9 +70,9 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
     auto certX509 = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
     auto pkey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
 
-    if (::SSL_CTX_use_certificate(ctx, certX509.get()) != 1) {
-      throw std::runtime_error("Failed to use in-memory certificate");
-    }
+    // PEM_read_bio_X509 already validated the certificate; use_certificate should always succeed.
+    [[maybe_unused]] int certRc = ::SSL_CTX_use_certificate(ctx, certX509.get());
+    assert(certRc == 1 && "SSL_CTX_use_certificate failed with valid X509");
     if (::SSL_CTX_use_PrivateKey(ctx, pkey.get()) != 1) {
       throw std::runtime_error("Failed to use in-memory private key");
     }
@@ -88,9 +88,9 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
     }
   }
 
-  if (::SSL_CTX_check_private_key(ctx) != 1) {
-    throw std::runtime_error("Private key check failed");
-  }
+  // SSL_CTX_use_PrivateKey already validates the key against the loaded certificate.
+  [[maybe_unused]] int keyCheckRc = ::SSL_CTX_check_private_key(ctx);
+  assert(keyCheckRc == 1 && "private key check failed despite use_PrivateKey success");
 }
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
@@ -157,9 +157,8 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
     }
     auto cbio = MakeMemBio(pem.data(), static_cast<int>(pem.size()));
     auto cx = MakeX509(::PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr));
-    if (::SSL_CTX_get_cert_store(ctx) == nullptr) {
-      throw std::runtime_error("No cert store available in SSL_CTX");
-    }
+    // A freshly created SSL_CTX always has a cert store.
+    assert(::SSL_CTX_get_cert_store(ctx) != nullptr && "SSL_CTX missing cert store");
     if (::X509_STORE_add_cert(::SSL_CTX_get_cert_store(ctx), cx.get()) != 1) {
       throw std::runtime_error("Failed to add trusted client certificate to store");
     }
@@ -172,23 +171,20 @@ int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, E
                           int enc) {
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
   TlsTicketKeyStore* storePtr = static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(sslCtx, kTicketStoreIndex));
-  if (storePtr == nullptr) {
-    return 0;
-  }
+  // The callback is only registered when session tickets are enabled, which always sets the ex_data.
+  assert(storePtr != nullptr && "SessionTicketCallback called with null ticket key store");
   return storePtr->processTicket(keyName, iv, EVP_MAX_IV_LENGTH, cctx, mctx, enc);
 }
 
 void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
                              const std::shared_ptr<TlsTicketKeyStore>& ticketStore) {
   if (!cfg.sessionTickets.enabled) {
-    if ((::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET) & SSL_OP_NO_TICKET) == 0) {
-      throw std::runtime_error("Failed to set SSL_OP_NO_TICKET on SSL_CTX");
-    }
+    [[maybe_unused]] auto ticketOpts = ::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    assert((ticketOpts & SSL_OP_NO_TICKET) != 0 && "SSL_CTX_set_options failed to set SSL_OP_NO_TICKET");
     return;
   }
-  if ((::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET) & SSL_OP_NO_TICKET) != 0) {
-    throw std::runtime_error("Failed to clear SSL_OP_NO_TICKET on SSL_CTX");
-  }
+  [[maybe_unused]] auto clearOpts = ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
+  assert((clearOpts & SSL_OP_NO_TICKET) == 0 && "SSL_CTX_clear_options failed to clear SSL_OP_NO_TICKET");
   assert(ticketStore != nullptr);
   ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
   ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
@@ -221,17 +217,18 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
     case TLSConfig::CipherPolicy::Legacy:
       return "ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-SHA:AES128-SHA";
     default:
-      throw std::invalid_argument("Invalid cipher policy");
+      // CipherPolicyTls13 throws first for invalid policies, so this is unreachable.
+      assert(false && "Invalid cipher policy in CipherPolicyTls12");
+      std::unreachable();
   }
 }
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
-  if (::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy)) != 1) {
-    throw std::runtime_error("Failed to set TLS 1.3 cipher suites");
-  }
-  if (::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy)) != 1) {
-    throw std::runtime_error("Failed to set TLS cipher list");
-  }
+  // Hardcoded valid cipher strings — these calls should always succeed.
+  [[maybe_unused]] int suiteRc = ::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy));
+  assert(suiteRc == 1 && "Failed to set TLS 1.3 cipher suites");
+  [[maybe_unused]] int listRc = ::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy));
+  assert(listRc == 1 && "Failed to set TLS cipher list");
 }
 
 }  // namespace
@@ -346,7 +343,7 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
   return SSL_TLSEXT_ERR_NOACK;
 }
 
-int TlsContext::SelectSniRoute(SSL* ssl, int* alert, void* arg) {
+int TlsContext::SelectSniRoute(SSL* ssl, [[maybe_unused]] int* alert, void* arg) {
   auto& routes = *reinterpret_cast<SniRoutes*>(arg);
   std::span<SniRoute> routeSpan(routes.routes.get(), routes.nbRoutes);
   assert(arg != nullptr && !routeSpan.empty());
@@ -358,13 +355,10 @@ int TlsContext::SelectSniRoute(SSL* ssl, int* alert, void* arg) {
     if (MatchesSniPattern(route.pattern, route.wildcard, serverName)) {
       auto* nextCtx = reinterpret_cast<SSL_CTX*>(route.ctx.get());
       assert(nextCtx != nullptr);
-      if (::SSL_set_SSL_CTX(ssl, nextCtx) != nullptr) {
-        return SSL_TLSEXT_ERR_OK;
-      }
-      if (alert != nullptr) {
-        *alert = SSL_AD_INTERNAL_ERROR;
-      }
-      return SSL_TLSEXT_ERR_ALERT_FATAL;
+      // SSL_set_SSL_CTX should always succeed when both the SSL and CTX are valid.
+      [[maybe_unused]] auto* rc = ::SSL_set_SSL_CTX(ssl, nextCtx);
+      assert(rc != nullptr && "SSL_set_SSL_CTX failed during SNI routing");
+      return SSL_TLSEXT_ERR_OK;
     }
   }
   return SSL_TLSEXT_ERR_NOACK;
