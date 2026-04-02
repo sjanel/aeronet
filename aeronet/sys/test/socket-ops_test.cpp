@@ -13,10 +13,12 @@
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/tcp-cork-guard.hpp"
 
 #ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -240,5 +242,66 @@ TEST_F(SocketOpsTest, SafeSendStringViewOverload) {
     EXPECT_EQ(5, sent);
   }
 }
+
+#ifdef AERONET_POSIX
+
+TEST_F(SocketOpsTest, SetTcpCorkSucceedsOnValidSocket) {
+  NativeHandle fd = CreateTestSocket();
+  ASSERT_GE(fd, 0);
+  // On Linux this sets TCP_CORK; on macOS/Windows it's a no-op returning true.
+  EXPECT_TRUE(SetTcpCork(fd, true));
+  EXPECT_TRUE(SetTcpCork(fd, false));
+  CloseSocket(fd);
+}
+
+#ifdef AERONET_LINUX
+
+TEST_F(SocketOpsTest, SetTcpCorkFailsOnBadFd) { EXPECT_FALSE(SetTcpCork(-1, true)); }
+
+TEST_F(SocketOpsTest, SetTcpCorkVerifyKernelState) {
+  NativeHandle fd = CreateTestSocket();
+  ASSERT_GE(fd, 0);
+
+  EXPECT_TRUE(SetTcpCork(fd, true));
+  int val = 0;
+  socklen_t len = sizeof(val);
+  ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
+  EXPECT_EQ(1, val);
+
+  EXPECT_TRUE(SetTcpCork(fd, false));
+  ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
+  EXPECT_EQ(0, val);
+
+  CloseSocket(fd);
+}
+
+TEST_F(SocketOpsTest, TcpCorkGuardCorksAndUncorks) {
+  NativeHandle fd = CreateTestSocket();
+  ASSERT_GE(fd, 0);
+
+  {
+    TcpCorkGuard guard(fd);
+    int val = 0;
+    socklen_t len = sizeof(val);
+    ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
+    EXPECT_EQ(1, val);
+  }  // guard destroyed, socket should be uncorked
+
+  int val = 0;
+  socklen_t len = sizeof(val);
+  ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
+  EXPECT_EQ(0, val);
+
+  CloseSocket(fd);
+}
+
+#endif  // AERONET_LINUX
+
+TEST_F(SocketOpsTest, TcpCorkGuardNoOpOnInvalidHandle) {
+  // Should not crash or fail
+  TcpCorkGuard guard(kInvalidHandle);
+}
+
+#endif  // AERONET_POSIX
 
 }  // namespace aeronet

@@ -1576,7 +1576,9 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
     assert(state.tlsInfo.selectedAlpn() == http2::kAlpnH2);
     // Disable Nagle's algorithm for HTTP/2 connections by default to reduce latency.
     // The protocol handler may choose to re-enable it later if it determines it's beneficial.
-    if (!SetTcpNoDelay(clientFd)) [[unlikely]] {
+    if (SetTcpNoDelay(clientFd)) [[likely]] {
+      state.corkable = true;
+    } else {
       const auto err = LastSystemError();
       log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", clientFd, err);
       _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);

@@ -100,6 +100,19 @@ bool SetTcpNoDelay(NativeHandle fd) noexcept {
 #endif
 }
 
+bool SetTcpCork([[maybe_unused]] NativeHandle fd, [[maybe_unused]] bool enable) noexcept {
+#ifdef AERONET_LINUX
+  const int val = enable ? 1 : 0;
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, sizeof(val)) == 0;
+#else
+  // macOS TCP_NOPUSH has different semantics: clearing the flag does NOT flush
+  // accumulated data (unlike Linux TCP_CORK). Combined with TCP_NODELAY this
+  // causes data to stall. writev already coalesces header+body on macOS.
+  // Windows has no equivalent; coalescing relies on Nagle and WSASend scatter-gather.
+  return true;
+#endif
+}
+
 int GetSocketError(NativeHandle fd) noexcept {
   int err = 0;
   socklen_t len = sizeof(err);

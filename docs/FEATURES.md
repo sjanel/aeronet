@@ -231,6 +231,7 @@ Behavior summary
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
+- [x] TCP_CORK response coalescing *(Linux-only)* — automatically corks the socket before writing response data and uncorks after, preventing partial TCP segments when `TCP_NODELAY` is active. Clearing `TCP_CORK` flushes accumulated data immediately. No-op on macOS (TCP_NOPUSH does not flush on clear, and `writev` already coalesces) and Windows. Enabled per-connection when `TCP_NODELAY` is set. See `SetTcpCork()` in `socket-ops.hpp` and `TcpCorkGuard` RAII helper. Tests in `socket-ops_test.cpp`.
 - [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, WSAPoll on Windows)
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs

@@ -176,6 +176,7 @@ struct ConnectionState {
   bool connectPending{false};
   bool shutdownWritePending{false};  // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
   bool eofReceived{false};           // true when transportRead returned 0 (EOF)
+  bool corkable{false};              // true when TCP_NODELAY is active; enables TCP_CORK coalescing
 
   // Current protocol type. Http11 by default, changes after successful upgrade.
   ProtocolType protocol{ProtocolType::Http11};
