@@ -341,6 +341,7 @@ void ConnectionState::reset() {
   connectPending = false;
   shutdownWritePending = false;
   eofReceived = false;
+  corkable = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};

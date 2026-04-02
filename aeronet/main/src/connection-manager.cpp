@@ -215,8 +215,11 @@ void SingleHttpServer::acceptNewConnections() {
       break;
     }
     const auto cnxFd = cnx.fd();
+    bool tcpNoDelayActive = false;
     if (_config.tcpNoDelay == TcpNoDelayMode::Enabled) {
-      if (!SetTcpNoDelay(cnxFd)) [[unlikely]] {
+      if (SetTcpNoDelay(cnxFd)) [[likely]] {
+        tcpNoDelayActive = true;
+      } else {
         const auto err = LastSystemError();
         log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", cnxFd, err);
         _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
@@ -234,6 +237,9 @@ void SingleHttpServer::acceptNewConnections() {
     ConnectionState& state = _connections.connectionState(cnxIt);
 
     state.initializeStateNewConnection(_config, cnxFd, _compressionState);
+
+    // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
+    state.corkable = tcpNoDelayActive;
 
     ZerocopyMode zerocopyMode = _config.zerocopyMode;
     if (!state.zerocopyRequested) {

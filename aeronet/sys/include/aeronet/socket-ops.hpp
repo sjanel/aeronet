@@ -48,6 +48,14 @@ void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcep
 // Returns true on success.
 bool SetTcpNoDelay(NativeHandle fd) noexcept;
 
+// Set TCP_CORK (Linux) to coalesce small writes into full TCP segments.
+// When corked, the kernel accumulates data and avoids sending partial segments.
+// Clearing the cork flushes any accumulated data immediately.
+// *Linux-only*: macOS TCP_NOPUSH does not flush on clear (unlike TCP_CORK),
+// causing data stalls when TCP_NODELAY is also set. writev already coalesces there.
+// No-op on macOS and Windows. Returns true on success.
+bool SetTcpCork(NativeHandle fd, bool enable) noexcept;
+
 // Retrieve the pending socket error (SO_ERROR).
 // Returns the error code (0 means no error, >0 is errno).
 // On failure to query, returns the errno from getsockopt itself.
