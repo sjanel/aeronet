@@ -1509,4 +1509,101 @@ TEST_F(RouterTest, OverwriteStaticLeafUnderParamUsesLatestHandler) {
   EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
 }
 
+TEST_F(RouterTest, RegisterShorterParamRouteAfterLongerCreatesRouteOnIntermediateNode) {
+  // First register a longer param route which creates an intermediate param node without pRoute
+  router.setPath(http::Method::GET, "/api/{id}/details", OkHandler);
+
+  // Now register the shorter prefix as a separate route.
+  // This hits the insertRoute path where commonPrefixLen == path.size() and pNode->pRoute == nullptr,
+  // requiring allocation of a new CompiledRoute on the existing intermediate node.
+  router.setPath(http::Method::POST, "/api/{id}", AcceptedHandler);
+
+  // Verify both routes work independently
+  auto resLong = router.match(http::Method::GET, "/api/42/details");
+  ASSERT_NE(resLong.requestHandler(), nullptr);
+  EXPECT_EQ((*resLong.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+  ASSERT_EQ(resLong.pathParams.size(), 1U);
+  EXPECT_EQ(resLong.pathParams[0].key, "id");
+  EXPECT_EQ(resLong.pathParams[0].value, "42");
+
+  auto resShort = router.match(http::Method::POST, "/api/99");
+  ASSERT_NE(resShort.requestHandler(), nullptr);
+  EXPECT_EQ((*resShort.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+  ASSERT_EQ(resShort.pathParams.size(), 1U);
+  EXPECT_EQ(resShort.pathParams[0].key, "id");
+  EXPECT_EQ(resShort.pathParams[0].value, "99");
+
+  // The shorter route should not match the longer path's method
+  auto resWrongMethod = router.match(http::Method::POST, "/api/42/details");
+  EXPECT_TRUE(resWrongMethod.methodNotAllowed);
+}
+
+TEST_F(RouterTest, RegisterShorterStaticAfterLongerWithSamePrefix) {
+  // Register a longer route first, creating an intermediate node for the shared prefix
+  router.setPath(http::Method::GET, "/api/v2/users", OkHandler);
+
+  // Register a route that exactly matches the intermediate split node's path
+  router.setPath(http::Method::GET, "/api/v2", AcceptedHandler);
+
+  auto resLong = router.match(http::Method::GET, "/api/v2/users");
+  ASSERT_NE(resLong.requestHandler(), nullptr);
+  EXPECT_EQ((*resLong.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto resShort = router.match(http::Method::GET, "/api/v2");
+  ASSERT_NE(resShort.requestHandler(), nullptr);
+  EXPECT_EQ((*resShort.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, InsertStaticChildBeforeExistingWildcardChild) {
+  // Register a param route first, making the parent node hasWildChild=true
+  router.setPath(http::Method::GET, "/api/{id}", OkHandler);
+
+  // Now register a static route at the same level — the static child must be
+  // inserted before the wildcard child (which always stays at the end)
+  router.setPath(http::Method::GET, "/api/users", AcceptedHandler);
+
+  auto resParam = router.match(http::Method::GET, "/api/42");
+  ASSERT_NE(resParam.requestHandler(), nullptr);
+  EXPECT_EQ((*resParam.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+  ASSERT_EQ(resParam.pathParams.size(), 1U);
+  EXPECT_EQ(resParam.pathParams[0].value, "42");
+
+  auto resStatic = router.match(http::Method::GET, "/api/users");
+  ASSERT_NE(resStatic.requestHandler(), nullptr);
+  EXPECT_EQ((*resStatic.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+  EXPECT_TRUE(resStatic.pathParams.empty());
+}
+
+TEST_F(RouterTest, CatchAllStrictTrailingSlashReturnsNull) {
+  // In Strict policy, a catch-all registered without trailing slash must
+  // reject requests whose remaining path ends with '/'
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  router = Router(cfg);
+  router.setPath(http::Method::GET, "/files/*", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/files/test/");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, CatchAllStrictNoTrailingSlashMatches) {
+  // In Strict policy, a catch-all registered without trailing slash must
+  // match requests without trailing slash
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  router = Router(cfg);
+  router.setPath(http::Method::GET, "/files/*", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/files/test");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+}
+
+TEST_F(RouterTest, ParamRouteExtraSegmentsNoChildrenReturnsNull) {
+  // A param route without children must reject paths with extra segments
+  router.setPath(http::Method::GET, "/items/{id}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/items/42/extra");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
 }  // namespace aeronet

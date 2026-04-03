@@ -34,6 +34,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"

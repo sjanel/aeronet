@@ -16,17 +16,19 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_WANT_MALLOC_OVERRIDES
 #include <exception>
 #include <new>
 #endif
 
-using Map = aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
+namespace aeronet {
+
+using Map = flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>>;
 
 TEST(flat_hash_map, basic_insert_find) {
   Map map1;
@@ -76,8 +78,7 @@ struct TestAlloc {
 
 TEST(flat_hash_map, move_assignment_allocators_not_equal_emplaces_and_clears_other) {
   using PairAlloc = TestAlloc<std::pair<std::string, int>>;
-  using PairAllocMap =
-      aeronet::flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>, PairAlloc>;
+  using PairAllocMap = flat_hash_map<std::string, int, std::hash<std::string_view>, std::equal_to<>, PairAlloc>;
 
   PairAllocMap dest(PairAlloc(1));
   PairAllocMap src(PairAlloc(2));
@@ -210,7 +211,7 @@ TEST(flat_hash_map, preserves_value_alignment) {
     std::array<std::uint8_t, 64> data{};
   };
 
-  aeronet::flat_hash_map<int, CacheLineAlignedValue> map;
+  flat_hash_map<int, CacheLineAlignedValue> map;
   static constexpr int expectedAlignment = alignof(CacheLineAlignedValue);
 
   for (int i = 0; i < 128; ++i) {
@@ -253,7 +254,7 @@ TEST(flat_hash_map, try_emplace_constructs_mapped_from_multiple_args) {
     int b;
   };
 
-  aeronet::flat_hash_map<std::string, MultiArgValue, std::hash<std::string_view>, std::equal_to<>> map;
+  flat_hash_map<std::string, MultiArgValue, std::hash<std::string_view>, std::equal_to<>> map;
   auto [it, inserted] = map.try_emplace("k", 1, 2);
   EXPECT_TRUE(inserted);
   EXPECT_EQ(it->second.a, 1);
@@ -266,7 +267,7 @@ TEST(flat_hash_map, try_emplace_does_not_construct_mapped_when_key_exists) {
     int value;
   };
 
-  aeronet::flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
+  flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
   int ctorCount = 0;
 
   auto [it, inserted] = map.try_emplace("k", ctorCount, 7);
@@ -291,7 +292,7 @@ TEST(flat_hash_map, try_emplace_supports_move_only_mapped_type) {
     int value;
   };
 
-  aeronet::flat_hash_map<std::string, MoveOnly, std::hash<std::string_view>, std::equal_to<>> map;
+  flat_hash_map<std::string, MoveOnly, std::hash<std::string_view>, std::equal_to<>> map;
   auto [it, inserted] = map.try_emplace("k", 5);
   EXPECT_TRUE(inserted);
   EXPECT_EQ(it->second.value, 5);
@@ -331,7 +332,7 @@ TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key
     int value;
   };
 
-  aeronet::flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
+  flat_hash_map<std::string, CountsCtor, std::hash<std::string_view>, std::equal_to<>> map;
   int ctorCount = 0;
 
   std::string_view key = "k";
@@ -349,8 +350,8 @@ TEST(flat_hash_map, try_emplace_heterogeneous_does_not_construct_mapped_when_key
 }
 
 TEST(flat_hash_map, proper_iteration_during_erase) {
-  std::vector<std::unique_ptr<int>> pointers;
-  aeronet::flat_hash_map<const int*, int> testMap;
+  vector<std::unique_ptr<int>> pointers;
+  flat_hash_map<const int*, int> testMap;
 
   for (int iteration = 0; iteration < 1000; ++iteration) {
     // Insert some items in the map
@@ -360,7 +361,7 @@ TEST(flat_hash_map, proper_iteration_during_erase) {
     }
 
     // Process
-    std::vector<const int*> keys;
+    vector<const int*> keys;
     for (auto it = testMap.begin(); it != testMap.end();) {
       keys.push_back(it->first);
       if (--it->second == 0) {
@@ -537,10 +538,9 @@ TEST(flat_hash_map, rehash_and_shrink_to_fit_preserve_entries) {
 // Regression test: ensure flat_hash_map with std::string_view keys that point
 // into a single stable backing buffer remains consistent across rehash.
 TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
-  using KeyMap = aeronet::flat_hash_map<std::string_view, std::string_view, aeronet::CaseInsensitiveHashFunc,
-                                        aeronet::CaseInsensitiveEqualFunc>;
+  using KeyMap = flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc>;
 
-  std::vector<std::pair<std::string_view, std::string_view>> headers = {
+  vector<std::pair<std::string_view, std::string_view>> headers = {
       {":status", "200"},       {"content-type", "text/plain"},
       {"x-custom", "original"}, {"x-another", "anothervalue"},
       {"x-global", "gvalue"},   {"date", "Sun, 04 Jan 2026 10:38:25 GMT"},
@@ -548,13 +548,13 @@ TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
 
   KeyMap map;
 
-  for (std::size_t currentSize = 0; currentSize < headers.size(); ++currentSize) {
+  for (uint32_t currentSize = 0; currentSize < headers.size(); ++currentSize) {
     const auto& [key, value] = headers[currentSize];
     EXPECT_TRUE(map.try_emplace(key, value).second);
     EXPECT_EQ(map.size(), currentSize + 1U);
 
     // ensure all existing entries are still present after each insert
-    for (std::size_t verifyIndex = 0; verifyIndex <= currentSize; ++verifyIndex) {
+    for (uint32_t verifyIndex = 0; verifyIndex <= currentSize; ++verifyIndex) {
       const auto& [vkey, vvalue] = headers[verifyIndex];
       auto it = map.find(vkey);
       ASSERT_NE(it, map.end());
@@ -590,7 +590,7 @@ struct CountingValue {
 
 TEST(flat_hash_map, bracket_operator_default_constructs_values_once) {
   CountingValue::defaultConstructionCount = 0;
-  aeronet::flat_hash_map<std::string, CountingValue> map;
+  flat_hash_map<std::string, CountingValue> map;
 
   map["missing"].payload = 42;
   EXPECT_EQ(CountingValue::defaultConstructionCount, 1);
@@ -604,8 +604,7 @@ TEST(flat_hash_map, bracket_operator_default_constructs_values_once) {
 }
 
 TEST(flat_hash_map, case_insensitive_contains_variants) {
-  aeronet::flat_hash_map<std::string, std::string, aeronet::CaseInsensitiveHashFunc, aeronet::CaseInsensitiveEqualFunc>
-      headers;
+  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> headers;
   headers["Content-Type"] = "text/html";
   headers["ACCEPT"] = "*/*";
   headers["X-Trace-Request-ID"] = "r-123";
@@ -629,8 +628,7 @@ TEST(flat_hash_map, case_insensitive_contains_variants) {
 
   EXPECT_FALSE(headers.contains("missing-header"));
 
-  aeronet::flat_hash_map<std::string, std::string, aeronet::CaseInsensitiveHashFunc, aeronet::CaseInsensitiveEqualFunc>
-      copy = headers;
+  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> copy = headers;
   EXPECT_EQ(headers, copy);
 }
 
@@ -663,7 +661,7 @@ TEST(flat_hash_map, emplace_default_and_insert_or_assign_hint) {
 
 // Negative tests: simulate allocation failures and throwing constructors.
 TEST(flat_hash_map, rehash_handles_realloc_failure) {
-  using aeronet::test::FailNextRealloc;
+  using test::FailNextRealloc;
   Map map1;
   for (int i = 0; i < 100; ++i) {
     map1.emplace("k" + std::to_string(i), i);
@@ -685,9 +683,9 @@ TEST(flat_hash_map, rehash_handles_realloc_failure) {
 }
 
 TEST(flat_hash_map, insert_range_handles_malloc_failure) {
-  using aeronet::test::FailNextMalloc;
+  using test::FailNextMalloc;
   Map map1;
-  std::vector<std::pair<std::string, int>> batch;
+  vector<std::pair<std::string, int>> batch;
   batch.reserve(500);
   for (int i = 0; i < 500; ++i) {
     batch.emplace_back("r" + std::to_string(i), i);
@@ -731,8 +729,8 @@ struct MaybeThrow {
 std::mt19937 MaybeThrow::rng(1337);
 
 TEST(flat_hash_map, insert_object_that_can_throw_and_malloc_failure_mix) {
-  using aeronet::test::FailNextMalloc;
-  aeronet::flat_hash_map<int, MaybeThrow> map;
+  using test::FailNextMalloc;
+  flat_hash_map<int, MaybeThrow> map;
 
   // Attempt many inserts; randomly simulate malloc failures and throwing constructors.
   for (int i = 0; i < 2000; ++i) {
@@ -776,7 +774,7 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
     ThrowOnCopy& operator=(const ThrowOnCopy&) = default;
   };
 
-  aeronet::flat_hash_map<std::string, ThrowOnCopy> src;
+  flat_hash_map<std::string, ThrowOnCopy> src;
   for (int i = 0; i < 50; ++i) {
     src.emplace("ok" + std::to_string(i), ThrowOnCopy(i, false));
   }
@@ -789,7 +787,7 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
 
   // Use allocator-argument copy constructor to exercise the path that clears and
   // deallocates on exception during insert(other.begin(), other.end()).
-  using MapType = aeronet::flat_hash_map<std::string, ThrowOnCopy>;
+  using MapType = flat_hash_map<std::string, ThrowOnCopy>;
   auto alloc = src.get_allocator();
   // We expect the allocator-argument copy constructor to throw when copying the
   // element that is marked to throw on copy. Use EXPECT_ANY_THROW to assert it.
@@ -803,15 +801,15 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_insertion_exception) {
 #if AERONET_WANT_MALLOC_OVERRIDES
 
 TEST(flat_hash_map, copy_ctor_with_alloc_handles_alloc_failure) {
-  using aeronet::test::FailNextMalloc;
-  aeronet::flat_hash_map<std::string, int> src;
+  using test::FailNextMalloc;
+  flat_hash_map<std::string, int> src;
   for (int i = 0; i < 100; ++i) {
     src.emplace("v" + std::to_string(i), i);
   }
 
   // Force the next malloc used during insert(other.begin(), other.end()) to fail.
   FailNextMalloc(1);
-  using MapType = aeronet::flat_hash_map<std::string, int>;
+  using MapType = flat_hash_map<std::string, int>;
   auto alloc = src.get_allocator();
   try {
     std::unique_ptr<MapType> copy;
@@ -832,3 +830,5 @@ TEST(flat_hash_map, copy_ctor_with_alloc_handles_alloc_failure) {
 }
 
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
+
+}  // namespace aeronet

@@ -10,9 +10,9 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/socket.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::test {
 
@@ -21,7 +21,7 @@ struct CapturedOtlpRequest {
 
   std::string method;
   std::string path;
-  std::vector<std::pair<std::string, std::string>> headers;
+  vector<std::pair<std::string, std::string>> headers;
   std::string body;
 };
 
@@ -41,7 +41,7 @@ class OtlpTestCollector {
   [[nodiscard]] std::string endpointForPath(std::string_view path) const;
 
   CapturedOtlpRequest waitForRequest(std::chrono::milliseconds timeout);
-  std::vector<CapturedOtlpRequest> drain();
+  vector<CapturedOtlpRequest> drain();
 
  private:
   void run();

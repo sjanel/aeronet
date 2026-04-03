@@ -8,9 +8,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 #include <new>
@@ -191,7 +191,7 @@ TEST(ObjectArrayPoolMoveTest, MoveAssignmentOverExistingPool) {
 TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
   ObjectArrayPool<char> pool;
 
-  std::vector<char*> allocated;
+  vector<char*> allocated;
   for (int i = 0; i < 128; ++i) {
     char* arr = pool.allocateAndDefaultConstruct(8);
     ASSERT_NE(arr, nullptr);
@@ -346,7 +346,7 @@ namespace {
 void RunFuzzPoolChar(unsigned seed) {
   std::mt19937_64 rng(seed);
   aeronet::ObjectArrayPool<char> pool(8);
-  std::vector<std::pair<char*, size_t>> allocated;
+  vector<std::pair<char*, size_t>> allocated;
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {
@@ -387,7 +387,7 @@ void RunFuzzPoolChar(unsigned seed) {
 void RunFuzzPoolString(unsigned seed) {
   std::mt19937_64 rng(seed);
   ObjectArrayPool<std::string> pool(8);
-  std::vector<std::pair<std::string*, size_t>> allocated;
+  vector<std::pair<std::string*, size_t>> allocated;
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {

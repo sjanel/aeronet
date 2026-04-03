@@ -44,7 +44,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
-#include <vector>
+
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/bio.h>
@@ -410,7 +411,7 @@ class ActionQueue {
     _actions.assign(actions.begin(), actions.end());
   }
 
-  void setActions(std::vector<Action> actions) {
+  void setActions(vector<Action> actions) {
     std::scoped_lock<std::mutex> lock(_mutex);
     _actions.clear();
     for (auto& action : actions) {
@@ -455,7 +456,7 @@ class KeyedActionQueue {
     _queues[key] = std::deque<Action>(actions.begin(), actions.end());
   }
 
-  void setActions(const Key& key, std::vector<Action> actions) {
+  void setActions(const Key& key, vector<Action> actions) {
     std::scoped_lock<std::mutex> lock(_mutex);
     auto& queue = _queues[key];
     queue.clear();
@@ -531,9 +532,9 @@ inline ActionQueue<std::pair<int64_t, int>> g_send_actions;  // (ret, errno)
 // This is required because tests create a client-side fd, but the server writes on the
 // server-side accepted fd (same process, different fd number).
 struct AcceptInstallActions {
-  std::vector<IoAction> writeActions;
-  std::vector<IoAction> writevActions;
-  std::vector<IoAction> sendfileActions;
+  vector<IoAction> writeActions;
+  vector<IoAction> writevActions;
+  vector<IoAction> sendfileActions;
 };
 
 inline ActionQueue<AcceptInstallActions> g_on_accept_install_actions;
@@ -570,7 +571,7 @@ struct EpollWaitAction {
   Kind kind{Kind::Events};
   int result{0};
   int err{0};
-  std::vector<struct epoll_event> events;
+  vector<struct epoll_event> events;
 };
 
 inline ActionQueue<EpollWaitAction> g_epoll_wait_actions;
@@ -828,7 +829,7 @@ inline void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actio
   test::g_epoll_create_actions.setActions(actions);
 }
 
-inline void SetEpollWaitActions(std::vector<EpollWaitAction> actions) {
+inline void SetEpollWaitActions(vector<EpollWaitAction> actions) {
   test::g_epoll_wait_default_action.reset();
   if (!actions.empty()) {
     // Repeat the last action if the queue is exhausted.
@@ -850,7 +851,7 @@ struct EventLoopHookGuard {
 
 [[nodiscard]] inline EpollCreateAction EpollCreateFail(int err) { return EpollCreateAction{true, err}; }
 
-[[nodiscard]] inline EpollWaitAction WaitReturn(int readyCount, std::vector<epoll_event> events) {
+[[nodiscard]] inline EpollWaitAction WaitReturn(int readyCount, vector<epoll_event> events) {
   EpollWaitAction action;
   action.kind = EpollWaitAction::Kind::Events;
   action.result = readyCount;
@@ -1404,7 +1405,7 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, stru
       return -1;
     }
     const std::size_t limit = std::min(static_cast<std::size_t>(act.result), static_cast<std::size_t>(maxevents));
-    for (std::size_t i = 0; i < limit && i < act.events.size(); ++i) {
+    for (uint32_t i = 0; i < limit && i < act.events.size(); ++i) {
       events[i] = act.events[i];
     }
     return act.result;

@@ -4,7 +4,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -36,21 +35,19 @@ constexpr std::string_view kEscapedOpenBrace = "{{";
 constexpr std::string_view kEscapedCloseBrace = "}}";
 
 void UnescapePattern(std::string_view input, RawChars32& output) {
+  // Single-pass unescape: {{ → {, }} → }
+  // For path = "/api/{{version}}/data", we want to store "/api/{version}/data"
   output.assign(input);
 
-  // Unescape any reserved characters by removing the duplicate
-  // For path = "/api/{{version}}/data", we want to store "/api/{version}/data"
-  static_assert(kEscapedOpenBrace.size() == 2U && kEscapedCloseBrace.size() == 2U);
-  for (std::string_view escaped : {kEscapedOpenBrace, kEscapedCloseBrace}) {
-    for (auto it = output.begin(); it != output.end(); ++it) {
-      it = std::search(it, output.end(), escaped.begin(), escaped.end());
-      if (it == output.end()) {
-        break;
-      }
-      std::memmove(it, it + 1U, static_cast<std::size_t>(output.end() - (it + 1U)));
-      output.setSize(output.size() - 1U);
+  auto dst = output.begin();
+  for (auto src = output.begin(); src != output.end(); ++src, ++dst) {
+    *dst = *src;
+    // Skip duplicate brace
+    if ((*src == '{' || *src == '}') && src + 1 != output.end() && *(src + 1) == *src) {
+      ++src;
     }
   }
+  output.setSize(static_cast<uint32_t>(dst - output.begin()));
 }
 
 bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) {
@@ -66,7 +63,7 @@ bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy, std:
   return pathHasTrailingSlash;
 }
 
-void indent(std::ostream& os, int depth) {
+void Indent(std::ostream& os, int depth) {
   for (int i = 0; i < depth; ++i) {
     os << "│   ";
   }
@@ -167,12 +164,8 @@ PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint 
 namespace {
 
 std::size_t LongestCommonPrefix(std::string_view pathA, std::string_view pathB) noexcept {
-  const std::size_t maxLen = std::min(pathA.size(), pathB.size());
-  std::size_t idx = 0;
-  while (idx < maxLen && pathA[idx] == pathB[idx]) {
-    ++idx;
-  }
-  return idx;
+  auto [itA, itB] = std::ranges::mismatch(pathA, pathB);
+  return static_cast<std::size_t>(itA - pathA.begin());
 }
 
 // Find the position of a wildcard (:param or {param} or *) in the path
@@ -340,7 +333,7 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
 
   while (true) {
     // Find position of first wildcard
-    auto [wildcardFirst, wildcardLast] = FindWildcard(path);
+    const auto [wildcardFirst, wildcardLast] = FindWildcard(path);
 
     if (wildcardFirst == std::string_view::npos) {
       // No wildcard found, simply store the path
@@ -353,7 +346,7 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
     assert(!pNode->hasWildChild);
 
     // Handle param: {name} or {name}literal or prefix{name}
-    std::string_view wildcard(path.data() + wildcardFirst, path.data() + wildcardLast);
+    const std::string_view wildcard(path.data() + wildcardFirst, path.data() + wildcardLast);
     assert(!wildcard.empty());
     if (wildcard[0] == '{') {
       if (wildcardFirst > 0) {
@@ -363,8 +356,8 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
       }
 
       // Find the end of the segment containing the param
-      std::size_t segEnd = path.find('/');
-      std::string_view paramSegment = segEnd == std::string_view::npos ? path : path.substr(0, segEnd);
+      const std::size_t segEnd = path.find('/');
+      const std::string_view paramSegment = segEnd == std::string_view::npos ? path : path.substr(0, segEnd);
 
       // Parse the param segment into parts
       pNode->hasWildChild = true;
@@ -1226,13 +1219,14 @@ const char* Router::nodeTypeToString(NodeType nodeType) {
     case NodeType::CatchAll:
       return "CATCHALL";
     default:
+      assert(nodeType == NodeType::Static);
       return "STATIC";
   }
 }
 
 // NOLINTNEXTLINE(misc-no-recursion) - this is OK for a debugging function
 void Router::printNode(std::ostream& os, const RadixNode& node, int depth) const {
-  indent(os, depth);
+  Indent(os, depth);
 
   os << "└─ ";
 
@@ -1268,7 +1262,7 @@ void Router::printNode(std::ostream& os, const RadixNode& node, int depth) const
   const std::size_t staticCount = node.indices.size();
 
   for (uint32_t childPos = 0; childPos < node.children.size(); ++childPos) {
-    indent(os, depth + 1);
+    Indent(os, depth + 1);
 
     if (childPos < staticCount) {
       os << "edge '" << node.indices[childPos] << "'\n";
