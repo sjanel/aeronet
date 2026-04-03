@@ -384,7 +384,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFi
         std::span<const std::byte>(reinterpret_cast<const std::byte*>(_fileSendBuffer.data()), _fileSendBuffer.size());
     // sendData cannot fail here: stream is valid (asserted above), flow control windows
     // are sufficient (chunkSize bounded by both), and stream state allows sending.
-    const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+    [[maybe_unused]] const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
     assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
 
     pending.offset += readCount;
@@ -463,7 +463,7 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
           reinterpret_cast<const std::byte*>(pending.buffer.data() + pending.offset), chunkSize);
       // sendData cannot fail: stream is valid (asserted), flow control windows are sufficient
       // (chunkSize bounded by both), and stream state allows sending.
-      const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+      [[maybe_unused]] const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
       assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
 
       pending.offset += chunkSize;
@@ -480,7 +480,8 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
       HeadersView tv(std::string_view{pending.trailersData.data(), pending.trailersData.size()});
       // sendHeaders cannot fail: stream is valid (asserted) and in correct state
       // (we just successfully sent DATA on it).
-      const auto sendErr = _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
+      [[maybe_unused]] const auto sendErr =
+          _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
       assert(sendErr == ErrorCode::NoError && "sendHeaders failed for trailers on a valid stream");
     }
 

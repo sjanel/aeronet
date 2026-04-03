@@ -16,11 +16,11 @@
 #include <string>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/vector.hpp"
 
 // Enable read override from sys-test-support.hpp so we can deterministically
 // drive TimerFd::drain() without relying on a real timerfd.
@@ -110,7 +110,7 @@ class TimerfdOverrideState {
     _createCalls.push_back(TimerfdCreateCall{clockId, flags});
   }
 
-  [[nodiscard]] std::vector<TimerfdCreateCall> createCalls() const {
+  [[nodiscard]] vector<TimerfdCreateCall> createCalls() const {
     std::scoped_lock<std::mutex> lock(_mutex);
     return _createCalls;
   }
@@ -130,7 +130,7 @@ class TimerfdOverrideState {
     _settimeCalls.push_back(call);
   }
 
-  [[nodiscard]] std::vector<TimerfdSettimeCall> settimeCalls() const {
+  [[nodiscard]] vector<TimerfdSettimeCall> settimeCalls() const {
     std::scoped_lock<std::mutex> lock(_mutex);
     return _settimeCalls;
   }
@@ -138,10 +138,10 @@ class TimerfdOverrideState {
  private:
   mutable std::mutex _mutex;
   std::deque<TimerfdCreateAction> _createActions;
-  std::vector<TimerfdCreateCall> _createCalls;
+  vector<TimerfdCreateCall> _createCalls;
 
   aeronet::test::KeyedActionQueue<int, TimerfdSettimeAction> _settimeActions;
-  std::vector<TimerfdSettimeCall> _settimeCalls;
+  vector<TimerfdSettimeCall> _settimeCalls;
 };
 
 TimerfdOverrideState gTimerfd;
@@ -149,8 +149,12 @@ TimerfdOverrideState gTimerfd;
 class TimerfdOverrideGuard {
  public:
   TimerfdOverrideGuard() = default;
+
   TimerfdOverrideGuard(const TimerfdOverrideGuard&) = delete;
+  TimerfdOverrideGuard(TimerfdOverrideGuard&&) noexcept = delete;
   TimerfdOverrideGuard& operator=(const TimerfdOverrideGuard&) = delete;
+  TimerfdOverrideGuard& operator=(TimerfdOverrideGuard&&) noexcept = delete;
+
   ~TimerfdOverrideGuard() { gTimerfd.reset(); }
 };
 

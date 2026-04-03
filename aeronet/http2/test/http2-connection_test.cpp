@@ -12,7 +12,6 @@
 #include <span>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
@@ -39,8 +38,8 @@ struct WireDecodedHeadersDebug {
   bool foundHeaders{false};
   bool decodeSuccess{false};
   bool hasDate{false};
-  std::vector<std::byte> headerBlockBytes;
-  std::vector<std::pair<std::string, std::string>> headers;
+  vector<std::byte> headerBlockBytes;
+  vector<std::pair<std::string, std::string>> headers;
 };
 
 [[nodiscard]] WireDecodedHeadersDebug DecodeFirstHeadersFromOutput(std::span<const std::byte> output) {
@@ -102,7 +101,7 @@ struct WireDecodedHeadersDebug {
       }
 
       dbg.hasDate = decodeResult.decodedHeaders.contains(http::Date);
-      dbg.headers.reserve(decodeResult.decodedHeaders.size());
+      dbg.headers.reserve(static_cast<uint32_t>(decodeResult.decodedHeaders.size()));
       for (const auto& [name, value] : decodeResult.decodedHeaders) {
         dbg.headers.emplace_back(std::string{name}, std::string{value});
       }
@@ -1089,7 +1088,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
 
   // Consume the stream send window by sending exactly the peer initial window bytes
   const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
-  std::vector<std::byte> payload(initialWindow, std::byte{0});
+  vector<std::byte> payload(initialWindow, std::byte{0});
 
   EXPECT_EQ(conn.sendData(1U, payload, false), ErrorCode::NoError);
 
@@ -1435,7 +1434,7 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
 
   // Send a DATA frame larger than the connection recv window (100 bytes).
   // We need to construct a raw frame because the peer doesn't know our window.
-  std::vector<std::byte> payload(200, std::byte{0x42});
+  vector<std::byte> payload(200, std::byte{0x42});
   FrameHeader header;
   header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Data;
@@ -1497,7 +1496,7 @@ TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
   }
 
   // Send a DATA frame exceeding the stream recv window (65535 bytes)
-  std::vector<std::byte> payload(66000, std::byte{0x42});
+  vector<std::byte> payload(66000, std::byte{0x42});
   FrameHeader header;
   header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Data;
@@ -1739,7 +1738,7 @@ TEST(Http2Connection, HeadersBlockTooLargeIsEnhanceYourCalm) {
 
   // Build a HEADERS frame without END_HEADERS so the header block is accumulated.
   // The header block fragment is larger than kMaxHeaderBlockAccumulationSize (256KB).
-  std::vector<std::byte> hugeBlock(257 * 1024, std::byte{0x00});
+  vector<std::byte> hugeBlock(257 * 1024, std::byte{0x00});
 
   RawBytes buf;
   WriteFrame(buf, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1,
@@ -1936,7 +1935,7 @@ TEST(Http2Connection, ContinuationHeaderBlockTooLargeIsEnhanceYourCalm) {
   }
 
   // Send a CONTINUATION with a huge fragment that exceeds kMaxHeaderBlockAccumulationSize
-  std::vector<std::byte> hugeBlock(257 * 1024, std::byte{0x00});
+  vector<std::byte> hugeBlock(257 * 1024, std::byte{0x00});
   RawBytes contBuf;
   WriteContinuationFrame(contBuf, 1, std::span<const std::byte>(hugeBlock.data(), hugeBlock.size()), true);
 
@@ -1994,7 +1993,7 @@ TEST(Http2Connection, SendDataConnectionWindowRestoresStreamWindowOnOverflow) {
   }
 
   // Deplete connection send window (default 65535)
-  std::vector<std::byte> big(static_cast<std::size_t>(conn.connectionSendWindow()), std::byte{0x00});
+  vector<std::byte> big(static_cast<vector<std::byte>::size_type>(conn.connectionSendWindow()), std::byte{0x00});
   ASSERT_EQ(conn.sendData(1, big, false), ErrorCode::NoError);
   EXPECT_EQ(conn.connectionSendWindow(), 0);
 

@@ -10,7 +10,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -27,6 +26,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
@@ -297,7 +297,7 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
 
 TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   std::mutex seqMutex;
-  std::vector<std::string> sequence;
+  vector<std::string> sequence;
 
   ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
     std::scoped_lock lock(seqMutex);
@@ -341,18 +341,18 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   EXPECT_TRUE(response.contains("X-Route-Middleware: post")) << response;
   EXPECT_TRUE(response.contains("X-Global-Middleware: post")) << response;
 
-  std::vector<std::string> snapshot;
+  vector<std::string> snapshot;
   {
     std::scoped_lock lock(seqMutex);
     snapshot = sequence;
   }
-  const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
+  const vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
   EXPECT_EQ(snapshot, expected);
 }
 
 TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   std::mutex seqMutex;
-  std::vector<std::string> sequence;
+  vector<std::string> sequence;
 
   ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
     std::scoped_lock lock(seqMutex);
@@ -403,19 +403,19 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   EXPECT_TRUE(response.contains("chunk-1")) << response;
   EXPECT_TRUE(response.contains("chunk-2")) << response;
 
-  std::vector<std::string> snapshot;
+  vector<std::string> snapshot;
   {
     std::scoped_lock lock(seqMutex);
     snapshot = sequence;
   }
-  const std::vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
+  const vector<std::string> expected{"global-pre", "route-pre", "handler", "route-post", "global-post"};
   EXPECT_EQ(snapshot, expected);
 }
 
 TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   std::mutex metricsMutex;
-  std::vector<MiddlewareMetrics> captured;
-  std::vector<std::string> requestPaths;
+  vector<MiddlewareMetrics> captured;
+  vector<std::string> requestPaths;
   ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
@@ -440,7 +440,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<MiddlewareMetrics> metrics;
+  vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
@@ -482,7 +482,7 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
 
 TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   std::mutex metricsMutex;
-  std::vector<MiddlewareMetrics> captured;
+  vector<MiddlewareMetrics> captured;
   ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
@@ -510,7 +510,7 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   ts.server.setMiddlewareMetricsCallback({});
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  std::vector<MiddlewareMetrics> metrics;
+  vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
@@ -536,8 +536,8 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
 
 TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
   std::mutex metricsMutex;
-  std::vector<MiddlewareMetrics> captured;
-  std::vector<std::string> requestPaths;
+  vector<MiddlewareMetrics> captured;
+  vector<std::string> requestPaths;
   ts.server.setMiddlewareMetricsCallback([&](const MiddlewareMetrics& metrics) {
     std::scoped_lock lock(metricsMutex);
     captured.push_back(metrics);
@@ -565,7 +565,7 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
 
   ts.server.setMiddlewareMetricsCallback({});
 
-  std::vector<MiddlewareMetrics> metrics;
+  vector<MiddlewareMetrics> metrics;
   {
     std::scoped_lock lock(metricsMutex);
     metrics = captured;
@@ -1351,7 +1351,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
       });
 
   // Launch multiple requests in parallel
-  std::vector<std::thread> threads;
+  vector<std::thread> threads;
   std::atomic<int> successCount{0};
   constexpr int kNumRequests = 5;
 

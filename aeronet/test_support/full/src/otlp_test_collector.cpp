@@ -26,7 +26,6 @@
 #include <system_error>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
@@ -36,6 +35,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::test {
 namespace {
@@ -272,8 +272,8 @@ CapturedOtlpRequest OtlpTestCollector::waitForRequest(std::chrono::milliseconds 
   return req;
 }
 
-std::vector<CapturedOtlpRequest> OtlpTestCollector::drain() {
-  std::vector<CapturedOtlpRequest> out;
+vector<CapturedOtlpRequest> OtlpTestCollector::drain() {
+  vector<CapturedOtlpRequest> out;
   std::scoped_lock lk(_mutex);
   while (!_requests.empty()) {
     out.emplace_back(std::move(_requests.front()));

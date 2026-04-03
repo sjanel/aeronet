@@ -7,7 +7,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/brotli-decoder.hpp"
 #include "aeronet/brotli-encoder.hpp"
@@ -16,6 +15,7 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 #include "brotli/encode.h"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
@@ -30,8 +30,9 @@ constexpr std::size_t kDecoderChunkSize = 256;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
 
-std::vector<std::string> SamplePayloads() {
-  std::vector<std::string> payloads;
+vector<std::string> SamplePayloads() {
+  vector<std::string> payloads;
+  payloads.reserve(4U);
   payloads.emplace_back("");
   payloads.emplace_back("Hello, Brotli compression!");
   payloads.emplace_back(512U, 'A');

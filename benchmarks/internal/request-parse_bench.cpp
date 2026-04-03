@@ -23,6 +23,8 @@ using namespace std::chrono_literals;  // NOLINT(misc-unused-using-decls)
 // Self-contained minimal roundtrip benchmark (loopback). Avoids depending on test utilities
 // so the benchmarks module can stay decoupled from test headers.
 
+namespace aeronet {
+
 namespace {
 class MinimalServerFixture : public benchmark::Fixture {
  protected:
@@ -58,6 +60,8 @@ bool sendGet(uint16_t port) {
   return raw.contains(aeronet::http::DoubleCRLF);
 }
 
+}  // namespace
+
 BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {
   auto portNumber = server->port();
   for ([[maybe_unused]] auto iter : state) {
@@ -68,6 +72,6 @@ BENCHMARK_F(MinimalServerFixture, GET_RoundTrip)(benchmark::State& state) {
   }
   state.counters["port"] = static_cast<double>(portNumber);
 }
-}  // namespace
+}  // namespace aeronet
 
 BENCHMARK_MAIN();

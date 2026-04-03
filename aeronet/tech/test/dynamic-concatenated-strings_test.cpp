@@ -11,7 +11,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
+
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -184,7 +185,7 @@ TYPED_TEST(DynamicConcatenatedStringsTest, IteratorMultipleParts) {
   pool.append("two");
   pool.append("three");
 
-  std::vector<std::string_view> parts;
+  vector<std::string_view> parts;
   for (auto partView : pool) {
     parts.emplace_back(partView);
   }
@@ -200,7 +201,7 @@ TYPED_TEST(DynamicConcatenatedStringsTest, IteratorCaseInsensitive) {
   pool.append("AbC");
   pool.append("DeF");
 
-  std::vector<std::string_view> parts;
+  vector<std::string_view> parts;
   for (auto partView : pool) {
     parts.emplace_back(partView);
   }

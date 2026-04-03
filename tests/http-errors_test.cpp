@@ -14,7 +14,6 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
@@ -35,6 +34,7 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_tls_fixture.hpp"
@@ -50,7 +50,7 @@ namespace {
 
 struct Capture {
   std::mutex m;
-  std::vector<http::StatusCode> errors;
+  vector<http::StatusCode> errors;
   void push(http::StatusCode err) {
     std::scoped_lock lk(m);
     errors.push_back(err);

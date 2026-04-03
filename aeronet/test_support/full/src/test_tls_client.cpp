@@ -30,7 +30,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -38,6 +37,7 @@
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tls-raii.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::test {
 
@@ -392,7 +392,7 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
 }
 
 // Convenience: perform a GET request and read entire response.
-std::string TlsClient::get(std::string_view target, const std::vector<http::Header>& extraHeaders) {
+std::string TlsClient::get(std::string_view target, const vector<http::Header>& extraHeaders) {
   if (!_handshakeOk) {
     return {};
   }

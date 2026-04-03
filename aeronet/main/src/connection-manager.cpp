@@ -15,6 +15,7 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"

@@ -18,17 +18,18 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 // (Pregen pools are declared inside the benchutil namespace below)
 
-namespace benchutil {
+namespace aeronet::benchutil {
 
 inline constexpr std::string kBodyPath = "/body";
 inline constexpr std::string kHeaderPath = "/headers";
 
 // Pre-generated string pools to avoid per-request RNG or allocation noise during benchmarks.
 struct PregenPool {
-  std::vector<std::string> items;
+  vector<std::string> items;
   std::atomic<uint32_t> idx{0};
   // Each pool owns its RNG so we can deterministically re-seed it when
   // pre-filling. This ensures the same sequence of strings across runs.
@@ -320,4 +321,4 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
   }
 }
 
-}  // namespace benchutil
+}  // namespace aeronet::benchutil

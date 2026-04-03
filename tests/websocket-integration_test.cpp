@@ -11,7 +11,6 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -19,6 +18,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
@@ -43,8 +43,8 @@ std::string BuildUpgradeRequest(std::string_view path, std::string_view key = "d
 }
 
 // Helper to create a masked client frame
-std::vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
-  std::vector<std::byte> frame;
+vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
+  vector<std::byte> frame;
   uint8_t firstByte = static_cast<uint8_t>(Opcode::Text);
   if (fin) {
     firstByte |= 0x80;
@@ -80,15 +80,15 @@ std::vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = tr
 }
 
 // Helper to create a close frame
-std::vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal, std::string_view reason = "") {
-  std::vector<std::byte> payload;
+vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal, std::string_view reason = "") {
+  vector<std::byte> payload;
   payload.push_back(static_cast<std::byte>((static_cast<uint16_t>(code) >> 8) & 0xFF));
   payload.push_back(static_cast<std::byte>(static_cast<uint16_t>(code) & 0xFF));
   for (char ch : reason) {
     payload.push_back(static_cast<std::byte>(ch));
   }
 
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(static_cast<std::byte>(0x80 | static_cast<uint8_t>(Opcode::Close)));
   frame.push_back(static_cast<std::byte>(0x80 | payload.size()));
 
@@ -99,7 +99,7 @@ std::vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal,
   }
 
   // Masked payload
-  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+  for (uint32_t idx = 0; idx < payload.size(); ++idx) {
     frame.push_back(payload[idx] ^ maskKey[idx % 4]);
   }
 
@@ -110,7 +110,7 @@ std::vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal,
 struct ServerFrame {
   Opcode opcode{};
   bool fin{false};
-  std::vector<std::byte> payload;
+  vector<std::byte> payload;
 };
 
 std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
@@ -173,8 +173,8 @@ class WebSocketTest : public ::testing::Test {
   }
 
   // Capture callbacks for verification
-  std::vector<std::pair<std::string, bool>> _receivedMessages;  // payload, isBinary
-  std::vector<std::string> _receivedPings;
+  vector<std::pair<std::string, bool>> _receivedMessages;  // payload, isBinary
+  vector<std::string> _receivedPings;
   bool _closeReceived{false};
   CloseCode _closeCode{CloseCode::Normal};
   std::string _closeReason;
