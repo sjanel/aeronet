@@ -7,9 +7,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/timedef.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -693,7 +693,7 @@ TEST(TimeStringRFC7231Test, RejectsInvalidDigitsAtSpecificPositions) {
   // ptr[17..18] -> hour digits ("08")
   // ptr[20..21] -> minute digits ("49")
   // ptr[23..24] -> second digits ("37")
-  std::vector<size_t> digitPositions = {5, 6, 12, 13, 14, 15, 17, 18, 20, 21, 23, 24};
+  vector<size_t> digitPositions = {5, 6, 12, 13, 14, 15, 17, 18, 20, 21, 23, 24};
 
   for (size_t pos : digitPositions) {
     std::string ts = str;
@@ -712,7 +712,7 @@ TEST(TimeStringRFC7231Test, RejectsNonGMTTimezone) {
   ASSERT_NE(TryParseTimeRFC7231(str), kInvalidTimePoint);  // Sanity check: base string is valid
 
   // Try a few alternatives that are commonly seen but should be rejected by TryParseTimeRFC7231
-  std::vector<std::string> badTz = {"UTC", "G M", "gmt", "GXT", "XYZ", "GM"};
+  vector<std::string> badTz = {"UTC", "G M", "gmt", "GXT", "XYZ", "GM"};
   for (auto& tz : badTz) {
     std::string ts = str;
     // Overwrite the final 3 chars with tz (truncate/pad as necessary)

@@ -10,10 +10,10 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zlib-gateway.hpp"
 
 namespace aeronet {
@@ -160,10 +160,10 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
 
   ZSetInput(compressor.stream, payload);
 
-  std::vector<unsigned char> compressed;
-  compressed.reserve(payload.size() / 2);
+  vector<unsigned char> compressed;
+  compressed.reserve(static_cast<uint32_t>(payload.size() / 2));
   static constexpr std::size_t kChunk = 4096;
-  std::vector<unsigned char> outbuf(kChunk);
+  vector<unsigned char> outbuf(kChunk);
 
   while (true) {
     ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
@@ -180,8 +180,8 @@ TEST(ZStreamRAII, VariantGzipCompressionRoundTrip) {
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
   ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
-  std::vector<char> decompressed;
-  std::vector<unsigned char> inbuf(kChunk);
+  vector<char> decompressed;
+  vector<unsigned char> inbuf(kChunk);
 
   do {
     ZSetOutput(decompressor.stream, reinterpret_cast<char*>(inbuf.data()), inbuf.size());
@@ -206,9 +206,9 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
   ZStreamRAII compressor(ZStreamRAII::Variant::deflate, 6);
   ZSetInput(compressor.stream, payload);
 
-  std::vector<unsigned char> compressed;
+  vector<unsigned char> compressed;
   static constexpr std::size_t kChunk = 4096;
-  std::vector<unsigned char> outbuf(kChunk);
+  vector<unsigned char> outbuf(kChunk);
 
   while (true) {
     ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
@@ -225,8 +225,8 @@ TEST(ZStreamRAII, VariantDeflateCompressionRoundTrip) {
   ZStreamRAII decompressor(ZStreamRAII::Variant::deflate);
   ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
-  std::vector<char> decompressed;
-  std::vector<unsigned char> inbuf(kChunk);
+  vector<char> decompressed;
+  vector<unsigned char> inbuf(kChunk);
 
   do {
     ZSetOutput(decompressor.stream, reinterpret_cast<char*>(inbuf.data()), inbuf.size());
@@ -259,9 +259,9 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
   ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
   ZSetInput(compressor.stream, largePayload);
 
-  std::vector<unsigned char> compressed;
+  vector<unsigned char> compressed;
   static constexpr std::size_t kChunk = 65536;
-  std::vector<unsigned char> outbuf(kChunk);
+  vector<unsigned char> outbuf(kChunk);
 
   while (true) {
     ZSetOutput(compressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
@@ -278,7 +278,7 @@ TEST(ZStreamRAII, LargePayloadCompressionDecompression) {
   ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
   ZSetInput(decompressor.stream, std::string_view{reinterpret_cast<const char*>(compressed.data()), compressed.size()});
 
-  std::vector<unsigned char> decompressed;
+  vector<unsigned char> decompressed;
   while (true) {
     ZSetOutput(decompressor.stream, reinterpret_cast<char*>(outbuf.data()), outbuf.size());
     const int ret = ZInflate(decompressor.stream, Z_NO_FLUSH);
@@ -299,7 +299,7 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
   // of the internal buffer by using the custom allocator that caches the buffer.
 
   std::string testData = "Hello, World! This is a test to verify buffer reuse.";
-  std::vector<unsigned char> outbuf(1024);
+  vector<unsigned char> outbuf(1024);
 
   // Start with gzip compression
   ZStreamRAII stream(ZStreamRAII::Variant::gzip, 6);

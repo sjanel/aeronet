@@ -25,7 +25,6 @@
 #include <system_error>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
@@ -39,6 +38,7 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/toupperlower.hpp"
+#include "aeronet/vector.hpp"
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
 #endif
@@ -368,7 +368,7 @@ std::string dechunk(std::string_view raw) {
 
 // Minimal GET request helper used across compression streaming tests. Parses headers into a map and returns body raw.
 ParsedResponse simpleGet(uint16_t port, std::string_view target,
-                         std::vector<std::pair<std::string_view, std::string_view>> extraHeaders) {
+                         vector<std::pair<std::string_view, std::string_view>> extraHeaders) {
   RequestOptions opt;
   opt.target = std::string(target);
   opt.headers = std::move(extraHeaders);

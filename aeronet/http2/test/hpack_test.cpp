@@ -11,12 +11,12 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 
@@ -25,6 +25,8 @@ namespace {
 std::span<const std::byte> AsBytes(std::span<const uint8_t> span) {
   return {reinterpret_cast<const std::byte*>(span.data()), span.size()};
 }
+
+}  // namespace
 
 // ============================
 // Static Table Tests
@@ -325,7 +327,7 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
   // bytes to a few patterns. The goal is to find at least one input that
   // exercises the invalid-encoding path in the Huffman decoder.
   bool found = false;
-  std::vector<uint8_t> encoded;
+  vector<uint8_t> encoded;
 
   const std::array<std::pair<uint8_t, uint8_t>, 4> prefixes = {
       {{0x12, 0x34}, {0xAA, 0x55}, {0xF0, 0x0F}, {0x99, 0x66}}};
@@ -509,7 +511,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerOverflow) {
   // Construct an indexed header field (1xxxxxxx). Use prefix 7 bits with
   // all ones to indicate continuation, then provide many continuation bytes
   // that keep the multiplier growing until it overflows to 0.
-  std::vector<uint8_t> encoded;
+  vector<uint8_t> encoded;
   encoded.push_back(0x80 | 0x7F);
 
   // Provide a large number of continuation bytes with MSB set to 1 to force
@@ -547,7 +549,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderOutOfBounds) {
 
   // Indexed header with an index larger than static + dynamic table
   // Use a small decoder with no dynamic entries and index value 1000 encoded as varint
-  std::vector<uint8_t> encoded;
+  vector<uint8_t> encoded;
   // First byte: 0x80 | prefix (7 bits) set to max to indicate continuation
   encoded.push_back(0x80 | 0x7F);
   // continuation bytes for 1000 - 127 = 873 in base-128 varint
@@ -594,7 +596,7 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameOutOfBounds) {
 
   // Literal header field with incremental indexing (01xxxxxx). Use the
   // 6-bit prefix with all ones to force varint continuation for the name index.
-  std::vector<uint8_t> encoded;
+  vector<uint8_t> encoded;
   encoded.push_back(0x40 | 0x3F);
 
   // Choose an index far beyond static + dynamic table sizes (e.g., 1000).
@@ -618,10 +620,10 @@ TEST(HpackDecoder, SetMaxDynamicTableSize) {
   HpackDecoder decoder(4096);
 
   // Add two entries via literal-with-indexing encoded blocks
-  std::vector<uint8_t> encoded1 = {0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
-                                   'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
+  vector<uint8_t> encoded1 = {0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
+                              'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
 
-  std::vector<uint8_t> encoded2 = {0x40, 0x04, 'h', 'e', 'a', 'd', 0x05, 'v', 'a', 'l', 'u', 'e'};
+  vector<uint8_t> encoded2 = {0x40, 0x04, 'h', 'e', 'a', 'd', 0x05, 'v', 'a', 'l', 'u', 'e'};
 
   auto r1 = decoder.decode(AsBytes(encoded1));
   EXPECT_TRUE(r1.isSuccess());
@@ -978,9 +980,6 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
   EXPECT_TRUE(dateIt->second.ends_with("GMT"));
 }
 
-}  // namespace
-}  // namespace aeronet::http2
-
 TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
   using namespace aeronet::http2;
 
@@ -994,7 +993,7 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
 
   static constexpr int kStep = kMaxLen / iterations;
 
-  std::vector<uint8_t> buf;
+  vector<uint8_t> buf;
   buf.reserve(kMaxLen);
 
   for (std::size_t len = 7; len < kMaxLen; len += kStep) {
@@ -1009,3 +1008,5 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
   }
 }
+
+}  // namespace aeronet::http2

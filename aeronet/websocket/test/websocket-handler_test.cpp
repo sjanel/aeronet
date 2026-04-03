@@ -1348,7 +1348,7 @@ TEST_F(WebSocketHandlerTest, CompressionFallbackWhenNotBeneficial) {
   // With noContextTakeover, deflate overhead exceeds savings for small incompressible data.
   std::string incompressible;
   for (int ch = 0; ch < 17; ++ch) {
-    incompressible += static_cast<char>(ch * 37 + 97);
+    incompressible += static_cast<char>((ch * 37) + 97);
   }
   EXPECT_TRUE(compressHandler->sendText(incompressible));
 

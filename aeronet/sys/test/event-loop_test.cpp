@@ -10,11 +10,11 @@
 #include <stdexcept>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/vector.hpp"
 
 // Enable epoll/socket syscall overrides from sys-test-support.hpp
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -63,7 +63,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
   // Now exercise growth: create many pipes and write to their write ends so that
   // the internal event array must grow from initial capacity 4 upwards.
   const unsigned kExtra = 128;  // should be enough to force several growth steps
-  std::vector<std::pair<BaseFd, BaseFd>> pipes;
+  vector<std::pair<BaseFd, BaseFd>> pipes;
   pipes.reserve(kExtra);
   for (unsigned i = 0; i < kExtra; ++i) {
     int ints[2];
@@ -136,7 +136,7 @@ TEST(EventLoopTest, NoShrinkPolicy) {
 
   // Grow the loop by adding many fds and poll once
   const unsigned kExtra = 128;
-  std::vector<std::pair<BaseFd, BaseFd>> pipes;
+  vector<std::pair<BaseFd, BaseFd>> pipes;
   pipes.reserve(kExtra);
   for (unsigned i = 0; i < kExtra; ++i) {
     int fds[2];
@@ -215,7 +215,7 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   test::EventLoopHookGuard guard;
   EventLoop loop(std::chrono::milliseconds(5), 2);
   const auto initialCapacity = loop.capacity();
-  std::vector<epoll_event> events;
+  vector<epoll_event> events;
   events.reserve(initialCapacity);
   for (uint32_t i = 0; i < initialCapacity; ++i) {
     events.push_back(test::MakeEvent(static_cast<int>(i), EventIn));
@@ -242,7 +242,7 @@ TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   test::EventLoopHookGuard guard;
   EventLoop loop(std::chrono::milliseconds(5), 2);
   const auto initialCapacity = loop.capacity();
-  std::vector<epoll_event> events;
+  vector<epoll_event> events;
   events.reserve(initialCapacity);
   for (uint32_t i = 0; i < initialCapacity; ++i) {
     events.push_back(test::MakeEvent(static_cast<int>(i), EventIn));

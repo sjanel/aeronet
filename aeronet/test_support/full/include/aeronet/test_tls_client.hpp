@@ -9,10 +9,10 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-header.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::test {
 
@@ -29,7 +29,7 @@ namespace aeronet::test {
 class TlsClient {
  public:
   struct Options {
-    std::vector<std::string> alpn;     // e.g. {"http/1.1"}
+    vector<std::string> alpn;          // e.g. {"http/1.1"}
     bool verifyPeer{false};            // off for self-signed tests
     std::string clientCertPem;         // optional client cert (mTLS)
     std::string clientKeyPem;          // optional client key (mTLS)
@@ -67,7 +67,7 @@ class TlsClient {
   std::string_view readSome(std::span<char> buffer);
 
   /// Convenience: perform a GET request and read entire response.
-  std::string get(std::string_view target, const std::vector<http::Header>& extraHeaders = {});
+  std::string get(std::string_view target, const vector<http::Header>& extraHeaders = {});
 
   [[nodiscard]] std::string_view negotiatedAlpn() const { return _negotiatedAlpn; }
 

@@ -235,7 +235,7 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
 
   // canSend() above already ensures the stream is Open or HalfClosedRemote,
   // which are exactly the states onSendData() handles — so this cannot fail.
-  ErrorCode err = stream->onSendData(endStream);
+  [[maybe_unused]] ErrorCode err = stream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
 
   // Write frame (may need to split if larger than max frame size)
@@ -436,7 +436,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   // canReceive() above already ensures the stream is Open or HalfClosedLocal,
   // which are exactly the states onRecvData() handles — so this cannot fail.
-  ErrorCode err = it->second.onRecvData(frame.endStream);
+  [[maybe_unused]] ErrorCode err = it->second.onRecvData(frame.endStream);
   assert(err == ErrorCode::NoError);
 
   // Invoke callback

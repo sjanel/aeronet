@@ -7,7 +7,6 @@
 #include <exception>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -17,6 +16,7 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/vector.hpp"
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -105,7 +105,7 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   EXPECT_TRUE(response.contains("otel-ok"));
 
   // Collect requests until we have both trace and metrics exports or timeout
-  std::vector<test::CapturedOtlpRequest> captured;
+  vector<test::CapturedOtlpRequest> captured;
   const auto deadline = std::chrono::steady_clock::now() + 3s;  // NOLINT(misc-include-cleaner)
   while (captured.size() < 2 && std::chrono::steady_clock::now() < deadline) {
     try {

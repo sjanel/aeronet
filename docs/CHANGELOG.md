@@ -12,6 +12,7 @@ All notable changes to aeronet are documented in this file.
 ### Improvements
 
 - Optimized WebSocket frame building by removing some copies and allocations.
+- Slightly improved Router test coverage
 
 ### Other
 
