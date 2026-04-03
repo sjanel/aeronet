@@ -3,15 +3,16 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 #include <new>
@@ -195,7 +196,7 @@ TEST(ObjectPoolTest, SelfMoveAssignDoesntDoAnything) {
 TEST(ObjectPoolTest, BulkCreateDestroyCheckValues) {
   ObjectPool<int> pool;
   static constexpr int count = 1000;
-  std::vector<int*> ptrs;
+  vector<int*> ptrs;
   ptrs.reserve(static_cast<std::size_t>(count));
 
   for (int i = 0; i < count; ++i) {
@@ -206,19 +207,19 @@ TEST(ObjectPoolTest, BulkCreateDestroyCheckValues) {
   EXPECT_EQ(pool.size(), static_cast<std::size_t>(count));
 
   // destroy even indices
-  for (int i = 0; i < count; i += 2) {
-    pool.destroyAndRelease(ptrs[static_cast<std::size_t>(i)]);
-    ptrs[static_cast<std::size_t>(i)] = nullptr;
+  for (uint32_t i = 0; i < count; i += 2) {
+    pool.destroyAndRelease(ptrs[i]);
+    ptrs[i] = nullptr;
   }
 
   EXPECT_EQ(pool.size(), static_cast<std::size_t>(count / 2));
 
   // verify remaining values
-  for (int i = 1; i < count; i += 2) {
-    ASSERT_NE(ptrs[static_cast<std::size_t>(i)], nullptr);
-    EXPECT_EQ(*ptrs[static_cast<std::size_t>(i)], i);
-    pool.destroyAndRelease(ptrs[static_cast<std::size_t>(i)]);
-    ptrs[static_cast<std::size_t>(i)] = nullptr;
+  for (uint32_t i = 1; i < count; i += 2) {
+    ASSERT_NE(ptrs[i], nullptr);
+    EXPECT_EQ(*ptrs[i], static_cast<int>(i));
+    pool.destroyAndRelease(ptrs[i]);
+    ptrs[i] = nullptr;
   }
 
   EXPECT_EQ(pool.size(), 0U);
@@ -227,7 +228,7 @@ TEST(ObjectPoolTest, BulkCreateDestroyCheckValues) {
 TEST(ObjectPoolTest, FuzzAllocFreeCycles) {
   ObjectPool<int> pool;
   constexpr int cycles = 10000;
-  std::vector<int*> live;
+  vector<int*> live;
   live.reserve(1024);
 
   std::mt19937_64 rng(12345);
@@ -237,10 +238,10 @@ TEST(ObjectPoolTest, FuzzAllocFreeCycles) {
     int choice = op(rng);
     if (choice != 0 && !live.empty()) {
       // free a random live element
-      std::uniform_int_distribution<std::size_t> idx(0, live.size() - 1);
-      std::size_t index = idx(rng);
+      std::uniform_int_distribution<uint32_t> idx(0, live.size() - 1);
+      uint32_t index = idx(rng);
       pool.destroyAndRelease(live[index]);
-      live.erase(live.begin() + static_cast<std::vector<int*>::difference_type>(index));
+      live.erase(live.begin() + static_cast<vector<int*>::difference_type>(index));
     } else {
       // allocate
       int* val = pool.allocateAndConstruct(i);
@@ -278,7 +279,7 @@ TEST(ObjectPoolTest, FuzzThrowingConstructor) {
 
   ObjectPool<ProbThrow> pool;
   constexpr int cycles = 3000;
-  std::vector<ProbThrow*> live;
+  vector<ProbThrow*> live;
   live.reserve(1024);
 
   std::uniform_int_distribution<int> op(0, 10);
@@ -288,12 +289,12 @@ TEST(ObjectPoolTest, FuzzThrowingConstructor) {
   for (int i = 0; i < cycles; ++i) {
     int choice = op(rng);
     if (choice == 0 && !live.empty()) {
-      std::uniform_int_distribution<std::size_t> idx(0, live.size() - 1);
-      std::size_t index = idx(rng);
+      std::uniform_int_distribution<uint32_t> idx(0, live.size() - 1);
+      uint32_t index = idx(rng);
       // destroy via pool and remove from live list
       ProbThrow* ptr = live[index];
       pool.destroyAndRelease(ptr);
-      live.erase(live.begin() + static_cast<std::vector<ProbThrow*>::difference_type>(index));
+      live.erase(live.begin() + static_cast<vector<ProbThrow*>::difference_type>(index));
     } else {
       try {
         ProbThrow* ptr = pool.allocateAndConstruct(rng, dist);
@@ -326,7 +327,7 @@ TEST(ObjectPoolTest, FuzzThrowingConstructor) {
 TEST(ObjectPoolTest, StringStress) {
   ObjectPool<std::string> pool;
   constexpr int countS = 2000;
-  std::vector<std::string*> ptrs;
+  vector<std::string*> ptrs;
   ptrs.reserve(static_cast<std::size_t>(countS));
 
   for (int i = 0; i < countS; ++i) {
@@ -338,11 +339,11 @@ TEST(ObjectPoolTest, StringStress) {
     ptrs.push_back(val);
   }
 
-  for (int i = 0; i < countS; ++i) {
+  for (uint32_t i = 0; i < countS; ++i) {
     std::ostringstream ss;
     ss << "str-" << i << "-" << (i * 17 % 10007);
-    EXPECT_EQ(*ptrs[static_cast<std::size_t>(i)], ss.str());
-    pool.destroyAndRelease(ptrs[static_cast<std::size_t>(i)]);
+    EXPECT_EQ(*ptrs[i], ss.str());
+    pool.destroyAndRelease(ptrs[i]);
   }
 
   EXPECT_EQ(pool.size(), 0U);
@@ -370,7 +371,7 @@ TEST(ObjectPoolTest, ClearResetsToInitialCapacityAndAllowsReallocate) {
   EXPECT_EQ(pool.capacity(), initCap);
 
   // grow the pool beyond the initial capacity to force several allocations
-  std::vector<int*> ptrs;
+  vector<int*> ptrs;
   ptrs.reserve(initCap * 4);
   for (std::size_t i = 0; i < initCap * 4; ++i) {
     ptrs.push_back(pool.allocateAndConstruct(static_cast<int>(i)));
@@ -467,7 +468,7 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForInt) {
   ObjectPool<int> pool(initCap);
 
   // grow the pool a bit
-  std::vector<int*> ptrs;
+  vector<int*> ptrs;
   ptrs.reserve(200);
   for (int i = 0; i < 200; ++i) {
     ptrs.push_back(pool.allocateAndConstruct(i));
@@ -491,7 +492,7 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForInt) {
 TEST(ObjectPoolTest, ClearPreservesCapacityForString) {
   ObjectPool<std::string> pool;
 
-  std::vector<std::string*> ptrs;
+  vector<std::string*> ptrs;
   const auto capacity = 16 + 32 + 64 + 128;
   ptrs.reserve(capacity);
   for (int i = 0; i < capacity; ++i) {
@@ -525,7 +526,7 @@ TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
   ObjectPool<int> pool(kInitialCapacity);
 
   // fill the pool to force several block allocations
-  std::vector<int*> ptrs;
+  vector<int*> ptrs;
   ptrs.reserve(kInitialCapacity);
   for (std::size_t i = 0; i < kInitialCapacity; ++i) {
     ptrs.push_back(pool.allocateAndConstruct(i));
@@ -546,7 +547,7 @@ TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
   EXPECT_EQ(pool.capacity(), capBefore);
 
   // Check all stored pointers values remain valid
-  for (std::size_t i = 0; i < ptrs.size(); ++i) {
+  for (uint32_t i = 0; i < ptrs.size(); ++i) {
     ASSERT_NE(ptrs[i], nullptr);
     EXPECT_EQ(*ptrs[i], static_cast<int>(i));
   }

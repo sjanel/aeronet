@@ -170,16 +170,17 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   }
 
   if (_activeEncoderCtx != nullptr && _compressionFormat != Encoding::none) {
-    RawChars compressedBuffer(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
-    const auto result = _activeEncoderCtx->encodeChunk(data, compressedBuffer.capacity(), compressedBuffer.data());
+    _compressedBuffer.clear();
+    _compressedBuffer.ensureAvailableCapacity(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
+    const auto result = _activeEncoderCtx->encodeChunk(data, _compressedBuffer.capacity(), _compressedBuffer.data());
     if (result.hasError()) [[unlikely]] {
       _state = State::Failed;
       return false;
     }
     const auto written = result.written();
     if (written > 0) {
-      compressedBuffer.setSize(written);
-      if (!_head && !_transport->emitData(compressedBuffer)) {
+      _compressedBuffer.setSize(written);
+      if (!_head && !_transport->emitData(_compressedBuffer)) {
         _state = State::Failed;
         return false;
       }
@@ -249,10 +250,11 @@ void HttpResponseWriter::end() {
   if (_compressionActivated) {
     const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
     // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
-    RawChars last;
+    _compressedBuffer.clear();
     while (true) {
-      last.ensureAvailableCapacityExponential(endChunkSize);
-      const auto result = _activeEncoderCtx->end(last.availableCapacity(), last.data() + last.size());
+      _compressedBuffer.ensureAvailableCapacityExponential(endChunkSize);
+      const auto result = _activeEncoderCtx->end(_compressedBuffer.availableCapacity(),
+                                                 _compressedBuffer.data() + _compressedBuffer.size());
       if (result.hasError()) [[unlikely]] {
         _state = State::Failed;
         return;
@@ -261,9 +263,9 @@ void HttpResponseWriter::end() {
       if (written == 0) {
         break;
       }
-      last.addSize(written);
+      _compressedBuffer.addSize(written);
     }
-    if (!_head && !last.empty() && !_transport->emitData(last)) {
+    if (!_head && !_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
       _state = State::Failed;
       return;
     }
@@ -324,9 +326,10 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   // Threshold reached exactly or exceeded: activate encoder.
   _activeEncoderCtx = _pCompressionState->makeContext(_compressionFormat);
 
-  RawChars compressedBuffer(_activeEncoderCtx->minEncodeChunkCapacity(_preCompressBuffer.size()));
+  _compressedBuffer.clear();
+  _compressedBuffer.ensureAvailableCapacity(_activeEncoderCtx->minEncodeChunkCapacity(_preCompressBuffer.size()));
   const auto result =
-      _activeEncoderCtx->encodeChunk(_preCompressBuffer, compressedBuffer.capacity(), compressedBuffer.data());
+      _activeEncoderCtx->encodeChunk(_preCompressBuffer, _compressedBuffer.capacity(), _compressedBuffer.data());
   if (result.hasError()) [[unlikely]] {
     _state = State::Failed;
     return false;
@@ -334,7 +337,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
 
   const auto written = result.written();
 
-  compressedBuffer.setSize(written);
+  _compressedBuffer.setSize(written);
 
   _compressionActivated = true;
 
@@ -344,7 +347,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   }
 
   _preCompressBuffer.clear();
-  if (!_head && written > 0 && !_transport->emitData(compressedBuffer)) {
+  if (!_head && written > 0 && !_transport->emitData(_compressedBuffer)) {
     _state = State::Failed;
     return false;
   }

@@ -11,7 +11,6 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -187,7 +186,9 @@ class HttpResponseWriter {
   [[nodiscard]] bool failed() const { return _state == State::Failed; }
 
  private:
+#ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
+#endif
   friend class SingleHttpServer;
 
   /// Construct a writer with a transport backend.
@@ -223,10 +224,11 @@ class HttpResponseWriter {
 #ifndef NDEBUG
   std::size_t _bytesWritten{0};
 #endif
-  EncoderContext* _activeEncoderCtx{nullptr};              // streaming context (owned by compression state)
-  RawChars _preCompressBuffer;                             // threshold buffering before activation
-  RawChars _trailers;                                      // Trailer headers buffered until end()
-  const CompressionConfig* _pCompressionConfig;            // compression thresholds, etc.
+  EncoderContext* _activeEncoderCtx{nullptr};    // streaming context (owned by compression state)
+  RawChars _preCompressBuffer;                   // threshold buffering before activation
+  RawChars _compressedBuffer;                    // reusable output buffer for compression (never freed between chunks)
+  RawChars _trailers;                            // Trailer headers buffered until end()
+  const CompressionConfig* _pCompressionConfig;  // compression thresholds, etc.
   internal::ResponseCompressionState* _pCompressionState;  // encoder pool
 };
 

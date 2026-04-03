@@ -6,9 +6,9 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/scoped-env-var.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -94,7 +94,7 @@ TEST(TelemetryConfigTest, TelemetryConfigHttpHeadersStored) {
   cfg.addHttpHeader("Authorization", "Bearer secret-token");
   cfg.addHttpHeader("X-Test", "Value 42");
 
-  std::vector<std::string_view> headers;
+  vector<std::string_view> headers;
   auto range = cfg.httpHeadersRange();
   headers.assign(range.begin(), range.end());
 
@@ -126,7 +126,7 @@ TEST(TelemetryConfigTest, TelemetryConfigServiceTagAppendedOnce) {
   cfg.validate();  // first call should append service tag
   cfg.validate();  // second call should not duplicate the tag
 
-  std::vector<std::string_view> tags;
+  vector<std::string_view> tags;
   auto range = cfg.dogstatsdTagsRange();
   tags.assign(range.begin(), range.end());
 
@@ -145,28 +145,27 @@ TEST(TelemetryConfigTest, HistogramBoundaries) {
   TelemetryConfig cfg;
 
   // Strictly increasing boundaries are accepted
-  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, 2.0, 3.0}).validate());
+  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{1.0, 2.0, 3.0}).validate());
 
   // Empty name rejected
-  EXPECT_THROW(cfg.addHistogramBuckets("", std::vector<double>{1.0, 2.0}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("", vector<double>{1.0, 2.0}), std::invalid_argument);
 
   // Empty number of boundaries rejected
-  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{}), std::invalid_argument);
-  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{3.14}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{3.14}), std::invalid_argument);
 
   // Double infinite values are rejected
-  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, std::numeric_limits<double>::infinity()}),
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{1.0, std::numeric_limits<double>::infinity()}),
                std::invalid_argument);
-  EXPECT_THROW(
-      cfg.addHistogramBuckets("test.histo", std::vector<double>{-std::numeric_limits<double>::infinity(), 3.0}),
-      std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{-std::numeric_limits<double>::infinity(), 3.0}),
+               std::invalid_argument);
 
   // Non strictly increasing boundaries are rejected
-  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{1.0, 1.0, 2.0}), std::invalid_argument);
-  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{2.0, 3.0, 1.0}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{1.0, 1.0, 2.0}), std::invalid_argument);
+  EXPECT_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{2.0, 3.0, 1.0}), std::invalid_argument);
 
   // Override new boundaries for the same instrument name logs a warning but does not throw
-  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", std::vector<double>{0.0, 1.0, 2.0}).validate());
+  EXPECT_NO_THROW(cfg.addHistogramBuckets("test.histo", vector<double>{0.0, 1.0, 2.0}).validate());
   ASSERT_EQ(cfg.histogramBuckets().size(), 1UL);
   const auto& buckets = cfg.histogramBuckets().begin()->second;
   EXPECT_EQ(buckets.size(), 3UL);
