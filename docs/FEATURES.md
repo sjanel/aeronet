@@ -82,6 +82,7 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 - [x] Outbound trailer headers (buffered via HttpResponse::trailerAddLine, streaming via HttpResponseWriter::trailerAddLine)
 - [x] Mixed-mode dispatch (simultaneous registration of streaming and fixed handlers with precedence)
 - [x] Compression (gzip, deflate, br, zstd) (zlib / zlib-ng, native mode, brotli, zstd) – streaming + buffered with threshold & q-values
+- [x] Streaming compression: per-writer reusable output buffer (zero reallocation between chunks)
 - [x] Large-body optimization (zero-copy capture for large fixed responses)
 - [x] Identity rejection -> 406 Not Acceptable when `identity;q=0` and no acceptable encoding
 

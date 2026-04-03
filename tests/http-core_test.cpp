@@ -11,7 +11,6 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -31,6 +30,7 @@
 #include "aeronet/test_util.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 using namespace std::chrono_literals;
@@ -480,7 +480,7 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   });
 
   // Representative variants for common methods.
-  std::vector<std::pair<std::string, std::string>> cases = {
+  static constexpr std::pair<std::string_view, std::string_view> cases[] = {
       {"GET /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
       {"get /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
       {"GeT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
@@ -492,7 +492,7 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
     std::string resp = sendRaw(pair.first);
     // Response should be 200 and include the method echoed in the body.
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << "Resp=" << resp;
-    EXPECT_TRUE(resp.contains(std::string("method=") + pair.second)) << "Resp=" << resp;
+    EXPECT_TRUE(resp.contains(std::string("method=") + std::string(pair.second))) << "Resp=" << resp;
   }
 }
 
@@ -824,7 +824,7 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
   constexpr int kThreads = 8;
   constexpr int kRequestsPerThread = 20;
 
-  std::vector<std::thread> threads;
+  vector<std::thread> threads;
   std::atomic<int> failures{0};
 
   threads.reserve(kThreads);
@@ -865,7 +865,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   test::TestServer localTs(cfg);
 
   // Payloads of different sizes to exercise edge cases
-  const std::vector<std::size_t> sizes = {100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
+  static constexpr std::size_t sizes[] = {100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
 
   for (std::size_t sz : sizes) {
     std::string payload(sz, static_cast<char>('a' + (sz % 26)));
