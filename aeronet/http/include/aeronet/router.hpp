@@ -347,6 +347,9 @@ class Router {
     // Static children (ordered by priority, highest first)
     vector<RadixNode*> children;
 
+    // Route metadata (param names, wildcard flag, etc.) — near children for cache locality during matching
+    CompiledRoute* pRoute{nullptr};
+
     // Priority for this subtree (number of handlers in children + self)
     // Used to order children for faster lookups of common routes
     uint32_t priority{0};
@@ -362,9 +365,6 @@ class Router {
 
     // Handlers registered at this node (single entry, slash variants tracked in CompiledRoute)
     PathHandlerEntry handlers;
-
-    // Route metadata (param names, wildcard flag, etc.)
-    CompiledRoute* pRoute{nullptr};
   };
 
 #ifdef AERONET_ENABLE_WEBSOCKET

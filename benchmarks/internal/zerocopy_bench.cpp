@@ -12,6 +12,8 @@
 
 using namespace std::chrono_literals;
 
+namespace aeronet {
+
 namespace {
 
 constexpr auto kPollInterval = 3ms;
@@ -56,6 +58,8 @@ class ZerocopyServerFixture : public benchmark::Fixture {
   bench_util::ClientConnection client;
 };
 
+}  // namespace
+
 // Benchmark: measure request throughput for different payload sizes with zerocopy disabled/enabled
 BENCHMARK_DEFINE_F(ZerocopyServerFixture, LargeResponseRoundtrip)(benchmark::State& state) {
   for ([[maybe_unused]] auto iteration : state) {
@@ -95,6 +99,7 @@ BENCHMARK_REGISTER_F(ZerocopyServerFixture, LargeResponseRoundtrip)
     ->Args({1048576, 0})  // 1MB, regular
     ->Args({1048576, 1})  // 1MB, zerocopy
     ;
-}  // namespace
+
+}  // namespace aeronet
 
 BENCHMARK_MAIN();

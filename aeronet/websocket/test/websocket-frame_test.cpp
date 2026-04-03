@@ -11,9 +11,9 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 
 namespace aeronet::websocket {
@@ -517,7 +517,7 @@ TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(original), true, true, mask);
 
   // Make mutable copy for parsing (unmasking)
-  std::vector<std::byte> mutableData(buffer.size());
+  vector<std::byte> mutableData(static_cast<uint32_t>(buffer.size()));
   std::memcpy(mutableData.data(), buffer.data(), buffer.size());
 
   auto result = ParseFrame(mutableData, 0, true);
@@ -526,7 +526,7 @@ TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
   ASSERT_TRUE(result.header.masked);
 
   // Unmask the payload
-  std::vector<std::byte> payloadCopy(result.payload.begin(), result.payload.end());
+  vector<std::byte> payloadCopy(result.payload.begin(), result.payload.end());
   ApplyMask(payloadCopy, result.header.maskingKey);
 
   std::string_view parsed(reinterpret_cast<const char*>(payloadCopy.data()), payloadCopy.size());
@@ -591,7 +591,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameMasked) {
   EXPECT_TRUE(result.header.masked);
 
   // Unmask and verify
-  std::vector<std::byte> payloadCopy(result.payload.begin(), result.payload.end());
+  vector<std::byte> payloadCopy(result.payload.begin(), result.payload.end());
   ApplyMask(payloadCopy, result.header.maskingKey);
 
   auto closePayload = ParseClosePayload(payloadCopy);
@@ -608,8 +608,8 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadSingleByte) {
 
 TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
   // Create a payload of 126 bytes to trigger 16-bit length encoding
-  std::vector<std::byte> mediumPayload(126);
-  for (std::size_t idx = 0; idx < mediumPayload.size(); ++idx) {
+  vector<std::byte> mediumPayload(126);
+  for (uint32_t idx = 0; idx < mediumPayload.size(); ++idx) {
     mediumPayload[idx] = static_cast<std::byte>(idx & 0xFF);
   }
 
@@ -626,8 +626,8 @@ TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
 
 TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
   // Create a large payload that requires 64-bit length encoding
-  std::vector<std::byte> largePayload(70000);
-  for (std::size_t idx = 0; idx < largePayload.size(); ++idx) {
+  vector<std::byte> largePayload(70000);
+  for (uint32_t idx = 0; idx < largePayload.size(); ++idx) {
     largePayload[idx] = static_cast<std::byte>(idx & 0xFF);
   }
 
@@ -642,13 +642,13 @@ TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
 }
 
 TEST_F(WebSocketFrameTest, BuildMasked64BitLengthFrame) {
-  std::vector<std::byte> largePayload(70000);
+  vector<std::byte> largePayload(70000);
   MaskingKey mask = MakeMask(0x11, 0x22, 0x33, 0x44);
 
   BuildFrame(buffer, Opcode::Binary, largePayload, true, true, mask);
 
   // Make mutable copy
-  std::vector<std::byte> mutableData(buffer.size());
+  vector<std::byte> mutableData(static_cast<uint32_t>(buffer.size()));
   std::memcpy(mutableData.data(), buffer.data(), buffer.size());
 
   auto result = ParseFrame(mutableData, 0, true);
@@ -660,7 +660,7 @@ TEST_F(WebSocketFrameTest, BuildMasked64BitLengthFrame) {
 
 TEST_F(WebSocketFrameTest, ParseFrame64BitLengthNonMinimal) {
   // Build a frame with non-minimal 64-bit length encoding (value < 65536)
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN + Text
   frame.push_back(std::byte{127});   // 64-bit length indicator
   // 8 bytes for length, value = 100 (could fit in 7-bit encoding)
@@ -680,7 +680,7 @@ TEST_F(WebSocketFrameTest, ParseFrame64BitLengthNonMinimal) {
 
 TEST_F(WebSocketFrameTest, ParseFrame64BitLengthMSBSet) {
   // Build a frame with 64-bit length where MSB is set (invalid)
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN + Text
   frame.push_back(std::byte{127});   // 64-bit length indicator
   frame.push_back(std::byte{0x80});  // MSB set
@@ -777,7 +777,7 @@ TEST_F(WebSocketFrameTest, IsValidWireCloseCode) {
 
 TEST_F(WebSocketFrameTest, ParseRSV1BitSet) {
   // Build frame with RSV1 bit set
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x91});  // FIN=1, RSV1=1, opcode=Text
   frame.push_back(std::byte{0x05});  // MASK=0, length=5
   frame.push_back(std::byte{'H'});
@@ -793,7 +793,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1BitSet) {
 
 TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
   // Build frame with RSV1 bit set (data frame) and permessage-deflate not allowed
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN=1, RSV1=0 (will set below), opcode=Text
   // Set RSV1 bit
   frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40);
@@ -812,7 +812,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
 
 TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   // Build control frame (Ping) with RSV1 bit set
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x89});  // FIN=1, opcode=Ping (0x09)
   // Set RSV1 bit
   frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40);
@@ -826,7 +826,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
 
 TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {
   // Build frame with RSV2 bit set
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0xA1});  // FIN=1, RSV2=1, opcode=Text
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -836,7 +836,7 @@ TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {
 
 TEST_F(WebSocketFrameTest, ParseRSV3BitSet) {
   // Build frame with RSV3 bit set
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x91});  // FIN=1, RSV3=1, opcode=Text (0x81 | 0x10)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -849,7 +849,7 @@ TEST_F(WebSocketFrameTest, ParseRSV3BitSet) {
 // ============================================================================
 
 TEST_F(WebSocketFrameTest, ParseReservedDataOpcode3) {
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x83});  // FIN=1, opcode=3 (reserved)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -859,7 +859,7 @@ TEST_F(WebSocketFrameTest, ParseReservedDataOpcode3) {
 }
 
 TEST_F(WebSocketFrameTest, ParseReservedControlOpcode11) {
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x8B});  // FIN=1, opcode=0x0B (reserved control)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -872,7 +872,7 @@ TEST_F(WebSocketFrameTest, ParseReservedControlOpcode11) {
 // ============================================================================
 
 TEST_F(WebSocketFrameTest, ParseFragmentedPingFrame) {
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x09});  // FIN=0, opcode=Ping (fragmented - invalid)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -882,7 +882,7 @@ TEST_F(WebSocketFrameTest, ParseFragmentedPingFrame) {
 }
 
 TEST_F(WebSocketFrameTest, ParseFragmentedCloseFrame) {
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x08});  // FIN=0, opcode=Close (fragmented - invalid)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
@@ -896,7 +896,7 @@ TEST_F(WebSocketFrameTest, ParseFragmentedCloseFrame) {
 
 TEST_F(WebSocketFrameTest, ParsePingPayloadTooLarge) {
   // Build Ping frame with payload > 125 bytes (using 16-bit length)
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x89});  // FIN=1, opcode=Ping
   frame.push_back(std::byte{126});   // 16-bit length indicator
   frame.push_back(std::byte{0x00});
@@ -933,7 +933,7 @@ TEST_F(WebSocketFrameTest, ParseClientRejectsServerMaskedFrame) {
 
 TEST_F(WebSocketFrameTest, ParseFrame16BitLengthNonMinimal) {
   // Build a frame with non-minimal 16-bit length encoding (value < 126)
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN + Text
   frame.push_back(std::byte{126});   // 16-bit length indicator
   // 2 bytes for length, value = 50 (could fit in 7-bit encoding)
@@ -955,7 +955,7 @@ TEST_F(WebSocketFrameTest, ParseFrame16BitLengthNonMinimal) {
 
 TEST_F(WebSocketFrameTest, ParseIncompleteMaskingKey) {
   // Header says masked, but not enough bytes for masking key
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN + Text
   frame.push_back(std::byte{0x85});  // MASK=1, length=5
   frame.push_back(std::byte{0x12});  // Only 1 byte of masking key
@@ -970,7 +970,7 @@ TEST_F(WebSocketFrameTest, ParseIncompleteMaskingKey) {
 
 TEST_F(WebSocketFrameTest, ParseIncomplete64BitLength) {
   // 64-bit length marker but only 4 extra bytes
-  std::vector<std::byte> frame;
+  vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN + Text
   frame.push_back(std::byte{127});   // 64-bit length indicator
   frame.push_back(std::byte{0x00});

@@ -11,9 +11,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {
@@ -48,6 +48,8 @@ std::pair<bool, std::string> DecompressData(std::span<const std::byte> input, st
   }
   return {true, BytesToString(output)};
 }
+
+}  // namespace
 
 // ============================================================================
 // WebSocketCompressor Tests
@@ -452,8 +454,8 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripRandomBinary) {
 }
 
 TEST_F(WebSocketCompressRoundTripTest, RoundTripMultipleMessages) {
-  std::vector<std::string> messages = {"First message", "Second message with more content", "Third",
-                                       "Fourth message that is quite a bit longer than the others", ""};
+  vector<std::string> messages = {"First message", "Second message with more content", "Third",
+                                  "Fourth message that is quite a bit longer than the others", ""};
 
   for (const auto& msg : messages) {
     auto [compressOk, compressed] = CompressData(msg, true);
@@ -690,5 +692,4 @@ TEST_F(WebSocketCompressEdgeCasesTest, ManuallyCorruptedCompressedData) {
   }
 }
 
-}  // namespace
 }  // namespace aeronet

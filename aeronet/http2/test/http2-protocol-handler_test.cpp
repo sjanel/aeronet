@@ -16,7 +16,6 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -41,6 +40,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
@@ -951,7 +951,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  std::vector<NativeHandle> closedFds;
+  vector<NativeHandle> closedFds;
   constexpr NativeHandle kFakeUpstreamFd1 = 42;
   constexpr NativeHandle kFakeUpstreamFd2 = 43;
   NativeHandle nextFd = kFakeUpstreamFd1;
@@ -3976,7 +3976,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRstDuringDeferredSendCleansUp) {
 TEST(Http2ProtocolHandler, FilePayloadRstDuringDeferredSendCleansUp) {
   test::ScopedTempDir tmpDir;
   // File larger than initial window to force deferred file sends.
-  const std::string fileContent(128 * 1024, 'F');
+  const std::string fileContent(static_cast<std::string::size_type>(128 * 1024), 'F');
   test::ScopedTempFile tmpFile(tmpDir, fileContent);
 
   Router router;

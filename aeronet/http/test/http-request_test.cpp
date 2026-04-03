@@ -16,7 +16,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
@@ -40,6 +39,7 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -567,7 +567,7 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   // a=1+2&b=hello%20world&c=%zz (malformed % sequence left verbatim for c's value)
   auto st = reqSet(BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  std::vector<http::HeaderView> seen;
+  vector<http::HeaderView> seen;
   for (auto [key, val] : req.queryParamsRange()) {
     seen.emplace_back(key, val);
   }
@@ -599,7 +599,7 @@ TEST_F(HttpRequestTest, QueryParamInt) {
 TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   auto st = reqSet(BuildRaw("GET", "/p?k1=&k2&=v"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  std::vector<http::HeaderView> seen;
+  vector<http::HeaderView> seen;
   for (auto [key, value] : req.queryParamsRange()) {
     seen.emplace_back(key, value);
   }
@@ -620,7 +620,7 @@ TEST_F(HttpRequestTest, EmptyAndMissingValues) {
 TEST_F(HttpRequestTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
   auto st = reqSet(BuildRaw("GET", "/p?x=1&x=2&x=3"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  std::vector<std::string_view> values;
+  vector<std::string_view> values;
   for (auto [key, value] : req.queryParamsRange()) {
     if (key == "x") {
       values.push_back(value);
