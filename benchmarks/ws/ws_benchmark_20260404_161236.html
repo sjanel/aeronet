@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en"> 
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"> 
+  <title>aeronet Benchmarks</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net"> 
+  <style>
+    :root { --bg: #ffffff; --muted: #666; --accent: #1976d2; --success: #2e7d32; }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, 'Helvetica Neue', Arial; margin: clamp(1rem, 2vw, 2.5rem); background: var(--bg); color: #111; }
+    .wrap { width: min(1700px, 95vw); margin: 0 auto; }
+    header { display:flex; align-items:baseline; gap:1rem; }
+    h1 { margin:0; font-size:1.4rem; }
+    .badge { background: var(--success); color: white; padding: 0.15rem 0.5rem; border-radius: 999px; font-size:0.75rem; }
+    .meta { margin-top:0.5rem; color: var(--muted); font-size:0.95rem; }
+    .meta-cards { display:flex; flex-wrap:wrap; gap:0.75rem; margin-top:1rem; }
+    .meta-cards div { flex:1 1 140px; border:1px solid #e0e7ff; background:#f6f8ff; border-radius:8px; padding:0.6rem 0.9rem; }
+    .meta-cards span { display:block; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; color:#6b7280; }
+    .meta-cards strong { font-size:1.15rem; }
+    .tabs { display:inline-flex; gap:0.6rem; margin:1.25rem 0 0.5rem; border-bottom:1px solid #e5e7eb; }
+    .tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .tab.active { color:#111; border-color: var(--accent); }
+    .chart-controls { display:flex; flex-wrap:wrap; gap:1rem; margin:0.75rem 0 0; align-items:flex-end; }
+    .chart-controls label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.75rem; color:#4b5563; text-transform:uppercase; letter-spacing:0.04em; }
+    .chart-controls select { border:1px solid #d1d5db; border-radius:6px; padding:0.4rem 0.6rem; min-width:170px; font-size:0.95rem; }
+    .view { display:none; }
+    .view.active { display:block; }
+    .charts { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem; margin-top:0.75rem; }
+    #charts-grid.focused { grid-template-columns: minmax(360px, 1fr); }
+    .chart-card { display:flex; flex-direction:column; gap:0.4rem; }
+    .chart-card.hidden { display:none; }
+    .chart-shell { position:relative; height:520px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:0.25rem; }
+    .chart-shell canvas { position:absolute; inset:0; width:100%; height:100%; }
+    .table-wrap { margin-top:1.25rem; overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; }
+    .table-tabs { margin-top:1.25rem; }
+    .tabs-nav { display:inline-flex; gap:0.6rem; border-bottom:1px solid #e5e7eb; margin-bottom:0; }
+    .table-tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .table-tab.active { color:#111; border-color: var(--accent); }
+    .table-content { overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; margin-top:0.5rem; }
+    table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    table.benchmark-table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    th, td { padding:0.45rem 0.6rem; border-bottom: 1px solid #f4f4f4; text-align:right; }
+    th:first-child, td:first-child { text-align:left; }
+    td.best-cell { font-weight: 700; color: var(--success); background: #e8f5e9; }
+    @media (min-width: 1500px) {
+      .charts { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+    }
+    /* Focused (single chart) uses more vertical space */
+    #charts-grid.focused .chart-shell { height: min(80vh, 900px); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>WebSocket Benchmarks <span class="badge">CI</span></h1>
+    </header>
+    <p class="meta">This page is generated from <code>benchmark_latest.json</code>. Higher is better for requests/sec and throughput; lower is better for latency.</p>
+    
+<div class="meta-cards">
+  <div><span>Protocol</span><strong>WebSocket</strong></div>
+  <div><span>Tool</span><strong>k6</strong></div>
+  <div><span>Threads</span><strong>2</strong></div>
+  <div><span>VUs</span><strong>50</strong></div>
+  <div><span>Duration</span><strong>30s</strong></div>
+  <div><span>Warmup</span><strong>5s</strong></div>
+</div>
+
+
+    <div style="margin-top:0.5rem;">
+      <div class="tabs" role="tablist" aria-label="Benchmark views">
+        <button class="tab active" data-tab="charts" role="tab" aria-selected="true">Charts</button>
+        <button class="tab" data-tab="table" role="tab" aria-selected="false">Table</button>
+      </div>
+
+      <section id="view-charts" class="view active">
+        <div class="chart-controls" aria-label="Chart filters">
+          
+          <label>Scenario
+            <select id="scenario-filter"><option value="all" selected>All scenarios</option>
+<option value="echo-small">echo-small</option>
+<option value="echo-medium">echo-medium</option>
+<option value="mix">mix</option>
+<option value="ping-pong">ping-pong</option>
+<option value="churn">churn</option>
+<option value="compression">compression</option></select>
+          </label>
+          <label>Metric
+            <select id="metric-filter"><option value="all">All metrics</option>
+<option value="rps" selected>Messages/sec</option>
+<option value="latency">Latency p95 (ms)</option></select>
+          </label>
+        </div>
+        <div class="charts" id="charts-grid">
+          <div class="chart-card" data-metric="rps">
+          <h3 style="margin:.25rem 0">Messages/sec</h3>
+          <div class="chart-shell"><canvas id="chart-rps"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="latency">
+          <h3 style="margin:.25rem 0">Latency p95 (ms)</h3>
+          <div class="chart-shell"><canvas id="chart-latency"></canvas></div>
+        </div>
+        </div>
+      </section>
+
+      <section id="view-table" class="table-wrap view" hidden>
+        
+<div class="conn-config-tables" data-conn-idx="0" style="display:block">
+  <div class="table-tabs">
+    <div class="tabs-nav">
+      <button class="table-tab active" data-table="rps">Messages/sec</button><button class="table-tab" data-table="latency">Latency p95</button>
+    </div>
+    <div class="table-content" id="table-rps-0" style="display: block;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>uwebsockets</th><th>drogon</th><th>Best</th></tr></thead>
+  <tbody><tr><td>echo-small</td><td data-server='aeronet'>63889.7</td><td data-server='uwebsockets'>70661.0</td><td data-server='drogon'>68243.1</td><td class='best-cell'>uwebsockets</td></tr><tr><td>echo-medium</td><td data-server='aeronet'>48692.9</td><td data-server='uwebsockets'>49971.8</td><td data-server='drogon'>47341.1</td><td class='best-cell'>uwebsockets</td></tr><tr><td>mix</td><td data-server='aeronet'>63304.2</td><td data-server='uwebsockets'>58566.2</td><td data-server='drogon'>63360.8</td><td class='best-cell'>drogon</td></tr><tr><td>ping-pong</td><td data-server='aeronet'>70365.1</td><td data-server='uwebsockets'>74548.3</td><td data-server='drogon'>73813.3</td><td class='best-cell'>uwebsockets</td></tr><tr><td>churn</td><td data-server='aeronet'>7481.2</td><td data-server='uwebsockets'>7537.3</td><td data-server='drogon'>7002.6</td><td class='best-cell'>uwebsockets</td></tr><tr><td>compression</td><td data-server='aeronet'>51396.8</td><td data-server='uwebsockets'>53424.5</td><td data-server='drogon'>-</td><td class='best-cell'>uwebsockets</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-latency-0" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>uwebsockets</th><th>drogon</th><th>Best</th></tr></thead>
+  <tbody><tr><td>echo-small</td><td data-server='aeronet'>2.000ms</td><td data-server='uwebsockets'>2.000ms</td><td data-server='drogon'>2.000ms</td><td class='best-cell'>aeronet</td></tr><tr><td>echo-medium</td><td data-server='aeronet'>3.000ms</td><td data-server='uwebsockets'>3.000ms</td><td data-server='drogon'>3.000ms</td><td class='best-cell'>aeronet</td></tr><tr><td>mix</td><td data-server='aeronet'>2.000ms</td><td data-server='uwebsockets'>2.000ms</td><td data-server='drogon'>2.000ms</td><td class='best-cell'>aeronet</td></tr><tr><td>ping-pong</td><td data-server='aeronet'>2.000ms</td><td data-server='uwebsockets'>2.000ms</td><td data-server='drogon'>2.000ms</td><td class='best-cell'>aeronet</td></tr><tr><td>churn</td><td data-server='aeronet'>13.000ms</td><td data-server='uwebsockets'>12.000ms</td><td data-server='drogon'>13.000ms</td><td class='best-cell'>uwebsockets</td></tr><tr><td>compression</td><td data-server='aeronet'>3.000ms</td><td data-server='uwebsockets'>3.000ms</td><td data-server='drogon'>-</td><td class='best-cell'>aeronet</td></tr></tbody>
+</table>
+</div>
+  </div>
+</div>
+
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const allConfigs = [{"servers": ["aeronet", "uwebsockets", "drogon"], "scenarios": [{"name": "echo-small", "rps": [63889.7, 70661.0, 68243.1], "latency": [2.0, 2.0, 2.0]}, {"name": "echo-medium", "rps": [48692.9, 49971.8, 47341.1], "latency": [3.0, 3.0, 3.0]}, {"name": "mix", "rps": [63304.2, 58566.2, 63360.8], "latency": [2.0, 2.0, 2.0]}, {"name": "ping-pong", "rps": [70365.1, 74548.3, 73813.3], "latency": [2.0, 2.0, 2.0]}, {"name": "churn", "rps": [7481.2, 7537.3, 7002.6], "latency": [13.0, 12.0, 13.0]}, {"name": "compression", "rps": [51396.8, 53424.5, null], "latency": [3.0, 3.0, null]}], "units": {"latency": "ms", "transfer": "MB"}, "chartDefs": [{"canvasId": "chart-rps", "dataKey": "rps", "filterMetric": "rps", "chartTitle": "Messages/sec", "axisLabel": "Messages/sec", "scaleType": "linear", "logMin": 0, "formatMetric": "rps"}, {"canvasId": "chart-latency", "dataKey": "latency", "filterMetric": "latency", "chartTitle": "Latency p95 (ms)", "axisLabel": "Latency p95 (ms)", "scaleType": "logarithmic", "logMin": 0.0001, "formatMetric": "latency"}]}];
+    let currentConfigIdx = 0;
+    let payload = allConfigs[currentConfigIdx];
+    let servers = payload.servers;
+    let units = payload.units || { latency: 'ms', transfer: 'MB' };
+    let scenarioLabels = payload.scenarios.map(s => s.name);
+    const palette = ['#2563eb', '#16a34a', '#f97316', '#a855f7', '#0ea5e9', '#f43f5e', '#22d3ee', '#fbbf24'];
+    const chartsGrid = document.getElementById('charts-grid');
+    const scenarioSelect = document.getElementById('scenario-filter');
+    const metricSelect = document.getElementById('metric-filter');
+    const connSelect = document.getElementById('conn-filter');
+
+    function datasetFor(metric) {
+      return servers.map((server, idx) => ({
+        label: server,
+        data: payload.scenarios.map(s => {
+          const arr = s[metric] || [];
+          const value = arr[idx];
+          return typeof value === 'number' ? value : null;
+        }),
+        backgroundColor: palette[idx % palette.length],
+        borderRadius: 6,
+        maxBarThickness: 48,
+      }));
+    }
+
+    function buildChartData(metric, scenarioValue) {
+      const datasets = datasetFor(metric);
+      if (scenarioValue === 'all') {
+        return { labels: scenarioLabels, datasets };
+      }
+      const scenarioIndex = scenarioLabels.indexOf(scenarioValue);
+      if (scenarioIndex === -1) {
+        return { labels: [], datasets: [] };
+      }
+      datasets.forEach(ds => {
+        ds.data = [ds.data[scenarioIndex] ?? null];
+      });
+      return { labels: [scenarioValue], datasets };
+    }
+
+    function minPositive(metric) {
+      let min = Infinity;
+      payload.scenarios.forEach(s => {
+        (s[metric] || []).forEach(val => {
+          if (typeof val === 'number' && val > 0 && val < min) {
+            min = val;
+          }
+        });
+      });
+      return Number.isFinite(min) ? min : 0.1;
+    }
+
+    function formatValue(value, metric) {
+      if (value === null || value === undefined) return 'n/a';
+      let unit = '';
+      if (metric === 'latency') unit = units.latency || 'ms';
+      if (metric === 'transfer') unit = units.transfer || 'MB';
+      const abs = Math.abs(value);
+      let formatted;
+      if (abs >= 1_000_000) {
+        formatted = (value / 1_000_000).toFixed(1) + 'M';
+      } else if (abs >= 1_000) {
+        formatted = (value / 1_000).toFixed(1) + 'k';
+      } else if (abs >= 100) {
+        formatted = value.toFixed(0);
+      } else if (abs >= 10) {
+        formatted = value.toFixed(1);
+      } else {
+        formatted = value.toFixed(2);
+      }
+      return unit ? `${formatted} ${unit}` : formatted;
+    }
+
+    function baseOptions(metric, axisOptions, showLabels = true) {
+      const datalabelsConfig = {
+        anchor: 'end',
+        align: 'start',
+        offset: -22,
+        clip: false,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        borderRadius: 4,
+        padding: 4,
+        color: '#111',
+        font: { weight: '600', size: 11 },
+        formatter: (value, ctx) => {
+          const label = ctx.dataset.label || '';
+          return label;
+        },
+        display: showLabels,
+      };
+
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const value = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : ctx.raw;
+                return `${ctx.dataset.label}: ${formatValue(value, metric)}`;
+              }
+            }
+          },
+          datalabels: datalabelsConfig
+        },
+        scales: axisOptions,
+      };
+    }
+
+    if (typeof ChartDataLabels !== 'undefined') {
+      try { Chart.register(ChartDataLabels); } catch (e) { /* ignore if already registered */ }
+    }
+
+    // Dynamic chart initialization from payload
+    const chartDefs = payload.chartDefs || [];
+    const chartEntries = [];
+    chartDefs.forEach(def => {
+      const canvas = document.getElementById(def.canvasId);
+      if (!canvas) return;
+      const card = canvas.closest('.chart-card');
+      const scaleType = def.scaleType || 'linear';
+      const yOpts = { title: { display: true, text: def.axisLabel || '' }, ticks: { callback: value => formatValue(value, def.formatMetric || def.dataKey) } };
+      if (scaleType === 'logarithmic') {
+        yOpts.type = 'logarithmic';
+        yOpts.min = Math.max(minPositive(def.dataKey) / 1.5, def.logMin || 1e-4);
+      } else {
+        yOpts.beginAtZero = true;
+      }
+      const chart = new Chart(canvas, {
+        type: 'bar',
+        data: buildChartData(def.dataKey, 'all'),
+        options: baseOptions(def.formatMetric || def.dataKey, { x: { ticks: { autoSkip: false } }, y: yOpts }, false),
+      });
+      chartEntries.push({ metric: def.filterMetric, chart, card, dataKey: def.dataKey });
+    });
+
+    function switchConfig(idx) {
+      currentConfigIdx = idx;
+      payload = allConfigs[idx];
+      servers = payload.servers;
+      units = payload.units || { latency: 'ms', transfer: 'MB' };
+      scenarioLabels = payload.scenarios.map(s => s.name);
+
+      // Show/hide per-config table blocks
+      document.querySelectorAll('.conn-config-tables').forEach(el => {
+        el.style.display = el.dataset.connIdx == String(idx) ? 'block' : 'none';
+      });
+
+      refreshCharts();
+    }
+
+    function refreshCharts() {
+      const scenarioValue = scenarioSelect.value;
+      const metricValue = metricSelect.value;
+      const scenarioFocused = scenarioValue !== 'all';
+      const metricFocused = metricValue !== 'all';
+      const focused = scenarioFocused || metricFocused;
+      const activeMetric = metricFocused ? metricValue : null;
+      const showLabels = scenarioFocused;
+      chartsGrid.classList.toggle('focused', focused);
+      chartEntries.forEach(entry => {
+        const showCard = activeMetric ? entry.metric === activeMetric : true;
+        entry.card.classList.toggle('hidden', !showCard);
+        const nextData = buildChartData(entry.dataKey, scenarioValue);
+        entry.chart.data.labels = nextData.labels;
+        entry.chart.data.datasets = nextData.datasets;
+        if (entry.chart.options.plugins.datalabels) {
+          entry.chart.options.plugins.datalabels.display = showLabels;
+        }
+        entry.chart.update();
+      });
+    }
+
+    scenarioSelect.addEventListener('change', refreshCharts);
+    metricSelect.addEventListener('change', refreshCharts);
+    if (connSelect) {
+      connSelect.addEventListener('change', () => switchConfig(parseInt(connSelect.value, 10)));
+    }
+
+    // Tab switching logic
+    const tabs = document.querySelectorAll('.tab');
+    const views = document.querySelectorAll('.view');
+    function activateTab(name) {
+      tabs.forEach(t => { t.classList.toggle('active', t.dataset.tab === name); t.setAttribute('aria-selected', t.dataset.tab === name); });
+      views.forEach(v => {
+        if (v.id === 'view-' + name) { v.classList.add('active'); v.removeAttribute('hidden'); } else { v.classList.remove('active'); v.setAttribute('hidden', ''); }
+      });
+      chartEntries.forEach(entry => entry.chart.update());
+    }
+    tabs.forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
+    refreshCharts();
+
+    // Table tab switching logic (per-config)
+    document.querySelectorAll('.conn-config-tables').forEach(container => {
+      const idx = container.dataset.connIdx;
+      container.querySelectorAll('.table-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tableId = 'table-' + tab.dataset.table + '-' + idx;
+          container.querySelectorAll('.table-tab').forEach(t => t.classList.toggle('active', t.dataset.table === tab.dataset.table));
+          container.querySelectorAll('.table-content').forEach(content => {
+            content.style.display = content.id === tableId ? 'block' : 'none';
+          });
+        });
+      });
+    });
+  </script>
+</body>
+</html>
