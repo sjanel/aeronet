@@ -333,12 +333,10 @@ void SingleHttpServer::setupAcceptedConnection(Connection cnx) {
     state.tlsInfo.handshakeStart = state.lastActivity;
     ++_tls.handshakesInFlight;
   } else {
-    state.transport =
-        std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes, _eventLoop.ioRing());
+    state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
   }
 #else
-  state.transport =
-      std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes, _eventLoop.ioRing());
+  state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
 #endif
   ConnectionState* pCnx = &state;
   std::size_t bytesReadThisEvent = 0;
@@ -732,7 +730,7 @@ NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std:
   // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
   // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
   // reused for the next read, causing data corruption.
-  state.transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0, _eventLoop.ioRing());
+  state.transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0);
   state.peerFd = clientFd;
   state.connectPending = cres.connectPending;
 

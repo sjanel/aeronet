@@ -72,6 +72,8 @@ struct Ipv4Endpoint {
   uint16_t port{0};
 };
 
+#ifndef AERONET_IO_URING
+
 bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
   socklen_t len = sizeof(addr);
@@ -220,6 +222,8 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
   }
   return false;
 }
+
+#endif
 
 }  // namespace
 

@@ -131,9 +131,7 @@ class EventLoop {
   BaseFd _baseFd;
   void* _pEvents = nullptr;
 #ifdef AERONET_IO_URING
-  void* _pRing = nullptr;      // heap-allocated struct io_uring for event notifications (poll/accept/cancel/close)
-  void* _pIoRing = nullptr;    // heap-allocated struct io_uring for data I/O (read/write/splice/send_zc)
-  int _splicePipe[2]{-1, -1};  // pipe pair for IORING_OP_SPLICE (sendfile replacement)
+  void* _pRing = nullptr;  // heap-allocated struct io_uring for event notifications (poll/accept/cancel/close)
 #endif
 #ifdef AERONET_WINDOWS
   void* _pPollFds = nullptr;   // WSAPOLLFD registration array for WSAPoll()

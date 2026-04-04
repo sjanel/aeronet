@@ -1,7 +1,6 @@
 #include "aeronet/event-loop.hpp"
 
 #ifdef AERONET_IO_URING
-#include <fcntl.h>
 #include <liburing.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -73,14 +72,6 @@ struct IoUring {
   // Tracks whether there are un-submitted SQEs in the SQ ring.
   // When true, poll() will call io_uring_submit() before waiting.
   bool hasPendingSqes = false;
-};
-
-// Separate io_uring ring dedicated to data-path I/O (read/write/writev/splice/send_zc).
-// Using a separate ring avoids CQE ordering issues with the event-notification ring:
-// when PlainTransport::read() submits a READ SQE and waits for its CQE, it won't
-// accidentally consume a poll/accept CQE from the event ring.
-struct IoUringIO {
-  struct io_uring ring;
 };
 
 // Ensure fdGen is large enough to hold index 'fd'. Returns false on OOM or invalid fd.
@@ -272,43 +263,6 @@ EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
   _pRing = iouring;
   // Store the ring fd in _baseFd for logging / diagnostics (not used for I/O).
   _baseFd = BaseFd(iouring->ring.ring_fd);
-
-  // Initialize the data I/O ring (read/write/writev/splice/send_zc).
-  auto* ioRingIO = new (std::nothrow) IoUringIO();
-  if (ioRingIO == nullptr) {
-    (void)_baseFd.release();
-    ::io_uring_queue_exit(&iouring->ring);
-    std::free(iouring->rearmBuf);
-    delete iouring;
-    _pRing = nullptr;
-    std::free(_pEvents);
-    _pEvents = nullptr;
-    throw std::bad_alloc();
-  }
-  {
-    // Small ring is sufficient — I/O submissions are per-operation and synchronous.
-    const int ioRet = ::io_uring_queue_init(32, &ioRingIO->ring, 0);
-    if (ioRet < 0) {
-      log::error("io_uring I/O ring init failed (err={}, msg={})", -ioRet, SystemErrorMessage(-ioRet));
-      delete ioRingIO;
-      (void)_baseFd.release();
-      ::io_uring_queue_exit(&iouring->ring);
-      std::free(iouring->rearmBuf);
-      delete iouring;
-      _pRing = nullptr;
-      std::free(_pEvents);
-      _pEvents = nullptr;
-      throw std::runtime_error("io_uring I/O ring initialization failed");
-    }
-  }
-  _pIoRing = ioRingIO;
-
-  // Create pipe for IORING_OP_SPLICE (sendfile replacement).
-  if (::pipe2(_splicePipe, O_CLOEXEC | O_NONBLOCK) != 0) {
-    log::warn("pipe2 for splice failed (err={}), sendfile will use ::sendfile() fallback", LastSystemError());
-    _splicePipe[0] = -1;
-    _splicePipe[1] = -1;
-  }
 #elifdef AERONET_LINUX
   _baseFd = BaseFd(::epoll_create1(EPOLL_CLOEXEC));
   if (!_baseFd) {
@@ -356,9 +310,7 @@ EventLoop::EventLoop(EventLoop&& rhs) noexcept
       _pEvents(std::exchange(rhs._pEvents, nullptr))
 #ifdef AERONET_IO_URING
       ,
-      _pRing(std::exchange(rhs._pRing, nullptr)),
-      _pIoRing(std::exchange(rhs._pIoRing, nullptr)),
-      _splicePipe{std::exchange(rhs._splicePipe[0], -1), std::exchange(rhs._splicePipe[1], -1)}
+      _pRing(std::exchange(rhs._pRing, nullptr))
 #endif
 #ifdef AERONET_WINDOWS
       ,
@@ -372,15 +324,6 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
     std::free(_pEvents);
 #ifdef AERONET_IO_URING
-    if (_pIoRing != nullptr) {
-      auto* ioRingIO = static_cast<IoUringIO*>(_pIoRing);
-      ::io_uring_queue_exit(&ioRingIO->ring);
-      delete ioRingIO;
-    }
-    if (_splicePipe[0] >= 0) {
-      ::close(_splicePipe[0]);
-      ::close(_splicePipe[1]);
-    }
     if (_pRing != nullptr) {
       auto* iouring = static_cast<IoUring*>(_pRing);
       (void)_baseFd.release();  // Prevent double-close: io_uring_queue_exit closes the ring fd.
@@ -400,9 +343,6 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
     _pEvents = std::exchange(rhs._pEvents, nullptr);
 #ifdef AERONET_IO_URING
     _pRing = std::exchange(rhs._pRing, nullptr);
-    _pIoRing = std::exchange(rhs._pIoRing, nullptr);
-    _splicePipe[0] = std::exchange(rhs._splicePipe[0], -1);
-    _splicePipe[1] = std::exchange(rhs._splicePipe[1], -1);
 #endif
 #ifdef AERONET_WINDOWS
     _pPollFds = std::exchange(rhs._pPollFds, nullptr);
@@ -414,15 +354,6 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 
 EventLoop::~EventLoop() {
 #ifdef AERONET_IO_URING
-  if (_pIoRing != nullptr) {
-    auto* ioRingIO = static_cast<IoUringIO*>(_pIoRing);
-    ::io_uring_queue_exit(&ioRingIO->ring);
-    delete ioRingIO;
-  }
-  if (_splicePipe[0] >= 0) {
-    ::close(_splicePipe[0]);
-    ::close(_splicePipe[1]);
-  }
   if (_pRing != nullptr) {
     auto* iouring = static_cast<IoUring*>(_pRing);
     // Prevent BaseFd from closing the ring fd (io_uring_queue_exit does it).
@@ -725,20 +656,22 @@ void EventLoop::submitClose(NativeHandle fd) {
 #ifdef AERONET_IO_URING
   auto* iouring = static_cast<IoUring*>(_pRing);
 
+  // Cancel any active io_uring operations on this fd first, then close synchronously.
+  // Using IORING_OP_CLOSE can delay the actual TCP FIN delivery because the kernel
+  // may not fully release the socket until all io_uring references are dropped.
+  // Synchronous close ensures the FIN is sent promptly.
   struct io_uring_sqe* sqe = GetSqe(iouring);
   if (sqe != nullptr) {
-    ::io_uring_prep_close(sqe, fd);
-    ::io_uring_sqe_set_data64(sqe, PackUserData(fd, kCloseMask, 0));
-    // Submit immediately: the caller expects the fd to be closed promptly (teardown path).
-    // This also flushes any pending del() cancel SQEs so the cancel is processed before
-    // the close, and ensures the fd is actually closed even if the event loop exits soon after.
+    ::io_uring_prep_cancel_fd(sqe, fd, 0);
+    ::io_uring_sqe_set_data64(sqe, kCancelSentinel);
     ::io_uring_submit(&iouring->ring);
     iouring->hasPendingSqes = false;
-  } else {
-    // Fallback: synchronous close if we can't get an SQE.
-    log::debug("io_uring_get_sqe failed for submitClose (fd # {}), falling back to sync close", fd);
-    ::close(fd);
   }
+  // Explicit shutdown: close() alone may not send FIN if io_uring poll operations
+  // still hold references to the file — the socket stays alive until all references
+  // are released. shutdown(SHUT_RDWR) forces the TCP stack to send FIN immediately.
+  ::shutdown(fd, SHUT_RDWR);
+  ::close(fd);
 #else
   BaseFd{fd};  // RAII close — immediately destroys the temporary BaseFd.
 #endif
@@ -1051,28 +984,10 @@ void EventLoop::updatePollTimeout(SysDuration pollTimeout) {
   _pollTimeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count());
 }
 
-void* EventLoop::ioRing() const noexcept {
-#ifdef AERONET_IO_URING
-  return _pIoRing != nullptr ? &static_cast<IoUringIO*>(_pIoRing)->ring : nullptr;
-#else
-  return nullptr;
-#endif
-}
+void* EventLoop::ioRing() const noexcept { return nullptr; }
 
-NativeHandle EventLoop::splicePipeRead() const noexcept {
-#ifdef AERONET_IO_URING
-  return _splicePipe[0];
-#else
-  return kInvalidHandle;
-#endif
-}
+NativeHandle EventLoop::splicePipeRead() const noexcept { return kInvalidHandle; }
 
-NativeHandle EventLoop::splicePipeWrite() const noexcept {
-#ifdef AERONET_IO_URING
-  return _splicePipe[1];
-#else
-  return kInvalidHandle;
-#endif
-}
+NativeHandle EventLoop::splicePipeWrite() const noexcept { return kInvalidHandle; }
 
 }  // namespace aeronet
