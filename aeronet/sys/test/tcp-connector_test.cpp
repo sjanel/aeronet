@@ -18,10 +18,12 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
-#include <vector>
 
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/vector.hpp"
+
+using namespace aeronet;
 
 namespace {
 
@@ -57,7 +59,7 @@ struct TestAddrEntry {
 
 struct AddrinfoOverrideData {
   int result{0};
-  std::vector<TestAddrEntry> entries;
+  vector<TestAddrEntry> entries;
 };
 
 struct TestAddrinfoNode {
@@ -75,7 +77,7 @@ struct HookState {
 HookState gHookState;
 std::mutex gHookMutex;
 
-[[nodiscard]] TestAddrinfoNode* DuplicateEntries(const std::vector<TestAddrEntry>& entries) {
+[[nodiscard]] TestAddrinfoNode* DuplicateEntries(const vector<TestAddrEntry>& entries) {
   TestAddrinfoNode* head = nullptr;
   TestAddrinfoNode* tail = nullptr;
   for (const auto& entry : entries) {
@@ -139,7 +141,7 @@ class AddrinfoOverrideGuard {
  public:
   AddrinfoOverrideGuard() = default;
 
-  explicit AddrinfoOverrideGuard(std::vector<TestAddrEntry> entries, int result = 0) {
+  explicit AddrinfoOverrideGuard(vector<TestAddrEntry> entries, int result = 0) {
     activate(std::move(entries), result);
   }
 
@@ -172,7 +174,7 @@ class AddrinfoOverrideGuard {
  private:
   bool active_{false};
 
-  void activate(std::vector<TestAddrEntry> entries, int result) {
+  void activate(vector<TestAddrEntry> entries, int result) {
     std::scoped_lock lock(gHookMutex);
     gHookState.addrinfoOverride = AddrinfoOverrideData{result, std::move(entries)};
     active_ = true;

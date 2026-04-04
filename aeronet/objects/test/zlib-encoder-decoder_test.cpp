@@ -8,12 +8,12 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-gateway.hpp"
@@ -26,8 +26,8 @@ namespace {
 constexpr std::size_t kDecoderChunkSize = 512;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
 
-std::vector<std::string> SamplePayloads() {
-  std::vector<std::string> payloads;
+vector<std::string> SamplePayloads() {
+  vector<std::string> payloads;
   payloads.reserve(4);
   payloads.emplace_back("");
   payloads.emplace_back("gzip -> deflate parity test");
@@ -403,7 +403,7 @@ TEST_P(ZlibEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
 
 TEST_P(ZlibEncoderDecoderTest, MultipleStreamingSessionsReuseBuffer) {
   // Test that buffer reuse across multiple streaming sessions doesn't cause issues
-  const std::vector<std::string> payloads = {
+  const vector<std::string> payloads = {
       "First stream",
       "Second stream with more data",
       "Third stream",

@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 struct PerSocketData {};
 
@@ -58,17 +59,14 @@ void RunWorker(uint16_t port, uint32_t numThreads, bool printBanner) {
   });
 
   // /ws-uncompressed — no permessage-deflate, used by all non-compression scenarios
-  app.ws<PerSocketData>(
-      "/ws-uncompressed",
-      uWS::TemplatedApp<false>::WebSocketBehavior<PerSocketData>{
-          .compression = uWS::DISABLED,
-          .maxPayloadLength = 64 * 1024 * 1024,
-          .idleTimeout = 0,
-          .maxBackpressure = 1024 * 1024,
-          .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
-            ws->send(message, opCode);
-          },
-      });
+  app.ws<PerSocketData>("/ws-uncompressed", uWS::TemplatedApp<false>::WebSocketBehavior<PerSocketData>{
+                                                .compression = uWS::DISABLED,
+                                                .maxPayloadLength = 64 * 1024 * 1024,
+                                                .idleTimeout = 0,
+                                                .maxBackpressure = 1024 * 1024,
+                                                .message = [](auto* ws, std::string_view message,
+                                                              uWS::OpCode opCode) { ws->send(message, opCode); },
+                                            });
 
   // /ws-compressed — permessage-deflate enabled, used by the compression scenario
   app.ws<PerSocketData>(
@@ -78,9 +76,7 @@ void RunWorker(uint16_t port, uint32_t numThreads, bool printBanner) {
           .maxPayloadLength = 64 * 1024 * 1024,
           .idleTimeout = 0,
           .maxBackpressure = 1024 * 1024,
-          .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
-            ws->send(message, opCode, true);
-          },
+          .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) { ws->send(message, opCode, true); },
       });
 
   app.listen(port, [port, numThreads, printBanner](auto* listenSocket) {

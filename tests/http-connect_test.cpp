@@ -7,7 +7,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <vector>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
@@ -108,8 +107,8 @@ TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
 TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
   // only allow example.com
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    std::vector<std::string> list = {"example.com"};
-    cfg.withConnectAllowlist(list.begin(), list.end());
+    static constexpr std::string_view list[] = {"example.com"};
+    cfg.withConnectAllowlist(std::begin(list), std::end(list));
   });
 
   test::sendAll(fd, "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
