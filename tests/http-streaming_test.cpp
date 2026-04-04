@@ -39,6 +39,8 @@
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <utility>
+
+#include "aeronet/compression-test-helpers.hpp"
 #endif
 
 using namespace aeronet;
@@ -376,6 +378,62 @@ TEST(HttpStreamingCompression, AddHeaderContentEncodingIdentityShouldNotAutomati
   EXPECT_EQ(parsed.body, std::string(64, 'a'));
 
   ts.postConfigUpdate([compression](HttpServerConfig& serverCfg) { serverCfg.withCompression({}); });
+}
+
+TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
+  CompressionConfig compression;
+  compression.minBytes = 8;
+  compression.preferredFormats = {Encoding::gzip};
+  compression.addVaryAcceptEncodingHeader = false;
+
+  ts.postConfigUpdate([compression](HttpServerConfig& serverCfg) { serverCfg.withCompression(compression); });
+
+  // Build large unique chunks so the encoder produces output for intermediate writes,
+  // exercising the _compressedBuffer reuse path in writeBody().
+  constexpr std::size_t kChunkSize = static_cast<const std::size_t>(256 * 1024);
+  constexpr int kNumChunks = 4;
+  std::string chunk(kChunkSize, '\0');
+  for (std::size_t idx = 0; idx < kChunkSize; ++idx) {
+    chunk[idx] = static_cast<char>('A' + (idx % 26));
+  }
+  std::string expected;
+  expected.reserve(kChunkSize * kNumChunks);
+  for (int ii = 0; ii < kNumChunks; ++ii) {
+    expected += chunk;
+  }
+
+  ts.router().setPath(http::Method::GET, "/multi-chunk-compress",
+                      [&chunk](const HttpRequest&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodeOK);
+                        writer.contentType("text/plain");
+                        for (int ii = 0; ii < kNumChunks; ++ii) {
+                          EXPECT_TRUE(writer.writeBody(chunk));
+                        }
+                        writer.end();
+                      });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/multi-chunk-compress";
+  opt.headers = {{"Accept-Encoding", "gzip"}};
+  opt.maxResponseBytes = 2 << 20;
+
+  const auto raw = test::requestOrThrow(ts.port(), opt);
+  const auto parsed = test::parseResponseOrThrow(raw);
+
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  auto ceIt = parsed.headers.find(http::ContentEncoding);
+  ASSERT_NE(ceIt, parsed.headers.end());
+  EXPECT_EQ(ceIt->second, "gzip");
+
+  // Body must be smaller than identity (compression effective on repeated pattern)
+  EXPECT_LT(parsed.body.size(), expected.size());
+
+  // Round-trip decompress and verify correctness
+  auto decompressed = test::Decompress(Encoding::gzip, parsed.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), expected);
+
+  ts.postConfigUpdate([](HttpServerConfig& serverCfg) { serverCfg.withCompression({}); });
 }
 #endif
 

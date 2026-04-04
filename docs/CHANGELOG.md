@@ -13,6 +13,7 @@ All notable changes to aeronet are documented in this file.
 
 - Optimized WebSocket frame building by removing some copies and allocations.
 - Slightly improved Router test coverage
+- Decrease looping allocations in `HttpResponseWriter` by reusing a single buffer for compression
 
 ### Other
 

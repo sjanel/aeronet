@@ -7,13 +7,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zstd-decoder.hpp"
 #include "aeronet/zstd-encoder.hpp"
 
@@ -29,8 +29,8 @@ constexpr std::size_t kDecoderChunkSize = 512;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 4UL * 1024 * 1024;
 
-std::vector<std::string> SamplePayloads() {
-  std::vector<std::string> payloads;
+vector<std::string> SamplePayloads() {
+  vector<std::string> payloads;
   payloads.reserve(4);
   payloads.emplace_back("");
   payloads.emplace_back("Zstd keeps strings sharp.");
