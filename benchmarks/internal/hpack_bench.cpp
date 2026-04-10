@@ -3,13 +3,17 @@
 #include <benchmark/benchmark.h>
 
 #include <array>
+#include <charconv>
 #include <cstddef>
+#include <cstring>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
@@ -63,7 +67,7 @@ constexpr std::array<http::HeaderView, 20> kMediumHeaders{{
 }};
 
 // Large: 50 headers — simulates header-heavy workloads (proxies, CDN)
-std::array<http::HeaderView, 50> BuildLargeHeaders() {
+auto BuildLargeHeaders() {
   // We need storage that outlives the function — use static buffers.
   static std::array<std::string, 50> names;
   static std::array<std::string, 50> values;
@@ -282,7 +286,7 @@ BENCHMARK(BM_HpackFindHeader)->Arg(0)->Arg(10)->Arg(50)->Arg(100);
 
 void BM_HpackRoundTrip(benchmark::State& state) {
   const auto headerCount = static_cast<std::size_t>(state.range(0));
-  auto headers =
+  const auto headers =
       headerCount <= kSmallHeaders.size()    ? std::span<const http::HeaderView>(kSmallHeaders.data(), headerCount)
       : headerCount <= kMediumHeaders.size() ? std::span<const http::HeaderView>(kMediumHeaders.data(), headerCount)
                                              : std::span<const http::HeaderView>(kLargeHeaders.data(), headerCount);
@@ -306,10 +310,16 @@ BENCHMARK(BM_HpackRoundTrip)->Arg(5)->Arg(20)->Arg(50);
 
 void BM_HpackDynamicTableAddEvict(benchmark::State& state) {
   HpackDynamicTable table(4096);  // 4KB default
-  int idx = 0;
+  uint32_t idx = 0;
+  static constexpr std::string_view kNmPrefix = "x-h-";
+  char nmStorage[kNmPrefix.size() + std::numeric_limits<uint32_t>::digits10 + 1];
+  char vlStorage[64];
+  std::string_view vl(vlStorage, sizeof(vlStorage));
+  auto* pNm = Append(kNmPrefix, nmStorage);
   for ([[maybe_unused]] auto iter : state) {
-    std::string nm = "x-h-" + std::to_string(idx % 200);
-    std::string vl = std::string(64, static_cast<char>('a' + (idx % 26)));
+    auto [ptr, ec] = std::to_chars(pNm, nmStorage + sizeof(nmStorage), idx);
+    std::string_view nm(nmStorage, ptr);
+    std::memset(vlStorage, static_cast<char>('a' + (idx % 26)), sizeof(vlStorage));
     table.add(nm, vl);
     benchmark::DoNotOptimize(table.currentSize());
     ++idx;
