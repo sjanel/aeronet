@@ -14,6 +14,9 @@ All notable changes to aeronet are documented in this file.
 - Optimized WebSocket frame building by removing some copies and allocations.
 - Slightly improved Router test coverage
 - Decrease looping allocations in `HttpResponseWriter` by reusing a single buffer for compression
+- HTTP/2 HPACK static table: hash-based encoding lookup (expected CPU gain from internal benches: ~33.5% average on `BM_HpackFindHeader` across 0/10/50/100 dynamic entries)
+- HTTP/2 HPACK dynamic table: reuse evicted-entry buffers in `add()` (expected CPU gain from internal benches: ~46.9% average on `BM_HpackEncode*`, ~19.9% average on `BM_HpackRoundTrip*`; decode overall roughly flat on average)
+- HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
 
 ### Other
 

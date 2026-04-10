@@ -341,7 +341,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
 
     // If buffer is now empty, we're done
     if (state.tunnelOrFileBuffer.empty()) {
-      if (state.fileSend.remaining == 0) {
+      if (state.fileSend.file.length == 0) {
         state.fileSend.active = false;
       }
       return false;
@@ -376,7 +376,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
   // user-space TLS staging buffer has been drained.  Clearing tunnelOrFileBuffer here
   // while data is still pending would drop the last chunk of the response and produce
   // truncated bodies on macOS / any platform without kTLS.
-  if (state.fileSend.remaining == 0 && state.tunnelOrFileBuffer.empty()) {
+  if (state.fileSend.file.length == 0 && state.tunnelOrFileBuffer.empty()) {
     state.fileSend.active = false;
     return;
   }
@@ -404,7 +404,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
       return;
     }
 
-    if (state.fileSend.remaining == 0) {
+    if (state.fileSend.file.length == 0) {
       state.fileSend.active = false;
       state.tunnelOrFileBuffer.clear();
       return;

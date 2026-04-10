@@ -202,11 +202,9 @@ struct ConnectionState {
   std::shared_ptr<const TlsContext> tlsContextKeepAlive;
 #endif
   struct FileSendState {
-    File file;
+    FilePayload file;
     bool active{false};
     bool headersPending{false};
-    std::size_t offset{0};
-    std::size_t remaining{0};
   };
 
   FileSendState fileSend;
