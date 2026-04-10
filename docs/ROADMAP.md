@@ -28,17 +28,6 @@
 
 ### Performance improvement ideas
 
-#### Completed
-
-- ~~`TCP_CORK` / `TCP_NOPUSH` to coalesce~~ ✔
-
-#### High priority
-
-- **HPACK dynamic table: replace `vector` with `deque`** — `_entries.insert(_entries.begin(), ...)` in `hpack.cpp` is O(n) per new header insertion (shifts all elements). `std::deque` gives O(1) `push_front()`, O(1) `pop_back()` eviction, and preserves random-access indexing. Expected 10–20 % improvement on header-heavy HTTP/2 workloads cycling through the dynamic table.
-- **HPACK static table: hash-based encoding lookup** — the encoding path linearly scans the 61-entry static table to match header names. Build a compile-time `flat_hash_map` or `constexpr` indexed array for O(1) lookup. Expected 5–15 % gain on typical HTTP/2 traffic with standard headers (`:method`, `:path`, `content-type`, …).
-- **HTTP/2 stream cleanup: consolidate per-stream maps** — stream close triggers 5 separate map erasures (`_streamRequests`, `_pendingFileSends`, `_pendingStreamingSends`, `_pendingAsyncTasks`, tunnel maps) in `Http2ProtocolHandler::onStreamClosed()`. Unify per-stream state into a single struct stored in one map (optional fields via variant or flags for stream mode). Reduces hash lookups from 5 → 1 per stream close, better cache locality for stream lifecycle.
-- ~~**Response writer: pool compression output buffer**~~ ✅ Done — `_compressedBuffer` member replaces per-call `RawChars` allocations in `writeBody()`, `accumulateInPreCompressBuffer()`, and `end()`. Buffer capacity only grows, never freed between chunks. Tests: `HttpStreamingCompression.MultiChunkCompressedWriteReusesBuffer`.
-
 #### Medium priority
 
 - **`ConnectionState` bool bit-packing** — 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` — meaningful at 10 K+ connections.

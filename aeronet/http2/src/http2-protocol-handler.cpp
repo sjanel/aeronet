@@ -17,6 +17,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/headers-view-map.hpp"
@@ -95,14 +96,16 @@ void Http2ProtocolHandler::setupCallbacks() {
   _connection.setOnWindowUpdate([this](uint32_t streamId, uint32_t /*increment*/) {
     if (streamId == 0) {
       // Connection-level window update: notify all tunnel streams
-      for (const auto& [id, upstreamFd] : _tunnelStreams) {
-        _tunnelBridge->onTunnelWindowUpdate(upstreamFd);
+      for (const auto& [id, state] : _streams) {
+        if (state.tunnelUpstreamFd != kInvalidHandle) {
+          _tunnelBridge->onTunnelWindowUpdate(state.tunnelUpstreamFd);
+        }
       }
     } else {
       // Stream-level window update
-      auto it = _tunnelStreams.find(streamId);
-      if (it != _tunnelStreams.end()) {
-        _tunnelBridge->onTunnelWindowUpdate(it->second);
+      auto it = _streams.find(streamId);
+      if (it != _streams.end() && it->second.tunnelUpstreamFd != kInvalidHandle) {
+        _tunnelBridge->onTunnelWindowUpdate(it->second.tunnelUpstreamFd);
       }
     }
   });
@@ -185,9 +188,10 @@ http::Method ParseHttpMethod(std::string_view method) noexcept {
 }  // namespace
 
 void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
-  auto [it, inserted] = _streamRequests.try_emplace(streamId);
+  auto [it, inserted] = _streams.try_emplace(streamId);
   assert(inserted);  // logic below should be adapted if we can call this multiple times per stream
-  StreamRequest& streamReq = it->second;
+  StreamState& state = it->second;
+  StreamRequest& streamReq = state.request;
 
   HttpRequest& req = streamReq.request;
   req.init(*_pServerConfig, *_pCompressionState);
@@ -236,7 +240,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
                   http::StatusCodeBadRequest,
                   "Invalid :path header - unable to decode percent-encoded characters or path is not valid UTF-8"),
               /*isHeadMethod=*/false);
-          _streamRequests.erase(streamId);
+          _streams.erase(streamId);
           return;
         }
       }
@@ -252,7 +256,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   if (reject) {
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"),
                        /*isHeadMethod=*/false);
-    _streamRequests.erase(streamId);
+    _streams.erase(streamId);
     return;
   }
 
@@ -273,33 +277,39 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   }
 
   // CONNECT requests must be dispatched immediately after headers regardless of endStream,
-  // because CONNECT has no request body — subsequent DATA frames carry tunnel payload.
+  // because CONNECT has no request body - subsequent DATA frames carry tunnel payload.
   if (endStream || req.method() == http::Method::CONNECT) {
     dispatchRequest(it);
   }
 }
 
 void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-  // Check if this is a CONNECT tunnel stream — forward data to upstream.
-  auto tunnelIt = _tunnelStreams.find(streamId);
-  if (tunnelIt != _tunnelStreams.end()) {
-    if (!data.empty()) {
-      _tunnelBridge->writeTunnel(tunnelIt->second, data);
-    }
-    if (endStream) {
-      // Client closed their end of the tunnel — half-close the upstream side.
-      _tunnelBridge->shutdownTunnelWrite(tunnelIt->second);
-    }
-    return;
-  }
-
-  auto it = _streamRequests.find(streamId);
-  if (it == _streamRequests.end()) [[unlikely]] {
+  auto it = _streams.find(streamId);
+  if (it == _streams.end()) [[unlikely]] {
     log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
     return;
   }
 
-  StreamRequest& streamReq = it->second;
+  StreamState& state = it->second;
+
+  // Check if this is a CONNECT tunnel stream - forward data to upstream.
+  if (state.tunnelUpstreamFd != kInvalidHandle) {
+    if (!data.empty()) {
+      _tunnelBridge->writeTunnel(state.tunnelUpstreamFd, data);
+    }
+    if (endStream) {
+      // Client closed their end of the tunnel - half-close the upstream side.
+      _tunnelBridge->shutdownTunnelWrite(state.tunnelUpstreamFd);
+    }
+    return;
+  }
+
+  if (!state.hasRequest()) [[unlikely]] {
+    log::warn("HTTP/2 DATA frame for stream {} with no active request", streamId);
+    return;
+  }
+
+  StreamRequest& streamReq = state.request;
 
   // Accumulate body data
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
@@ -313,7 +323,7 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
           *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
       if (res.message != nullptr) {
         (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
-        _streamRequests.erase(streamId);
+        _streams.erase(streamId);
         return;
       }
     }
@@ -323,33 +333,30 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
 }
 
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
-  _streamRequests.erase(streamId);
-  _pendingFileSends.erase(streamId);
-  _pendingStreamingSends.erase(streamId);
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  _pendingAsyncTasks.erase(streamId);
-#endif
-  cleanupTunnel(streamId);
+  auto it = _streams.find(streamId);
+  if (it == _streams.end()) {
+    return;
+  }
+  cleanupTunnel(it);
+  _streams.erase(it);
 }
 
 void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode) {
   log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
-  _streamRequests.erase(streamId);
-  _pendingFileSends.erase(streamId);
-  _pendingStreamingSends.erase(streamId);
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  _pendingAsyncTasks.erase(streamId);
-#endif
-  cleanupTunnel(streamId);
+  auto it = _streams.find(streamId);
+  if (it == _streams.end()) {
+    return;
+  }
+  cleanupTunnel(it);
+  _streams.erase(it);
 }
 
-ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFileSend& pending,
-                                                    bool endStreamAfterBody) {
+ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody) {
   const uint32_t peerMaxFrame = _connection.peerSettings().maxFrameSize;
 
-  while (pending.remaining != 0) {
+  while (pending.length != 0) {
     Http2Stream* stream = _connection.getStream(streamId);
-    // Stream cannot vanish during synchronous output buffer writes — only processInput
+    // Stream cannot vanish during synchronous output buffer writes - only processInput
     // (which is not re-entered) can close/reset streams.
     assert(stream != nullptr && "stream disappeared during synchronous file send loop");
 
@@ -360,7 +367,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFi
     }
 
     const auto windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
-    const std::size_t chunkSize = std::min({pending.remaining, windowLimit, static_cast<std::size_t>(peerMaxFrame),
+    const std::size_t chunkSize = std::min({pending.length, windowLimit, static_cast<std::size_t>(peerMaxFrame),
                                             static_cast<std::size_t>(_fileSendBuffer.capacity())});
     // All min() inputs are > 0: pending.remaining (loop condition), windowLimit (checked > 0),
     // peerMaxFrame (>= 16384 per HTTP/2), fileSendBuffer capacity (always > 0).
@@ -377,7 +384,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFi
     }
 
     _fileSendBuffer.setSize(readCount);
-    const bool lastBodyChunk = (readCount >= pending.remaining);
+    const bool lastBodyChunk = (readCount >= pending.length);
     const bool endStream = lastBodyChunk && endStreamAfterBody;
 
     const auto bytes =
@@ -388,31 +395,37 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, PendingFi
     assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
 
     pending.offset += readCount;
-    pending.remaining -= readCount;
+    pending.length -= readCount;
   }
 
   return ErrorCode::NoError;
 }
 
 void Http2ProtocolHandler::flushPendingFileSends() {
-  for (auto it = _pendingFileSends.begin(); it != _pendingFileSends.end();) {
+  for (auto it = _streams.begin(); it != _streams.end();) {
+    auto* pFileSend = it->second.fileSend();
+    if (pFileSend == nullptr) {
+      ++it;
+      continue;
+    }
     const uint32_t streamId = it->first;
-    PendingFileSend& pending = it->second;
+    PendingFileSend& pending = *pFileSend;
 
-    // onStreamReset / onStreamClosed erase from _pendingFileSends before flush runs,
+    // onStreamReset / onStreamClosed erase from _streams before flush runs,
     // so all entries here have a live stream.
     assert(_connection.getStream(streamId) != nullptr && "pending file send references a dead stream");
 
     const bool endStreamAfterBody = pending.trailersData.empty();
-    const ErrorCode err = sendPendingFileBody(streamId, pending, endStreamAfterBody);
+    const ErrorCode err = sendPendingFileBody(streamId, pending.file, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
       _connection.sendRstStream(streamId, err);
-      it = _pendingFileSends.erase(it);
+      it->second.pending.reset();
+      ++it;
       continue;
     }
 
-    if (pending.remaining != 0) {
+    if (pending.file.length != 0) {
       ++it;
       continue;
     }
@@ -421,29 +434,41 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     // requires an in-memory body, which file() clears), so endStreamAfterBody is always true.
     assert(endStreamAfterBody && "file + trailers is not supported by the current HttpResponse API");
 
-    it = _pendingFileSends.erase(it);
+    it->second.pending.reset();
+
+    // If the stream has no other active state, remove the entry entirely.
+    if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
+      it = _streams.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
 void Http2ProtocolHandler::flushPendingStreamingSends() {
-  for (auto it = _pendingStreamingSends.begin(); it != _pendingStreamingSends.end();) {
+  for (auto it = _streams.begin(); it != _streams.end();) {
+    auto* pStreamingSend = it->second.streamingSend();
+    if (pStreamingSend == nullptr) {
+      ++it;
+      continue;
+    }
     const uint32_t streamId = it->first;
-    PendingStreamingSend& pending = it->second;
+    PendingStreamingSend& pending = *pStreamingSend;
 
-    // onStreamReset / onStreamClosed erase from _pendingStreamingSends before flush runs,
+    // onStreamReset / onStreamClosed erase from _streams before flush runs,
     // so all entries here have a live stream.
     assert(_connection.getStream(streamId) != nullptr && "pending streaming send references a dead stream");
 
     // Try to send buffered body data.
     while (pending.offset < pending.buffer.size()) {
       // Stream cannot vanish during synchronous output buffer writes.
-      auto* stream = _connection.getStream(streamId);
-      assert(stream != nullptr && "stream disappeared during synchronous streaming send loop");
+      Http2Stream* pStream = _connection.getStream(streamId);
+      assert(pStream != nullptr && "stream disappeared during synchronous streaming send loop");
 
-      const int32_t streamWin = stream->sendWindow();
+      const int32_t streamWin = pStream->sendWindow();
       const int32_t connWin = _connection.connectionSendWindow();
       if (streamWin <= 0 || connWin <= 0) {
-        // Flow control still blocked — wait for WINDOW_UPDATE.
+        // Flow control still blocked - wait for WINDOW_UPDATE.
         break;
       }
 
@@ -485,15 +510,23 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
       assert(sendErr == ErrorCode::NoError && "sendHeaders failed for trailers on a valid stream");
     }
 
-    it = _pendingStreamingSends.erase(it);
+    it->second.pending.reset();
+
+    // If the stream has no other active state, remove the entry entirely.
+    if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
+      it = _streams.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
-void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it, const StreamingHandler& handler,
+void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const StreamingHandler& handler,
                                                   const CorsPolicy* pCorsPolicy,
                                                   std::span<const ResponseMiddleware> responseMiddleware) {
   const uint32_t streamId = it->first;
-  HttpRequest& request = it->second.request;
+  StreamState& state = it->second;
+  HttpRequest& request = state.request.request;
   const bool isHead = (request.method() == http::Method::HEAD);
 
   // CORS preflight rejection
@@ -511,7 +544,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
       [[maybe_unused]] const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHead);
       assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
       onRequestCompleted(request, http::StatusCodeForbidden);
-      _streamRequests.erase(streamId);
+      _streams.erase(streamId);
       return;
     }
   }
@@ -535,11 +568,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
   HttpResponseWriter writer(transport, request, compressionFormat, _pServerConfig->compression, *_pCompressionState,
                             _pServerConfig->globalHeaders.fullStringWithLastSep(), _pServerConfig->addTrailerHeader);
 
-  // Apply response middleware to the writer's internal response (before handler call, for pre-set headers).
-  // Note: CORS application is handled lazily by the writer through the transport.
-  // Response middleware runs here too if needed? Actually, for streaming, response middleware runs in emitHeaders
-  // via the transport... But Http2WriterTransport doesn't run middleware — that's an HTTP/1.1 concern.
-  // For HTTP/2, we skip response middleware on streaming for now (TODO if needed).
+  // Note: response middleware and CORS are applied above only for the preflight-rejection path.
+  // For the normal streaming path, Http2WriterTransport does not run response middleware -
+  // the handler drives the response directly through HttpResponseWriter.
 
   try {
     handler(request, writer);
@@ -555,26 +586,20 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamRequestsMap::iterator it
   // Emit metrics for the streaming request (matching HTTP/1 behavior with StatusCodeOK)
   onRequestCompleted(request, http::StatusCodeOK);
 
-  // Transfer any pending data from the transport to the protocol handler's deferred-send maps.
+  // Transfer any pending data from the transport to the stream's deferred-send state.
   if (transport.hasPendingFile()) {
-    auto fileInfo = transport.extractPendingFile();
     PendingFileSend pendingFile;
-    pendingFile.file = std::move(fileInfo.file);
-    pendingFile.offset = fileInfo.offset;
-    pendingFile.remaining = fileInfo.remaining;
+    pendingFile.file = transport.extractPendingFile();
     pendingFile.trailersData = transport.extractPendingTrailers();
-    pendingFile.trailersView =
-        HeadersView(std::string_view{pendingFile.trailersData.data(), pendingFile.trailersData.size()});
-    _pendingFileSends[streamId] = std::move(pendingFile);
+    pendingFile.trailersView = HeadersView(pendingFile.trailersData);
+    state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingFile));
   } else if (transport.hasPendingData()) {
-    PendingStreamingSend pending;
-    pending.buffer = transport.extractPendingBuffer();
-    pending.trailersData = transport.extractPendingTrailers();
-    _pendingStreamingSends[streamId] = std::move(pending);
+    state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(PendingStreamingSend{
+        .buffer = transport.extractPendingBuffer(), .offset = 0, .trailersData = transport.extractPendingTrailers()});
   }
 
-  // Clean up stream request
-  _streamRequests.erase(streamId);
+  // Clean up stream request (keep stream entry for pending sends)
+  state.request = {};
 }
 
 bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t streamId, bool isHead, bool streaming,
@@ -594,7 +619,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
-    _streamRequests.erase(streamId);
+    _streams.erase(streamId);
     return true;
   }
 
@@ -603,15 +628,16 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
   return false;
 }
 
-void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
+void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   const uint32_t streamId = it->first;
-  HttpRequest& request = it->second.request;
+  HttpRequest& request = it->second.request.request;
 
   // CONNECT requests establish a per-stream TCP tunnel (RFC 7540 §8.3).
   // Handle separately from normal request/response dispatch.
   if (request.method() == http::Method::CONNECT) {
     handleConnectRequest(streamId, request);
-    _streamRequests.erase(streamId);
+    // handleConnectRequest sets up tunnel state in-place; clear only the request.
+    it->second.request = {};
     return;
   }
 
@@ -619,7 +645,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
   if (request.path().empty()) {
     log::error("HTTP/2 stream {} missing :path", streamId);
     _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    _streamRequests.erase(streamId);
+    _streams.erase(streamId);
     return;
   }
 
@@ -631,7 +657,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
         sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError && "sendResponse cannot fail for empty 404 response");
     onRequestCompleted(request, http::StatusCodeNotFound);
-    _streamRequests.erase(streamId);
+    _streams.erase(streamId);
     return;
   }
 
@@ -697,8 +723,14 @@ void Http2ProtocolHandler::dispatchRequest(StreamRequestsMap::iterator it) {
 
   onRequestCompleted(request, respStatusCode);
 
-  // Clean up stream request
-  _streamRequests.erase(streamId);
+  // Clean up stream state. If sendResponse() deferred a file payload (flow-controlled),
+  // the pending send lives inside the StreamState - only clear the request, don't erase.
+  auto& state = it->second;
+  if (state.pending) {
+    state.request = {};
+  } else {
+    _streams.erase(streamId);
+  }
 }
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::RoutingResult& routingResult) {
@@ -809,26 +841,25 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& 
     return;
   }
 
-  // Send 200 headers WITHOUT END_STREAM — the stream stays open for bidirectional DATA.
+  // Send 200 headers WITHOUT END_STREAM - the stream stays open for bidirectional DATA.
   [[maybe_unused]] ErrorCode err =
       _connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, /*endStream=*/false);
   assert(err == ErrorCode::NoError && "sendHeaders cannot fail for a just-opened CONNECT stream");
 
-  // Track the tunnel mapping.
-  _tunnelStreams[streamId] = upstreamFd;
+  // Track the tunnel mapping in the unified stream state.
+  _streams[streamId].tunnelUpstreamFd = upstreamFd;
   _tunnelUpstreams[upstreamFd] = streamId;
 
   log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, target);
 }
 
-void Http2ProtocolHandler::cleanupTunnel(uint32_t streamId) {
-  auto it = _tunnelStreams.find(streamId);
-  if (it == _tunnelStreams.end()) {
+void Http2ProtocolHandler::cleanupTunnel(StreamsMap::iterator it) {
+  const auto upstreamFd = it->second.tunnelUpstreamFd;
+  if (upstreamFd == kInvalidHandle) {
     return;
   }
-  const auto upstreamFd = it->second;
   _tunnelUpstreams.erase(upstreamFd);
-  _tunnelStreams.erase(it);
+  it->second.tunnelUpstreamFd = kInvalidHandle;
 
   _tunnelBridge->closeTunnel(upstreamFd);
 }
@@ -843,7 +874,10 @@ void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
     return;
   }
   const uint32_t streamId = it->second;
-  _tunnelStreams.erase(streamId);
+  auto streamIt = _streams.find(streamId);
+  if (streamIt != _streams.end()) {
+    streamIt->second.tunnelUpstreamFd = kInvalidHandle;
+  }
   _tunnelUpstreams.erase(it);
 
   // Send empty DATA with END_STREAM to gracefully close the tunnel stream.
@@ -851,28 +885,31 @@ void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
 }
 
 void Http2ProtocolHandler::tunnelConnectFailed(uint32_t streamId) {
-  auto it = _tunnelStreams.find(streamId);
-  if (it != _tunnelStreams.end()) {
-    _tunnelUpstreams.erase(it->second);
-    _tunnelStreams.erase(it);
+  auto streamIt = _streams.find(streamId);
+  if (streamIt != _streams.end() && streamIt->second.tunnelUpstreamFd != kInvalidHandle) {
+    _tunnelUpstreams.erase(streamIt->second.tunnelUpstreamFd);
+    streamIt->second.tunnelUpstreamFd = kInvalidHandle;
   }
   // Signal the tunnel failure per RFC 7540 §8.3 using CONNECT_ERROR.
   _connection.sendRstStream(streamId, ErrorCode::ConnectError);
 }
 
 bool Http2ProtocolHandler::isTunnelStream(uint32_t streamId) const noexcept {
-  return _tunnelStreams.contains(streamId);
+  auto it = _streams.find(streamId);
+  return it != _streams.end() && it->second.tunnelUpstreamFd != kInvalidHandle;
 }
 
 Http2ProtocolHandler::TunnelUpstreamsMap Http2ProtocolHandler::drainTunnelUpstreamFds() {
   auto ret = std::move(_tunnelUpstreams);
-  _tunnelStreams.clear();
+  for (auto& [streamId, state] : _streams) {
+    state.tunnelUpstreamFd = kInvalidHandle;
+  }
   _tunnelUpstreams.clear();
   return ret;
 }
 
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
-  auto* pFilePayload = response.filePayloadPtr();
+  FilePayload* pFilePayload = response.filePayloadPtr();
 
   // finalize Date header
   WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
@@ -902,19 +939,17 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   if (hasBody) {
     if (hasFile) {
       PendingFileSend pending;
-      pending.file = std::move(pFilePayload->file);
-      pending.offset = pFilePayload->offset;
-      pending.remaining = pFilePayload->length;
+      pending.file = std::move(*pFilePayload);
 
       // Pass 1 - try to send as much as possible now
-      err = sendPendingFileBody(streamId, pending, endStreamOnData);
+      err = sendPendingFileBody(streamId, pending.file, endStreamOnData);
       if (err != ErrorCode::NoError) {
         return err;
       }
 
-      if (pending.remaining != 0) {
+      if (pending.file.length != 0) {
         assert(!hasTrailers && "file + trailers is not supported by the current HttpResponse API");
-        _pendingFileSends[streamId] = std::move(pending);
+        _streams[streamId].pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pending));
       } else {
         // File payload fully sent inline. Send trailers if present.
         // Note: hasFile && hasTrailers is currently unreachable via the public HttpResponse API
@@ -943,36 +978,41 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-bool Http2ProtocolHandler::startAsyncHandler(StreamRequestsMap::iterator it, const AsyncRequestHandler& handler,
+bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler,
                                              const CorsPolicy* pCorsPolicy,
                                              std::span<const ResponseMiddleware> responseMiddleware) {
   const uint32_t streamId = it->first;
-  const bool isHead = (it->second.request.method() == http::Method::HEAD);
+  StreamState& state = it->second;
+  const bool isHead = (state.request.request.method() == http::Method::HEAD);
 
-  // Prepare the pending task entry. We move the StreamRequest out of _streamRequests immediately
+  // Prepare the pending task entry. We move the StreamRequest out of the request slot immediately
   // so the HttpRequest gets a stable memory address BEFORE we pass it by reference to the coroutine.
-  auto& pendingRef = _pendingAsyncTasks[streamId];
-  pendingRef.streamRequest = std::move(it->second);
+  auto pendingPtr = _pendingWorkPool.allocateAndConstructPoolPtr(PendingAsyncTask{});
+  auto& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
+  pendingRef.streamRequest = std::move(state.request);
   pendingRef.pCorsPolicy = pCorsPolicy;
   pendingRef.pResponseMiddleware = responseMiddleware.data();
   pendingRef.responseMiddlewareCount = responseMiddleware.size();
   pendingRef.isHead = isHead;
   pendingRef.suspended = false;
 
-  _streamRequests.erase(it);
-
   // Install HTTP/2 async callback mechanism on the request NOW
   pendingRef.streamRequest.request._h2SuspendedFlag = &pendingRef.suspended;
   pendingRef.streamRequest.request._h2PostCallback = _asyncPostCallback;
+
+  // Store in the variant
+  state.pending = std::move(pendingPtr);
 
   auto task = handler(pendingRef.streamRequest.request);
   if (!task.valid()) {
     log::error("HTTP/2 async handler returned invalid task on stream {} for path {}", streamId,
                pendingRef.streamRequest.request.path());
+    state.request = std::move(pendingRef.streamRequest);
+    state.pending.reset();
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
                        /*isHeadMethod=*/false);
-    onRequestCompleted(pendingRef.streamRequest.request, http::StatusCodeInternalServerError);
-    _pendingAsyncTasks.erase(streamId);
+    onRequestCompleted(state.request.request, http::StatusCodeInternalServerError);
+    _streams.erase(streamId);
     return false;
   }
 
@@ -988,7 +1028,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamRequestsMap::iterator it, con
   }
 
   if (pendingRef.suspended) {
-    // Coroutine suspended on co_await (e.g., deferWork) — truly async.
+    // Coroutine suspended on co_await (e.g., deferWork) - truly async.
     // It will be resumed later via resumeAsyncTaskByHandle when the callback fires.
     log::debug("HTTP/2 async handler suspended on stream {}", streamId);
     return true;
@@ -996,24 +1036,25 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamRequestsMap::iterator it, con
 
   // All current RequestTask coroutines either complete immediately or suspend via deferWork.
   // A non-deferWork suspension point would indicate an unsupported awaitable.
-  assert(pendingRef.task.done() && "coroutine suspended without deferWork — unsupported by current RequestTask design");
+  assert(pendingRef.task.done() && "coroutine suspended without deferWork - unsupported by current RequestTask design");
 
   onAsyncTaskCompleted(streamId);
   return false;
 }
 
 void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
-  auto it = _pendingAsyncTasks.find(streamId);
-  // Only called from resumeAsyncTaskByHandle which just found the entry — cannot be absent.
-  assert(it != _pendingAsyncTasks.end());
+  auto it = _streams.find(streamId);
+  // Only called from resumeAsyncTaskByHandle which just found the entry - cannot be absent.
+  auto* pAsync = it->second.asyncTask();
+  assert(it != _streams.end() && pAsync != nullptr);
 
-  PendingAsyncTask& pending = it->second;
+  PendingAsyncTask& pending = *pAsync;
   pending.suspended = false;
 
   while (!pending.task.done()) {
     pending.task.resume();
     if (pending.suspended && !pending.task.done()) {
-      // Suspended again — wait for next callback
+      // Suspended again - wait for next callback
       return;
     }
   }
@@ -1022,40 +1063,48 @@ void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
 }
 
 void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
-  auto it = _pendingAsyncTasks.find(streamId);
-  // Called from startAsyncHandler (just inserted) or resumeAsyncTask (just found) — cannot be absent.
-  assert(it != _pendingAsyncTasks.end());
+  auto it = _streams.find(streamId);
+  // Called from startAsyncHandler (just inserted) or resumeAsyncTask (just found) - cannot be absent.
+  auto* pAsync = it->second.asyncTask();
+  assert(pAsync != nullptr);
 
-  PendingAsyncTask& pending = it->second;
-  HttpRequest& request = pending.streamRequest.request;
-  const bool isHead = pending.isHead;
+  HttpRequest& asyncRequest = pAsync->streamRequest.request;
+  const bool isHead = pAsync->isHead;
   ErrorCode err = ErrorCode::NoError;
   http::StatusCode respStatusCode{};
 
   try {
-    HttpResponse resp = pending.task.runSynchronously();
+    HttpResponse resp = pAsync->task.runSynchronously();
 
     auto middlewareSpan =
-        std::span<const ResponseMiddleware>(pending.pResponseMiddleware, pending.responseMiddlewareCount);
-    ApplyResponseMiddleware(request, resp, middlewareSpan, _pRouter->globalResponseMiddleware(), *_pTelemetryContext,
-                            false, {});
-    if (pending.pCorsPolicy != nullptr) {
-      (void)pending.pCorsPolicy->applyToResponse(request, resp);
+        std::span<const ResponseMiddleware>(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
+    ApplyResponseMiddleware(asyncRequest, resp, middlewareSpan, _pRouter->globalResponseMiddleware(),
+                            *_pTelemetryContext, false, {});
+    if (pAsync->pCorsPolicy != nullptr) {
+      (void)pAsync->pCorsPolicy->applyToResponse(asyncRequest, resp);
     }
 
-    request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
+    asyncRequest.prefinalizeHttpResponse(resp, *_pTelemetryContext);
     resp.finalizeForHttp2();
 
     respStatusCode = resp.status();
+    // Move request back to stream slot and free the pending variant so sendResponse
+    // can store a deferred file send if needed.
+    it->second.request = std::move(pAsync->streamRequest);
+    it->second.pending.reset();
     err = sendResponse(streamId, std::move(resp), isHead);
   } catch (const std::exception& ex) {
     log::error("HTTP/2 async handler exception on stream {}: {}", streamId, ex.what());
     respStatusCode = http::StatusCodeInternalServerError;
+    it->second.request = std::move(pAsync->streamRequest);
+    it->second.pending.reset();
     err = sendResponse(streamId, HttpResponse(respStatusCode, ex.what()),
                        /*isHeadMethod=*/false);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
     respStatusCode = http::StatusCodeInternalServerError;
+    it->second.request = std::move(pAsync->streamRequest);
+    it->second.pending.reset();
     err = sendResponse(streamId, HttpResponse(respStatusCode, "Unknown error"),
                        /*isHeadMethod=*/false);
   }
@@ -1064,20 +1113,29 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     log::error("HTTP/2 failed to send async response on stream {}: {}", streamId, ErrorCodeName(err));
   }
 
-  onRequestCompleted(request, respStatusCode);
+  onRequestCompleted(it->second.request.request, respStatusCode);
 
-  _pendingAsyncTasks.erase(it);
+  // If sendResponse() deferred a file payload, keep the stream entry alive.
+  auto& state = it->second;
+  if (state.pending) {
+    state.request = {};
+  } else {
+    _streams.erase(it);
+  }
 }
 
 bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handle) {
-  const void* targetAddr = handle.address();
-  for (auto& [streamId, pending] : _pendingAsyncTasks) {
-    if (pending.task.coroutineAddress() == targetAddr) {
-      pending.suspended = false;
-      resumeAsyncTask(streamId);
-      return true;
-    }
+  auto pAsyncIt = std::ranges::find_if(_streams, [targetAddr = handle.address()](auto& pair) {
+    auto* pAsync = pair.second.asyncTask();
+    return pAsync != nullptr && pAsync->task.coroutineAddress() == targetAddr;
+  });
+  if (pAsyncIt != _streams.end()) {
+    auto* pAsync = pAsyncIt->second.asyncTask();
+    pAsync->suspended = false;
+    resumeAsyncTask(pAsyncIt->first);
+    return true;
   }
+
   return false;
 }
 

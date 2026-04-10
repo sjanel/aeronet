@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -29,19 +28,36 @@ class HpackDynamicEntry {
   // Internally, the name is stored in lowercase for string searching optimization.
   HpackDynamicEntry(std::string_view name, std::string_view value);
 
+  // Same as above, but by stealing the buffer of 'rhs'.
+  // If it is smaller than the new name/value, the buffer will be reallocated.
+  HpackDynamicEntry(HpackDynamicEntry&& rhs, std::string_view name, std::string_view value);
+
+  HpackDynamicEntry(const HpackDynamicEntry&) = delete;
+  HpackDynamicEntry(HpackDynamicEntry&& rhs) noexcept;
+  HpackDynamicEntry& operator=(const HpackDynamicEntry&) = delete;
+  HpackDynamicEntry& operator=(HpackDynamicEntry&& rhs) noexcept;
+
+  ~HpackDynamicEntry();
+
   /// Calculate the size of this entry as defined by RFC 7541 §4.1.
   [[nodiscard]] std::size_t size() const noexcept { return kOverhead + _nameLength + _valueLength; }
 
-  [[nodiscard]] std::string_view name() const noexcept { return {_data.get(), _nameLength}; }
+  [[nodiscard]] std::string_view name() const noexcept { return {_pData, _nameLength}; }
 
-  [[nodiscard]] std::string_view value() const noexcept { return {_data.get() + _nameLength, _valueLength}; }
+  [[nodiscard]] std::string_view value() const noexcept { return {_pData + _nameLength, _valueLength}; }
 
   using trivially_relocatable = std::true_type;
 
  private:
-  std::unique_ptr<char[]> _data;
-  uint32_t _nameLength;
-  uint32_t _valueLength;
+  friend class HpackDynamicTable;
+
+  HpackDynamicEntry() noexcept = default;
+
+  [[nodiscard]] bool unallocated() const noexcept { return _pData == nullptr; }
+
+  char* _pData{};
+  uint32_t _nameLength{};
+  uint32_t _valueLength{};
 };
 
 /// HPACK dynamic table with FIFO eviction (RFC 7541 §2.3.2).
@@ -83,7 +99,7 @@ class HpackDynamicTable {
   void clear() noexcept;
 
  private:
-  void evict();
+  HpackDynamicEntry evict();
 
   vector<HpackDynamicEntry> _entries;
   std::size_t _currentSize{0};

@@ -22,6 +22,7 @@ AeronetAddUnitTest(
     test/hpack_test.cpp
     LIBRARIES
     aeronet_http2
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

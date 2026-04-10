@@ -12,7 +12,12 @@
 #include <string_view>
 #include <utility>
 
+#if AERONET_WANT_MALLOC_OVERRIDES
+#include <new>
+#endif
+
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -1008,5 +1013,34 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
   }
 }
+
+// ============================
+// Allocation Failure Tests
+// ============================
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(HpackDynamicEntry, ConstructorMallocFailureThrowsBadAlloc) {
+  // The HpackDynamicEntry(name, value) constructor calls malloc.
+  // When malloc returns nullptr, it must throw std::bad_alloc.
+  test::FailNextMalloc();
+  EXPECT_THROW(HpackDynamicEntry("test-name", "test-value"), std::bad_alloc);
+}
+
+TEST(HpackDynamicEntry, BufferStealingConstructorReallocFailureThrowsBadAlloc) {
+  // The HpackDynamicEntry(rhs&&, name, value) constructor calls realloc
+  // when the new entry is larger than the stolen buffer.
+  // When realloc returns nullptr, it must throw std::bad_alloc.
+  HpackDynamicEntry small("a", "b");
+
+  // The buffer-stealing constructor needs a larger entry to trigger realloc.
+  const std::string longName(200, 'x');
+  const std::string longValue(200, 'y');
+
+  test::FailNextRealloc();
+  EXPECT_THROW(HpackDynamicEntry(std::move(small), longName, longValue), std::bad_alloc);
+}
+
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 }  // namespace aeronet::http2
