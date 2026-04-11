@@ -416,7 +416,7 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     assert(_connection.getStream(streamId) != nullptr && "pending file send references a dead stream");
 
     const bool endStreamAfterBody = pending.trailersData.empty();
-    const ErrorCode err = sendPendingFileBody(streamId, pending.file, endStreamAfterBody);
+    const ErrorCode err = sendPendingFileBody(streamId, pending.filePayload, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
       _connection.sendRstStream(streamId, err);
@@ -425,7 +425,7 @@ void Http2ProtocolHandler::flushPendingFileSends() {
       continue;
     }
 
-    if (pending.file.length != 0) {
+    if (pending.filePayload.length != 0) {
       ++it;
       continue;
     }
@@ -589,7 +589,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   // Transfer any pending data from the transport to the stream's deferred-send state.
   if (transport.hasPendingFile()) {
     PendingFileSend pendingFile;
-    pendingFile.file = transport.extractPendingFile();
+    pendingFile.filePayload = transport.extractPendingFile();
     pendingFile.trailersData = transport.extractPendingTrailers();
     pendingFile.trailersView = HeadersView(pendingFile.trailersData);
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingFile));
@@ -605,7 +605,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
 bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t streamId, bool isHead, bool streaming,
                                                   const Router::RoutingResult& routingResult) {
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
-                                           routingResult.requestMiddlewareRange, *_pTelemetryContext, streaming, {});
+                                           routingResult.preMiddlewareRange(), *_pTelemetryContext, streaming, {});
   if (globalResult.has_value()) {
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
     if (pCorsPolicy != nullptr) {
@@ -623,7 +623,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
     return true;
   }
 
-  request.finalizeBeforeHandlerCall(routingResult.pathParams);
+  request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
   return false;
 }
@@ -677,7 +677,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      if (startAsyncHandler(it, *asyncHandler, routingResult.pCorsPolicy, routingResult.responseMiddlewareRange)) {
+      if (startAsyncHandler(it, *asyncHandler, routingResult.pCorsPolicy, routingResult.postMiddlewareRange())) {
         // Async handler is running; response will be sent later when it completes.
         return;
       }
@@ -694,7 +694,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      handleStreamingRequest(it, *streamingHandler, routingResult.pCorsPolicy, routingResult.responseMiddlewareRange);
+      handleStreamingRequest(it, *streamingHandler, routingResult.pCorsPolicy, routingResult.postMiddlewareRange());
       return;
     }
 
@@ -756,16 +756,12 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::Rou
     // Not handled (e.g., not a preflight), fall through to normal processing
   }
 
-  // Execute request middleware chain
-  auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
-  auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
-
   // Streaming handlers are always intercepted in dispatchRequest() before reply() is called.
   assert(routingResult.streamingHandler() == nullptr);
 
   // Run global request middleware first
-  auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(), requestMiddlewareRange,
-                                           *_pTelemetryContext, false, {});
+  auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
+                                           routingResult.preMiddlewareRange(), *_pTelemetryContext, false, {});
   if (globalResult.has_value()) {
     if (pCorsPolicy != nullptr) {
       (void)pCorsPolicy->applyToResponse(request, *globalResult);
@@ -774,7 +770,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::Rou
   }
 
   // Helper to apply response middleware and CORS
-  auto finalizeResponse = [&, responseMiddlewareRange](HttpResponse& resp) {
+  auto finalizeResponse = [&, responseMiddlewareRange = routingResult.postMiddlewareRange()](HttpResponse& resp) {
     ApplyResponseMiddleware(request, resp, responseMiddlewareRange, _pRouter->globalResponseMiddleware(),
                             *_pTelemetryContext, false, {});
     if (pCorsPolicy != nullptr) {
@@ -782,7 +778,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::Rou
     }
   };
 
-  request.finalizeBeforeHandlerCall(routingResult.pathParams);
+  request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
   // Handle the request based on handler type
   if (const auto* reqHandler = routingResult.requestHandler(); reqHandler != nullptr) {
@@ -939,15 +935,15 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   if (hasBody) {
     if (hasFile) {
       PendingFileSend pending;
-      pending.file = std::move(*pFilePayload);
+      pending.filePayload = std::move(*pFilePayload);
 
       // Pass 1 - try to send as much as possible now
-      err = sendPendingFileBody(streamId, pending.file, endStreamOnData);
+      err = sendPendingFileBody(streamId, pending.filePayload, endStreamOnData);
       if (err != ErrorCode::NoError) {
         return err;
       }
 
-      if (pending.file.length != 0) {
+      if (pending.filePayload.length != 0) {
         assert(!hasTrailers && "file + trailers is not supported by the current HttpResponse API");
         _streams[streamId].pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pending));
       } else {
@@ -992,7 +988,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   pendingRef.streamRequest = std::move(state.request);
   pendingRef.pCorsPolicy = pCorsPolicy;
   pendingRef.pResponseMiddleware = responseMiddleware.data();
-  pendingRef.responseMiddlewareCount = responseMiddleware.size();
+  pendingRef.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   pendingRef.isHead = isHead;
   pendingRef.suspended = false;
 

@@ -191,7 +191,7 @@ TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   auto result = router.match(http::Method::GET, "/ctor");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Request);
   EXPECT_NE(result.requestHandler(), nullptr);
-  EXPECT_EQ(result.requestMiddlewareRange.size(), 1U);
+  EXPECT_EQ(result.preMiddlewareRange().size(), 1U);
 
   result.resetHandler();
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::None);
@@ -199,7 +199,7 @@ TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   result = router.match(http::Method::POST, "/ctor");
   EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
   EXPECT_NE(result.streamingHandler(), nullptr);
-  EXPECT_EQ(result.responseMiddlewareRange.size(), 1U);
+  EXPECT_EQ(result.postMiddlewareRange().size(), 1U);
 }
 
 TEST_F(PathHandlerEntryTest, CopyAssignmentTransfersNormalHandlers) {
@@ -297,8 +297,8 @@ TEST_F(PathHandlerEntryTest, CorsAndMiddlewarePopulatedOnMatch) {
   auto result = router.match(http::Method::GET, "/middleware");
   ASSERT_NE(result.pCorsPolicy, nullptr);
   EXPECT_TRUE(result.pCorsPolicy->active());
-  EXPECT_EQ(result.requestMiddlewareRange.size(), 1U);
-  EXPECT_EQ(result.responseMiddlewareRange.size(), 1U);
+  EXPECT_EQ(result.preMiddlewareRange().size(), 1U);
+  EXPECT_EQ(result.postMiddlewareRange().size(), 1U);
 }
 
 TEST_F(PathHandlerEntryTest, NormalAfterStreamingThrows) {

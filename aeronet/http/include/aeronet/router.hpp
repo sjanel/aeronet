@@ -1,5 +1,6 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
@@ -181,6 +182,16 @@ class Router {
 #endif
     };
 
+    // Captured path parameters for the matched route, if any.
+    // The span is valid until next call to match() on the same Router instance.
+    [[nodiscard]] std::span<const PathParamCapture> pathParams() const { return {pPathParams, nbPathParams}; }
+
+    // The ordered range of RequestMiddleware to be applied.
+    [[nodiscard]] RequestMiddlewareRange preMiddlewareRange() const { return {pPreMiddleware, nbPreMiddleware}; }
+
+    // The ordered range of ResponseMiddleware to be applied.
+    [[nodiscard]] ResponseMiddlewareRange postMiddlewareRange() const { return {pPostMiddleware, nbPostMiddleware}; }
+
     [[nodiscard]] const RequestHandler* requestHandler() const {
       return handlerKind == HandlerKind::Request ? handler.request : nullptr;
     }
@@ -216,14 +227,13 @@ class Router {
       handler.request = nullptr;
     }
 
-    union HandlerPointer {
-      HandlerPointer() noexcept : request(nullptr) {}
+    union {
       const RequestHandler* request;
       const StreamingHandler* streaming;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       const AsyncRequestHandler* async;
 #endif
-    } handler;
+    } handler{};
 
     HandlerKind handlerKind{HandlerKind::None};
 
@@ -231,9 +241,16 @@ class Router {
 
     bool methodNotAllowed{false};
 
-    // Captured path parameters for the matched route, if any.
-    // The span is valid until next call to match() on the same Router instance.
-    std::span<const PathParamCapture> pathParams;
+    // Per-path configuration (HTTP/2 enable mode, etc.)
+    PathEntryConfig pathConfig;
+
+    uint32_t nbPathParams{0};
+    uint32_t nbPreMiddleware{0};
+    uint32_t nbPostMiddleware{0};
+
+    const PathParamCapture* pPathParams{nullptr};
+    const RequestMiddleware* pPreMiddleware{nullptr};
+    const ResponseMiddleware* pPostMiddleware{nullptr};
 
     // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
     const CorsPolicy* pCorsPolicy{nullptr};
@@ -242,15 +259,6 @@ class Router {
     // If set, points to the WebSocket endpoint for this route; nullptr if not a WebSocket route.
     const WebSocketEndpoint* pWebSocketEndpoint{nullptr};
 #endif
-
-    // The ordered range of RequestMiddleware to be applied.
-    RequestMiddlewareRange requestMiddlewareRange;
-
-    // The ordered range of ResponseMiddleware to be applied.
-    ResponseMiddlewareRange responseMiddlewareRange;
-
-    // Per-path configuration (HTTP/2 enable mode, etc.)
-    PathEntryConfig pathConfig;
   };
 
   // Match the provided `path` for `method` and return the matching handlers (or a
@@ -298,16 +306,14 @@ class Router {
 
     [[nodiscard]] Kind kind() const noexcept { return literal.empty() ? Kind::Param : Kind::Literal; }
 
-    bool operator==(const SegmentPart&) const noexcept = default;
-
-    using trivially_relocatable = std::true_type;
+    using trivially_relocatable = amc::is_trivially_relocatable<RawChars32>::type;
 
     RawChars32 literal;  // non empty when Kind::Literal
   };
 
   // Metadata about a compiled route pattern
   struct CompiledRoute {
-    using trivially_relocatable = std::true_type;
+    using trivially_relocatable = amc::is_trivially_relocatable<ConcatenatedStrings32>::type;
 
     ConcatenatedStrings32 paramNames;
     bool hasWildcard{false};

@@ -2295,14 +2295,13 @@ TEST(Http2ProtocolHandler, StreamingHandlerRequestMiddlewareShortCircuit) {
 
   router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(401)); });
 
-  router.setPath(
-      http::Method::GET, "/stream-mw",
-      ::aeronet::StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
-        handlerCalled = true;
-        writer.status(http::StatusCode{200});
-        writer.writeBody("ok");
-        writer.end();
-      }});
+  router.setPath(http::Method::GET, "/stream-mw",
+                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                   handlerCalled = true;
+                   writer.status(http::StatusCode{200});
+                   writer.writeBody("ok");
+                   writer.end();
+                 }});
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3579,16 +3578,15 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestSendsNoBody) {
   Router router;
   bool handlerCalled = false;
 
-  router.setPath(
-      http::Method::HEAD, "/stream-head",
-      ::aeronet::StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
-        handlerCalled = true;
-        writer.status(http::StatusCode{200});
-        writer.writeBody("should be suppressed for HEAD");
-        writer.end();
-      }});
+  router.setPath(http::Method::HEAD, "/stream-head",
+                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                   handlerCalled = true;
+                   writer.status(http::StatusCode{200});
+                   writer.writeBody("should be suppressed for HEAD");
+                   writer.end();
+                 }});
   router.setPath(http::Method::GET, "/stream-head",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -4119,17 +4117,16 @@ TEST(Http2ProtocolHandler, ResumeAsyncTaskByHandleWithNonAsyncStreamSkips) {
   // We use a streaming handler that pauses long enough for us to call resumeAsyncTaskByHandle
   // while the stream is still active (has pending streaming data).
   bool handlerCalled = false;
-  router.setPath(
-      http::Method::GET, "/sync",
-      ::aeronet::StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
-        handlerCalled = true;
-        writer.status(http::StatusCode{200});
-        // Write enough data to trigger flow-control buffering so the stream stays alive
-        // with a PendingStreamingSend (not PendingAsyncTask).
-        const std::string bigData(70000, 'X');
-        writer.writeBody(bigData);
-        writer.end();
-      }});
+  router.setPath(http::Method::GET, "/sync",
+                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                   handlerCalled = true;
+                   writer.status(http::StatusCode{200});
+                   // Write enough data to trigger flow-control buffering so the stream stays alive
+                   // with a PendingStreamingSend (not PendingAsyncTask).
+                   const std::string bigData(70000, 'X');
+                   writer.writeBody(bigData);
+                   writer.end();
+                 }});
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
