@@ -46,6 +46,9 @@
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
 
+// Private implementation header — included for direct Http2WriterTransport testing.
+#include "../src/http2-writer-transport.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
@@ -4102,5 +4105,105 @@ TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
   telemetry = std::move(savedTelemetry);
 }
 #endif
+
+// ============== asyncTask() nullptr branch coverage ==============
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(Http2ProtocolHandler, ResumeAsyncTaskByHandleWithNonAsyncStreamSkips) {
+  // This test covers the asyncTask() branch where pending == nullptr.
+  // When resumeAsyncTaskByHandle iterates _streams, non-async streams
+  // (i.e., streams without a pending async task) must safely return nullptr.
+  Router router;
+
+  // Register a sync handler that will create a stream entry without an async pending task.
+  // We use a streaming handler that pauses long enough for us to call resumeAsyncTaskByHandle
+  // while the stream is still active (has pending streaming data).
+  bool handlerCalled = false;
+  router.setPath(
+      http::Method::GET, "/sync",
+      ::aeronet::StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+        handlerCalled = true;
+        writer.status(http::StatusCode{200});
+        // Write enough data to trigger flow-control buffering so the stream stays alive
+        // with a PendingStreamingSend (not PendingAsyncTask).
+        const std::string bigData(70000, 'X');
+        writer.writeBody(bigData);
+        writer.end();
+      }});
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/sync"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  // Process the request — the handler runs synchronously but may leave pending data.
+  loop.pumpClientToServer();
+
+  // Attempt to resume a nonexistent async task handle while the stream has pending data.
+  // This iterates _streams and calls asyncTask() on streams with PendingStreamingSend,
+  // exercising the branch where asyncTask() returns nullptr.
+  std::coroutine_handle<> fakeHandle = std::coroutine_handle<>::from_address(reinterpret_cast<void*>(0xDEAD));
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(fakeHandle));
+  EXPECT_TRUE(handlerCalled);
+
+  // Drain remaining data
+  loop.pumpServerToClient();
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+}
+#endif
+
+// ============== Http2WriterTransport Direct Tests ==============
+
+TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
+  Http2Config serverCfg;
+  Http2Config clientCfg;
+  Http2Connection server(serverCfg, true);
+  Http2Connection client(clientCfg, false);
+
+  // Establish connection
+  client.sendClientPreface();
+  auto clientOut = client.getPendingOutput();
+  (void)server.processInput(clientOut);
+  client.onOutputWritten(clientOut.size());
+
+  auto serverOut = server.getPendingOutput();
+  (void)client.processInput(serverOut);
+  server.onOutputWritten(serverOut.size());
+
+  clientOut = client.getPendingOutput();
+  (void)server.processInput(clientOut);
+  client.onOutputWritten(clientOut.size());
+
+  // Client sends HEADERS to open stream 1
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/"));
+  ASSERT_EQ(client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  clientOut = client.getPendingOutput();
+  (void)server.processInput(clientOut);
+  client.onOutputWritten(clientOut.size());
+
+  // Stream 1 should exist on the server side now
+  Http2WriterTransport transport(server, 1, nullptr);
+  EXPECT_TRUE(transport.isAlive());
+}
+
+TEST(Http2WriterTransport, IsAliveReturnsFalseForNonexistentStream) {
+  Http2Config serverCfg;
+  Http2Connection server(serverCfg, true);
+
+  // No streams opened yet — stream 99 doesn't exist
+  Http2WriterTransport transport(server, 99, nullptr);
+  EXPECT_FALSE(transport.isAlive());
+}
 
 }  // namespace aeronet::http2

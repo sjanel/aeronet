@@ -567,4 +567,100 @@ TEST(ObjectPoolTest, BasicExceptionGuaranteeOnBlockAllocationFailure) {
 
 #endif
 
+// ============================
+// PoolPtr Tests
+// ============================
+
+TEST(PoolPtrTest, DefaultConstructedIsNull) {
+  PoolPtr<int> pp;
+  EXPECT_FALSE(pp);
+  EXPECT_EQ(pp.get(), nullptr);
+}
+
+TEST(PoolPtrTest, NullptrConstructedIsNull) {
+  PoolPtr<int> pp = nullptr;
+  EXPECT_FALSE(pp);
+}
+
+TEST(PoolPtrTest, AllocateReturnsValidPtr) {
+  ObjectPool<int> pool;
+  auto pp = pool.allocateAndConstructPoolPtr(42);
+  ASSERT_TRUE(pp);
+  EXPECT_EQ(*pp, 42);
+}
+
+TEST(PoolPtrTest, ResetReleasesObject) {
+  ObjectPool<std::string> pool;
+  auto pp = pool.allocateAndConstructPoolPtr("hello");
+  EXPECT_EQ(pool.size(), 1U);
+  pp.reset();
+  EXPECT_EQ(pool.size(), 0U);
+  EXPECT_FALSE(pp);
+}
+
+TEST(PoolPtrTest, DestructorReleasesObject) {
+  ObjectPool<std::string> pool;
+  {
+    auto pp = pool.allocateAndConstructPoolPtr("scoped");
+    EXPECT_EQ(pool.size(), 1U);
+  }
+  EXPECT_EQ(pool.size(), 0U);
+}
+
+TEST(PoolPtrTest, MoveConstructorTransfersOwnership) {
+  ObjectPool<int> pool;
+  auto pp1 = pool.allocateAndConstructPoolPtr(99);
+  int* raw = pp1.get();
+  PoolPtr<int> pp2 = std::move(pp1);
+  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move)
+  EXPECT_TRUE(pp2);
+  EXPECT_EQ(pp2.get(), raw);
+  EXPECT_EQ(*pp2, 99);
+  EXPECT_EQ(pool.size(), 1U);
+}
+
+TEST(PoolPtrTest, MoveAssignmentTransfersOwnership) {
+  ObjectPool<int> pool;
+  auto pp1 = pool.allocateAndConstructPoolPtr(10);
+  auto pp2 = pool.allocateAndConstructPoolPtr(20);
+  EXPECT_EQ(pool.size(), 2U);
+
+  pp2 = std::move(pp1);
+  // pp2's old value (20) should have been released
+  EXPECT_EQ(pool.size(), 1U);
+  EXPECT_EQ(*pp2, 10);
+  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move)
+}
+
+TEST(PoolPtrTest, SelfMoveAssignIsSafe) {
+  ObjectPool<int> pool;
+  auto pp = pool.allocateAndConstructPoolPtr(7);
+  auto& alias = pp;
+  pp = std::move(alias);
+  EXPECT_TRUE(pp);
+  EXPECT_EQ(*pp, 7);
+  EXPECT_EQ(pool.size(), 1U);
+}
+
+TEST(PoolPtrTest, ArrowOperator) {
+  ObjectPool<std::string> pool;
+  auto pp = pool.allocateAndConstructPoolPtr("arrow");
+  EXPECT_EQ(pp->size(), 5U);
+}
+
+TEST(PoolPtrTest, MultipleAllocateAndRelease) {
+  ObjectPool<int> pool;
+  auto pp1 = pool.allocateAndConstructPoolPtr(1);
+  auto pp2 = pool.allocateAndConstructPoolPtr(2);
+  auto pp3 = pool.allocateAndConstructPoolPtr(3);
+  EXPECT_EQ(pool.size(), 3U);
+  pp2.reset();
+  EXPECT_EQ(pool.size(), 2U);
+  auto pp4 = pool.allocateAndConstructPoolPtr(4);
+  EXPECT_EQ(pool.size(), 3U);
+  EXPECT_EQ(*pp1, 1);
+  EXPECT_EQ(*pp3, 3);
+  EXPECT_EQ(*pp4, 4);
+}
+
 }  // namespace aeronet

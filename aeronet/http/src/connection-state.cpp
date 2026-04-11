@@ -128,19 +128,19 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
   static constexpr std::size_t kTlsReadChunk = 128UL << 10;  // 128 KiB
 
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
-  const std::size_t maxBytes = std::min(fileSend.remaining, chunkLimit);
+  const std::size_t maxBytes = std::min(fileSend.file.length, chunkLimit);
 #ifdef AERONET_POSIX
-  off_t offset = static_cast<off_t>(fileSend.offset);
+  off_t offset = static_cast<off_t>(fileSend.file.offset);
 #else
-  int64_t offset = static_cast<int64_t>(fileSend.offset);
+  int64_t offset = static_cast<int64_t>(fileSend.file.offset);
 #endif
 
   int64_t result;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
-    result = ReadOffset(fileSend.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.offset);
+    result = ReadOffset(fileSend.file.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.file.offset);
   } else {
-    result = Sendfile(clientFd, static_cast<int>(fileSend.file.fd()), offset, maxBytes);
+    result = Sendfile(clientFd, static_cast<int>(fileSend.file.file.fd()), offset, maxBytes);
   }
   FileResult res{static_cast<std::size_t>(result), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
 
@@ -153,7 +153,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
         res.enableWritable = true;
         [[fallthrough]];
       case error::kInterrupted:
-        if (!tlsFlow || fileSend.remaining != 0) {
+        if (!tlsFlow || fileSend.file.length != 0) {
           res.code = FileResult::Code::WouldBlock;
         }
         return res;
@@ -194,24 +194,24 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     tunnelOrFileBuffer.setSize(res.bytesDone);
 
     // Update file send offsets according to bytes read.
-    fileSend.offset += res.bytesDone;
-    fileSend.remaining -= res.bytesDone;
+    fileSend.file.offset += res.bytesDone;
+    fileSend.file.length -= res.bytesDone;
 
-    if (tunnelOrFileBuffer.empty() && fileSend.remaining == 0) {
+    if (tunnelOrFileBuffer.empty() && fileSend.file.length == 0) {
       fileSend.active = false;
     }
   } else {
     // Successful transfer: update state based on the modified offset
     if (result > 0) {
-      fileSend.offset = static_cast<std::size_t>(offset);
-      fileSend.remaining -= static_cast<std::size_t>(result);
+      fileSend.file.offset = static_cast<std::size_t>(offset);
+      fileSend.file.length -= static_cast<std::size_t>(result);
     } else {  // 0
       // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
       // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.
       res.code = FileResult::Code::WouldBlock;
       res.enableWritable = true;
     }
-    if (fileSend.remaining == 0) {
+    if (fileSend.file.length == 0) {
       fileSend.active = false;
       tunnelOrFileBuffer.clear();
     }
@@ -362,10 +362,8 @@ void ConnectionState::reset() {
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
-  fileSend.file = std::move(filePayload.file);
-  fileSend.offset = filePayload.offset;
-  fileSend.remaining = filePayload.length;
-  fileSend.active = fileSend.remaining > 0;
+  fileSend.file = std::move(filePayload);
+  fileSend.active = fileSend.file.length > 0;
   fileSend.headersPending = !outBuffer.empty();
   if (isSendingFile()) {
     // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.

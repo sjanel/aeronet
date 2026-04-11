@@ -5,8 +5,10 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <variant>
 
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -17,6 +19,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/object-pool.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -99,20 +102,14 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   void onTransportClosing() override {
     // Close all active tunnel upstream connections before clearing state.
-    for (const auto& [streamId, upstreamFd] : _tunnelStreams) {
-      _tunnelBridge->closeTunnel(upstreamFd);
+    for (const auto& [streamId, state] : _streams) {
+      if (state.tunnelUpstreamFd != kInvalidHandle) {
+        _tunnelBridge->closeTunnel(state.tunnelUpstreamFd);
+      }
     }
-    _tunnelStreams.clear();
     _tunnelUpstreams.clear();
 
-    _streamRequests.clear();
-    _pendingFileSends.clear();
-    _pendingStreamingSends.clear();
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    // Destroy any in-flight async coroutines before clearing state.
-    _pendingAsyncTasks.clear();
-#endif
+    _streams.clear();
 
     // Detach callbacks to avoid generating new outbound frames while the transport is closing.
     _connection.setOnHeadersDecoded({});
@@ -158,7 +155,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Check if a given stream is a CONNECT tunnel.
   [[nodiscard]] bool isTunnelStream(uint32_t streamId) const noexcept;
 
-  using TunnelStreamsMap = flat_hash_map<uint32_t, NativeHandle>;
   using TunnelUpstreamsMap = flat_hash_map<NativeHandle, uint32_t>;
 
   /// Drain all tunnel upstream fds and clear internal tunnel maps.
@@ -184,29 +180,14 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   struct StreamRequest {
     HttpRequest request;
     RawChars bodyBuffer;
-    std::unique_ptr<char[]> headerStorage;  // Storage for header name/value strings
+    std::unique_ptr<char[]> headerStorage;  // Storage for header name/value strings. nullptr = inactive.
   };
 
-  using StreamRequestsMap = flat_hash_map<uint32_t, StreamRequest>;
-
-  void setupCallbacks();
-  void onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream);
-  void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
-  void onStreamClosed(uint32_t streamId);
-  void onStreamReset(uint32_t streamId, ErrorCode errorCode);
-
   struct PendingFileSend {
-    File file;
-    std::size_t offset = 0;
-    std::size_t remaining = 0;
+    FilePayload file;
     RawChars trailersData;
     HeadersView trailersView;
   };
-
-  using PendingFileSendsMap = flat_hash_map<uint32_t, PendingFileSend>;
-
-  void flushPendingFileSends();
-  [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, PendingFileSend& pending, bool endStreamAfterBody);
 
   /// Buffered streaming body data when flow-control windows are exhausted.
   struct PendingStreamingSend {
@@ -214,34 +195,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     std::size_t offset{0};  // How much of buffer has been sent
     RawChars trailersData;  // Trailer lines (may be empty)
   };
-
-  using PendingStreamingSendsMap = flat_hash_map<uint32_t, PendingStreamingSend>;
-
-  void flushPendingStreamingSends();
-
-  /// Dispatch a streaming handler request on an HTTP/2 stream.
-  void handleStreamingRequest(StreamRequestsMap::iterator it, const StreamingHandler& handler,
-                              const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
-
-  /// Dispatch a completed request to the dispatcher and send response.
-  void dispatchRequest(StreamRequestsMap::iterator it);
-
-  /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
-  void handleConnectRequest(uint32_t streamId, HttpRequest& request);
-
-  /// Clean up tunnel state for a given stream.
-  void cleanupTunnel(uint32_t streamId);
-
-  // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
-  // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
-  // to the appropriate handler (sync, async, or streaming).
-  HttpResponse reply(HttpRequest& request, const Router::RoutingResult& routingResult);
-
-  /// Emit metrics and end trace span for a completed request.
-  void onRequestCompleted(HttpRequest& request, http::StatusCode status);
-
-  /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Per-stream async handler state for coroutines that suspend (e.g., co_await deferWork).
@@ -255,13 +208,80 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     bool suspended{false};  // Set to true when the coroutine suspends
   };
 
-  using PendingAsyncTasksMap = flat_hash_map<uint32_t, PendingAsyncTask>;
+  using PendingWork = std::variant<PendingFileSend, PendingStreamingSend, PendingAsyncTask>;
+#else
+  using PendingWork = std::variant<PendingFileSend, PendingStreamingSend>;
+#endif
 
+  /// Consolidated per-stream state.
+  /// All per-stream state lives in a single struct stored in one map.
+  /// Cold pending work uses a single heap-allocated variant to keep inline size small.
+  struct StreamState {
+    /// Whether there is an active request being aggregated (headers received).
+    [[nodiscard]] bool hasRequest() const noexcept { return request.headerStorage != nullptr; }
+
+    [[nodiscard]] PendingFileSend* fileSend() const noexcept {
+      return pending ? std::get_if<PendingFileSend>(pending.get()) : nullptr;
+    }
+
+    [[nodiscard]] PendingStreamingSend* streamingSend() const noexcept {
+      return pending ? std::get_if<PendingStreamingSend>(pending.get()) : nullptr;
+    }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    [[nodiscard]] PendingAsyncTask* asyncTask() const noexcept {
+      return pending ? std::get_if<PendingAsyncTask>(pending.get()) : nullptr;
+    }
+#endif
+
+    StreamRequest request;
+    PoolPtr<PendingWork> pending;
+    NativeHandle tunnelUpstreamFd{kInvalidHandle};  ///< Valid if this is a CONNECT tunnel stream
+  };
+
+  using StreamsMap = flat_hash_map<uint32_t, StreamState>;
+
+  void setupCallbacks();
+  void onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream);
+  void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
+  void onStreamClosed(uint32_t streamId);
+  void onStreamReset(uint32_t streamId, ErrorCode errorCode);
+
+  void flushPendingFileSends();
+  [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody);
+
+  void flushPendingStreamingSends();
+
+  /// Dispatch a streaming handler request on an HTTP/2 stream.
+  void handleStreamingRequest(StreamsMap::iterator it, const StreamingHandler& handler, const CorsPolicy* pCorsPolicy,
+                              std::span<const ResponseMiddleware> responseMiddleware);
+
+  /// Dispatch a completed request to the dispatcher and send response.
+  void dispatchRequest(StreamsMap::iterator it);
+
+  /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
+  void handleConnectRequest(uint32_t streamId, HttpRequest& request);
+
+  /// Clean up tunnel state for a given stream (using the consolidated StreamState).
+  void cleanupTunnel(StreamsMap::iterator it);
+
+  // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
+  // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
+  // to the appropriate handler (sync, async, or streaming).
+  HttpResponse reply(HttpRequest& request, const Router::RoutingResult& routingResult);
+
+  /// Emit metrics and end trace span for a completed request.
+  void onRequestCompleted(HttpRequest& request, http::StatusCode status);
+
+  /// Send an HTTP response on a stream.
+  ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Start an async handler for a stream. Returns true if the handler was started
   /// asynchronously (response will be sent later), false if it completed synchronously
   /// (response already sent).
-  bool startAsyncHandler(StreamRequestsMap::iterator it, const AsyncRequestHandler& handler,
-                         const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
+  bool startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler, const CorsPolicy* pCorsPolicy,
+                         std::span<const ResponseMiddleware> responseMiddleware);
 
   /// Resume a pending async task's coroutine after suspension.
   void resumeAsyncTask(uint32_t streamId);
@@ -277,15 +297,14 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   Router* _pRouter;
 
-  // Request state per stream
-  StreamRequestsMap _streamRequests;
+  /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
+  ObjectPool<PendingWork> _pendingWorkPool;
 
-  // File payload streaming state per stream (flow-control aware)
-  PendingFileSendsMap _pendingFileSends;
+  /// Unified per-stream state map (replaces _streamRequests, _pendingFileSends,
+  /// _pendingStreamingSends, _pendingAsyncTasks, and _tunnelStreams).
+  StreamsMap _streams;
+
   RawChars _fileSendBuffer;
-
-  // Streaming handler buffered body data per stream (flow-control aware)
-  PendingStreamingSendsMap _pendingStreamingSends;
 
   HttpServerConfig* _pServerConfig;
   internal::ResponseCompressionState* _pCompressionState;
@@ -293,16 +312,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
 
-  // CONNECT tunnel state: maps stream IDs to upstream fds (and reverse).
-  TunnelStreamsMap _tunnelStreams;      // streamId → upstreamFd
+  // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
   ITunnelBridge* _tunnelBridge{nullptr};
   RequestCompletionCallback _requestCompletionCallback;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Pending async tasks per stream (coroutines that have suspended).
-  PendingAsyncTasksMap _pendingAsyncTasks;
   // Callback to post async work completion to the server's event loop.
   AsyncPostCallbackFn _asyncPostCallback;
 #endif
