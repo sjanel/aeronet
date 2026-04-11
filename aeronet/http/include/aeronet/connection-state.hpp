@@ -7,7 +7,6 @@
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
-#include "aeronet/file.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/native-handle.hpp"
@@ -201,8 +200,9 @@ struct ConnectionState {
   // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
   std::shared_ptr<const TlsContext> tlsContextKeepAlive;
 #endif
+
   struct FileSendState {
-    FilePayload file;
+    FilePayload filePayload;
     bool active{false};
     bool headersPending{false};
   };
@@ -235,10 +235,10 @@ struct ConnectionState {
     bool usesSharedDecompressedBody{false};
     bool isChunked{false};
     bool expectContinue{false};
+    uint32_t responseMiddlewareCount{0};
     std::size_t consumedBytes{0};
     const CorsPolicy* corsPolicy{nullptr};
     const void* responseMiddleware{nullptr};
-    std::size_t responseMiddlewareCount{0};
     std::optional<HttpResponse> pendingResponse;
     // Callback to post async work completion to the server's event loop.
     // Set by the server when dispatching an async handler.

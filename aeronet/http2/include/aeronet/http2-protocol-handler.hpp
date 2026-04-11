@@ -184,7 +184,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   };
 
   struct PendingFileSend {
-    FilePayload file;
+    FilePayload filePayload;
     RawChars trailersData;
     HeadersView trailersView;
   };
@@ -203,7 +203,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     StreamRequest streamRequest;  // Owns the HttpRequest and header storage
     const CorsPolicy* pCorsPolicy{};
     const ResponseMiddleware* pResponseMiddleware{};
-    std::size_t responseMiddlewareCount{0};
+    uint32_t responseMiddlewareCount{0};
     bool isHead{false};
     bool suspended{false};  // Set to true when the coroutine suspends
   };
