@@ -82,6 +82,9 @@ struct Slot<T, true> {
 
 }  // namespace internal
 
+template <class T, class SizeType>
+class PoolPtr;
+
 // Object pools for fast allocation/deallocation of frequently used objects.
 // Once allocated and constructed, object pointers remain valid along with the pool lifetime.
 // All allocated objects are destroyed when the pool is destroyed.
@@ -157,6 +160,12 @@ class ObjectPool {
   // All live objects are destroyed so all pointers previously returned by
   // allocateAndConstruct become invalid.
   void reset() noexcept;
+
+  // Allocates and constructs an object in the pool, returning a PoolPtr that manages its lifetime.
+  template <class... Args>
+  [[nodiscard]] PoolPtr<T, SizeType> allocateAndConstructPoolPtr(Args&&... args) {
+    return PoolPtr<T, SizeType>(*this, allocateAndConstruct(std::forward<Args>(args)...));
+  }
 
  private:
   using Slot = internal::Slot<T, std::is_trivially_destructible_v<T>>;
@@ -329,5 +338,49 @@ void ObjectPool<T, SizeType>::reset() noexcept {
   _liveCount = 0U;
   _nextSlot = nullptr;
 }
+
+/// RAII smart pointer that returns the managed object to its ObjectPool on destruction.
+/// Move-only, analogous to std::unique_ptr but backed by pool allocation.
+template <class T, class SizeType = uint32_t>
+class PoolPtr {
+ public:
+  PoolPtr() noexcept = default;
+  PoolPtr(std::nullptr_t) noexcept {}  // NOLINT(google-explicit-constructor)
+
+  PoolPtr(ObjectPool<T, SizeType>& pool, T* ptr) noexcept : _pPool(&pool), _ptr(ptr) {}
+
+  PoolPtr(const PoolPtr&) = delete;
+  PoolPtr& operator=(const PoolPtr&) = delete;
+
+  PoolPtr(PoolPtr&& other) noexcept
+      : _pPool(std::exchange(other._pPool, nullptr)), _ptr(std::exchange(other._ptr, nullptr)) {}
+
+  PoolPtr& operator=(PoolPtr&& other) noexcept {
+    if (this != &other) {
+      reset();
+      _pPool = std::exchange(other._pPool, nullptr);
+      _ptr = std::exchange(other._ptr, nullptr);
+    }
+    return *this;
+  }
+
+  ~PoolPtr() { reset(); }
+
+  void reset() noexcept {
+    if (_ptr != nullptr) {
+      _pPool->destroyAndRelease(_ptr);
+      _ptr = nullptr;
+    }
+  }
+
+  [[nodiscard]] T* get() const noexcept { return _ptr; }
+  T& operator*() const noexcept { return *_ptr; }
+  T* operator->() const noexcept { return _ptr; }
+  explicit operator bool() const noexcept { return _ptr != nullptr; }
+
+ private:
+  ObjectPool<T, SizeType>* _pPool{nullptr};
+  T* _ptr{nullptr};
+};
 
 }  // namespace aeronet

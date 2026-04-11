@@ -5,8 +5,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
-#include <memory>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -24,7 +24,7 @@ namespace {
 
 // HPACK static table (RFC 7541 Appendix A)
 // Index 0 is unused (indices are 1-based in the spec)
-constexpr std::array<http::HeaderView, 61> kStaticTable = {{
+constexpr http::HeaderView kStaticTable[] = {
     {":authority", ""},
     {":method", "GET"},
     {":method", "POST"},
@@ -86,20 +86,20 @@ constexpr std::array<http::HeaderView, 61> kStaticTable = {{
     {"vary", ""},
     {"via", ""},
     {"www-authenticate", ""},
-}};
+};
 
 struct StaticTableEntry {
   std::string_view name;
   std::uint8_t index;
 };
 
-static_assert(kStaticTable.size() <= std::numeric_limits<decltype(StaticTableEntry{}.index)>::max(),
+static_assert(std::size(kStaticTable) <= std::numeric_limits<decltype(StaticTableEntry{}.index)>::max(),
               "Static table header names must be representable in uint8_t for efficient indexing");
 
 // Sorted by name, then by index (to get lowest index first for name-only matches)
 constexpr auto kStaticTableByName = []() {
-  std::array<StaticTableEntry, kStaticTable.size()> entries{};
-  for (std::uint8_t idx = 0; idx < static_cast<std::uint8_t>(kStaticTable.size()); ++idx) {
+  std::array<StaticTableEntry, std::size(kStaticTable)> entries{};
+  for (std::uint8_t idx = 0; idx < static_cast<std::uint8_t>(std::size(kStaticTable)); ++idx) {
     entries[idx] = {kStaticTable[idx].name, idx};
   }
   std::ranges::sort(entries, [](const StaticTableEntry& lhs, const StaticTableEntry& rhs) {
@@ -121,6 +121,56 @@ constexpr std::size_t kStaticHeaderNameMaxLen =
         kStaticTable, [](const auto lhs, const auto rhs) { return lhs.size() < rhs.size(); }, &http::HeaderView::name)
         ->name.size();
 
+// ============================
+// Static Table Hash Lookup
+// ============================
+// O(1) hash-based lookup for static table header names, replacing binary search.
+// Uses FNV-1a hash with open-addressing linear probing.
+
+/// Compile-time FNV-1a hash for header name strings.
+constexpr uint32_t FnvHash(std::string_view sv) noexcept {
+  uint32_t hash = 2166136261U;
+  for (char ch : sv) {
+    hash ^= static_cast<uint32_t>(static_cast<uint8_t>(ch));
+    hash *= 16777619U;
+  }
+  return hash;
+}
+
+/// Entry in the static table name hash map.
+/// Maps a header name to the range of matching entries in kStaticTableByName.
+struct StaticNameHashEntry {
+  std::string_view name;
+  uint8_t sortedStart;  ///< First index in kStaticTableByName with this name
+  uint8_t count;        ///< Number of consecutive entries with this name
+};
+
+constexpr uint32_t kStaticNameHashBits = 6;
+constexpr uint32_t kStaticNameHashSize = 1UL << kStaticNameHashBits;
+constexpr uint32_t kStaticNameHashMask = kStaticNameHashSize - 1;
+
+constexpr auto kStaticNameHashTable = []() {
+  std::array<StaticNameHashEntry, kStaticNameHashSize> table{};
+
+  // Walk kStaticTableByName (sorted by name) and collect unique name ranges
+  uint32_t idx = 0;
+  while (idx < kStaticTableByName.size()) {
+    const auto name = kStaticTableByName[idx].name;
+    const auto start = idx;
+    while (idx < kStaticTableByName.size() && kStaticTableByName[idx].name == name) {
+      ++idx;
+    }
+    // Insert into hash table with linear probing
+    auto slot = FnvHash(name) & kStaticNameHashMask;
+    while (!table[slot].name.empty()) {
+      slot = (slot + 1) & kStaticNameHashMask;
+    }
+    table[slot] = {name, static_cast<uint8_t>(start), static_cast<uint8_t>(idx - start)};
+  }
+
+  return table;
+}();
+
 // Huffman decoding table (RFC 7541 Appendix B)
 // This is a simplified representation - each entry contains the symbol and the number of bits
 struct HuffmanEntry {
@@ -135,7 +185,7 @@ struct HuffmanCode {
 };
 
 // Huffman codes from RFC 7541 Appendix B
-constexpr std::array<HuffmanCode, 257> kHuffmanCodes = {{
+constexpr HuffmanCode kHuffmanCodes[] = {
     {0x1ff8, 13},      // 0
     {0x7fffd8, 23},    // 1
     {0xfffffe2, 28},   // 2
@@ -393,7 +443,7 @@ constexpr std::array<HuffmanCode, 257> kHuffmanCodes = {{
     {0x7fffff0, 27},   // 254
     {0x3ffffee, 26},   // 255
     {0x3fffffff, 30},  // 256 (EOS)
-}};
+};
 
 // ============================
 // Optimized Huffman Decode Table
@@ -419,7 +469,7 @@ constexpr auto kHuffmanDecodeTable = []() {
   std::ranges::fill(table, HuffmanDecodeEntry{0xFFFF, 0});
 
   // Fill in entries for codes that fit in 9 bits or less
-  for (std::size_t sym = 0; sym < 257; ++sym) {
+  for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
     const auto [code, bitLen] = kHuffmanCodes[sym];
 
     if (bitLen <= kHuffmanLevel1Bits) {
@@ -447,7 +497,7 @@ constexpr auto kHuffmanDecodeTable = []() {
 constexpr uint16_t DecodeHuffmanSymbol(uint32_t code, uint8_t numBits) noexcept {
   // Binary search could be used, but linear scan with early exit is often faster
   // for the HPACK Huffman table due to good cache locality
-  for (std::size_t sym = 0; sym < 257; ++sym) {
+  for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
     if (kHuffmanCodes[sym].bitLength == numBits && kHuffmanCodes[sym].code == code) {
       return static_cast<uint16_t>(sym);
     }
@@ -458,12 +508,45 @@ constexpr uint16_t DecodeHuffmanSymbol(uint32_t code, uint8_t numBits) noexcept 
 }  // namespace
 
 HpackDynamicEntry::HpackDynamicEntry(std::string_view name, std::string_view value)
-    : _data(std::make_unique<char[]>(name.size() + value.size())),
+    : _pData(static_cast<char*>(std::malloc(name.size() + value.size()))),
       _nameLength(SafeCast<uint32_t>(name.size())),
       _valueLength(SafeCast<uint32_t>(value.size())) {
-  tolower_n(name.data(), name.size(), _data.get());
-  Copy(value, _data.get() + name.size());
+  if (_pData == nullptr) {
+    throw std::bad_alloc();
+  }
+  tolower_n(name.data(), name.size(), _pData);
+  Copy(value, _pData + name.size());
 }
+
+HpackDynamicEntry::HpackDynamicEntry(HpackDynamicEntry&& rhs, std::string_view name, std::string_view value)
+    : _pData(std::exchange(rhs._pData, nullptr)),
+      _nameLength(SafeCast<uint32_t>(name.size())),
+      _valueLength(SafeCast<uint32_t>(value.size())) {
+  if (rhs.size() < size()) {
+    _pData = static_cast<char*>(std::realloc(_pData, name.size() + value.size()));
+    if (_pData == nullptr) {
+      throw std::bad_alloc();
+    }
+  }
+  tolower_n(name.data(), name.size(), _pData);
+  Copy(value, _pData + name.size());
+}
+
+HpackDynamicEntry::HpackDynamicEntry(HpackDynamicEntry&& rhs) noexcept
+    : _pData(std::exchange(rhs._pData, nullptr)),
+      _nameLength(std::exchange(rhs._nameLength, 0)),
+      _valueLength(std::exchange(rhs._valueLength, 0)) {}
+
+HpackDynamicEntry& HpackDynamicEntry::operator=(HpackDynamicEntry&& rhs) noexcept {
+  assert(this != &rhs);
+  std::free(_pData);
+  _pData = std::exchange(rhs._pData, nullptr);
+  _nameLength = std::exchange(rhs._nameLength, 0);
+  _valueLength = std::exchange(rhs._valueLength, 0);
+  return *this;
+}
+
+HpackDynamicEntry::~HpackDynamicEntry() { std::free(_pData); }
 
 std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStaticTable; }
 
@@ -475,21 +558,27 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
   const std::size_t entrySize = name.size() + value.size() + HpackDynamicEntry::kOverhead;
 
   // If entry is larger than max size, clear the table (RFC 7541 §4.4)
-  if (entrySize > _maxSize) {
+  if (_maxSize < entrySize) {
     clear();
     return false;
   }
 
-  // IMPORTANT: Use name and value BEFORE any eviction, because string_views may point
-  // to data owned by entries that will be evicted (use-after-free otherwise)
-  HpackDynamicEntry newEntry(name, value);
+  HpackDynamicEntry newEntry;
 
-  // Evict entries until there's room
-  while (_currentSize + entrySize > _maxSize) {
-    evict();
+  if (_maxSize < _currentSize + entrySize) {
+    do {
+      HpackDynamicEntry evicted = evict();
+      if (newEntry.unallocated()) {
+        newEntry = HpackDynamicEntry(std::move(evicted), name, value);
+      }
+    } while (_maxSize < _currentSize + entrySize);
+  } else {
+    // Fast path (no eviction) - construct then noexcept-move into the vector.
+    // Using insert (noexcept move) instead of emplace avoids exception-handling
+    // code around the malloc inside the constructor, producing tighter codegen.
+    newEntry = HpackDynamicEntry(name, value);
   }
 
-  // Insert at the front
   _entries.insert(_entries.begin(), std::move(newEntry));
   _currentSize += entrySize;
 
@@ -500,7 +589,7 @@ void HpackDynamicTable::setMaxSize(std::size_t maxSize) {
   _maxSize = maxSize;
 
   // Evict entries until we fit
-  while (_currentSize > _maxSize) {
+  while (_maxSize < _currentSize) {
     evict();
   }
 }
@@ -510,9 +599,11 @@ void HpackDynamicTable::clear() noexcept {
   _currentSize = 0;
 }
 
-void HpackDynamicTable::evict() {
-  _currentSize -= _entries.back().size();
+HpackDynamicEntry HpackDynamicTable::evict() {
+  HpackDynamicEntry evictedEntry = std::move(_entries.back());
+  _currentSize -= evictedEntry.size();
   _entries.pop_back();
+  return evictedEntry;
 }
 
 // ============================
@@ -812,7 +903,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
 http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
   // Static table: indices 1-61
   http::HeaderView ret;
-  if (index <= kStaticTable.size()) {
+  if (index <= std::size(kStaticTable)) {
     const auto& entry = kStaticTable[index - 1];
     ret.name = entry.name;
     ret.value = entry.value;
@@ -820,7 +911,7 @@ http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
   }
 
   // Dynamic table: indices 62+
-  const uint32_t dynamicIndex = static_cast<uint32_t>(index - kStaticTable.size() - 1);
+  const uint32_t dynamicIndex = static_cast<uint32_t>(index - std::size(kStaticTable) - 1);
   if (dynamicIndex >= _dynamicTable.entryCount()) {
     return ret;
   }
@@ -1000,20 +1091,28 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
 
   HpackLookupResult result;
 
-  // Search static table first, using binary search.
+  // Search static table first, using hash-based O(1) lookup.
   if (name.size() >= kStaticHeaderNameMinLen && name.size() <= kStaticHeaderNameMaxLen) {
-    for (auto it = std::ranges::lower_bound(kStaticTableByName, name, {}, &StaticTableEntry::name);
-         it != kStaticTableByName.end() && it->name == name; ++it) {
-      const auto& entry = kStaticTable[it->index];
-      if (result.match == HpackLookupResult::Match::None) {
-        result.index = 1U + it->index;  // RFC 7541 is 1-based
-        result.match = HpackLookupResult::Match::NameOnly;
+    auto slot = FnvHash(name) & kStaticNameHashMask;
+    while (!kStaticNameHashTable[slot].name.empty()) {
+      if (kStaticNameHashTable[slot].name == name) {
+        const auto& hashEntry = kStaticNameHashTable[slot];
+        for (uint8_t ii = 0; ii < hashEntry.count; ++ii) {
+          const auto entryIdx = kStaticTableByName[hashEntry.sortedStart + ii].index;
+          const auto& entry = kStaticTable[entryIdx];
+          if (result.match == HpackLookupResult::Match::None) {
+            result.index = 1U + entryIdx;  // RFC 7541 is 1-based
+            result.match = HpackLookupResult::Match::NameOnly;
+          }
+          if (entry.value == value) {
+            result.index = 1U + entryIdx;
+            result.match = HpackLookupResult::Match::Full;
+            return result;
+          }
+        }
+        break;
       }
-      if (entry.value == value) {
-        result.index = 1U + it->index;
-        result.match = HpackLookupResult::Match::Full;
-        return result;
-      }
+      slot = (slot + 1) & kStaticNameHashMask;
     }
   }
 
@@ -1022,7 +1121,7 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
   for (uint32_t idx = 0; idx < _dynamicTable.entryCount(); ++idx) {
     const auto& entry = _dynamicTable[idx];
     if (entry.name() == name) {
-      result.index = static_cast<uint32_t>(kStaticTable.size()) + 1U + idx;
+      result.index = static_cast<uint32_t>(std::size(kStaticTable)) + 1U + idx;
       if (entry.value() == value) {
         result.match = HpackLookupResult::Match::Full;
         return result;
