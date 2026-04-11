@@ -1,9 +1,5 @@
 #pragma once
 
-#ifdef AERONET_POSIX
-#include <sys/types.h>  // off_t
-#endif
-
 #include <cstddef>
 #include <cstdint>
 
@@ -23,10 +19,6 @@ namespace aeronet {
 //          len is in/out).
 // Windows: uses TransmitFile.  `fileFd` is a CRT file descriptor (from
 //          _open / open) — it is converted internally via _get_osfhandle.
-#ifdef AERONET_POSIX
-int64_t Sendfile(NativeHandle outFd, NativeHandle inFd, off_t& offset, std::size_t count) noexcept;
-#elifdef AERONET_WINDOWS
-int64_t Sendfile(NativeHandle outFd, int fileFd, int64_t& offset, std::size_t count) noexcept;
-#endif
+int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_t count) noexcept;
 
 }  // namespace aeronet

@@ -47,7 +47,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Ensure the peer socket is blocking (default) so sendfile will make progress.
@@ -86,7 +86,7 @@ TEST(ConnectionState, RequestDrainAndCloseIsIdempotent) {
 
 TEST(ConnectionStateSendfileTest, TransportFileInvalidFd) {
   ConnectionState state;
-  state.fileSend.file = FilePayload(File{}, 0, 1024);
+  state.fileSend.filePayload = FilePayload(File{}, 0, 1024);
   state.fileSend.active = true;
 
   auto res = state.transportFile(-1, /*tlsFlow=*/false);
@@ -104,7 +104,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Make client socket non-blocking and intentionally small send buffer so the kernel
@@ -132,7 +132,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
       break;
     }
     // If fully sent, nothing more to do.
-    if (res.code == ConnectionState::FileResult::Code::Sent && state.fileSend.file.length == 0) {
+    if (res.code == ConnectionState::FileResult::Code::Sent && state.fileSend.filePayload.length == 0) {
       break;
     }
   }
@@ -151,7 +151,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEna
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Force sendfile to report error::kInterrupted once for sv[0]
@@ -175,7 +175,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositi
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Force pread on the file path to return error::kInterrupted once
@@ -199,7 +199,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlo
   ScopedTempFile tmp(tmpDir, std::string());
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, 0);
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
   state.fileSend.active = true;
 
   // Force pread error::kInterrupted; since remaining == 0, code should not flip to WouldBlock per branch
@@ -223,7 +223,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) 
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Simulate pread returning 0 bytes (e.g., unexpected EOF) while remaining > 0
@@ -234,7 +234,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) 
   // transportFile should return with 0 bytes read and fileSend should remain active
   EXPECT_EQ(res.bytesDone, 0U);
   EXPECT_TRUE(state.tunnelOrFileBuffer.empty());
-  EXPECT_TRUE(state.fileSend.file.length > 0);
+  EXPECT_TRUE(state.fileSend.filePayload.length > 0);
   EXPECT_TRUE(state.fileSend.active);
 }
 
@@ -250,7 +250,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Attach a PlainTransport that writes to sv[0]. We'll read from sv[1].
@@ -259,9 +259,9 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   // Loop until we've consumed the whole file; on each iteration read from file into
   // tunnelOrFileBuffer then write it to the transport and read on the peer socket.
   std::size_t totalRead = 0;
-  while (state.fileSend.file.length > 0 || !state.tunnelOrFileBuffer.empty()) {
+  while (state.fileSend.filePayload.length > 0 || !state.tunnelOrFileBuffer.empty()) {
     // If no pending buffered file data, attempt to read into the buffer (TLS path).
-    if (state.tunnelOrFileBuffer.empty() && state.fileSend.file.length > 0) {
+    if (state.tunnelOrFileBuffer.empty() && state.fileSend.filePayload.length > 0) {
       const auto fr = state.transportFile(sv[0], /*tlsFlow=*/true);
       EXPECT_NE(fr.code, ConnectionState::FileResult::Code::Error);
       // If WouldBlock is returned (very unlikely for pread), just continue and retry.
@@ -303,7 +303,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
   // Create an empty file to ensure sendfile has nothing to send
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string());
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, 0);
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
   state.fileSend.active = true;
 
   const auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
@@ -321,7 +321,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string());
 
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, 0);
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
 
   state.fileSend.active = true;
 
@@ -697,7 +697,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   ScopedTempFile tmp(tmpDir, content);
 
   ConnectionState state;
-  state.fileSend.file = FilePayload(File(tmp.filePath().string()), 0, content.size());
+  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSend.active = true;
 
   // Force a hard pread error (not EAGAIN/error::kInterrupted) to take default error path

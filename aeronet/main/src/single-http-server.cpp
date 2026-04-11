@@ -583,12 +583,11 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       break;
     }
 
-    request.finalizeBeforeHandlerCall(routingResult.pathParams);
-
-    auto requestMiddlewareRange = routingResult.requestMiddlewareRange;
-    auto responseMiddlewareRange = routingResult.responseMiddlewareRange;
+    request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
     const bool isStreaming = routingResult.streamingHandler() != nullptr;
+
+    auto responseMiddlewareRange = routingResult.postMiddlewareRange();
 
     auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, &state, consumedBytes,
                          pCorsPolicy](HttpResponse&& resp) {
@@ -597,7 +596,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
 
-    auto corsRejected = [&]() {
+    auto corsRejected = [pCorsPolicy, &request, &sendResponse]() {
       if (pCorsPolicy == nullptr) {
         return false;
       }
@@ -609,7 +608,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     };
 
     auto shortCircuitedResponse =
-        RunRequestMiddleware(request, _router.globalRequestMiddleware(), requestMiddlewareRange, _telemetry,
+        RunRequestMiddleware(request, _router.globalRequestMiddleware(), routingResult.preMiddlewareRange(), _telemetry,
                              isStreaming, _callbacks.middlewareMetrics);
 
     if (shortCircuitedResponse.has_value()) {
@@ -830,7 +829,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.corsPolicy = pCorsPolicy;
   asyncState.responseMiddleware = responseMiddleware.data();
-  asyncState.responseMiddlewareCount = responseMiddleware.size();
+  asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   asyncState.pendingResponse = {};
 
   // Keep header storage stable while async work runs so header string_views stay valid

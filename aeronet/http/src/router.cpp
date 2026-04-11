@@ -965,7 +965,8 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
     for (auto [paramPos, param] : std::views::enumerate(pRoute->paramNames)) {
       _pathParamCaptureBuffer.emplace_back(param, _matchStateBuffer[static_cast<uint32_t>(paramPos)]);
     }
-    result.pathParams = _pathParamCaptureBuffer;
+    result.pPathParams = _pathParamCaptureBuffer.data();
+    result.nbPathParams = _pathParamCaptureBuffer.size();
   }
 
   return result;
@@ -1118,8 +1119,12 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
   }
 #endif
 
-  result.requestMiddlewareRange = entry._preMiddleware;
-  result.responseMiddlewareRange = entry._postMiddleware;
+  result.pPreMiddleware = entry._preMiddleware.data();
+  result.nbPreMiddleware = entry._preMiddleware.size();
+
+  result.pPostMiddleware = entry._postMiddleware.data();
+  result.nbPostMiddleware = entry._postMiddleware.size();
+
   result.pathConfig = entry._pathConfig;
 }
 
