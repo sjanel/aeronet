@@ -89,15 +89,15 @@ TEST_F(RouterTest, MatchPatternWithLiteralPrefixAndSuffixInSegment) {
 
   res = router.match(http::Method::GET, "/files/prefixwithend");
   EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "0");
-  EXPECT_EQ(res.pathParams[0].value, "with");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "0");
+  EXPECT_EQ(res.pathParams()[0].value, "with");
 
   res = router.match(http::Method::GET, "/files/prefixend");
   EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "0");
-  EXPECT_EQ(res.pathParams[0].value, "");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "0");
+  EXPECT_EQ(res.pathParams()[0].value, "");
 }
 
 TEST_F(RouterTest, MatchPatternSegmentConsecutiveParamsReturnsFalse) {
@@ -341,11 +341,11 @@ TEST_F(RouterTest, CapturesNamedParameters) {
 
   auto res = router.match(http::Method::GET, "/users/42/posts/abc");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 2U);
-  EXPECT_EQ(res.pathParams[0].key, "userId");
-  EXPECT_EQ(res.pathParams[0].value, "42");
-  EXPECT_EQ(res.pathParams[1].key, "postId");
-  EXPECT_EQ(res.pathParams[1].value, "abc");
+  ASSERT_EQ(res.pathParams().size(), 2U);
+  EXPECT_EQ(res.pathParams()[0].key, "userId");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+  EXPECT_EQ(res.pathParams()[1].key, "postId");
+  EXPECT_EQ(res.pathParams()[1].value, "abc");
 }
 
 TEST_F(RouterTest, CapturesUnnamedParametersAsIndices) {
@@ -354,11 +354,11 @@ TEST_F(RouterTest, CapturesUnnamedParametersAsIndices) {
 
   auto res = router.match(http::Method::GET, "/files/alpha/chunk/123");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 2U);
-  EXPECT_EQ(res.pathParams[0].key, "0");
-  EXPECT_EQ(res.pathParams[0].value, "alpha");
-  EXPECT_EQ(res.pathParams[1].key, "1");
-  EXPECT_EQ(res.pathParams[1].value, "123");
+  ASSERT_EQ(res.pathParams().size(), 2U);
+  EXPECT_EQ(res.pathParams()[0].key, "0");
+  EXPECT_EQ(res.pathParams()[0].value, "alpha");
+  EXPECT_EQ(res.pathParams()[1].key, "1");
+  EXPECT_EQ(res.pathParams()[1].value, "123");
 }
 
 TEST_F(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
@@ -367,9 +367,9 @@ TEST_F(RouterTest, SupportsLiteralAndParamMixWithinSegment) {
 
   auto res = router.match(http::Method::GET, "/api/v1/foo123bar");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 2U);
-  EXPECT_EQ(res.pathParams[0].value, "1");
-  EXPECT_EQ(res.pathParams[1].value, "123");
+  ASSERT_EQ(res.pathParams().size(), 2U);
+  EXPECT_EQ(res.pathParams()[0].value, "1");
+  EXPECT_EQ(res.pathParams()[1].value, "123");
 }
 
 TEST_F(RouterTest, EmptyPathInvalid) {
@@ -387,7 +387,7 @@ TEST_F(RouterTest, WildcardMatchesRemainingSegments) {
 
   auto res = router.match(http::Method::GET, "/static/css/app/main.css");
   ASSERT_NE(res.requestHandler(), nullptr);
-  EXPECT_EQ(res.pathParams.size(), 0U);
+  EXPECT_EQ(res.pathParams().size(), 0U);
 }
 
 TEST_F(RouterTest, SpecialOperations) {
@@ -674,9 +674,9 @@ TEST_F(RouterTest, MixedEscapedBracesAndNamedParams) {
 
   auto res = router.match(http::Method::GET, "/mix/{}/42/{end}");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "id");
-  EXPECT_EQ(res.pathParams[0].value, "42");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
 }
 
 TEST_F(RouterTest, MixedEscapedBracesAndUnnamedParams) {
@@ -684,9 +684,9 @@ TEST_F(RouterTest, MixedEscapedBracesAndUnnamedParams) {
 
   auto res = router.match(http::Method::GET, "/mix/{}/value/{end}");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "0");
-  EXPECT_EQ(res.pathParams[0].value, "value");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "0");
+  EXPECT_EQ(res.pathParams()[0].value, "value");
 }
 
 TEST_F(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
@@ -704,9 +704,9 @@ TEST_F(RouterTest, FindWildcardEscapedAndTrailingOpenBrace) {
   router.setPath(http::Method::GET, "/fw/{{}}/{id}/end", [](const HttpRequest&) { return HttpResponse(200); });
   auto res = router.match(http::Method::GET, "/fw/{}/42/end");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "id");
-  EXPECT_EQ(res.pathParams[0].value, "42");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
 
   // Trailing open brace should raise an error (FindWildcard sees '{' at end -> second condition false)
   EXPECT_THROW(router.setPath(http::Method::GET, "/trailing/{", OkHandler), std::invalid_argument);
@@ -836,9 +836,9 @@ TEST_F(RouterTest, AsteriskPartOfPatternName) {
   router.setPath(http::Method::GET, "/pattern/{pa**rt}/end", OkHandler);
   auto res = router.match(http::Method::GET, "/pattern/pa*rt/end");
   EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "pa**rt");
-  EXPECT_EQ(res.pathParams[0].value, "pa*rt");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "pa**rt");
+  EXPECT_EQ(res.pathParams()[0].value, "pa*rt");
 }
 
 TEST_F(RouterTest, ParamNameIsAsteriskOnly) {
@@ -846,9 +846,9 @@ TEST_F(RouterTest, ParamNameIsAsteriskOnly) {
   router.setPath(http::Method::GET, "/pattern/{*}/end", OkHandler);
   auto res = router.match(http::Method::GET, "/pattern/salut/end");
   EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "*");
-  EXPECT_EQ(res.pathParams[0].value, "salut");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "*");
+  EXPECT_EQ(res.pathParams()[0].value, "salut");
 }
 
 TEST_F(RouterTest, WildcardConflictAndTerminalRules) {
@@ -871,9 +871,9 @@ TEST_F(RouterTest, AsteriskAllowedInParamName) {
   EXPECT_NO_THROW(router.setPath(http::Method::GET, "/items/{id*}/detail", OkHandler));
   auto res = router.match(http::Method::GET, "/items/xyz/detail");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "id*");
-  EXPECT_EQ(res.pathParams[0].value, "xyz");
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id*");
+  EXPECT_EQ(res.pathParams()[0].value, "xyz");
 }
 
 TEST_F(RouterTest, AllowedMethodsAndGlobalFallback) {
@@ -1354,8 +1354,8 @@ TEST_F(RouterTest, ParamWithLiteralSuffix) {
 
   auto ok = router.match(http::Method::GET, "/file-test.json");
   ASSERT_TRUE(ok.hasHandler());
-  EXPECT_EQ(ok.pathParams[0].key, "name");
-  EXPECT_EQ(ok.pathParams[0].value, "test");
+  EXPECT_EQ(ok.pathParams()[0].key, "name");
+  EXPECT_EQ(ok.pathParams()[0].value, "test");
 
   auto bad = router.match(http::Method::GET, "/file-test.txt");
   EXPECT_FALSE(bad.hasHandler());
@@ -1396,9 +1396,9 @@ TEST_F(RouterTest, ParamRouteTrailingSlashNormalize) {
 
   auto res = router.match(http::Method::GET, "/foo/123/");
   EXPECT_TRUE(res.hasHandler());
-  EXPECT_EQ(res.pathParams.size(), 1U);
-  EXPECT_EQ(res.pathParams[0].key, "id");
-  EXPECT_EQ(res.pathParams[0].value, "123");
+  EXPECT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "123");
 }
 
 TEST_F(RouterTest, ParamAtSegmentStart) { router.setPath(http::Method::GET, "/{id}", OkHandler); }
@@ -1522,16 +1522,16 @@ TEST_F(RouterTest, RegisterShorterParamRouteAfterLongerCreatesRouteOnIntermediat
   auto resLong = router.match(http::Method::GET, "/api/42/details");
   ASSERT_NE(resLong.requestHandler(), nullptr);
   EXPECT_EQ((*resLong.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
-  ASSERT_EQ(resLong.pathParams.size(), 1U);
-  EXPECT_EQ(resLong.pathParams[0].key, "id");
-  EXPECT_EQ(resLong.pathParams[0].value, "42");
+  ASSERT_EQ(resLong.pathParams().size(), 1U);
+  EXPECT_EQ(resLong.pathParams()[0].key, "id");
+  EXPECT_EQ(resLong.pathParams()[0].value, "42");
 
   auto resShort = router.match(http::Method::POST, "/api/99");
   ASSERT_NE(resShort.requestHandler(), nullptr);
   EXPECT_EQ((*resShort.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
-  ASSERT_EQ(resShort.pathParams.size(), 1U);
-  EXPECT_EQ(resShort.pathParams[0].key, "id");
-  EXPECT_EQ(resShort.pathParams[0].value, "99");
+  ASSERT_EQ(resShort.pathParams().size(), 1U);
+  EXPECT_EQ(resShort.pathParams()[0].key, "id");
+  EXPECT_EQ(resShort.pathParams()[0].value, "99");
 
   // The shorter route should not match the longer path's method
   auto resWrongMethod = router.match(http::Method::POST, "/api/42/details");
@@ -1565,13 +1565,13 @@ TEST_F(RouterTest, InsertStaticChildBeforeExistingWildcardChild) {
   auto resParam = router.match(http::Method::GET, "/api/42");
   ASSERT_NE(resParam.requestHandler(), nullptr);
   EXPECT_EQ((*resParam.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
-  ASSERT_EQ(resParam.pathParams.size(), 1U);
-  EXPECT_EQ(resParam.pathParams[0].value, "42");
+  ASSERT_EQ(resParam.pathParams().size(), 1U);
+  EXPECT_EQ(resParam.pathParams()[0].value, "42");
 
   auto resStatic = router.match(http::Method::GET, "/api/users");
   ASSERT_NE(resStatic.requestHandler(), nullptr);
   EXPECT_EQ((*resStatic.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
-  EXPECT_TRUE(resStatic.pathParams.empty());
+  EXPECT_TRUE(resStatic.pathParams().empty());
 }
 
 TEST_F(RouterTest, CatchAllStrictTrailingSlashReturnsNull) {
