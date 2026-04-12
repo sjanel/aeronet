@@ -52,6 +52,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    duration-string_test
+    test/duration-string_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     dynamic-concatenated-strings_test
     test/dynamic-concatenated-strings_test.cpp
     LIBRARIES
@@ -183,6 +190,13 @@ if(AERONET_ENABLE_GLAZE)
     AeronetAddUnitTest(
         json-serializer_test
         test/json-serializer_test.cpp
+        LIBRARIES
+        aeronet_tech
+    )
+
+    AeronetAddUnitTest(
+        glaze-adapters_test
+        test/glaze-adapters_test.cpp
         LIBRARIES
         aeronet_tech
     )

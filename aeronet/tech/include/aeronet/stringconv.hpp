@@ -4,7 +4,6 @@
 #include <climits>
 #include <concepts>
 #include <limits>
-#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
@@ -62,18 +61,6 @@ constexpr char* AppendIntegralToCharBuf(char* buf, std::integral auto val) {
   static constexpr auto kMaxCharsInt =
       std::max(nchars(std::numeric_limits<decltype(val)>::max()), nchars(std::numeric_limits<decltype(val)>::min()));
   return std::to_chars(buf, buf + kMaxCharsInt, val).ptr;
-}
-
-constexpr std::span<char> IntegralToCharBuffer(std::span<char> buf, std::integral auto val) {
-  const auto nbDigitsInt = nchars(val);
-
-  if (buf.size() < nbDigitsInt) {
-    throw std::invalid_argument("Buffer size too small for integral conversion");
-  }
-
-  std::to_chars(buf.data(), buf.data() + nbDigitsInt, val);
-
-  return buf.subspan(0, nbDigitsInt);
 }
 
 }  // namespace aeronet

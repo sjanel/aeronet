@@ -14,7 +14,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -22,6 +21,10 @@
 
 #ifdef __linux__
 #include <sys/resource.h>
+#endif
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include <span>
 #endif
 
 #include "aeronet/aeronet.hpp"

@@ -19,25 +19,6 @@
 //    so that symbols they provide are treated as satisfied for direct use in user code.
 //  * If you prefer more granular control (to minimize compile time), you can include the
 //    specific individual headers instead of this umbrella.
-//
-// Stability: Pre-1.0 API — surface may evolve; this umbrella will track new top-level
-// components but aims to remain a convenient superset for typical server usage.
-//
-// Usage Example:
-//    #include <aeronet/aeronet.hpp>
-//    using namespace aeronet;
-//    int main() {
-//      Router router;
-//      router.setDefault([](const HttpRequest& req){
-//         return HttpResponse(200, "hi\n");
-//      });
-//      SingleHttpServer server(HttpServerConfig{}.withPort(0), std::move(router));
-//      server.run();
-//    }
-//
-// NOTE: Keep this header lightweight: do not add large STL or system headers here; rely on
-// transitive includes from the specific components they belong to. This keeps build times
-// reasonable when users adopt the umbrella.
 
 #pragma once
 

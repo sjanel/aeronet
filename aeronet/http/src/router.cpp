@@ -843,7 +843,7 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
           }
         }
 
-        // No matching child found — this path segment does not match any registered route.
+        // No matching child found - this path segment does not match any registered route.
         // Return nullptr so the caller can fall back to the default handler (e.g. static files).
         return nullptr;
       }

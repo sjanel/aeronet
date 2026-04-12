@@ -87,7 +87,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     }
 
     if (err == ErrorCode::FlowControlError) {
-      // Flow control window exhausted — buffer data for later flushing.
+      // Flow control window exhausted - buffer data for later flushing.
       _pendingBuffer.ensureAvailableCapacityExponential(data.size());
       _pendingBuffer.unchecked_append(data);
       return true;
@@ -111,7 +111,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
       return true;
     }
 
-    // All data was sent inline — emit the stream end now.
+    // All data was sent inline - emit the stream end now.
     if (_isHead) {
       // HEAD: send empty DATA frame with END_STREAM
       const ErrorCode err = _pConnection->sendData(_streamId, {}, /*endStream=*/true);
@@ -133,7 +133,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
       return true;
     }
 
-    // No trailers — send empty DATA frame with END_STREAM
+    // No trailers - send empty DATA frame with END_STREAM
     const ErrorCode err = _pConnection->sendData(_streamId, {}, /*endStream=*/true);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send END_STREAM on stream {}: {}", _streamId, ErrorCodeName(err));
