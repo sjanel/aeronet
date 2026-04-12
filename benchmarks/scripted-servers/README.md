@@ -6,8 +6,8 @@ This directory contains standalone HTTP server executables and `wrk` benchmark s
 
 Unlike Google Benchmark (which measures internal latencies), this setup uses **external load generators** to measure real-world throughput and latency under stress. The primary tools are:
 
-- [`wrk`](https://github.com/wg/wrk) — HTTP/1.1 benchmarking with LuaJIT scripting
-- [`h2load`](https://nghttp2.org/documentation/h2load-howto.html) — HTTP/2 benchmarking (part of nghttp2), supports both cleartext h2c and TLS h2
+- [`wrk`](https://github.com/wg/wrk) - HTTP/1.1 benchmarking with LuaJIT scripting
+- [`h2load`](https://nghttp2.org/documentation/h2load-howto.html) - HTTP/2 benchmarking (part of nghttp2), supports both cleartext h2c and TLS h2
 
 ## What is wrk and LuaJIT?
 
@@ -209,8 +209,8 @@ run_benchmarks.py
 
 The same runner supports HTTP/2 benchmarking via h2load. Two protocol modes are available:
 
-- **h2c** — HTTP/2 over cleartext TCP (no TLS overhead)
-- **h2-tls** — HTTP/2 over TLS (production-realistic)
+- **h2c** - HTTP/2 over cleartext TCP (no TLS overhead)
+- **h2-tls** - HTTP/2 over TLS (production-realistic)
 
 ```bash
 # h2c mode (cleartext HTTP/2)
@@ -504,7 +504,7 @@ go install github.com/matttomasetti/websocket-bench@latest
 ### Running WebSocket Benchmarks
 
 ```bash
-# Full suite — all servers, all scenarios
+# Full suite - all servers, all scenarios
 ./run_ws_benchmarks.py
 
 # Quick smoke test (5s, 10 VUs)
@@ -546,8 +546,8 @@ Each `run_ws_benchmarks.py` execution now automatically generates:
 
 ## Future Work
 
-- [x] Add HTTP/2 scenarios (h2load) — h2c and h2-tls modes via `--protocol`
-- [x] Add TLS benchmarks — h2-tls mode, self-signed certs generated at runtime
+- [x] Add HTTP/2 scenarios (h2load) - h2c and h2-tls modes via `--protocol`
+- [x] Add TLS benchmarks - h2-tls mode, self-signed certs generated at runtime
 - [ ] Integrate with CI for regression detection
 - [x] WebSocket scenarios (k6 + websocket-bench, see below)
 - [ ] Add streaming/chunked benchmark when comparable APIs exist across frameworks

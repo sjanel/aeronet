@@ -1,4 +1,4 @@
-# aeronet Roadmap — Planned / Not Implemented
+# aeronet Roadmap - Planned / Not Implemented
 
 ## High priority
 
@@ -21,26 +21,27 @@
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
   (Content-Encoding + compressed Content-Length) when desired.
 - **Performance improvements**:
-  - ~~`TCP_CORK` / `TCP_NOPUSH` for response header/body coalescing~~ ✔ (Linux: `TcpCorkGuard` RAII in `queueData` / `flushOutbound`; macOS: no-op because `TCP_NOPUSH` does not flush on clear — `writev` already coalesces)
+  - ~~`TCP_CORK` / `TCP_NOPUSH` for response header/body coalescing~~ ✔ (Linux: `TcpCorkGuard` RAII in `queueData` / `flushOutbound`; macOS: no-op because `TCP_NOPUSH` does not flush on clear - `writev` already coalesces)
   - Further hot-path cache locality optimization
 - Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
   - Support tags/labels for metrics
+- **Typed request body parsing** - something like `req.bodyAs<MyDto>()` that auto-parses JSON (based on Content-Type) and returns `std::expected<MyDto, HttpResponse>` so we can propagate a 400 on validation failure. This would complete the symmetry between `bodyJson` (response) and `bodyAs` (request). It fits the same `AERONET_ENABLE_GLAZE` guard.
 
 ### Performance improvement ideas
 
 #### Medium priority
 
-- **`ConnectionState` bool bit-packing** — 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` — meaningful at 10 K+ connections.
-- **Brotli encoder context reuse across sessions** — Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
-- **Adaptive event loop poll timeout** — currently fixed at construction time. If last `poll()` returned max events, use zero timeout (spin); if idle for N iterations, increase timeout exponentially up to a cap. Better tail latency under bursts, lower CPU when idle.
-- **Keep-alive timeout: timer wheel instead of sweep** — idle connection cleanup in `ConnectionManager` sweeps all connections (O(n)). A timer wheel or min-heap sorted by expiry lets each poll iteration check only connections whose expiry has passed → O(expired). Significant at 10 K+ idle connections.
+- **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
+- **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
+- **Adaptive event loop poll timeout** - currently fixed at construction time. If last `poll()` returned max events, use zero timeout (spin); if idle for N iterations, increase timeout exponentially up to a cap. Better tail latency under bursts, lower CPU when idle.
+- **Keep-alive timeout: timer wheel instead of sweep** - idle connection cleanup in `ConnectionManager` sweeps all connections (O(n)). A timer wheel or min-heap sorted by expiry lets each poll iteration check only connections whose expiry has passed → O(expired). Significant at 10 K+ idle connections.
 - Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 
 #### Low priority / specialized
 
-- **WebSocket frame demasking: full SIMD XOR** — SSE4.2 is used for mask detection, but the actual XOR demasking loop is scalar. Vectorize the 4-byte-repeating XOR with SSE2/AVX2 to process 16–32 bytes per iteration → 2–4× throughput for large binary WebSocket frames.
-- **Pre-computed static file response headers** — response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
+- **WebSocket frame demasking: full SIMD XOR** - SSE4.2 is used for mask detection, but the actual XOR demasking loop is scalar. Vectorize the 4-byte-repeating XOR with SSE2/AVX2 to process 16–32 bytes per iteration → 2–4× throughput for large binary WebSocket frames.
+- **Pre-computed static file response headers** - response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
 - `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
 #### Benchmark gaps
@@ -80,7 +81,7 @@ Essential for microservice architectures (proxying, upstream calls, service-to-s
 
 #### Server-Sent Events (SSE) convenience layer
 
-Thin abstraction over existing chunked streaming — no new compile flag needed. Auto-formats `text/event-stream` content type with `id:`, `event:`, `data:` field framing and `retry:` reconnect hints. API sugar on `HttpResponseWriter`:
+Thin abstraction over existing chunked streaming - no new compile flag needed. Auto-formats `text/event-stream` content type with `id:`, `event:`, `data:` field framing and `retry:` reconnect hints. API sugar on `HttpResponseWriter`:
 
 ```cpp
 router.setPath(http::Method::GET, "/events", [](const HttpRequest&, HttpResponseWriter& w) {
@@ -106,9 +107,11 @@ Built-in token bucket or sliding window rate limiter. Per-IP and/or per-route. R
 Extend the existing glaze integration with ergonomic helpers:
 
 - Automatic JSON body parsing with validation error → 400
-- `HttpResponse::json(T)` serialization one-liner
-- `Content-Type: application/json` auto-detection on request and auto-setting on response
-- No new compile flag — enhances existing `AERONET_ENABLE_GLAZE` support
+- ~~`HttpResponse::json(T)` serialization one-liner~~ **Done** - `bodyJson(T)` and `bodyYaml(T)` on `HttpResponse`
+- ~~`Content-Type: application/json` auto-detection on request and auto-setting on response~~ **Done** - auto-set by `bodyJson`/`bodyYaml`
+- ~~Filepath-based server construction~~ **Done** - `SingleHttpServer(path)` and `MultiHttpServer(path)` constructors
+- ~~Config dump / save~~ **Done** - `dumpConfig(format)` and `saveConfig(path)` methods on both server classes
+- No new compile flag - enhances existing `AERONET_ENABLE_GLAZE` support
 
 #### Response caching middleware (`AERONET_ENABLE_RESPONSE_CACHE`)
 
@@ -185,7 +188,7 @@ Parse `Authorization` header, extract Basic credentials or Bearer tokens, and pr
 
 #### Reverse proxy / HTTP forwarding mode
 
-Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `Via`). Pairs naturally with the planned HTTP Client module. Load balancing strategies (round-robin, least-connections). This turns aeronet from a pure application server into an edge/gateway server — a common deployment pattern (Nginx, Caddy, Envoy, Traefik, HAProxy).
+Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `Via`). Pairs naturally with the planned HTTP Client module. Load balancing strategies (round-robin, least-connections). This turns aeronet from a pure application server into an edge/gateway server - a common deployment pattern (Nginx, Caddy, Envoy, Traefik, HAProxy).
 
 #### Inbound request body streaming to handler
 

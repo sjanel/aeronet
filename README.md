@@ -73,7 +73,7 @@ See the [full program](examples/minimal.cpp).
 
 ### Streaming response
 
-When the response body size is not known upfront, or when you want to transmit the response as several controlled-size network chunks rather than a single transmission, use `HttpResponseWriter`. It automatically applies HTTP chunked transfer encoding, so each `writeBody()` call maps to its own network chunk — unlike a normal handler where all `bodyAppend()` calls are buffered and sent as a single transmission at the end:
+When the response body size is not known upfront, or when you want to transmit the response as several controlled-size network chunks rather than a single transmission, use `HttpResponseWriter`. It automatically applies HTTP chunked transfer encoding, so each `writeBody()` call maps to its own network chunk - unlike a normal handler where all `bodyAppend()` calls are buffered and sent as a single transmission at the end:
 
 ```cpp
 Router router;
@@ -383,13 +383,13 @@ Note that `nbThreads` field should be 1 for `SingleHttpServer`. If you intend to
 
 A convenient set of methods on a `SingleHttpServer` that allow non blocking:
 
-`start()` — non-blocking convenience (returns void); the server manages an internal handle.
+`start()` - non-blocking convenience (returns void); the server manages an internal handle.
 
-`startDetached()` — non-blocking; returns an `AsyncHandle` giving explicit lifecycle control.
+`startDetached()` - non-blocking; returns an `AsyncHandle` giving explicit lifecycle control.
 
-`startDetachedAndStopWhen(<predicate>)` — like `startDetached()` but stops when predicate fires.
+`startDetachedAndStopWhen(<predicate>)` - like `startDetached()` but stops when predicate fires.
 
-`startDetachedWithStopToken(<stop token>)` — like `startDetached()` but integrates with `std::stop_token`.
+`startDetachedWithStopToken(<stop token>)` - like `startDetached()` but integrates with `std::stop_token`.
 
 These methods allow running the server in a background thread; pick `startDetached()` when you need the handle, or `start()` when you do not.
 
@@ -735,15 +735,22 @@ curl -i http://localhost:8080/readyz  # expects 200 when ready, 503 during drain
 curl -i http://localhost:8080/startupz # returns 503 until initialization completes
 ```
 
-For a Kubernetes `Deployment` example that configures liveness/readiness/startup probes against these paths, see: [docs/kubernetes-probes.md](docs/kubernetes-probes.md).
+For Kubernetes deployment examples (ConfigMap + probes + full manifests), see: [docs/kubernetes-examples.md](docs/kubernetes-examples.md).
+
+You can use `aeronet-config-dump` example to generate a baseline config file with all the default values, which you can then customize for your deployment needs (e.g. enabling TLS, tuning timeouts, etc.):
+
+```bash
+# Generate a baseline full config file (server + router)
+./aeronet-config-dump --format yaml --output server.yaml
+```
 
 ### Zero copy / Sendfile
 
 There is a small example demonstrating `file` in `examples/aeronet-sendfile`.
 It exposes two endpoints:
 
-- `GET /static` — returns the contents of a file using `HttpResponse::file` (fixed response).
-- `GET /stream` — returns the contents of a file using `HttpResponseWriter::file` (streaming writer API).
+- `GET /static` - returns the contents of a file using `HttpResponse::file` (fixed response).
+- `GET /stream` - returns the contents of a file using `HttpResponseWriter::file` (streaming writer API).
 
 Build the examples and run the sendfile example:
 
@@ -770,7 +777,7 @@ and writes through the TLS transport.
 ### C++ modules support (experimental)
 
 When `AERONET_BUILD_MODULES=ON` is set in CMake, the library builds an optional C++20 module interface (`aeronet`).
-The module re-exports the public API surface of `<aeronet/aeronet.hpp>` — only user-facing types, configuration
+The module re-exports the public API surface of `<aeronet/aeronet.hpp>` - only user-facing types, configuration
 structs, handler callbacks, and protocol enums are exported; internal implementation details are omitted.
 
 **Requirements:**
@@ -785,7 +792,7 @@ cmake --build build
 ```
 
 ```cpp
-#include <utility> // std::move — standard library is not exported by the module
+#include <utility> // std::move - standard library is not exported by the module
 
 import aeronet;
 
@@ -909,7 +916,7 @@ Metrics example: [TLS Features](docs/FEATURES.md#tls-features)
 - Makes testing and multi-server scenarios straightforward
 - Ties telemetry lifecycle directly to server lifecycle
 
-All telemetry operations log errors via `log::error()` for debuggability—no silent failures.
+All telemetry operations log errors via `log::error()` for debuggability - no silent failures.
 
 You may create your own `TelemetryContext` instance for your custom metrics/traces if needed.
 

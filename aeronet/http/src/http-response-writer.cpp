@@ -236,7 +236,7 @@ void HttpResponseWriter::end() {
     return;
   }
   // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
-  // Otherwise we may still have buffered identity bytes (below threshold case) — emit headers now then flush.
+  // Otherwise we may still have buffered identity bytes (below threshold case) - emit headers now then flush.
   ensureHeadersSent();
   if (_state == State::Failed) {
     return;
