@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <memory>
@@ -50,6 +51,10 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/internal/tls-runtime-state.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/config-loader.hpp"
 #endif
 
 namespace aeronet {
@@ -171,6 +176,21 @@ class SingleHttpServer {
   // Constructs a server bound and listening immediately according to given configuration,
   // and using the provided Router for request routing (can be configured after construction before run).
   SingleHttpServer(HttpServerConfig cfg, Router router);
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Construct a server from a JSON or YAML configuration file.
+  // Format is auto-detected from file extension (.json, .yaml, .yml).
+  // Router can then be configured with the router() method.
+  // Throws std::runtime_error on parse or file I/O errors.
+  explicit SingleHttpServer(const std::filesystem::path& configPath);
+
+  // Construct a server from a JSON or YAML configuration file while reusing an already-configured Router.
+  // Only the HttpServerConfig portion of the file is applied; the RouterConfig from the file is ignored.
+  // This preserves all handlers/routes already registered in `router`.
+  // Format is auto-detected from file extension (.json, .yaml, .yml).
+  // Throws std::runtime_error on parse or file I/O errors.
+  SingleHttpServer(const std::filesystem::path& configPath, Router router);
+#endif
 
   // A SingleHttpServer is copyable - but only from a non-running instance.
   // The copy will duplicate the configuration and router state, but not
@@ -364,6 +384,15 @@ class SingleHttpServer {
   // Get the actual port of this server.
   // If the configuration port was 0, the port has been automatically allocated by the system.
   [[nodiscard]] uint16_t port() const { return _config.port; }
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Serialize the current server and router configuration as a JSON or YAML string.
+  [[nodiscard]] std::string dumpConfig(ConfigFormat format = ConfigFormat::json) const;
+
+  // Write the current server and router configuration to a file.
+  // Format is auto-detected from the file extension (.json, .yaml, .yml).
+  void saveConfig(const std::filesystem::path& filePath) const;
+#endif
 
   // Returns true while the event loop is actively executing inside run() / runUntil(), and
   // false otherwise (before start, after stop(), or after loop exit due to predicate / error).

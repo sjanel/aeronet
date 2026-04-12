@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <expected>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -16,6 +17,11 @@
 #include <coroutine>
 #include <functional>
 #include <thread>
+#endif
+
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+#include <glaze/yaml.hpp>  // IWYU pragma: keep
 #endif
 
 #include "aeronet/city-hash.hpp"
@@ -497,6 +503,32 @@ class HttpRequest {
   // Same as makeResponse(statusCode) but also sets the body from given bytes span and content type.
   [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                           std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
+
+#ifdef AERONET_ENABLE_GLAZE
+  /// Parse the request body as JSON into type T.
+  /// Returns the parsed object on success, or an HttpResponse (400 Bad Request) on parse failure.
+  template <class T>
+  [[nodiscard]] std::expected<T, HttpResponse> bodyAs() const {
+    T obj{};
+    if (const auto ec = glz::read_json(obj, body())) [[unlikely]] {
+      return std::unexpected(
+          makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
+    }
+    return obj;
+  }
+
+  /// Parse the request body as YAML into type T.
+  /// Returns the parsed object on success, or an HttpResponse (400 Bad Request) on parse failure.
+  template <class T>
+  [[nodiscard]] std::expected<T, HttpResponse> bodyAsYaml() const {
+    T obj{};
+    if (const auto ec = glz::read<glz::opts{.format = glz::YAML}>(obj, body())) [[unlikely]] {
+      return std::unexpected(
+          makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
+    }
+    return obj;
+  }
+#endif
 
   // Returns the best encoding that can be used for the response based on the
   // Accept-Encoding header of the request and the server compression configuration.

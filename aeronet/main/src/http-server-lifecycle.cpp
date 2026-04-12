@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -31,6 +32,10 @@
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/aeronet-config.hpp"
 #endif
 
 namespace aeronet {
@@ -96,6 +101,33 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
       _telemetry(_config.telemetry) {
   initListener();
 }
+
+#ifdef AERONET_ENABLE_GLAZE
+SingleHttpServer::SingleHttpServer(const std::filesystem::path& configPath) {
+  auto config = detail::ParseConfigFile(configPath);
+  *this = SingleHttpServer(std::move(config.server), std::move(config.router));
+}
+
+SingleHttpServer::SingleHttpServer(const std::filesystem::path& configPath, Router router) {
+  auto config = detail::ParseConfigFile(configPath);
+  *this = SingleHttpServer(std::move(config.server), std::move(router));
+}
+
+std::string SingleHttpServer::dumpConfig(ConfigFormat format) const {
+  TopLevelConfig config{.server = _config, .router = _router.config()};
+  return detail::SerializeConfig(config, format);
+}
+
+void SingleHttpServer::saveConfig(const std::filesystem::path& filePath) const {
+  auto format = detail::DetectFormat(filePath);
+  auto content = dumpConfig(format);
+  std::ofstream ofs(filePath, std::ios::binary);
+  if (!ofs) {
+    throw std::runtime_error("Failed to open file for writing: " + filePath.string());
+  }
+  ofs << content;
+}
+#endif
 
 SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle sharedListenFd)
     : _callbacks([&other] {
@@ -394,10 +426,10 @@ void SingleHttpServer::stop() noexcept {
     // This joins the background thread, after which the thread has already called _lifecycle.reset().
     _internalHandle.stop();
 
-    // In multi-server mode the background thread is NOT owned by _internalHandle — it is managed
+    // In multi-server mode the background thread is NOT owned by _internalHandle - it is managed
     // by MultiHttpServer::AsyncHandle and will be joined later.  The event-loop thread closes
     // the listener itself when it processes the Stopping state, so we must NOT call
-    // closeListener() here — doing so would close the socket while WSAPoll still holds it,
+    // closeListener() here - doing so would close the socket while WSAPoll still holds it,
     // causing undefined behavior on Windows.
     if (!isInMultiHttpServer()) {
       // Close the listener AFTER the event-loop thread has exited (joined via _internalHandle),
@@ -406,7 +438,7 @@ void SingleHttpServer::stop() noexcept {
       _lifecycle.reset();
     }
   } else if (prevState != internal::Lifecycle::State::Stopping) {
-    // Idle — still ensure the listener is closed.
+    // Idle - still ensure the listener is closed.
     // When Stopping, another stop() call (or the event-loop thread) is already
     // handling shutdown.  Calling closeListener() here would race with
     // the event-loop thread's WSAPoll on Windows.
