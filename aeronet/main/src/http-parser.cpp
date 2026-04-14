@@ -27,17 +27,18 @@
 namespace aeronet {
 
 SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked,
-                                                                       bool expectContinue,
+                                                                       bool expectContinue, std::size_t maxBodyBytes,
                                                                        std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
-    return decodeChunkedBody(cnxIt, expectContinue, consumedBytes);
+    return decodeChunkedBody(cnxIt, expectContinue, maxBodyBytes, consumedBytes);
   }
   // For fixed-length, non-chunked HTTP/1.1 requests there are no trailers per RFC 7230 §4.1.2
-  return decodeFixedLengthBody(cnxIt, expectContinue, consumedBytes);
+  return decodeFixedLengthBody(cnxIt, expectContinue, maxBodyBytes, consumedBytes);
 }
 
 SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue,
+                                                                           std::size_t maxBodyBytes,
                                                                            std::size_t& consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
@@ -57,7 +58,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid Content-Length");
     return BodyDecodeStatus::Error;
   }
-  if (_config.maxBodyBytes < declaredContentLen) {
+  if (maxBodyBytes < declaredContentLen) {
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
     return BodyDecodeStatus::Error;
   }
@@ -74,6 +75,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
 }
 
 SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue,
+                                                                       std::size_t maxBodyBytes,
                                                                        std::size_t& consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
@@ -117,7 +119,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         return BodyDecodeStatus::Error;
       }
       chunkSize = (chunkSize << 4) | static_cast<std::size_t>(digit);
-      if (_config.maxBodyBytes < chunkSize) {
+      if (maxBodyBytes < chunkSize) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
         return BodyDecodeStatus::Error;
       }
@@ -210,9 +212,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       compressedChunks.emplace_back(state.inBuffer.data() + pos, chunkSize);
       totalCompressedSize += chunkSize;
 
-      if (totalCompressedSize > _config.maxBodyBytes ||
-          (_config.decompression.maxCompressedBytes != 0 &&
-           totalCompressedSize > _config.decompression.maxCompressedBytes)) {
+      if (totalCompressedSize > maxBodyBytes || (_config.decompression.maxCompressedBytes != 0 &&
+                                                 totalCompressedSize > _config.decompression.maxCompressedBytes)) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }
@@ -220,7 +221,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // Append chunk data to body buffer (original path)
       const auto appendSz = std::min(chunkSize, static_cast<std::size_t>(state.inBuffer.size() - pos));
 
-      if (bodyAndTrailers.size() + appendSz > _config.maxBodyBytes) {
+      if (bodyAndTrailers.size() + appendSz > maxBodyBytes) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }

@@ -366,6 +366,132 @@ TEST(HttpContentLength, ExplicitTooLarge413) {
   ASSERT_TRUE(resp.contains("413"));
 }
 
+TEST(HttpContentLength, PerRouteMaxBodyBytesRejects) {
+  // Global limit is generous, per-route limit is tight
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
+  ts.router()
+      .setPath(http::Method::POST, "/limited", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxBodyBytes(10);
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  // Send 20 bytes body to /limited → should get 413
+  test::ClientConnection cc1(ts.port());
+  std::string req1 =
+      "POST /limited HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
+  test::sendAll(cc1.fd(), req1);
+  std::string resp1 = test::recvUntilClosed(cc1.fd());
+  EXPECT_TRUE(resp1.contains("413")) << resp1;
+}
+
+TEST(HttpContentLength, PerRouteMaxBodyBytesAllowsSmallerBody) {
+  // Per-route limit allows this body size
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
+  ts.router()
+      .setPath(http::Method::POST, "/limited2", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxBodyBytes(30);
+  test::ClientConnection cc(ts.port());
+  std::string req =
+      "POST /limited2 HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
+  test::sendAll(cc.fd(), req);
+  std::string resp = test::recvUntilClosed(cc.fd());
+  EXPECT_TRUE(resp.contains("200")) << resp;
+}
+
+TEST(HttpContentLength, PerRouteMaxBodyBytesDoesNotAffectOtherRoutes) {
+  // Only /limited3 has a tight limit; /other should use the global limit
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
+  ts.router()
+      .setPath(http::Method::POST, "/limited3", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxBodyBytes(5);
+  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequest&) { return HttpResponse("OK"); });
+  // /limited3 should reject 20-byte body
+  test::ClientConnection cc1(ts.port());
+  std::string req1 =
+      "POST /limited3 HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
+  test::sendAll(cc1.fd(), req1);
+  std::string resp1 = test::recvUntilClosed(cc1.fd());
+  EXPECT_TRUE(resp1.contains("413")) << resp1;
+  // /other should accept 20-byte body (global limit is 1024)
+  test::ClientConnection cc2(ts.port());
+  std::string req2 =
+      "POST /other HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
+  test::sendAll(cc2.fd(), req2);
+  std::string resp2 = test::recvUntilClosed(cc2.fd());
+  EXPECT_TRUE(resp2.contains("200")) << resp2;
+}
+
+TEST(HttpContentLength, PerRouteMaxHeaderBytesRejects) {
+  // Global header limit is generous, per-route limit is tight (50 bytes)
+  ts.router()
+      .setPath(http::Method::GET, "/hdr-limited", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxHeaderBytes(50);
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  // Headers: "Host: x\r\nX-Big: <60 chars>\r\nConnection: close\r\n" → well over 50 bytes
+  test::ClientConnection cc(ts.port());
+  std::string bigHeader(60, 'A');
+  std::string req = "GET /hdr-limited HTTP/1.1\r\nHost: x\r\nX-Big: " + bigHeader + "\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc.fd(), req);
+  std::string resp = test::recvUntilClosed(cc.fd());
+  EXPECT_TRUE(resp.contains("431")) << resp;
+}
+
+TEST(HttpContentLength, PerRouteMaxHeaderBytesAllowsSmaller) {
+  // Headers fit within the per-route limit
+  ts.router()
+      .setPath(http::Method::GET, "/hdr-ok", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxHeaderBytes(500);
+  test::ClientConnection cc(ts.port());
+  std::string req = "GET /hdr-ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc.fd(), req);
+  std::string resp = test::recvUntilClosed(cc.fd());
+  EXPECT_TRUE(resp.contains("200")) << resp;
+}
+
+TEST(HttpContentLength, PerRouteMaxHeaderBytesDoesNotAffectOthers) {
+  ts.router()
+      .setPath(http::Method::GET, "/hdr-strict", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .maxHeaderBytes(10);
+  ts.router().setPath(http::Method::GET, "/hdr-free", [](const HttpRequest&) { return HttpResponse("OK"); });
+  // /hdr-strict should reject (headers > 10 bytes)
+  test::ClientConnection cc1(ts.port());
+  std::string req1 = "GET /hdr-strict HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc1.fd(), req1);
+  std::string resp1 = test::recvUntilClosed(cc1.fd());
+  EXPECT_TRUE(resp1.contains("431")) << resp1;
+  // /hdr-free should pass (no per-route limit)
+  test::ClientConnection cc2(ts.port());
+  std::string req2 = "GET /hdr-free HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc2.fd(), req2);
+  std::string resp2 = test::recvUntilClosed(cc2.fd());
+  EXPECT_TRUE(resp2.contains("200")) << resp2;
+}
+
+TEST(HttpContentLength, PerRouteTimeoutClosesStaleRequest) {
+  // Set a very short per-route timeout (30ms) on one route
+  ts.router()
+      .setPath(http::Method::POST, "/slow-route", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .timeout(std::chrono::milliseconds{30});
+  // Send a request with Content-Length but hold back the body → server waits for body
+  test::ClientConnection cc(ts.port());
+  std::string req = "POST /slow-route HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc.fd(), req);
+  // Wait for the per-route deadline to expire and the sweep to close the connection
+  std::string resp = test::recvWithTimeout(cc.fd(), std::chrono::milliseconds{500});
+  EXPECT_TRUE(resp.contains("408")) << resp;
+}
+
+TEST(HttpContentLength, PerRouteTimeoutDoesNotAffectFastRequests) {
+  // Short per-route timeout, but the request completes quickly
+  ts.router()
+      .setPath(http::Method::GET, "/fast-route", [](const HttpRequest&) { return HttpResponse("Fast OK"); })
+      .timeout(std::chrono::milliseconds{5000});
+  test::ClientConnection cc(ts.port());
+  std::string req = "GET /fast-route HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  test::sendAll(cc.fd(), req);
+  std::string resp = test::recvUntilClosed(cc.fd());
+  EXPECT_TRUE(resp.contains("200")) << resp;
+  EXPECT_TRUE(resp.contains("Fast OK")) << resp;
+}
+
 TEST(HttpContentLength, GlobalHeaders) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
@@ -448,7 +574,7 @@ TEST(HttpBasic, LargePayload) {
 
 TEST(HttpBasic, ManyHeadersRequest) {
   // Test handling a request with thousands of headers
-  static constexpr std::size_t kMaxHeaderBytes = 128UL * 1024UL;
+  static constexpr uint32_t kMaxHeaderBytes = 128U * 1024U;
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
   ts.router().setDefault([](const HttpRequest& req) {
     int headerCount = 0;

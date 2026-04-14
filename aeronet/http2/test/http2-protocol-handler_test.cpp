@@ -4203,4 +4203,242 @@ TEST(Http2WriterTransport, IsAliveReturnsFalseForNonexistentStream) {
   EXPECT_FALSE(transport.isAlive());
 }
 
+// ============== Per-route maxHeaderBytes Tests ==============
+
+TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesRejects431) {
+  Router router;
+  // Set a small header limit on this route
+  router.setPath(http::Method::GET, "/small-hdr", [](const HttpRequest&) { return HttpResponse(200); })
+      .maxHeaderBytes(10);
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/small-hdr"));
+  // Add a custom header that will exceed the 10-byte limit
+  hdrs.append(MakeHttp1HeaderLine("x-big-header", "this-value-is-way-too-long-for-the-limit"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "431");
+}
+
+TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesAllowsSmaller) {
+  Router router;
+  router.setPath(http::Method::GET, "/ok-hdr", [](const HttpRequest&) { return HttpResponse(200); })
+      .maxHeaderBytes(4096);
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/ok-hdr"));
+  hdrs.append(MakeHttp1HeaderLine("x-small", "ok"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+}
+
+// ============== Per-route maxBodyBytes Tests ==============
+
+TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesRejects413) {
+  Router router;
+  router.setPath(http::Method::POST, "/small-body", [](const HttpRequest&) { return HttpResponse(200); })
+      .maxBodyBytes(5);
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/small-body"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  // Send body that exceeds the 5-byte limit
+  const std::string_view body = "this body is too big for the route limit";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(body.data(), body.size())), true),
+            ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "413");
+}
+
+TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
+  Router router;
+  std::string capturedBody;
+  router
+      .setPath(http::Method::POST, "/ok-body",
+               [&capturedBody](const HttpRequest& req) {
+                 capturedBody = req.body();
+                 return HttpResponse(201);
+               })
+      .maxBodyBytes(1024);
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/ok-body"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  const std::string_view body = "small body";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(body.data(), body.size())), true),
+            ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(capturedBody, "small body");
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "201");
+}
+
+// ============== Per-route requestTimeout / sweepStreams Tests ==============
+
+TEST(Http2ProtocolHandler, SweepStreamsOnEmptyStreamsIsNoOp) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // sweepStreams on an empty map should be a no-op
+  loop.handler.sweepStreams(std::chrono::steady_clock::now() + std::chrono::hours(1));
+  EXPECT_TRUE(loop.clientHeaders.empty());
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
+  Router router;
+  using namespace std::chrono_literals;
+
+  std::coroutine_handle<> capturedHandle;
+  std::atomic<bool> callbackFired{false};
+
+  router
+      .setPath(http::Method::GET, "/async-slow",
+               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                 const int result = co_await req.deferWork([]() { return 1; });
+                 co_return HttpResponse(200, std::to_string(result));
+               })
+      .timeout(1ms);
+
+  Http2ProtocolLoopback loop(router);
+
+  loop.handler.setAsyncPostCallback(
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
+        capturedHandle = handle;
+        callbackFired.store(true, std::memory_order_release);
+      });
+
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/async-slow"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+
+  // Wait for the background thread to complete and fire the callback
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!callbackFired.load(std::memory_order_acquire)) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+
+  // Instead of resuming, sweep with a far-future time to trigger the deadline
+  const auto farFuture = std::chrono::steady_clock::now() + 10s;
+  loop.handler.sweepStreams(farFuture);
+  loop.pumpServerToClient();
+
+  // Expect 408 status and a RST_STREAM
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "408");
+  EXPECT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::Cancel);
+}
+
+TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
+  Router router;
+  using namespace std::chrono_literals;
+
+  std::coroutine_handle<> capturedHandle;
+  std::atomic<bool> callbackFired{false};
+
+  router
+      .setPath(http::Method::GET, "/async-ok",
+               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                 const int result = co_await req.deferWork([]() { return 1; });
+                 co_return HttpResponse(200, std::to_string(result));
+               })
+      .timeout(1h);  // Very long timeout
+
+  Http2ProtocolLoopback loop(router);
+
+  loop.handler.setAsyncPostCallback(
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
+        capturedHandle = handle;
+        callbackFired.store(true, std::memory_order_release);
+      });
+
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/async-ok"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+
+  // Wait for background thread to complete
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!callbackFired.load(std::memory_order_acquire)) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+
+  // Sweep with current time — deadline not yet reached (1 hour timeout)
+  loop.handler.sweepStreams(std::chrono::steady_clock::now());
+  loop.pumpServerToClient();
+
+  // No 408 should have been sent
+  for (const auto& hdr : loop.clientHeaders) {
+    EXPECT_NE(GetHeaderValue(hdr, ":status"), "408") << "Should not send 408 when deadline has not been reached";
+  }
+
+  // Clean up: resume the coroutine so the stream is properly released
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  loop.pumpServerToClient();
+}
+#endif
+
 }  // namespace aeronet::http2

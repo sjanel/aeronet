@@ -38,6 +38,10 @@
 #include "aeronet/raw-chars.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/path-handler-entry.hpp"
+#endif
+
 using namespace aeronet;
 
 namespace {
@@ -1011,9 +1015,7 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
   CorsPolicy policy(CorsPolicy::Active::On);
   policy.allowOrigin("https://example.com").allowMethods(http::Method::GET).allowRequestHeader("X-Custom");
 
-  router
-      .setPath(http::Method::GET, "/with-cors",
-               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "cors-enabled"); })
+  router.setPath(http::Method::GET, "/with-cors", [](const HttpRequest&) { return HttpResponse("cors-enabled"); })
       .cors(std::move(policy));
 
   test::RequestOptions opts;
@@ -1026,6 +1028,63 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
   EXPECT_TRUE(preflightResp.contains("HTTP/1.1 204")) << preflightResp;
   EXPECT_TRUE(preflightResp.contains(MakeHttp1HeaderLine(http::AccessControlAllowOrigin, "https://example.com")))
       << preflightResp;
+}
+
+#ifdef AERONET_ENABLE_HTTP2
+TEST(RouterUpdateProxy, PathEntryProxyHttp2Enable) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  // Register a route and disable HTTP/2 via the proxy
+  router.setPath(http::Method::GET, "/h1only-proxy", [](const HttpRequest&) { return HttpResponse("h1-only"); })
+      .http2Enable(PathEntryConfig::Http2Enable::Disable);
+
+  // HTTP/1.1 should still work
+  const std::string response = test::simpleGet(ts.port(), "/h1only-proxy");
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.contains("h1-only")) << response;
+}
+#endif
+
+TEST(RouterUpdateProxy, PathEntryProxyTimeout) {
+  using namespace std::chrono_literals;
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router
+      .setPath(http::Method::GET, "/timeout-proxy", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+      .timeout(5000ms);
+
+  // Verify route still works through HTTP/1.1 (the timeout is enforced via sweep, not here)
+  const std::string response = test::simpleGet(ts.port(), "/timeout-proxy");
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+}
+
+TEST(RouterUpdateProxy, PathEntryProxyMaxBodyBytes) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router
+      .setPath(http::Method::POST, "/small-body-proxy",
+               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+      .maxBodyBytes(5);
+
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = "/small-body-proxy";
+  opts.body = "this body is way too large for the 5 byte limit";
+  opts.connection = "close";
+  const std::string response = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(response.contains("413")) << response;
+}
+
+TEST(RouterUpdateProxy, PathEntryProxyMaxHeaderBytes) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  router
+      .setPath(http::Method::GET, "/small-hdr-proxy",
+               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+      .maxHeaderBytes(10);
+
+  test::RequestOptions opts;
+  opts.target = "/small-hdr-proxy";
+  opts.headers.emplace_back("X-Big-Header", "this-value-is-way-too-long-for-the-ten-byte-limit-and-should-be-rejected");
+  opts.connection = "close";
+  const std::string response = test::requestOrThrow(ts.port(), opts);
+  EXPECT_TRUE(response.contains("431")) << response;
 }
 
 TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
