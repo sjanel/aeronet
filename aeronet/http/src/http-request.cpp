@@ -186,7 +186,7 @@ void HttpRequest::init(const HttpServerConfig& config, internal::ResponseCompres
   _pCompressionState = &compressionState;
 }
 
-http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
                                              bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
@@ -249,7 +249,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
       // we are pointing to a CRLF (empty line) - end of headers
       break;
     }
-    if (maxHeadersBytes < static_cast<std::size_t>(lineLast - headersFirst) + http::CRLF.size()) {
+    if (maxHeadersBytes < static_cast<uint32_t>(lineLast + http::CRLF.size() - inBuffer.data())) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
     const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);

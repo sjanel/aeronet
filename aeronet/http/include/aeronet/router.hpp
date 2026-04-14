@@ -20,6 +20,7 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/route-group.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
 
@@ -296,6 +297,17 @@ class Router {
   // The configuration stays unchanged.
   void clear() noexcept;
 
+  // Clamp all per-route PathEntryConfig limits (maxHeaderBytes, maxBodyBytes) against the
+  // provided global server limits. After this call, every route's effective limits are
+  // min(per-route, global) so the hot path only needs a single comparison.
+  // Throws std::invalid_argument if any non-sentinel per-route value exceeds the global limit.
+  void clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes);
+
+  // Create a RouteGroup with the given prefix for scoped route registration.
+  // Routes registered through the group are prepended with the prefix and inherit
+  // any shared configuration (CORS, middleware, per-route limits) set on the group.
+  [[nodiscard]] RouteGroup group(std::string_view prefix) { return {*this, prefix}; }
+
   // Prints in given ostream a representation of the path hold by the Router.
   void printTree(std::ostream& os) const;
 
@@ -433,6 +445,8 @@ class Router {
   AsyncRequestHandler _asyncHandler;
 #endif
   StreamingHandler _streamingHandler;
+
+  PathEntryConfig _defaultPathConfig;
 
   vector<RequestMiddleware> _globalPreMiddleware;
   vector<ResponseMiddleware> _globalPostMiddleware;

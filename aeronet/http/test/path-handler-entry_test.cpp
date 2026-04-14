@@ -2,7 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
@@ -373,5 +377,118 @@ TEST_F(PathHandlerEntryTest, AssignAsyncHandlerCopiesWithinSingleCall) {
 }
 
 #endif
+
+TEST_F(PathHandlerEntryTest, PathEntryConfigDefaultValues) {
+  PathEntryConfig config;
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_EQ(config.http2Enable, PathEntryConfig::Http2Enable::Default);
+#endif
+  EXPECT_EQ(config.requestTimeout, std::chrono::milliseconds::max());
+  EXPECT_EQ(config.maxBodyBytes, static_cast<std::size_t>(-1));
+  EXPECT_EQ(config.maxHeaderBytes, static_cast<uint32_t>(-1));
+}
+
+TEST_F(PathHandlerEntryTest, PathEntryConfigDesignatedInitializers) {
+  using namespace std::chrono_literals;
+  PathEntryConfig config{.maxHeaderBytes = 512, .maxBodyBytes = 1024, .requestTimeout = 5000ms};
+  EXPECT_EQ(config.requestTimeout, 5000ms);
+  EXPECT_EQ(config.maxBodyBytes, 1024U);
+  EXPECT_EQ(config.maxHeaderBytes, 512U);
+}
+
+TEST_F(PathHandlerEntryTest, ChainableTimeoutSetter) {
+  using namespace std::chrono_literals;
+  auto& ref = router.setPath(http::Method::POST, "/timeout-test", MakeNormalHandler()).timeout(3000ms);
+  auto result = router.match(http::Method::POST, "/timeout-test");
+  EXPECT_EQ(result.pathConfig.requestTimeout, 3000ms);
+  static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
+}
+
+TEST_F(PathHandlerEntryTest, ExcessiveTimeoutThrows) {
+  using namespace std::chrono_literals;
+  EXPECT_THROW(router.setPath(http::Method::GET, "/too-long", MakeNormalHandler()).timeout(std::chrono::hours{24 * 50}),
+               std::invalid_argument);
+}
+
+TEST_F(PathHandlerEntryTest, MaxMillisecondsTimeoutDoesNotThrow) {
+  // milliseconds::max() is the sentinel for "no per-route timeout" — must not be rejected.
+  EXPECT_NO_THROW(
+      router.setPath(http::Method::GET, "/max-ok", MakeNormalHandler()).timeout(std::chrono::milliseconds::max()));
+}
+
+TEST_F(PathHandlerEntryTest, ChainableMaxBodyBytesSetter) {
+  auto& ref = router.setPath(http::Method::PUT, "/body-limit", MakeNormalHandler()).maxBodyBytes(65536);
+  auto result = router.match(http::Method::PUT, "/body-limit");
+  EXPECT_EQ(result.pathConfig.maxBodyBytes, 65536U);
+  static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
+}
+
+TEST_F(PathHandlerEntryTest, ChainableMaxHeaderBytesSetter) {
+  auto& ref = router.setPath(http::Method::GET, "/header-limit", MakeNormalHandler()).maxHeaderBytes(2048);
+  auto result = router.match(http::Method::GET, "/header-limit");
+  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 2048U);
+  static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
+}
+
+TEST_F(PathHandlerEntryTest, ChainingMultipleSetters) {
+  using namespace std::chrono_literals;
+  router.setPath(http::Method::POST, "/all-config", MakeNormalHandler())
+      .timeout(1000ms)
+      .maxBodyBytes(4096)
+      .maxHeaderBytes(1024)
+#ifdef AERONET_ENABLE_HTTP2
+      .http2Enable(PathEntryConfig::Http2Enable::Disable)
+#endif
+      .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
+
+  auto result = router.match(http::Method::POST, "/all-config");
+  EXPECT_EQ(result.pathConfig.requestTimeout, 1000ms);
+  EXPECT_EQ(result.pathConfig.maxBodyBytes, 4096U);
+  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 1024U);
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_EQ(result.pathConfig.http2Enable, PathEntryConfig::Http2Enable::Disable);
+#endif
+  ASSERT_NE(result.pCorsPolicy, nullptr);
+  EXPECT_TRUE(result.pCorsPolicy->active());
+}
+
+TEST_F(PathHandlerEntryTest, RouteWithoutOverridesHasNulloptConfig) {
+  router.setPath(http::Method::GET, "/no-config", MakeNormalHandler());
+  auto result = router.match(http::Method::GET, "/no-config");
+  EXPECT_EQ(result.pathConfig.requestTimeout, std::chrono::milliseconds::max());
+  EXPECT_EQ(result.pathConfig.maxBodyBytes, static_cast<std::size_t>(-1));
+  EXPECT_EQ(result.pathConfig.maxHeaderBytes, static_cast<uint32_t>(-1));
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_EQ(result.pathConfig.http2Enable, PathEntryConfig::Http2Enable::Default);
+#endif
+}
+
+TEST_F(PathHandlerEntryTest, CopyPreservesNewPathConfigFields) {
+  using namespace std::chrono_literals;
+  auto& sourceEntry =
+      router.setPath(http::Method::GET, "/copy-cfg-src", MakeNormalHandler()).timeout(2000ms).maxBodyBytes(8192);
+
+  Router target;
+  auto& targetEntry = target.setPath(http::Method::DELETE, "/copy-cfg-dst", MakeNormalHandler());
+  targetEntry = sourceEntry;
+
+  auto result = target.match(http::Method::GET, "/copy-cfg-dst");
+  EXPECT_EQ(result.pathConfig.requestTimeout, 2000ms);
+  EXPECT_EQ(result.pathConfig.maxBodyBytes, 8192U);
+}
+
+TEST_F(PathHandlerEntryTest, MovePreservesNewPathConfigFields) {
+  using namespace std::chrono_literals;
+  auto& sourceEntry =
+      router.setPath(http::Method::GET, "/move-cfg-src", MakeNormalHandler()).timeout(500ms).maxHeaderBytes(4096);
+
+  Router target;
+  auto& targetEntry = target.setPath(http::Method::DELETE, "/move-cfg-dst", MakeNormalHandler());
+  targetEntry = std::move(sourceEntry);
+
+  auto result = target.match(http::Method::GET, "/move-cfg-dst");
+  EXPECT_EQ(result.pathConfig.requestTimeout, 500ms);
+  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 4096U);
+}
 
 }  // namespace aeronet

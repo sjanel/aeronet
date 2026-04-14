@@ -70,6 +70,7 @@ ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize
   inBuffer.addSize(result.bytesProcessed);
   if (headerStartTp.time_since_epoch().count() == 0) {
     headerStartTp = lastActivity;
+    parsingHeaders = true;
   }
   return result;
 }
@@ -324,7 +325,9 @@ void ConnectionState::reset() {
   transport.reset();
   lastActivity = {};
   headerStartTp = {};
-  bodyLastActivity = {};
+  bodyLastActivityMs = kInactiveRelativeMs;
+  requestDeadlineMs = kInactiveRelativeMs;
+  parsingHeaders = false;
   peerFd = kInvalidHandle;
   peerStreamId = 0;
   requestsServed = 0;

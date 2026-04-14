@@ -511,6 +511,7 @@ TEST(ConnectionManagerErrors, MaxBufferOverflow) {
     test::sendAll(client.fd(), hugeHeaders);
 
     const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
+    // Pre-routing DoS guard: buffer exceeds global maxHeaderBytes before headers are fully parsed.
     EXPECT_TRUE(resp.contains("HTTP/1.1 431")) << resp;
   }
 

@@ -1606,4 +1606,37 @@ TEST_F(RouterTest, ParamRouteExtraSegmentsNoChildrenReturnsNull) {
   EXPECT_EQ(res.requestHandler(), nullptr);
 }
 
+// --- clampConfigs validation tests ---
+
+TEST_F(RouterTest, ClampConfigsSentinelValuesAreClamped) {
+  // Sentinel values (default) should be clamped to the global limit without error.
+  router.setPath(http::Method::GET, "/test", OkHandler);
+  EXPECT_NO_THROW(router.clampConfigs(4096, 8192));
+}
+
+TEST_F(RouterTest, ClampConfigsPerRouteLowerThanGlobalIsOk) {
+  router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(2048).maxBodyBytes(4096);
+  EXPECT_NO_THROW(router.clampConfigs(8192, 16384));
+}
+
+TEST_F(RouterTest, ClampConfigsPerRouteEqualToGlobalIsOk) {
+  router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(8192).maxBodyBytes(16384);
+  EXPECT_NO_THROW(router.clampConfigs(8192, 16384));
+}
+
+TEST_F(RouterTest, ClampConfigsPerRouteHeaderExceedsGlobalThrows) {
+  router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(16384);
+  EXPECT_THROW(router.clampConfigs(8192, 1024 * 1024), std::invalid_argument);
+}
+
+TEST_F(RouterTest, ClampConfigsPerRouteBodyExceedsGlobalThrows) {
+  router.setPath(http::Method::GET, "/test", OkHandler).maxBodyBytes(32768);
+  EXPECT_THROW(router.clampConfigs(8192, 16384), std::invalid_argument);
+}
+
+TEST_F(RouterTest, ClampConfigsLiteralRouteExceedsGlobalThrows) {
+  router.setPath(http::Method::GET, "/exact", OkHandler).maxBodyBytes(100);
+  EXPECT_THROW(router.clampConfigs(8192, 50), std::invalid_argument);
+}
+
 }  // namespace aeronet

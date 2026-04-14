@@ -213,6 +213,33 @@ TEST(HttpServerConfigTest, InvalidBodyReadTimeoutThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpServerConfigTest, ExcessiveHeaderReadTimeoutThrows) {
+  HttpServerConfig config;
+  config.withHeaderReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});  // 50 days > ~49.7 days
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, ExcessiveBodyReadTimeoutThrows) {
+  HttpServerConfig config;
+  config.withBodyReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, ExcessiveKeepAliveTimeoutThrows) {
+  HttpServerConfig config;
+  config.withKeepAliveTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, LargeButValidTimeoutsPass) {
+  HttpServerConfig config;
+  // Just under 49 days should be fine
+  config.withHeaderReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
+  config.withBodyReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
+  config.withKeepAliveTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(HttpServerConfigTest, TooSmallOutboundBufferBytesThrows) {
   HttpServerConfig config;
   config.withMaxOutboundBufferBytes(64);  // less than minimum of 1kB

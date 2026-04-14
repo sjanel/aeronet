@@ -446,10 +446,12 @@ class SingleHttpServer {
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
-  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked, bool expectContinue,
+  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked, bool expectContinue, std::size_t maxBodyBytes,
                                      std::size_t& consumedBytes);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
-  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue, std::size_t maxBodyBytes,
+                                         std::size_t& consumedBytes);
+  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue, std::size_t maxBodyBytes,
+                                     std::size_t& consumedBytes);
   bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
   void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
@@ -547,7 +549,7 @@ class SingleHttpServer {
 
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
-                            std::span<const ResponseMiddleware> responseMiddleware);
+                            std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
   void resumeAsyncHandler(ConnectionIt cnxIt);
   void handleAsyncBodyProgress(ConnectionIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionIt cnxIt);

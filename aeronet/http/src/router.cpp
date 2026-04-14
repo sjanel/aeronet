@@ -945,6 +945,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
     } else if (_handler) {
       result.setRequestHandler(&_handler);
     }
+    result.pathConfig = _defaultPathConfig;
     return result;
   }
 
@@ -1204,6 +1205,59 @@ void Router::clear() noexcept {
   _compiledRoutePool.clear();
   _pRootNode = nullptr;
   _literalOnlyRoutes.clear();
+}
+
+namespace {
+constexpr uint32_t kSentinelHeaderBytes = static_cast<uint32_t>(-1);
+constexpr std::size_t kSentinelBodyBytes = static_cast<std::size_t>(-1);
+
+void CheckRouteConfig(const PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes,
+                      std::string_view routePath) {
+  if (cfg.maxHeaderBytes != kSentinelHeaderBytes && cfg.maxHeaderBytes > globalMaxHeaderBytes) {
+    log::critical("Per-route maxHeaderBytes ({}) for '{}' exceeds global limit ({})", cfg.maxHeaderBytes, routePath,
+                  globalMaxHeaderBytes);
+    throw std::invalid_argument("Per-route maxHeaderBytes should not exceed global limit");
+  }
+  if (cfg.maxBodyBytes != kSentinelBodyBytes && cfg.maxBodyBytes > globalMaxBodyBytes) {
+    log::critical("Per-route maxBodyBytes ({}) for '{}' exceeds global limit ({})", cfg.maxBodyBytes, routePath,
+                  globalMaxBodyBytes);
+    throw std::invalid_argument("Per-route maxBodyBytes should not exceed global limit");
+  }
+}
+
+void ClampConfig(PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes) noexcept {
+  cfg.maxHeaderBytes = std::min(cfg.maxHeaderBytes, globalMaxHeaderBytes);
+  cfg.maxBodyBytes = std::min(cfg.maxBodyBytes, globalMaxBodyBytes);
+}
+}  // namespace
+
+void Router::clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes) {
+  // Validate and clamp radix tree nodes iteratively.
+  if (_pRootNode != nullptr) {
+    vector<RadixNode*> stack(1U, _pRootNode);
+    while (!stack.empty()) {
+      auto* node = stack.back();
+      stack.pop_back();
+
+      CheckRouteConfig(node->handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes, node->path);
+
+      ClampConfig(node->handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
+
+      for (auto* child : node->children) {
+        stack.push_back(child);
+      }
+    }
+  }
+
+  // Validate and clamp literal routes.
+  for (auto& [key, entry] : _literalOnlyRoutes) {
+    CheckRouteConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes, key);
+    ClampConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
+  }
+
+  // _defaultPathConfig represents "no per-route override" so always equals the global values.
+  _defaultPathConfig.maxHeaderBytes = globalMaxHeaderBytes;
+  _defaultPathConfig.maxBodyBytes = globalMaxBodyBytes;
 }
 
 void Router::printTree(std::ostream& os) const {

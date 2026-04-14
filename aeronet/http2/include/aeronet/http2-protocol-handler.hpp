@@ -175,6 +175,10 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   bool resumeAsyncTaskByHandle(std::coroutine_handle<> handle);
 #endif
 
+  /// Check per-stream request deadlines and send 408 + RST_STREAM for expired ones.
+  /// Called during the server's periodic sweep of idle connections.
+  void sweepStreams(std::chrono::steady_clock::time_point now);
+
  private:
   /// Per-stream request state during aggregation.
   struct StreamRequest {
@@ -237,6 +241,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     StreamRequest request;
     PoolPtr<PendingWork> pending;
     NativeHandle tunnelUpstreamFd{kInvalidHandle};  ///< Valid if this is a CONNECT tunnel stream
+    /// Per-route handler deadline. Epoch means no per-route deadline active.
+    std::chrono::steady_clock::time_point requestDeadline;
   };
 
   using StreamsMap = flat_hash_map<uint32_t, StreamState>;
