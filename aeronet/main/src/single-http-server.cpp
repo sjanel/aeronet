@@ -1077,8 +1077,14 @@ void SingleHttpServer::eventLoop() {
   // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
   // a connection that still had TCP data after hitting the cap won't generate a new
   // read event, so we must re-read it here before waiting for events again.
+  //
+  // Swap into a local so that handleReadableClient can safely push new deferrals
+  // into the (now-empty) member vector without invalidating our iteration and
+  // without losing them to a blanket clear().
   if (!_pendingReadFds.empty()) {
-    for (const NativeHandle pendingFd : _pendingReadFds) {
+    decltype(_pendingReadFds) batch;
+    batch.swap(_pendingReadFds);
+    for (const NativeHandle pendingFd : batch) {
       const auto pendingIt = _connections.iterator(pendingFd);
       if (!IsValid(_connections, pendingIt)) {
         continue;
@@ -1091,7 +1097,6 @@ void SingleHttpServer::eventLoop() {
         }
       }
     }
-    _pendingReadFds.clear();
   }
 
   // Under high load epoll_wait may return immediately and never hit the timeout path.
