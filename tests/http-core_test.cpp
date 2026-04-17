@@ -173,6 +173,55 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
 }
 
+TEST(HttpServerConfigLimits, DeferredReadDrainsBufferAfterFairnessCap) {
+  // Send header + body in a single write so the TCP stack coalesces everything
+  // into one kernel buffer. With edge-triggered polling the fd won't fire again
+  // after the fairness cap breaks the read loop, so the deferred-read path must kick in.
+  const std::size_t cap = ts.server.config().minReadChunkBytes;
+  auto scope = makeMaxPerEventReadBytesScope(cap);
+
+  const std::size_t payloadSize = cap * 4;
+  std::string payload(payloadSize, 'y');
+  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+    HttpResponse resp;
+    if (req.body().size() != payloadSize) {
+      resp.status(http::StatusCodeBadRequest).body("size mismatch");
+    } else {
+      resp.body("deferred ok");
+    }
+    return resp;
+  });
+
+  std::string raw = "POST /deferred HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
+                    "\r\nConnection: close\r\n\r\n" + payload;
+  std::string resp = test::sendAndCollect(port, raw);
+  ASSERT_FALSE(resp.empty()) << "expected a response";
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.contains("deferred ok")) << resp;
+}
+
+TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
+  // Verify that a fd closed between being deferred and being re-read
+  // is silently skipped (the IsValid check in the deferred loop).
+  const std::size_t cap = ts.server.config().minReadChunkBytes;
+  auto scope = makeMaxPerEventReadBytesScope(cap);
+
+  const std::size_t payloadSize = cap * 4;
+  std::string payload(payloadSize, 'z');
+  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+    HttpResponse resp;
+    resp.body(req.body().size() == payloadSize ? "ok" : "bad");
+    return resp;
+  });
+
+  // First request: succeed normally to verify the cap path works.
+  std::string raw = "POST /deferred2 HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
+                    "\r\nConnection: close\r\n\r\n" + payload;
+  std::string resp = test::sendAndCollect(port, raw);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.contains("ok")) << resp;
+}
+
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
   auto scope = makeTcpNoDelayScope(TcpNoDelayMode::Enabled);
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });

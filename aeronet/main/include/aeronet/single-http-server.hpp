@@ -11,7 +11,6 @@
 #include <span>
 #include <string_view>
 #include <thread>
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #endif
@@ -41,6 +40,7 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
@@ -440,7 +440,7 @@ class SingleHttpServer {
   // Returns true if the connection should be closed.
   bool processConnectionInput(ConnectionIt cnxIt);
   bool processHttp1Requests(ConnectionIt cnxIt);
-  // Process WebSocket data through the protocol handler.
+  // Process WebSocket / HTTP/2 data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
   // Split helpers
@@ -631,6 +631,12 @@ class SingleHttpServer {
 
   // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
+
+  // Fds that hit the per-event fairness cap with data still in their TCP buffer.
+  // Edge-triggered polling (EPOLLET on Linux, EV_CLEAR on macOS) only fires on
+  // state transitions; if bytes remain after the cap, no new read event is generated.
+  // Deferring these fds to the next iteration ensures they are re-read.
+  vector<NativeHandle> _pendingReadFds;
 
 #ifdef AERONET_MACOS
   // When true (default), this instance owns the listen socket and will close it
