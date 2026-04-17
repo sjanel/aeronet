@@ -167,7 +167,8 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _sharedBuffers(std::move(other._sharedBuffers)),
       _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
-      _lifecycleTracker(std::move(other._lifecycleTracker))
+      _lifecycleTracker(std::move(other._lifecycleTracker)),
+      _pendingReadFds(std::move(other._pendingReadFds))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tls(std::move(other._tls))
@@ -208,6 +209,7 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
+    _pendingReadFds = std::move(other._pendingReadFds);
 #ifdef AERONET_ENABLE_OPENSSL
     _tls = std::move(other._tls);
 #endif

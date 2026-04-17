@@ -252,7 +252,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 
   // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
-  if (state.protocolHandler != nullptr) {
+  if (state.protocolHandler) {
     return processSpecialProtocolHandler(cnxIt);
   }
 
@@ -723,8 +723,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   // Determine active CORS policy (route-specific if provided, otherwise global)
   if (pCorsPolicy != nullptr) {
     if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-      HttpResponse corsProbe(http::StatusCodeForbidden);
-      corsProbe.body("Forbidden by CORS policy");
+      HttpResponse corsProbe(http::StatusCodeForbidden, "Forbidden by CORS policy");
       ApplyResponseMiddleware(request, corsProbe, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
                               _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
@@ -737,8 +736,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     auto negotiated = _compressionState.selector.negotiateAcceptEncoding(encHeader);
     if (negotiated.reject) {
       // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
-      HttpResponse resp(http::StatusCodeNotAcceptable);
-      resp.body("No acceptable content-coding available");
+      HttpResponse resp(http::StatusCodeNotAcceptable, "No acceptable content-coding available");
       ApplyResponseMiddleware(request, resp, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
                               _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
@@ -793,8 +791,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
     static constexpr std::string_view kMessage = "Async handler inactive";
     log::error("Async path handler returned an invalid RequestTask for path {}", request.path());
     if (bodyReady) {
-      HttpResponse resp(http::StatusCodeInternalServerError);
-      resp.body(kMessage);
+      HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
       ApplyResponseMiddleware(request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry, false,
                               _callbacks.middlewareMetrics);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
@@ -1074,6 +1071,27 @@ void SingleHttpServer::eventLoop() {
     // issues. With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
     // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
     maintenanceTick = true;
+  }
+
+  // Re-process connections deferred by the per-event fairness cap.
+  // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
+  // a connection that still had TCP data after hitting the cap won't generate a new
+  // read event, so we must re-read it here before waiting for events again.
+  if (!_pendingReadFds.empty()) {
+    for (const NativeHandle pendingFd : _pendingReadFds) {
+      const auto pendingIt = _connections.iterator(pendingFd);
+      if (!IsValid(_connections, pendingIt)) {
+        continue;
+      }
+      const CloseStatus cs = handleReadableClient(pendingIt);
+      if (cs == CloseStatus::Close) {
+        const auto finalIt = _connections.iterator(pendingFd);
+        if (IsValid(_connections, finalIt)) {
+          closeConnection(finalIt);
+        }
+      }
+    }
+    _pendingReadFds.clear();
   }
 
   // Under high load epoll_wait may return immediately and never hit the timeout path.
