@@ -1520,6 +1520,7 @@ TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
 }
 
 TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
+  ts.router() = Router();
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.enableKeepAlive = false;
     cfg.maxBodyBytes = 5;              // Very small max body

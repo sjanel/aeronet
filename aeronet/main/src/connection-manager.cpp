@@ -645,6 +645,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       if (processConnectionInput(cnxIt)) {
         break;
       }
+      // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
+      // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
+      // so defer this fd for re-read at the start of the next event-loop iteration.
+      _pendingReadFds.push_back(fd);
+      _lifecycle.wakeupFd.send();
       break;
     }
     if (pCnx->inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {

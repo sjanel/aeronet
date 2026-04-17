@@ -6,6 +6,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Bug fixes
 
+- Fix connection stall when `maxPerEventReadBytes` fairness cap interrupts a read with data still in the TCP buffer. Edge-triggered polling (EPOLLET on Linux, EV_CLEAR on macOS) does not fire a new read event on a non-empty -> non-empty buffer transition, causing the connection to hang until keepAlive timeout. The fix defers partially-read fds and re-processes them at the start of the next event-loop iteration.
 - HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
 - HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
 
