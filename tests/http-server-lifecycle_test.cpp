@@ -5,6 +5,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -43,6 +45,33 @@ TEST(SingleHttpServer, DefaultConstructor) {
   EXPECT_FALSE(server.isRunning());
   server.setExpectationHandler({});
 }
+
+#ifdef AERONET_ENABLE_GLAZE
+TEST(SingleHttpServer, ConfigPathAndRouterConstructorKeepsProvidedRoutes) {
+  const auto tmpDir = std::filesystem::temp_directory_path();
+  const auto filePath = tmpDir / "aeronet_single_with_router_test.yaml";
+  {
+    std::ofstream ofs(filePath);
+    ofs << "server:\n  port: 0\n";
+  }
+
+  Router router;
+  router.setPath(http::Method::GET, "/from-router", [](const HttpRequest&) { return HttpResponse(200).body("ok"); });
+
+  SingleHttpServer server(filePath, std::move(router));
+  std::filesystem::remove(filePath);
+
+  std::atomic_bool stop{false};
+  std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
+  test::WaitForServer(server);
+
+  const std::string resp = test::simpleGet(server.port(), "/from-router");
+  stop.store(true);
+
+  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.contains("ok"));
+}
+#endif
 
 TEST(SingleHttpServer, ShouldHaveOnlyOneThread) {
   HttpServerConfig config;

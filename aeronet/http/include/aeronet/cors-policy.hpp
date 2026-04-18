@@ -12,6 +12,14 @@
 
 namespace aeronet {
 
+class CorsPolicy;
+
+namespace detail {
+struct CorsPolicyData;
+void ApplyCorsPolicyData(const CorsPolicyData& data, CorsPolicy& policy);
+CorsPolicyData BuildCorsPolicyData(const CorsPolicy& policy);
+}  // namespace detail
+
 // Policy object responsible for evaluating CORS requests and emitting the relevant headers.
 class CorsPolicy {
  public:
@@ -93,6 +101,9 @@ class CorsPolicy {
   void applyResponseHeaders(HttpResponse& response, std::string_view origin) const;
 
   [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept;
+
+  friend void detail::ApplyCorsPolicyData(const detail::CorsPolicyData& data, CorsPolicy& policy);
+  friend detail::CorsPolicyData detail::BuildCorsPolicyData(const CorsPolicy& policy);
 
   ConcatenatedStrings32 _allowedOrigins;
   ConcatenatedHeaderValues _allowedRequestHeaders;

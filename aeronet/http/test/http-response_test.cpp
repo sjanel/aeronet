@@ -2828,7 +2828,7 @@ TEST_F(HttpResponseTest, BodyInlineAppend_DuringStreamingCompression) {
     resp.body(std::string_view{initialBody}, http::ContentTypeTextPlain);
     EXPECT_TRUE(IsAutomaticDirectCompression(resp));
 
-    // Use bodyInlineAppend — this triggers the decompress-and-append path
+    // Use bodyInlineAppend - this triggers the decompress-and-append path
     for (std::size_t i = 0; i < 2UL * appendData.size(); ++i) {
       resp.bodyInlineAppend(1U, kAppendZeroOrOneA);
     }
@@ -2946,7 +2946,7 @@ TEST_F(HttpResponseTest, BodyInlineSet_AfterDirectCompression_ClearsState) {
       EXPECT_TRUE(IsAutomaticDirectCompression(resp));
       EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
 
-      // bodyInlineSet replaces the body — it calls removeBodyAndItsHeaders()
+      // bodyInlineSet replaces the body - it calls removeBodyAndItsHeaders()
       if (bodyInlineSetBytes) {
         resp.bodyInlineSet(1U, kAppendZeroOrOneABytes);
         resp.bodyInlineSet(1U, kAppendZeroOrOneABytes);
@@ -3209,7 +3209,7 @@ TEST_F(HttpResponseTest, DirectCompressionMode_RvalueChaining) {
     resp.directCompressionMode(DirectCompressionMode::On);
 
     std::move(resp).body(body, http::ContentTypeTextPlain);
-    // Just verify it doesn't crash — rvalue chain
+    // Just verify it doesn't crash - rvalue chain
   }
 }
 
@@ -3222,7 +3222,7 @@ TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
     resp.body(body, http::ContentTypeTextPlain);
     EXPECT_TRUE(IsAutomaticDirectCompression(resp));
 
-    // Do NOT call FinalizeCompressedBody here — finalizeForHttp1 handles it internally
+    // Do NOT call FinalizeCompressedBody here - finalizeForHttp1 handles it internally
     auto full = concatenated(std::move(resp));
 
     // Verify the full response is valid and contains compressed body

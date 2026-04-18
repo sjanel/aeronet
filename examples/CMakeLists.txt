@@ -38,3 +38,8 @@ if (AERONET_ENABLE_WEBSOCKET)
 	target_link_libraries(aeronet-websocket-echo PRIVATE aeronet)
 endif()
 
+if (AERONET_ENABLE_GLAZE)
+	AeronetAddProjectExecutable(aeronet-config-dump config-dump.cpp)
+	target_link_libraries(aeronet-config-dump PRIVATE aeronet)
+endif()
+

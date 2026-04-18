@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <stop_token>
@@ -110,6 +111,13 @@ class MultiHttpServer {
 
   // Variant of MultiHttpServer(HttpServerConfig, Router) with a default constructed Router.
   explicit MultiHttpServer(HttpServerConfig cfg) : MultiHttpServer(std::move(cfg), Router()) {}
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Construct a multi-threaded server from a JSON or YAML configuration file.
+  // Format is auto-detected from file extension (.json, .yaml, .yml).
+  // Throws std::runtime_error on parse or file I/O errors.
+  explicit MultiHttpServer(const std::filesystem::path& configPath);
+#endif
 
   // MultiHttpServer is copyable as long as the source is fully stopped. Copies rebuild fresh SingleHttpServer instances
   // with the same configuration but do not share lifecycle trackers or stop tokens with the source.
@@ -245,6 +253,15 @@ class MultiHttpServer {
 
   // nbThreads(): Number of underlying SingleHttpServer instances (and threads) configured.
   [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Serialize the current server and router configuration as a JSON or YAML string.
+  [[nodiscard]] std::string dumpConfig(ConfigFormat format = ConfigFormat::json) const;
+
+  // Write the current server and router configuration to a file.
+  // Format is auto-detected from the file extension (.json, .yaml, .yml).
+  void saveConfig(const std::filesystem::path& filePath) const;
+#endif
 
   struct AggregatedStats {
     // JSON array of per-instance objects
