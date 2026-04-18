@@ -146,10 +146,10 @@ struct ConnectionState {
   vector<HttpResponseData> zerocopyPendingBuffers;
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
-  // Timestamp of first byte of the current pending request headers (buffer not yet containing full CRLFCRLF).
-  // Reset when a complete request head is parsed. If std::chrono::steady_clock::time_point{} (epoch) -> inactive.
-  std::chrono::steady_clock::time_point headerStartTp;     // default epoch value means no header timing active
-  std::chrono::steady_clock::time_point bodyLastActivity;  // timestamp of last body progress while waiting
+  // Timestamp of first byte of the current pending request headers.
+  // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
+  // Epoch means inactive (no request in progress).
+  std::chrono::steady_clock::time_point headerStartTp;
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
   NativeHandle peerFd{kInvalidHandle};
@@ -161,6 +161,14 @@ struct ConnectionState {
   // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
   uint32_t trailerLen{0};
 
+  /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
+  static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
+
+  // Milliseconds since headerStartTp of last body read progress. kInactiveRelativeMs means inactive.
+  uint32_t bodyLastActivityMs{kInactiveRelativeMs};
+  // Milliseconds since headerStartTp of per-route handler deadline. kInactiveRelativeMs means inactive.
+  uint32_t requestDeadlineMs{kInactiveRelativeMs};
+
   TLSInfo tlsInfo;
 
   // Connection close lifecycle.
@@ -170,6 +178,7 @@ struct ConnectionState {
   bool waitingWritable{false};  // EPOLLOUT registered
   bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
   bool waitingForBody{false};   // true when awaiting missing body bytes (bodyReadTimeout enforcement)
+  bool parsingHeaders{false};   // true while request headers are being received (headerStartTp to head-parsed)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending{false};
@@ -237,6 +246,8 @@ struct ConnectionState {
     bool expectContinue{false};
     uint32_t responseMiddlewareCount{0};
     std::size_t consumedBytes{0};
+    // Per-route maximum body size override (MAX = use global limit only).
+    std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
     const CorsPolicy* corsPolicy{nullptr};
     const void* responseMiddleware{nullptr};
     std::optional<HttpResponse> pendingResponse;

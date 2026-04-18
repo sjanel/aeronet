@@ -459,8 +459,9 @@ class HttpRequest {
   // Timestamp when request parsing began.
   [[nodiscard]] std::chrono::steady_clock::time_point reqStart() const noexcept { return _reqStart; }
 
-  // Size of the request head span.
-  // This is the sum of the lengths of the request line and all headers including CRLFs.
+  // Size of the parsed request head used for header-limit checks and HTTP/1.x body offset computation.
+  // HTTP/1.x: request line + headers + terminating CRLFs.
+  // HTTP/2: sum of pseudo-header and header name/value bytes accumulated while decoding the header block.
   [[nodiscard]] std::size_t headSpanSize() const noexcept { return _headSpanSize; }
 
   // ============================
@@ -528,7 +529,7 @@ class HttpRequest {
   // Attempts to set this HttpRequest (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
-  http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, std::size_t maxHeadersBytes,
+  http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
 
   void prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext);

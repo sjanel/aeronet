@@ -217,6 +217,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
     buf = Append(value, buf);
 
     assert(!name.empty());
+    req._headSpanSize += storedName.size() + storedValue.size();
     if (name[0] == ':') {
       if (storedName == ":method") {
         req._method = ParseHttpMethod(storedValue);
@@ -659,6 +660,31 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     onRequestCompleted(request, http::StatusCodeNotFound);
     _streams.erase(streamId);
     return;
+  }
+
+  // Per-route request head size limit (already clamped against global in prepareRun)
+  if (request.headSpanSize() > routingResult.pathConfig.maxHeaderBytes) {
+    [[maybe_unused]] ErrorCode err =
+        sendResponse(streamId, HttpResponse(http::StatusCodeRequestHeaderFieldsTooLarge), /*isHeadMethod=*/false);
+    assert(err == ErrorCode::NoError);
+    onRequestCompleted(request, http::StatusCodeRequestHeaderFieldsTooLarge);
+    _streams.erase(streamId);
+    return;
+  }
+
+  // Per-route body size limit (already clamped against global in prepareRun)
+  if (request.body().size() > routingResult.pathConfig.maxBodyBytes) {
+    [[maybe_unused]] ErrorCode err =
+        sendResponse(streamId, HttpResponse(http::StatusCodePayloadTooLarge), /*isHeadMethod=*/false);
+    assert(err == ErrorCode::NoError);
+    onRequestCompleted(request, http::StatusCodePayloadTooLarge);
+    _streams.erase(streamId);
+    return;
+  }
+
+  // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
+  if (routingResult.pathConfig.requestTimeout != std::chrono::milliseconds::max()) {
+    it->second.requestDeadline = request.reqStart() + routingResult.pathConfig.requestTimeout;
   }
 
   const bool isHead = (request.method() == http::Method::HEAD);
@@ -1141,6 +1167,25 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequest& request, http::Status
   request.end(status);
   if (_requestCompletionCallback) {
     _requestCompletionCallback(request, status);
+  }
+}
+
+void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point now) {
+  for (auto it = _streams.begin(); it != _streams.end();) {
+    auto& streamState = it->second;
+    if (streamState.requestDeadline.time_since_epoch().count() != 0 && now > streamState.requestDeadline) {
+      const uint32_t streamId = it->first;
+      log::debug("HTTP/2 stream {} timed out (per-route request deadline exceeded)", streamId);
+      [[maybe_unused]] ErrorCode err =
+          sendResponse(streamId, HttpResponse(http::StatusCodeRequestTimeout), /*isHeadMethod=*/false);
+      // Erase from our map before sendRstStream, because sendRstStream triggers
+      // the onStreamClosed callback which also erases from _streams — doing both
+      // would double-erase and invalidate the iterator.
+      it = _streams.erase(it);
+      _connection.sendRstStream(streamId, ErrorCode::Cancel);
+    } else {
+      ++it;
+    }
   }
 }
 

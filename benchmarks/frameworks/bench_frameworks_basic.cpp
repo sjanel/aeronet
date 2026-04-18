@@ -66,7 +66,7 @@ struct AeronetServerRunner {
       : server([]() {
           HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
-          cfg.maxHeaderBytes = 256UL * 1024;       // allow large headers for benchmarks
+          cfg.maxHeaderBytes = 256U * 1024;        // allow large headers for benchmarks
           cfg.maxBodyBytes = 1UL << 25;
           cfg.withTcpNoDelay();  // disable Nagle's algorithm for more consistent latency measurements
           return cfg;

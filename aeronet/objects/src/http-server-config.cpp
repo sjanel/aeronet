@@ -71,7 +71,7 @@ HttpServerConfig& HttpServerConfig::withTrailerHeader(bool on) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::size_t bytes) {
+HttpServerConfig& HttpServerConfig::withMaxHeaderBytes(std::uint32_t bytes) {
   this->maxHeaderBytes = bytes;
   return *this;
 }
@@ -356,14 +356,26 @@ void HttpServerConfig::validate() {
   if (keepAliveTimeout.count() < 0) {
     throw std::invalid_argument("keepAliveTimeout must be non-negative");
   }
+  // Relative milliseconds in ConnectionState are stored as uint32_t. The maximum representable
+  // value (~49.7 days) is reserved as a sentinel, so configured durations must be strictly below it.
+  static constexpr auto kMaxTimeoutMs = std::chrono::milliseconds(std::numeric_limits<uint32_t>::max() - 1);
+  if (keepAliveTimeout > kMaxTimeoutMs) {
+    throw std::invalid_argument("keepAliveTimeout exceeds maximum representable duration (~49.7 days)");
+  }
   if (pollInterval.count() <= 0) {
     throw std::invalid_argument("pollInterval must be > 0");
   }
   if (headerReadTimeout.count() < 0) {
     throw std::invalid_argument("headerReadTimeout must be non-negative");
   }
+  if (headerReadTimeout > kMaxTimeoutMs) {
+    throw std::invalid_argument("headerReadTimeout exceeds maximum representable duration (~49.7 days)");
+  }
   if (bodyReadTimeout.count() < 0) {
     throw std::invalid_argument("bodyReadTimeout must be non-negative");
+  }
+  if (bodyReadTimeout > kMaxTimeoutMs) {
+    throw std::invalid_argument("bodyReadTimeout exceeds maximum representable duration (~49.7 days)");
   }
   if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
     throw std::invalid_argument("maxOutboundBufferBytes must be >= 1024");
