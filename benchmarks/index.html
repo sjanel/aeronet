@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en"> 
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1"> 
+  <title>aeronet Benchmarks</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net"> 
+  <style>
+    :root { --bg: #ffffff; --muted: #666; --accent: #1976d2; --success: #2e7d32; }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, 'Helvetica Neue', Arial; margin: clamp(1rem, 2vw, 2.5rem); background: var(--bg); color: #111; }
+    .wrap { width: min(1700px, 95vw); margin: 0 auto; }
+    header { display:flex; align-items:baseline; gap:1rem; }
+    h1 { margin:0; font-size:1.4rem; }
+    .badge { background: var(--success); color: white; padding: 0.15rem 0.5rem; border-radius: 999px; font-size:0.75rem; }
+    .meta { margin-top:0.5rem; color: var(--muted); font-size:0.95rem; }
+    .meta-cards { display:flex; flex-wrap:wrap; gap:0.75rem; margin-top:1rem; }
+    .meta-cards div { flex:1 1 140px; border:1px solid #e0e7ff; background:#f6f8ff; border-radius:8px; padding:0.6rem 0.9rem; }
+    .meta-cards span { display:block; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; color:#6b7280; }
+    .meta-cards strong { font-size:1.15rem; }
+    .tabs { display:inline-flex; gap:0.6rem; margin:1.25rem 0 0.5rem; border-bottom:1px solid #e5e7eb; }
+    .tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .tab.active { color:#111; border-color: var(--accent); }
+    .chart-controls { display:flex; flex-wrap:wrap; gap:1rem; margin:0.75rem 0 0; align-items:flex-end; }
+    .chart-controls label { display:flex; flex-direction:column; gap:0.25rem; font-size:0.75rem; color:#4b5563; text-transform:uppercase; letter-spacing:0.04em; }
+    .chart-controls select { border:1px solid #d1d5db; border-radius:6px; padding:0.4rem 0.6rem; min-width:170px; font-size:0.95rem; }
+    .view { display:none; }
+    .view.active { display:block; }
+    .charts { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:1.5rem; margin-top:0.75rem; }
+    #charts-grid.focused { grid-template-columns: minmax(360px, 1fr); }
+    .chart-card { display:flex; flex-direction:column; gap:0.4rem; }
+    .chart-card.hidden { display:none; }
+    .chart-shell { position:relative; height:520px; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:0.25rem; }
+    .chart-shell canvas { position:absolute; inset:0; width:100%; height:100%; }
+    .table-wrap { margin-top:1.25rem; overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; }
+    .table-tabs { margin-top:1.25rem; }
+    .tabs-nav { display:inline-flex; gap:0.6rem; border-bottom:1px solid #e5e7eb; margin-bottom:0; }
+    .table-tab { border:none; background:none; padding:0.4rem 0.9rem; font-weight:600; color:#6b7280; border-bottom:3px solid transparent; cursor:pointer; }
+    .table-tab.active { color:#111; border-color: var(--accent); }
+    .table-content { overflow:auto; border-radius:6px; border:1px solid #eee; padding:0.5rem; background:#fff; margin-top:0.5rem; }
+    table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    table.benchmark-table { border-collapse: collapse; width:100%; font-size:0.9rem; }
+    th, td { padding:0.45rem 0.6rem; border-bottom: 1px solid #f4f4f4; text-align:right; }
+    th:first-child, td:first-child { text-align:left; }
+    td.best-cell { font-weight: 700; color: var(--success); background: #e8f5e9; }
+    @media (min-width: 1500px) {
+      .charts { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+    }
+    /* Focused (single chart) uses more vertical space */
+    #charts-grid.focused .chart-shell { height: min(80vh, 900px); }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>aeronet Benchmarks <span class="badge">CI</span></h1>
+    </header>
+    <p class="meta">This page is generated from <code>benchmark_latest.json</code>. Higher is better for requests/sec and throughput; lower is better for latency.</p>
+    
+<div class="meta-cards">
+  <div><span>Protocol</span><strong>HTTP1</strong></div>
+  <div><span>Tool</span><strong>wrk</strong></div>
+  <div><span>Threads</span><strong>2</strong></div>
+  <div><span>wrk duration</span><strong>30s</strong></div>
+  <div><span>wrk warmup</span><strong>5s</strong></div>
+</div>
+
+
+    <div style="margin-top:0.5rem;">
+      <div class="tabs" role="tablist" aria-label="Benchmark views">
+        <button class="tab active" data-tab="charts" role="tab" aria-selected="true">Charts</button>
+        <button class="tab" data-tab="table" role="tab" aria-selected="false">Table</button>
+      </div>
+
+      <section id="view-charts" class="view active">
+        <div class="chart-controls" aria-label="Chart filters">
+          
+<label>Connections
+  <select id="conn-filter"><option value="0">20 total (10/thread)</option>
+<option value="1">200 total (100/thread)</option></select>
+</label>
+
+          <label>Scenario
+            <select id="scenario-filter"><option value="all" selected>All scenarios</option>
+<option value="headers">headers</option>
+<option value="body">body</option>
+<option value="body-codec">body-codec</option>
+<option value="static">static</option>
+<option value="cpu">cpu</option>
+<option value="mixed">mixed</option>
+<option value="files">files</option>
+<option value="routing">routing</option></select>
+          </label>
+          <label>Metric
+            <select id="metric-filter"><option value="all">All metrics</option>
+<option value="rps" selected>Requests/sec (RPS)</option>
+<option value="latency">Avg Latency (ms)</option>
+<option value="transfer">Data transferred (MB)</option>
+<option value="memory">Memory RSS (MB)</option></select>
+          </label>
+        </div>
+        <div class="charts" id="charts-grid">
+          <div class="chart-card" data-metric="rps">
+          <h3 style="margin:.25rem 0">Requests/sec (RPS)</h3>
+          <div class="chart-shell"><canvas id="chart-rps"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="latency">
+          <h3 style="margin:.25rem 0">Avg Latency (ms)</h3>
+          <div class="chart-shell"><canvas id="chart-latency"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="transfer">
+          <h3 style="margin:.25rem 0">Data transferred (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-transfer"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="memory">
+          <h3 style="margin:.25rem 0">Memory RSS (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-memory-rss"></canvas></div>
+        </div>
+        <div class="chart-card" data-metric="memory">
+          <h3 style="margin:.25rem 0">Memory Peak (MB)</h3>
+          <div class="chart-shell"><canvas id="chart-memory-peak"></canvas></div>
+        </div>
+        </div>
+      </section>
+
+      <section id="view-table" class="table-wrap view" hidden>
+        
+<div class="conn-config-tables" data-conn-idx="0" style="display:block">
+  <div class="table-tabs">
+    <div class="tabs-nav">
+      <button class="table-tab active" data-table="rps">Requests/sec</button><button class="table-tab" data-table="latency">Latency</button><button class="table-tab" data-table="transfer">Throughput</button><button class="table-tab" data-table="memory_rss">Memory</button>
+    </div>
+    <div class="table-content" id="table-rps-0" style="display: block;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>33831.89</td><td data-server='drogon'>24322.96</td><td data-server='pistache'>10998.73</td><td data-server='crow'>487.11</td><td data-server='undertow'>16738.77</td><td data-server='go'>5346.12</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>3491.12</td><td data-server='drogon'>1640.51</td><td data-server='pistache'>1293.65</td><td data-server='crow'>1733.71</td><td data-server='undertow'>412.72</td><td data-server='go'>369.13</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>3012.33</td><td data-server='drogon'>1970.48</td><td data-server='pistache'>1935.44</td><td data-server='crow'>476.22</td><td data-server='undertow'>245.12</td><td data-server='go'>240.96</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>141802.13</td><td data-server='drogon'>133517.00</td><td data-server='pistache'>77048.04</td><td data-server='crow'>62603.06</td><td data-server='undertow'>117612.36</td><td data-server='go'>46668.17</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>14295.08</td><td data-server='drogon'>14071.93</td><td data-server='pistache'>13706.73</td><td data-server='crow'>488.67</td><td data-server='undertow'>13993.20</td><td data-server='go'>6818.80</td><td class='best-cell'>aeronet</td></tr><tr><td>mixed</td><td data-server='aeronet'>67414.02</td><td data-server='drogon'>56384.15</td><td data-server='pistache'>45810.47</td><td data-server='crow'>1392.14</td><td data-server='undertow'>48802.03</td><td data-server='go'>16280.86</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>1191.66</td><td data-server='drogon'>1200.10</td><td data-server='pistache'>-</td><td data-server='crow'>97.54</td><td data-server='undertow'>1140.13</td><td data-server='go'>1160.27</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>130228.37</td><td data-server='drogon'>129489.04</td><td data-server='pistache'>78733.02</td><td data-server='crow'>62382.03</td><td data-server='undertow'>127076.81</td><td data-server='go'>49889.93</td><td class='best-cell'>aeronet</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-latency-0" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>577.54us</td><td data-server='drogon'>821.61us</td><td data-server='pistache'>1.80ms</td><td data-server='crow'>40.91ms</td><td data-server='undertow'>1.18ms</td><td data-server='go'>3.74ms</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>3.17ms</td><td data-server='drogon'>12.22ms</td><td data-server='pistache'>15.17ms</td><td data-server='crow'>15.16ms</td><td data-server='undertow'>48.81ms</td><td data-server='go'>63.05ms</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>6.66ms</td><td data-server='drogon'>10.74ms</td><td data-server='pistache'>10.42ms</td><td data-server='crow'>41.95ms</td><td data-server='undertow'>83.55ms</td><td data-server='go'>97.82ms</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>97.60us</td><td data-server='drogon'>143.65us</td><td data-server='pistache'>252.52us</td><td data-server='crow'>315.53us</td><td data-server='undertow'>188.66us</td><td data-server='go'>484.34us</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>1.39ms</td><td data-server='drogon'>1.42ms</td><td data-server='pistache'>1.45ms</td><td data-server='crow'>40.87ms</td><td data-server='undertow'>1.45ms</td><td data-server='go'>2.93ms</td><td class='best-cell'>aeronet</td></tr><tr><td>mixed</td><td data-server='aeronet'>271.45us</td><td data-server='drogon'>423.68us</td><td data-server='pistache'>411.12us</td><td data-server='crow'>16.23ms</td><td data-server='undertow'>387.96us</td><td data-server='go'>1.23ms</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>10.62ms</td><td data-server='drogon'>12.32ms</td><td data-server='pistache'>-</td><td data-server='crow'>204.22ms</td><td data-server='undertow'>11.73ms</td><td data-server='go'>14.09ms</td><td class='best-cell'>aeronet</td></tr><tr><td>routing</td><td data-server='aeronet'>101.16us</td><td data-server='drogon'>134.36us</td><td data-server='pistache'>245.97us</td><td data-server='crow'>316.24us</td><td data-server='undertow'>144.13us</td><td data-server='go'>402.67us</td><td class='best-cell'>aeronet</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-transfer-0" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>243.89MB</td><td data-server='drogon'>176.27MB</td><td data-server='pistache'>0.87MB</td><td data-server='crow'>3.50MB</td><td data-server='undertow'>121.10MB</td><td data-server='go'>38.56MB</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>1.70GB</td><td data-server='drogon'>821.47MB</td><td data-server='pistache'>649.13MB</td><td data-server='crow'>868.85MB</td><td data-server='undertow'>205.32MB</td><td data-server='go'>184.18MB</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>53.57MB</td><td data-server='drogon'>17.68MB</td><td data-server='pistache'>16.95MB</td><td data-server='crow'>4.16MB</td><td data-server='undertow'>1.23MB</td><td data-server='go'>1.19MB</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>19.91MB</td><td data-server='drogon'>23.89MB</td><td data-server='pistache'>7.27MB</td><td data-server='crow'>8.22MB</td><td data-server='undertow'>19.56MB</td><td data-server='go'>6.65MB</td><td class='best-cell'>drogon</td></tr><tr><td>cpu</td><td data-server='aeronet'>2.71MB</td><td data-server='drogon'>3.21MB</td><td data-server='pistache'>1.36MB</td><td data-server='crow'>87.90KB</td><td data-server='undertow'>3.02MB</td><td data-server='go'>1.31MB</td><td class='best-cell'>drogon</td></tr><tr><td>mixed</td><td data-server='aeronet'>108.41MB</td><td data-server='drogon'>92.84MB</td><td data-server='pistache'>53.02MB</td><td data-server='crow'>2.47MB</td><td data-server='undertow'>79.52MB</td><td data-server='go'>26.27MB</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>4.35GB</td><td data-server='drogon'>4.38GB</td><td data-server='pistache'>-</td><td data-server='crow'>364.93MB</td><td data-server='undertow'>4.16GB</td><td data-server='go'>4.23GB</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>13.68MB</td><td data-server='drogon'>18.54MB</td><td data-server='pistache'>5.57MB</td><td data-server='crow'>5.66MB</td><td data-server='undertow'>16.62MB</td><td data-server='go'>5.60MB</td><td class='best-cell'>drogon</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-memory_rss-0" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>body</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>body-codec</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>static</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>cpu</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>mixed</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>files</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>routing</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr></tbody>
+</table>
+</div>
+  </div>
+</div>
+
+
+<div class="conn-config-tables" data-conn-idx="1" style="display:none">
+  <div class="table-tabs">
+    <div class="tabs-nav">
+      <button class="table-tab active" data-table="rps">Requests/sec</button><button class="table-tab" data-table="latency">Latency</button><button class="table-tab" data-table="transfer">Throughput</button><button class="table-tab" data-table="memory_rss">Memory</button>
+    </div>
+    <div class="table-content" id="table-rps-1" style="display: block;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>30080.07</td><td data-server='drogon'>21364.77</td><td data-server='pistache'>11785.74</td><td data-server='crow'>4857.31</td><td data-server='undertow'>16046.75</td><td data-server='go'>4665.48</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>3577.22</td><td data-server='drogon'>1471.38</td><td data-server='pistache'>1084.18</td><td data-server='crow'>1660.17</td><td data-server='undertow'>317.90</td><td data-server='go'>414.90</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>3116.69</td><td data-server='drogon'>1952.53</td><td data-server='pistache'>2216.64</td><td data-server='crow'>1151.75</td><td data-server='undertow'>231.47</td><td data-server='go'>220.81</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>139407.67</td><td data-server='drogon'>117981.70</td><td data-server='pistache'>82044.85</td><td data-server='crow'>55139.23</td><td data-server='undertow'>104137.32</td><td data-server='go'>32328.27</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>14937.47</td><td data-server='drogon'>15111.80</td><td data-server='pistache'>15368.22</td><td data-server='crow'>4847.25</td><td data-server='undertow'>15067.47</td><td data-server='go'>7123.73</td><td class='best-cell'>pistache</td></tr><tr><td>mixed</td><td data-server='aeronet'>66322.33</td><td data-server='drogon'>49091.30</td><td data-server='pistache'>47559.95</td><td data-server='crow'>13393.84</td><td data-server='undertow'>44853.58</td><td data-server='go'>14383.17</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>1269.27</td><td data-server='drogon'>1281.01</td><td data-server='pistache'>-</td><td data-server='crow'>101.86</td><td data-server='undertow'>1203.85</td><td data-server='go'>1246.24</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>127484.13</td><td data-server='drogon'>120587.07</td><td data-server='pistache'>86623.50</td><td data-server='crow'>59028.53</td><td data-server='undertow'>121173.91</td><td data-server='go'>37038.43</td><td class='best-cell'>aeronet</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-latency-1" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>6.63ms</td><td data-server='drogon'>9.63ms</td><td data-server='pistache'>16.94ms</td><td data-server='crow'>41.10ms</td><td data-server='undertow'>12.45ms</td><td data-server='go'>42.86ms</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>29.77ms</td><td data-server='drogon'>135.78ms</td><td data-server='pistache'>181.84ms</td><td data-server='crow'>121.78ms</td><td data-server='undertow'>636.18ms</td><td data-server='go'>527.14ms</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>64.07ms</td><td data-server='drogon'>171.20ms</td><td data-server='pistache'>90.08ms</td><td data-server='crow'>173.24ms</td><td data-server='undertow'>850.47ms</td><td data-server='go'>898.72ms</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>809.40us</td><td data-server='drogon'>1.96ms</td><td data-server='pistache'>2.49ms</td><td data-server='crow'>3.94ms</td><td data-server='undertow'>9.19ms</td><td data-server='go'>19.43ms</td><td class='best-cell'>aeronet</td></tr><tr><td>cpu</td><td data-server='aeronet'>13.38ms</td><td data-server='drogon'>13.23ms</td><td data-server='pistache'>12.99ms</td><td data-server='crow'>41.20ms</td><td data-server='undertow'>13.26ms</td><td data-server='go'>28.06ms</td><td class='best-cell'>pistache</td></tr><tr><td>mixed</td><td data-server='aeronet'>2.98ms</td><td data-server='drogon'>17.74ms</td><td data-server='pistache'>4.12ms</td><td data-server='crow'>16.36ms</td><td data-server='undertow'>4.55ms</td><td data-server='go'>13.96ms</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>82.66ms</td><td data-server='drogon'>81.25ms</td><td data-server='pistache'>-</td><td data-server='crow'>1.91s</td><td data-server='undertow'>89.63ms</td><td data-server='go'>88.39ms</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>828.39us</td><td data-server='drogon'>1.60ms</td><td data-server='pistache'>2.27ms</td><td data-server='crow'>3.38ms</td><td data-server='undertow'>1.54ms</td><td data-server='go'>5.40ms</td><td class='best-cell'>aeronet</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-transfer-1" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>216.85MB</td><td data-server='drogon'>154.81MB</td><td data-server='pistache'>0.93MB</td><td data-server='crow'>34.95MB</td><td data-server='undertow'>116.11MB</td><td data-server='go'>33.64MB</td><td class='best-cell'>aeronet</td></tr><tr><td>body</td><td data-server='aeronet'>1.74GB</td><td data-server='drogon'>736.77MB</td><td data-server='pistache'>542.31MB</td><td data-server='crow'>830.70MB</td><td data-server='undertow'>158.08MB</td><td data-server='go'>206.27MB</td><td class='best-cell'>aeronet</td></tr><tr><td>body-codec</td><td data-server='aeronet'>54.97MB</td><td data-server='drogon'>17.43MB</td><td data-server='pistache'>19.48MB</td><td data-server='crow'>10.20MB</td><td data-server='undertow'>1.17MB</td><td data-server='go'>1.07MB</td><td class='best-cell'>aeronet</td></tr><tr><td>static</td><td data-server='aeronet'>19.57MB</td><td data-server='drogon'>21.11MB</td><td data-server='pistache'>7.75MB</td><td data-server='crow'>7.23MB</td><td data-server='undertow'>17.32MB</td><td data-server='go'>4.61MB</td><td class='best-cell'>drogon</td></tr><tr><td>cpu</td><td data-server='aeronet'>2.83MB</td><td data-server='drogon'>3.44MB</td><td data-server='pistache'>1.52MB</td><td data-server='crow'>0.85MB</td><td data-server='undertow'>3.25MB</td><td data-server='go'>1.37MB</td><td class='best-cell'>drogon</td></tr><tr><td>mixed</td><td data-server='aeronet'>106.59MB</td><td data-server='drogon'>80.69MB</td><td data-server='pistache'>55.16MB</td><td data-server='crow'>23.85MB</td><td data-server='undertow'>73.05MB</td><td data-server='go'>23.15MB</td><td class='best-cell'>aeronet</td></tr><tr><td>files</td><td data-server='aeronet'>4.63GB</td><td data-server='drogon'>4.67GB</td><td data-server='pistache'>-</td><td data-server='crow'>379.79MB</td><td data-server='undertow'>4.39GB</td><td data-server='go'>4.55GB</td><td class='best-cell'>drogon</td></tr><tr><td>routing</td><td data-server='aeronet'>13.39MB</td><td data-server='drogon'>17.27MB</td><td data-server='pistache'>6.12MB</td><td data-server='crow'>5.36MB</td><td data-server='undertow'>15.85MB</td><td data-server='go'>4.15MB</td><td class='best-cell'>drogon</td></tr></tbody>
+</table>
+</div><div class="table-content" id="table-memory_rss-1" style="display: none;">
+<table class="benchmark-table">
+  <thead><tr><th>Scenario</th><th>aeronet</th><th>drogon</th><th>pistache</th><th>crow</th><th>undertow</th><th>go</th><th>Best</th></tr></thead>
+  <tbody><tr><td>headers</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>body</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>body-codec</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>static</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>cpu</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>mixed</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>files</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr><tr><td>routing</td><td data-server='aeronet'>-</td><td data-server='drogon'>-</td><td data-server='pistache'>-</td><td data-server='crow'>-</td><td data-server='undertow'>-</td><td data-server='go'>-</td><td class='best-cell'>-</td></tr></tbody>
+</table>
+</div>
+  </div>
+</div>
+
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const allConfigs = [{"servers": ["aeronet", "drogon", "pistache", "crow", "undertow", "go"], "scenarios": [{"name": "headers", "rps": [33831.89, 24322.96, 10998.73, 487.11, 16738.77, 5346.12], "latency": [0.5775399999999999, 0.8216100000000001, 1.8, 40.91, 1.18, 3.74], "transfer": [243.89, 176.27, 0.87, 3.5, 121.1, 38.56], "memory_rss": [38.715, 25.406, 18.402, 16.691, 291.539, 25.398], "memory_peak": [241.395, 241.098, 231.387, 312.418, 7315.445, 1703.695]}, {"name": "body", "rps": [3491.12, 1640.51, 1293.65, 1733.71, 412.72, 369.13], "latency": [3.17, 12.22, 15.17, 15.16, 48.81, 63.05], "transfer": [1740.8, 821.47, 649.13, 868.85, 205.32, 184.18], "memory_rss": [60.957, 25.406, 22.527, 54.008, 330.492, 25.875], "memory_peak": [241.395, 241.098, 231.387, 312.418, 7315.445, 1703.695]}, {"name": "body-codec", "rps": [3012.33, 1970.48, 1935.44, 476.22, 245.12, 240.96], "latency": [6.66, 10.74, 10.42, 41.95, 83.55, 97.82], "transfer": [53.57, 17.68, 16.95, 4.16, 1.23, 1.19], "memory_rss": [79.449, 30.371, 9.895, 57.762, 259.074, 39.008], "memory_peak": [241.395, 241.098, 231.387, 334.418, 7315.445, 1703.695]}, {"name": "static", "rps": [141802.13, 133517.0, 77048.04, 62603.06, 117612.36, 46668.17], "latency": [0.09759999999999999, 0.14365, 0.25252, 0.31553, 0.18866, 0.48434], "transfer": [19.91, 23.89, 7.27, 8.22, 19.56, 6.65], "memory_rss": [79.449, 23.406, 9.895, 59.605, 295.559, 21.258], "memory_peak": [241.395, 241.098, 231.387, 334.418, 7315.445, 1703.695]}, {"name": "cpu", "rps": [14295.08, 14071.93, 13706.73, 488.67, 13993.2, 6818.8], "latency": [1.39, 1.42, 1.45, 40.87, 1.45, 2.93], "transfer": [2.71, 3.21, 1.36, 0.08583984375, 3.02, 1.31], "memory_rss": [79.449, 23.406, 9.895, 59.605, 298.137, 21.27], "memory_peak": [241.395, 241.098, 231.387, 334.418, 7315.445, 1703.695]}, {"name": "mixed", "rps": [67414.02, 56384.15, 45810.47, 1392.14, 48802.03, 16280.86], "latency": [0.27144999999999997, 0.42368, 0.41112, 16.23, 0.38795999999999997, 1.23], "transfer": [108.41, 92.84, 53.02, 2.47, 79.52, 26.27], "memory_rss": [52.855, 23.406, 9.895, 59.609, 298.246, 21.25], "memory_peak": [241.395, 241.098, 231.387, 334.418, 7315.445, 1703.695]}, {"name": "files", "rps": [1191.66, 1200.1, null, 97.54, 1140.13, 1160.27], "latency": [10.62, 12.32, null, 204.22, 11.73, 14.09], "transfer": [4454.4, 4485.12, null, 364.93, 4259.84, 4331.52], "memory_rss": [9.602, 13.762, null, 199.434, 254.016, 14.887], "memory_peak": [241.402, 241.098, null, 422.812, 7505.191, 1719.379]}, {"name": "routing", "rps": [130228.37, 129489.04, 78733.02, 62382.03, 127076.81, 49889.93], "latency": [0.10116, 0.13436, 0.24597, 0.31624, 0.14413, 0.40267000000000003], "transfer": [13.68, 18.54, 5.57, 5.66, 16.62, 5.6], "memory_rss": [9.254, 13.531, 4.949, 4.457, 246.141, 16.797], "memory_peak": [241.395, 241.098, 231.387, 230.812, 7375.102, 1702.242]}], "units": {"latency": "ms", "transfer": "MB"}, "chartDefs": [{"canvasId": "chart-rps", "dataKey": "rps", "filterMetric": "rps", "chartTitle": "Requests/sec (RPS)", "axisLabel": "Requests/sec", "scaleType": "linear", "logMin": 0, "formatMetric": "rps"}, {"canvasId": "chart-latency", "dataKey": "latency", "filterMetric": "latency", "chartTitle": "Avg Latency (ms)", "axisLabel": "Latency (ms)", "scaleType": "logarithmic", "logMin": 0.0001, "formatMetric": "latency"}, {"canvasId": "chart-transfer", "dataKey": "transfer", "filterMetric": "transfer", "chartTitle": "Data transferred (MB)", "axisLabel": "Transfer (MB)", "scaleType": "logarithmic", "logMin": 0.001, "formatMetric": "transfer"}, {"canvasId": "chart-memory-rss", "dataKey": "memory_rss", "filterMetric": "memory", "chartTitle": "Memory RSS (MB)", "axisLabel": "RSS (MB) (log scale)", "scaleType": "logarithmic", "logMin": 0.01, "formatMetric": "memory"}, {"canvasId": "chart-memory-peak", "dataKey": "memory_peak", "filterMetric": "memory", "chartTitle": "Memory Peak (MB)", "axisLabel": "Peak (MB) (log scale)", "scaleType": "logarithmic", "logMin": 0.01, "formatMetric": "memory"}]},{"servers": ["aeronet", "drogon", "pistache", "crow", "undertow", "go"], "scenarios": [{"name": "headers", "rps": [30080.07, 21364.77, 11785.74, 4857.31, 16046.75, 4665.48], "latency": [6.63, 9.63, 16.94, 41.1, 12.45, 42.86], "transfer": [216.85, 154.81, 0.93, 34.95, 116.11, 33.64], "memory_rss": [81.336, 23.973, 389.316, 342.066, 335.031, 32.746], "memory_peak": [489.98, 241.098, 619.449, 1214.406, 7317.566, 1896.969]}, {"name": "body", "rps": [3577.22, 1471.38, 1084.18, 1660.17, 317.9, 414.9], "latency": [29.77, 135.78, 181.84, 121.78, 636.18, 527.14], "transfer": [1781.76, 736.77, 542.31, 830.7, 158.08, 206.27], "memory_rss": [388.574, 23.973, 397.215, 550.449, 963.867, 34.168], "memory_peak": [602.953, 241.098, 693.926, 1214.406, 7317.566, 1896.969]}, {"name": "body-codec", "rps": [3116.69, 1952.53, 2216.64, 1151.75, 231.47, 220.81], "latency": [64.07, 171.2, 90.08, 173.24, 850.47, 898.72], "transfer": [54.97, 17.43, 19.48, 10.2, 1.17, 1.07], "memory_rss": [367.832, 39.355, 389.316, 683.422, 321.105, 214.637], "memory_peak": [602.953, 241.098, 693.926, 1214.406, 7317.566, 1897.219]}, {"name": "static", "rps": [139407.67, 117981.7, 82044.85, 55139.23, 104137.32, 32328.27], "latency": [0.8094, 1.96, 2.49, 3.94, 9.19, 19.43], "transfer": [19.57, 21.11, 7.75, 7.23, 17.32, 4.61], "memory_rss": [77.445, 27.355, 389.316, 615.469, 488.676, 27.191], "memory_peak": [602.953, 241.098, 693.926, 1214.406, 7317.566, 1897.219]}, {"name": "cpu", "rps": [14937.47, 15111.8, 15368.22, 4847.25, 15067.47, 7123.73], "latency": [13.38, 13.23, 12.99, 41.2, 13.26, 28.06], "transfer": [2.83, 3.44, 1.52, 0.85, 3.25, 1.37], "memory_rss": [77.445, 27.355, 389.316, 615.469, 488.707, 29.07], "memory_peak": [602.953, 241.098, 693.926, 1214.406, 7317.566, 1897.219]}, {"name": "mixed", "rps": [66322.33, 49091.3, 47559.95, 13393.84, 44853.58, 14383.17], "latency": [2.98, 17.74, 4.12, 16.36, 4.55, 13.96], "transfer": [106.59, 80.69, 55.16, 23.85, 73.05, 23.15], "memory_rss": [77.445, 27.355, 389.316, 333.109, 488.852, 30.648], "memory_peak": [602.953, 241.098, 693.926, 1214.406, 7317.566, 1897.219]}, {"name": "files", "rps": [1269.27, 1281.01, null, 101.86, 1203.85, 1246.24], "latency": [82.66, 81.25, null, 1910.0, 89.63, 88.39], "transfer": [4741.12, 4782.08, null, 379.79, 4495.36, 4659.2], "memory_rss": [10.777, 15.336, null, 1516.77, 255.082, 23.16], "memory_peak": [177.402, 241.098, null, 2037.918, 7507.266, 2087.148]}, {"name": "routing", "rps": [127484.13, 120587.07, 86623.5, 59028.53, 121173.91, 37038.43], "latency": [0.82839, 1.6, 2.27, 3.38, 1.54, 5.4], "transfer": [13.39, 17.27, 6.12, 5.36, 15.85, 4.15], "memory_rss": [10.406, 15.066, 5.531, 5.668, 247.723, 19.027], "memory_peak": [241.395, 241.098, 231.387, 230.812, 7377.176, 1639.625]}], "units": {"latency": "ms", "transfer": "MB"}, "chartDefs": [{"canvasId": "chart-rps", "dataKey": "rps", "filterMetric": "rps", "chartTitle": "Requests/sec (RPS)", "axisLabel": "Requests/sec", "scaleType": "linear", "logMin": 0, "formatMetric": "rps"}, {"canvasId": "chart-latency", "dataKey": "latency", "filterMetric": "latency", "chartTitle": "Avg Latency (ms)", "axisLabel": "Latency (ms)", "scaleType": "logarithmic", "logMin": 0.0001, "formatMetric": "latency"}, {"canvasId": "chart-transfer", "dataKey": "transfer", "filterMetric": "transfer", "chartTitle": "Data transferred (MB)", "axisLabel": "Transfer (MB)", "scaleType": "logarithmic", "logMin": 0.001, "formatMetric": "transfer"}, {"canvasId": "chart-memory-rss", "dataKey": "memory_rss", "filterMetric": "memory", "chartTitle": "Memory RSS (MB)", "axisLabel": "RSS (MB) (log scale)", "scaleType": "logarithmic", "logMin": 0.01, "formatMetric": "memory"}, {"canvasId": "chart-memory-peak", "dataKey": "memory_peak", "filterMetric": "memory", "chartTitle": "Memory Peak (MB)", "axisLabel": "Peak (MB) (log scale)", "scaleType": "logarithmic", "logMin": 0.01, "formatMetric": "memory"}]}];
+    let currentConfigIdx = 0;
+    let payload = allConfigs[currentConfigIdx];
+    let servers = payload.servers;
+    let units = payload.units || { latency: 'ms', transfer: 'MB' };
+    let scenarioLabels = payload.scenarios.map(s => s.name);
+    const palette = ['#2563eb', '#16a34a', '#f97316', '#a855f7', '#0ea5e9', '#f43f5e', '#22d3ee', '#fbbf24'];
+    const chartsGrid = document.getElementById('charts-grid');
+    const scenarioSelect = document.getElementById('scenario-filter');
+    const metricSelect = document.getElementById('metric-filter');
+    const connSelect = document.getElementById('conn-filter');
+
+    function datasetFor(metric) {
+      return servers.map((server, idx) => ({
+        label: server,
+        data: payload.scenarios.map(s => {
+          const arr = s[metric] || [];
+          const value = arr[idx];
+          return typeof value === 'number' ? value : null;
+        }),
+        backgroundColor: palette[idx % palette.length],
+        borderRadius: 6,
+        maxBarThickness: 48,
+      }));
+    }
+
+    function buildChartData(metric, scenarioValue) {
+      const datasets = datasetFor(metric);
+      if (scenarioValue === 'all') {
+        return { labels: scenarioLabels, datasets };
+      }
+      const scenarioIndex = scenarioLabels.indexOf(scenarioValue);
+      if (scenarioIndex === -1) {
+        return { labels: [], datasets: [] };
+      }
+      datasets.forEach(ds => {
+        ds.data = [ds.data[scenarioIndex] ?? null];
+      });
+      return { labels: [scenarioValue], datasets };
+    }
+
+    function minPositive(metric) {
+      let min = Infinity;
+      payload.scenarios.forEach(s => {
+        (s[metric] || []).forEach(val => {
+          if (typeof val === 'number' && val > 0 && val < min) {
+            min = val;
+          }
+        });
+      });
+      return Number.isFinite(min) ? min : 0.1;
+    }
+
+    function formatValue(value, metric) {
+      if (value === null || value === undefined) return 'n/a';
+      let unit = '';
+      if (metric === 'latency') unit = units.latency || 'ms';
+      if (metric === 'transfer') unit = units.transfer || 'MB';
+      const abs = Math.abs(value);
+      let formatted;
+      if (abs >= 1_000_000) {
+        formatted = (value / 1_000_000).toFixed(1) + 'M';
+      } else if (abs >= 1_000) {
+        formatted = (value / 1_000).toFixed(1) + 'k';
+      } else if (abs >= 100) {
+        formatted = value.toFixed(0);
+      } else if (abs >= 10) {
+        formatted = value.toFixed(1);
+      } else {
+        formatted = value.toFixed(2);
+      }
+      return unit ? `${formatted} ${unit}` : formatted;
+    }
+
+    function baseOptions(metric, axisOptions, showLabels = true) {
+      const datalabelsConfig = {
+        anchor: 'end',
+        align: 'start',
+        offset: -22,
+        clip: false,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        borderRadius: 4,
+        padding: 4,
+        color: '#111',
+        font: { weight: '600', size: 11 },
+        formatter: (value, ctx) => {
+          const label = ctx.dataset.label || '';
+          return label;
+        },
+        display: showLabels,
+      };
+
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const value = typeof ctx.parsed.y === 'number' ? ctx.parsed.y : ctx.raw;
+                return `${ctx.dataset.label}: ${formatValue(value, metric)}`;
+              }
+            }
+          },
+          datalabels: datalabelsConfig
+        },
+        scales: axisOptions,
+      };
+    }
+
+    if (typeof ChartDataLabels !== 'undefined') {
+      try { Chart.register(ChartDataLabels); } catch (e) { /* ignore if already registered */ }
+    }
+
+    // Dynamic chart initialization from payload
+    const chartDefs = payload.chartDefs || [];
+    const chartEntries = [];
+    chartDefs.forEach(def => {
+      const canvas = document.getElementById(def.canvasId);
+      if (!canvas) return;
+      const card = canvas.closest('.chart-card');
+      const scaleType = def.scaleType || 'linear';
+      const yOpts = { title: { display: true, text: def.axisLabel || '' }, ticks: { callback: value => formatValue(value, def.formatMetric || def.dataKey) } };
+      if (scaleType === 'logarithmic') {
+        yOpts.type = 'logarithmic';
+        yOpts.min = Math.max(minPositive(def.dataKey) / 1.5, def.logMin || 1e-4);
+      } else {
+        yOpts.beginAtZero = true;
+      }
+      const chart = new Chart(canvas, {
+        type: 'bar',
+        data: buildChartData(def.dataKey, 'all'),
+        options: baseOptions(def.formatMetric || def.dataKey, { x: { ticks: { autoSkip: false } }, y: yOpts }, false),
+      });
+      chartEntries.push({ metric: def.filterMetric, chart, card, dataKey: def.dataKey });
+    });
+
+    function switchConfig(idx) {
+      currentConfigIdx = idx;
+      payload = allConfigs[idx];
+      servers = payload.servers;
+      units = payload.units || { latency: 'ms', transfer: 'MB' };
+      scenarioLabels = payload.scenarios.map(s => s.name);
+
+      // Show/hide per-config table blocks
+      document.querySelectorAll('.conn-config-tables').forEach(el => {
+        el.style.display = el.dataset.connIdx == String(idx) ? 'block' : 'none';
+      });
+
+      refreshCharts();
+    }
+
+    function refreshCharts() {
+      const scenarioValue = scenarioSelect.value;
+      const metricValue = metricSelect.value;
+      const scenarioFocused = scenarioValue !== 'all';
+      const metricFocused = metricValue !== 'all';
+      const focused = scenarioFocused || metricFocused;
+      const activeMetric = metricFocused ? metricValue : null;
+      const showLabels = scenarioFocused;
+      chartsGrid.classList.toggle('focused', focused);
+      chartEntries.forEach(entry => {
+        const showCard = activeMetric ? entry.metric === activeMetric : true;
+        entry.card.classList.toggle('hidden', !showCard);
+        const nextData = buildChartData(entry.dataKey, scenarioValue);
+        entry.chart.data.labels = nextData.labels;
+        entry.chart.data.datasets = nextData.datasets;
+        if (entry.chart.options.plugins.datalabels) {
+          entry.chart.options.plugins.datalabels.display = showLabels;
+        }
+        entry.chart.update();
+      });
+    }
+
+    scenarioSelect.addEventListener('change', refreshCharts);
+    metricSelect.addEventListener('change', refreshCharts);
+    if (connSelect) {
+      connSelect.addEventListener('change', () => switchConfig(parseInt(connSelect.value, 10)));
+    }
+
+    // Tab switching logic
+    const tabs = document.querySelectorAll('.tab');
+    const views = document.querySelectorAll('.view');
+    function activateTab(name) {
+      tabs.forEach(t => { t.classList.toggle('active', t.dataset.tab === name); t.setAttribute('aria-selected', t.dataset.tab === name); });
+      views.forEach(v => {
+        if (v.id === 'view-' + name) { v.classList.add('active'); v.removeAttribute('hidden'); } else { v.classList.remove('active'); v.setAttribute('hidden', ''); }
+      });
+      chartEntries.forEach(entry => entry.chart.update());
+    }
+    tabs.forEach(t => t.addEventListener('click', () => activateTab(t.dataset.tab)));
+    refreshCharts();
+
+    // Table tab switching logic (per-config)
+    document.querySelectorAll('.conn-config-tables').forEach(container => {
+      const idx = container.dataset.connIdx;
+      container.querySelectorAll('.table-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tableId = 'table-' + tab.dataset.table + '-' + idx;
+          container.querySelectorAll('.table-tab').forEach(t => t.classList.toggle('active', t.dataset.table === tab.dataset.table));
+          container.querySelectorAll('.table-content').forEach(content => {
+            content.style.display = content.id === tableId ? 'block' : 'none';
+          });
+        });
+      });
+    });
+  </script>
+</body>
+</html>

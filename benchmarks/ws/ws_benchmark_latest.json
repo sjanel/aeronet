@@ -1,0 +1,93 @@
+{
+  "benchmark_type": "websocket",
+  "tool": "k6",
+  "threads": 2,
+  "vus": 50,
+  "duration": "30s",
+  "warmup": "5s",
+  "servers": [
+    "aeronet",
+    "uwebsockets",
+    "drogon"
+  ],
+  "scenarios": [
+    "echo-small",
+    "echo-medium",
+    "mix",
+    "ping-pong",
+    "churn",
+    "compression"
+  ],
+  "results": {
+    "echo-small": {
+      "rps": {
+        "aeronet": 63854.7,
+        "uwebsockets": 69857.3,
+        "drogon": 67618.1
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "echo-medium": {
+      "rps": {
+        "aeronet": 49230.1,
+        "uwebsockets": 49722.6,
+        "drogon": 46913.1
+      },
+      "latency": {
+        "aeronet": "3.000ms",
+        "uwebsockets": "3.000ms",
+        "drogon": "3.000ms"
+      }
+    },
+    "mix": {
+      "rps": {
+        "aeronet": 63661.5,
+        "uwebsockets": 61963.9,
+        "drogon": 63186.9
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "ping-pong": {
+      "rps": {
+        "aeronet": 69288.4,
+        "uwebsockets": 73029.9,
+        "drogon": 72312.1
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "churn": {
+      "rps": {
+        "aeronet": 7651.1,
+        "uwebsockets": 7422.6,
+        "drogon": 7157.6
+      },
+      "latency": {
+        "aeronet": "13.000ms",
+        "uwebsockets": "12.000ms",
+        "drogon": "13.000ms"
+      }
+    },
+    "compression": {
+      "rps": {
+        "aeronet": 52041.8,
+        "uwebsockets": 54083.0
+      },
+      "latency": {
+        "aeronet": "3.000ms",
+        "uwebsockets": "3.000ms"
+      }
+    }
+  }
+}
