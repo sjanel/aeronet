@@ -76,23 +76,21 @@ class HttpRequestTest : public ::testing::Test {
     compressionState.pCompressionConfig = &compressionConfig;
   }
 
-  http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true,
-                          std::size_t maxHeaderSize = 4096UL) {
+  http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders, nullptr);
+    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
     return ret;
   }
 
-  http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span, bool mergeAllowedForUnknownRequestHeaders = true,
-                                  std::size_t maxHeaderSize = 4096UL) {
+  http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span,
+                                  bool mergeAllowedForUnknownRequestHeaders = true) {
     cs.inBuffer = std::move(raw);
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, maxHeaderSize, mergeAllowedForUnknownRequestHeaders,
-                                  std::move(span));
+    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, std::move(span));
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -219,13 +217,10 @@ class HttpRequestTest : public ::testing::Test {
 
   // Feed raw bytes to HttpRequest parser and ensure no crash/UB
   void fuzzHttpRequestParsing(const RawChars& input, bool mergeUnknownHeaders = true) {
-    // Parse with various max header sizes
-    for (std::size_t maxSize : {64UL, 256UL, 1024UL, 8192UL}) {
-      cs.inBuffer = input;  // reset
-      [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders, maxSize);
-      // We don't care about the result - just that we don't crash
-      (void)status;
-    }
+    cs.inBuffer = input;  // reset
+    [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders);
+    // We don't care about the result - just that we don't crash
+    (void)status;
   }
 
   ConcatenatedHeaders globalHeaders;

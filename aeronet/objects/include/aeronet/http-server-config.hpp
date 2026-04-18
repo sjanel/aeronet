@@ -37,14 +37,14 @@ struct HttpServerConfig {
   // If 0, the server will use std::thread::hardware_concurrency() for MultiHttpServer,
   // or 1 for SingleHttpServer.
   // Default: 0.
-  uint32_t nbThreads{0};
+  std::uint32_t nbThreads{0};
 
   // ============================
   // Listener / socket parameters
   // ============================
   // TCP port to bind. 0 (default) lets the OS pick an ephemeral free port. After construction
   // you can retrieve the effective port via SingleHttpServer::port().
-  uint16_t port{0};
+  std::uint16_t port{0};
 
   // If true, enables SO_REUSEPORT allowing multiple independent server instances to bind the same port
   // for load distribution by the kernel.
@@ -130,17 +130,14 @@ struct HttpServerConfig {
   // When the limit is reached, closed connections are fully destroyed. Default: 10.
   std::uint32_t maxCachedConnections{10};
 
-  // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
-  // sent). Once exceeded the server proactively closes the connection.
-  // Default: 5000 ms.
-  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
-
   // ============================
   // Request parsing & body limits
   // ============================
+
   // Maximum allowed size (in bytes) of the aggregate HTTP request head (request line + all headers + CRLFCRLF).
   // If exceeded while parsing, the server replies 431/400 and closes the connection. Default: 8 KiB.
-  std::size_t maxHeaderBytes{8192};
+  // uint32_t is sufficient — no sane HTTP implementation needs to accept >4 GiB of headers.
+  std::uint32_t maxHeaderBytes{8192};
 
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
   // this limit result in a 413 (Payload Too Large) HTTP error and closure.
@@ -188,6 +185,12 @@ struct HttpServerConfig {
   // ===========================================
   // Slowloris / header read timeout mitigation
   // ===========================================
+
+  // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
+  // sent). Once exceeded the server proactively closes the connection.
+  // Default: 5000 ms.
+  std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
+
   // Maximum duration allowed to fully receive the HTTP request headers (request line + headers + CRLFCRLF)
   // from the moment the first byte of the request is read on a connection. If exceeded before the header
   // terminator is observed the server closes the connection and emits a 408 Request Timeout. A value
@@ -301,7 +304,7 @@ struct HttpServerConfig {
   HttpServerConfig& withTrailerHeader(bool on = true);
 
   // Adjust header size ceiling
-  HttpServerConfig& withMaxHeaderBytes(std::size_t bytes);
+  HttpServerConfig& withMaxHeaderBytes(std::uint32_t bytes);
 
   // Adjust body size limit
   HttpServerConfig& withMaxBodyBytes(std::size_t bytes);

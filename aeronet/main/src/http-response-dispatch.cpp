@@ -129,6 +129,11 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   ++state.requestsServed;
   ++_stats.totalRequestsServed;
 
+  // Clear per-route request deadline and headerStartTp now that a response is being sent.
+  // Resetting headerStartTp to epoch allows transportRead to re-arm it for the next keep-alive request.
+  state.requestDeadlineMs = ConnectionState::kInactiveRelativeMs;
+  state.headerStartTp = {};
+
   request.prefinalizeHttpResponse(resp, _telemetry);
 
   const bool keepAlive =

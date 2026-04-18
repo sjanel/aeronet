@@ -408,9 +408,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     request._reqStart = state.lastActivity;
 
-    // A full request head (and body, if present) will now be processed; reset headerStart to signal
-    // that the header timeout should track the next pending request only.
-    state.headerStartTp = {};
+    // A full request head (and body, if present) will now be processed; mark header parsing as done.
+    // headerStartTp is kept alive as the reference for relative body/deadline timestamps.
+    state.parsingHeaders = false;
     bool isChunked = false;
     const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
     if (optTransferEncoding) {
@@ -445,6 +445,14 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // Route matching
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
     const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+
+    // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
+    if (routingResult.pathConfig.requestTimeout != std::chrono::milliseconds::max()) {
+      state.requestDeadlineMs =
+          static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    state.lastActivity - state.headerStartTp + routingResult.pathConfig.requestTimeout)
+                                    .count());
+    }
 
     // Check for HTTP/2 cleartext upgrade (h2c) - only on plaintext listeners
 #ifdef AERONET_ENABLE_HTTP2
@@ -535,6 +543,12 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     }
 #endif
 
+    // Per-route request head size limit (already clamped against global in prepareRun)
+    if (request.headSpanSize() > routingResult.pathConfig.maxHeaderBytes) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
+      break;
+    }
+
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
     bool found100Continue = false;
@@ -543,7 +557,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       break;  // stop processing this request (response queued)
     }
     std::size_t consumedBytes = 0;
-    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, isChunked, found100Continue, consumedBytes);
+    const BodyDecodeStatus decodeStatus =
+        decodeBodyIfReady(cnxIt, isChunked, found100Continue, routingResult.pathConfig.maxBodyBytes, consumedBytes);
     if (decodeStatus == BodyDecodeStatus::Error) {
       break;
     }
@@ -551,7 +566,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     if (bodyReady) {
       if (_config.bodyReadTimeout.count() > 0) {
         state.waitingForBody = false;
-        state.bodyLastActivity = {};
+        state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
       }
       const bool usePerConnectionBodyStorage = state.trailerLen != 0;
       if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
@@ -561,7 +576,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     } else {
       if (_config.bodyReadTimeout.count() > 0) {
         state.waitingForBody = true;
-        state.bodyLastActivity = state.lastActivity;
+        state.bodyLastActivityMs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
       }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       if (routingResult.asyncRequestHandler() == nullptr) {
@@ -628,9 +644,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         continue;
       }
 
-      const bool handlerActive =
-          dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked, found100Continue,
-                               consumedBytes, pCorsPolicy, responseMiddlewareRange);
+      const bool handlerActive = dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked,
+                                                      found100Continue, consumedBytes, pCorsPolicy,
+                                                      responseMiddlewareRange, routingResult.pathConfig.maxBodyBytes);
       if (handlerActive) {
         return state.isAnyCloseRequested();
       }
@@ -782,7 +798,8 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
 bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady,
                                             bool isChunked, bool expectContinue, std::size_t consumedBytes,
                                             const CorsPolicy* pCorsPolicy,
-                                            std::span<const ResponseMiddleware> responseMiddleware) {
+                                            std::span<const ResponseMiddleware> responseMiddleware,
+                                            std::size_t perRouteMaxBodyBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequest& request = state.request;
   RequestTask<HttpResponse> task = handler(request);
@@ -827,6 +844,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   asyncState.corsPolicy = pCorsPolicy;
   asyncState.responseMiddleware = responseMiddleware.data();
   asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
+  asyncState.maxBodyBytes = perRouteMaxBodyBytes;
   asyncState.pendingResponse = {};
 
   // Keep header storage stable while async work runs so header string_views stay valid
@@ -873,7 +891,8 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
 
   if (async.needsBody) {
     std::size_t consumedBytes = 0;
-    const BodyDecodeStatus status = decodeBodyIfReady(cnxIt, async.isChunked, async.expectContinue, consumedBytes);
+    const BodyDecodeStatus status =
+        decodeBodyIfReady(cnxIt, async.isChunked, async.expectContinue, async.maxBodyBytes, consumedBytes);
     if (status == BodyDecodeStatus::Error) {
       state.asyncState.clear();
       return;
@@ -889,9 +908,10 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       return;
     }
     state.installAggregatedBodyBridge();
+
     if (_config.bodyReadTimeout.count() > 0) {
       state.waitingForBody = false;
-      state.bodyLastActivity = {};
+      state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
     }
 
     if (async.awaitReason == ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody) {
@@ -1390,6 +1410,8 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 }  // namespace
 
 void SingleHttpServer::applyPendingUpdates() {
+  bool needsClamp = false;
+
   if (_updates.hasConfig.load(std::memory_order_acquire)) {
 #ifdef AERONET_ENABLE_OPENSSL
     // Capture TLS config before updates to detect changes
@@ -1403,6 +1425,7 @@ void SingleHttpServer::applyPendingUpdates() {
     _eventLoop.updatePollTimeout(_config.pollInterval);
     updateMaintenanceTimer();
     registerBuiltInProbes();
+    needsClamp = true;
 
 #ifdef AERONET_ENABLE_OPENSSL
     // If TLS config changed, rebuild the OpenSSL context.
@@ -1418,6 +1441,11 @@ void SingleHttpServer::applyPendingUpdates() {
   }
   if (_updates.hasRouter.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
+    needsClamp = true;
+  }
+
+  if (needsClamp) {
+    _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

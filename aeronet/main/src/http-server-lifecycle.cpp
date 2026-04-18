@@ -316,6 +316,10 @@ void SingleHttpServer::prepareRun() {
 
   // Register builtin probes handlers if enabled in config
   registerBuiltInProbes();
+
+  // Pre-clamp per-route limits against the global server limits so the hot path
+  // only needs a single comparison (no runtime std::min).
+  _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
 }
 
 void SingleHttpServer::run() {

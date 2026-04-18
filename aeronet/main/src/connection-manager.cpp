@@ -148,8 +148,8 @@ void SingleHttpServer::sweepIdleConnections() {
       continue;
     }
 
-    // Header read timeout: active if headerStart set and duration exceeded and no full request parsed yet.
-    if (_config.headerReadTimeout.count() > 0 && state.headerStartTp.time_since_epoch().count() != 0 &&
+    // Header read timeout: active while headers are being parsed and duration exceeded.
+    if (_config.headerReadTimeout.count() > 0 && state.parsingHeaders &&
         now > state.headerStartTp + _config.headerReadTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for header read timeout", fd);
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
@@ -163,12 +163,25 @@ void SingleHttpServer::sweepIdleConnections() {
 
     // Body read timeout: triggered when the handler is waiting for missing body bytes.
     if (_config.bodyReadTimeout.count() > 0 && state.waitingForBody &&
-        state.bodyLastActivity.time_since_epoch().count() != 0 &&
-        now > state.bodyLastActivity + _config.bodyReadTimeout) {
+        state.bodyLastActivityMs != ConnectionState::kInactiveRelativeMs &&
+        now > state.headerStartTp + std::chrono::milliseconds(state.bodyLastActivityMs) + _config.bodyReadTimeout) {
       log::debug("sweepIdleConnections: fd # {} closed for body read timeout", fd);
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_body_read_timeout");
+#ifdef AERONET_WINDOWS
+      cnxIt = _connections.begin();
+#endif
+      continue;
+    }
+
+    // Per-route request timeout: active when a per-route deadline was set after routing.
+    if (state.requestDeadlineMs != ConnectionState::kInactiveRelativeMs &&
+        now > state.headerStartTp + std::chrono::milliseconds(state.requestDeadlineMs)) {
+      log::debug("sweepIdleConnections: fd # {} closed for per-route request timeout", fd);
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
+      closeConnection(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_request_timeout");
 #ifdef AERONET_WINDOWS
       cnxIt = _connections.begin();
 #endif
@@ -190,6 +203,13 @@ void SingleHttpServer::sweepIdleConnections() {
 #endif
         continue;
       }
+    }
+#endif
+
+#ifdef AERONET_ENABLE_HTTP2
+    // Sweep per-stream request deadlines for HTTP/2 connections.
+    if (state.protocol == ProtocolType::Http2 && state.protocolHandler) {
+      static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get())->sweepStreams(now);
     }
 #endif
 
@@ -360,7 +380,8 @@ void SingleHttpServer::acceptNewConnections() {
         break;
       }
       if (pCnx->waitingForBody && bytesRead > 0) {
-        pCnx->bodyLastActivity = state.lastActivity;
+        pCnx->bodyLastActivityMs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - pCnx->headerStartTp).count());
       }
       // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
       if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
@@ -618,7 +639,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       return CloseStatus::Close;
     }
     if (pCnx->waitingForBody && count > 0) {
-      pCnx->bodyLastActivity = _connections.now;
+      pCnx->bodyLastActivityMs = static_cast<uint32_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(_connections.now - pCnx->headerStartTp).count());
     }
     if (want == TransportHint::Error) [[unlikely]] {
 #ifdef AERONET_ENABLE_OPENSSL
@@ -639,12 +661,15 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #endif
       return CloseStatus::Close;
     }
+
     bytesReadThisEvent += static_cast<std::size_t>(count);
+
+    if (processConnectionInput(cnxIt)) {
+      break;
+    }
+
     if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
-      // Reached per-event fairness cap; parse what we have then yield.
-      if (processConnectionInput(cnxIt)) {
-        break;
-      }
+      // Reached per-event fairness cap
       // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
       // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
       // so defer this fd for re-read at the start of the next event-loop iteration.
@@ -652,26 +677,19 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       _lifecycle.wakeupFd.send();
       break;
     }
-    if (pCnx->inBuffer.size() > _config.maxHeaderBytes + _config.maxBodyBytes) {
-      // Distinguish header-only overflow (431) from payload/body overflow (413).
-      // If we have not yet parsed the header (no DoubleCRLF found) or the buffer
-      // already exceeds the configured header limit, treat this as header-field overflow.
-      http::StatusCode code;
-      if (pCnx->inBuffer.size() > _config.maxHeaderBytes ||
-          std::ranges::search(pCnx->inBuffer, http::DoubleCRLF).empty()) {
-        code = http::StatusCodeRequestHeaderFieldsTooLarge;
-      } else {
-        code = http::StatusCodePayloadTooLarge;
-      }
-      emitSimpleError(cnxIt, code, {});
+
+    if (!pCnx->protocolHandler && pCnx->parsingHeaders && pCnx->inBuffer.size() > _config.maxHeaderBytes) {
+      // Safety cap: prevent unbounded buffer growth while headers are still being received.
+      // Checked after processConnectionInput so that a single read delivering headers + body together
+      // does not falsely trigger: initTrySetHead clears parsingHeaders once the request head is parsed.
+      // If we reach here, the header delimiter was not found and the buffer exceeds the header limit.
+      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
       return CloseStatus::Close;
     }
-    if (processConnectionInput(cnxIt)) {
-      break;
-    }
+
     // Header read timeout enforcement: if headers of current pending request are not complete yet
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
-    if (_config.headerReadTimeout.count() > 0 && pCnx->headerStartTp.time_since_epoch().count() != 0) {
+    if (_config.headerReadTimeout.count() > 0 && pCnx->parsingHeaders) {
       if (_connections.now - pCnx->headerStartTp > _config.headerReadTimeout) {
         emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
         return CloseStatus::Close;

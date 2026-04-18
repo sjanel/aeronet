@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <type_traits>
 
 #include "aeronet/cors-policy.hpp"
@@ -24,13 +27,12 @@ namespace aeronet {
 /// This struct allows fine-grained control over routing behavior on a per-path basis.
 /// Pass an instance to Router::setPath() or Router::setDefault() to configure specific
 /// options for that route.
-///
-/// Example:
-/// @code
-///   router.setPath(http::Method::GET, "/api/v2/stream",
-///                  myHandler, PathEntryConfig{.http2Enable = PathEntryConfig::Http2Enable::Enable});
-/// @endcode
 struct PathEntryConfig {
+  /// Maximum timeout representable by the internal uint32_t millisecond storage.
+  /// The absolute maximum (~49.7 days) is reserved as a sentinel; configured values must not exceed this.
+  static constexpr auto kMaxRequestTimeout = std::chrono::milliseconds(std::numeric_limits<uint32_t>::max() - 1);
+
+#ifdef AERONET_ENABLE_HTTP2
   /// HTTP/2 enable mode for this specific path.
   ///
   /// - Default: Use the global Http2Config.enable setting from HttpServerConfig
@@ -39,6 +41,18 @@ struct PathEntryConfig {
   enum class Http2Enable : uint8_t { Default, Enable, Disable };
 
   Http2Enable http2Enable{Http2Enable::Default};
+#endif
+
+  /// Per-route maximum header size in bytes. Must not exceed HttpServerConfig::maxHeaderBytes.
+  /// Default (sentinel) means "use the global limit".
+  uint32_t maxHeaderBytes = static_cast<uint32_t>(-1);
+
+  /// Per-route maximum body size in bytes. Must not exceed HttpServerConfig::maxBodyBytes.
+  /// Default (sentinel) means "use the global limit".
+  std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
+
+  /// Per-route handler deadline. std::chrono::milliseconds::max() means use the global timeout (or no limit).
+  std::chrono::milliseconds requestTimeout = std::chrono::milliseconds::max();
 };
 
 // Object that stores handlers and options for a specific group of paths.
@@ -63,6 +77,7 @@ class PathHandlerEntry {
   // can amend headers or body before the response is finalized.
   PathHandlerEntry& after(ResponseMiddleware middleware);
 
+#ifdef AERONET_ENABLE_HTTP2
   /// Configure whether HTTP/2 is allowed for this route.
   ///
   /// Default: follow global HTTP/2 setting.
@@ -70,6 +85,28 @@ class PathHandlerEntry {
   /// Disable: force HTTP/1.1 only for this route.
   PathHandlerEntry& http2Enable(PathEntryConfig::Http2Enable mode) noexcept {
     _pathConfig.http2Enable = mode;
+    return *this;
+  }
+#endif
+
+  /// Set a per-route maximum header size in bytes. Overrides the global maxHeaderBytes for this route.
+  PathHandlerEntry& maxHeaderBytes(uint32_t bytes) noexcept {
+    _pathConfig.maxHeaderBytes = bytes;
+    return *this;
+  }
+
+  /// Set a per-route maximum body size in bytes. Overrides the global maxBodyBytes for this route.
+  PathHandlerEntry& maxBodyBytes(std::size_t bytes) noexcept {
+    _pathConfig.maxBodyBytes = bytes;
+    return *this;
+  }
+
+  /// Set a per-route handler deadline. Overrides the global timeout for this route.
+  PathHandlerEntry& timeout(std::chrono::milliseconds ms) {
+    if (ms != std::chrono::milliseconds::max() && ms > PathEntryConfig::kMaxRequestTimeout) {
+      throw std::invalid_argument("per-route requestTimeout exceeds maximum representable duration (~49.7 days)");
+    }
+    _pathConfig.requestTimeout = ms;
     return *this;
   }
 

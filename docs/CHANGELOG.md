@@ -10,6 +10,19 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
 - HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
 
+### Breaking changes
+
+- `HttpServerConfig::maxHeaderBytes` changed from `std::size_t` to `std::uint32_t`. No HTTP implementation should need >4 GiB of headers; this change eliminates struct padding and aligns with `PathEntryConfig::maxHeaderBytes`. Callers passing `std::size_t` values may need a narrowing cast.
+- `HttpServerConfig::withMaxHeaderBytes()` parameter changed from `std::size_t` to `std::uint32_t`.
+
+### New features
+
+- **Per-route configuration**: `PathEntryConfig` now supports `requestTimeout`, `maxBodyBytes`, and `maxHeaderBytes` overrides. Chainable setters on `PathHandlerEntry` (`.timeout()`, `.maxBodyBytes()`, `.maxHeaderBytes()`) allow per-route configuration inline with handler registration.
+- **Per-route body limit enforcement**: Per-route `maxBodyBytes` is enforced server-side across HTTP/1.1 (sync and async paths) and HTTP/2, returning `413 Content Too Large` when the decoded body exceeds the route-specific limit.
+- **Per-route header limit enforcement**: Per-route `maxHeaderBytes` is enforced after routing in both HTTP/1.1 and HTTP/2, returning `431 Request Header Fields Too Large` when headers exceed the route-specific limit (tighter than the global limit already enforced during parsing).
+- **Per-route request timeout**: Per-route `requestTimeout` sets a handler deadline enforced during periodic sweeps. For HTTP/1.1, the deadline is checked connection-wide; for HTTP/2, per-stream deadlines are checked independently via `sweepStreams()`. Expired requests receive `408 Request Timeout`.
+- **Route groups** (`RouteGroup`): Lightweight non-owning prefix proxy created via `Router::group(prefix)`. Supports shared configuration (timeout, body/header limits, HTTP/2 enable), CORS policy, and request/response middleware applied to all routes in the group. Groups can be nested with config inheritance, and per-route overrides take precedence over group defaults.
+
 ### Improvements
 
 - Optimized WebSocket frame building by removing some copies and allocations.

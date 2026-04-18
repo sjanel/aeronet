@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -108,6 +110,48 @@ class RouterUpdateProxy {
       (*_dispatcher)([entryPtr = _entryPtr, policy = std::move(policy)](Router&) mutable {
         if (auto* entry = *entryPtr) {
           entry->cors(std::move(policy));
+        }
+      });
+      return *this;
+    }
+
+#ifdef AERONET_ENABLE_HTTP2
+    /** Set HTTP/2 enable mode for the registered path. See PathHandlerEntry::http2Enable */
+    PathEntryProxy& http2Enable(PathEntryConfig::Http2Enable mode) {
+      (*_dispatcher)([entryPtr = _entryPtr, mode](Router&) {
+        if (auto* entry = *entryPtr) {
+          entry->http2Enable(mode);
+        }
+      });
+      return *this;
+    }
+#endif
+
+    /** Set per-route maximum header size. See PathHandlerEntry::maxHeaderBytes */
+    PathEntryProxy& maxHeaderBytes(uint32_t bytes) {
+      (*_dispatcher)([entryPtr = _entryPtr, bytes](Router&) {
+        if (auto* entry = *entryPtr) {
+          entry->maxHeaderBytes(bytes);
+        }
+      });
+      return *this;
+    }
+
+    /** Set per-route maximum body size. See PathHandlerEntry::maxBodyBytes */
+    PathEntryProxy& maxBodyBytes(std::size_t bytes) {
+      (*_dispatcher)([entryPtr = _entryPtr, bytes](Router&) {
+        if (auto* entry = *entryPtr) {
+          entry->maxBodyBytes(bytes);
+        }
+      });
+      return *this;
+    }
+
+    /** Set per-route handler deadline. See PathHandlerEntry::timeout */
+    PathEntryProxy& timeout(std::chrono::milliseconds ms) {
+      (*_dispatcher)([entryPtr = _entryPtr, ms](Router&) {
+        if (auto* entry = *entryPtr) {
+          entry->timeout(ms);
         }
       });
       return *this;

@@ -125,6 +125,96 @@ router.setPath(http::Method::GET, "/files/{path:[a-zA-Z0-9/._-]+}", handler); //
 
 Returns 404 on constraint mismatch. Consider [CTRE](https://github.com/hanickadot/compile-time-regular-expressions) for compile-time regex performance, with `std::regex` fallback. Drogon supports regex routing natively.
 
+#### Route groups & prefix mounting
+
+Organize routes under a common prefix with shared middleware, reducing boilerplate for versioned APIs. Inspired by Express.js `Router`, Gin `Group()`, Axum `Router::nest()`:
+
+```cpp
+Router router;
+auto api = router.group("/api/v1");
+api.addRequestMiddleware(authMiddleware);
+api.setPath(http::Method::GET, "/users", listUsersHandler);     // matches /api/v1/users
+api.setPath(http::Method::GET, "/users/{id}", getUserHandler);  // matches /api/v1/users/{id}
+```
+
+Every major framework provides this (Express, Gin, Axum, Actix-web, FastAPI, Spring Boot). Without it, handler registrations repeat prefixes and middleware is duplicated across routes.
+
+#### Per-route request timeout
+
+Enforce a deadline on handler execution so slow handlers do not hold connections indefinitely. Returns `504 Gateway Timeout` (or configurable status) when the deadline expires. Integrates naturally with coroutines (`co_await` cancellation). Currently only TLS handshake and header-read timeouts exist; this covers the application handler layer.
+
+```cpp
+router.setPath(http::Method::GET, "/slow", handler)
+      .timeout(std::chrono::seconds{5});
+```
+
+Go (`context.WithTimeout`), Axum (`tower::timeout`), Actix-web (`web::Timeout`) and Spring (`@Transactional(timeout=)`) all provide this. Critical for production resilience.
+
+#### Structured access logging
+
+Standard HTTP access logs in CLF (Common Log Format) or JSON. Emit one log line per request with method, path, status, response size, latency, client IP, and User-Agent. Pluggable sink (stdout, file, syslog). This is the first feature users expect when operating a server in production. Nginx, HAProxy, Caddy, Express (morgan), Go, and every major framework have this built-in.
+
+#### Content negotiation (Accept header)
+
+Parse `Accept` header q-values to select response content type (JSON, YAML, XML, plain text). Return `406 Not Acceptable` when no format matches. Currently only `Accept-Encoding` is negotiated; `Accept` (media type) is left to user code. Frameworks like Spring, Rails, Phoenix, and ASP.NET handle this transparently.
+
+```cpp
+router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
+  auto negotiated = req.negotiate({"application/json", "text/yaml", "text/plain"});
+  // returns best match, or std::nullopt → 406
+});
+```
+
+#### Request ID / correlation ID
+
+Generate a unique ID per request (UUID or monotonic counter), set it on the response (`X-Request-Id`), and forward it to OpenTelemetry spans. If the client provides `X-Request-Id`, the server adopts it. Essential for distributed tracing and log correlation across microservices. Provided by Nginx (`$request_id`), Envoy, Express (`express-request-id`), Spring (`spring-cloud-sleuth`), FastAPI, etc.
+
+#### IP-based access control middleware
+
+Per-route allowlist/denylist by source IP or CIDR range. Returns `403 Forbidden` for denied IPs. Useful for admin endpoints, internal APIs, and compliance. Nginx (`allow/deny`), HAProxy (`acl`), Caddy, Express (`express-ip-filter`), and Go all support this natively or as first-class middleware.
+
+```cpp
+IpAccessPolicy policy;
+policy.allow("10.0.0.0/8").allow("192.168.1.0/24").denyAll();
+router.setPath(http::Method::GET, "/admin", adminHandler).accessPolicy(std::move(policy));
+```
+
+#### Authentication helpers (Basic / Bearer / JWT)
+
+Parse `Authorization` header, extract Basic credentials or Bearer tokens, and provide a pluggable validator interface. Optionally integrate with JWT validation (compile-time gated). Every web framework provides at least Basic/Bearer auth middleware (Express `passport`, Axum `axum-extra`, Gin `gin-jwt`, Spring Security, ASP.NET Identity).
+
+#### Reverse proxy / HTTP forwarding mode
+
+Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `Via`). Pairs naturally with the planned HTTP Client module. Load balancing strategies (round-robin, least-connections). This turns aeronet from a pure application server into an edge/gateway server — a common deployment pattern (Nginx, Caddy, Envoy, Traefik, HAProxy).
+
+#### Inbound request body streaming to handler
+
+Deliver chunked request bodies to handlers as they arrive instead of buffering the full payload first. Enables processing uploads in bounded memory. Currently noted as a limitation in FEATURES.md. Express (streams), Go (`io.Reader`), Axum (`BodyStream`), Actix-web (`Payload`), and Rust Hyper all expose streaming request bodies.
+
+#### Streaming multipart parsing
+
+Process multipart/form-data uploads part-by-part as data arrives, rather than buffering the entire payload. Critical for large file uploads where the full body does not fit in memory. Currently flagged as a future item in FEATURES.md. Popular in Multer (Node.js), Actix-multipart, Spring `StreamingMultipartResolver`, and Go `multipart.Reader`.
+
+#### Per-route body size limits
+
+Different `maxBodyBytes` on different endpoints (e.g. `/upload` allows 100 MB, `/api` allows 1 MB). Currently only a global limit exists. Nginx (`client_max_body_size` per `location`), Express (`express.json({limit})`), Spring (`@RequestMapping` with size),  and Gin all support per-route limits.
+
+#### Automatic HTTP → HTTPS redirect
+
+When both a plaintext and a TLS listener are configured, automatically respond with `301 Moved Permanently` from the plaintext port to the HTTPS URL. A one-liner config instead of writing a custom handler. Caddy does this by default, Nginx via `return 301 https://`, Traefik via entrypoint redirect.
+
+#### Graceful config reload via signal (SIGHUP)
+
+Reload the JSON/YAML config file on `SIGHUP` without restarting the server. Apply mutable config changes (timeouts, limits, compression settings, TLS certs) hot. Pairs with the existing Glaze config loader and `postConfigUpdate()`. Nginx, HAProxy, Caddy, and systemd-based services all support `SIGHUP`-driven reload.
+
+#### WebSocket broadcast / pub-sub helpers
+
+Built-in topic-based broadcast for WebSocket connections. `WsRoom` / `WsTopic` abstraction where connections subscribe to topics and the server broadcasts to all subscribers. Common pattern in Socket.IO, uWebSockets, Phoenix Channels, and SignalR. Reduces boilerplate for chat, dashboards, and real-time notification use cases.
+
+#### ETag support for dynamic responses
+
+Compute a weak or strong ETag from the response body (e.g. hash) and handle `If-None-Match` / `304 Not Modified` for dynamic endpoints, not just static files. Reduces bandwidth for API responses that rarely change. Express (`etag` by default), Rails, ASP.NET, and Spring all auto-generate ETags for regular responses.
+
 ### TLS enhancements (detailed roadmap)
 
 #### Phase 3 (Advanced / Enterprise)
