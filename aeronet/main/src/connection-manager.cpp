@@ -734,8 +734,8 @@ bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, std::string_view
   // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
   if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
     target.tunnelOrFileBuffer.append(data);
-    if (!target.waitingWritable) {
-      enableWritableInterest(targetIt);
+    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
+      return false;
     }
     return true;
   }
@@ -749,8 +749,8 @@ bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, std::string_view
   // Buffer any unwritten remainder.
   if (static_cast<std::size_t>(written) < data.size()) {
     target.tunnelOrFileBuffer.append(data.data() + written, data.size() - written);
-    if (!target.waitingWritable) {
-      enableWritableInterest(targetIt);
+    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
+      return false;
     }
   }
   return true;
@@ -768,8 +768,8 @@ bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, RawChars& source
       target.tunnelOrFileBuffer.append(sourceBuffer);
       sourceBuffer.clear();
     }
-    if (!target.waitingWritable) {
-      enableWritableInterest(targetIt);
+    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
+      return false;
     }
     return true;
   }
@@ -789,8 +789,8 @@ bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, RawChars& source
       target.tunnelOrFileBuffer.append(sourceBuffer);
       sourceBuffer.clear();
     }
-    if (!target.waitingWritable) {
-      enableWritableInterest(targetIt);
+    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
+      return false;
     }
   }
   return true;
