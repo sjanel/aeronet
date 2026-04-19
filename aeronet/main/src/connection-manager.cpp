@@ -13,7 +13,6 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
@@ -357,13 +356,8 @@ void SingleHttpServer::acceptNewConnections() {
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
-      std::size_t chunkSize = _config.minReadChunkBytes;
-      if (_config.maxPerEventReadBytes != 0) {
-        if (_config.maxPerEventReadBytes <= bytesReadThisEvent) {
-          break;  // fairness cap reached for this epoll cycle
-        }
-        chunkSize = std::min(chunkSize, _config.maxPerEventReadBytes - bytesReadThisEvent);
-      }
+      const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
+      assert(chunkSize > 0);
       const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
       // Check for handshake completion
       // If the TLS handshake completed during the preceding transportRead, finalize it
@@ -433,8 +427,8 @@ void SingleHttpServer::acceptNewConnections() {
           break;
         }
       }
-      if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
-        break;  // reached fairness cap
+      if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
+        break;
       }
     }
     if (pCnx == nullptr) {
@@ -622,13 +616,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   std::size_t bytesReadThisEvent = 0;
   const auto fd = cnxIt->fd();
   while (true) {
-    std::size_t chunkSize = _config.minReadChunkBytes;
-    if (_config.maxPerEventReadBytes != 0) {
-      if (_config.maxPerEventReadBytes <= bytesReadThisEvent) {
-        break;  // fairness budget exhausted
-      }
-      chunkSize = std::min(chunkSize, _config.maxPerEventReadBytes - bytesReadThisEvent);
-    }
+    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
+    assert(chunkSize > 0);
 
     // Re-set the pointer on each loop iteration in case of connection state reallocations.
     cnxIt = _connections.iterator(fd);
@@ -668,8 +657,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       break;
     }
 
-    if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
-      // Reached per-event fairness cap
+    if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
       // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
       // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
       // so defer this fd for re-read at the start of the next event-loop iteration.
@@ -828,7 +816,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
                                                                bool& hitEagain) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   while (!state.eofReceived && state.inBuffer.size() < _config.maxOutboundBufferBytes) {
-    const std::size_t chunkSize = _config.minReadChunkBytes;
+    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
+    assert(chunkSize > 0);
     const auto [bytesRead, want] = state.transportRead(chunkSize);
     if (want == TransportHint::Error) {
       return CloseStatus::Close;
@@ -846,12 +835,12 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
       hitEagain = true;
       break;
     }
-    if (_config.maxPerEventReadBytes != 0 && bytesReadThisEvent >= _config.maxPerEventReadBytes) {
+    if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
       // Yield event loop to prevent starvation.
       // We must re-arm EPOLLIN manually since we are edge-triggered and didn't hit EAGAIN.
       state.waitingWritable =
           _eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt});
-      hitEagain = true;  // Treat as EAGAIN to yield the event loop
+      hitEagain = true;
       break;
     }
   }

@@ -229,8 +229,11 @@ HttpServerConfig& HttpServerConfig::withMinReadChunkBytes(std::size_t bytes) {
   return *this;
 }
 
-// Configure a per-event read fairness cap (0 => unlimited)
+// Configure a per-event read fairness cap (must be > 0)
 HttpServerConfig& HttpServerConfig::withMaxPerEventReadBytes(std::size_t capBytes) {
+  if (capBytes == 0) {
+    throw std::invalid_argument("maxPerEventReadBytes must be > 0");
+  }
   if (std::cmp_greater(capBytes, std::numeric_limits<std::uint32_t>::max())) {
     throw std::invalid_argument("maxPerEventReadBytes value too large");
   }
@@ -299,8 +302,12 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("minReadChunkBytes must be > 0");
   }
 
-  if (maxPerEventReadBytes != 0 && maxPerEventReadBytes < minReadChunkBytes) {
-    throw std::invalid_argument("maxPerEventReadBytes must be 0 or >= minReadChunkBytes");
+  if (maxPerEventReadBytes == 0) {
+    throw std::invalid_argument("maxPerEventReadBytes must be > 0");
+  }
+
+  if (minReadChunkBytes > maxPerEventReadBytes) {
+    throw std::invalid_argument("minReadChunkBytes cannot be greater than maxPerEventReadBytes");
   }
 
   if (std::cmp_less(std::numeric_limits<int>::max(),

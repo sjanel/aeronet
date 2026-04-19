@@ -66,7 +66,7 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
 ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
   inBuffer.ensureAvailableCapacityExponential(chunkSize);
 
-  const auto result = transport->read(inBuffer.data() + inBuffer.size(), inBuffer.availableCapacity());
+  const auto result = transport->read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
   if (headerStartTp.time_since_epoch().count() == 0) {
     headerStartTp = lastActivity;
