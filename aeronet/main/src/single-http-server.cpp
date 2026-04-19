@@ -232,6 +232,11 @@ bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
     return true;
   }
   ++_stats.epollModFailures;
+  // Cannot register for EPOLLOUT so buffered data will never be flushed.
+  // Clear the write buffers so canCloseConnectionForDrain() can proceed;
+  // without this, tunnel connections get stuck forever (exempt from keep-alive reaping).
+  state.outBuffer.clear();
+  state.tunnelOrFileBuffer.clear();
   state.requestDrainAndClose();
   return false;
 }
@@ -244,6 +249,8 @@ bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
     return true;
   }
   ++_stats.epollModFailures;
+  state.outBuffer.clear();
+  state.tunnelOrFileBuffer.clear();
   state.requestDrainAndClose();
   return false;
 }
