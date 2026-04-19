@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### Bug fixes
 
 - Fix connection stall when `maxPerEventReadBytes` fairness cap interrupts a read with data still in the TCP buffer. Edge-triggered polling (EPOLLET on Linux, EV_CLEAR on macOS) does not fire a new read event on a non-empty -> non-empty buffer transition, causing the connection to hang until keepAlive timeout. The fix defers partially-read fds and re-processes them at the start of the next event-loop iteration.
+- Honor `HttpServerConfig::minReadChunkBytes` for actual transport reads: `ConnectionState::transportRead()` now uses `chunkSize` as the syscall read length instead of reading the whole currently available buffer capacity. This makes chunk sizing deterministic on long-lived connections and keeps `maxPerEventReadBytes` fairness behavior predictable.
 - HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
 - HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
 
@@ -14,6 +15,8 @@ All notable changes to aeronet are documented in this file.
 
 - `HttpServerConfig::maxHeaderBytes` changed from `std::size_t` to `std::uint32_t`. No HTTP implementation should need >4 GiB of headers; this change eliminates struct padding and aligns with `PathEntryConfig::maxHeaderBytes`. Callers passing `std::size_t` values may need a narrowing cast.
 - `HttpServerConfig::withMaxHeaderBytes()` parameter changed from `std::size_t` to `std::uint32_t`.
+- `HttpServerConfig::maxPerEventReadBytes` no longer treats `0` as unlimited. It must now be `> 0`; use `std::numeric_limits<uint32_t>::max()` to approximate unlimited behavior.
+- Default `HttpServerConfig::maxPerEventReadBytes` changed from `0` (previous unlimited mode) to `128 KiB` to enforce fairness by default.
 
 ### New features
 

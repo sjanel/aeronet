@@ -159,18 +159,14 @@ TEST(HttpServerConfigTest, CompressionConfig) {
 #endif
 }
 
-TEST(HttpServerConfigTest, MaxPerEventReadBytesMustMatchChunkSize) {
+TEST(HttpServerConfigTest, MaxPerEventReadBytesMustBePositive) {
   HttpServerConfig cfg;
   cfg.withMinReadChunkBytes(1024);
 
-  cfg.withMaxPerEventReadBytes(0);
-  EXPECT_NO_THROW(cfg.validate());
+  EXPECT_THROW(cfg.withMaxPerEventReadBytes(0), std::invalid_argument);
 
   cfg.withMaxPerEventReadBytes(1024);
   EXPECT_NO_THROW(cfg.validate());
-
-  cfg.withMaxPerEventReadBytes(512);
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   EXPECT_THROW(cfg.withMaxPerEventReadBytes(1ULL << 34), std::invalid_argument);
 }
@@ -180,6 +176,13 @@ TEST(HttpServerConfig, MinReadChunkBytes) {
   cfg.withMinReadChunkBytes(0);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
   EXPECT_THROW(cfg.withMinReadChunkBytes(1ULL << 34), std::invalid_argument);
+}
+
+TEST(HttpServerConfig, MinReadChunkBytesGreaterThanMaxPerEventReadBytes) {
+  HttpServerConfig cfg;
+  cfg.withMinReadChunkBytes(2048);
+  cfg.withMaxPerEventReadBytes(1024);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
