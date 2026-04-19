@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -240,16 +241,38 @@ struct HttpServerConfig {
   // ===========================================
   // Adaptive inbound read chunk sizing
   // ===========================================
-  // The server initially used a fixed 4096 byte read() size for all inbound socket reads. To better balance
-  // header latency and bulk body throughput we expose a two‑tier strategy:
-  //   * minReadChunkBytes     : the minimum transport read size chunk used while parsing request data.
-  //                             The buffer grows exponentially as needed up to this size while parsing headers.
-  //   * maxPerEventReadBytes  : optional fairness cap. 0 => unlimited (loop continues until EAGAIN / short read).
-  //                             When >0 the server stops reading from a connection once this many bytes were
-  //                             successfully read in the current epoll event, yielding back to the event loop.
-  // Defaults chosen to preserve prior behavior (4K) unless body phase tuning is explicitly desired.
+
+  // Controls how much data the server reads from each connection per syscall and per event:
+  //   * minReadChunkBytes     : minimum chunk used for follow-up reads once an event already consumed bytes.
+  //                             This keeps progress steady while avoiding tiny reads in multi-iteration paths
+  //                             (for example TLS buffered data handling).
+  // Defaults balance fairness and throughput while keeping nominal one-read behavior.
   std::uint32_t minReadChunkBytes{4096};
-  std::uint32_t maxPerEventReadBytes{0};
+
+  // Fairness cap for one event-loop iteration (must be > 0).
+  // The first read of an event attempts to consume up to this budget in one syscall; follow-up reads are clamped to
+  // remaining budget and minReadChunkBytes. If you expect large request bodies and low number of connections, you can
+  // favor high values to improve throughput. For workloads with many concurrent connections, lower values can improve
+  // fairness and latency at the cost of throughput. To approximate unlimited behavior, set this to
+  // std::numeric_limits<uint32_t>::max().
+  std::uint32_t maxPerEventReadBytes{128U << 10};
+
+  // Check whether the per-event fairness cap has been reached after reading.
+  [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesReadThisEvent) const {
+    return bytesReadThisEvent >= maxPerEventReadBytes;
+  }
+
+  // Compute the read chunk size for a connection, accounting for the per-event fairness cap.
+  // Returns 0 when the fairness budget is exhausted (caller should break).
+  [[nodiscard]] std::size_t computeReadChunkSize(std::size_t bytesReadThisEvent) const {
+    assert(bytesReadThisEvent < maxPerEventReadBytes);
+    const std::size_t remainingBudget = maxPerEventReadBytes - bytesReadThisEvent;
+    if (remainingBudget < minReadChunkBytes) {
+      // Fairness budget is almost exhausted; cap to remaining budget to avoid over-reading.
+      return minReadChunkBytes;
+    }
+    return remainingBudget;
+  }
 
   // Hard limit to avoid pathological cases with excessive global headers, which would bloat response size
   // and waste CPU serializing them.
@@ -416,7 +439,8 @@ struct HttpServerConfig {
   // Configure the minimum read chunk size when receiving request data. Returns *this.
   HttpServerConfig& withMinReadChunkBytes(std::size_t bytes);
 
-  // Configure a per-event read fairness cap (0 => unlimited)
+  // Configure a per-event read fairness cap (must be > 0).
+  // To approximate unlimited behavior, use std::numeric_limits<uint32_t>::max().
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);
 
   // Replace the global response headers list
