@@ -1003,7 +1003,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
 
   File file(pathString.c_str(), File::OpenMode::ReadOnly);
   if (!file) {
-    resp = HttpResponse(http::StatusCodeNotFound, "Unable to open file\n");
+    // resolveTarget already confirmed the file exists, so failure here is a system error (e.g. EMFILE), not "not found"
+    resp = HttpResponse(http::StatusCodeServiceUnavailable, "Unable to open file\n");
     return resp;
   }
 
