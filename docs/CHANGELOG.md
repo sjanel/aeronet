@@ -21,6 +21,7 @@ All notable changes to aeronet are documented in this file.
 
 ### New features
 
+- **Configurable accept batch size**: New `HttpServerConfig::maxAcceptBatchSize` (default: 64) controls how many new connections are accepted per event-loop iteration. Prevents connection-burst starvation of existing connections under high concurrency.
 - **Per-route configuration**: `PathEntryConfig` now supports `requestTimeout`, `maxBodyBytes`, and `maxHeaderBytes` overrides. Chainable setters on `PathHandlerEntry` (`.timeout()`, `.maxBodyBytes()`, `.maxHeaderBytes()`) allow per-route configuration inline with handler registration.
 - **Per-route body limit enforcement**: Per-route `maxBodyBytes` is enforced server-side across HTTP/1.1 (sync and async paths) and HTTP/2, returning `413 Content Too Large` when the decoded body exceeds the route-specific limit.
 - **Per-route header limit enforcement**: Per-route `maxHeaderBytes` is enforced after routing in both HTTP/1.1 and HTTP/2, returning `431 Request Header Fields Too Large` when headers exceed the route-specific limit (tighter than the global limit already enforced during parsing).

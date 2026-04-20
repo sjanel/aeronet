@@ -131,6 +131,13 @@ struct HttpServerConfig {
   // When the limit is reached, closed connections are fully destroyed. Default: 10.
   std::uint32_t maxCachedConnections{10};
 
+  // Maximum number of new connections to accept per event-loop iteration.
+  // Caps the accept burst to avoid starving existing connections when many clients connect
+  // simultaneously (e.g. benchmark tools opening hundreds of connections at once).
+  // Remaining connections stay in the kernel backlog and will be accepted on subsequent iterations.
+  // Should be > 0. Use std::numeric_limits<uint32_t>::max() to approximate unlimited behavior. Default: 64.
+  std::uint32_t maxAcceptBatchSize{64};
+
   // ============================
   // Request parsing & body limits
   // ============================
@@ -349,6 +356,9 @@ struct HttpServerConfig {
 
   // Maximum number of closed connection objects to cache for reuse to reduce allocations.
   HttpServerConfig& withMaxCachedConnections(uint32_t nbCachedConnections);
+
+  // Set maximum accept batch size per event-loop iteration (0 = unlimited).
+  HttpServerConfig& withMaxAcceptBatchSize(uint32_t batchSize);
 
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);

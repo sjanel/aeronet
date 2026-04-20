@@ -360,6 +360,7 @@ void ConnectionState::reset() {
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
+  assert(!fileSend.active && "Cannot attach file payload while a previous file send is still active");
   fileSend.filePayload = std::move(filePayload);
   fileSend.active = fileSend.filePayload.length > 0;
   fileSend.headersPending = !outBuffer.empty();
