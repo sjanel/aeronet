@@ -393,6 +393,14 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 #endif
   HttpRequest& request = state.request;
   do {
+    // Do not parse the next pipelined request while a file send is still in progress.
+    // attachFilePayload would silently overwrite the in-flight file payload, corrupting
+    // the response stream (partial data from file1 mixed with file2 headers+data).
+    // Also skip when outBuffer is non-empty — the previous response hasn't been fully
+    // flushed yet, and starting a new response would interleave data.
+    if (state.isSendingFile() || !state.outBuffer.empty()) {
+      break;
+    }
     // If we don't yet have a full request line (no '\n' observed) wait for more data
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;  // need more bytes for at least the request line

@@ -237,6 +237,7 @@ Behavior summary
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
+- [x] Configurable accept batch size (`HttpServerConfig::maxAcceptBatchSize`, default 64). Limits how many new connections are accepted per event-loop iteration to prevent connection-burst starvation of existing connections. Set to `0` for unlimited. Builder: `withMaxAcceptBatchSize(uint32_t)`.
 - [x] MSG_ZEROCOPY for large payload sends *(Linux-only)*, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
   Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -160,8 +161,6 @@ class BenchmarkRunner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.script_dir = Path(__file__).resolve().parent
-        self.logs_dir = self.script_dir / "logs"
-        self.logs_dir.mkdir(exist_ok=True)
         self.repo_script_dir = self._detect_repo_script_dir()
         self.build_dir = self._find_build_dir()
 
@@ -180,6 +179,8 @@ class BenchmarkRunner:
 
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir = self.output_dir / "logs"
+        self.logs_dir.mkdir(exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.result_file = self.output_dir / f"benchmark_{timestamp}.txt"
 
@@ -653,6 +654,14 @@ class BenchmarkRunner:
 
         log_path = self.logs_dir / f"{server}.log"
         log_fp = log_path.open("w", encoding="utf-8", errors="replace")
+
+        def _preexec() -> None:
+            """New session + raise fd limit so benchmarks with many connections don't hit EMFILE."""
+            os.setsid()
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            if soft < hard:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
         try:
             popen = subprocess.Popen(
                 cmd,
@@ -660,7 +669,7 @@ class BenchmarkRunner:
                 stderr=subprocess.STDOUT,
                 cwd=cwd or self.script_dir,
                 env=env,
-                preexec_fn=os.setsid,
+                preexec_fn=_preexec,
             )
         except Exception as exc:
             log_fp.close()
