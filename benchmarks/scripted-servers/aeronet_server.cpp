@@ -20,6 +20,10 @@
 #include <thread>
 #include <utility>
 
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
+
 #include "aeronet/aeronet.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/ndigits.hpp"
@@ -33,12 +37,29 @@ namespace {
 
 constexpr std::size_t kCompressionMinBytes = 16UL;  // Compress responses larger than 16 bytes
 
+/// Raise the soft file-descriptor limit to the hard limit so that benchmarks
+/// with many concurrent connections (and their associated file sends) do not
+/// hit EMFILE.
+void RaiseFileDescriptorLimit() {
+#ifdef __linux__
+  struct rlimit rl{};
+  if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
+    rl.rlim_cur = rl.rlim_max;
+    if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+      std::cerr << "Warning: could not raise file descriptor limit to " << rl.rlim_max << "\n";
+    }
+  }
+#endif
 }
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
   // Ignore SIGPIPE to prevent process termination when writing to closed sockets
   // (e.g. when h2load abruptly closes TLS connections during benchmarks)
   std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
+
+  RaiseFileDescriptorLimit();
 
   bench::BenchConfig benchCfg(8080, argc, argv);
 

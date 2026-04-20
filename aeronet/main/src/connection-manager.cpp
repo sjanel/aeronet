@@ -98,6 +98,11 @@ void SingleHttpServer::sweepIdleConnections() {
   // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
   const auto now = _connections.now;
 
+  // Cap the number of sendfile / outbound retries per sweep to avoid spending the
+  // entire maintenance tick retrying N connections that all return EAGAIN immediately.
+  static constexpr int kMaxFlushRetriesPerSweep = 128;
+  int flushRetries = 0;
+
 #ifdef AERONET_WINDOWS
   auto cnxIt = _connections.begin();
   while (cnxIt != _connections.end()) {
@@ -111,15 +116,17 @@ void SingleHttpServer::sweepIdleConnections() {
     ConnectionState& state = _connections.connectionState(cnxIt);
 
     // Retry pending file sends to handle potential missed EPOLLOUT edges.
-    if (state.isSendingFile() && state.waitingWritable) {
+    if (state.isSendingFile() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
       flushFilePayload(cnxIt);
+      ++flushRetries;
     }
     // Retry pending outbound buffer flushes to handle potential missed EPOLLOUT edges.
     // On Windows, WSAPoll can fail to report writability on loopback sockets, leaving
     // buffered response data (including HTTP/2 DATA frames) stuck in outBuffer indefinitely.
     // Periodic retry here ensures forward progress regardless of missed poll events.
-    if (!state.outBuffer.empty() && state.waitingWritable) {
+    if (!state.outBuffer.empty() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
       flushOutbound(cnxIt);
+      ++flushRetries;
     }
 
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
@@ -228,7 +235,13 @@ void SingleHttpServer::sweepIdleConnections() {
 }
 
 void SingleHttpServer::acceptNewConnections() {
-  while (true) {
+  // Cap the number of connections accepted per event-loop iteration to avoid starving
+  // existing connections when a burst of new connections arrives (e.g. wrk opening 1000
+  // connections simultaneously).  Remaining connections stay in the kernel backlog and
+  // will be accepted on the next EPOLLIN on the listen socket.
+  const auto maxAcceptBatch = _config.maxAcceptBatchSize;
+  assert(maxAcceptBatch > 0);
+  for (decltype(_config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch;) {
     Connection cnx(_listenSocket);
     if (!cnx) {
       // no more waiting connections
@@ -439,6 +452,8 @@ void SingleHttpServer::acceptNewConnections() {
     if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     }
+
+    ++accepted;
   }
 }
 

@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -85,6 +86,8 @@ class WsBenchmarkRunner:
 
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir = self.output_dir / "logs"
+        self.logs_dir.mkdir(exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.result_file = self.output_dir / f"ws_benchmark_{timestamp}.txt"
         self.json_file = self.output_dir / f"ws_benchmark_{timestamp}.json"
@@ -95,6 +98,7 @@ class WsBenchmarkRunner:
         self.enable_ws_bench = args.websocket_bench
 
         self.server_processes: Dict[str, subprocess.Popen] = {}
+        self._server_log_fps: Dict[str, Any] = {}
         self.results: List[RunResult] = []
 
         # Track whether any aeronet scenario reported errors (fails CI)
@@ -179,12 +183,20 @@ class WsBenchmarkRunner:
         port = SERVER_PORTS[name]
         binary = self._server_binary(name)
         cmd = [str(binary), "--port", str(port), "--threads", str(int((self.args.threads + 3) / 4))]
-        log_path = self.output_dir / f"{name}_server.log"
+        log_path = self.logs_dir / f"{name}_server.log"
         log_fp = open(log_path, "w")
+
+        def _preexec() -> None:
+            os.setsid()
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            if soft < hard:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+
         proc = subprocess.Popen(
-            cmd, stdout=log_fp, stderr=subprocess.STDOUT, preexec_fn=os.setsid
+            cmd, stdout=log_fp, stderr=subprocess.STDOUT, preexec_fn=_preexec
         )
         self.server_processes[name] = proc
+        self._server_log_fps[name] = log_fp
         if not self._wait_for_port(port):
             print(f"  ERROR: {name} did not start on port {port}")
             self._stop_server(name)
@@ -205,6 +217,9 @@ class WsBenchmarkRunner:
                 proc.wait(timeout=3)
             except Exception:
                 pass
+        log_fp = self._server_log_fps.pop(name, None)
+        if log_fp:
+            log_fp.close()
 
     def _stop_all(self) -> None:
         for name in list(self.server_processes):

@@ -301,6 +301,21 @@ TEST(HttpServerConfigTest, CachedConnections) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(HttpServerConfigTest, MaxAcceptBatchSizeShouldNotBeZero) {
+  HttpServerConfig config;
+  config.withMaxAcceptBatchSize(0);
+  EXPECT_EQ(config.maxAcceptBatchSize, 0U);
+  EXPECT_THROW(config.validate(), std::invalid_argument);  // 0 is not a valid value for maxAcceptBatchSize
+}
+
+TEST(HttpServerConfigTest, MaxPerEventReadBytesShouldNotBeZero) {
+  HttpServerConfig config;
+  EXPECT_THROW(config.withMaxPerEventReadBytes(0), std::invalid_argument);
+  config.maxPerEventReadBytes = 0;
+  EXPECT_EQ(config.maxPerEventReadBytes, 0U);
+  EXPECT_THROW(config.validate(), std::invalid_argument);  // 0 is not a valid value for maxPerEventReadBytes
+}
+
 // ============================
 // Zerocopy configuration tests
 // ============================

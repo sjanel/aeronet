@@ -1408,7 +1408,7 @@ TEST_F(StaticFileHandlerTest, FileReadSizeFails) {
   buildReq(tmpFile.filename());
   ASSERT_EQ(setHead(), http::StatusCodeOK);
   HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
+  EXPECT_EQ(resp.status(), http::StatusCodeServiceUnavailable);
 }
 
 TEST_F(StaticFileHandlerTest, SmallFileReadAtFailure) {

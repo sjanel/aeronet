@@ -106,6 +106,11 @@ HttpServerConfig& HttpServerConfig::withMaxCachedConnections(uint32_t nbCachedCo
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withMaxAcceptBatchSize(uint32_t batchSize) {
+  this->maxAcceptBatchSize = batchSize;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds interval) {
   this->pollInterval = interval;
   return *this;
@@ -308,6 +313,10 @@ void HttpServerConfig::validate() {
 
   if (minReadChunkBytes > maxPerEventReadBytes) {
     throw std::invalid_argument("minReadChunkBytes cannot be greater than maxPerEventReadBytes");
+  }
+
+  if (maxAcceptBatchSize == 0) {
+    throw std::invalid_argument("maxAcceptBatchSize must be > 0");
   }
 
   if (std::cmp_less(std::numeric_limits<int>::max(),
