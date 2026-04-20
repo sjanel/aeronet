@@ -836,10 +836,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
       break;
     }
     if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
-      // Yield event loop to prevent starvation.
-      // We must re-arm EPOLLIN manually since we are edge-triggered and didn't hit EAGAIN.
-      state.waitingWritable =
-          _eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt});
+      // Edge-triggered polling (EPOLLET): data may remain in the TCP buffer after the fairness cap.
+      // No new read event fires on a non-empty→non-empty transition, so defer this fd for
+      // re-processing at the start of the next event-loop iteration (same as handleReadableClient).
+      _pendingReadFds.push_back(cnxIt->fd());
+      _lifecycle.wakeupFd.send();
       hitEagain = true;
       break;
     }
@@ -864,10 +865,10 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
           return CloseStatus::Keep;  // peer closed and cleaned up
         }
       }
-      // We don't close the connection immediately, we wait for the peer to close it
-      // or for the keep-alive timeout to trigger.
-      // But we can stop reading from this side.
-      (void)_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt});
+      // Stop reading from this side — wait for the peer to close or drain.
+      if (!_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
+        return CloseStatus::Close;
+      }
     }
     return CloseStatus::Keep;
   }
@@ -886,7 +887,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
     if (shutdownTunnelPeerWrite(peerIt)) {
       return CloseStatus::Keep;  // already cleaned up
     }
-    (void)_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt});
+    if (!_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
+      return CloseStatus::Close;
+    }
   }
   return CloseStatus::Keep;
 }
