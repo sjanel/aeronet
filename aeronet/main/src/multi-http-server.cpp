@@ -27,6 +27,12 @@
 #include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/single-http-server.hpp"
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <fstream>
+
+#include "aeronet/aeronet-config.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
@@ -188,6 +194,40 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
 
   firstServer._lifecycleTracker = _lifecycleTracker;
 }
+
+#ifdef AERONET_ENABLE_GLAZE
+MultiHttpServer::MultiHttpServer(const std::filesystem::path& configPath) {
+  auto config = detail::ParseConfigFile(configPath);
+  *this = MultiHttpServer(std::move(config.server), Router(std::move(config.router)));
+}
+
+MultiHttpServer::MultiHttpServer(const std::filesystem::path& configPath, Router router) {
+  auto config = detail::ParseConfigFile(configPath);
+  *this = MultiHttpServer(std::move(config.server), std::move(router));
+}
+
+std::string MultiHttpServer::dumpConfig(ConfigFormat format) const {
+  if (empty()) {
+    throw std::logic_error("Cannot dump config from an empty MultiHttpServer");
+  }
+  TopLevelConfig config{.server = _servers[0]._config, .router = _servers[0]._router.config()};
+  config.server.nbThreads = nbThreads();
+  return detail::SerializeConfig(config, format);
+}
+
+void MultiHttpServer::saveConfig(const std::filesystem::path& filePath) const {
+  if (empty()) {
+    throw std::logic_error("Cannot save config from an empty MultiHttpServer");
+  }
+  auto format = detail::DetectFormat(filePath);
+  auto content = dumpConfig(format);
+  std::ofstream ofs(filePath, std::ios::binary);
+  if (!ofs) {
+    throw std::runtime_error("Failed to open file for writing: " + filePath.string());
+  }
+  ofs << content;
+}
+#endif
 
 MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)),
@@ -399,8 +439,8 @@ void MultiHttpServer::ensureNextServersBuilt() {
   // reinitialize the first server's listener.  After a stop cycle in multi-
   // server mode the event-loop thread may have exited via predicate before the
   // maintenance tick called closeListener(), leaving the listen socket open or
-  // the event loop in a stale state.  Re-creating both here — on the single
-  // main thread before any worker threads start — guarantees a clean state and
+  // the event loop in a stale state.  Re-creating both here - on the single
+  // main thread before any worker threads start - guarantees a clean state and
   // avoids a racy in-thread initListener() call.
   if (_servers.size() > 1UL) {
     firstServer.closeListener();
@@ -434,7 +474,7 @@ void MultiHttpServer::ensureNextServersBuilt() {
   _serversAlive = std::make_shared<std::atomic<bool>>(true);
 
 #ifdef AERONET_MACOS
-  // macOS SO_REUSEPORT does not load balance loopback traffic — the kernel routes
+  // macOS SO_REUSEPORT does not load balance loopback traffic - the kernel routes
   // all connections to the most recently bound socket. Instead, share a single
   // listen fd across all threads; each thread registers EVFILT_READ on the fd in
   // its own kqueue. The kernel serialises accept() so only one thread wakes per

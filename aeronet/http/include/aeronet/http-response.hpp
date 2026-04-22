@@ -34,6 +34,11 @@
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+#include <glaze/yaml.hpp>  // IWYU pragma: keep
+#endif
+
 namespace aeronet {
 
 class EncoderContext;
@@ -905,7 +910,7 @@ class HttpResponse {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         // during streaming compression, if the output buffer is too small,
-        // encoders do NOT fail — they keep compressed data in their internal state and wait for more output space.
+        // encoders do NOT fail - they keep compressed data in their internal state and wait for more output space.
         written = appendEncodedInlineOrThrow(std::string_view(first, first + written));
       }
 #endif
@@ -995,6 +1000,44 @@ class HttpResponse {
   // The capacity should be enough to hold the entire response (status line, headers, body if inlined, trailers and the
   // CRLF chars) to avoid reallocations.
   void reserve(std::size_t capacity) { _data.reserve(capacity); }
+
+#ifdef AERONET_ENABLE_GLAZE
+  /// Serialize 'obj' as JSON directly into the response body (Content-Type: application/json).
+  /// Avoids intermediate copies: Glaze writes into a std::string which is then moved into the body.
+  /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
+  template <class T>
+  HttpResponse& bodyJson(const T& obj) & {
+    std::string buf;
+    if (const auto ec = glz::write<glz::opts{}>(obj, buf)) [[unlikely]] {
+      throw std::runtime_error("bodyJson serialization failed: " + glz::format_error(ec));
+    }
+    return body(std::move(buf), http::ContentTypeApplicationJson);
+  }
+
+  /// Rvalue overload of bodyJson.
+  template <class T>
+  HttpResponse&& bodyJson(const T& obj) && {
+    return std::move(bodyJson(obj));
+  }
+
+  /// Serialize 'obj' as YAML directly into the response body (Content-Type: text/yaml).
+  /// Avoids intermediate copies: Glaze writes into a std::string which is then moved into the body.
+  /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
+  template <class T>
+  HttpResponse& bodyYaml(const T& obj) & {
+    std::string buf;
+    if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
+      throw std::runtime_error("bodyYaml serialization failed: " + glz::format_error(ec));
+    }
+    return body(std::move(buf), "text/yaml");
+  }
+
+  /// Rvalue overload of bodyYaml.
+  template <class T>
+  HttpResponse&& bodyYaml(const T& obj) && {
+    return std::move(bodyYaml(obj));
+  }
+#endif
 
  private:
   friend class SingleHttpServer;

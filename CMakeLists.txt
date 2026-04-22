@@ -40,7 +40,7 @@ if(WIN32 AND MSVC AND NOT CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
     message(STATUS "[aeronet] Injecting MSVC include dir (no VS env): ${_msvc_include}")
     include_directories(SYSTEM "${_msvc_include}")
   endif()
-  # MSVC lib dir: .../MSVC/<ver>/lib/x64 — needed for msvcprt, vcruntime, etc.
+  # MSVC lib dir: .../MSVC/<ver>/lib/x64 - needed for msvcprt, vcruntime, etc.
   set(_msvc_libdir "${_msvc_root}/lib/x64")
   if(EXISTS "${_msvc_libdir}")
     message(STATUS "[aeronet] Injecting MSVC lib dir (no VS env): ${_msvc_libdir}")
