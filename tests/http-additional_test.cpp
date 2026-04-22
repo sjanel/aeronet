@@ -1093,7 +1093,7 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
   // Now send body
   test::sendAll(fd, "1234567890");
   std::string resp = test::recvWithTimeout(fd, 1000ms, 187);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test body read timeout cleared when body is ready
@@ -1106,7 +1106,7 @@ TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
   std::string req = "POST /test HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("HELLO")) << resp;
 }
 
@@ -1137,7 +1137,7 @@ TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
       "close\r\n\r\ntest";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("test")) << resp;
 }
 
@@ -1158,7 +1158,7 @@ TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
       "POST /test HTTP/1.1\r\nHost: x\r\nContent-Encoding: gzip\r\nContent-Length: 5\r\nConnection: close\r\n\r\nDUMMY";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("gzip")) << resp;
 }
 
@@ -1175,7 +1175,7 @@ TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test TLS config modification attempt at runtime (should be ignored)
@@ -1242,7 +1242,7 @@ TEST(SingleHttpServer, HeadMethodNoBody) {
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("X-Custom"));
   // Body should not be present for HEAD
   ASSERT_FALSE(resp.contains("This is the body content"));
@@ -1257,7 +1257,7 @@ TEST(SingleHttpServer, OptionsMethod) {
   test::sendAll(fd, "OPTIONS / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
   // Should handle OPTIONS (typically returns 200 or 204)
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200") || resp.contains("HTTP/1.1 204")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.1 204")) << resp;
 }
 
 // Test exception in request middleware
@@ -1411,8 +1411,8 @@ TEST(SingleHttpServer, MultipleResponseMiddleware) {
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
   std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_TRUE(resp.contains("X-Middleware-1"));
-  ASSERT_TRUE(resp.contains("X-Middleware-2"));
+  ASSERT_TRUE(resp.contains("\r\nX-Middleware-1"));
+  ASSERT_TRUE(resp.contains("\r\nX-Middleware-2"));
 
   ts.router() = Router();  // Clear middlewares for other tests
 }

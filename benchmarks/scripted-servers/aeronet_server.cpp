@@ -313,7 +313,10 @@ int main(int argc, char* argv[]) {
                   hp->sendText({reinterpret_cast<const char*>(payload.data()), payload.size()});
                 }
               },
-      });
+          .onPing = {},
+          .onPong = {},
+          .onClose = {},
+          .onError = {}});
       return handler;
     };
   };
