@@ -105,7 +105,7 @@ struct HttpServerConfig {
   // DMA-mapping user pages. Has effect only when 'zerocopyMode' is not Disabled.
   //
   // Expected gains by payload size (rough guidance):
-  // - < ~1 KB:        Slower — overhead dominates; net loss of ~10–30%.
+  // - < ~1 KB:        Slower - overhead dominates; net loss of ~10–30%.
   // - 1 KB – 10 KB:   Roughly neutral to marginal gain; barely worth it.
   // - 10 KB – 100 KB: Small gains, ~5–15% throughput improvement.
   // - 100 KB – 1 MB:  More meaningful gains, ~10–25%.
@@ -144,7 +144,7 @@ struct HttpServerConfig {
 
   // Maximum allowed size (in bytes) of the aggregate HTTP request head (request line + all headers + CRLFCRLF).
   // If exceeded while parsing, the server replies 431/400 and closes the connection. Default: 8 KiB.
-  // uint32_t is sufficient — no sane HTTP implementation needs to accept >4 GiB of headers.
+  // uint32_t is sufficient - no sane HTTP implementation needs to accept >4 GiB of headers.
   std::uint32_t maxHeaderBytes{8192};
 
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
@@ -302,6 +302,9 @@ struct HttpServerConfig {
  private:
   TLSConfig& ensureTls();
 
+  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
+  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
+  // case-insensitive for hostnames.
   ConcatenatedStrings32 _connectAllowlist;
 
  public:

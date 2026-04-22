@@ -12,7 +12,7 @@ Single consolidated reference for **aeronet** features.
 1. [Compression & Negotiation](#compression--negotiation)
 1. [Inbound Request Decompression (Config Details)](#inbound-request-decompression-config-details)
 1. [Chunked Transfer Encoding (RFC 7230 §4.1)](#chunked-transfer-encoding-rfc-7230-41)
-1. [Connection Close Semantics](#connection-close-semantics) — includes graceful drain lifecycle
+1. [Connection Close Semantics](#connection-close-semantics) - includes graceful drain lifecycle
 1. [Reserved & Managed Response Headers](#reserved--managed-response-headers)
 1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
 1. [Path Handling](#path-handling)
@@ -91,8 +91,8 @@ Where to look: see the "Compression & Negotiation" section for full details and 
 ### Methods & special semantics
 
 - [x] OPTIONS * handling (returns an Allow header per RFC 7231 §4.3)
-- [x] TRACE method support (echo) — optional and configurable via `HttpServerConfig::TraceMethodPolicy`
-- [x] CONNECT method support — proxy-style TCP tunneling to an upstream host:port target.
+- [x] TRACE method support (echo) - optional and configurable via `HttpServerConfig::TraceMethodPolicy`
+- [x] CONNECT method support - proxy-style TCP tunneling to an upstream host:port target.
 
 Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 
@@ -127,9 +127,9 @@ TRACE semantics and safety:
 
 - TRACE, when allowed, echoes the received request (start-line, headers and body) back with `Content-Type: message/http` so it can be used for debugging loopback-style probes as per RFC 7231 §4.3.2.
 - The server exposes a `TraceMethodPolicy` in `HttpServerConfig` with the following values:
-  - `Disabled` — TRACE disallowed (default).
-  - `EnabledPlainAndTLS` — TRACE allowed on both plaintext and TLS connections.
-  - `EnabledPlainOnly` — TRACE allowed on plaintext connections only; rejected on TLS.
+  - `Disabled` - TRACE disallowed (default).
+  - `EnabledPlainAndTLS` - TRACE allowed on both plaintext and TLS connections.
+  - `EnabledPlainOnly` - TRACE allowed on plaintext connections only; rejected on TLS.
 
 Server enforcement uses the per-request TLS indicator (e.g. `HttpRequest::tlsVersion()` being non-empty for TLS) to make the decision when `TraceMethodPolicy` is one of the TLS-bound options. Use `withTracePolicy(TraceMethodPolicy)` to configure the policy programmatically.
 
@@ -137,7 +137,7 @@ Use cases:
 
 - If you deploy behind TLS-terminating proxies and want to avoid exposing TRACE responses over TLS endpoints, set `TraceMethodPolicy::EnabledPlainOnly`.
   
-Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed — the policy set is now intentionally smaller and focuses
+Note: `EnabledOnTls` (TRACE allowed only on TLS) was removed - the policy set is now intentionally smaller and focuses
 on disabling TRACE entirely, allowing it everywhere, or allowing it only on plaintext.
 
 ### Expect header handling (RFC 7231 §5.1.1)
@@ -152,10 +152,10 @@ Behavior summary
 - For expectation tokens other than `100-continue` aeronet exposes an opt-in `ExpectationHandler` API (see
   `SingleHttpServer::setExpectationHandler` in `http-server.hpp`). When present, the handler is invoked with the
   parsed expectation token and may respond with one of:
-  - Continue — allow normal request processing
-  - Interim — emit an informational 1xx interim response (handler supplies the specific 1xx status)
-  - FinalResponse — send the supplied final response immediately and abort normal request processing
-  - Reject — equivalent to `417 Expectation Failed` (server will send 417)
+  - Continue - allow normal request processing
+  - Interim - emit an informational 1xx interim response (handler supplies the specific 1xx status)
+  - FinalResponse - send the supplied final response immediately and abort normal request processing
+  - Reject - equivalent to `417 Expectation Failed` (server will send 417)
 - Default behavior when no handler is installed: any non-`100-continue` expectation token is treated as unknown and the
   server responds with **417 Expectation Failed** per the RFC.
 
@@ -173,7 +173,7 @@ Implementation notes & constraints
 
 ### CONNECT (HTTP tunneling)
 
-- [x] CONNECT method support — proxy-style TCP tunneling to an upstream host:port target.
+- [x] CONNECT method support - proxy-style TCP tunneling to an upstream host:port target.
 
 Behavior summary
 
@@ -192,7 +192,7 @@ Behavior summary
 
 Configuration
 
-- `HttpServerConfig::connectAllowlist` — optional list of allowed target hosts (exact string match). When empty, any
+- `HttpServerConfig::connectAllowlist` - optional list of allowed target hosts (exact string match). When empty, any
   resolved host is allowed. To populate conveniently use `withConnectAllowlist()` builder helper.
 
 Notes and implementation details
@@ -232,7 +232,7 @@ Behavior summary
 - [x] Horizontal scaling via SO_REUSEPORT (multi-reactor)
 - [x] Multi-instance orchestration wrapper (`HttpServer` aka `MultiHttpServer`) (forces `reusePort=true` for >1 threads; aggregated stats; resolved port immediately after construction)
 - [x] writev scatter-gather for response header + body
-- [x] TCP_CORK response coalescing *(Linux-only)* — automatically corks the socket before writing response data and uncorks after, preventing partial TCP segments when `TCP_NODELAY` is active. Clearing `TCP_CORK` flushes accumulated data immediately. No-op on macOS (TCP_NOPUSH does not flush on clear, and `writev` already coalesces) and Windows. Enabled per-connection when `TCP_NODELAY` is set. See `SetTcpCork()` in `socket-ops.hpp` and `TcpCorkGuard` RAII helper. Tests in `socket-ops_test.cpp`.
+- [x] TCP_CORK response coalescing *(Linux-only)* - automatically corks the socket before writing response data and uncorks after, preventing partial TCP segments when `TCP_NODELAY` is active. Clearing `TCP_CORK` flushes accumulated data immediately. No-op on macOS (TCP_NOPUSH does not flush on clear, and `writev` already coalesces) and Windows. Enabled per-connection when `TCP_NODELAY` is set. See `SetTcpCork()` in `socket-ops.hpp` and `TcpCorkGuard` RAII helper. Tests in `socket-ops_test.cpp`.
 - [x] Outbound write buffering with event-driven backpressure (EPOLLOUT on Linux, kevent on macOS, WSAPoll on Windows)
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs
@@ -301,7 +301,7 @@ router.setPath(http::Method::GET, "/api/user/{id}", [](const HttpRequest& req) {
 });
 ```
 
-✅ **Safe**: Use head data (path, query params, headers) in async handlers — the server pins this data automatically when the handler needs to await the body:
+✅ **Safe**: Use head data (path, query params, headers) in async handlers - the server pins this data automatically when the handler needs to await the body:
 
 ```cpp
 Router router;
@@ -377,9 +377,9 @@ This section explains the behavior and the supported capture types.
 The `HttpResponse` body API accepts several convenient ownership types so handlers may hand off buffers without
 copying:
 
-- `std::string` — move a string into the response body for zero-copy handoff;
-- `std::vector<char>` — move a character vector when your data is in a non-null-terminated buffer;
-- `std::unique_ptr<char[]>` — for blob ownership without a resizing container (move-only `unique_ptr` semantics).
+- `std::string` - move a string into the response body for zero-copy handoff;
+- `std::vector<char>` - move a character vector when your data is in a non-null-terminated buffer;
+- `std::unique_ptr<char[]>` - for blob ownership without a resizing container (move-only `unique_ptr` semantics).
 
 ### Usage examples
 
@@ -541,7 +541,7 @@ direct compression (captured bodies are compressed at finalization). Use `body(s
 for inline storage with direct compression eligibility.
 
 Tests: [aeronet/http/test/http-response_test.cpp](aeronet/http/test/http-response_test.cpp) (unit),
-[tests/http-compression_test.cpp](tests/http-compression_test.cpp) (e2e — `DirectCompression_*` tests).
+[tests/http-compression_test.cpp](tests/http-compression_test.cpp) (e2e - `DirectCompression_*` tests).
 
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 
@@ -1000,7 +1000,7 @@ When a buffered `HttpResponse` has trailers, aeronet **automatically converts** 
 - The `Content-Length` header is **replaced** with `Transfer-Encoding: chunked`
 - The body is wrapped in chunked format: `hex(len)\r\n body \r\n 0\r\n trailers \r\n`
 
-This conversion is **transparent** to application code — simply set the body and add trailers, and aeronet handles the encoding conversion automatically.
+This conversion is **transparent** to application code - simply set the body and add trailers, and aeronet handles the encoding conversion automatically.
 
 **Wire format example**:
 
@@ -1169,7 +1169,7 @@ Key API points:
 
 - **`beginDrain(std::chrono::milliseconds maxWait = 0)`** stops accepting new connections, keeps existing keep-alive sessions long enough to finish their current response, and injects `Connection: close` so the client does not reuse the socket. When `maxWait` is non-zero, a deadline is armed; any connections still open when it expires are closed immediately. Calling `beginDrain()` again with a shorter timeout shrinks the deadline.
 - **`isDraining()`** reflects whether the server is currently in the draining state. `isRunning()` still reports `true` until the drain completes or a stop occurs.
-- **Wrappers** — `HttpServer::beginDrain()` / `isDraining()` forward to the underlying `SingleHttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
+- **Wrappers** - `HttpServer::beginDrain()` / `isDraining()` forward to the underlying `SingleHttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
 - Draining is restart-friendly: once all connections are gone (or the deadline forces closure) the lifecycle resets to `Idle` and the server can be started again with another `run()`.
 - `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
 
@@ -1204,7 +1204,7 @@ This mechanism is recommended for most deployments where a clean shutdown on `SI
 
 Where to look: [`signal-handler.hpp`](../aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](../tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
 
-#### stop() vs beginDrain() — intent, semantics and guidance
+#### stop() vs beginDrain() - intent, semantics and guidance
 
 The library exposes two related shutdown controls and they serve different intent: `stop()` is the immediate termination primitive while `beginDrain()` explicitly requests a graceful quiesce. The differences are summarized below to avoid confusion.
 
@@ -1236,7 +1236,7 @@ The library exposes two related shutdown controls and they serve different inten
 - Wrapper behavior:
   - `HttpServer::beginDrain()` forward to their underlying `SingleHttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
 
-Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread — the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
+Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread - the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
 
 ## Reserved & Managed Response Headers
 
@@ -1351,7 +1351,7 @@ router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
 - **Execution**: The coroutine is started immediately on the event loop. When it `co_await`s, it suspends, returning control to the event loop. When the awaited operation completes, the coroutine resumes.
 - **Middleware**: Fully supported. Request middleware runs before the coroutine starts. Response middleware runs after the coroutine `co_return`s the response.
 - **CORS**: Fully supported. CORS checks happen before the coroutine starts.
-- **Early Dispatch**: Async handlers are invoked as soon as the request head is parsed, even if the body is still uploading. Call `co_await req.bodyAwaitable()` (or the chunk helpers) before touching the body. Because of this, request middleware on async routes should not rely on the body or trailers being populated—they will become available only after the coroutine awaits them.
+- **Early Dispatch**: Async handlers are invoked as soon as the request head is parsed, even if the body is still uploading. Call `co_await req.bodyAwaitable()` (or the chunk helpers) before touching the body. Because of this, request middleware on async routes should not rely on the body or trailers being populated-they will become available only after the coroutine awaits them.
 
 #### Async Handler Example
 
@@ -1595,7 +1595,7 @@ Empty segments (double slashes `//`) are not allowed.
 
 - Named captures use `{name}` and become available under the provided key (`name`).
 - Unnamed captures use `{}`; the router assigns sequential numeric string keys (`"0"`, `"1"`, ...) in segment order.
-- Mixing named and unnamed captures in the same pattern is not allowed — registration (`setPath`) will throw if you mix them.
+- Mixing named and unnamed captures in the same pattern is not allowed - registration (`setPath`) will throw if you mix them.
 - Consecutive parameter fragments with no literal separator (e.g. `{}{}` within a segment) are rejected.
 
 #### Escape sequences for literal special characters
@@ -1759,9 +1759,9 @@ entirely by the server, and do not require application handlers to be installed 
 
 - Enabled via `HttpServerConfig::withBuiltinProbes(BuiltinProbesConfig)` or `enableBuiltinProbes(true)`.
 - Default probe paths (configurable in `BuiltinProbesConfig`):
-  - Liveness: `/livez` — consistently returns HTTP 200 while the server is running
-  - Readiness: `/readyz` — indicates the server is ready to receive new requests (HTTP 200). During draining, it returns HTTP 503 and returns `Connection: close` to signal clients not to reuse connections.
-  - Startup: `/startupz` — returns HTTP 503 until the server has fully initialized, then returns HTTP 200 like liveness.
+  - Liveness: `/livez` - consistently returns HTTP 200 while the server is running
+  - Readiness: `/readyz` - indicates the server is ready to receive new requests (HTTP 200). During draining, it returns HTTP 503 and returns `Connection: close` to signal clients not to reuse connections.
+  - Startup: `/startupz` - returns HTTP 503 until the server has fully initialized, then returns HTTP 200 like liveness.
 - The probe handlers return minimal responses (status only, configurable Content-Type) and avoid heavy work.
 
 ### Probes configuration options
@@ -1769,7 +1769,7 @@ entirely by the server, and do not require application handlers to be installed 
 - `BuiltinProbesConfig::enabled` (bool): enable/disable builtin probes.
 - `BuiltinProbesConfig::contentType` (enum): response Content-Type used by the probe responses.
 - `BuiltinProbesConfig::withLivenessPath / withReadinessPath / withStartupPath`: customize probe paths. Paths must be
-  non-empty and begin with `/` — invalid values are rejected by `BuiltinProbesConfig::validate()`.
+  non-empty and begin with `/` - invalid values are rejected by `BuiltinProbesConfig::validate()`.
 
 When enabled, if an application handler is already registered on the same path(s) the server will override them
 with the probes handlers.
@@ -1941,7 +1941,7 @@ the aggregate bytes transferred via kernel TLS sendfile. Logs capture the reason
 #### How to enable kTLS in your server
 
 1. Ensure the project was compiled with both `AERONET_ENABLE_OPENSSL=ON` and uses a modern OpenSSL version (>= 3.0).
-1. Provide TLS credentials — either files or in-memory PEM strings — exactly as for any HTTPS deployment.
+1. Provide TLS credentials - either files or in-memory PEM strings - exactly as for any HTTPS deployment.
 1. Set the desired kTLS mode before constructing the server:
 
 ```cpp
@@ -2099,9 +2099,9 @@ See `examples/tls-session-tickets.cpp` for a complete working example.
 The server exposes a configurable `TraceMethodPolicy` to control handling of the HTTP `TRACE` method. Use
 `HttpServerConfig::withTracePolicy(...)` to choose one of:
 
-- `Disabled` (default) — reject TRACE (405).
-- `EnabledPlainAndTLS` — allow TRACE and echo the received request message (RFC 7231 §4.3) on both plaintext and TLS.
-- `EnabledPlainOnly` — allow TRACE on plaintext connections only; reject when the request arrived over TLS.
+- `Disabled` (default) - reject TRACE (405).
+- `EnabledPlainAndTLS` - allow TRACE and echo the received request message (RFC 7231 §4.3) on both plaintext and TLS.
+- `EnabledPlainOnly` - allow TRACE on plaintext connections only; reject when the request arrived over TLS.
 
 This provides a safety-minded default while allowing deployments to express site-specific policies (e.g. disallow TRACE on TLS).
 
@@ -2109,7 +2109,7 @@ Quick reference matrix:
 
 | Policy | Plaintext TRACE | TLS TRACE | Description |
 |--------|-----------------|-----------|-------------|
-| Disabled | Rejected (405) | Rejected (405) | Default safe option — TRACE not allowed |
+| Disabled | Rejected (405) | Rejected (405) | Default safe option - TRACE not allowed |
 | EnabledPlainOnly | Allowed (echo)  | Rejected (405) | Useful when TLS endpoints must not expose request echoes |
 | EnabledPlainAndTLS  | Allowed (echo)  | Allowed (echo)  | TRACE allowed on both plaintext and TLS |
 
@@ -2196,8 +2196,8 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   - `If-Range` interaction: when the validator mismatches, the full body is returned (200) regardless of the
     number of ranges requested.
   - Safety limits are configurable via `StaticFileConfig`:
-    - `maxMultipartRanges` (default **16**) — requests exceeding this are treated as invalid (416).
-    - `maxMultipartBodySize` (default **32 MiB**) — if the assembled multipart body would exceed this limit the
+    - `maxMultipartRanges` (default **16**) - requests exceeding this are treated as invalid (416).
+    - `maxMultipartBodySize` (default **32 MiB**) - if the assembled multipart body would exceed this limit the
       handler falls back to a full 200 response instead of partial content.
 - **Conditional requests**: `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, and `If-Range`
   are honoured using strong validators. Requests that do not modify the resource return `304 Not Modified` for GET/HEAD
@@ -2511,7 +2511,7 @@ sudo pacman -S curl protobuf
 ### Overview
 
 - **Header:** `aeronet/cors-policy.hpp`
-- **Core class:** `aeronet::CorsPolicy` — immutable after setup, thread-safe for reuse
+- **Core class:** `aeronet::CorsPolicy` - immutable after setup, thread-safe for reuse
 - **Integration:** Attach policy to individual routes via `Router::setPath(...).cors(policy)` or set a default policy for all routes via `RouterConfig::withDefaultCorsPolicy(policy)`
 - **Automatic preflight:** OPTIONS requests with `Access-Control-Request-Method` header are recognized as preflight and receive automatic 204 No Content responses with appropriate CORS headers
 - **Actual request handling:** CORS headers are injected into all matching responses (both buffered `HttpResponse` and streaming `HttpResponseWriter`)
@@ -2527,9 +2527,9 @@ sudo pacman -S curl protobuf
    - `allowCredentials(true)` enables `Access-Control-Allow-Credentials: true` and forces specific origin mirroring (never `*`)
 
 3. **Method & header control:**
-   - `allowMethods(Method bitmask)` — configures which HTTP methods are allowed for the route
-   - `allowRequestHeader(name)` / `allowRequestHeaders({...})` — controls which custom headers clients can send
-   - `exposeHeader(...)` — controls which response headers are exposed to client JavaScript
+   - `allowMethods(Method bitmask)` - configures which HTTP methods are allowed for the route
+   - `allowRequestHeader(name)` / `allowRequestHeaders({...})` - controls which custom headers clients can send
+   - `exposeHeader(...)` - controls which response headers are exposed to client JavaScript
 
 4. **Preflight caching:**
    - `maxAge(duration)` sets `Access-Control-Max-Age` to reduce preflight requests
@@ -2613,9 +2613,9 @@ Routes with explicit `.cors(...)` always take precedence over the default policy
 
 #### Precedence Rules
 
-1. **Per-route policy** (via `.cors(...)`) — highest priority
+1. **Per-route policy** (via `.cors(...)`) - highest priority
 2. **Router default policy** (via `RouterConfig::withDefaultCorsPolicy(...)`)
-3. **No CORS** — no headers emitted
+3. **No CORS** - no headers emitted
 
 ### Performance Notes
 
@@ -2965,7 +2965,7 @@ server.run();
 Notes:
 
 - Pattern syntax, trailing-slash policy, and HEAD→GET fallback apply identically to both protocols.
-- `AsyncRequestHandler` (including `co_await req.deferWork(...)`) is fully supported for HTTP/2 with true per-stream async execution — suspended coroutines do not block other streams on the connection.
+- `AsyncRequestHandler` (including `co_await req.deferWork(...)`) is fully supported for HTTP/2 with true per-stream async execution - suspended coroutines do not block other streams on the connection.
 - `StreamingHandler` is fully supported for HTTP/2, including flow-control-aware DATA framing and compression.
 - All handler types registered in the Router work transparently for both HTTP/1.1 and HTTP/2.
 
@@ -3041,3 +3041,121 @@ curl --http2 http://localhost:8080/hello
 Planned / potential: richer logging & metrics, additional OpenTelemetry instrumentation (histograms, gauges).
 
 - [ ] Additional OpenTelemetry instrumentation (histograms, gauges)
+
+## Glaze Integration (Optional)
+
+When built with `AERONET_ENABLE_GLAZE=ON`, aeronet integrates with [Glaze](https://github.com/stephenberry/glaze) for high-performance JSON/YAML serialization.
+
+### Configuration Loading
+
+Construct a server directly from a JSON or YAML configuration file:
+
+```cpp
+#include "aeronet/single-http-server.hpp"
+#include "aeronet/multi-http-server.hpp"
+
+auto handler = [](const HttpRequest&) { return HttpResponse(200); };
+
+// Single-threaded server from config file (format auto-detected from extension)
+SingleHttpServer server("/etc/aeronet/config.yaml");
+server.router().setPath(http::Method::GET, "/hello", handler);
+server.run();
+
+// Single-threaded server from config file while keeping pre-registered routes from a Router
+Router preconfigured;
+preconfigured.setPath(http::Method::GET, "/health", handler);
+SingleHttpServer serverWithRouter("/etc/aeronet/config.yaml", std::move(preconfigured));
+serverWithRouter.run();
+
+// Multi-threaded server from config file
+MultiHttpServer multi("/etc/aeronet/config.json");
+multi.router().setDefault(handler);
+multi.run();
+
+// Multi-threaded server from config file with a pre-configured router
+Router multiRouter;
+multiRouter.setPath(http::Method::GET, "/health", handler);
+MultiHttpServer multiWithRouter("/etc/aeronet/config.json", std::move(multiRouter));
+multiWithRouter.run();
+```
+
+For advanced use (e.g. loading only `HttpServerConfig`):
+
+```cpp
+#include "aeronet/config-loader.hpp"
+
+auto serverCfg = LoadServerConfig("/etc/aeronet/server.json");
+auto serverCfg2 = LoadServerConfig(R"({"server":{"port":8080}})", ConfigFormat::json);
+```
+
+### Configuration Dumping
+
+Serialize a running server's configuration (including router settings) back to JSON or YAML:
+
+```cpp
+SingleHttpServer server("/etc/aeronet/config.yaml");
+
+// Dump as JSON string
+std::string json = server.dumpConfig(ConfigFormat::json);
+std::string yaml = server.dumpConfig(ConfigFormat::yaml);
+
+// Save directly to a file (format auto-detected from extension)
+server.saveConfig("/etc/aeronet/config-backup.yaml");
+```
+
+### Response Body Serialization
+
+Serialize any Glaze-compatible object directly into the response body, avoiding intermediate copies:
+
+```cpp
+#include "aeronet/http-response.hpp"
+#include <unordered_map>
+
+using MyPayload = std::unordered_map<std::string, std::string>;
+
+int main() {
+  MyPayload payload{{"id", "1"}, {"name", "example"}};
+
+  HttpResponse resp;
+  resp.bodyJson(payload);   // Content-Type: application/json
+  resp.bodyYaml(payload);   // Content-Type: text/yaml
+
+  // Builder-style chaining (inside a coroutine handler):
+  // co_return HttpResponse(200).bodyJson(payload);
+}
+```
+
+### Request Body Deserialization
+
+Parse incoming request bodies into typed C++ objects:
+
+```cpp
+#include "aeronet/http-request.hpp"
+#include <unordered_map>
+
+using MyPayload = std::unordered_map<std::string, std::string>;
+
+auto handler = [](const HttpRequest& req) {
+  auto jsonResult = req.bodyAs<MyPayload>();       // parse JSON body
+
+  // YAML variant:
+  auto yamlResult = req.bodyAsYaml<MyPayload>();
+
+  if (!jsonResult) return std::move(jsonResult.error());  // 400 Bad Request with parse error details
+  // use jsonResult.value()
+  return HttpResponse(200).bodyJson(*jsonResult);
+};
+```
+
+### Human-Readable Duration Serialization
+
+Duration fields in configuration are serialized as human-readable strings (e.g. `"3s"`, `"500ms"`, `"1h30m"`)
+instead of raw integers, ensuring symmetric read/write round-trips. Tests: `config-loader_test.cpp`
+(`DurationHumanReadableRoundTrip`, `DurationSecondsHumanReadableRoundTrip`, `DurationZeroRoundTrip`,
+`DurationSubSecondMillisecondsRoundTrip`, `DurationHumanReadableYamlRoundTrip`).
+
+### Router Configuration Validation
+
+`RouterConfig::validate()` is called automatically after parsing a config file, alongside
+`HttpServerConfig::validate()`. It currently validates the `TrailingSlashPolicy` enum range.
+Tests: `config-loader_test.cpp` (`RouterConfigValidateDefaultIsOk`, `RouterConfigValidateAllPoliciesOk`).

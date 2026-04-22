@@ -142,7 +142,7 @@ Planned enhancements:
 
 1. Add source under `benchmarks/internal/` (micro) or `benchmarks/e2e/` (macro / throughput).
 2. Append the file to `AERONET_BENCH_INTERNAL_SOURCES` (for microbench) or create a new executable.
-3. Prefer small, isolated scopes—avoid mixing multiple subsystems unless explicitly measuring end-to-end.
+3. Prefer small, isolated scopes - avoid mixing multiple subsystems unless explicitly measuring end-to-end.
 4. Keep runtime bounded: default iterations should finish in < 2 seconds on a typical dev laptop.
 5. Use `benchmark::DoNotOptimize(value)` to prevent undesired optimization.
 6. Use counters (`state.counters["name"]`) for derived metrics where helpful.

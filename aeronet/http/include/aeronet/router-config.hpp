@@ -35,6 +35,9 @@ struct RouterConfig {
   // If a route has its own CORS policy, that one takes precedence over the router-level default.
   RouterConfig& withDefaultCorsPolicy(CorsPolicy policy);
 
+  // Validate configuration values. Throws std::invalid_argument on invalid settings.
+  void validate() const;
+
   // Behavior for resolving paths that differ only by a trailing slash.
   // Default: Normalize
   TrailingSlashPolicy trailingSlashPolicy{TrailingSlashPolicy::Normalize};

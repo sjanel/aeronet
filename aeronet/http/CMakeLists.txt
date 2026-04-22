@@ -5,6 +5,10 @@ if(NOT AERONET_ENABLE_HTTP2 AND NOT AERONET_ENABLE_WEBSOCKET)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/upgrade-handler.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_GLAZE)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/config-loader.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_http
     ${AERONET_HTTP_SRC_LIST}
 )
@@ -30,7 +34,7 @@ target_include_directories(aeronet_http
         $<INSTALL_INTERFACE:include>
 )
 
-# connection-state_test uses socketpair(AF_UNIX), fcntl, and sendfile/pread overrides — Linux only.
+# connection-state_test uses socketpair(AF_UNIX), fcntl, and sendfile/pread overrides - Linux only.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 AeronetAddUnitTest(
     connection-state_test
@@ -158,5 +162,14 @@ if (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET)
         LIBRARIES
         aeronet_http
         aeronet_basic_test_support
+    )
+endif()
+
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        config-loader_test
+        test/config-loader_test.cpp
+        LIBRARIES
+        aeronet
     )
 endif()

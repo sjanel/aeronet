@@ -376,7 +376,7 @@ void SingleHttpServer::acceptNewConnections() {
       // If the TLS handshake completed during the preceding transportRead, finalize it
       // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
       // metrics/state. This must be done even if the same read later returns an error or
-      // EOF — the handshake result is valuable and should be recorded before any
+      // EOF - the handshake result is valuable and should be recorded before any
       // connection teardown logic runs.
       // Note: this is a transition action (handshakePending -> done) rather than a
       // normal successful-read action, so it intentionally runs prior to evaluating

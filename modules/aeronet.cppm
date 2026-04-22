@@ -117,7 +117,6 @@ using aeronet::CaseInsensitiveHashFunc;
 using aeronet::CaseInsensitiveLess;
 using aeronet::CharToStringView;
 using aeronet::CharToStringView_v;
-using aeronet::IntegralToCharBuffer;
 using aeronet::IntegralToCharVector;
 using aeronet::IntToStringView;
 using aeronet::IntToStringView_v;

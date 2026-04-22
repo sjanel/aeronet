@@ -75,6 +75,9 @@ class Router {
 
   ~Router();
 
+  // Access the RouterConfig for this router (read-only).
+  [[nodiscard]] const RouterConfig& config() const noexcept { return _config; }
+
   // Register a global (fallback) request handler invoked when no path-specific handler
   // matches. The handler receives a const HttpRequest& and returns an HttpResponse by value.
   //
@@ -365,7 +368,7 @@ class Router {
     // Static children (ordered by priority, highest first)
     vector<RadixNode*> children;
 
-    // Route metadata (param names, wildcard flag, etc.) — near children for cache locality during matching
+    // Route metadata (param names, wildcard flag, etc.) - near children for cache locality during matching
     CompiledRoute* pRoute{nullptr};
 
     // Priority for this subtree (number of handlers in children + self)
