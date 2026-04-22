@@ -22,10 +22,11 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   auto* pConnectionState = _activeConnectionStates[connectionIdx];
 #endif
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  auto& asyncState = pConnectionState->asyncState;
-  if (asyncState.active || asyncState.handle) {
-    asyncState.clear();
+  auto* asyncState = pConnectionState->asyncState.get();
+  if (asyncState != nullptr && (asyncState->active || asyncState->handle)) {
+    *asyncState = {};
   }
+  pConnectionState->asyncState.reset();
 #endif
 
   // Best-effort graceful TLS shutdown

@@ -34,6 +34,10 @@
 #include "aeronet/tls-transport.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#endif
+
 namespace aeronet {
 
 void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
@@ -299,6 +303,15 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const
 }
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+AsyncHandlerState& ConnectionState::ensureAsyncState(AsyncHandlerStatePool& asyncStatePool) {
+  if (!asyncState) {
+    asyncState = asyncStatePool.allocateAndConstructPoolPtr();
+  }
+  return *asyncState;
+}
+#endif
+
 void ConnectionState::reset() {
   // In order to avoid retaining large buffers in cached ConnectionState objects,
   // we shrink (before clear, otherwise it would free all memory) and clear them before reuse.
@@ -309,7 +322,7 @@ void ConnectionState::reset() {
   shrinkAndClear(inBuffer);
   shrinkAndClear(bodyAndTrailersBuffer);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  shrinkAndClear(asyncState.headBuffer);
+  asyncState.reset();
 #endif
   shrinkAndClear(tunnelOrFileBuffer);
 
@@ -353,10 +366,6 @@ void ConnectionState::reset() {
   protocolHandler.reset();
   tunnelBridge.reset();
   protocol = ProtocolType::Http11;
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  asyncState.clear();
-#endif
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
@@ -385,7 +394,7 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // bodyAndTrailersBuffer: grows to accommodate decompressed request bodies (up to maxBodyBytes).
   // Safe to clear - body data has been consumed by the handler.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (!asyncState.active) {
+  if (!asyncState || !asyncState->active) {
     bodyAndTrailersBuffer.shrink_to_fit();
     bodyAndTrailersBuffer.clear();
   }
@@ -423,15 +432,5 @@ void ConnectionState::releaseCompletedZerocopyBuffers() {
     zerocopyPendingBuffers.clear();
   }
 }
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void ConnectionState::AsyncHandlerState::clear() {
-  if (handle) {
-    handle.destroy();
-    handle = {};
-  }
-  *this = {};
-}
-#endif
 
 }  // namespace aeronet

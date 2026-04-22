@@ -386,7 +386,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
 bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (state.asyncState.active) {
+  if (auto* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->active) {
     handleAsyncBodyProgress(cnxIt);
     return state.isAnyCloseRequested();
   }
@@ -837,7 +837,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   auto handle = task.release();
   assert(handle);
 
-  auto& asyncState = state.asyncState;
+  auto& asyncState = state.ensureAsyncState(_connections.asyncHandlerStatePool());
   const std::string_view bodyView = state.request._body;
   bool usesSharedDecompressedBody = false;
   if (bodyReady && !bodyView.empty()) {
@@ -849,8 +849,8 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   }
 
   asyncState.active = true;
-  asyncState.handle = handle;
-  asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+  asyncState.handle = std::move(handle);
+  asyncState.awaitReason = AsyncHandlerState::AwaitReason::None;
   asyncState.needsBody = !bodyReady;
   asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
@@ -863,7 +863,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   asyncState.pendingResponse = {};
 
   // Keep header storage stable while async work runs so header string_views stay valid
-  state.request.pinHeadStorage(state);
+  state.request.pinHeadStorage(state, _connections.asyncHandlerStatePool());
 
   // Install the postCallback function for deferred work
   asyncState.postCallback = [this, fd = cnxIt->fd()](std::coroutine_handle<> handle, std::function<void()> work) {
@@ -876,15 +876,19 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
 
 void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  auto& async = state.asyncState;
+  auto* asyncState = state.pAsyncState();
+  if (asyncState == nullptr) {
+    return;
+  }
+  auto& async = *asyncState;
   if (!async.active || !async.handle) {
     return;
   }
 
   while (async.handle && !async.handle.done()) {
-    async.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+    async.awaitReason = AsyncHandlerState::AwaitReason::None;
     async.handle.resume();
-    if (async.awaitReason != ConnectionState::AsyncHandlerState::AwaitReason::None) {
+    if (async.awaitReason != AsyncHandlerState::AwaitReason::None) {
       if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
         state.requestDrainAndClose();
       }
@@ -899,7 +903,11 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
 
 void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  auto& async = state.asyncState;
+  auto* asyncState = state.pAsyncState();
+  if (asyncState == nullptr) {
+    return;
+  }
+  auto& async = *asyncState;
   if (!async.active) {
     return;
   }
@@ -909,7 +917,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
     const BodyDecodeStatus status =
         decodeBodyIfReady(cnxIt, async.isChunked, async.expectContinue, async.maxBodyBytes, consumedBytes);
     if (status == BodyDecodeStatus::Error) {
-      state.asyncState.clear();
+      *asyncState = {};
       return;
     }
     if (status == BodyDecodeStatus::NeedMore) {
@@ -919,7 +927,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
     async.needsBody = false;
     async.consumedBytes = consumedBytes;
     if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt, true)) {
-      state.asyncState.clear();
+      *asyncState = {};
       return;
     }
     state.installAggregatedBodyBridge();
@@ -929,8 +937,8 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
     }
 
-    if (async.awaitReason == ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody) {
-      async.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+    if (async.awaitReason == AsyncHandlerState::AwaitReason::WaitingForBody) {
+      async.awaitReason = AsyncHandlerState::AwaitReason::None;
       resumeAsyncHandler(cnxIt);
       return;
     }
@@ -942,7 +950,11 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
 }
 
 bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
-  auto& async = state.asyncState;
+  auto* asyncState = state.pAsyncState();
+  if (asyncState == nullptr) {
+    return true;
+  }
+  auto& async = *asyncState;
   if (!async.usesSharedDecompressedBody) {
     return true;
   }
@@ -967,13 +979,17 @@ bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& st
 
 void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  auto& async = state.asyncState;
+  auto* asyncState = state.pAsyncState();
+  if (asyncState == nullptr) {
+    return;
+  }
+  auto& async = *asyncState;
   if (!async.handle) {
     return;
   }
 
-  auto typedHandle =
-      std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(async.handle.address());
+  auto rawHandle = async.handle.release();
+  auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(rawHandle.address());
   bool fromException = false;
   HttpResponse resp(HttpResponse::Check::No);  // do not allocate memory yet
   try {
@@ -990,7 +1006,6 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
     resp.body("Unknown error");
   }
   typedHandle.destroy();
-  async.handle = {};
   async.pendingResponse = std::move(resp);
 
   if (async.needsBody) {
@@ -1004,7 +1019,11 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
 
 void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  auto& async = state.asyncState;
+  auto* asyncState = state.pAsyncState();
+  if (asyncState == nullptr) {
+    return;
+  }
+  auto& async = *asyncState;
 
   assert(!async.needsBody);
   assert(async.pendingResponse.has_value());
@@ -1014,7 +1033,7 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
   ApplyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
                           _telemetry, false, _callbacks.middlewareMetrics);
   finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy);
-  state.asyncState.clear();
+  *asyncState = {};
 }
 #endif
 
@@ -1503,9 +1522,9 @@ void SingleHttpServer::applyPendingUpdates() {
             continue;
           }
 #endif
-          auto& asyncState = state.asyncState;
-          if (asyncState.active && asyncState.handle == cb.handle) {
-            asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::None;
+          if (auto* asyncState = state.pAsyncState();
+              asyncState != nullptr && asyncState->active && asyncState->handle == cb.handle) {
+            asyncState->awaitReason = AsyncHandlerState::AwaitReason::None;
             resumeAsyncHandler(it);
           }
           // Close connection immediately if response was sent and drain-and-close is pending.
