@@ -3114,7 +3114,7 @@ Serialize any Glaze-compatible object directly into the response body, avoiding 
 using MyPayload = std::unordered_map<std::string, std::string>;
 
 int main() {
-  MyPayload payload{{"id", "1"}, {"name", "example"}};
+  MyPayload payload{ {"id", "1"}, {"name", "example"} };
 
   HttpResponse resp;
   resp.bodyJson(payload);   // Content-Type: application/json
