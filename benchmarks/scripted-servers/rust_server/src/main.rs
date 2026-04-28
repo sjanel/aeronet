@@ -12,7 +12,7 @@ use axum::{
 };
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use hyper_util::rt::TokioIo;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -52,7 +52,7 @@ fn compute_hash(data: &str, iterations: u32) -> u64 {
 
 /// Generate random alphanumeric string
 fn random_string(length: usize) -> String {
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(length)
         .map(char::from)
