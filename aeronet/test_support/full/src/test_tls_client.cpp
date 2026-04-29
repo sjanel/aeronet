@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -215,11 +216,12 @@ std::string TlsClient::readAll() {
   }
   static constexpr std::size_t kChunkSize = 4096;
   // Maximum number of consecutive SSL_ERROR_SYSCALL+errno=0 retries before treating as EOF.
-  // On Windows, non-blocking TLS sockets can transiently return SSL_ERROR_SYSCALL with no
-  // system error before all application data has been delivered (see server-side handling in
-  // tls-transport.cpp::read()). A short pause + retry avoids premature EOF on large responses.
-  static constexpr int kMaxSyscallRetries = 5;
+  // Keep this budget fairly large to tolerate slow CI workers while reading large TLS bodies.
+  static constexpr int kMaxSyscallRetries = 50;
   int syscallRetries = 0;
+  std::size_t expectedTotalBytes = 0;
+  bool expectedTotalKnown = false;
+  bool chunkedResponse = false;
   out.reserve(kChunkSize);
 
   for (;;) {
@@ -241,7 +243,63 @@ std::string TlsClient::readAll() {
 
     if (readRet > 0) {
       syscallRetries = 0;  // Reset retry counter on successful read
-      continue;            // Successfully read data, try to read more
+
+      // If we can determine full response boundaries from headers, return as soon as
+      // we have all bytes instead of waiting for connection close.
+      if (!expectedTotalKnown) {
+        const auto headerEnd = out.find(http::DoubleCRLF);
+        if (headerEnd != std::string::npos) {
+          const std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
+          std::string_view headers(out.data(), headerEnd);
+
+          auto tePos = headers.find("Transfer-Encoding: chunked");
+          if (tePos == std::string_view::npos) {
+            tePos = headers.find("transfer-encoding: chunked");
+          }
+          chunkedResponse = (tePos != std::string_view::npos);
+
+          if (!chunkedResponse) {
+            auto clPos = headers.find("Content-Length:");
+            if (clPos == std::string_view::npos) {
+              clPos = headers.find("content-length:");
+            }
+            if (clPos != std::string_view::npos) {
+              const auto lineEnd = headers.find(http::CRLF, clPos);
+              const auto colonPos = headers.find(':', clPos);
+              if (lineEnd != std::string_view::npos && colonPos != std::string_view::npos && colonPos < lineEnd) {
+                auto valueStart = colonPos + 1;
+                while (valueStart < lineEnd && headers[valueStart] == ' ') {
+                  ++valueStart;
+                }
+                std::size_t contentLength = 0;
+                const std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
+                const auto [ptr, ec] =
+                    std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
+                if (ec == std::errc{} && ptr == lengthStr.data() + lengthStr.size()) {
+                  expectedTotalBytes = bodyStart + contentLength;
+                  expectedTotalKnown = true;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (expectedTotalKnown && out.size() >= expectedTotalBytes) {
+        return out;
+      }
+      if (chunkedResponse) {
+        const auto headerEnd = out.find(http::DoubleCRLF);
+        if (headerEnd != std::string::npos) {
+          const std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
+          std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
+          if (body.contains(http::EndChunk)) {
+            return out;
+          }
+        }
+      }
+
+      continue;  // Successfully read data, try to read more
     }
 
     // readRet <= 0: check SSL error
@@ -273,6 +331,20 @@ std::string TlsClient::readAll() {
       // (mirroring the server-side tls-transport.cpp::read() behaviour) before treating it
       // as a graceful EOF and returning the accumulated data.
       if (ERR_peek_error() == 0) {
+        if (expectedTotalKnown && out.size() >= expectedTotalBytes) {
+          break;
+        }
+        if (chunkedResponse) {
+          const auto headerEnd = out.find(http::DoubleCRLF);
+          if (headerEnd != std::string::npos) {
+            const std::size_t bodyStart = headerEnd + http::DoubleCRLF.size();
+            std::string_view body(out.data() + bodyStart, out.size() - bodyStart);
+            if (body.contains(http::EndChunk)) {
+              break;
+            }
+          }
+        }
+
         if (++syscallRetries <= kMaxSyscallRetries) {
           if (waitForSocketReady(POLLIN, std::chrono::milliseconds{100})) {
             continue;
