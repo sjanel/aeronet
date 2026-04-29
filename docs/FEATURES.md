@@ -2671,6 +2671,10 @@ WebSocket enables full-duplex, bidirectional communication between client and se
 - [x] Control frames: Ping, Pong, Close
 - [x] Close handshake with status codes and reasons
 - [x] Frame masking (required for client-to-server, rejected if missing)
+- [x] SIMD payload demasking in `ApplyMask` (AVX2/SSE2 on x86 and NEON on ARM, scalar fallback)
+  - Intent: improve throughput for large masked WebSocket frames by XORing 16-32 bytes per iteration.
+  - Public API changes: none.
+  - Tests: `aeronet/websocket/test/websocket-frame_test.cpp` (`ApplyMaskLargeData`, `ApplyMaskLargeDataNonMultipleVectorWidth`, `ApplyMaskReversible`).
 - [x] Configurable maximum message size
 - [x] Protocol subprotocol negotiation (Sec-WebSocket-Protocol)
 - [x] permessage-deflate compression (RFC 7692)

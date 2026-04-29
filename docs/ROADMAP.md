@@ -38,7 +38,7 @@
 
 #### Low priority / specialized
 
-- **WebSocket frame demasking: full SIMD XOR** - SSE4.2 is used for mask detection, but the actual XOR demasking loop is scalar. Vectorize the 4-byte-repeating XOR with SSE2/AVX2 to process 16–32 bytes per iteration → 2–4× throughput for large binary WebSocket frames.
+- ~~**WebSocket frame demasking: full SIMD XOR** - SSE4.2 is used for mask detection, but the actual XOR demasking loop is scalar. Vectorize the 4-byte-repeating XOR with SSE2/AVX2 to process 16-32 bytes per iteration → 2-4× throughput for large binary WebSocket frames.~~ ✔ Implemented in `websocket::ApplyMask` (AVX2/SSE2/NEON paths with scalar tail fallback).
 - **Pre-computed static file response headers** - response headers (`Content-Type`, `Content-Length`, `ETag`, `Last-Modified`) are formatted per request for the same file. Cache fully‑formed header bytes alongside file metadata; invalidate on stat change.
 - `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
