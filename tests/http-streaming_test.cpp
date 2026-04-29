@@ -390,7 +390,7 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
 
   // Build large unique chunks so the encoder produces output for intermediate writes,
   // exercising the _compressedBuffer reuse path in writeBody().
-  constexpr std::size_t kChunkSize = static_cast<const std::size_t>(256 * 1024);
+  constexpr std::size_t kChunkSize = static_cast<std::size_t>(256 * 1024);
   constexpr int kNumChunks = 4;
   std::string chunk(kChunkSize, '\0');
   for (std::size_t idx = 0; idx < kChunkSize; ++idx) {
