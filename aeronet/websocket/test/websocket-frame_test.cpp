@@ -422,6 +422,23 @@ TEST_F(WebSocketFrameTest, ApplyMaskLargeData) {
   EXPECT_EQ(std::memcmp(data.data(), backup.data(), 1024), 0);
 }
 
+TEST_F(WebSocketFrameTest, ApplyMaskLargeDataNonMultipleVectorWidth) {
+  // Covers SIMD path plus scalar tail processing.
+  vector<std::byte> data(4099);
+  for (uint32_t idx = 0; idx < data.size(); ++idx) {
+    data[idx] = static_cast<std::byte>(idx & 0xFF);
+  }
+
+  const auto original = data;
+  MaskingKey mask = MakeMask(0xDE, 0xAD, 0xBE, 0xEF);
+
+  ApplyMask(data, mask);
+  EXPECT_NE(std::memcmp(data.data(), original.data(), data.size()), 0);
+
+  ApplyMask(data, mask);
+  EXPECT_EQ(std::memcmp(data.data(), original.data(), data.size()), 0);
+}
+
 TEST_F(WebSocketFrameTest, ApplyMaskEmpty) {
   std::span<std::byte> empty;
   MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
