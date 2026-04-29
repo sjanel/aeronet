@@ -7,8 +7,15 @@
 #include <span>
 #include <string_view>
 
-#ifdef __SSE2__
-#include <emmintrin.h>
+// On x86-64, always include the full intrinsic header so both SSE2 and AVX2
+// code paths can be compiled.  The AVX2 path is gated by a target attribute
+// and selected at runtime via __builtin_cpu_supports, so -mavx2 is NOT needed
+// at the TU level.
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
 #endif
@@ -208,27 +215,77 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   return result;
 }
 
-void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
-  // XOR each byte with the repeating 4-byte masking key.
-  // Uses 128-bit SIMD (SSE2 on x86_64, NEON on aarch64), with a 64-bit fallback.
-  // ApplyMask is always called starting at mask position 0, so the broadcast
-  // of the 32-bit key into wider registers needs no rotation.
-  const std::size_t sz = data.size();
-  auto* bytes = data.data();
-  std::size_t idx = 0;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+namespace detail {
 
-#ifdef __SSE2__
-  if (sz >= 16) {
-    // Broadcast 4-byte key into all four 32-bit lanes
+// AVX2 path: 32-byte XOR loop with SSE2 residue for 16-byte remainder.
+// The target attribute makes GCC/Clang emit AVX2 instructions for this
+// function only, without requiring -mavx2 for the whole TU.
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+std::size_t ApplyMaskAvx2(std::byte* bytes, std::size_t sz, MaskingKey maskingKey) {
+  std::size_t idx = 0;
+  if (sz >= 32) {
+    const __m256i mask256 = _mm256_set1_epi32(static_cast<int>(maskingKey));
+    for (; idx + 32 <= sz; idx += 32) {
+      __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(bytes + idx));
+      _mm256_storeu_si256(reinterpret_cast<__m256i*>(bytes + idx), _mm256_xor_si256(chunk, mask256));
+    }
+  }
+  // Handle 16-byte remainder with SSE2 (always available on x86-64)
+  if (idx + 16 <= sz) {
     const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
     for (; idx + 16 <= sz; idx += 16) {
       __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
       _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
     }
   }
+  return idx;
+}
+
+std::size_t ApplyMaskSse2(std::byte* bytes, std::size_t sz, MaskingKey maskingKey) {
+  std::size_t idx = 0;
+  if (sz >= 16) {
+    const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
+    for (; idx + 16 <= sz; idx += 16) {
+      __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
+    }
+  }
+  return idx;
+}
+
+}  // namespace detail
+#endif
+
+void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
+  // XOR each byte with the repeating 4-byte masking key.
+  // On x86-64 the AVX2 path is selected at runtime via CPUID; the SSE2 path
+  // is the baseline fallback.  ARM uses NEON unconditionally.
+  // ApplyMask is always called starting at mask position 0, so the broadcast
+  // of the 32-bit key into wider registers needs no rotation.
+  const std::size_t sz = data.size();
+  auto* bytes = data.data();
+  std::size_t idx = 0;
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(__GNUC__) || defined(__clang__)
+  static const bool kHasAvx2 = __builtin_cpu_supports("avx2");
+#else
+  static const bool kHasAvx2 = [] {
+    int cpuInfo[4];
+    __cpuidex(cpuInfo, 7, 0);
+    return (cpuInfo[1] & (1 << 5)) != 0;
+  }();
+#endif
+  if (kHasAvx2) {
+    idx = detail::ApplyMaskAvx2(bytes, sz, maskingKey);
+  } else {
+    idx = detail::ApplyMaskSse2(bytes, sz, maskingKey);
+  }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
   if (sz >= 16) {
-    // Broadcast 4-byte key into all four 32-bit lanes
     const uint8x16_t mask128 = vreinterpretq_u8_u32(vdupq_n_u32(maskingKey));
     for (; idx + 16 <= sz; idx += 16) {
       uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(bytes + idx));
@@ -248,7 +305,7 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
   }
 #endif
 
-  // Trailing bytes (at most 15 for SIMD paths, 7 for 64-bit path)
+  // Trailing bytes (at most 31 for AVX2, 15 for SSE2/NEON, 7 for scalar)
   for (; idx < sz; ++idx) {
     bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3) * 8)) & 0xFF);
   }
