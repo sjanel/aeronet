@@ -1,3 +1,5 @@
+#include "aeronet/config-loader.hpp"
+
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -7,11 +9,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "aeronet/aeronet-config.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/multi-http-server.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 
 namespace aeronet {
@@ -1262,7 +1266,7 @@ TEST(ServerConfigDumpTest, MultiHttpServerMovedFromDumpConfigThrows) {
 
   MultiHttpServer moved(std::move(server));
   // server is now empty (moved-from)
-  EXPECT_THROW((void)server.dumpConfig(), std::logic_error);
+  EXPECT_THROW((void)server.dumpConfig(), std::logic_error);  // NOLINT(bugprone-use-after-move)
   EXPECT_THROW(server.saveConfig(tmpDir / "should_not_exist.json"), std::logic_error);
 }
 

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 

@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 K6_SCENARIOS: Dict[str, str] = {
     "echo-small": "k6/ws_echo_small.js",
     "echo-medium": "k6/ws_echo_medium.js",
+    "echo-large": "k6/ws_echo_large.js",
     "mix": "k6/ws_mix_text_binary.js",
     "ping-pong": "k6/ws_ping_pong.js",
     "churn": "k6/ws_churn.js",
@@ -225,6 +226,63 @@ class WsBenchmarkRunner:
         for name in list(self.server_processes):
             self._stop_server(name)
 
+    def _server_log_path(self, name: str) -> Path:
+        return self.logs_dir / f"{name}_server.log"
+
+    @staticmethod
+    def _tail_file(path: Path, max_lines: int = 80) -> List[str]:
+        if not path.is_file():
+            return []
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fp:
+                lines = fp.read().splitlines()
+            if not lines:
+                return []
+            return lines[-max_lines:]
+        except OSError:
+            return []
+
+    @staticmethod
+    def _interesting_k6_lines(output: str, max_lines: int = 20) -> List[str]:
+        if not output.strip():
+            return []
+        interesting: List[str] = []
+        pattern = re.compile(r"(warn|error|fail|panic|exception|timeout|refused|status\s*!=\s*101|status\s*===\s*101)", re.IGNORECASE)
+        for line in output.splitlines():
+            if pattern.search(line):
+                interesting.append(line)
+        if interesting:
+            return interesting[-max_lines:]
+        return output.splitlines()[-max_lines:]
+
+    def _print_k6_error_context(self, server: str, scenario: str, result: RunResult) -> None:
+        print("  --- diagnostics begin ---")
+        checks = result.metrics.get("checks", {})
+        if isinstance(checks, dict):
+            passes = checks.get("passes", 0)
+            fails = checks.get("fails", 0)
+            value = checks.get("value", 0)
+            if isinstance(passes, (int, float)) and isinstance(fails, (int, float)):
+                print(
+                    "  checks summary: "
+                    f"passes={int(passes)}, fails={int(fails)}, success={float(value):.2f}%"
+                )
+
+        k6_log_path = self.logs_dir / f"k6_{server}_{scenario}.log"
+        print(f"  k6 raw log: {k6_log_path}")
+        for line in self._interesting_k6_lines(result.raw_output):
+            print(f"    k6> {line}")
+
+        server_log = self._server_log_path(server)
+        print(f"  server log tail: {server_log}")
+        tail_lines = self._tail_file(server_log)
+        if tail_lines:
+            for line in tail_lines:
+                print(f"    srv> {line}")
+        else:
+            print("    srv> <no server log output>")
+        print("  --- diagnostics end ---")
+
     # ----------------------- k6 execution --------------------------------- #
 
     def _run_k6(self, server: str, scenario: str) -> RunResult:
@@ -253,7 +311,12 @@ class WsBenchmarkRunner:
             "DURATION": self.duration,
             "SESSION_DURATION_MS": str(self.session_duration_ms),
         })
-        if self.pipeline_depth > 0:
+        if scenario == "echo-large":
+            # Large (64 KB) payloads in tight pipeline mode can create extreme
+            # allocation pressure and make results unstable. Keep this scenario
+            # in timer mode unless explicitly overridden by env.
+            base_env["PIPELINE_DEPTH"] = "0"
+        elif self.pipeline_depth > 0:
             base_env["PIPELINE_DEPTH"] = str(self.pipeline_depth)
 
         # Limit Go threads per instance so k6 doesn't steal server CPU
@@ -272,6 +335,7 @@ class WsBenchmarkRunner:
             env["VUS"] = str(vus_per)
             cmd = [
                 "k6", "run",
+                "--address", "127.0.0.1:0",
                 "--summary-export", str(json_out),
                 "--quiet",
                 str(script),
@@ -297,16 +361,19 @@ class WsBenchmarkRunner:
         # Wait for all instances to finish
         outputs: List[str] = []
         all_success = True
-        for proc in procs:
+        for idx, proc in enumerate(procs):
             try:
                 stdout, stderr = proc.communicate(timeout=300)
-                outputs.append(stdout.decode(errors="replace") + stderr.decode(errors="replace"))
+                combined_output = stdout.decode(errors="replace") + stderr.decode(errors="replace")
+                outputs.append(
+                    f"=== k6 instance {idx} (exit={proc.returncode}) ===\n{combined_output}".rstrip()
+                )
                 if proc.returncode != 0:
                     all_success = False
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-                outputs.append("k6 instance timed out after 300s")
+                outputs.append(f"=== k6 instance {idx} (exit=timeout) ===\nk6 instance timed out after 300s")
                 all_success = False
 
         # Aggregate results from all instances
@@ -323,12 +390,19 @@ class WsBenchmarkRunner:
             except OSError:
                 pass
 
+        raw_log_path = self.logs_dir / f"k6_{server}_{scenario}.log"
+        try:
+            with open(raw_log_path, "w", encoding="utf-8") as fp:
+                fp.write("\n\n".join(outputs) if outputs else "<no k6 output>\n")
+        except OSError:
+            pass
+
         return RunResult(
             scenario=scenario,
             server=server,
             tool="k6",
             metrics=metrics,
-            raw_output="\n".join(outputs),
+            raw_output="\n\n".join(outputs),
             success=all_success,
         )
 
@@ -646,6 +720,22 @@ class WsBenchmarkRunner:
                 if scenario in COMPRESSED_SCENARIOS and server not in COMPRESSION_CAPABLE_SERVERS:
                     print(f"  Skipping k6: {scenario} ({server} does not support WS compression)")
                     continue
+
+                proc = self.server_processes.get(server)
+                if proc is not None and proc.poll() is not None:
+                    print(
+                        f"  ERROR: {server} process exited unexpectedly before scenario "
+                        f"'{scenario}' (exit={proc.returncode})"
+                    )
+                    self._print_k6_error_context(
+                        server,
+                        scenario,
+                        RunResult(scenario=scenario, server=server, tool="k6", success=False),
+                    )
+                    if server == "aeronet":
+                        self._aeronet_errors_found = True
+                    break
+
                 if idx > 0:
                     time.sleep(2)  # Cooldown between scenarios
                 print(f"  Running k6: {scenario} ...", end=" ", flush=True)
@@ -665,6 +755,9 @@ class WsBenchmarkRunner:
                         parts.append(f"fails={int(fails)}")
                     print(", ".join(parts) if parts else "OK")
 
+                    if isinstance(fails, (int, float)) and fails > 0:
+                        self._print_k6_error_context(server, scenario, result)
+
                     # Check for aeronet errors
                     if server == "aeronet" and isinstance(fails, (int, float)) and fails > 0:
                         self._aeronet_errors_found = True
@@ -674,6 +767,7 @@ class WsBenchmarkRunner:
                         )
                 else:
                     print("FAILED")
+                    self._print_k6_error_context(server, scenario, result)
                     if server == "aeronet":
                         self._aeronet_errors_found = True
                         print(
