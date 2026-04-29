@@ -114,7 +114,7 @@ std::chrono::milliseconds ParseDuration(std::string_view durationStr) {
       throw std::invalid_argument("Cannot parse time duration");
     }
 
-    int64_t timeAmount;
+    int64_t timeAmount{};
     [[maybe_unused]] const auto [ptr, err] = std::from_chars(intFirst, beg, timeAmount);
     assert(err == std::errc() && ptr == beg);
 
