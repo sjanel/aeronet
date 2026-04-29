@@ -165,6 +165,15 @@ if(AERONET_ENABLE_HTTP2)
   set_target_properties(aeronet-bench-internal-http2-flow-control PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
+# WebSocket micro-benchmarks (guarded by WebSocket feature flag)
+if(AERONET_ENABLE_WEBSOCKET)
+  set(AERONET_BENCH_INTERNAL_WS_MASK ${AERONET_BENCH_ROOT}/internal/websocket-mask_bench.cpp)
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-mask ${AERONET_BENCH_INTERNAL_WS_MASK})
+  target_link_libraries(aeronet-bench-internal-websocket-mask PRIVATE aeronet_websocket)
+  set_target_properties(aeronet-bench-internal-websocket-mask PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
 AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
 

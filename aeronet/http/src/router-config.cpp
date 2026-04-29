@@ -1,6 +1,7 @@
 #include "aeronet/router-config.hpp"
 
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
