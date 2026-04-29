@@ -7,12 +7,11 @@
 
 #include "aeronet/toupperlower.hpp"
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
-#include <emmintrin.h>
-#endif
-
-#ifdef __AVX2__
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #endif
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -20,6 +19,22 @@
 #endif
 
 namespace aeronet {
+
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+inline bool HasAvx2ForToLower() { return __builtin_cpu_supports("avx2"); }
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+inline bool HasAvx2ForToLower() {
+  int cpuInfo[4];
+  __cpuidex(cpuInfo, 7, 0);
+  return (cpuInfo[1] & (1 << 5)) != 0;
+}
+#else
+inline bool HasAvx2ForToLower() { return false; }
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define AERONET_HAS_ASCII_LOWER_MASK4 1
+#endif
 
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
@@ -43,7 +58,7 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
     return BytewiseLower(val);
   }
 
-#if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
   const auto input = _mm_cvtsi64_si128(static_cast<long long>(val));
   const auto aMinus1 = _mm_set1_epi8(static_cast<char>('A' - 1));
   const auto zPlus1 = _mm_set1_epi8(static_cast<char>('Z' + 1));
@@ -68,7 +83,10 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
 #endif
 }
 
-#ifdef __AVX2__
+#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
 inline void AsciiLowerMask4(const uint64_t* src, uint64_t* dst) {
   const auto input = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
   const auto aMinus1 = _mm256_set1_epi8(static_cast<char>('A' - 1));
@@ -81,7 +99,12 @@ inline void AsciiLowerMask4(const uint64_t* src, uint64_t* dst) {
   _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst), lowered);
 }
 
-inline void AsciiLowerMask4(uint64_t* v) { AsciiLowerMask4(static_cast<const uint64_t*>(v), v); }
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+inline void AsciiLowerMask4(uint64_t* val) {
+  AsciiLowerMask4(static_cast<const uint64_t*>(val), val);
+}
 #endif
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -97,7 +120,7 @@ inline void AsciiLowerMask2(const uint64_t* src, uint64_t* dst) {
   vst1q_u8(reinterpret_cast<uint8_t*>(dst), lowered);
 }
 
-inline void AsciiLowerMask2(uint64_t* v) { AsciiLowerMask2(static_cast<const uint64_t*>(v), v); }
+inline void AsciiLowerMask2(uint64_t* val) { AsciiLowerMask2(static_cast<const uint64_t*>(val), val); }
 #endif
 
 // Inplace optimized tolower for ASCII characters
@@ -127,11 +150,13 @@ constexpr void tolower(char* buf, std::size_t len) {
     buf[charPos] = tolower(buf[charPos]);
   }
 
-#ifdef __AVX2__
-  // Process 32 bytes at a time
-  for (; charPos + 32 <= len; charPos += 32) {
-    auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
-    AsciiLowerMask4(chunk);
+#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+  if (HasAvx2ForToLower()) {
+    // Process 32 bytes at a time when AVX2 is available.
+    for (; charPos + 32 <= len; charPos += 32) {
+      auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);
+      AsciiLowerMask4(chunk);
+    }
   }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
   // Process 16 bytes at a time
@@ -209,6 +234,10 @@ constexpr void tolower_n(const char* from, std::size_t len, char* to) {
 
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
+
+#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+#undef AERONET_HAS_ASCII_LOWER_MASK4
 #endif
 
 }  // namespace aeronet

@@ -16,6 +16,11 @@ if(NOT TARGET benchmark)
     URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
     URL_HASH SHA256=9631341c82bac4a288bef951f8b26b41f69021794184ece969f8473977eaa340
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    # google-benchmark v1.9.5 MaybeReenterWithoutASLR() calls execv() in a loop
+    # when personality(ADDR_NO_RANDOMIZE) appears to succeed but the kernel/AppArmor
+    # prevents it from taking effect. This neutralizes the execv call.
+    # Tracked in this issue: https://github.com/google/benchmark/issues/2184
+    PATCH_COMMAND sh ${CMAKE_CURRENT_LIST_DIR}/patches/disable-benchmark-aslr-reexec.sh
   )
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(google_benchmark)

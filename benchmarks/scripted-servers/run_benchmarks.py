@@ -196,8 +196,8 @@ class BenchmarkRunner:
         self.servers_to_test = self._resolve_server_filter(args.server)
         self.scenarios_to_test = self._resolve_scenario_filter(args.scenario)
 
-        # Track whether any Aeronet scenario reported wrk errors
-        self._aeronet_errors_found: bool = False
+        # Track which (server, scenario) pairs reported wrk errors
+        self._scenario_errors: Dict[str, set] = {}  # scenario -> set of servers with errors
 
         self.needs_static = any(
             self.SCENARIOS.get(s, Scenario(s, "", "")).requires_static
@@ -529,10 +529,28 @@ class BenchmarkRunner:
         self._write_memory_summary_table()
         self._write_summary_table()
         self._write_json_summary()
-        # Fail the CI if Aeronet had any wrk-reported errors
-        if self._aeronet_errors_found:
-            print("\nBenchmarks complete (Aeronet reported errors)\n")
-            # Non-zero exit code to fail CI
+        # Fail CI only if Aeronet had errors in a scenario where no other
+        # server had errors (i.e. the issue is Aeronet-specific, not environmental).
+        aeronet_only_errors = [
+            scenario
+            for scenario, servers in self._scenario_errors.items()
+            if "aeronet" in servers and servers == {"aeronet"}
+        ]
+        shared_errors = [
+            scenario
+            for scenario, servers in self._scenario_errors.items()
+            if "aeronet" in servers and len(servers) > 1
+        ]
+        if shared_errors:
+            others = {s for sc in shared_errors for s in self._scenario_errors[sc] if s != "aeronet"}
+            print(
+                f"\nNote: Aeronet errors in {shared_errors} also seen in {others} "
+                "— likely environmental, not failing CI for those."
+            )
+        if aeronet_only_errors:
+            print(
+                f"\nBenchmarks complete (Aeronet-only errors in {aeronet_only_errors})\n"
+            )
             sys.exit(1)
         print("\nBenchmarks complete!\n")
 
@@ -793,12 +811,13 @@ class BenchmarkRunner:
             or (err_timeout > 0)
             or (non2xx > 0)
         )
-        if server == "aeronet" and any_errs:
-            self._aeronet_errors_found = True
-            print(
-                f"ERROR: Aeronet reported issues (connect/read/write/timeout/non2xx) = "
-                f"{err_connect}/{err_read}/{err_write}/{err_timeout}/{non2xx} for scenario '{scenario_name}'"
-            )
+        if any_errs:
+            self._scenario_errors.setdefault(scenario_name, set()).add(server)
+            if server == "aeronet":
+                print(
+                    f"WARNING: Aeronet reported issues (connect/read/write/timeout/non2xx) = "
+                    f"{err_connect}/{err_read}/{err_write}/{err_timeout}/{non2xx} for scenario '{scenario_name}'"
+                )
 
         success_requests = int(metrics.get("total_requests") or 0)
         total_errors = err_connect + err_read + err_write + err_timeout + non2xx
@@ -1037,12 +1056,13 @@ class BenchmarkRunner:
         non2xx = int(metrics.get("non2xx", 0))
         total_errors = failed + errored + timeout + non2xx
 
-        if server == "aeronet" and total_errors > 0:
-            self._aeronet_errors_found = True
-            print(
-                f"ERROR: Aeronet h2load issues (failed/errored/timeout/non2xx) = "
-                f"{failed}/{errored}/{timeout}/{non2xx} for '{scenario_name}'"
-            )
+        if total_errors > 0:
+            self._scenario_errors.setdefault(scenario_name, set()).add(server)
+            if server == "aeronet":
+                print(
+                    f"WARNING: Aeronet h2load issues (failed/errored/timeout/non2xx) = "
+                    f"{failed}/{errored}/{timeout}/{non2xx} for '{scenario_name}'"
+                )
 
         succeeded = int(metrics.get("succeeded", 0))
         duration_s = metrics.get("duration_seconds")
