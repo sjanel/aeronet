@@ -68,7 +68,7 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
 #endif
 }
 
-#if defined(__AVX2__)
+#ifdef __AVX2__
 inline void AsciiLowerMask4(const uint64_t* src, uint64_t* dst) {
   const auto input = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src));
   const auto aMinus1 = _mm256_set1_epi8(static_cast<char>('A' - 1));
@@ -127,7 +127,7 @@ constexpr void tolower(char* buf, std::size_t len) {
     buf[charPos] = tolower(buf[charPos]);
   }
 
-#if defined(__AVX2__)
+#ifdef __AVX2__
   // Process 32 bytes at a time
   for (; charPos + 32 <= len; charPos += 32) {
     auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);

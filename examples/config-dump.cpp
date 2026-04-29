@@ -1,4 +1,4 @@
-#include <aeronet/aeronet-config.hpp>
+#include <aeronet/aeronet.hpp>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
