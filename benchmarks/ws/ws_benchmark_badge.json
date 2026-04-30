@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "label": "ws aeronet peak msg/s",
+  "message": "71k msg/s",
+  "color": "yellowgreen",
+  "labelColor": "#0f172a",
+  "namedLogo": "speedtest",
+  "cacheSeconds": 3600
+}

@@ -1,0 +1,106 @@
+{
+  "benchmark_type": "websocket",
+  "tool": "k6",
+  "threads": 2,
+  "vus": 50,
+  "duration": "30s",
+  "warmup": "5s",
+  "servers": [
+    "aeronet",
+    "uwebsockets",
+    "drogon"
+  ],
+  "scenarios": [
+    "echo-small",
+    "echo-medium",
+    "echo-large",
+    "mix",
+    "ping-pong",
+    "churn",
+    "compression"
+  ],
+  "results": {
+    "echo-small": {
+      "rps": {
+        "aeronet": 65377.9,
+        "uwebsockets": 71891.0,
+        "drogon": 69465.3
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "echo-medium": {
+      "rps": {
+        "aeronet": 50407.0,
+        "uwebsockets": 52422.2,
+        "drogon": 48066.0
+      },
+      "latency": {
+        "aeronet": "3.000ms",
+        "uwebsockets": "3.000ms",
+        "drogon": "3.000ms"
+      }
+    },
+    "echo-large": {
+      "rps": {
+        "aeronet": 996.3,
+        "uwebsockets": 995.9,
+        "drogon": 995.6
+      },
+      "latency": {
+        "aeronet": "4.000ms",
+        "uwebsockets": "4.000ms",
+        "drogon": "4.000ms"
+      }
+    },
+    "mix": {
+      "rps": {
+        "aeronet": 65402.5,
+        "uwebsockets": 64617.0,
+        "drogon": 64837.0
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "ping-pong": {
+      "rps": {
+        "aeronet": 70721.7,
+        "uwebsockets": 75620.0,
+        "drogon": 74617.9
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms"
+      }
+    },
+    "churn": {
+      "rps": {
+        "aeronet": 7816.3,
+        "uwebsockets": 7843.1,
+        "drogon": 7358.4
+      },
+      "latency": {
+        "aeronet": "12.000ms",
+        "uwebsockets": "12.000ms",
+        "drogon": "12.000ms"
+      }
+    },
+    "compression": {
+      "rps": {
+        "aeronet": 53188.2,
+        "uwebsockets": 54993.8
+      },
+      "latency": {
+        "aeronet": "3.000ms",
+        "uwebsockets": "3.000ms"
+      }
+    }
+  }
+}
