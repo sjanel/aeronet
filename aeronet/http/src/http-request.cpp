@@ -13,6 +13,8 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/async-handler-state.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
@@ -88,8 +90,8 @@ bool HttpRequest::hasMoreBody() const {
     // having more body so loops using hasMoreBody()+readBodyAsync() will
     // execute and suspend correctly.
     assert(_ownerState != nullptr);
-    const auto& async = _ownerState->asyncState;
-    return async.active && async.needsBody;
+    const auto* async = _ownerState->asyncState.get();
+    return async != nullptr && async->active && async->needsBody;
 #else
     return false;
 #endif
@@ -338,14 +340,15 @@ void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pa
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void HttpRequest::pinHeadStorage(ConnectionState& state) {
+void HttpRequest::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool) {
   if (_headPinned || _headSpanSize == 0) {
     return;
   }
   const char* oldBase = state.inBuffer.data();
-  state.asyncState.headBuffer.assign(oldBase, _headSpanSize);
+  auto& asyncState = state.ensureAsyncState(asyncStatePool);
+  asyncState.headBuffer.assign(oldBase, _headSpanSize);
 
-  const auto remapPtr = [newBase = state.asyncState.headBuffer.data(), oldBase,
+  const auto remapPtr = [newBase = asyncState.headBuffer.data(), oldBase,
                          oldLimit = oldBase + _headSpanSize](const char* ptr) -> const char* {
     if (ptr < oldBase || ptr >= oldLimit) {
       return ptr;
@@ -405,8 +408,10 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void HttpRequest::markAwaitingBody() const noexcept {
-  assert(_ownerState->asyncState.active);
-  _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
+  auto* asyncState = _ownerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
 }
 
 void HttpRequest::markAwaitingCallback() const noexcept {
@@ -414,8 +419,10 @@ void HttpRequest::markAwaitingCallback() const noexcept {
     *_h2SuspendedFlag = true;
     return;
   }
-  assert(_ownerState->asyncState.active);
-  _ownerState->asyncState.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForCallback;
+  auto* asyncState = _ownerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
 void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
@@ -423,9 +430,11 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
     _h2PostCallback(handle, std::move(work));
     return;
   }
-  assert(_ownerState->asyncState.active);
-  assert(_ownerState->asyncState.postCallback);
-  _ownerState->asyncState.postCallback(handle, std::move(work));
+  auto* asyncState = _ownerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  assert(asyncState->postCallback);
+  asyncState->postCallback(handle, std::move(work));
 }
 #endif
 

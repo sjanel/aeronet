@@ -1496,6 +1496,16 @@ TEST(ConfigLoaderTest, RouterConfigValidateDefaultIsOk) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
+TEST(ConfigLoaderTest, RouterConfigValidateInvalidValues) {
+  RouterConfig cfg;
+
+  cfg.trailingSlashPolicy = static_cast<RouterConfig::TrailingSlashPolicy>(999);  // Invalid value
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.trailingSlashPolicy = static_cast<RouterConfig::TrailingSlashPolicy>(-1);  // Invalid value
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
 TEST(ConfigLoaderTest, RouterConfigValidateAllPoliciesOk) {
   RouterConfig cfg;
   cfg.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Strict;
