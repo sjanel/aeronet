@@ -238,6 +238,7 @@ Behavior summary
 - [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
 - [x] Configurable accept batch size (`HttpServerConfig::maxAcceptBatchSize`, default 64). Limits how many new connections are accepted per event-loop iteration to prevent connection-burst starvation of existing connections. Set to `0` for unlimited. Builder: `withMaxAcceptBatchSize(uint32_t)`.
+- [x] Adaptive event-loop poll timeout (`HttpServerConfig::pollIntervalMinFactor` / `pollIntervalMaxFactor`, default `1.0F` / `1.0F`). Bounds are derived from `pollInterval`; saturated polls switch to the minimum factor while repeated idle polls exponentially back off up to the maximum factor. Production cadence: backoff after 4 consecutive idle polls with a 2x growth factor. Builder: `withPollIntervalFactors(minFactor, maxFactor)`. Tests: `aeronet/sys/test/event-loop_test.cpp` and `aeronet/objects/test/http-server-config_test.cpp`.
 - [x] MSG_ZEROCOPY for large payload sends *(Linux-only)*, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
   Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:

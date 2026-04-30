@@ -10,6 +10,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"
@@ -25,7 +26,6 @@
 #include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -69,7 +69,14 @@ class LifecycleTrackerGuard {
  private:
   std::weak_ptr<ServerLifecycleTracker> _tracker;
 };
+
 }  // namespace
+
+PollTimeoutPolicy SingleHttpServer::MakePollTimeoutPolicy(const HttpServerConfig& config) {
+  return PollTimeoutPolicy{.baseTimeout = config.pollInterval,
+                           .minFactor = config.pollIntervalMinFactor,
+                           .maxFactor = config.pollIntervalMaxFactor};
+}
 
 SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
@@ -91,7 +98,7 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerC
     : _config(std::move(config)),
       _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(_config.pollInterval),
+      _eventLoop(MakePollTimeoutPolicy(_config)),
       _router(std::move(routerConfig)),
       _telemetry(_config.telemetry) {
   initListener();
@@ -101,7 +108,7 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
     : _config(std::move(cfg)),
       _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(_config.pollInterval),
+      _eventLoop(MakePollTimeoutPolicy(_config)),
       _router(std::move(router)),
       _telemetry(_config.telemetry) {
   initListener();
@@ -313,7 +320,7 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #ifdef AERONET_MACOS
     }
 #endif
-    _eventLoop = EventLoop(_config.pollInterval);
+    _eventLoop = EventLoop(MakePollTimeoutPolicy(_config));
   }
 
 #ifdef AERONET_ENABLE_OPENSSL

@@ -100,7 +100,7 @@ constexpr int sherwood_v8_constants<T>::num_jump_distances;
 template<typename T>
 constexpr size_t sherwood_v8_constants<T>::jump_distances[num_jump_distances];
 
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4624) // 'ska::detailv8::sherwood_v8_block<T,BlockSize>': destructor was implicitly defined as deleted
 #endif
@@ -142,7 +142,7 @@ struct sherwood_v8_block
     }
 };
 
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #pragma warning(pop)
 #endif
 
