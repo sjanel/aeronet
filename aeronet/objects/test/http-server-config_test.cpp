@@ -263,6 +263,49 @@ TEST(HttpServerConfigTest, TooLargePollIntervalValueThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpServerConfigTest, AdaptivePollTimeoutValidPolicy) {
+  HttpServerConfig config;
+  config.withPollInterval(std::chrono::milliseconds{10}).withPollIntervalFactors(0.0F, 8.0F);
+
+  EXPECT_EQ(config.pollIntervalMinFactor, 0.0F);
+  EXPECT_EQ(config.pollIntervalMaxFactor, 8.0F);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, AdaptivePollTimeoutValidationRejectsInvalidPolicy) {
+  {
+    HttpServerConfig config;
+    config.withPollIntervalFactors(-0.1F, 1.0F);
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+  {
+    HttpServerConfig config;
+    config.withPollIntervalFactors(1.1F, 2.0F);
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+  {
+    HttpServerConfig config;
+    config.withPollIntervalFactors(0.5F, 0.9F);
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+  {
+    HttpServerConfig config;
+    config.withPollIntervalFactors(std::numeric_limits<float>::quiet_NaN(), 2.0F);
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+  {
+    HttpServerConfig config;
+    config.withPollIntervalFactors(0.0F, std::numeric_limits<float>::infinity());
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+  {
+    HttpServerConfig config;
+    config.withPollInterval(std::chrono::milliseconds{std::numeric_limits<int>::max() / 2})
+        .withPollIntervalFactors(0.0F, 3.0F);
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+  }
+}
+
 TEST(HttpServerConfigTest, HeaderBodyLimits) {
   HttpServerConfig cfg;
   cfg.maxHeaderBytes = 10;

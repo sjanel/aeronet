@@ -1456,7 +1456,7 @@ void SingleHttpServer::applyPendingUpdates() {
 
     // Reinitialize components dependent on config values.
     _compressionState.selector = EncodingSelector(_config.compression);
-    _eventLoop.updatePollTimeout(_config.pollInterval);
+    _eventLoop.updatePollTimeoutPolicy(MakePollTimeoutPolicy(_config));
     updateMaintenanceTimer();
     registerBuiltInProbes();
     needsClamp = true;

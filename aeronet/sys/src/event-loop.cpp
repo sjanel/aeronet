@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -22,6 +21,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/event.hpp"
@@ -29,7 +29,6 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
-#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
@@ -124,10 +123,11 @@ EventBmp PollReventsToEventBmp(short revents) {
 
 // ---- Construction / move / destruction ----
 
-EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
+EventLoop::EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity)
     : _nbAllocatedEvents(std::max(1U, initialCapacity)),
-      _pollTimeoutMs(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count())),
+      _timeout(timeoutPolicy),
       _pEvents(std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * NativeEventSize())) {
+  timeoutPolicy.validate();
   if (_pEvents == nullptr) {
     throw std::bad_alloc();
   }
@@ -164,17 +164,16 @@ EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");
   }
-
-#ifndef AERONET_WINDOWS
-  log::debug("EventLoop fd # {} opened", static_cast<intptr_t>(_baseFd.fd()));
-#else
+#ifdef AERONET_WINDOWS
   log::debug("EventLoop WSAPoll initialized (capacity={})", _nbAllocatedEvents);
+#else
+  log::debug("EventLoop fd # {} opened", static_cast<intptr_t>(_baseFd.fd()));
 #endif
 }
 
 EventLoop::EventLoop(EventLoop&& rhs) noexcept
     : _nbAllocatedEvents(std::exchange(rhs._nbAllocatedEvents, 0)),
-      _pollTimeoutMs(rhs._pollTimeoutMs),
+      _timeout(std::move(rhs._timeout)),
       _baseFd(std::move(rhs._baseFd)),
       _pEvents(std::exchange(rhs._pEvents, nullptr))
 #ifdef AERONET_WINDOWS
@@ -193,7 +192,7 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 #endif
 
     _nbAllocatedEvents = std::exchange(rhs._nbAllocatedEvents, 0);
-    _pollTimeoutMs = rhs._pollTimeoutMs;
+    _timeout = std::move(rhs._timeout);
     _baseFd = std::move(rhs._baseFd);
     _pEvents = std::exchange(rhs._pEvents, nullptr);
 #ifdef AERONET_WINDOWS
@@ -348,20 +347,20 @@ void EventLoop::del(NativeHandle fd) {
 // ---- poll ----
 
 std::span<const EventLoop::EventFd> EventLoop::poll() {
-#ifdef AERONET_POSIX
   const uint32_t capacityBeforePoll = _nbAllocatedEvents;
-#endif
 
 #ifdef AERONET_LINUX
   auto* epollEvents = static_cast<epoll_event*>(_pEvents);
-  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), epollEvents, static_cast<int>(capacityBeforePoll), _pollTimeoutMs);
+  const int nbReadyFds =
+      ::epoll_wait(_baseFd.fd(), epollEvents, static_cast<int>(capacityBeforePoll), _timeout.pollTimeoutMs());
 
   if (nbReadyFds == -1) {
     if (LastSystemError() == error::kInterrupted) {
       return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
     }
     const auto err = LastSystemError();
-    log::error("epoll_wait failed (timeout_ms={}, err={}, msg={})", _pollTimeoutMs, err, SystemErrorMessage(err));
+    log::error("epoll_wait failed (timeout_ms={}, err={}, msg={})", _timeout.pollTimeoutMs(), err,
+               SystemErrorMessage(err));
     return {};
   }
 
@@ -370,8 +369,8 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 #elifdef AERONET_MACOS
   auto* kevents = static_cast<struct kevent*>(_pEvents);
   struct timespec ts;
-  ts.tv_sec = _pollTimeoutMs / 1000;
-  ts.tv_nsec = (_pollTimeoutMs % 1000) * 1000000L;
+  ts.tv_sec = _timeout.pollTimeoutMs() / 1000;
+  ts.tv_nsec = (_timeout.pollTimeoutMs() % 1000) * 1000000L;
 
   const int nbReadyFds = ::kevent(_baseFd.fd(), nullptr, 0, kevents, static_cast<int>(capacityBeforePoll), &ts);
 
@@ -380,7 +379,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
       return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
     }
     const auto err = LastSystemError();
-    log::error("kevent failed (timeout_ms={}, err={}, msg={})", _pollTimeoutMs, err, SystemErrorMessage(err));
+    log::error("kevent failed (timeout_ms={}, err={}, msg={})", _timeout.pollTimeoutMs(), err, SystemErrorMessage(err));
     return {};
   }
 
@@ -388,7 +387,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 
 #elifdef AERONET_WINDOWS
   auto* pollFdsBuf = static_cast<WSAPOLLFD*>(_pPollFds);
-  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, _pollTimeoutMs);
+  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, _timeout.pollTimeoutMs());
 
   if (nbReadyFds == SOCKET_ERROR) {
     auto err = LastSystemError();
@@ -399,14 +398,11 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
     return {};
   }
 
-  if (nbReadyFds == 0) {
-    // Timeout
-    return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
-  }
-
   const uint32_t nbReadyEvents = static_cast<uint32_t>(nbReadyFds);
 
 #endif
+
+  _timeout.update(nbReadyEvents, capacityBeforePoll);
 
   // If saturated, grow buffer for subsequent polls.
   // On Windows, buffer growth is handled in add() when registration count reaches capacity.
@@ -426,15 +422,13 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
   EventFd* out = std::launder(reinterpret_cast<EventFd*>(_pEvents));
 
 #ifdef AERONET_LINUX
-  // Convert epoll_event[] into EventFd[] in-place (EventFd is smaller or equal in size/alignment).
-  if constexpr (offsetof(epoll_event, data.fd) != offsetof(EventFd, fd) ||
-                offsetof(epoll_event, events) != offsetof(EventFd, eventBmp) ||
-                sizeof(epoll_event) != sizeof(EventFd)) {
-    auto* epollEventsOut = static_cast<epoll_event*>(_pEvents);
-    for (uint32_t idx = 0; idx < nbReadyEvents; ++idx) {
-      out[idx] = EventFd{epollEventsOut[idx].data.fd, static_cast<EventBmp>(epollEventsOut[idx].events)};
-    }
-  }
+  // Zero-copy: EventFd is crafted to match epoll_event layout on all Linux arches.
+  //   x86_64: __EPOLL_PACKED → 12 bytes, data.fd at offset 4.
+  //   ARM64 etc: unpacked → 16 bytes, data.fd at offset 8 (EventFd gains _padding_pre_fd).
+  // The static_assert is a compile-time guard for any future layout divergence.
+  static_assert(offsetof(epoll_event, events) == offsetof(EventFd, eventBmp) &&
+                offsetof(epoll_event, data.fd) == offsetof(EventFd, fd) && sizeof(epoll_event) == sizeof(EventFd) &&
+                sizeof(EventBmp) == sizeof(uint32_t) && sizeof(NativeHandle) == sizeof(int));
 #elifdef AERONET_MACOS
   // Convert kevent[] into EventFd[] in-place.
   auto* keventsOut = static_cast<struct kevent*>(_pEvents);
@@ -455,10 +449,6 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 #endif
 
   return {out, nbReadyEvents};
-}
-
-void EventLoop::updatePollTimeout(SysDuration pollTimeout) {
-  _pollTimeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count());
 }
 
 }  // namespace aeronet

@@ -1,14 +1,33 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
+#ifdef AERONET_LINUX
+#include <sys/epoll.h>
+#endif
+
+#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/timedef.hpp"
 
 namespace aeronet {
+
+#ifdef AERONET_LINUX
+namespace detail {
+// Padding helper to mirror epoll_event layout inside EventFd exactly.
+// Sizes are derived from epoll_event via offsetof/sizeof — no arch-specific guards needed.
+// EpollPad<0> is an empty type; [[no_unique_address]] ensures it occupies zero bytes.
+template <std::size_t N>
+struct alignas(1) EpollPad {
+  uint8_t _[N];
+};
+template <>
+struct EpollPad<0> {};
+}  // namespace detail
+#endif
 
 // Thin RAII wrapper over a platform event-notification mechanism
 // (epoll on Linux, kqueue on macOS, WSAPoll on Windows).
@@ -30,27 +49,33 @@ class EventLoop {
   static constexpr uint32_t kInitialCapacity = 64;
 
   struct EventFd {
-    EventFd(NativeHandle fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
+    constexpr EventFd(NativeHandle fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
 
     EventBmp eventBmp;
+#ifdef AERONET_LINUX
+    // Layout mirrors epoll_event exactly; sizes derived from epoll_event via offsetof/sizeof.
+    // The static_assert in event-loop.cpp validates the result at compile time.
+    [[no_unique_address]] detail::EpollPad<offsetof(epoll_event, data.fd) - sizeof(EventBmp)> _pre_fd_pad;
     NativeHandle fd;
-#ifdef AERONET_POSIX
-    uint32_t _padding;
+    [[no_unique_address]] detail::EpollPad<sizeof(epoll_event) - offsetof(epoll_event, data.fd) - sizeof(NativeHandle)>
+        _post_fd_pad;
+#else
+    NativeHandle fd;
 #endif
   };
 
   // Default constructor - creates an empty EventLoop.
   EventLoop() noexcept = default;
 
-  // Construct an EventLoop.
+  // Construct an EventLoop with a fixed or adaptive poll timeout policy.
   // Parameters:
-  //   pollTimeout      -> timeout for poll() calls
+  //   timeoutPolicy    -> validated poll timeout policy; validate() is called here.
   //   initialCapacity  -> starting number of event slots reserved in the internal buffer.
   //                       Must be > 0. Values <= 0 are promoted to 1. A value of 64 is a good
   //                       balance for small/medium workloads: it fits easily in cache (< 1 KB)
   //                       yet avoids immediate reallocations. Buffer grows by doubling whenever
   //                       a poll returns exactly capacity() events. It never shrinks.
-  explicit EventLoop(SysDuration pollTimeout, uint32_t initialCapacity = kInitialCapacity);
+  explicit EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity = kInitialCapacity);
 
   EventLoop(const EventLoop&) = delete;
   EventLoop(EventLoop&& rhs) noexcept;
@@ -90,12 +115,15 @@ class EventLoop {
   // Current allocated capacity (number of event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
 
-  // Update the poll timeout.
-  void updatePollTimeout(SysDuration pollTimeout);
+  // Current effective poll timeout in milliseconds.
+  [[nodiscard]] int currentPollTimeoutMs() const noexcept { return _timeout.pollTimeoutMs(); }
+
+  // Update the fixed or adaptive poll timeout policy.
+  void updatePollTimeoutPolicy(PollTimeoutPolicy timeoutPolicy) { _timeout = AdaptivePollTimeout(timeoutPolicy); }
 
  private:
   uint32_t _nbAllocatedEvents = 0;
-  int _pollTimeoutMs = 0;
+  AdaptivePollTimeout _timeout;
   BaseFd _baseFd;
   void* _pEvents = nullptr;
 #ifdef AERONET_WINDOWS
