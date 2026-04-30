@@ -10,6 +10,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/object-pool.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-info.hpp"
@@ -25,10 +26,7 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#include <functional>
-#include <optional>
-
+#include "aeronet/async-handler-state.hpp"
 #include "aeronet/http-response.hpp"
 #endif
 
@@ -38,10 +36,6 @@ struct HttpServerConfig;
 
 #ifdef AERONET_ENABLE_OPENSSL
 class TlsContext;
-#endif
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-class CorsPolicy;
 #endif
 
 struct ConnectionState {
@@ -228,33 +222,14 @@ struct ConnectionState {
   std::unique_ptr<ITunnelBridge> tunnelBridge;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  struct AsyncHandlerState {
-    AsyncHandlerState() = default;
+  [[nodiscard]] AsyncHandlerState* pAsyncState() const noexcept { return asyncState.get(); }
 
-    enum class AwaitReason : uint8_t { None, WaitingForBody, WaitingForCallback };
+  /// Allocate async state on first use from the bound pool and return it.
+  AsyncHandlerState& ensureAsyncState(AsyncHandlerStatePool& asyncStatePool);
 
-    void clear();
+  // Async handler state is pooled by ConnectionStorage to avoid per-connection inline bloat.
+  PoolPtr<AsyncHandlerState> asyncState;
 
-    std::coroutine_handle<> handle;
-    // stable storage for the current request head when async body progress is needed
-    RawChars headBuffer;
-    AwaitReason awaitReason{AwaitReason::None};
-    bool active{false};
-    bool needsBody{false};
-    bool usesSharedDecompressedBody{false};
-    bool isChunked{false};
-    bool expectContinue{false};
-    uint32_t responseMiddlewareCount{0};
-    std::size_t consumedBytes{0};
-    // Per-route maximum body size override (MAX = use global limit only).
-    std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
-    const CorsPolicy* corsPolicy{nullptr};
-    const void* responseMiddleware{nullptr};
-    std::optional<HttpResponse> pendingResponse;
-    // Callback to post async work completion to the server's event loop.
-    // Set by the server when dispatching an async handler.
-    std::function<void(std::coroutine_handle<>, std::function<void()>)> postCallback;
-  } asyncState;
 #endif
 };
 

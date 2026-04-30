@@ -16,6 +16,10 @@
 #include "aeronet/flat-hash-map.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#endif
+
 namespace aeronet::internal {
 
 class ConnectionStorage {
@@ -174,6 +178,11 @@ class ConnectionStorage {
 #endif
   }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  AsyncHandlerStatePool& asyncHandlerStatePool() noexcept { return _asyncHandlerStatePool; }
+  const AsyncHandlerStatePool& asyncHandlerStatePool() const noexcept { return _asyncHandlerStatePool; }
+#endif
+
   std::chrono::steady_clock::time_point now;
 
  private:
@@ -190,6 +199,10 @@ class ConnectionStorage {
     statePtr->lastActivity = now;
     return statePtr;
   }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  AsyncHandlerStatePool _asyncHandlerStatePool;
+#endif
 
   ObjectPool<ConnectionState> _connectionStatePool;
 

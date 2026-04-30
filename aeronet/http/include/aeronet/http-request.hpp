@@ -17,6 +17,8 @@
 #include <coroutine>
 #include <functional>
 #include <thread>
+
+#include "aeronet/async-handler-state.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_GLAZE
@@ -569,7 +571,7 @@ class HttpRequest {
   void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void pinHeadStorage(ConnectionState& state);
+  void pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool);
 #endif
 
   void shrinkAndMaybeClear();

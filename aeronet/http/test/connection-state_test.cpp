@@ -337,6 +337,9 @@ TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  AsyncHandlerStatePool asyncStatePool;
+#endif
   ConnectionState state;
 
   // Grow buffers to have extra capacity
@@ -347,21 +350,22 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   state.bodyAndTrailersBuffer.append("chunked body");
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  state.asyncState.headBuffer.reserve(4096);
-  state.asyncState.headBuffer.append("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
+  (void)state.ensureAsyncState(asyncStatePool);
+  state.asyncState->headBuffer.reserve(4096);
+  state.asyncState->headBuffer.append("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
 #endif
 
   // Sanity: capacities should be larger than sizes prior to shrink
   EXPECT_GT(state.inBuffer.capacity(), state.inBuffer.size());
   EXPECT_GT(state.bodyAndTrailersBuffer.capacity(), state.bodyAndTrailersBuffer.size());
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  EXPECT_GT(state.asyncState.headBuffer.capacity(), state.asyncState.headBuffer.size());
+  EXPECT_GT(state.asyncState->headBuffer.capacity(), state.asyncState->headBuffer.size());
 #endif
 
   const auto oldCapacityInBuffer = state.inBuffer.capacity();
   const auto oldCapacityBodyBuffer = state.bodyAndTrailersBuffer.capacity();
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  const auto oldCapacityHeadBuffer = state.asyncState.headBuffer.capacity();
+  const auto oldCapacityHeadBuffer = state.asyncState->headBuffer.capacity();
 #endif
 
   state.reset();
@@ -370,11 +374,15 @@ TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {
   EXPECT_LT(state.inBuffer.capacity(), oldCapacityInBuffer);
   EXPECT_LT(state.bodyAndTrailersBuffer.capacity(), oldCapacityBodyBuffer);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  EXPECT_LT(state.asyncState.headBuffer.capacity(), oldCapacityHeadBuffer);
+  EXPECT_FALSE(static_cast<bool>(state.asyncState));
+  EXPECT_GT(oldCapacityHeadBuffer, 0U);
 #endif
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  AsyncHandlerStatePool asyncStatePool;
+#endif
   ConnectionState state;
 
   // Ensure buffers are empty
@@ -382,7 +390,8 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   state.inBuffer.clear();
   state.bodyAndTrailersBuffer.clear();
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  state.asyncState.headBuffer.clear();
+  (void)state.ensureAsyncState(asyncStatePool);
+  state.asyncState->headBuffer.clear();
 #endif
 
   state.reset();
@@ -392,7 +401,7 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
   EXPECT_EQ(state.inBuffer.capacity(), 0U);
   EXPECT_EQ(state.bodyAndTrailersBuffer.capacity(), 0U);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  EXPECT_EQ(state.asyncState.headBuffer.capacity(), 0U);
+  EXPECT_FALSE(static_cast<bool>(state.asyncState));
 #endif
 }
 
@@ -460,39 +469,11 @@ TEST(ConnectionStateBridgeTest, AggregatedBridgeReadWithZeroMaxBytesReturnsEmpty
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-TEST(ConnectionStateAsyncStateTest, AsyncHandlerStateClearResetsState) {
-  ConnectionState::AsyncHandlerState st;
-
-  // Populate fields to non-default values
-  st.awaitReason = ConnectionState::AsyncHandlerState::AwaitReason::WaitingForBody;
-  st.active = true;
-  st.needsBody = true;
-  st.isChunked = true;
-  st.expectContinue = true;
-  st.consumedBytes = 42;
-  st.corsPolicy = reinterpret_cast<const CorsPolicy*>(0x1);
-  st.responseMiddleware = reinterpret_cast<const void*>(0x2);
-  st.responseMiddlewareCount = 3;
-  st.pendingResponse = HttpResponse(http::StatusCodeOK);
-
-  st.clear();
-
-  // All fields should be reset to defaults
-  EXPECT_EQ(st.handle, std::coroutine_handle<>());
-  EXPECT_EQ(st.awaitReason, ConnectionState::AsyncHandlerState::AwaitReason::None);
-  EXPECT_FALSE(st.active);
-  EXPECT_FALSE(st.needsBody);
-  EXPECT_FALSE(st.isChunked);
-  EXPECT_FALSE(st.expectContinue);
-  EXPECT_EQ(st.consumedBytes, 0U);
-  EXPECT_EQ(st.corsPolicy, nullptr);
-  EXPECT_EQ(st.responseMiddleware, nullptr);
-  EXPECT_EQ(st.responseMiddlewareCount, 0U);
-  EXPECT_FALSE(st.pendingResponse.has_value());
-}
 
 TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
+  AsyncHandlerStatePool asyncStatePool;
   ConnectionState state;
+  (void)state.ensureAsyncState(asyncStatePool);
 
   // Helper coroutine type that exposes a coroutine handle without destroying it.
   struct HandleBox {
@@ -521,12 +502,12 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
   ASSERT_TRUE(handle);
 
   // Move the handle into state.asyncState and ensure it's present
-  state.asyncState.handle = handle;
-  EXPECT_TRUE(static_cast<bool>(state.asyncState.handle));
+  state.asyncState->handle = handle;
+  EXPECT_TRUE(static_cast<bool>(state.asyncState->handle));
 
   // clear() should destroy the handle and set it to null
   state.reset();
-  EXPECT_EQ(state.asyncState.handle, std::coroutine_handle<>());
+  EXPECT_FALSE(static_cast<bool>(state.asyncState));
 }
 #endif
 

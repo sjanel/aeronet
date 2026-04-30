@@ -72,6 +72,9 @@ class HttpRequestTest : public ::testing::Test {
     req._ownerState = &cs;
     req._pGlobalHeaders = &globalHeaders;
     req._pCompressionState = &compressionState;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    (void)cs.ensureAsyncState(asyncStatePoolStorage);
+#endif
 
     compressionState.pCompressionConfig = &compressionConfig;
   }
@@ -189,7 +192,7 @@ class HttpRequestTest : public ::testing::Test {
   void setOwnerState(ConnectionState* st) { req._ownerState = st; }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void callPinHeadStorage() { req.pinHeadStorage(cs); }
+  void callPinHeadStorage() { req.pinHeadStorage(cs, asyncStatePoolStorage); }
   void callPostCallback(std::coroutine_handle<> handle, std::function<void()> work) {
     req.postCallback(handle, std::move(work));
   }
@@ -226,6 +229,9 @@ class HttpRequestTest : public ::testing::Test {
   ConcatenatedHeaders globalHeaders;
   CompressionConfig compressionConfig;
   internal::ResponseCompressionState compressionState;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  AsyncHandlerStatePool asyncStatePoolStorage;
+#endif
   HttpRequest req;
   ConnectionState cs;
 };
@@ -430,25 +436,25 @@ TEST_F(HttpRequestTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
   // Ensure _ownerState is set so hasMoreBody() consults asyncState
   setOwnerState(&cs);
 
-  cs.asyncState.active = false;
-  cs.asyncState.needsBody = true;
+  cs.asyncState->active = false;
+  cs.asyncState->needsBody = true;
 
   EXPECT_FALSE(req.hasMoreBody());
 
-  cs.asyncState.active = true;
-  cs.asyncState.needsBody = false;
+  cs.asyncState->active = true;
+  cs.asyncState->needsBody = false;
   EXPECT_FALSE(req.hasMoreBody());
 
-  cs.asyncState.needsBody = true;
+  cs.asyncState->needsBody = true;
   EXPECT_TRUE(req.hasMoreBody());
 }
 
 // postCallback: HTTP/1.x path forwards the non-null work function to asyncState.postCallback.
 TEST_F(HttpRequestTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState) {
-  cs.asyncState.active = true;
+  cs.asyncState->active = true;
   std::coroutine_handle<> capturedHandle{};
   std::function<void()> capturedWork;
-  cs.asyncState.postCallback = [&](std::coroutine_handle<> handle, std::function<void()> work) {
+  cs.asyncState->postCallback = [&](std::coroutine_handle<> handle, std::function<void()> work) {
     capturedHandle = handle;
     capturedWork = std::move(work);
   };
@@ -1033,7 +1039,7 @@ TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
   auto hostView = req.headerValueOrEmpty("X-Custom");
   const char* originalPtr = hostView.data();
 
-  // now pin head storage which moves data into state.asyncState.headBuffer
+  // now pin head storage which moves data into state.asyncState->headBuffer
   callPinHeadStorage();
 
   // after pinning, header view should point into headBuffer (ownerState.headBuffer)
@@ -1042,9 +1048,9 @@ TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
 
   ASSERT_NE(originalPtr, pinnedPtr);
   // pinned pointer should be within headBuffer data range
-  const char* hb = cs.asyncState.headBuffer.data();
+  const char* hb = cs.asyncState->headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
@@ -1080,8 +1086,8 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   EXPECT_GE(afterPtr, inBase);
   EXPECT_LT(afterPtr, inBase + static_cast<std::ptrdiff_t>(cs.inBuffer.size()));
   // And ensure it's not inside headBuffer
-  const char* hb = cs.asyncState.headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  const char* hb = cs.asyncState->headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
@@ -1111,8 +1117,8 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   EXPECT_EQ(beforePtr, afterPtr);
 
   // Ensure it still points into tmp buffer (not into headBuffer)
-  const char* hb = cs.asyncState.headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  const char* hb = cs.asyncState->headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
 TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
@@ -1149,13 +1155,13 @@ TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
   EXPECT_NE(origPtr, ppPtr);
 
   // All remapped pointers should be inside headBuffer
-  const char* hb = cs.asyncState.headBuffer.data();
+  const char* hb = cs.asyncState->headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
   EXPECT_GE(trPtr, hb);
-  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
   EXPECT_GE(ppPtr, hb);
-  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState.headBuffer.size()));
+  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
 #endif

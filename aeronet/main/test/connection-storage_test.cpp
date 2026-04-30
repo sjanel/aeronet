@@ -215,10 +215,12 @@ TEST(ConnectionStorage, RecycleOrReleaseWithActiveAsyncState) {
 
   // Create a real coroutine to get a valid handle
   auto coro = makeTestCoroutine();
+  auto& state = storage.connectionState(it);
+  (void)state.ensureAsyncState(storage.asyncHandlerStatePool());
 
   // Simulate an active async handler with a coroutine handle
-  storage.connectionState(it).asyncState.active = true;
-  storage.connectionState(it).asyncState.handle = coro.handle;
+  state.asyncState->active = true;
+  state.asyncState->handle = coro.handle;
   coro.handle = {};  // Transfer ownership to asyncState (clear() will destroy it)
 
   // Recycle should clear the async state
@@ -235,11 +237,13 @@ TEST(ConnectionStorage, RecycleOrReleaseWithHandleButNotActive) {
 
   // Create a real coroutine to get a valid handle
   auto coro = makeTestCoroutine();
+  auto& state = storage.connectionState(it);
+  (void)state.ensureAsyncState(storage.asyncHandlerStatePool());
 
   // Set handle but not active - this covers the branch: asyncState.handle && !asyncState.active
-  storage.connectionState(it).asyncState.handle = coro.handle;
-  storage.connectionState(it).asyncState.active = false;  // handle set but not active
-  coro.handle = {};                                       // Transfer ownership
+  state.asyncState->handle = coro.handle;
+  state.asyncState->active = false;  // handle set but not active
+  coro.handle = {};                  // Transfer ownership
 
   // Recycle should clear the async state (covers the || branch)
   RecycleConnection(storage, 10, it);
