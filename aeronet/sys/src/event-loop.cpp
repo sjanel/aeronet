@@ -11,11 +11,13 @@
 #endif
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <span>
 #include <stdexcept>
@@ -120,17 +122,34 @@ EventBmp PollReventsToEventBmp(short revents) {
 }
 #endif
 
+int DurationToPollTimeoutMs(SysDuration timeout) {
+  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+  assert(milliseconds >= 0);
+  assert(!std::cmp_greater(milliseconds, std::numeric_limits<int>::max()));
+  return static_cast<int>(milliseconds);
+}
+
+int MultiplyTimeoutWithCap(int timeoutMs, uint32_t growthFactor, int maxTimeoutMs) noexcept {
+  const int floorMs = std::max(timeoutMs, 1);
+  const auto scaledTimeoutMs = static_cast<std::uint64_t>(floorMs) * static_cast<std::uint64_t>(growthFactor);
+  if (scaledTimeoutMs >= static_cast<std::uint64_t>(maxTimeoutMs)) {
+    return maxTimeoutMs;
+  }
+  return static_cast<int>(scaledTimeoutMs);
+}
+
 }  // namespace
 
 // ---- Construction / move / destruction ----
 
-EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
+EventLoop::EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity)
     : _nbAllocatedEvents(std::max(1U, initialCapacity)),
-      _pollTimeoutMs(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count())),
       _pEvents(std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * NativeEventSize())) {
+  timeoutPolicy.validate();
   if (_pEvents == nullptr) {
     throw std::bad_alloc();
   }
+  updatePollTimeoutPolicy(timeoutPolicy);
 
 #ifdef AERONET_LINUX
   _baseFd = BaseFd(::epoll_create1(EPOLL_CLOEXEC));
@@ -175,6 +194,10 @@ EventLoop::EventLoop(SysDuration pollTimeout, uint32_t initialCapacity)
 EventLoop::EventLoop(EventLoop&& rhs) noexcept
     : _nbAllocatedEvents(std::exchange(rhs._nbAllocatedEvents, 0)),
       _pollTimeoutMs(rhs._pollTimeoutMs),
+      _basePollTimeoutMs(rhs._basePollTimeoutMs),
+      _minPollTimeoutMs(rhs._minPollTimeoutMs),
+      _maxPollTimeoutMs(rhs._maxPollTimeoutMs),
+      _idlePollIterations(rhs._idlePollIterations),
       _baseFd(std::move(rhs._baseFd)),
       _pEvents(std::exchange(rhs._pEvents, nullptr))
 #ifdef AERONET_WINDOWS
@@ -194,6 +217,10 @@ EventLoop& EventLoop::operator=(EventLoop&& rhs) noexcept {
 
     _nbAllocatedEvents = std::exchange(rhs._nbAllocatedEvents, 0);
     _pollTimeoutMs = rhs._pollTimeoutMs;
+    _basePollTimeoutMs = rhs._basePollTimeoutMs;
+    _minPollTimeoutMs = rhs._minPollTimeoutMs;
+    _maxPollTimeoutMs = rhs._maxPollTimeoutMs;
+    _idlePollIterations = rhs._idlePollIterations;
     _baseFd = std::move(rhs._baseFd);
     _pEvents = std::exchange(rhs._pEvents, nullptr);
 #ifdef AERONET_WINDOWS
@@ -348,9 +375,7 @@ void EventLoop::del(NativeHandle fd) {
 // ---- poll ----
 
 std::span<const EventLoop::EventFd> EventLoop::poll() {
-#ifdef AERONET_POSIX
   const uint32_t capacityBeforePoll = _nbAllocatedEvents;
-#endif
 
 #ifdef AERONET_LINUX
   auto* epollEvents = static_cast<epoll_event*>(_pEvents);
@@ -399,14 +424,11 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
     return {};
   }
 
-  if (nbReadyFds == 0) {
-    // Timeout
-    return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
-  }
-
   const uint32_t nbReadyEvents = static_cast<uint32_t>(nbReadyFds);
 
 #endif
+
+  updateAdaptivePollTimeout(nbReadyEvents, capacityBeforePoll);
 
   // If saturated, grow buffer for subsequent polls.
   // On Windows, buffer growth is handled in add() when registration count reaches capacity.
@@ -457,8 +479,69 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
   return {out, nbReadyEvents};
 }
 
-void EventLoop::updatePollTimeout(SysDuration pollTimeout) {
-  _pollTimeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(pollTimeout).count());
+void EventLoop::PollTimeoutPolicy::validate() const {
+  const auto minMs = std::chrono::duration_cast<std::chrono::milliseconds>(minTimeout).count();
+  const auto baseMs = std::chrono::duration_cast<std::chrono::milliseconds>(baseTimeout).count();
+  const auto maxMs = std::chrono::duration_cast<std::chrono::milliseconds>(maxTimeout).count();
+  if (baseMs <= 0) {
+    throw std::invalid_argument("PollTimeoutPolicy: baseTimeout must be > 0");
+  }
+  if (minMs < 0) {
+    throw std::invalid_argument("PollTimeoutPolicy: minTimeout must be non-negative");
+  }
+  if (minMs > baseMs) {
+    throw std::invalid_argument("PollTimeoutPolicy: minTimeout must be <= baseTimeout");
+  }
+  if (maxMs < baseMs) {
+    throw std::invalid_argument("PollTimeoutPolicy: maxTimeout must be >= baseTimeout");
+  }
+  if (std::cmp_greater(maxMs, std::numeric_limits<int>::max())) {
+    throw std::invalid_argument("PollTimeoutPolicy: maxTimeout exceeds poll API limit (INT_MAX ms)");
+  }
+}
+
+void EventLoop::updatePollTimeoutPolicy(PollTimeoutPolicy timeoutPolicy) {
+  _idlePollIterations = 0;
+
+  _minPollTimeoutMs = DurationToPollTimeoutMs(timeoutPolicy.minTimeout);
+  _maxPollTimeoutMs = DurationToPollTimeoutMs(timeoutPolicy.maxTimeout);
+  assert(_maxPollTimeoutMs >= _minPollTimeoutMs);
+  _basePollTimeoutMs = DurationToPollTimeoutMs(timeoutPolicy.baseTimeout);
+  assert(_basePollTimeoutMs >= _minPollTimeoutMs && _basePollTimeoutMs <= _maxPollTimeoutMs);
+
+  _pollTimeoutMs = _basePollTimeoutMs;
+}
+
+void EventLoop::updateAdaptivePollTimeout(uint32_t nbReadyEvents, uint32_t capacityBeforePoll) noexcept {
+  // Saturation: every event slot was filled. Drop to the minimum (often 0) so the next poll
+  // returns immediately and we drain whatever else is waiting in the kernel queue.
+  assert(capacityBeforePoll > 0U);
+  if (nbReadyEvents == capacityBeforePoll) {
+    _pollTimeoutMs = _minPollTimeoutMs;
+    _idlePollIterations = 0;
+    return;
+  }
+
+  // Idle: no events at all. Increase the timeout exponentially after enough consecutive idle
+  // polls, capped at maxTimeout. Note: when transitioning saturation -> idle the backoff grows
+  // from the current (small) timeout rather than restarting at base; this is intentional and
+  // gives a gentle decay back to the maximum sleep when the server truly goes quiet.
+  if (nbReadyEvents == 0U) {
+    static constexpr uint32_t kDefaultIdleIterationsBeforeBackoff = 4;
+    static constexpr uint32_t kDefaultPollTimeoutGrowthFactor = 2;
+
+    ++_idlePollIterations;
+    if (_idlePollIterations >= kDefaultIdleIterationsBeforeBackoff) {
+      _pollTimeoutMs = MultiplyTimeoutWithCap(_pollTimeoutMs, kDefaultPollTimeoutGrowthFactor, _maxPollTimeoutMs);
+      _idlePollIterations = 0;
+    }
+    return;
+  }
+
+  // Normal load: some but not all slots used. Reset to the configured base so we neither spin
+  // nor stay in backoff mode.
+  _pollTimeoutMs = _basePollTimeoutMs;
+  _idlePollIterations = 0;
 }
 
 }  // namespace aeronet

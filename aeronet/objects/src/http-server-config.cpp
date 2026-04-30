@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -28,6 +29,23 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/tolower-str.hpp"
 #endif
+
+#include "aeronet/event-loop.hpp"
+
+namespace {
+
+std::chrono::milliseconds ScalePollInterval(std::chrono::milliseconds interval, float factor) noexcept {
+  const double scaledMs = static_cast<double>(interval.count()) * static_cast<double>(factor);
+  if (scaledMs <= 0.0) {
+    return std::chrono::milliseconds{0};
+  }
+  if (scaledMs >= static_cast<double>(std::numeric_limits<std::chrono::milliseconds::rep>::max())) {
+    return std::chrono::milliseconds{std::numeric_limits<std::chrono::milliseconds::rep>::max()};
+  }
+  return std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(scaledMs)};
+}
+
+}  // namespace
 
 namespace aeronet {
 
@@ -113,6 +131,12 @@ HttpServerConfig& HttpServerConfig::withMaxAcceptBatchSize(uint32_t batchSize) {
 
 HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds interval) {
   this->pollInterval = interval;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withPollIntervalFactors(float minFactor, float maxFactor) {
+  pollIntervalMinFactor = minFactor;
+  pollIntervalMaxFactor = maxFactor;
   return *this;
 }
 
@@ -319,11 +343,6 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("maxAcceptBatchSize must be > 0");
   }
 
-  if (std::cmp_less(std::numeric_limits<int>::max(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(pollInterval).count())) {
-    throw std::invalid_argument("Poll interval value is too large");
-  }
-
   if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }
@@ -378,9 +397,16 @@ void HttpServerConfig::validate() {
   if (keepAliveTimeout > kMaxTimeoutMs) {
     throw std::invalid_argument("keepAliveTimeout exceeds maximum representable duration (~49.7 days)");
   }
-  if (pollInterval.count() <= 0) {
-    throw std::invalid_argument("pollInterval must be > 0");
+  if (!std::isfinite(pollIntervalMinFactor) || pollIntervalMinFactor < 0.0F || pollIntervalMinFactor > 1.0F) {
+    throw std::invalid_argument("pollIntervalMinFactor must be finite and between 0 and 1");
   }
+  if (!std::isfinite(pollIntervalMaxFactor) || pollIntervalMaxFactor < 1.0F) {
+    throw std::invalid_argument("pollIntervalMaxFactor must be finite and >= 1");
+  }
+  EventLoop::PollTimeoutPolicy{.baseTimeout = pollInterval,
+                               .minTimeout = ScalePollInterval(pollInterval, pollIntervalMinFactor),
+                               .maxTimeout = ScalePollInterval(pollInterval, pollIntervalMaxFactor)}
+      .validate();
   if (headerReadTimeout.count() < 0) {
     throw std::invalid_argument("headerReadTimeout must be non-negative");
   }

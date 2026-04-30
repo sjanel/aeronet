@@ -29,6 +29,17 @@ class EventLoop {
  public:
   static constexpr uint32_t kInitialCapacity = 64;
 
+  struct PollTimeoutPolicy {
+    // Throws std::invalid_argument if the policy is inconsistent:
+    // baseTimeout must be > 0, minTimeout must be in [0, baseTimeout],
+    // maxTimeout must be >= baseTimeout and fit within the poll API limit (INT_MAX ms).
+    void validate() const;
+
+    SysDuration baseTimeout{};
+    SysDuration minTimeout{};
+    SysDuration maxTimeout{};
+  };
+
   struct EventFd {
     EventFd(NativeHandle fd, EventBmp eventBmp) : eventBmp(eventBmp), fd(fd) {}
 
@@ -42,15 +53,15 @@ class EventLoop {
   // Default constructor - creates an empty EventLoop.
   EventLoop() noexcept = default;
 
-  // Construct an EventLoop.
+  // Construct an EventLoop with a fixed or adaptive poll timeout policy.
   // Parameters:
-  //   pollTimeout      -> timeout for poll() calls
+  //   timeoutPolicy    -> validated poll timeout policy; validate() is called here.
   //   initialCapacity  -> starting number of event slots reserved in the internal buffer.
   //                       Must be > 0. Values <= 0 are promoted to 1. A value of 64 is a good
   //                       balance for small/medium workloads: it fits easily in cache (< 1 KB)
   //                       yet avoids immediate reallocations. Buffer grows by doubling whenever
   //                       a poll returns exactly capacity() events. It never shrinks.
-  explicit EventLoop(SysDuration pollTimeout, uint32_t initialCapacity = kInitialCapacity);
+  explicit EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity = kInitialCapacity);
 
   EventLoop(const EventLoop&) = delete;
   EventLoop(EventLoop&& rhs) noexcept;
@@ -90,12 +101,21 @@ class EventLoop {
   // Current allocated capacity (number of event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
 
-  // Update the poll timeout.
-  void updatePollTimeout(SysDuration pollTimeout);
+  // Current effective poll timeout in milliseconds.
+  [[nodiscard]] int currentPollTimeoutMs() const noexcept { return _pollTimeoutMs; }
+
+  // Update the fixed or adaptive poll timeout policy.
+  void updatePollTimeoutPolicy(PollTimeoutPolicy timeoutPolicy);
 
  private:
+  void updateAdaptivePollTimeout(uint32_t nbReadyEvents, uint32_t capacityBeforePoll) noexcept;
+
   uint32_t _nbAllocatedEvents = 0;
   int _pollTimeoutMs = 0;
+  int _basePollTimeoutMs = 0;
+  int _minPollTimeoutMs = 0;
+  int _maxPollTimeoutMs = 0;
+  uint32_t _idlePollIterations = 0;
   BaseFd _baseFd;
   void* _pEvents = nullptr;
 #ifdef AERONET_WINDOWS

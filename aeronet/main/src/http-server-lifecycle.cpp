@@ -4,6 +4,7 @@
 #include <exception>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <stop_token>
@@ -25,7 +26,6 @@
 #include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -69,7 +69,26 @@ class LifecycleTrackerGuard {
  private:
   std::weak_ptr<ServerLifecycleTracker> _tracker;
 };
+
+std::chrono::milliseconds ScalePollInterval(std::chrono::milliseconds pollInterval, float factor) {
+  const double scaledMs = static_cast<double>(pollInterval.count()) * static_cast<double>(factor);
+  if (scaledMs <= 0.0) {
+    return std::chrono::milliseconds{0};
+  }
+  if (scaledMs >= static_cast<double>(std::numeric_limits<std::chrono::milliseconds::rep>::max())) {
+    return std::chrono::milliseconds{std::numeric_limits<std::chrono::milliseconds::rep>::max()};
+  }
+  return std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(scaledMs)};
+}
+
 }  // namespace
+
+EventLoop::PollTimeoutPolicy SingleHttpServer::MakePollTimeoutPolicy(const HttpServerConfig& config) {
+  return EventLoop::PollTimeoutPolicy{
+      .baseTimeout = config.pollInterval,
+      .minTimeout = ScalePollInterval(config.pollInterval, config.pollIntervalMinFactor),
+      .maxTimeout = ScalePollInterval(config.pollInterval, config.pollIntervalMaxFactor)};
+}
 
 SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
@@ -91,7 +110,7 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerC
     : _config(std::move(config)),
       _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(_config.pollInterval),
+      _eventLoop(MakePollTimeoutPolicy(_config)),
       _router(std::move(routerConfig)),
       _telemetry(_config.telemetry) {
   initListener();
@@ -101,7 +120,7 @@ SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
     : _config(std::move(cfg)),
       _compressionState(_config.compression),
       _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(_config.pollInterval),
+      _eventLoop(MakePollTimeoutPolicy(_config)),
       _router(std::move(router)),
       _telemetry(_config.telemetry) {
   initListener();
@@ -313,7 +332,7 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #ifdef AERONET_MACOS
     }
 #endif
-    _eventLoop = EventLoop(_config.pollInterval);
+    _eventLoop = EventLoop(MakePollTimeoutPolicy(_config));
   }
 
 #ifdef AERONET_ENABLE_OPENSSL
