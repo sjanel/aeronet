@@ -157,11 +157,14 @@ struct ConnectionState {
 
   /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
   static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
+  static constexpr uint32_t kNoKeepAliveDeadlineIndex = static_cast<uint32_t>(-1);
 
   // Milliseconds since headerStartTp of last body read progress. kInactiveRelativeMs means inactive.
   uint32_t bodyLastActivityMs{kInactiveRelativeMs};
   // Milliseconds since headerStartTp of per-route handler deadline. kInactiveRelativeMs means inactive.
   uint32_t requestDeadlineMs{kInactiveRelativeMs};
+  // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
+  uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
 
   TLSInfo tlsInfo;
 
