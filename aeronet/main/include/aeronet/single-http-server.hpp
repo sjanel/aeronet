@@ -28,6 +28,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/keep-alive-deadline-queue.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/internal/pending-updates.hpp"
 #include "aeronet/internal/shared-buffers.hpp"
@@ -511,6 +512,15 @@ class SingleHttpServer {
 
   void closeConnection(ConnectionIt cnxIt);
 
+  void refreshKeepAliveDeadline(ConnectionIt cnxIt);
+  bool closeExpiredKeepAliveConnections();
+  void rebuildKeepAliveDeadlines();
+  void forgetConnectionMaintenance(ConnectionState& state);
+  void clearRequestDeadline(ConnectionState& state) noexcept;
+  void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
+  void forgetWritableInterest(ConnectionState& state) noexcept;
+  [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
+
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
   // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
@@ -649,6 +659,7 @@ class SingleHttpServer {
   Router _router;
 
   internal::ConnectionStorage _connections;
+  internal::KeepAliveDeadlineQueue _keepAliveDeadlines;
 
   internal::SharedBuffers _sharedBuffers;
 
@@ -668,6 +679,11 @@ class SingleHttpServer {
   // state transitions; if bytes remain after the cap, no new read event is generated.
   // Deferring these fds to the next iteration ensures they are re-read.
   vector<NativeHandle> _pendingReadFds;
+
+  std::size_t _writableMaintenanceConnections{0};
+  std::size_t _activeRequestDeadlineConnections{0};
+  std::size_t _http2MaintenanceConnections{0};
+  bool _connectionsNeedShrink{false};
 
 #ifdef AERONET_MACOS
   // When true (default), this instance owns the listen socket and will close it

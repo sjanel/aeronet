@@ -91,12 +91,151 @@ inline void CheckHandshake(bool isTlsEnabled, ConnectionState& state, TlsMetrics
 
 }  // namespace
 
-void SingleHttpServer::sweepIdleConnections() {
-  // Periodic maintenance of live connections: applies keep-alive timeout (if enabled) and
-  // header read timeout (always, regardless of keep-alive enablement). The header read timeout
-  // needs a periodic check because a client might send a partial request line then stall; no
-  // further EPOLLIN events will arrive to trigger enforcement in handleReadableClient().
+void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  if (!_config.enableKeepAlive || state.isTunneling()) {
+    _keepAliveDeadlines.remove(state);
+    return;
+  }
+  _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.keepAliveTimeout);
+}
+
+bool SingleHttpServer::closeExpiredKeepAliveConnections() {
+  bool closedAny = false;
   const auto now = _connections.now;
+
+  while (!_keepAliveDeadlines.empty()) {
+    const auto& next = _keepAliveDeadlines.top();
+    if (next.expiresAt > now) {
+      break;
+    }
+
+    const auto expired = _keepAliveDeadlines.pop();
+    auto cnxIt = _connections.iterator(expired.fd);
+    if (!IsValid(_connections, cnxIt) || _connections.pConnectionState(cnxIt) != expired.state) [[unlikely]] {
+      continue;
+    }
+
+    ConnectionState& state = _connections.connectionState(cnxIt);
+    if (!_config.enableKeepAlive || state.isTunneling()) {
+      continue;
+    }
+
+    if (state.isSendingFile()) {
+      _keepAliveDeadlines.upsert(state, expired.fd, now + _config.keepAliveTimeout);
+      continue;
+    }
+
+    const auto currentExpiry = state.lastActivity + _config.keepAliveTimeout;
+    if (currentExpiry > now) {
+      _keepAliveDeadlines.upsert(state, expired.fd, currentExpiry);
+      continue;
+    }
+
+    log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", expired.fd);
+    closeConnection(cnxIt);
+    _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
+    closedAny = true;
+  }
+
+  return closedAny;
+}
+
+void SingleHttpServer::rebuildKeepAliveDeadlines() {
+  _keepAliveDeadlines.clear();
+  if (!_config.enableKeepAlive) {
+    return;
+  }
+
+  for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
+    if (!IsValid(_connections, cnxIt)) {
+      continue;
+    }
+    refreshKeepAliveDeadline(cnxIt);
+  }
+}
+
+void SingleHttpServer::clearRequestDeadline(ConnectionState& state) noexcept {
+  if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
+    return;
+  }
+  state.requestDeadlineMs = ConnectionState::kInactiveRelativeMs;
+  assert(_activeRequestDeadlineConnections > 0U);
+  --_activeRequestDeadlineConnections;
+}
+
+void SingleHttpServer::trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept {
+  if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
+    ++_activeRequestDeadlineConnections;
+  }
+  state.requestDeadlineMs = deadlineMs;
+}
+
+void SingleHttpServer::forgetWritableInterest(ConnectionState& state) noexcept {
+  if (!state.waitingWritable) {
+    return;
+  }
+  state.waitingWritable = false;
+  assert(_writableMaintenanceConnections > 0U);
+  --_writableMaintenanceConnections;
+}
+
+void SingleHttpServer::forgetConnectionMaintenance(ConnectionState& state) {
+  _keepAliveDeadlines.remove(state);
+  clearRequestDeadline(state);
+  forgetWritableInterest(state);
+#ifdef AERONET_ENABLE_HTTP2
+  if (state.protocol == ProtocolType::Http2) {
+    assert(_http2MaintenanceConnections > 0U);
+    --_http2MaintenanceConnections;
+  }
+#endif
+}
+
+bool SingleHttpServer::needsFullConnectionMaintenanceSweep() const noexcept {
+  if (_connections.empty()) {
+    return false;
+  }
+  if (_lifecycle.isDraining() || _lifecycle.isStopping()) {
+    return true;
+  }
+  if (_writableMaintenanceConnections != 0U || _activeRequestDeadlineConnections != 0U) {
+    return true;
+  }
+  if (_config.headerReadTimeout.count() > 0 || _config.bodyReadTimeout.count() > 0) {
+    return true;
+  }
+#ifdef AERONET_ENABLE_OPENSSL
+  if (_config.tls.enabled && _config.tls.handshakeTimeout.count() > 0) {
+    return true;
+  }
+#endif
+#ifdef AERONET_ENABLE_HTTP2
+  if (_http2MaintenanceConnections != 0U) {
+    return true;
+  }
+#endif
+  return false;
+}
+
+void SingleHttpServer::sweepIdleConnections() {
+  // Periodic maintenance of live connections. Keep-alive idle timeout is handled by
+  // _keepAliveDeadlines so idle HTTP/1.1 connections do not require an O(n) scan.
+  // The full scan is reserved for states that still need periodic observation:
+  // missed writable edges, header/body/request/TLS timeouts, HTTP/2 stream deadlines,
+  // and graceful-drain closure.
+  const auto now = _connections.now;
+  (void)closeExpiredKeepAliveConnections();
+
+  if (!needsFullConnectionMaintenanceSweep()) {
+    _telemetry.gauge("aeronet.connections.cached_count", static_cast<int64_t>(_connections.nbCachedConnections()));
+    _connections.sweepCachedConnections(std::chrono::hours{1});
+    if (_connectionsNeedShrink) {
+      _connections.shrink_to_fit();
+      _connectionsNeedShrink = false;
+    }
+    return;
+  }
 
   // Cap the number of sendfile / outbound retries per sweep to avoid spending the
   // entire maintenance tick retrying N connections that all return EAGAIN immediately.
@@ -133,21 +272,6 @@ void SingleHttpServer::sweepIdleConnections() {
     if (state.canCloseConnectionForDrain()) {
       closeConnection(cnxIt);
       _telemetry.counterAdd("aeronet.connections.closed_for_drain");
-#ifdef AERONET_WINDOWS
-      cnxIt = _connections.begin();
-#endif
-      continue;
-    }
-
-    // Keep-alive inactivity enforcement only if enabled.
-    // Don't close if there's an active file send - those can block waiting for socket to be writable.
-    // Don't close tunnel connections - they can legitimately be idle waiting for data from the
-    // remote peer and rely on TCP-level keepalive / peer close detection instead.
-    if (_config.enableKeepAlive && !state.isSendingFile() && !state.isTunneling() &&
-        now > state.lastActivity + _config.keepAliveTimeout) {
-      log::debug("sweepIdleConnections: fd # {} closed for keep-alive timeout", fd);
-      closeConnection(cnxIt);
-      _telemetry.counterAdd("aeronet.connections.closed_for_keep_alive");
 #ifdef AERONET_WINDOWS
       cnxIt = _connections.begin();
 #endif
@@ -231,7 +355,10 @@ void SingleHttpServer::sweepIdleConnections() {
   // Clean up cached connections that have been idle for too long
   _connections.sweepCachedConnections(std::chrono::hours{1});
 
-  _connections.shrink_to_fit();
+  if (_connectionsNeedShrink) {
+    _connections.shrink_to_fit();
+    _connectionsNeedShrink = false;
+  }
 }
 
 void SingleHttpServer::acceptNewConnections() {
@@ -366,6 +493,8 @@ void SingleHttpServer::acceptNewConnections() {
 #else
     state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
 #endif
+    refreshKeepAliveDeadline(cnxIt);
+
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     while (true) {
@@ -424,7 +553,10 @@ void SingleHttpServer::acceptNewConnections() {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
         if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{cnxFd, EventIn | EventOut | EventRdHup | EventEt});
+          if (!enableWritableInterest(cnxIt)) [[unlikely]] {
+            closeConnection(cnxIt);
+            pCnx = nullptr;
+          }
         }
         break;
       }
@@ -461,6 +593,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   const auto cfd = cnxIt->fd();
   ConnectionState& state = _connections.connectionState(cnxIt);
   log::debug("closeConnection called for fd # {}", cfd);
+  forgetConnectionMaintenance(state);
 
   // If this is a tunnel endpoint (CONNECT), ensure we tear down the peer too.
   // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing
@@ -483,12 +616,14 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #endif
           if (peerConnectionState.peerFd == cfd) [[likely]] {
         _eventLoop.del(peerFd);
+        forgetConnectionMaintenance(peerConnectionState);
 #ifdef AERONET_ENABLE_OPENSSL
         _connections.recycleOrRelease(peerIt, _config.maxCachedConnections, _config.tls.enabled,
                                       _tls.handshakesInFlight);
 #else
         _connections.recycleOrRelease(peerIt, _config.maxCachedConnections);
 #endif
+        _connectionsNeedShrink = true;
 #ifdef AERONET_WINDOWS
         // bytell_hash_map::erase() can relocate chain-tail elements into the
         // erased slot, invalidating any iterator that pointed at the moved entry.
@@ -518,6 +653,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #else
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections);
 #endif
+  _connectionsNeedShrink = true;
 
 #ifdef AERONET_ENABLE_HTTP2
   // Close tunnel upstream fds after the HTTP/2 connection has been released.
@@ -529,11 +665,13 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
       upState.peerFd = kInvalidHandle;
       upState.peerStreamId = 0;
       _eventLoop.del(upFd);
+      forgetConnectionMaintenance(upState);
 #ifdef AERONET_ENABLE_OPENSSL
       _connections.recycleOrRelease(upIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
 #else
       _connections.recycleOrRelease(upIt, _config.maxCachedConnections);
 #endif
+      _connectionsNeedShrink = true;
     }
   }
 #endif
@@ -655,7 +793,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
       if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-        pCnx->waitingWritable = _eventLoop.mod(EventLoop::EventFd{fd, EventIn | EventOut | EventRdHup | EventEt});
+        if (!enableWritableInterest(cnxIt)) [[unlikely]] {
+          return CloseStatus::Close;
+        }
       }
       break;
     }

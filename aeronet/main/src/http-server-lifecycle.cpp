@@ -201,11 +201,16 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
 #endif
       _router(std::move(other._router)),
       _connections(std::move(other._connections)),
+      _keepAliveDeadlines(std::move(other._keepAliveDeadlines)),
       _sharedBuffers(std::move(other._sharedBuffers)),
       _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
       _lifecycleTracker(std::move(other._lifecycleTracker)),
-      _pendingReadFds(std::move(other._pendingReadFds))
+      _pendingReadFds(std::move(other._pendingReadFds)),
+      _writableMaintenanceConnections(std::exchange(other._writableMaintenanceConnections, 0U)),
+      _activeRequestDeadlineConnections(std::exchange(other._activeRequestDeadlineConnections, 0U)),
+      _http2MaintenanceConnections(std::exchange(other._http2MaintenanceConnections, 0U)),
+      _connectionsNeedShrink(std::exchange(other._connectionsNeedShrink, false))
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tls(std::move(other._tls))
@@ -242,11 +247,16 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 #endif
     _router = std::move(other._router);
     _connections = std::move(other._connections);
+    _keepAliveDeadlines = std::move(other._keepAliveDeadlines);
     _sharedBuffers = std::move(other._sharedBuffers);
     _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
     _pendingReadFds = std::move(other._pendingReadFds);
+    _writableMaintenanceConnections = std::exchange(other._writableMaintenanceConnections, 0U);
+    _activeRequestDeadlineConnections = std::exchange(other._activeRequestDeadlineConnections, 0U);
+    _http2MaintenanceConnections = std::exchange(other._http2MaintenanceConnections, 0U);
+    _connectionsNeedShrink = std::exchange(other._connectionsNeedShrink, false);
 #ifdef AERONET_ENABLE_OPENSSL
     _tls = std::move(other._tls);
 #endif
