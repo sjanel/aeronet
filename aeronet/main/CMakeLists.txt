@@ -64,6 +64,15 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    keep-alive-deadline-queue_test
+    src/keep-alive-deadline-queue.cpp
+    test/keep-alive-deadline-queue_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_sys
+)
+
+AeronetAddUnitTest(
     version_test
     test/version_test.cpp
     LIBRARIES

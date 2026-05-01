@@ -30,11 +30,8 @@
 #### Medium priority
 
 - **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
-- ~~**Pool `AsyncHandlerState` outside `ConnectionState`** - keep only an `AsyncHandlerState*` in `ConnectionState` and allocate async state from a dedicated object pool in connection storage. This reduces per-connection inline size without bitfield complexity.~~ ✔ implemented.
 - **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
 - **Adaptive event loop poll timeout** - currently fixed at construction time. If last `poll()` returned max events, use zero timeout (spin); if idle for N iterations, increase timeout exponentially up to a cap. Better tail latency under bursts, lower CPU when idle.
-- **Keep-alive timeout: timer wheel instead of sweep** - idle connection cleanup in `ConnectionManager` sweeps all connections (O(n)). A timer wheel or min-heap sorted by expiry lets each poll iteration check only connections whose expiry has passed → O(expired). Significant at 10 K+ idle connections.
-- Enforce backpressure correctness to avoid overload and wasted work.
 - Focus on cache locality in hot paths; measure before/after.
 
 #### Low priority / specialized
@@ -54,7 +51,7 @@ The following micro-benchmarks are missing and should be added to validate the a
 | Compressed response throughput (per-chunk alloc overhead) | Response writer buffer pooling |
 | `ConnectionState` `sizeof` / cache-line analysis | Bool bit-packing |
 | WebSocket large-frame demasking throughput | SIMD XOR demasking |
-| Connection sweep latency at 10 K idle connections | Timer wheel vs sweep |
+| ~~Connection sweep latency at 10 K idle connections~~ | ~~Timer wheel vs sweep~~ ✔ `aeronet-bench-internal-keep-alive-deadline-queue` |
 
 ## Long-term / Nice-to-have
 

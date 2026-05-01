@@ -238,6 +238,7 @@ Behavior summary
 - [x] Benchmarks & profiling docs
 - [x] Zero-copy sendfile() support for static files
 - [x] Configurable accept batch size (`HttpServerConfig::maxAcceptBatchSize`, default 64). Limits how many new connections are accepted per event-loop iteration to prevent connection-burst starvation of existing connections. Set to `0` for unlimited. Builder: `withMaxAcceptBatchSize(uint32_t)`.
+- [x] Keep-alive idle reaping uses an intrusive min-heap of connection expiry deadlines instead of scanning all active connections on every maintenance tick. Idle HTTP/1.1 keep-alive cleanup checks only expired deadlines in the common case; full connection sweeps are reserved for active timeout/backpressure/drain maintenance. Tests: `aeronet/main/test/keep-alive-deadline-queue_test.cpp`; benchmark: `aeronet-bench-internal-keep-alive-deadline-queue`.
 - [x] MSG_ZEROCOPY for large payload sends *(Linux-only)*, with automatic fallback for small payloads). Enables kernel DMA of user-space buffers directly to NIC, avoiding memcpy overhead for payloads ≥16KB. Configurable via `HttpServerConfig::withZerocopyMode()` with options: `Disabled`, `Opportunistic` (default), `Enabled` (logs warning if unavailable). Works with plain TCP and kTLS connections. For kTLS, bypasses OpenSSL's SSL_write and uses sendmsg() directly on the kTLS socket.
   
   Configuration notes: The feature is controlled per-server via `withZerocopyMode()` and evaluated per accepted connection. Modes are:
@@ -2141,7 +2142,7 @@ Key semantics:
 Backpressure & buffering:
 
 - Unified outbound queue for both fixed & streaming; immediate write path used when queue empty, else bytes accumulate and event-driven write-readiness notification drives flushing.
-- Exceeding `maxOutboundBufferBytes` marks connection to close after pending data flush (subsequent `write()` yields false).
+- Exceeding `maxOutboundBufferBytes` marks connection to close after pending data flush; additional queued chunks are rejected immediately so subsequent `write()` yields false without growing the buffer further.
 
 Limitations (current phase): compression integration limited to buffered activation decision; request body streaming (chunked delivery to handler as it arrives) not yet implemented.
 

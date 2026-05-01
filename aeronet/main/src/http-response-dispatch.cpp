@@ -107,6 +107,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 
   // Enter tunneling mode: link client → upstream (upstream → client is set by setupTunnelConnection).
   state.peerFd = upstreamFd;
+  refreshKeepAliveDeadline(cnxIt);
 
   // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
   if (auto* clientPlain = dynamic_cast<PlainTransport*>(state.transport.get())) {
@@ -131,7 +132,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
   // Clear per-route request deadline and headerStartTp now that a response is being sent.
   // Resetting headerStartTp to epoch allows transportRead to re-arm it for the next keep-alive request.
-  state.requestDeadlineMs = ConnectionState::kInactiveRelativeMs;
+  clearRequestDeadline(state);
   state.headerStartTp = {};
 
   request.prefinalizeHttpResponse(resp, _telemetry);
@@ -167,6 +168,9 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
 void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData) {
   ConnectionState& state = _connections.connectionState(cnxIt);
+  if (state.isAnyCloseRequested()) {
+    return;
+  }
 
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
@@ -221,6 +225,11 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpRespon
         break;
     }
   } else {
+    const std::size_t queuedSize = state.outBuffer.remainingSize();
+    if (queuedSize >= _config.maxOutboundBufferBytes || bufferedSz > _config.maxOutboundBufferBytes - queuedSize) {
+      state.requestDrainAndClose();
+      return;
+    }
     state.outBuffer.append(std::move(httpResponseData));
   }
 
