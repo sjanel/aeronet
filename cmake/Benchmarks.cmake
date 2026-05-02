@@ -106,6 +106,7 @@ set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
+set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -150,6 +151,11 @@ set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmark
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
 set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  AeronetAddProjectBenchmark(aeronet-bench-internal-event-loop-poll-timeout ${AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT})
+  set_target_properties(aeronet-bench-internal-event-loop-poll-timeout PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 # HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)
 if(AERONET_ENABLE_HTTP2)
@@ -232,6 +238,14 @@ set(_AERONET_BENCH_CMDS
   COMMAND aeronet-bench-internal-string-equal-ignore-case --benchmark_report_aggregates_only=true
   COMMAND aeronet-bench-internal-router --benchmark_report_aggregates_only=true
 )
+if(TARGET aeronet-bench-internal-event-loop-poll-timeout)
+  list(APPEND _AERONET_BENCH_DEPS
+    aeronet-bench-internal-event-loop-poll-timeout
+  )
+  list(APPEND _AERONET_BENCH_CMDS
+    COMMAND aeronet-bench-internal-event-loop-poll-timeout --benchmark_report_aggregates_only=true
+  )
+endif()
 if(AERONET_ENABLE_HTTP2)
   list(APPEND _AERONET_BENCH_DEPS
     aeronet-bench-internal-hpack

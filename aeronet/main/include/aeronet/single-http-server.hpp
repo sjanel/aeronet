@@ -447,6 +447,7 @@ class SingleHttpServer {
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void prepareRun();
+  static EventLoop::PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
 
   // Shared implementation for startDetached / startDetachedAndStopWhen / startDetachedWithStopToken.
   AsyncHandle launchDetached(std::function<bool()> extraPredicate = {});

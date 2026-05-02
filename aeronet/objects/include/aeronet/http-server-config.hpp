@@ -190,6 +190,12 @@ struct HttpServerConfig {
   // Default (500 ms) favors low idle CPU over sub‑100 ms shutdown responsiveness.
   std::chrono::milliseconds pollInterval{std::chrono::milliseconds{500}};
 
+  // Poll timeout scaling factors (min and max bounds relative to pollInterval).
+  // Defaults of 1.0 / 1.0 preserve fixed pollInterval behavior.
+  // Example: 0.0 / 2.0 lets saturated polls spin once and idle polls back off up to 2x pollInterval.
+  float pollIntervalMinFactor{1.0F};
+  float pollIntervalMaxFactor{1.0F};
+
   // ===========================================
   // Slowloris / header read timeout mitigation
   // ===========================================
@@ -365,6 +371,14 @@ struct HttpServerConfig {
 
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);
+
+  // Configure poll-timeout scaling factors relative to pollInterval.
+  //   minFactor: lower bound in [0, 1]. After a poll returns max events, timeout drops to
+  //              pollInterval * minFactor (set to 0 to spin).
+  //   maxFactor: upper bound in [1, +inf). After consecutive idle polls, timeout grows up to
+  //              pollInterval * maxFactor.
+  //   The default {1.0F, 1.0F} disables adaptation and keeps a fixed pollInterval.
+  HttpServerConfig& withPollIntervalFactors(float minFactor, float maxFactor);
 
   // Set slow header read timeout (0=off)
   HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);

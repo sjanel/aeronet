@@ -27,12 +27,18 @@
 
 using namespace aeronet;
 
+namespace {
+EventLoop::PollTimeoutPolicy FixedPolicy(SysDuration timeout) noexcept {
+  return {.baseTimeout = timeout, .minTimeout = timeout, .maxTimeout = timeout};
+}
+}  // namespace
+
 // Epoll system overrides are now centralized in sys-test-support.hpp
 // under the AERONET_WANT_SOCKET_OVERRIDES macro.
 
 TEST(EventLoopTest, BasicPollAndGrowth) {
   // Short timeout so poll returns quickly if something goes wrong
-  EventLoop loop(std::chrono::milliseconds(50), 4);
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(50)), 4);
 
   // Create a single pipe and ensure data written to the write end triggers the callback
   int fds[2];
@@ -107,7 +113,7 @@ TEST(EventLoopTest, BasicPollAndGrowth) {
 }
 
 TEST(EventLoopTest, MoveConstructorAndAssignment) {
-  EventLoop loopA(std::chrono::milliseconds(10), 8);
+  EventLoop loopA(FixedPolicy(std::chrono::milliseconds(10)), 8);
   // Move-construct loopB from loopA
   EventLoop loopB(std::move(loopA));
   // loopB should have non-zero capacity and loopA should be in a valid but unspecified state
@@ -125,14 +131,14 @@ TEST(EventLoopTest, MoveConstructorAndAssignment) {
 }
 
 TEST(EventLoopTest, ConstructZeroCapacityShouldBePromoted) {
-  EventLoop loopA(std::chrono::milliseconds(10), 0);
+  EventLoop loopA(FixedPolicy(std::chrono::milliseconds(10)), 0);
 
-  loopA = EventLoop(std::chrono::milliseconds(10), 128);
+  loopA = EventLoop(FixedPolicy(std::chrono::milliseconds(10)), 128);
 }
 
 TEST(EventLoopTest, NoShrinkPolicy) {
   // create an EventLoop with small initial capacity
-  EventLoop loop(std::chrono::milliseconds(10), 4);
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(10)), 4);
 
   // Grow the loop by adding many fds and poll once
   const unsigned kExtra = 128;
@@ -175,13 +181,13 @@ TEST(EventLoopTest, NoShrinkPolicy) {
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails_BadFlags) {
   test::EventLoopHookGuard guard;
   test::SetEpollCreateActions({test::EpollCreateFail(EINVAL)});
-  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
+  EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::runtime_error);
 }
 
 TEST(EventLoopTest, ConstructorThrowsWhenEpollCreateFails) {
   test::EventLoopHookGuard guard;
   test::SetEpollCreateActions({test::EpollCreateFail(error::kTooManyFiles)});
-  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::runtime_error);
+  EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::runtime_error);
 }
 
 TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
@@ -190,22 +196,48 @@ TEST(EventLoopTest, ConstructorThrowsWhenAllocationFails) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
   test::FailNextMalloc();
-  EXPECT_THROW(EventLoop(std::chrono::milliseconds(5)), std::bad_alloc);
+  EXPECT_THROW(EventLoop(FixedPolicy(std::chrono::milliseconds(5))), std::bad_alloc);
 }
 
 TEST(EventLoopTest, PollReturnsZeroWhenInterrupted) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(error::kInterrupted)});
-  EventLoop loop(std::chrono::milliseconds(5));
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)));
   const auto events = loop.poll();
   EXPECT_NE(events.data(), nullptr);
   EXPECT_TRUE(events.empty());
 }
 
+TEST(EventLoopTest, AdaptivePollTimeoutIgnoresInterruptedPoll) {
+  test::EventLoopHookGuard guard;
+  // The interrupted poll must not count toward the idle-backoff threshold (4 consecutive idle
+  // polls needed). The last action becomes the default, so all subsequent polls also return 0.
+  test::SetEpollWaitActions({test::WaitError(error::kInterrupted), test::WaitReturn(0, {})});
+  EventLoop loop(EventLoop::PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5},
+                                              .minTimeout = std::chrono::milliseconds{0},
+                                              .maxTimeout = std::chrono::milliseconds{40}});
+
+  // Interrupted: idle counter not incremented, timeout stays at base.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+
+  // 3 more idle polls: counter reaches 3, still below threshold.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+
+  // 4th idle poll: threshold reached, backoff triggers (5 * 2 = 10 ms).
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+}
+
 TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({test::WaitError(EIO)});
-  EventLoop loop(std::chrono::milliseconds(5));
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)));
   const auto events = loop.poll();
   EXPECT_EQ(events.data(), nullptr);
   EXPECT_TRUE(events.empty());
@@ -213,7 +245,7 @@ TEST(EventLoopTest, PollReturnsMinusOneOnFatalError) {
 
 TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 2);
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
   const auto initialCapacity = loop.capacity();
   vector<epoll_event> events;
   events.reserve(initialCapacity);
@@ -240,7 +272,7 @@ TEST(EventLoopTest, PollKeepsCapacityWhenReallocFails) {
 
 TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 2);
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
   const auto initialCapacity = loop.capacity();
   vector<epoll_event> events;
   events.reserve(initialCapacity);
@@ -255,9 +287,112 @@ TEST(EventLoopTest, PollDoublesCapacityWhenReallocSucceeds) {
   EXPECT_EQ(loop.capacity(), initialCapacity * 2);
 }
 
+TEST(EventLoopTest, AdaptivePollTimeoutSpinsAfterSaturation) {
+  test::EventLoopHookGuard guard;
+  EventLoop loop(EventLoop::PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5},
+                                              .minTimeout = std::chrono::milliseconds{0},
+                                              .maxTimeout = std::chrono::milliseconds{80}},
+                 2);
+  vector<epoll_event> events;
+  events.reserve(loop.capacity());
+  events.push_back(test::MakeEvent(10, EventIn));
+  events.push_back(test::MakeEvent(11, EventIn));
+  test::SetEpollWaitActions({test::WaitReturn(2, std::move(events))});
+
+  const auto span = loop.poll();
+
+  ASSERT_NE(span.data(), nullptr);
+  EXPECT_EQ(span.size(), 2U);
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 0);
+}
+
+TEST(EventLoopTest, AdaptivePollTimeoutBacksOffWhenIdle) {
+  test::EventLoopHookGuard guard;
+  // Backoff threshold is 4 consecutive idle polls; growth factor is 2.
+  // The single action is also set as the default, so every subsequent poll also returns 0.
+  EventLoop loop(EventLoop::PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5},
+                                              .minTimeout = std::chrono::milliseconds{0},
+                                              .maxTimeout = std::chrono::milliseconds{40}});
+  test::SetEpollWaitActions({test::WaitReturn(0, {})});
+
+  // Idle polls 1-3: below threshold, timeout stays at base (5 ms).
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  // Idle poll 4: threshold reached, backoff: 5 * 2 = 10 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+
+  // Idle polls 5-7: below threshold, timeout stays at 10 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+  // Idle poll 8: threshold reached, backoff: 10 * 2 = 20 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 20);
+
+  // Idle polls 9-11: below threshold, timeout stays at 20 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 20);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 20);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 20);
+  // Idle poll 12: threshold reached, backoff: 20 * 2 = 40 ms (capped at maxTimeout).
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 40);
+
+  // Further idle polls: timeout stays capped at 40 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 40);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 40);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 40);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 40);
+}
+
+TEST(EventLoopTest, AdaptivePollTimeoutResetsOnNormalLoad) {
+  test::EventLoopHookGuard guard;
+  // Drive the loop into backoff (4 idle polls → 5→10 ms), then verify a non-empty poll
+  // resets the timeout back to the configured base.
+  EventLoop loop(EventLoop::PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5},
+                                              .minTimeout = std::chrono::milliseconds{0},
+                                              .maxTimeout = std::chrono::milliseconds{40}},
+                 4);
+  vector<epoll_event> readyEvents;
+  readyEvents.push_back(test::MakeEvent(42, EventIn));
+  test::SetEpollWaitActions({test::WaitReturn(0, {}), test::WaitReturn(0, {}), test::WaitReturn(0, {}),
+                             test::WaitReturn(0, {}), test::WaitReturn(1, std::move(readyEvents))});
+
+  // Idle polls 1-3: timeout stays at base.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  // Idle poll 4: backoff triggered, timeout doubles to 10 ms.
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+
+  // Normal load: 1 event → reset to base (5 ms).
+  const auto span = loop.poll();
+  ASSERT_NE(span.data(), nullptr);
+  EXPECT_EQ(span.size(), 1U);
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+}
+
 TEST(EventLoopTest, ModFailures) {
   test::EventLoopHookGuard guard;
-  EventLoop loop(std::chrono::milliseconds(5), 2);
+  EventLoop loop(FixedPolicy(std::chrono::milliseconds(5)), 2);
 
   // simulate benign mod failure (EBADF)
   test::FailAllEpollCtlMod(EBADF);
