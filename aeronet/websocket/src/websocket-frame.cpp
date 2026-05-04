@@ -13,7 +13,7 @@
 // at the TU level.
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #include <intrin.h>
 #endif
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -218,12 +218,15 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 namespace detail {
 
+namespace {
+
 // AVX2 path: 32-byte XOR loop with SSE2 residue for 16-byte remainder.
 // The target attribute makes GCC/Clang emit AVX2 instructions for this
 // function only, without requiring -mavx2 for the whole TU.
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx2")))
 #endif
+
 std::size_t ApplyMaskAvx2(std::byte* bytes, std::size_t sz, MaskingKey maskingKey) {
   std::size_t idx = 0;
   if (sz >= 32) {
@@ -255,6 +258,8 @@ std::size_t ApplyMaskSse2(std::byte* bytes, std::size_t sz, MaskingKey maskingKe
   }
   return idx;
 }
+
+}  // namespace
 
 }  // namespace detail
 #endif

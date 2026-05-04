@@ -5,18 +5,22 @@ FROM ubuntu:24.04 AS build
 
 ARG BUILD_MODE=Release
 
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        ninja-build \
-        libssl-dev \
-        zlib1g-dev \
-        libcurl4-openssl-dev \
-        cmake \
-        git \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+RUN set -e; \
+    for i in 1 2 3; do \
+      apt-get update && \
+      apt-get upgrade -y && \
+      apt-get install -y --no-install-recommends \
+          build-essential \
+          ninja-build \
+          libssl-dev \
+          zlib1g-dev \
+          libcurl4-openssl-dev \
+          cmake \
+          git \
+          ca-certificates && \
+      rm -rf /var/lib/apt/lists/* && \
+      break || { [ $i -lt 3 ] && sleep $((2**i)) || false; }; \
+    done
 
 WORKDIR /app
 COPY CMakeLists.txt /app/

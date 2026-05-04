@@ -31,6 +31,13 @@ AeronetAddUnitTest(
     aeronet_sys
 )
 
+AeronetAddUnitTest(
+    adaptive-poll-timeout_test
+    test/adaptive-poll-timeout_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
 # The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
 # accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

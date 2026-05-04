@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/router.hpp"

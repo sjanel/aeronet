@@ -2,10 +2,14 @@
 # alpine does not support asan with gcc, if you need asan, you can switch to clang
 FROM alpine:latest
 
-RUN apk update && \
-    apk add --no-cache build-base cmake ninja git bash python3 linux-headers \
-      openssl-dev protobuf-dev musl-dev curl-dev \
-    compiler-rt
+RUN set -e; \
+    for i in 1 2 3; do \
+      apk update && \
+      apk add --no-cache build-base cmake ninja git bash python3 linux-headers \
+        openssl-dev protobuf-dev musl-dev curl-dev \
+      compiler-rt && \
+      break || { [ $i -lt 3 ] && sleep $((2**i)) || false; }; \
+    done
 
 ENV CC=gcc
 ENV CXX=g++

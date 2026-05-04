@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### New features
 
 - Configuration of `HttpServer` by yaml or json config files with `AERONET_ENABLE_GLAZE` (see `SingleHttpServer::SingleHttpServer(const std::filesystem::path&)` and `MultiHttpServer::MultiHttpServer(const std::filesystem::path&)` constructors).
+- **Adaptive event-loop poll timeout**: `HttpServerConfig::pollIntervalMinFactor` / `pollIntervalMaxFactor` (default `1.0F` / `1.0F`) scale `pollInterval` dynamically. Saturated polls drop to the min factor; consecutive idle polls back off exponentially up to the max factor. Builder: `withPollIntervalFactors(minFactor, maxFactor)`. The default `{1, 1}` keeps the previous fixed behavior.
 
 ### Bug fixes
 
@@ -40,6 +41,7 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2 HPACK static table: hash-based encoding lookup (expected CPU gain from internal benches: ~33.5% average on `BM_HpackFindHeader` across 0/10/50/100 dynamic entries)
 - HTTP/2 HPACK dynamic table: reuse evicted-entry buffers in `add()` (expected CPU gain from internal benches: ~46.9% average on `BM_HpackEncode*`, ~19.9% average on `BM_HpackRoundTrip*`; decode overall roughly flat on average)
 - HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
+- Decrease memory usage in connections by offloading async handler states to a separate object that is not allocated for connections that do not use async handlers.
 
 ### Other
 

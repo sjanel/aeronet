@@ -16,6 +16,7 @@
 #include <coroutine>
 #endif
 
+#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
@@ -447,6 +448,7 @@ class SingleHttpServer {
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void prepareRun();
+  static PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
 
   // Shared implementation for startDetached / startDetachedAndStopWhen / startDetachedWithStopToken.
   AsyncHandle launchDetached(std::function<bool()> extraPredicate = {});

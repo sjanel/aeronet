@@ -6,8 +6,8 @@
 #include <string_view>
 
 #include "aeronet/builtin-probes-config.hpp"
-#include "aeronet/glaze-adapters.hpp"
-#include "aeronet/glaze-enum-adapters.hpp"
+#include "aeronet/glaze-adapters.hpp"       // IWYU pragma: keep
+#include "aeronet/glaze-enum-adapters.hpp"  // IWYU pragma: keep
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -218,30 +218,31 @@ struct glz::meta<aeronet::BuiltinProbesConfig> {
 template <>
 struct glz::meta<aeronet::HttpServerConfig> {
   using T = aeronet::HttpServerConfig;
-  static constexpr auto value =
-      glz::object("nbThreads", &T::nbThreads, "port", &T::port, "reusePort", &T::reusePort, "tcpNoDelay",
-                  &T::tcpNoDelay, "enableKeepAlive", &T::enableKeepAlive, "mergeUnknownRequestHeaders",
-                  &T::mergeUnknownRequestHeaders, "traceMethodPolicy", &T::traceMethodPolicy, "addTrailerHeader",
-                  &T::addTrailerHeader, "zerocopyMode", &T::zerocopyMode, "zerocopyMinBytes", &T::zerocopyMinBytes,
-                  "maxRequestsPerConnection", &T::maxRequestsPerConnection, "maxCachedConnections",
-                  &T::maxCachedConnections, "keepAliveTimeout", &T::keepAliveTimeout, "maxHeaderBytes",
-                  &T::maxHeaderBytes, "maxBodyBytes", &T::maxBodyBytes, "minCapturedBodySize", &T::minCapturedBodySize,
-                  "maxOutboundBufferBytes", &T::maxOutboundBufferBytes, "pollInterval", &T::pollInterval,
-                  "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout", &T::bodyReadTimeout, "tls", &T::tls,
+  static constexpr auto value = glz::object(
+      "nbThreads", &T::nbThreads, "port", &T::port, "reusePort", &T::reusePort, "tcpNoDelay", &T::tcpNoDelay,
+      "enableKeepAlive", &T::enableKeepAlive, "mergeUnknownRequestHeaders", &T::mergeUnknownRequestHeaders,
+      "traceMethodPolicy", &T::traceMethodPolicy, "addTrailerHeader", &T::addTrailerHeader, "zerocopyMode",
+      &T::zerocopyMode, "zerocopyMinBytes", &T::zerocopyMinBytes, "maxRequestsPerConnection",
+      &T::maxRequestsPerConnection, "maxCachedConnections", &T::maxCachedConnections, "keepAliveTimeout",
+      &T::keepAliveTimeout, "maxHeaderBytes", &T::maxHeaderBytes, "maxBodyBytes", &T::maxBodyBytes,
+      "minCapturedBodySize", &T::minCapturedBodySize, "maxOutboundBufferBytes", &T::maxOutboundBufferBytes,
+      "pollInterval", &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor, "pollIntervalMaxFactor",
+      &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout", &T::bodyReadTimeout,
+      "tls", &T::tls,
 #ifdef AERONET_ENABLE_HTTP2
-                  "http2", &T::http2,
+      "http2", &T::http2,
 #endif
-                  "telemetry", &T::telemetry, "compression", &T::compression, "decompression", &T::decompression,
-                  "minReadChunkBytes", &T::minReadChunkBytes, "maxPerEventReadBytes", &T::maxPerEventReadBytes,
-                  "globalHeaders", &T::globalHeaders, "builtinProbes", &T::builtinProbes, "connectAllowlist",
-                  glz::custom<[](T& self, const aeronet::vector<std::string>& hosts) {
-                    self.withConnectAllowlist(hosts.begin(), hosts.end());
-                  },
-                              [](const T& self) {
-                                aeronet::vector<std::string_view> result;
-                                for (auto sv : self.connectAllowlist()) {
-                                  result.push_back(sv);
-                                }
-                                return result;
-                              }>);
+      "telemetry", &T::telemetry, "compression", &T::compression, "decompression", &T::decompression,
+      "minReadChunkBytes", &T::minReadChunkBytes, "maxPerEventReadBytes", &T::maxPerEventReadBytes, "globalHeaders",
+      &T::globalHeaders, "builtinProbes", &T::builtinProbes, "connectAllowlist",
+      glz::custom<[](T& self, const aeronet::vector<std::string>& hosts) {
+        self.withConnectAllowlist(hosts.begin(), hosts.end());
+      },
+                  [](const T& self) {
+                    aeronet::vector<std::string_view> result;
+                    for (auto sv : self.connectAllowlist()) {
+                      result.push_back(sv);
+                    }
+                    return result;
+                  }>);
 };
