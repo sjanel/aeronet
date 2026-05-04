@@ -28,9 +28,12 @@
 #include "aeronet/single-http-server.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
+#include <filesystem>
 #include <fstream>
+#include <ios>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/config-loader.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL

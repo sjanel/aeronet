@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
@@ -113,6 +114,12 @@ HttpServerConfig& HttpServerConfig::withMaxAcceptBatchSize(uint32_t batchSize) {
 
 HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds interval) {
   this->pollInterval = interval;
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withPollIntervalFactors(float minFactor, float maxFactor) {
+  pollIntervalMinFactor = minFactor;
+  pollIntervalMaxFactor = maxFactor;
   return *this;
 }
 
@@ -319,11 +326,6 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("maxAcceptBatchSize must be > 0");
   }
 
-  if (std::cmp_less(std::numeric_limits<int>::max(),
-                    std::chrono::duration_cast<std::chrono::milliseconds>(pollInterval).count())) {
-    throw std::invalid_argument("Poll interval value is too large");
-  }
-
   if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {
     throw std::invalid_argument("too many global headers");
   }
@@ -378,9 +380,8 @@ void HttpServerConfig::validate() {
   if (keepAliveTimeout > kMaxTimeoutMs) {
     throw std::invalid_argument("keepAliveTimeout exceeds maximum representable duration (~49.7 days)");
   }
-  if (pollInterval.count() <= 0) {
-    throw std::invalid_argument("pollInterval must be > 0");
-  }
+  PollTimeoutPolicy{.baseTimeout = pollInterval, .minFactor = pollIntervalMinFactor, .maxFactor = pollIntervalMaxFactor}
+      .validate();
   if (headerReadTimeout.count() < 0) {
     throw std::invalid_argument("headerReadTimeout must be non-negative");
   }

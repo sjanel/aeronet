@@ -1626,7 +1626,7 @@ TEST_F(RouterTest, ClampConfigsPerRouteEqualToGlobalIsOk) {
 
 TEST_F(RouterTest, ClampConfigsPerRouteHeaderExceedsGlobalThrows) {
   router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(16384);
-  EXPECT_THROW(router.clampConfigs(8192, 1024 * 1024), std::invalid_argument);
+  EXPECT_THROW(router.clampConfigs(8192, 1024UL * 1024), std::invalid_argument);
 }
 
 TEST_F(RouterTest, ClampConfigsPerRouteBodyExceedsGlobalThrows) {

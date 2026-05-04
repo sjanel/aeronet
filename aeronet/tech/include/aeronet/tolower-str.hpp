@@ -9,7 +9,7 @@
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #include <intrin.h>
 #endif
 #endif
