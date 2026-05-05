@@ -1,5 +1,6 @@
 #include <aeronet/aeronet.hpp>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
