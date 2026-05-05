@@ -21,6 +21,8 @@
 #include <coroutine>
 #include <functional>
 #include <thread>
+
+#include "aeronet/async-handler-state.hpp"
 #endif
 
 #include "aeronet/compression-config.hpp"
