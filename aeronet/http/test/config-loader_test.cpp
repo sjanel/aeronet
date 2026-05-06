@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <glaze/glaze.hpp>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -13,12 +14,17 @@
 #include <vector>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 namespace aeronet {
 
@@ -955,7 +961,7 @@ struct BadSerializerDto {
 template <>
 struct glz::to<glz::JSON, aeronet::BadSerializerDto> {
   template <auto Opts, class... Args>
-  static void op(auto&&, glz::is_context auto&& ctx, Args&&...) {
+  static void op([[maybe_unused]] auto&& dummy, glz::is_context auto&& ctx, [[maybe_unused]] Args&&... args) {
     ctx.error = glz::error_code::syntax_error;
   }
 };
@@ -963,7 +969,7 @@ struct glz::to<glz::JSON, aeronet::BadSerializerDto> {
 template <>
 struct glz::to<glz::YAML, aeronet::BadSerializerDto> {
   template <auto Opts, class... Args>
-  static void op(auto&&, glz::is_context auto&& ctx, Args&&...) {
+  static void op([[maybe_unused]] auto&& dummy, glz::is_context auto&& ctx, [[maybe_unused]] Args&&... args) {
     ctx.error = glz::error_code::syntax_error;
   }
 };
