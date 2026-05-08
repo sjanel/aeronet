@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 
@@ -26,6 +28,7 @@ class DynamicConcatenatedStrings {
   static_assert(!kSep.empty());
 
   using size_type = SizeType;
+  using value_type = std::string_view;
   using BufferType = RawBytesBase<char, std::string_view, SizeType>;
 
   DynamicConcatenatedStrings() noexcept = default;
@@ -46,11 +49,22 @@ class DynamicConcatenatedStrings {
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
+    if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
+      const auto maxSize = static_cast<std::string_view::size_type>(std::numeric_limits<size_type>::max());
+      if (str.size() + kSep.size() > maxSize) {
+        throw std::overflow_error("DynamicConcatenatedStrings::append: part too large");
+      }
+    }
+    if (str.contains(kSep)) {
+      throw std::invalid_argument("DynamicConcatenatedStrings::append: part contains separator");
+    }
     _buf.ensureAvailableCapacityExponential(str.size() + kSep.size());
-    assert(!str.contains(kSep));
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
   }
+
+  // Insert one element for native Glaze readable array support.
+  void emplace(value_type str) { append(str); }
 
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
@@ -156,6 +170,9 @@ class DynamicConcatenatedStrings {
 
   // Clear all concatenated strings
   void clear() noexcept { _buf.clear(); }
+
+  // Number of concatenated parts.
+  [[nodiscard]] size_type size() const noexcept { return nbConcatenatedStrings(); }
 
   // Get the number of concatenated strings
   [[nodiscard]] size_type nbConcatenatedStrings() const noexcept {
