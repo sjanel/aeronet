@@ -4,11 +4,13 @@
 
 #include <chrono>
 #include <glaze/glaze.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
 
@@ -19,9 +21,16 @@ using TlsVersion = MajorMinorVersion<kTlsPrefix>;
 
 static_assert(glz::meta<std::chrono::milliseconds>::custom_read);
 static_assert(glz::meta<std::chrono::seconds>::custom_write);
-static_assert(glz::meta<ConcatenatedStrings>::custom_read);
-static_assert(glz::meta<ConcatenatedStrings32>::custom_read);
 static_assert(glz::meta<TlsVersion>::custom_write);
+static_assert(glz::readable_array_t<ConcatenatedStrings>);
+static_assert(glz::writable_array_t<ConcatenatedStrings>);
+static_assert(glz::readable_array_t<ConcatenatedStrings32>);
+static_assert(glz::writable_array_t<ConcatenatedStrings32>);
+
+using StaticParts3 = StaticConcatenatedStrings<3, uint32_t>;
+
+static_assert(glz::readable_array_t<StaticParts3>);
+static_assert(glz::writable_array_t<StaticParts3>);
 
 template <typename StringRange>
 std::vector<std::string> CollectStrings(const StringRange& values) {
@@ -79,7 +88,7 @@ TEST(GlazeAdaptersTest, ConcatenatedStrings32YamlRoundTripNonEmpty) {
 
   ConcatenatedStrings32 loaded;
   auto error = glz::read<glz::opts{.format = glz::YAML}>(loaded, yaml.value());
-  ASSERT_FALSE(bool(error));
+  ASSERT_FALSE(bool(error)) << glz::format_error(error, yaml.value());
 
   EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"alpha", "beta"}));
 }
@@ -105,9 +114,62 @@ TEST(GlazeAdaptersTest, ConcatenatedStringsYamlRoundTripNonEmpty) {
 
   ConcatenatedStrings loaded;
   auto error = glz::read<glz::opts{.format = glz::YAML}>(loaded, yaml.value());
-  ASSERT_FALSE(bool(error));
+  ASSERT_FALSE(bool(error)) << glz::format_error(error, yaml.value());
 
   EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"gamma", "delta"}));
+}
+
+TEST(GlazeAdaptersTest, ConcatenatedStringsAppendRejectsPartWithSeparator) {
+  ConcatenatedStrings loaded;
+
+  std::string invalid{"ab"};
+  invalid.push_back('\0');
+  invalid += "cd";
+
+  EXPECT_THROW(loaded.append(invalid), std::invalid_argument);
+}
+
+TEST(GlazeAdaptersTest, StaticConcatenatedStringsJsonRoundTrip) {
+  StaticParts3 original{"alpha", "beta", "gamma"};
+
+  auto json = glz::write_json(original);
+  ASSERT_TRUE(json);
+
+  EXPECT_EQ(json.value(), R"(["alpha","beta","gamma"])");
+
+  StaticParts3 loaded;
+  auto error = glz::read_json(loaded, json.value());
+  ASSERT_FALSE(bool(error));
+
+  EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"alpha", "beta", "gamma"}));
+}
+
+TEST(GlazeAdaptersTest, StaticConcatenatedStringsYamlRoundTrip) {
+  StaticParts3 original{"a", "b", "c"};
+
+  auto yaml = glz::write<glz::opts{.format = glz::YAML}>(original);
+  ASSERT_TRUE(yaml);
+
+  StaticParts3 loaded;
+  auto error = glz::read<glz::opts{.format = glz::YAML}>(loaded, yaml.value());
+  ASSERT_FALSE(bool(error));
+
+  EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"a", "b", "c"}));
+}
+
+TEST(GlazeAdaptersTest, StaticConcatenatedStringsJsonRejectsTooManyParts) {
+  StaticParts3 loaded;
+
+  EXPECT_THROW(static_cast<void>(glz::read_json(loaded, R"(["a", "b", "c", "d"])")), std::length_error);
+}
+
+TEST(GlazeAdaptersTest, StaticConcatenatedStringsJsonShortInputFillsMissingWithEmpty) {
+  StaticParts3 loaded;
+
+  auto error = glz::read_json(loaded, R"(["x", "y"])");
+  ASSERT_FALSE(bool(error));
+
+  EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"x", "y", ""}));
 }
 
 TEST(GlazeAdaptersTest, TlsVersionYamlAcceptsShortForm) {
