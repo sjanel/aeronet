@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -13,7 +12,6 @@
 #include "aeronet/duration-string.hpp"
 #include "aeronet/dynamic-concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
-#include "aeronet/static-concatenated-strings.hpp"
 #include "aeronet/vector.hpp"
 
 // ============================================================================
@@ -163,69 +161,20 @@ struct to<YAML, std::chrono::seconds> {
   }
 };
 
-// --- DynamicConcatenatedStrings<Sep, SizeType>: read/write as array of strings ---
 template <const char* Sep, class SizeType>
-struct meta<aeronet::DynamicConcatenatedStrings<Sep, SizeType>> {
-  static constexpr bool custom_read = true;
-  static constexpr bool custom_write = true;
-};
-
-template <uint32_t Format, const char* Sep, class SizeType>
-struct from<Format, aeronet::DynamicConcatenatedStrings<Sep, SizeType>> {
+struct from<YAML, aeronet::DynamicConcatenatedStrings<Sep, SizeType>> {
   template <auto Opts>
   static void op(aeronet::DynamicConcatenatedStrings<Sep, SizeType>& value, is_context auto&& ctx, auto&& it,
                  auto&& end) {
     aeronet::vector<std::string> arr;
-    from<Format, aeronet::vector<std::string>>::template op<Opts>(arr, ctx, it, end);
-    assert(!bool(ctx.error));  // Glaze validated structure before calling custom reader
+    from<YAML, aeronet::vector<std::string>>::template op<Opts>(arr, ctx, it, end);
+    if (bool(ctx.error)) {
+      return;
+    }
     value.clear();
     for (const auto& str : arr) {
       value.append(str);
     }
-  }
-};
-
-template <uint32_t Format, const char* Sep, class SizeType>
-struct to<Format, aeronet::DynamicConcatenatedStrings<Sep, SizeType>> {
-  template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const aeronet::DynamicConcatenatedStrings<Sep, SizeType>& value, Ctx&& ctx, B&& b, IX&& ix) {
-    aeronet::vector<std::string_view> arr;
-    for (auto sv : value) {
-      arr.push_back(sv);
-    }
-    serialize<Format>::template op<Opts>(arr, ctx, b, ix);
-  }
-};
-
-// --- StaticConcatenatedStrings<N, SizeType>: read/write as array of strings ---
-template <unsigned N, class SizeType>
-struct meta<aeronet::StaticConcatenatedStrings<N, SizeType>> {
-  static constexpr bool custom_read = true;
-  static constexpr bool custom_write = true;
-};
-
-template <uint32_t Format, unsigned N, class SizeType>
-struct from<Format, aeronet::StaticConcatenatedStrings<N, SizeType>> {
-  template <auto Opts>
-  static void op(aeronet::StaticConcatenatedStrings<N, SizeType>& value, is_context auto&& ctx, auto&& it, auto&& end) {
-    std::array<std::string, N> arr;
-    from<Format, std::array<std::string, N>>::template op<Opts>(arr, ctx, it, end);
-    assert(!bool(ctx.error));  // Glaze validated structure before calling custom reader
-    for (unsigned idx = 0; idx < N; ++idx) {
-      value.set(idx, arr[idx]);
-    }
-  }
-};
-
-template <uint32_t Format, unsigned N, class SizeType>
-struct to<Format, aeronet::StaticConcatenatedStrings<N, SizeType>> {
-  template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const aeronet::StaticConcatenatedStrings<N, SizeType>& value, Ctx&& ctx, B&& b, IX&& ix) {
-    std::array<std::string_view, N> arr;
-    for (unsigned idx = 0; idx < N; ++idx) {
-      arr[idx] = value[idx];
-    }
-    serialize<Format>::template op<Opts>(arr, ctx, b, ix);
   }
 };
 
@@ -268,16 +217,12 @@ template <uint32_t Format, const char* Prefix>
 struct to<Format, aeronet::MajorMinorVersion<Prefix>> {
   template <auto Opts, is_context Ctx, class B, class IX>
   static void op(const aeronet::MajorMinorVersion<Prefix>& value, Ctx&& ctx, B&& b, IX&& ix) {
-    if (!value.isValid()) {
-      serialize<Format>::template op<Opts>(std::string_view{""}, ctx, b, ix);
-    } else {
+    if (value.isValid()) {
       // Write as short form "X.Y"
-      char buf[4];
-      buf[0] = static_cast<char>('0' + value.major());
-      buf[1] = '.';
-      buf[2] = static_cast<char>('0' + value.minor());
-      buf[3] = '\0';
-      serialize<Format>::template op<Opts>(std::string_view{buf, 3}, ctx, b, ix);
+      char buf[]{static_cast<char>('0' + value.major()), '.', static_cast<char>('0' + value.minor())};
+      serialize<Format>::template op<Opts>(std::string_view{buf, sizeof(buf)}, ctx, b, ix);
+    } else {
+      serialize<Format>::template op<Opts>(std::string_view{""}, ctx, b, ix);
     }
   }
 };

@@ -5,8 +5,10 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -29,6 +31,7 @@ class StaticConcatenatedStrings {
 
  public:
   using size_type = SizeType;
+  using value_type = std::string;
 
   using Offsets = std::array<size_type, N - 1>;
 
@@ -129,7 +132,64 @@ class StaticConcatenatedStrings {
 
   [[nodiscard]] std::string_view operator[](size_type idx) const { return {begPtr(idx), sizeAt(idx)}; }
 
-  bool operator==(const StaticConcatenatedStrings&) const noexcept = default;
+  // Number of static parts.
+  [[nodiscard]] static constexpr size_type size() noexcept { return static_cast<size_type>(kParts); }
+
+  // Reset all parts to empty strings.
+  void clear() noexcept {
+    _nextInsertIdx = 0;
+    _buf.clear();
+  }
+
+  // JSON set-like path uses range value type (std::string_view) rather than value_type.
+  void emplace(std::string_view str) {
+    if (_nextInsertIdx >= static_cast<size_type>(kParts)) {
+      throw std::length_error("StaticConcatenatedStrings::emplace: too many parts");
+    }
+    set(_nextInsertIdx, str);
+    ++_nextInsertIdx;
+  }
+
+  class iterator {
+   public:
+    using value_type = std::string_view;
+    using reference = std::string_view;
+    using pointer = const std::string_view*;
+    using difference_type = std::ptrdiff_t;
+    using iterator_category = std::forward_iterator_tag;
+
+    iterator() noexcept = default;
+
+    iterator(const StaticConcatenatedStrings* owner, size_type index) noexcept : _owner(owner), _index(index) {}
+
+    reference operator*() const noexcept { return (*_owner)[_index]; }
+
+    iterator& operator++() noexcept {
+      ++_index;
+      return *this;
+    }
+
+    iterator operator++(int) noexcept {
+      iterator tmp = *this;
+      ++(*this);
+      return tmp;
+    }
+
+    bool operator==(const iterator&) const noexcept = default;
+
+   private:
+    const StaticConcatenatedStrings* _owner = nullptr;
+    size_type _index = 0;
+  };
+
+  [[nodiscard]] iterator begin() noexcept { return iterator(this, 0); }
+  [[nodiscard]] iterator end() noexcept { return iterator(this, static_cast<size_type>(kParts)); }
+  [[nodiscard]] iterator begin() const noexcept { return iterator(this, 0); }
+  [[nodiscard]] iterator end() const noexcept { return iterator(this, static_cast<size_type>(kParts)); }
+
+  bool operator==(const StaticConcatenatedStrings& other) const noexcept {
+    return _offsets == other._offsets && _buf == other._buf;
+  }
 
   using trivially_relocatable = std::true_type;
 
@@ -150,6 +210,7 @@ class StaticConcatenatedStrings {
   }
 
   Offsets _offsets;
+  size_type _nextInsertIdx = 0;
   RawBytesBase<char, std::string_view, size_type> _buf;
 };
 
