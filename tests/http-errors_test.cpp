@@ -281,6 +281,54 @@ TEST(HttpResponseDispatchErrors, QueueDataTransportError) {
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms));
 }
 
+// Test queueData isAnyCloseRequested() early return guard (lines 170-173 in http-response-dispatch.cpp).
+// When an interim 102 Processing response fails to write (transport error), requestDrainAndClose() is
+// set inside queueData(). The subsequent queueData() call for the final response detects
+// isAnyCloseRequested() == true and returns early without queuing the response.
+// Call chain: handleExpectHeader -> queueData(102) -> TransportHint::Error -> requestDrainAndClose()
+//             -> finalizeAndSendResponseForHttp1 -> queueData(response) -> line 170 guard fires
+TEST(HttpResponseDispatchErrors, QueueDataSkipsWhenCloseAlreadyRequested) {
+  test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+    SingleHttpServer::ExpectationResult res;
+    if (token == "proc") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 102;
+      return res;
+    }
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
+    return res;
+  });
+
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
+
+  // Inject a write error so the 102 Processing interim response write fails with a transport error.
+  // This causes requestDrainAndClose() to be set inside queueData() (Error branch).
+  // The subsequent final response's queueData() call then sees isAnyCloseRequested() == true
+  // and returns early — so "ok" is never written to the socket.
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {{-1, error::kBrokenPipe}},
+      .writevActions = {{-1, error::kBrokenPipe}},
+      .sendfileActions = {},
+  });
+
+  test::ClientConnection client(ts.port());
+  // Send POST with Expect: proc and body already in the segment. The server processes
+  // the Expect header, fails the 102 write, then calls queueData for the final response
+  // which returns early because isAnyCloseRequested() is true — no "ok" body is sent.
+  test::sendAll(client.fd(),
+                "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: proc\r\nConnection: close\r\n\r\nhello");
+
+  auto resp = test::recvWithTimeout(client.fd(), 500ms);
+  EXPECT_FALSE(resp.contains("ok")) << "Final response must not be queued after drain+close was requested: " << resp;
+  EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms));
+
+  ts.server.setExpectationHandler({});
+}
+
 // Test flushOutbound TransportHint::Error path (line 364-372)
 TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);

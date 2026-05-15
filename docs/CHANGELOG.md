@@ -8,6 +8,7 @@ All notable changes to aeronet are documented in this file.
 
 - Configuration of `HttpServer` by yaml or json config files with `AERONET_ENABLE_GLAZE` (see `SingleHttpServer::SingleHttpServer(const std::filesystem::path&)` and `MultiHttpServer::MultiHttpServer(const std::filesystem::path&)` constructors).
 - **Adaptive event-loop poll timeout**: `HttpServerConfig::pollIntervalMinFactor` / `pollIntervalMaxFactor` (default `1.0F` / `1.0F`) scale `pollInterval` dynamically. Saturated polls drop to the min factor; consecutive idle polls back off exponentially up to the max factor. Builder: `withPollIntervalFactors(minFactor, maxFactor)`. The default `{1, 1}` keeps the previous fixed behavior.
+- **Keep-alive deadline queue**: idle keep-alive reaping now uses an intrusive min-heap keyed by expiry deadline instead of scanning every active connection on each maintenance tick. The common idle HTTP/1.1 path checks only expired deadlines, with full sweeps reserved for active timeout/backpressure/drain maintenance. Added `aeronet-bench-internal-keep-alive-deadline-queue` for 10 K idle-connection measurements.
 
 ### Bug fixes
 
@@ -42,6 +43,7 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2 HPACK dynamic table: reuse evicted-entry buffers in `add()` (expected CPU gain from internal benches: ~46.9% average on `BM_HpackEncode*`, ~19.9% average on `BM_HpackRoundTrip*`; decode overall roughly flat on average)
 - HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
 - Decrease memory usage in connections by offloading async handler states to a separate object that is not allocated for connections that do not use async handlers.
+- Backpressure queueing now rejects additional response chunks immediately once `maxOutboundBufferBytes` marks a connection for drain, avoiding repeated buffer growth/work when streaming handlers ignore a failed `writeBody()` result.
 
 ### Other
 

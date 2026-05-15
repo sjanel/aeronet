@@ -340,6 +340,7 @@ void ConnectionState::reset() {
   headerStartTp = {};
   bodyLastActivityMs = kInactiveRelativeMs;
   requestDeadlineMs = kInactiveRelativeMs;
+  keepAliveDeadlineIndex = kNoKeepAliveDeadlineIndex;
   parsingHeaders = false;
   peerFd = kInvalidHandle;
   peerStreamId = 0;
