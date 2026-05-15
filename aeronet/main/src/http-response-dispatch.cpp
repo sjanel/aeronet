@@ -107,6 +107,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 
   // Enter tunneling mode: link client → upstream (upstream → client is set by setupTunnelConnection).
   state.peerFd = upstreamFd;
+  refreshKeepAliveDeadline(cnxIt);
 
   // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
   if (auto* clientPlain = dynamic_cast<PlainTransport*>(state.transport.get())) {
@@ -131,7 +132,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
   // Clear per-route request deadline and headerStartTp now that a response is being sent.
   // Resetting headerStartTp to epoch allows transportRead to re-arm it for the next keep-alive request.
-  state.requestDeadlineMs = ConnectionState::kInactiveRelativeMs;
+  clearRequestDeadline(state);
   state.headerStartTp = {};
 
   request.prefinalizeHttpResponse(resp, _telemetry);
@@ -167,6 +168,9 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
 void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData) {
   ConnectionState& state = _connections.connectionState(cnxIt);
+  if (state.isAnyCloseRequested()) {
+    return;
+  }
 
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
@@ -185,43 +189,45 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpRespon
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
-  if (state.outBuffer.empty()) {
-    // Cork the socket to coalesce header + body into fewer TCP segments.
-    // The guard uncorks on scope exit, flushing any accumulated data.
-    const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
+  // flushOutbound() always drains outBuffer to empty before returning (spinning on EAGAIN
+  // until the kernel accepts bytes or a terminal error clears outBuffer). Errors set
+  // isAnyCloseRequested(), caught by the guard above. This path is therefore unreachable
+  // with the current synchronous transport architecture.
+  assert(state.outBuffer.empty());
 
-    // Plain TCP path: try immediate write optimization
-    const auto [written, want] = state.transportWrite(httpResponseData);
-    switch (want) {
-      case TransportHint::Error:
-        state.requestDrainAndClose();
-        return;
-      case TransportHint::ReadReady:
-        [[fallthrough]];
-      case TransportHint::WriteReady:
-        [[fallthrough]];
-      case TransportHint::None:
-        if (written == bufferedSz) {
-          _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-          _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-          // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
-          // asynchronously. We must keep the buffer alive until the kernel signals
-          // completion via the error queue, otherwise the allocator can reuse the
-          // freed pages while the kernel is still transmitting — causing data corruption.
-          state.holdBufferIfZerocopyPending(std::move(httpResponseData));
-          if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
-            flushFilePayload(cnxIt);
-          }
-          return;
-        }
-        // partial write, capture the buffer in the connection state
-        httpResponseData.addOffset(static_cast<std::size_t>(written));
-        state.outBuffer = std::move(httpResponseData);
+  // Cork the socket to coalesce header + body into fewer TCP segments.
+  // The guard uncorks on scope exit, flushing any accumulated data.
+  const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
+
+  // Plain TCP path: try immediate write optimization
+  const auto [written, want] = state.transportWrite(httpResponseData);
+  switch (want) {
+    case TransportHint::Error:
+      state.requestDrainAndClose();
+      return;
+    case TransportHint::ReadReady:
+      [[fallthrough]];
+    case TransportHint::WriteReady:
+      [[fallthrough]];
+    case TransportHint::None:
+      if (written == bufferedSz) {
+        _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
         _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-        break;
-    }
-  } else {
-    state.outBuffer.append(std::move(httpResponseData));
+        // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
+        // asynchronously. We must keep the buffer alive until the kernel signals
+        // completion via the error queue, otherwise the allocator can reuse the
+        // freed pages while the kernel is still transmitting — causing data corruption.
+        state.holdBufferIfZerocopyPending(std::move(httpResponseData));
+        if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+          flushFilePayload(cnxIt);
+        }
+        return;
+      }
+      // partial write, capture the buffer in the connection state
+      httpResponseData.addOffset(static_cast<std::size_t>(written));
+      state.outBuffer = std::move(httpResponseData);
+      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+      break;
   }
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();

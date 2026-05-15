@@ -228,6 +228,7 @@ bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
   assert(!state.waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
     state.waitingWritable = true;
+    ++_connectionSweepState.writableConnections;
     ++_stats.deferredWriteEvents;
     return true;
   }
@@ -245,10 +246,11 @@ bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(state.waitingWritable);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
-    state.waitingWritable = false;
+    forgetWritableInterest(state);
     return true;
   }
   ++_stats.epollModFailures;
+  forgetWritableInterest(state);
   state.outBuffer.clear();
   state.tunnelOrFileBuffer.clear();
   state.requestDrainAndClose();
@@ -425,6 +427,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     // A full request head (and body, if present) will now be processed; mark header parsing as done.
     // headerStartTp is kept alive as the reference for relative body/deadline timestamps.
+    if (state.parsingHeaders && _config.headerReadTimeout.count() > 0) {
+      assert(_connectionSweepState.pendingTimeoutConnections > 0U);
+      --_connectionSweepState.pendingTimeoutConnections;
+    }
     state.parsingHeaders = false;
     bool isChunked = false;
     const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
@@ -463,10 +469,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
     if (routingResult.pathConfig.requestTimeout != std::chrono::milliseconds::max()) {
-      state.requestDeadlineMs =
-          static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    state.lastActivity - state.headerStartTp + routingResult.pathConfig.requestTimeout)
-                                    .count());
+      trackRequestDeadline(state, static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                            state.lastActivity - state.headerStartTp +
+                                                            routingResult.pathConfig.requestTimeout)
+                                                            .count()));
     }
 
     // Check for HTTP/2 cleartext upgrade (h2c) - only on plaintext listeners
@@ -486,6 +492,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       // Create HTTP/2 protocol handler using unified dispatch
       state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                 _decompressionState, _telemetry, _sharedBuffers.buf);
+      ++_connectionSweepState.http2Connections;
       state.protocol = ProtocolType::Http2;
       installH2TunnelBridge(cnxIt->fd(), state);
 
@@ -580,6 +587,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     const bool bodyReady = decodeStatus == BodyDecodeStatus::Ready;
     if (bodyReady) {
       if (_config.bodyReadTimeout.count() > 0) {
+        if (state.waitingForBody) {
+          assert(_connectionSweepState.pendingTimeoutConnections > 0U);
+          --_connectionSweepState.pendingTimeoutConnections;
+        }
         state.waitingForBody = false;
         state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
       }
@@ -590,6 +601,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       state.installAggregatedBodyBridge();
     } else {
       if (_config.bodyReadTimeout.count() > 0) {
+        if (!state.waitingForBody) {
+          ++_connectionSweepState.pendingTimeoutConnections;
+        }
         state.waitingForBody = true;
         state.bodyLastActivityMs = static_cast<uint32_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
@@ -933,6 +947,10 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
     state.installAggregatedBodyBridge();
 
     if (_config.bodyReadTimeout.count() > 0) {
+      if (state.waitingForBody) {
+        assert(_connectionSweepState.pendingTimeoutConnections > 0U);
+        --_connectionSweepState.pendingTimeoutConnections;
+      }
       state.waitingForBody = false;
       state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
     }
@@ -1098,7 +1116,9 @@ void SingleHttpServer::eventLoop() {
           continue;
         }
 
-        _connections.connectionState(cnxIt).lastActivity = now;
+        ConnectionState& eventState = _connections.connectionState(cnxIt);
+        eventState.lastActivity = now;
+        refreshKeepAliveDeadline(cnxIt);
 
         CloseStatus closeStatus = CloseStatus::Keep;
         if ((bmp & EventOut) != 0) {
@@ -1458,6 +1478,7 @@ void SingleHttpServer::applyPendingUpdates() {
     _compressionState.selector = EncodingSelector(_config.compression);
     _eventLoop.updatePollTimeoutPolicy(MakePollTimeoutPolicy(_config));
     updateMaintenanceTimer();
+    rebuildKeepAliveDeadlines();
     registerBuiltInProbes();
     needsClamp = true;
 
@@ -1652,6 +1673,7 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                             _decompressionState, _telemetry, _sharedBuffers.buf, true);
+  ++_connectionSweepState.http2Connections;
   state.protocol = ProtocolType::Http2;
 
   // Install CONNECT tunnel bridge so the HTTP/2 handler can request TCP tunnel setup.
