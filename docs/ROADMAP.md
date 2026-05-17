@@ -2,11 +2,6 @@
 
 ## High priority
 
-- **HTTP/2 Performance Optimization & Testing** (h2load benchmarks):
-  - Micro-benchmarks for stream multiplexing efficiency
-  - h2load-based load testing scenarios (concurrent streams, various payload sizes)
-  - Performance regression detection in CI
-  - Identify and optimize hot paths in HPACK, flow control, and frame processing
 - **Security Hardening Audit**:
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
