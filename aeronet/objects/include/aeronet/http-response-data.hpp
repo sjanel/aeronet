@@ -58,6 +58,14 @@ class HttpResponseData {
     }
   }
 
+  void append(const char* data, std::size_t size) {
+    if (_capturedBody.empty()) {
+      _buf.append(data, size);
+    } else {
+      _capturedBody.append(data, size);
+    }
+  }
+
   void clear() noexcept {
     _buf.clear();
     _capturedBody.clear();

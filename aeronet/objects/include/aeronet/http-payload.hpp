@@ -79,7 +79,9 @@ class HttpPayload {
   [[nodiscard]] std::string_view view() const noexcept;
 
   // Appends data to the body (internal or captured) from a `const char*` and size.
-  void append(std::string_view data);
+  void append(const char* data, std::size_t size);
+
+  void append(std::string_view data) { append(data.data(), data.size()); }
 
   void append(const HttpPayload& other);
 

@@ -97,6 +97,9 @@ class Http2Connection {
   /// @return ProcessResult indicating next action and bytes consumed
   [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data);
 
+  /// Check if there's pending output to write.
+  [[nodiscard]] bool hasPendingOutput() const noexcept { return _outputWritePos < _outputBuffer.size(); }
+
   /// Get pending output data to be written to the transport.
   /// @return View of the output buffer (valid until next processInput or write operation)
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept {
@@ -106,9 +109,6 @@ class Http2Connection {
   /// Notify that output was successfully written to the transport.
   /// @param bytesWritten Number of bytes written
   void onOutputWritten(std::size_t bytesWritten);
-
-  /// Check if there's pending output to write.
-  [[nodiscard]] bool hasPendingOutput() const noexcept { return _outputWritePos < _outputBuffer.size(); }
 
   /// Initiate graceful shutdown by sending GOAWAY.
   /// @param errorCode Error code to include in GOAWAY (default: NO_ERROR)

@@ -2041,4 +2041,68 @@ TEST_F(WebSocketHandlerTest, DecompressionFailureWithoutOnErrorCallback) {
 
 #endif  // AERONET_ENABLE_ZLIB
 
+// ============================================================================
+// Client-side masking tests
+// ============================================================================
+
+// Helper: parse the first frame from a handler's pending output.
+static FrameParseResult ParseOutputFrame(WebSocketHandler& h) {
+  auto pending = h.getPendingOutput();
+  // Client sends masked frames → ParseFrame needs isServerSide=true (expects masking).
+  // Server sends unmasked frames → ParseFrame needs isServerSide=false.
+  const bool expectMasked = !h.config().isServerSide;
+  return ParseFrame(pending, /*maxPayloadSize=*/0, /*isServerSide=*/expectMasked, /*allowRsv1=*/false);
+}
+
+TEST(WebSocketClientMaskingTest, OutgoingFrameIsMasked) {
+  auto clientHandler = CreateClientWebSocketHandler();
+  EXPECT_TRUE(clientHandler->sendText("Hello"));
+
+  auto frame = ParseOutputFrame(*clientHandler);
+  EXPECT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_TRUE(frame.header.masked);
+  EXPECT_NE(frame.header.maskingKey, MaskingKey{0});
+}
+
+TEST(WebSocketClientMaskingTest, ServerSideFrameIsNotMasked) {
+  auto serverHandler = CreateServerWebSocketHandler();
+  EXPECT_TRUE(serverHandler->sendText("Hello"));
+
+  auto frame = ParseOutputFrame(*serverHandler);
+  EXPECT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_FALSE(frame.header.masked);
+}
+
+TEST(WebSocketClientMaskingTest, SuccessiveFramesHaveDifferentMaskingKeys) {
+  auto clientHandler = CreateClientWebSocketHandler();
+
+  clientHandler->sendText("First");
+  auto frame1 = ParseOutputFrame(*clientHandler);
+  clientHandler->onOutputWritten(clientHandler->getPendingOutput().size());
+
+  clientHandler->sendText("Second");
+  auto frame2 = ParseOutputFrame(*clientHandler);
+
+  EXPECT_EQ(frame1.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(frame2.status, FrameParseResult::Status::Complete);
+  EXPECT_TRUE(frame1.header.masked);
+  EXPECT_TRUE(frame2.header.masked);
+  EXPECT_NE(frame1.header.maskingKey, frame2.header.maskingKey);
+}
+
+TEST(WebSocketClientMaskingTest, MovedHandlerRetainsMaskingState) {
+  auto clientHandler = CreateClientWebSocketHandler();
+  clientHandler->sendText("Before move");
+  auto frame1 = ParseOutputFrame(*clientHandler);
+  clientHandler->onOutputWritten(clientHandler->getPendingOutput().size());
+
+  WebSocketHandler movedHandler(std::move(*clientHandler));
+  movedHandler.sendText("After move");
+  auto frame2 = ParseOutputFrame(movedHandler);
+
+  EXPECT_TRUE(frame1.header.masked);
+  EXPECT_TRUE(frame2.header.masked);
+  EXPECT_NE(frame1.header.maskingKey, frame2.header.maskingKey);
+}
+
 }  // namespace aeronet::websocket
