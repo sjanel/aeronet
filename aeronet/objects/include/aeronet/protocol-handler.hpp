@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
+
+#include "aeronet/http-response-data.hpp"
 
 namespace aeronet {
 
@@ -68,12 +71,11 @@ class IProtocolHandler {
   ///   - Indicate if a response is ready, upgrade requested, or error occurred
   [[nodiscard]] virtual ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) = 0;
 
-  /// Check if the handler has pending outbound data to write.
-  [[nodiscard]] virtual bool hasPendingOutput() const noexcept = 0;
-
   /// Get pending output data to be written to the transport.
-  /// After this call, the returned data should be considered consumed.
-  [[nodiscard]] virtual std::span<const std::byte> getPendingOutput() = 0;
+  [[nodiscard]] virtual std::span<const std::byte> getPendingOutput() const noexcept = 0;
+
+  /// Check if the handler has pending outbound data to write.
+  [[nodiscard]] bool hasPendingOutput() const noexcept { return !getPendingOutput().empty(); }
 
   /// Notify the handler that output was successfully written.
   /// @param bytesWritten Number of bytes successfully written to transport
@@ -85,6 +87,20 @@ class IProtocolHandler {
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
   virtual void onTransportClosing() = 0;
+
+  /// Drains all pending output into dest, returning true if any data was transferred.
+  ///
+  /// The default implementation copies pending output via getPendingOutput() + onOutputWritten().
+  /// Protocol handlers may override this to perform a zero-copy move of their internal buffer.
+  virtual bool drainOutputBuffer(HttpResponseData& dest) {
+    auto pending = getPendingOutput();
+    if (pending.empty()) {
+      return false;
+    }
+    dest.append(reinterpret_cast<const char*>(pending.data()), pending.size());
+    onOutputWritten(pending.size());
+    return true;
+  }
 };
 
 /// Factory function type for creating protocol handlers.

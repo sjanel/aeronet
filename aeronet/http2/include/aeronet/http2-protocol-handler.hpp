@@ -86,9 +86,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data,
                                                    ::aeronet::ConnectionState& state) override;
 
-  [[nodiscard]] bool hasPendingOutput() const noexcept override { return _connection.hasPendingOutput(); }
-
-  [[nodiscard]] std::span<const std::byte> getPendingOutput() override { return _connection.getPendingOutput(); }
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
+    return _connection.getPendingOutput();
+  }
 
   void onOutputWritten(std::size_t bytesWritten) override {
     _connection.onOutputWritten(bytesWritten);

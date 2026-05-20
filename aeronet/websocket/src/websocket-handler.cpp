@@ -8,7 +8,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <random>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -33,8 +32,8 @@ namespace {
 /// @param end  One-past-end of the buffer.
 /// @param lead The leading byte of the sequence (already consumed).
 /// @return true if the sequence is valid.
-bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t lead) {
-  std::size_t remaining;
+constexpr bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t lead) {
+  uint32_t remaining;
   uint32_t codepoint;
   uint32_t minCodepoint;
 
@@ -54,12 +53,12 @@ bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t 
     return false;
   }
 
-  if (ptr + remaining > end) {
+  if (end < ptr + remaining) {
     return false;
   }
 
-  for (std::size_t idx = 0; idx < remaining; ++idx) {
-    uint8_t byte = *ptr++;
+  for (decltype(remaining) idx = 0; idx < remaining; ++idx) {
+    const uint8_t byte = *ptr++;
     if ((byte & 0xC0) != 0x80) {
       return false;
     }
@@ -88,15 +87,15 @@ bool ValidateUtf8(std::span<const std::byte> data) {
 #ifdef __SSE2__
   // Fast-scan 16 bytes at a time: if all bytes are ASCII (high bit=0), skip the whole chunk.
   while (ptr + 16 <= end) {
-    __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr));
-    int mask = _mm_movemask_epi8(chunk);
+    const __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr));
+    const int mask = _mm_movemask_epi8(chunk);
     if (mask == 0) {
       // All 16 bytes are ASCII
       ptr += 16;
       continue;
     }
     // At least one non-ASCII byte — find it and validate the multibyte sequence
-    auto offset = static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
+    const auto offset = static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
     ptr += offset;
     uint8_t lead = *ptr++;
     if (!ValidateMultibyteSequence(ptr, end, lead)) {
@@ -105,7 +104,7 @@ bool ValidateUtf8(std::span<const std::byte> data) {
   }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
   while (ptr + 16 <= end) {
-    uint8x16_t chunk = vld1q_u8(ptr);
+    const uint8x16_t chunk = vld1q_u8(ptr);
     // Check if any byte has the high bit set (>= 0x80)
     if (vmaxvq_u8(chunk) < 0x80) {
       ptr += 16;
@@ -118,7 +117,7 @@ bool ValidateUtf8(std::span<const std::byte> data) {
     if (ptr >= end) {
       break;
     }
-    uint8_t lead = *ptr++;
+    const uint8_t lead = *ptr++;
     if (!ValidateMultibyteSequence(ptr, end, lead)) {
       return false;
     }
@@ -127,7 +126,7 @@ bool ValidateUtf8(std::span<const std::byte> data) {
 
   // Scalar tail (< 16 bytes remaining, or no SIMD)
   while (ptr < end) {
-    uint8_t byte = *ptr++;
+    const uint8_t byte = *ptr++;
     if (byte <= 0x7F) {
       continue;
     }
@@ -147,6 +146,12 @@ WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks ca
   _config.validate();
   if (deflateParams.has_value()) {
     _deflateContext = std::make_unique<DeflateContext>(*deflateParams, _config.deflateConfig, _config.isServerSide);
+  }
+  if (!_config.isServerSide) {
+    // Seed splitmix64 from time + object address: no syscall, adequate per-connection uniqueness.
+    // Masking is not a security mechanism (RFC 6455 §10.3 — proxy cache poisoning prevention only).
+    _rngState = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
+                reinterpret_cast<uintptr_t>(this);
   }
 }
 
@@ -183,7 +188,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
 
   // Process as many complete frames as possible
   while (!data.empty()) {
-    auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
+    const auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
 
     if (frameResult.status == FrameParseResult::Status::Incomplete) {
       // Need more data - save remainder for next call
@@ -261,7 +266,7 @@ ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& fra
     if (frame.header.masked && !payload.empty()) {
       std::memcpy(controlBuf, payload.data(), payload.size());
       ApplyMask(std::span<std::byte>(controlBuf, payload.size()), frame.header.maskingKey);
-      payload = std::span<const std::byte>(controlBuf, payload.size());
+      payload = {controlBuf, payload.size()};
     }
     return handleControlFrame(frame.header, payload);
   }
@@ -345,7 +350,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   }
 
   // Check message size limit (fragmented / compressed path)
-  std::size_t newSize = _message.buffer.size() + payload.size();
+  const std::size_t newSize = _message.buffer.size() + payload.size();
   if (_config.maxMessageSize > 0 && newSize > _config.maxMessageSize) {
     if (_callbacks.onError) {
       _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
@@ -502,19 +507,42 @@ void WebSocketHandler::onTransportClosing() {
   _inputBufferOffset = 0;
 }
 
+bool WebSocketHandler::drainOutputBuffer(HttpResponseData& dest) {
+  if (_outputOffset >= _outputBuffer.size()) {
+    return false;
+  }
+  // Fast path: move the buffer allocation directly into dest to avoid memcpy.
+  // Conditions: no partial drain (_outputOffset == 0) and dest is empty.
+  if (_outputOffset == 0 && dest.empty()) {
+    dest = HttpResponseData(RawChars(std::move(_outputBuffer)));
+    _outputBuffer = {};
+    return true;
+  }
+  // Fall back to copy path (partial drain or non-empty dest).
+  auto pending = getPendingOutput();
+  dest.append(reinterpret_cast<const char*>(pending.data()), pending.size());
+  onOutputWritten(pending.size());
+  return true;
+}
+
 namespace {
 
-/// Generate a random masking key for client-side frames (RFC 6455 §10.3).
-MaskingKey GenerateRandomMaskingKey() {
-  thread_local std::mt19937 rng(std::random_device{}());
-  return static_cast<MaskingKey>(rng());
+/// Generate a random masking key (splitmix64, client-side only).
+constexpr MaskingKey GenerateMaskingKey(uint64_t& rngState) noexcept {
+  // splitmix64: 8-byte state, adequate for non-cryptographic masking keys (RFC 6455 §10.3)
+  rngState += 0x9e3779b97f4a7c15ULL;
+  uint64_t val = rngState;
+  val = (val ^ (val >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  val = (val ^ (val >> 27)) * 0x94d049bb133111ebULL;
+  val ^= (val >> 31);
+  return static_cast<MaskingKey>(val);
 }
 
 }  // namespace
 
 void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin) {
   const bool shouldMask = !_config.isServerSide;
-  const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
+  const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
 }
 
@@ -529,7 +557,7 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
     const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
     if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
       const bool shouldMask = !_config.isServerSide;
-      const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
+      const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
       BuildFrame(_outputBuffer, opcode, std::span<const std::byte>(_compressBuffer.data(), _compressBuffer.size()),
                  true, shouldMask, mask, true);
       return true;
@@ -574,7 +602,7 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
   }
 
   const bool shouldMask = !_config.isServerSide;
-  const MaskingKey mask = shouldMask ? GenerateRandomMaskingKey() : MaskingKey{};
+  const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildCloseFrame(_outputBuffer, code, reason, shouldMask, mask);
 
   if (_closeState == CloseState::Open) {

@@ -106,9 +106,7 @@ class WebSocketHandler final : public IProtocolHandler {
 
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) override;
 
-  [[nodiscard]] bool hasPendingOutput() const noexcept override { return _outputOffset < _outputBuffer.size(); }
-
-  [[nodiscard]] std::span<const std::byte> getPendingOutput() override {
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
     return {_outputBuffer.begin() + _outputOffset, _outputBuffer.end()};
   }
 
@@ -117,6 +115,8 @@ class WebSocketHandler final : public IProtocolHandler {
   void initiateClose() override;
 
   void onTransportClosing() override;
+
+  bool drainOutputBuffer(HttpResponseData& dest) override;
 
   // WebSocket-specific API
 
@@ -229,6 +229,7 @@ class WebSocketHandler final : public IProtocolHandler {
   RawBytes _inputBuffer;                                    // Carry-over from incomplete frames
   RawBytes _compressBuffer;                                 // Temporary buffer for compression/decompression
   std::size_t _inputBufferOffset{0};                        // Offset into _inputBuffer for unconsumed data
+  uint64_t _rngState{0};                                    // splitmix64 state for masking key generation
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
   bool _messageCompressed{false};  // True if current message was received with RSV1 set
