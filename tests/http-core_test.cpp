@@ -970,7 +970,7 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
     auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000});
     ASSERT_FALSE(resp.empty()) << "empty response at iteration " << iter;
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << "bad status at iteration " << iter;
-    ASSERT_TRUE(resp.find(payload) != std::string::npos) << "data corruption at iteration " << iter;
+    ASSERT_TRUE(resp.contains(payload)) << "data corruption at iteration " << iter;
   }
 }
 #endif

@@ -323,9 +323,8 @@ TEST_F(WebSocketDecompressorTest, DecompressInvalidData) {
   const char* error = decompressor.decompress(StringToBytes(invalidData), output, 0, true);
   EXPECT_NE(error, nullptr);
   // Should return an error message
-  EXPECT_TRUE(std::string(error).find("inflate") != std::string::npos ||
-              std::string(error).find("error") != std::string::npos ||
-              std::string(error).find("failed") != std::string::npos);
+  EXPECT_TRUE(std::string(error).contains("inflate") || std::string(error).contains("error") ||
+              std::string(error).contains("failed"));
 }
 
 TEST_F(WebSocketDecompressorTest, DecompressPartialCompressedData) {

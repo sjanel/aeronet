@@ -1438,7 +1438,7 @@ TEST(Http2Async, DeferWorkBasicReturnValue) {
 
   auto response = client.get("/defer-basic");
   EXPECT_EQ(response.statusCode, 200);
-  EXPECT_TRUE(response.body.find("result=42") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("result=42")) << response.body;
 }
 
 // Test deferWork(): work returning a string in HTTP/2
@@ -1458,7 +1458,7 @@ TEST(Http2Async, DeferWorkReturnsString) {
 
   auto response = client.get("/defer-string");
   EXPECT_EQ(response.statusCode, 200);
-  EXPECT_TRUE(response.body.find("computed-value") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("computed-value")) << response.body;
 }
 
 // Test deferWork(): work returning an optional
@@ -1481,7 +1481,7 @@ TEST(Http2Async, DeferWorkReturnsOptional) {
 
   auto response = client.get("/defer-optional");
   EXPECT_EQ(response.statusCode, 200);
-  EXPECT_TRUE(response.body.find("found=123") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("found=123")) << response.body;
 }
 
 // Test deferWork(): multiple sequential defers in same handler over HTTP/2
@@ -1507,7 +1507,7 @@ TEST(Http2Async, DeferWorkMultipleSequential) {
 
   auto response = client.get("/defer-multi");
   EXPECT_EQ(response.statusCode, 200);
-  EXPECT_TRUE(response.body.find("final=20") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("final=20")) << response.body;
 }
 
 // Test deferWork(): multiple concurrent requests on a single connection over HTTP/2
@@ -1542,15 +1542,15 @@ TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
 
   ASSERT_TRUE(res1.has_value());
   EXPECT_EQ(res1.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
-  EXPECT_TRUE(res1.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
+  EXPECT_TRUE(res1.value_or(test::TlsHttp2Client::Response{}).body.contains("ok=1"));
 
   ASSERT_TRUE(res2.has_value());
   EXPECT_EQ(res2.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
-  EXPECT_TRUE(res2.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
+  EXPECT_TRUE(res2.value_or(test::TlsHttp2Client::Response{}).body.contains("ok=1"));
 
   ASSERT_TRUE(res3.has_value());
   EXPECT_EQ(res3.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
-  EXPECT_TRUE(res3.value_or(test::TlsHttp2Client::Response{}).body.find("ok=1") != std::string::npos);
+  EXPECT_TRUE(res3.value_or(test::TlsHttp2Client::Response{}).body.contains("ok=1"));
 }
 
 // Test deferWork(): exception (std::exception) thrown in work function
@@ -1571,7 +1571,7 @@ TEST(Http2Async, DeferWorkThrowsStdException) {
 
   auto response = client.get("/defer-throw");
   EXPECT_EQ(response.statusCode, 500);
-  EXPECT_TRUE(response.body.find("caught: test exception") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("caught: test exception")) << response.body;
 }
 
 // Test request middleware intercepting an async handler request, including CORS processing.
@@ -1600,7 +1600,7 @@ TEST(Http2Async, MiddlewareInterruptsAsyncHandlerWithCors) {
 
   auto response = client.get("/protected", {{"Origin", "https://example.com"}});
   EXPECT_EQ(response.statusCode, 401);
-  EXPECT_TRUE(response.body.find("interrupted-by-middleware") != std::string::npos) << response.body;
+  EXPECT_TRUE(response.body.contains("interrupted-by-middleware")) << response.body;
   EXPECT_EQ(response.header("access-control-allow-origin"), "https://example.com");
 }
 

@@ -57,7 +57,7 @@ TEST(Base64, EncodeSpecialChars) {
   std::array<char, 3> data = {'\xFB', '\xEF', '\xBE'};
   std::string_view input(data.data(), data.size());
   auto encoded = B64Encode(input);
-  EXPECT_TRUE(encoded.find('+') != std::string::npos || encoded.find('/') != std::string::npos);
+  EXPECT_TRUE(encoded.contains('+') || encoded.contains('/'));
 }
 
 }  // namespace aeronet

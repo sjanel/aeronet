@@ -148,8 +148,6 @@ std::string rawRequest(uint16_t port, std::string_view target) {
   return test::request(port, opt).value_or("");
 }
 
-}  // namespace
-
 class HttpTrailingSlash : public ::testing::Test {
  protected:
   static void setTrailingSlash(RouterConfig::TrailingSlashPolicy trailingSlashPolicy) {
@@ -158,6 +156,8 @@ class HttpTrailingSlash : public ::testing::Test {
     ts.router() = Router(std::move(routerCfg));
   }
 };
+
+}  // namespace
 
 TEST_F(HttpTrailingSlash, StrictPolicyDifferent) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
