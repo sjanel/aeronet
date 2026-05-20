@@ -257,7 +257,7 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
   std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 1531UL);
 
   // Should get 404 Not Found (no handler for /other)
-  EXPECT_TRUE(response.find("HTTP/1.1 404") != std::string::npos) << "Response: " << response;
+  EXPECT_TRUE(response.contains("HTTP/1.1 404")) << "Response: " << response;
 }
 
 TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
@@ -339,7 +339,7 @@ TEST_F(WebSocketTest, CloseHandshake) {
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
   std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
-  ASSERT_TRUE(upgradeResponse.find("HTTP/1.1 101") != std::string::npos);
+  ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
 
   // Send close frame
   auto closeFrame = BuildClientCloseFrame(CloseCode::Normal, "goodbye");
