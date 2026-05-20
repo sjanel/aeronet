@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
   if (argc > 1) {
     // Check if first arg is a cert file (exists and is readable)
     std::string firstArg = argv[1];
-    bool firstArgIsFile = (firstArg.find('.') != std::string::npos && firstArg.find('/') != std::string::npos);
+    bool firstArgIsFile = (firstArg.contains('.') && firstArg.contains('/'));
 
     if (firstArgIsFile && argc >= 3) {
       // Cert/key path format: cert key [port] [--tls]

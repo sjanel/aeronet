@@ -626,7 +626,7 @@ TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
   const auto resp = test::recvUntilClosed(client.fd());
   EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
   // Verify the body was received correctly
-  EXPECT_TRUE(resp.find(std::string(256, 'A')) != std::string::npos) << resp;
+  EXPECT_TRUE(resp.contains(std::string(256, 'A'))) << resp;
 }
 
 #ifdef AERONET_ENABLE_OPENSSL

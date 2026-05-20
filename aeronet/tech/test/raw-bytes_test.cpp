@@ -21,11 +21,13 @@
 
 namespace aeronet {
 
+namespace {
 template <typename T>
 class RawBaseTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+}  // namespace
 
 using MyTypes = ::testing::Types<RawBytes32, RawChars32, RawBytes, RawChars>;
 TYPED_TEST_SUITE(RawBaseTest, MyTypes, );
@@ -50,9 +52,9 @@ TYPED_TEST(RawBaseTest, ConstructorZeroCapacity) {
 
 TYPED_TEST(RawBaseTest, RandomAccessIteratorConstructor) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
+  using SizeType = RawT::size_type;
 
   std::string text = "Hello";
   RawT buf(reinterpret_cast<const Type*>(text.data()), static_cast<SizeType>(text.size()));
@@ -63,9 +65,9 @@ TYPED_TEST(RawBaseTest, RandomAccessIteratorConstructor) {
 
 TYPED_TEST(RawBaseTest, MoveConstructor) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
+  using SizeType = RawT::size_type;
 
   std::string_view data = "move-me";
   RawT buf1(reinterpret_cast<const Type*>(data.data()), static_cast<SizeType>(data.size()));
@@ -84,9 +86,9 @@ TYPED_TEST(RawBaseTest, MoveConstructor) {
 
 TYPED_TEST(RawBaseTest, MoveAssignment) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
+  using SizeType = RawT::size_type;
 
   std::string_view data = "move-me";
   RawT buf1(reinterpret_cast<const Type*>(data.data()), static_cast<SizeType>(data.size()));
@@ -112,9 +114,9 @@ TYPED_TEST(RawBaseTest, MoveAssignment) {
 
 TYPED_TEST(RawBaseTest, CopyAssignment) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
+  using SizeType = RawT::size_type;
 
   std::string_view data = "copy-me";
   RawT buf1(reinterpret_cast<const Type*>(data.data()), static_cast<SizeType>(data.size()));
@@ -139,8 +141,8 @@ TYPED_TEST(RawBaseTest, CopyAssignment) {
 
 TYPED_TEST(RawBaseTest, RangeForLoop) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   std::string_view text = "range";
   RawT buf(reinterpret_cast<const Type*>(text.data()), static_cast<SizeType>(text.size()));
@@ -153,7 +155,7 @@ TYPED_TEST(RawBaseTest, RangeForLoop) {
 
 TYPED_TEST(RawBaseTest, RangesAlgorithmsWork) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
   using VType = vector<Type>;
   using VTypeSize = VType::size_type;
 
@@ -172,9 +174,9 @@ TYPED_TEST(RawBaseTest, RangesAlgorithmsWork) {
 
 TYPED_TEST(RawBaseTest, GuardAgainstSmallSizeTypeOverflow) {
   using RawT = TypeParam;
-  using SizeType = typename RawT::size_type;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
+  using SizeType = RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
 
   RawT smallBuffer;
 
@@ -191,8 +193,8 @@ TYPED_TEST(RawBaseTest, GuardAgainstSmallSizeTypeOverflow) {
 
 TYPED_TEST(RawBaseTest, CopyConstructorNonEmpty) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   const char* payload = "CopyConstructorData";  // 19 bytes
   RawT src(reinterpret_cast<const Type*>(payload), static_cast<SizeType>(std::strlen(payload)));
@@ -216,8 +218,8 @@ TYPED_TEST(RawBaseTest, CopyConstructorEmpty) {
 
 TYPED_TEST(RawBaseTest, CopyAssignmentGrowCapacity) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   // Source with some pre-reserved capacity
   std::string payload(64, 'A');
@@ -235,8 +237,8 @@ TYPED_TEST(RawBaseTest, CopyAssignmentGrowCapacity) {
 
 TYPED_TEST(RawBaseTest, CopyAssignmentFromEmpty) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   std::string payload = std::string(32, 'Z');
   RawT src(reinterpret_cast<const Type*>(payload.data()), static_cast<SizeType>(payload.size()));
@@ -249,8 +251,8 @@ TYPED_TEST(RawBaseTest, CopyAssignmentFromEmpty) {
 
 TYPED_TEST(RawBaseTest, CopyAssignmentIntoEmptyDestination) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   RawT dst;  // empty with capacity 0
   std::string payload = std::string(48, 'Q');
@@ -264,8 +266,8 @@ TYPED_TEST(RawBaseTest, CopyAssignmentIntoEmptyDestination) {
 
 TYPED_TEST(RawBaseTest, SelfAssignmentNoChange) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   std::string payload = "SelfAssign";
   RawT buf(reinterpret_cast<const Type*>(payload.data()), static_cast<SizeType>(payload.size()));
@@ -284,8 +286,8 @@ TYPED_TEST(RawBaseTest, SelfAssignmentNoChange) {
 
 TYPED_TEST(RawBaseTest, EqualityOperatorNominal) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   std::string payload1 = "EqualTestData";
   RawT buf1(reinterpret_cast<const Type*>(payload1.data()), static_cast<SizeType>(payload1.size()));
@@ -313,8 +315,8 @@ TYPED_TEST(RawBaseTest, EqualityOperatorNominal) {
 
 TYPED_TEST(RawBaseTest, EqualityEmpty) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
 
   RawT buf1;
   RawT buf2(ViewType{});
@@ -327,7 +329,7 @@ TYPED_TEST(RawBaseTest, EqualityEmpty) {
 
 TYPED_TEST(RawBaseTest, CopyFromEmpty) {
   using RawT = TypeParam;
-  using ViewType = typename RawT::view_type;
+  using ViewType = RawT::view_type;
 
   RawT buf(10);
   RawT buf2{ViewType{}};
@@ -338,8 +340,8 @@ TYPED_TEST(RawBaseTest, CopyFromEmpty) {
 
 TYPED_TEST(RawBaseTest, UncheckedAppendAndOverflowCheck) {
   using RawT = RawChars32;
-  using Type = typename RawT::value_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
 
   RawT buf(10);
   std::string data = "1234567890";  // 10 bytes
@@ -366,7 +368,7 @@ TYPED_TEST(RawBaseTest, EraseFront) {
 
   RawT buf(10);
 
-  buf.append(reinterpret_cast<const typename RawT::value_type*>("abcdefghij"), 10);
+  buf.append(reinterpret_cast<const RawT::value_type*>("abcdefghij"), 10);
 
   buf.erase_front(4);
   EXPECT_EQ(buf.size(), 6U);
@@ -380,14 +382,14 @@ TYPED_TEST(RawBaseTest, EraseFront) {
 
 TYPED_TEST(RawBaseTest, EnsureAndOverflowCheck) {
   using RawT = TypeParam;
-  using SizeType = typename RawT::size_type;
+  using SizeType = RawT::size_type;
 
   RawT buf;
 
   buf.ensureAvailableCapacity(16UL);
   EXPECT_GE(buf.capacity(), 16U);
 
-  buf.unchecked_append(reinterpret_cast<const typename RawT::value_type*>("1234567890"), 10U);
+  buf.unchecked_append(reinterpret_cast<const RawT::value_type*>("1234567890"), 10U);
 
   if constexpr (sizeof(SizeType) < sizeof(uintmax_t)) {
     EXPECT_THROW(buf.ensureAvailableCapacity(static_cast<uint64_t>(std::numeric_limits<SizeType>::max() - 5U)),
@@ -424,14 +426,14 @@ TYPED_TEST(RawBaseTest, SignedEnsureCapacity) {
 
 TYPED_TEST(RawBaseTest, EnsureExponentialAndOverflowCheck) {
   using RawT = TypeParam;
-  using SizeType = typename RawT::size_type;
+  using SizeType = RawT::size_type;
 
   RawT buf;
 
   buf.ensureAvailableCapacityExponential(16UL);
   EXPECT_GE(buf.capacity(), 16U);
 
-  buf.unchecked_append(reinterpret_cast<const typename RawT::value_type*>("1234567890"), 10U);
+  buf.unchecked_append(reinterpret_cast<const RawT::value_type*>("1234567890"), 10U);
 
   if constexpr (sizeof(SizeType) < sizeof(uintmax_t)) {
     EXPECT_THROW(
@@ -442,8 +444,8 @@ TYPED_TEST(RawBaseTest, EnsureExponentialAndOverflowCheck) {
 
 TYPED_TEST(RawBaseTest, Assign) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
   RawT buf;
 
   buf.assign(reinterpret_cast<const Type*>("abcdef"), 6);
@@ -464,7 +466,7 @@ TYPED_TEST(RawBaseTest, Assign) {
 
 TYPED_TEST(RawBaseTest, ContPointersConstructor) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
 
   static constexpr char rawData[] = "constructor";
   RawT buf(reinterpret_cast<const Type*>(rawData), sizeof(rawData) - 1);
@@ -498,7 +500,7 @@ TYPED_TEST(RawBaseTest, ShrinkToFit) {
   static constexpr std::size_t kCapacities[]{0, 1UL << 4, 1UL << 8, 1UL << 12, 1UL << 16};
 
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
 
   std::string data;
 
@@ -531,7 +533,7 @@ TYPED_TEST(RawBaseTest, ShrinkToFit) {
 
 TYPED_TEST(RawBaseTest, EraseFrontSetSizeAndAddSize) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
 
   RawT buf;
   buf.assign(reinterpret_cast<const Type*>("abcdefgh"), 8);
@@ -552,8 +554,8 @@ TYPED_TEST(RawBaseTest, EraseFrontSetSizeAndAddSize) {
 
 TYPED_TEST(RawBaseTest, SwapAndSpanConstructor) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
 
   std::string_view initial = "payload";
   ViewType view(reinterpret_cast<const Type*>(initial.data()), initial.size());
@@ -570,9 +572,9 @@ TYPED_TEST(RawBaseTest, SwapAndSpanConstructor) {
 
 TYPED_TEST(RawBaseTest, SafeCastShouldCheckForOverflow) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
-  using ViewType = typename RawT::view_type;
-  using SizeType = typename RawT::size_type;
+  using Type = RawT::value_type;
+  using ViewType = RawT::view_type;
+  using SizeType = RawT::size_type;
 
   if constexpr (sizeof(SizeType) < sizeof(std::size_t)) {
     Type buf{};
@@ -584,7 +586,7 @@ TYPED_TEST(RawBaseTest, SafeCastShouldCheckForOverflow) {
 
 TYPED_TEST(RawBaseTest, Swap) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
 
   RawT buf1(reinterpret_cast<const Type*>("buffer1"), 7);
   RawT buf2(reinterpret_cast<const Type*>("buf2data"), 8);
@@ -628,7 +630,7 @@ TYPED_TEST(RawBaseTest, Swap) {
 
 TYPED_TEST(RawBaseTest, EqualityCheck) {
   using RawT = TypeParam;
-  using Type = typename RawT::value_type;
+  using Type = RawT::value_type;
 
   RawT buf1(reinterpret_cast<const Type*>("testdata"), 8);
   RawT buf2(reinterpret_cast<const Type*>("testdata"), 8);
