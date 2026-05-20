@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <glaze/glaze.hpp>
 #include <stdexcept>
 #include <string>

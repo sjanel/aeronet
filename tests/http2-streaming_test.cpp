@@ -255,7 +255,7 @@ TEST(Http2Streaming, MixedStreamingAndNormalHandlers) {
 
   auto postResp = client.post("/mix", "payload");
   EXPECT_EQ(postResp.statusCode, 201);
-  EXPECT_TRUE(postResp.body.find("NORMAL") != std::string::npos);
+  EXPECT_TRUE(postResp.body.contains("NORMAL"));
 }
 
 TEST(Http2Streaming, StreamingDefaultFallback) {
@@ -414,7 +414,7 @@ TEST(Http2Streaming, ConcurrentMixedStreamingAndNormal) {
 
   ASSERT_TRUE(r2.has_value());
   EXPECT_EQ(r2.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
-  EXPECT_TRUE(r2.value_or(test::TlsHttp2Client::Response{}).body.find("buffered") != std::string::npos);
+  EXPECT_TRUE(r2.value_or(test::TlsHttp2Client::Response{}).body.contains("buffered"));
 
   ASSERT_TRUE(r3.has_value());
   EXPECT_EQ(r3.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
