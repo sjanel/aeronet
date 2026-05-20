@@ -273,6 +273,20 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     set(WITH_OTLP_HTTP ON CACHE BOOL "" FORCE)
     set(WITH_OTLP_GRPC OFF CACHE BOOL "" FORCE)
 
+    # Optional: enable OTLP UTF-8 validation only when utf8_range is available.
+    # Some protobuf packages do not ship utf8_range CMake targets, which causes
+    # a warning in opentelemetry-cpp during configuration.
+    find_package(utf8_range CONFIG QUIET)
+    if(TARGET utf8_range::utf8_validity)
+      set(WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
+    elseif(TARGET utf8_validity AND NOT TARGET utf8_range::utf8_validity)
+      add_library(utf8_range::utf8_validity ALIAS utf8_validity)
+      set(WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
+    else()
+      set(WITH_OTLP_UTF8_VALIDITY OFF CACHE BOOL "" FORCE)
+      message(STATUS "utf8_range::utf8_validity not found; disabling OTLP UTF-8 validity checks")
+    endif()
+
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
     set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
