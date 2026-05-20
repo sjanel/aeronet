@@ -19,26 +19,15 @@ struct TestWorld {
   bool operator==(const TestWorld& other) const { return id == other.id && randomNumber == other.randomNumber; }
 };
 
-// Glaze metadata for test structures
-template <>
-struct glz::meta<TestMessage> {
-  using T = TestMessage;
-  static constexpr auto value = glz::object("message", &T::message);
-};
-
-template <>
-struct glz::meta<TestWorld> {
-  using T = TestWorld;
-  static constexpr auto value = glz::object("id", &T::id, "randomNumber", &T::randomNumber);
-};
-
 namespace aeronet::test {
 
+namespace {
 class JsonSerializerTest : public ::testing::Test {
  protected:
   void SetUp() override {}
   void TearDown() override {}
 };
+}  // namespace
 
 TEST_F(JsonSerializerTest, SerializeSimpleMessage) {
   TestMessage msg{"Hello, World!"};

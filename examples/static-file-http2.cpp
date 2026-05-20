@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
   //  - [cert] [key] [port] --tls [root]
   if (argc > 1) {
     std::string first = argv[1];
-    bool firstLooksLikeFile = (first.find('.') != std::string::npos || first.find('/') != std::string::npos);
+    bool firstLooksLikeFile = (first.contains('.') || first.contains('/'));
     if (firstLooksLikeFile && argc >= 3) {
       certPath = argv[1];
       keyPath = argv[2];

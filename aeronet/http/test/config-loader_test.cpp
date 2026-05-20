@@ -1363,9 +1363,9 @@ TEST(ConfigLoaderTest, TelemetryConfigRoundTrip) {
 
   // Round-trip: serialize and re-parse
   auto json = detail::SerializeConfig(config, ConfigFormat::json);
-  EXPECT_TRUE(json.find("env:staging") != std::string::npos);
-  EXPECT_TRUE(json.find("X-Api-Key:secret123") != std::string::npos);
-  EXPECT_TRUE(json.find("latency") != std::string::npos);
+  EXPECT_TRUE(json.contains("env:staging"));
+  EXPECT_TRUE(json.contains("X-Api-Key:secret123"));
+  EXPECT_TRUE(json.contains("latency"));
 
   auto reloaded = detail::ParseConfigString(json, ConfigFormat::json);
 
@@ -1422,8 +1422,8 @@ TEST(ConfigLoaderTest, TlsVersionRoundTrip) {
 
   // Serialize and re-parse to exercise to<Format, MajorMinorVersion> with non-empty value
   auto json = detail::SerializeConfig(config, ConfigFormat::json);
-  EXPECT_TRUE(json.find("1.2") != std::string::npos);
-  EXPECT_TRUE(json.find("1.3") != std::string::npos);
+  EXPECT_TRUE(json.contains("1.2"));
+  EXPECT_TRUE(json.contains("1.3"));
 
   auto reloaded = detail::ParseConfigString(json, ConfigFormat::json);
   EXPECT_TRUE(reloaded.server.tls.minVersion.isValid());

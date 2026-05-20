@@ -454,7 +454,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
 
   // verify baseline response
   auto raw1 = test::simpleGet(ts.port(), "/dyn");
-  EXPECT_TRUE(raw1.find("v1") != std::string::npos);
+  EXPECT_TRUE(raw1.contains("v1"));
 
   // From another thread, post an update to change the handler to v2 after a small delay
   std::jthread updater([&ts] {
@@ -469,7 +469,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   while (std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(1ms);
     auto raw = test::simpleGet(ts.port(), "/dyn");
-    if (raw.find("v2") != std::string::npos) {
+    if (raw.contains("v2")) {
       sawV2 = true;
       break;
     }
