@@ -1717,6 +1717,37 @@ TEST_F(WebSocketHandlerTest, InputBufferResetAfterFullConsumption) {
   EXPECT_EQ(lastMessage, "World");
 }
 
+TEST_F(WebSocketHandlerTest, BytesConsumedZeroWhenOnlyCarryOverInspected) {
+  // 1. Seed carry-over with an incomplete frame.
+  auto frame = BuildUnmaskedFrame(Opcode::Text, "Hello");
+  RawBytes firstPartial;
+  firstPartial.append(frame.data(), 3);
+
+  auto result = process(firstPartial);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(result.bytesConsumed, 0U);
+  EXPECT_EQ(messageCount, 0);
+
+  // 2. Provide a small additional chunk that is still not enough to complete the frame.
+  //    processInput() now has carry-over and should report 0 consumed bytes from this call.
+  RawBytes secondPartial;
+  secondPartial.append(frame.data() + 3, 1);
+
+  result = process(secondPartial);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(result.bytesConsumed, 0U);
+  EXPECT_EQ(messageCount, 0);
+
+  // 3. Finish the frame to verify normal progression after the carry-over-only step.
+  RawBytes remainder;
+  remainder.append(frame.data() + 4, frame.size() - 4);
+
+  result = process(remainder);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, "Hello");
+}
+
 TEST_F(WebSocketHandlerTest, InputBufferOffsetAdvancementWithoutMemmove) {
   // Build a complete frame (small) + an incomplete second frame
   auto frame1 = BuildUnmaskedFrame(Opcode::Text, "A");
@@ -1781,6 +1812,31 @@ TEST_F(WebSocketHandlerTest, InputBufferCompactionWhenOffsetExceedsHalf) {
   result = process(frame2Rest);
   EXPECT_EQ(messageCount, 2);
   EXPECT_EQ(lastMessage, "Z");
+}
+
+TEST_F(WebSocketHandlerTest, BytesConsumedCountsOnlyCurrentInputWhenCarryOverExists) {
+  // 1. Build carry-over by sending an incomplete first frame.
+  auto frame1 = BuildUnmaskedFrame(Opcode::Text, "A");
+  RawBytes firstPartial;
+  firstPartial.append(frame1.data(), frame1.size() - 1);
+  auto result = process(firstPartial);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(result.bytesConsumed, 0U);
+
+  // 2. Send the remaining byte of frame1 plus a full second frame in one call.
+  //    The handler will consume buffered carry-over bytes + current input bytes,
+  //    but bytesConsumed must report only consumption from this current input.
+  auto frame2 = BuildUnmaskedFrame(Opcode::Text, "B");
+  RawBytes batch;
+  batch.append(frame1.data() + frame1.size() - 1, 1);
+  batch.append(frame2.data(), frame2.size());
+
+  result = process(batch);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_LE(result.bytesConsumed, batch.size());
+  EXPECT_EQ(result.bytesConsumed, batch.size());
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(lastMessage, "B");
 }
 
 TEST_F(WebSocketHandlerTest, ForceCloseOnTimeout_NoOpIfNotClosing) {

@@ -1,6 +1,5 @@
 #include "aeronet/websocket-handler.hpp"
 
-#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -162,11 +161,22 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
                                                      [[maybe_unused]] ConnectionState& state) {
   ProtocolProcessResult result;
 
+  const std::size_t callerDataSize = data.size();
+  std::size_t carryOverBytes = 0;
+
   // Append new data to any carry-over from previous call
   if (_inputBufferOffset < _inputBuffer.size()) {
+    carryOverBytes = _inputBuffer.size() - _inputBufferOffset;
     _inputBuffer.append(data);
     data = {_inputBuffer.begin() + _inputBufferOffset, _inputBuffer.end()};
   }
+
+  auto consumedFromCaller = [carryOverBytes, callerDataSize](std::size_t consumedTotal) -> std::size_t {
+    if (consumedTotal <= carryOverBytes) {
+      return 0;
+    }
+    return std::min(consumedTotal - carryOverBytes, callerDataSize);
+  };
 
   std::size_t totalConsumed = 0;
   const bool allowRsv1 = (_deflateContext != nullptr);
@@ -189,7 +199,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
           _inputBufferOffset = 0;
         }
       }
-      result.bytesConsumed = totalConsumed;
+      result.bytesConsumed = consumedFromCaller(totalConsumed);
       return result;
     }
 
@@ -200,7 +210,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
       result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = totalConsumed;
+      result.bytesConsumed = consumedFromCaller(totalConsumed);
       return result;
     }
 
@@ -210,7 +220,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::MessageTooBig, "Frame payload too large");
       result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = totalConsumed;
+      result.bytesConsumed = consumedFromCaller(totalConsumed);
       return result;
     }
 
@@ -225,7 +235,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     assert(frameProcessResult.action != ProtocolProcessResult::Action::CloseImmediate);
     if (frameProcessResult.action == ProtocolProcessResult::Action::Close) {
       result.action = frameProcessResult.action;
-      result.bytesConsumed = totalConsumed;
+      result.bytesConsumed = consumedFromCaller(totalConsumed);
       _inputBuffer.clear();
       return result;
     }
@@ -238,7 +248,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
   // All data consumed
   _inputBuffer.clear();
   _inputBufferOffset = 0;
-  result.bytesConsumed = totalConsumed;
+  result.bytesConsumed = consumedFromCaller(totalConsumed);
   return result;
 }
 
@@ -246,11 +256,12 @@ ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& fra
   if (IsControlFrame(frame.header.opcode)) {
     // Control frames max 125 bytes - unmask on stack
     std::span<const std::byte> payload = frame.payload;
-    std::array<std::byte, kMaxControlFramePayload> controlBuf;
+    // Declared here because its memory may be pointed by payload
+    std::byte controlBuf[kMaxControlFramePayload];
     if (frame.header.masked && !payload.empty()) {
-      std::memcpy(controlBuf.data(), payload.data(), payload.size());
-      ApplyMask(std::span<std::byte>(controlBuf.data(), payload.size()), frame.header.maskingKey);
-      payload = std::span<const std::byte>(controlBuf.data(), payload.size());
+      std::memcpy(controlBuf, payload.data(), payload.size());
+      ApplyMask(std::span<std::byte>(controlBuf, payload.size()), frame.header.maskingKey);
+      payload = std::span<const std::byte>(controlBuf, payload.size());
     }
     return handleControlFrame(frame.header, payload);
   }
