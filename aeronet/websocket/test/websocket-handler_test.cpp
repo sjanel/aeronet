@@ -39,8 +39,6 @@ std::span<const std::byte> container_bytes(const Container& cont) noexcept {
   return std::span<const std::byte>(reinterpret_cast<const std::byte*>(cont.data()), cont.size());
 }
 
-}  // namespace
-
 class WebSocketHandlerTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -123,6 +121,8 @@ class WebSocketHandlerTest : public ::testing::Test {
   std::string lastErrorMessage;
   int errorCount{0};
 };
+
+}  // namespace
 
 // ============================================================================
 // Basic message tests

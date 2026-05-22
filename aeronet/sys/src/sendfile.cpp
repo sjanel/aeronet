@@ -10,6 +10,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+
+#include <cassert>
 #elifdef AERONET_WINDOWS
 #include <io.h>  // _get_osfhandle
 #include <mswsock.h>
@@ -34,7 +36,8 @@ int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_
   if (rc == -1 && len == 0) {
     return -1;
   }
-  offset += len;
+  assert(len >= 0);
+  offset += static_cast<std::size_t>(len);
   return static_cast<int64_t>(len);
 #elifdef AERONET_WINDOWS
   // Convert CRT file descriptor to a Win32 HANDLE for TransmitFile.
