@@ -101,7 +101,7 @@ AeronetAddUnitTest(
     http-response_test
     test/http-response_test.cpp
     LIBRARIES
-    aeronet_http aeronet_sys aeronet_test_support
+    aeronet_http aeronet_test_support
 )
 
 AeronetAddUnitTest(

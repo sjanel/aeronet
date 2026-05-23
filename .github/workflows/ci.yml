@@ -518,19 +518,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install dependencies
+      - name: Verify preinstalled tools
         run: |
-          brew install ninja
+          command -v ninja
+          ninja --version
+
+      - name: Select Xcode 26.2 SDK
+        run: |
+          echo "DEVELOPER_DIR=/Applications/Xcode_26.2.app/Contents/Developer" >> $GITHUB_ENV
+          echo "SDK_NAME=macosx26.2" >> $GITHUB_ENV
 
       - name: Set compiler environment
         run: |
-          GCC_PREFIX=$(brew --prefix gcc@15)
-          echo "CC=$GCC_PREFIX/bin/gcc-15" >> $GITHUB_ENV
-          echo "CXX=$GCC_PREFIX/bin/g++-15" >> $GITHUB_ENV
-          echo "SDKROOT=$(xcrun --show-sdk-path)" >> $GITHUB_ENV
+          echo "CC=gcc-15" >> $GITHUB_ENV
+          echo "CXX=g++-15" >> $GITHUB_ENV
+          echo "SDKROOT=$(DEVELOPER_DIR=${DEVELOPER_DIR} xcrun --sdk ${SDK_NAME} --show-sdk-path)" >> $GITHUB_ENV
 
-      - name: Show compiler version
+      - name: Show selected toolchain
         run: |
+          xcodebuild -version
+          xcrun --sdk ${SDK_NAME} --show-sdk-path
           $CC --version
           $CXX --version
 
@@ -538,6 +545,9 @@ jobs:
         run: |
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DCMAKE_C_COMPILER=${CC} \
+            -DCMAKE_CXX_COMPILER=${CXX} \
+            -DCMAKE_OSX_SYSROOT=${SDKROOT} \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_BUILD_BENCHMARKS=OFF \
