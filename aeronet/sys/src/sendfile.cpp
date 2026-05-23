@@ -32,13 +32,15 @@ int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_
   return static_cast<int64_t>(result);
 #elifdef AERONET_MACOS
   auto len = static_cast<off_t>(count);
-  const auto rc = ::sendfile(fileFd, outFd, static_cast<off_t>(offset), &len, nullptr, 0);
-  if (rc == -1 && len == 0) {
-    return -1;
+
+  const int rc = ::sendfile(fileFd, outFd, static_cast<off_t>(offset), &len, nullptr, 0);
+
+  if (len > 0) {
+    offset += static_cast<std::size_t>(len);
+    return static_cast<int64_t>(len);
   }
-  assert(len >= 0);
-  offset += static_cast<std::size_t>(len);
-  return static_cast<int64_t>(len);
+
+  return (rc == 0) ? 0 : -1;
 #elifdef AERONET_WINDOWS
   // Convert CRT file descriptor to a Win32 HANDLE for TransmitFile.
   const HANDLE fileHandle = reinterpret_cast<HANDLE>(_get_osfhandle(fileFd));

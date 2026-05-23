@@ -88,34 +88,34 @@ std::string_view HttpPayload::view() const noexcept {
       _data);
 }
 
-void HttpPayload::append(std::string_view data) {
+void HttpPayload::append(const char* data, std::size_t size) {
   assert(!isFilePayload());
   std::visit(
-      [this, data](auto& val) -> void {
+      [this, data, size](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::monostate>) {
-          _data = RawChars(data);
+          _data = RawChars(data, size);
         } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
-          val.append(data);
+          val.append(data, size);
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
-          val.insert(val.end(), data.begin(), data.end());
+          val.insert(val.end(), data, data + size);
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
-          const std::byte* buf = reinterpret_cast<const std::byte*>(data.data());
-          val.insert(val.end(), buf, buf + data.size());
+          const std::byte* buf = reinterpret_cast<const std::byte*>(data);
+          val.insert(val.end(), buf, buf + size);
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           // switch to RawChars to simplify appending
-          RawChars rawChars(val.second + data.size());
+          RawChars rawChars(val.second + size);
 
           rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
-          rawChars.unchecked_append(data);
+          rawChars.unchecked_append(data, size);
 
           _data = std::move(rawChars);
         } else if constexpr (std::is_same_v<T, std::string_view>) {
           // switch to RawChars to simplify appending
-          RawChars rawChars(val.size() + data.size());
+          RawChars rawChars(val.size() + size);
 
           rawChars.unchecked_append(val);
-          rawChars.unchecked_append(data);
+          rawChars.unchecked_append(data, size);
 
           _data = std::move(rawChars);
         }

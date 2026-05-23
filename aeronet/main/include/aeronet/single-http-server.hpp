@@ -288,7 +288,7 @@ class SingleHttpServer {
   void setExpectationHandler(ExpectationHandler handler);
 
   // Install a callback invoked with middleware metrics.
-  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) { _callbacks.middlewareMetrics = std::move(cb); }
+  void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb);
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
   // The maximum blocking interval of a single poll cycle is controlled by HttpServerConfig::pollInterval.
@@ -508,10 +508,6 @@ class SingleHttpServer {
   // Returns true if the caller should return early because the buffer is still non-empty.
   bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
 
-  // Drain pending output from a protocol handler into a ConnectionState's outBuffer.
-  // Returns true if any data was buffered (caller decides whether to flushOutbound).
-  static bool bufferProtocolHandlerOutput(IProtocolHandler& handler, ConnectionState& state);
-
   void closeConnection(ConnectionIt cnxIt);
 
   void refreshKeepAliveDeadline(ConnectionIt cnxIt);
@@ -521,6 +517,7 @@ class SingleHttpServer {
   void clearRequestDeadline(ConnectionState& state) noexcept;
   void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
   void forgetWritableInterest(ConnectionState& state) noexcept;
+
   [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling

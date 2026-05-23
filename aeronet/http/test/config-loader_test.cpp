@@ -6,10 +6,12 @@
 #include <filesystem>
 #include <fstream>
 #include <glaze/glaze.hpp>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1507,7 +1509,8 @@ TEST(ConfigLoaderTest, RouterConfigValidateDefaultIsOk) {
 TEST(ConfigLoaderTest, RouterConfigValidateInvalidValues) {
   RouterConfig cfg;
 
-  cfg.trailingSlashPolicy = static_cast<RouterConfig::TrailingSlashPolicy>(999);  // Invalid value
+  cfg.trailingSlashPolicy = static_cast<RouterConfig::TrailingSlashPolicy>(
+      std::numeric_limits<std::underlying_type_t<RouterConfig::TrailingSlashPolicy>>::max());  // Invalid value
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   cfg.trailingSlashPolicy = static_cast<RouterConfig::TrailingSlashPolicy>(-1);  // Invalid value

@@ -9,6 +9,12 @@ All notable changes to aeronet are documented in this file.
 - Configuration of `HttpServer` by yaml or json config files with `AERONET_ENABLE_GLAZE` (see `SingleHttpServer::SingleHttpServer(const std::filesystem::path&)` and `MultiHttpServer::MultiHttpServer(const std::filesystem::path&)` constructors).
 - **Adaptive event-loop poll timeout**: `HttpServerConfig::pollIntervalMinFactor` / `pollIntervalMaxFactor` (default `1.0F` / `1.0F`) scale `pollInterval` dynamically. Saturated polls drop to the min factor; consecutive idle polls back off exponentially up to the max factor. Builder: `withPollIntervalFactors(minFactor, maxFactor)`. The default `{1, 1}` keeps the previous fixed behavior.
 - **Keep-alive deadline queue**: idle keep-alive reaping now uses an intrusive min-heap keyed by expiry deadline instead of scanning every active connection on each maintenance tick. The common idle HTTP/1.1 path checks only expired deadlines, with full sweeps reserved for active timeout/backpressure/drain maintenance. Added `aeronet-bench-internal-keep-alive-deadline-queue` for 10 K idle-connection measurements.
+- **Configurable accept batch size**: New `HttpServerConfig::maxAcceptBatchSize` (default: 64) controls how many new connections are accepted per event-loop iteration. Prevents connection-burst starvation of existing connections under high concurrency.
+- **Per-route configuration**: `PathEntryConfig` now supports `requestTimeout`, `maxBodyBytes`, and `maxHeaderBytes` overrides. Chainable setters on `PathHandlerEntry` (`.timeout()`, `.maxBodyBytes()`, `.maxHeaderBytes()`) allow per-route configuration inline with handler registration.
+- **Per-route body limit enforcement**: Per-route `maxBodyBytes` is enforced server-side across HTTP/1.1 (sync and async paths) and HTTP/2, returning `413 Content Too Large` when the decoded body exceeds the route-specific limit.
+- **Per-route header limit enforcement**: Per-route `maxHeaderBytes` is enforced after routing in both HTTP/1.1 and HTTP/2, returning `431 Request Header Fields Too Large` when headers exceed the route-specific limit (tighter than the global limit already enforced during parsing).
+- **Per-route request timeout**: Per-route `requestTimeout` sets a handler deadline enforced during periodic sweeps. For HTTP/1.1, the deadline is checked connection-wide; for HTTP/2, per-stream deadlines are checked independently via `sweepStreams()`. Expired requests receive `408 Request Timeout`.
+- **Route groups** (`RouteGroup`): Lightweight non-owning prefix proxy created via `Router::group(prefix)`. Supports shared configuration (timeout, body/header limits, HTTP/2 enable), CORS policy, and request/response middleware applied to all routes in the group. Groups can be nested with config inheritance, and per-route overrides take precedence over group defaults.
 
 ### Bug fixes
 
@@ -26,15 +32,6 @@ All notable changes to aeronet are documented in this file.
 - `HttpServerConfig::maxPerEventReadBytes` no longer treats `0` as unlimited. It must now be `> 0`; use `std::numeric_limits<uint32_t>::max()` to approximate unlimited behavior.
 - Default `HttpServerConfig::maxPerEventReadBytes` changed from `0` (previous unlimited mode) to `128 KiB` to enforce fairness by default.
 
-### New features
-
-- **Configurable accept batch size**: New `HttpServerConfig::maxAcceptBatchSize` (default: 64) controls how many new connections are accepted per event-loop iteration. Prevents connection-burst starvation of existing connections under high concurrency.
-- **Per-route configuration**: `PathEntryConfig` now supports `requestTimeout`, `maxBodyBytes`, and `maxHeaderBytes` overrides. Chainable setters on `PathHandlerEntry` (`.timeout()`, `.maxBodyBytes()`, `.maxHeaderBytes()`) allow per-route configuration inline with handler registration.
-- **Per-route body limit enforcement**: Per-route `maxBodyBytes` is enforced server-side across HTTP/1.1 (sync and async paths) and HTTP/2, returning `413 Content Too Large` when the decoded body exceeds the route-specific limit.
-- **Per-route header limit enforcement**: Per-route `maxHeaderBytes` is enforced after routing in both HTTP/1.1 and HTTP/2, returning `431 Request Header Fields Too Large` when headers exceed the route-specific limit (tighter than the global limit already enforced during parsing).
-- **Per-route request timeout**: Per-route `requestTimeout` sets a handler deadline enforced during periodic sweeps. For HTTP/1.1, the deadline is checked connection-wide; for HTTP/2, per-stream deadlines are checked independently via `sweepStreams()`. Expired requests receive `408 Request Timeout`.
-- **Route groups** (`RouteGroup`): Lightweight non-owning prefix proxy created via `Router::group(prefix)`. Supports shared configuration (timeout, body/header limits, HTTP/2 enable), CORS policy, and request/response middleware applied to all routes in the group. Groups can be nested with config inheritance, and per-route overrides take precedence over group defaults.
-
 ### Improvements
 
 - Optimized WebSocket frame building by removing some copies and allocations.
@@ -45,6 +42,7 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
 - Decrease memory usage in connections by offloading async handler states to a separate object that is not allocated for connections that do not use async handlers.
 - Backpressure queueing now rejects additional response chunks immediately once `maxOutboundBufferBytes` marks a connection for drain, avoiding repeated buffer growth/work when streaming handlers ignore a failed `writeBody()` result.
+- **WebSocket output zero-copy: write directly into caller-provided buffer** — Instead of accumulating frames in `_outputBuffer` and then draining it, let the protocol handler accept a caller-provided `HttpResponseData&` and write frames directly into it, bypassing `_outputBuffer` entirely. Eliminates both the intermediate allocation and the drain copy for single-frame responses. Requires a larger interface change (pass the destination buffer into `processInput` or a separate `buildOutput` step). Build on the above move-ownership idea first.
 
 ### Other
 
