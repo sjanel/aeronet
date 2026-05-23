@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
 #include <cassert>
@@ -45,6 +46,15 @@ class RawBytesBase {
 
   // Constructs a buffer initialized with the specified data.
   explicit RawBytesBase(ViewType data) : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
+
+  /// Transfers the heap allocation from another RawBytesBase instantiation with a compatible element type.
+  /// After this call, other is left in a valid empty state.
+  template <class OtherT, class OtherView>
+    requires(!std::is_same_v<T, OtherT>)
+  RawBytesBase(RawBytesBase<OtherT, OtherView, SizeType>&& rhs) noexcept
+      : _buf(reinterpret_cast<pointer>(std::exchange(rhs._buf, nullptr))),
+        _size(std::exchange(rhs._size, 0)),
+        _capacity(std::exchange(rhs._capacity, 0)) {}
 
   // Constructs a buffer initialized with the specified data.
   RawBytesBase(const_pointer data, uint64_t sz);
@@ -223,6 +233,9 @@ class RawBytesBase {
   using trivially_relocatable = std::true_type;
 
  private:
+  template <class T2, class V2, class S2>
+  friend class RawBytesBase;
+
   void reallocUp(size_type newCapacity);
 
   pointer _buf = nullptr;

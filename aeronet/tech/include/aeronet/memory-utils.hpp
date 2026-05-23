@@ -21,7 +21,7 @@ inline void Copy(std::string_view sv, char* dst) noexcept {
 
 // Search for CRLF in the range [begin, end). If found, return a pointer to the CR character. Otherwise, return end.
 [[nodiscard]] inline auto SearchCRLF(auto begin, auto end) noexcept {
-  while (begin != end) {
+  for (; begin != end; ++begin) {
     begin = static_cast<decltype(begin)>(std::memchr(begin, '\r', static_cast<std::size_t>(end - begin)));
     if (begin == nullptr) {
       return end;
@@ -29,7 +29,6 @@ inline void Copy(std::string_view sv, char* dst) noexcept {
     if (begin + 1 < end && *(begin + 1) == '\n') {
       return begin;
     }
-    ++begin;
   }
   return end;
 }
