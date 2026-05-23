@@ -305,11 +305,16 @@ if(AERONET_INSTALL)
     endif()
   endif()
 
-  # Skip exporting aeronetTargets when opentelemetry is built via FetchContent,
-  # as the non-exported opentelemetry targets can't be included in the export set.
-  # Users should rely on find_package(aeronet) config for system-installed builds
-  # or use FetchContent for the full dependency tree including opentelemetry.
-  if(NOT (AERONET_ENABLE_OPENTELEMETRY AND DEFINED opentelemetry_cpp_SOURCE_DIR))
+  # Skip exporting aeronetTargets when some dependencies are built via
+  # FetchContent and are not themselves exported, otherwise install(EXPORT ...)
+  # fails while generating the export set.
+  # Users should rely on find_package(aeronet) for system-installed builds,
+  # or use FetchContent for the full dependency tree.
+  if(NOT (
+    (AERONET_ENABLE_OPENTELEMETRY AND DEFINED opentelemetry_cpp_SOURCE_DIR)
+    OR
+    (AERONET_ENABLE_GLAZE AND DEFINED glaze_SOURCE_DIR)
+  ))
     install(EXPORT aeronetTargets
       NAMESPACE aeronet::
       FILE aeronetTargets.cmake
