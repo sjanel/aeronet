@@ -219,7 +219,7 @@ struct to<Format, aeronet::MajorMinorVersion<Prefix>> {
   static void op(const aeronet::MajorMinorVersion<Prefix>& value, Ctx&& ctx, B&& b, IX&& ix) {
     if (value.isValid()) {
       // Write as short form "X.Y"
-      char buf[]{static_cast<char>('0' + value.major()), '.', static_cast<char>('0' + value.minor())};
+      const char buf[]{static_cast<char>('0' + value.major()), '.', static_cast<char>('0' + value.minor())};
       serialize<Format>::template op<Opts>(std::string_view{buf, sizeof(buf)}, ctx, b, ix);
     } else {
       serialize<Format>::template op<Opts>(std::string_view{""}, ctx, b, ix);

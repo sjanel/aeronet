@@ -234,7 +234,7 @@ struct glz::meta<aeronet::HttpServerConfig> {
 #endif
       "telemetry", &T::telemetry, "compression", &T::compression, "decompression", &T::decompression,
       "minReadChunkBytes", &T::minReadChunkBytes, "maxPerEventReadBytes", &T::maxPerEventReadBytes, "globalHeaders",
-      &T::globalHeaders, "builtinProbes", &T::builtinProbes, "connectAllowlist",
+      &T::globalHeaders, "builtinProbes", &T::builtinProbes, "accessLog", &T::accessLog, "connectAllowlist",
       glz::custom<[](T& self, const aeronet::vector<std::string>& hosts) {
         self.withConnectAllowlist(hosts.begin(), hosts.end());
       },

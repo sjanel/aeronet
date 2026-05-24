@@ -76,6 +76,17 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    access-log-writer_test
+    src/access-log-writer.cpp
+    test/access-log-writer_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_sys
+    aeronet_tech
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
     http-parser_test
     test/http-parser_test.cpp
     LIBRARIES
