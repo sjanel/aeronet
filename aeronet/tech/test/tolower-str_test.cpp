@@ -74,4 +74,23 @@ TEST(ToLowerStrTest, ToLowerNonAscii) {
   }
 }
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+TEST(ToLowerStrTest, ToLowerUsesAvx2ThirtyTwoBytePath) {
+  if (!HasAvx2ForToLower()) {
+    GTEST_SKIP() << "AVX2 not available on this CPU";
+  }
+
+  static constexpr char kInput[] = "ABCDEFGHijklMNOP1234QRSTuvwxYZ!@";
+  static constexpr std::size_t kLen = sizeof(kInput) - 1;
+  static constexpr char kExpected[] = "abcdefghijklmnop1234qrstuvwxyz!@";
+  static_assert(kLen == 32);
+
+  // With AVX2 available, aligned 32-byte input takes the AsciiLowerMask4 path exactly once.
+  alignas(8) char out[] = "ABCDEFGHijklMNOP1234QRSTuvwxYZ!@";
+  tolower(out, kLen);
+
+  EXPECT_STREQ(out, kExpected);
+}
+#endif
+
 }  // namespace aeronet
