@@ -26,11 +26,7 @@
 
 - **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
 - **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
-- ~~**Adaptive event loop poll timeout** - currently fixed at construction time. If last `poll()` returned max events, use zero timeout (spin); if idle for N iterations, increase timeout exponentially up to a cap. Better tail latency under bursts, lower CPU when idle.~~ ✔ implemented.
-- **Keep-alive timeout: timer wheel instead of sweep** - idle connection cleanup in `ConnectionManager` sweeps all connections (O(n)). A timer wheel or min-heap sorted by expiry lets each poll iteration check only connections whose expiry has passed → O(expired). Significant at 10 K+ idle connections.
 - Enforce backpressure correctness to avoid overload and wasted work.
-- **Adaptive event loop poll timeout** - currently fixed at construction time. If last `poll()` returned max events, use zero timeout (spin); if idle for N iterations, increase timeout exponentially up to a cap. Better tail latency under bursts, lower CPU when idle.
-- Focus on cache locality in hot paths; measure before/after.
 
 #### Low priority / specialized
 
@@ -48,7 +44,6 @@ The following micro-benchmarks are missing and should be added to validate the a
 | Compressed response throughput (per-chunk alloc overhead) | Response writer buffer pooling |
 | `ConnectionState` `sizeof` / cache-line analysis | Bool bit-packing |
 | WebSocket large-frame demasking throughput | SIMD XOR demasking |
-| ~~Connection sweep latency at 10 K idle connections~~ | ~~Timer wheel vs sweep~~ ✔ `aeronet-bench-internal-keep-alive-deadline-queue` |
 
 ## Long-term / Nice-to-have
 
@@ -94,17 +89,6 @@ Built-in token bucket or sliding window rate limiter. Per-IP and/or per-route. R
 
 - **Cookie builder**: RFC 6265-compliant `Set-Cookie` helper with `SameSite`, `Secure`, `HttpOnly`, `MaxAge`, `Path`, `Domain` attributes. Currently only raw header parsing exists.
 - **Session store**: In-memory session store with configurable TTL and pluggable backend interface. HMAC-signed session cookie for integrity. Both Drogon and Crow include this built-in; it is the most basic state management primitive for web applications.
-
-#### JSON request / response convenience (extends `AERONET_ENABLE_GLAZE`)
-
-Extend the existing glaze integration with ergonomic helpers:
-
-- ~~Automatic JSON body parsing with validation error → 400~~ **Done** - `bodyAs<T>()` and `bodyAsYaml<T>()` on `HttpRequest`
-- ~~`HttpResponse::json(T)` serialization one-liner~~ **Done** - `bodyJson(T)` and `bodyYaml(T)` on `HttpResponse`
-- ~~`Content-Type: application/json` auto-detection on request and auto-setting on response~~ **Done** - auto-set by `bodyJson`/`bodyYaml`
-- ~~Filepath-based server construction~~ **Done** - `SingleHttpServer(path)` and `MultiHttpServer(path)` constructors
-- ~~Config dump / save~~ **Done** - `dumpConfig(format)` and `saveConfig(path)` methods on both server classes
-- No new compile flag - enhances existing `AERONET_ENABLE_GLAZE` support
 
 #### Response caching middleware (`AERONET_ENABLE_RESPONSE_CACHE`)
 
