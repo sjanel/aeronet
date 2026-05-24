@@ -71,6 +71,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    server-lifecycle-tracker_test
+    test/server-lifecycle-tracker_test.cpp
+)
+
+AeronetAddUnitTest(
     version_test
     test/version_test.cpp
 )
