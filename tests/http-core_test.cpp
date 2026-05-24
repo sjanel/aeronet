@@ -250,7 +250,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
 
   // Try to finish the request; the server should already consider it timed out.
   static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
-  SafeSend(fd, rest);
+  SafeSend(fd, rest.data(), rest.size());
 
   ASSERT_FALSE(resp.empty());
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;

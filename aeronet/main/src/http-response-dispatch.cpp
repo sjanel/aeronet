@@ -158,8 +158,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     // so it is safe to call this before a large response finishes flushing.
     state.requestDrainAndClose();
   }
-  if (_callbacks.metrics) {
-    emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
+  if (_callbacks.metrics || _accessLog) {
+    emitRequestMetrics(cnxIt->fd(), request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
 
   // End the span after response is finalized

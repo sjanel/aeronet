@@ -365,6 +365,9 @@ void SingleHttpServer::prepareRun() {
   // Register builtin probes handlers if enabled in config
   registerBuiltInProbes();
 
+  // Initialize access log writer if configured
+  _accessLog = AccessLogWriter(_config.accessLog);
+
   // Pre-clamp per-route limits against the global server limits so the hot path
   // only needs a single comparison (no runtime std::min).
   _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);

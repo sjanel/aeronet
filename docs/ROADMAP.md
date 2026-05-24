@@ -11,7 +11,8 @@
 
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
-- **Structured logging / pluggable sinks** - Basic logging functional; spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed
+- ~~**Structured access logging**~~ ✔ implemented (`HttpServerConfig::accessLog` with `clf`/`json`, sinks `none`/`stdout`/`file`, optional `X-Forwarded-For` extraction).
+- **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
   (Content-Encoding + compressed Content-Length) when desired.

@@ -7,10 +7,12 @@
 
 using namespace aeronet;
 
+namespace {
 // helper prefix storage with static lifetime for template parameter
-static constexpr char kHttpPrefix[] = "HTTP/";
+constexpr char kHttpPrefix[] = "HTTP/";
 
 using HttpVer = MajorMinorVersion<kHttpPrefix>;
+}  // namespace
 
 TEST(MajorMinorVersion, ParseValid) {
   HttpVer vers{};
