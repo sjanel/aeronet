@@ -250,6 +250,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    access-log-config_test
+    test/access-log-config_test.cpp
+    src/access-log-config.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     compression-config_test
     test/compression-config_test.cpp
     LIBRARIES

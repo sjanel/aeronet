@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -25,11 +26,13 @@
 
 namespace aeronet {
 
+namespace {
+
 // Helper to create a real socket for testing
 class SocketOpsTest : public ::testing::Test {
  protected:
   static NativeHandle CreateTestSocket() {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    const auto fd = ::socket(AF_INET, SOCK_STREAM, 0);
     EXPECT_GE(fd, 0) << "Failed to create test socket";
     return fd;
   }
@@ -40,6 +43,24 @@ class SocketOpsTest : public ::testing::Test {
     }
   }
 };
+
+sockaddr_storage MakeIpv4Address(uint32_t address) {
+  sockaddr_storage addr{};
+  auto* in = reinterpret_cast<sockaddr_in*>(&addr);
+  addr.ss_family = AF_INET;
+  in->sin_addr.s_addr = htonl(address);
+  return addr;
+}
+
+sockaddr_storage MakeIpv6LoopbackAddress() {
+  sockaddr_storage addr{};
+  auto* in6 = reinterpret_cast<sockaddr_in6*>(&addr);
+  addr.ss_family = AF_INET6;
+  in6->sin6_addr = in6addr_loopback;
+  return addr;
+}
+
+}  // namespace
 
 TEST_F(SocketOpsTest, SetNonBlockingSucceeds) {
   NativeHandle fd = CreateTestSocket();
@@ -203,6 +224,51 @@ TEST_F(SocketOpsTest, IsLoopbackRejectsUnsupportedAddressFamily) {
   EXPECT_FALSE(IsLoopback(addr));
 }
 
+TEST_F(SocketOpsTest, FormatAddressFormatsIPv4Address) {
+  const auto addr = MakeIpv4Address(0x7F000001U);
+  std::array<char, 46> buffer{};
+
+  const auto len = FormatAddress(addr, buffer.data(), buffer.size());
+  std::string_view addrStr{buffer.data(), len};
+
+  EXPECT_EQ(9U, len);
+  EXPECT_EQ(std::string_view{"127.0.0.1"}, addrStr);
+}
+
+TEST_F(SocketOpsTest, FormatAddressFormatsIPv6Address) {
+  const auto addr = MakeIpv6LoopbackAddress();
+  std::array<char, 46> buffer{};
+
+  const auto len = FormatAddress(addr, buffer.data(), buffer.size());
+  std::string_view addrStr{buffer.data(), len};
+
+  EXPECT_EQ(3U, len);
+  EXPECT_EQ(std::string_view{"::1"}, addrStr);
+}
+
+TEST_F(SocketOpsTest, FormatAddressReturnsDashForUnsupportedFamily) {
+  sockaddr_storage addr{};
+  addr.ss_family = AF_UNIX;
+  std::array<char, 46> buffer{};
+
+  const auto len = FormatAddress(addr, buffer.data(), buffer.size());
+  std::string_view addrStr{buffer.data(), len};
+
+  EXPECT_EQ(1U, len);
+  EXPECT_EQ(std::string_view{"-"}, addrStr);
+}
+
+TEST_F(SocketOpsTest, FormatAddressReturnsDashWhenBufferTooSmall) {
+  const auto addr = MakeIpv4Address(0x08080808U);
+  std::array<char, 2> buffer{};
+
+  const auto len = FormatAddress(addr, buffer.data(), buffer.size());
+  std::string_view addrStr{buffer.data(), len};
+
+  EXPECT_EQ(1U, len);
+  EXPECT_EQ(std::string_view{"-"}, addrStr);
+}
+
 TEST_F(SocketOpsTest, SafeSendSucceeds) {
   // Create a socket pair for IPC
   NativeHandle sockets[2];
@@ -233,8 +299,8 @@ TEST_F(SocketOpsTest, SafeSendStringViewOverload) {
   BaseFd receiver(sockets[0]);
   BaseFd sender(sockets[1]);
 
-  std::string_view data = "hello";
-  int64_t sent = SafeSend(sender.fd(), data);
+  const std::string_view data = "hello";
+  const int64_t sent = SafeSend(sender.fd(), data.data(), data.size());
   // SafeSend should return the number of bytes sent, or -1 on error
   // socketpair creates connected sockets, so send should succeed
   EXPECT_GE(sent, 0);

@@ -16,18 +16,17 @@
 #include <coroutine>
 #endif
 
+#include "aeronet/access-log-writer.hpp"
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http-version.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/keep-alive-deadline-queue.hpp"
 #include "aeronet/internal/lifecycle.hpp"
@@ -36,6 +35,7 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handlers.hpp"
+#include "aeronet/request-metrics.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
@@ -84,16 +84,8 @@ class SingleHttpServer {
  public:
   using ParserErrorCallback = std::function<void(http::StatusCode)>;
 
-  struct RequestMetrics {
-    http::StatusCode status{0};
-    http::Method method;
-    http::Version version;
-    bool reusedConnection{false};
-    std::string_view path;
-    std::size_t bytesIn{0};
-    std::size_t bytesOut{0};
-    std::chrono::nanoseconds duration{0};
-  };
+  // Legacy alias kept for API compatibility.
+  using RequestMetrics = aeronet::RequestMetrics;
 
   // Expectation handling API
   // ------------------------
@@ -493,8 +485,8 @@ class SingleHttpServer {
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
-                          bool reusedConnection) const;
+  void emitRequestMetrics(NativeHandle fd, const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+                          bool reusedConnection);
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // The connection will be closed after draining buffered writes.
@@ -664,6 +656,9 @@ class SingleHttpServer {
 
   // Telemetry context - one per SingleHttpServer instance (no global singletons)
   tracing::TelemetryContext _telemetry;
+
+  // Structured access log writer - one per event-loop thread.
+  AccessLogWriter _accessLog;
 
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.

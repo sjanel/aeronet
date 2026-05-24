@@ -245,6 +245,20 @@ TEST(HttpResponseDataTest, AppendStringViewWithBody) {
   EXPECT_EQ(data.remainingSize(), 16U);
 }
 
+// Test append method with const char* + size (body already set)
+TEST(HttpResponseDataTest, AppendCharPointerWithBody) {
+  RawChars head("Header");
+  HttpPayload body(std::string("Body"));
+  HttpResponseData data(std::move(head), std::move(body));
+
+  const char extra[] = " plus";
+  data.append(extra, 5U);
+
+  EXPECT_EQ(data.firstBuffer(), "Header");
+  EXPECT_EQ(data.secondBuffer(), "Body plus");
+  EXPECT_EQ(data.remainingSize(), 15U);
+}
+
 // Test multiple appends
 TEST(HttpResponseDataTest, MultipleAppends) {
   HttpResponseData data;
