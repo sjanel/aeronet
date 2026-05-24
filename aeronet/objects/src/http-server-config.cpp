@@ -360,6 +360,7 @@ void HttpServerConfig::validate() {
   telemetry.validate();
   tls.validate();
   builtinProbes.validate();
+  accessLog.validate();
 #ifdef AERONET_ENABLE_HTTP2
   http2.validate();
 #endif

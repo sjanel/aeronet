@@ -4,10 +4,10 @@
 
 #include <glaze/glaze.hpp>
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
@@ -74,6 +74,18 @@ template <>
 struct glz::meta<aeronet::RouterConfig::TrailingSlashPolicy> {
   using enum aeronet::RouterConfig::TrailingSlashPolicy;
   static constexpr auto value = glz::enumerate("strict", Strict, "normalize", Normalize, "redirect", Redirect);
+};
+
+template <>
+struct glz::meta<aeronet::AccessLogConfig::Format> {
+  using enum aeronet::AccessLogConfig::Format;
+  static constexpr auto value = glz::enumerate("clf", CLF, "json", JSON);
+};
+
+template <>
+struct glz::meta<aeronet::AccessLogConfig::Sink> {
+  using enum aeronet::AccessLogConfig::Sink;
+  static constexpr auto value = glz::enumerate("none", None, "stdout", Stdout, "file", File);
 };
 
 #endif  // AERONET_ENABLE_GLAZE

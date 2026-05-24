@@ -8,7 +8,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <string_view>
 
 #include "aeronet/native-handle.hpp"
 
@@ -73,17 +72,18 @@ bool GetPeerAddress(NativeHandle fd, sockaddr_storage& addr) noexcept;
 // Supports AF_INET (127.0.0.0/8) and AF_INET6 (::1).
 bool IsLoopback(const sockaddr_storage& addr) noexcept;
 
+// Format a sockaddr_storage as a human-readable IP string into the provided buffer.
+// Returns the number of characters written (excluding null terminator), or 0 on failure.
+// The buffer must be at least 46 bytes (INET6_ADDRSTRLEN) for safety.
+// bufLen should be > 1, otherwise it's undefined behaviour.
+std::size_t FormatAddress(const sockaddr_storage& addr, char* buf, std::size_t bufLen) noexcept;
+
 // Send data on a connected socket with platform-appropriate flags
 // (MSG_NOSIGNAL on Linux, SO_NOSIGPIPE on macOS, none on Windows).
 // Non-blocking: the socket must already be in non-blocking mode or
 // the caller must accept blocking behaviour.
 // Returns the number of bytes sent, or -1 on error (errno is set).
 int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept;
-
-// Convenience overload accepting a string_view.
-inline int64_t SafeSend(NativeHandle fd, std::string_view data) noexcept {
-  return SafeSend(fd, data.data(), data.size());
-}
 
 // Shutdown the write half of a socket connection.
 // Returns true on success, false on error (errno is set).

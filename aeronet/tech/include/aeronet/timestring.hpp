@@ -48,7 +48,7 @@ constexpr auto TimeToStringISO8601UTC(SysTimePoint timePoint, auto out) {
 /// Writes chars of the representation of a given time point in ISO 8601 UTC format with maximum performance and return
 /// a pointer after the last char written. The written format will be (in millisecond precision):
 ///   - 'YYYY-MM-DDTHH:MM:SS.sssZ'
-/// The buffer should have a space of at least 24 chars.
+/// The buffer should have a space of at least 24 chars (ISO8601UTCWithMsStrLen).
 constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
   const auto daysFloor = std::chrono::floor<std::chrono::days>(timePoint);
   const std::chrono::hh_mm_ss hms{std::chrono::floor<std::chrono::milliseconds>(timePoint - daysFloor)};

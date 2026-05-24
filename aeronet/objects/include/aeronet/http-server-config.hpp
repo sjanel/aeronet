@@ -11,6 +11,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/concatenated-strings.hpp"
@@ -301,6 +302,11 @@ struct HttpServerConfig {
   // Builtin Kubernetes-style probes configuration
   // ===========================================
   BuiltinProbesConfig builtinProbes;
+
+  // ===========================================
+  // Structured access logging configuration
+  // ===========================================
+  AccessLogConfig accessLog;
 
   // Validates and (possibly) finalize config. Throws std::invalid_argument if it is not valid.
   void validate();

@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
 
@@ -16,7 +17,7 @@ namespace aeronet {
 using namespace std::chrono;
 
 TEST(TimeStringIso8601UTCTest, BasicIso8601Format) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{12} +
                     std::chrono::minutes{34} + std::chrono::seconds{56} + std::chrono::milliseconds{789};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -24,14 +25,14 @@ TEST(TimeStringIso8601UTCTest, BasicIso8601Format) {
 }
 
 TEST(TimeStringIso8601UTCTest, Midnight) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2022} / 1 / 1};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(end - buf)), "2022-01-01T00:00:00.000Z");
 }
 
 TEST(TimeStringIso8601UTCTest, EndOfYear) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2023} / 12 / 31} + std::chrono::hours{23} +
                     std::chrono::minutes{59} + std::chrono::seconds{59} + std::chrono::milliseconds{999};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -39,7 +40,7 @@ TEST(TimeStringIso8601UTCTest, EndOfYear) {
 }
 
 TEST(TimeStringIso8601UTCTest, LeapYearFeb29) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2024} / 2 / 29} + std::chrono::hours{6} +
                     std::chrono::minutes{30} + std::chrono::seconds{15} + std::chrono::milliseconds{123};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -47,7 +48,7 @@ TEST(TimeStringIso8601UTCTest, LeapYearFeb29) {
 }
 
 TEST(TimeStringIso8601UTCTest, SingleDigitMonthDay) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 3 / 7} + std::chrono::hours{1} +
                     std::chrono::minutes{2} + std::chrono::seconds{3} + std::chrono::milliseconds{4};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -55,7 +56,7 @@ TEST(TimeStringIso8601UTCTest, SingleDigitMonthDay) {
 }
 
 TEST(TimeStringIso8601UTCTest, ZeroMilliseconds) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{12} +
                     std::chrono::minutes{34} + std::chrono::seconds{56};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -63,7 +64,7 @@ TEST(TimeStringIso8601UTCTest, ZeroMilliseconds) {
 }
 
 TEST(TimeStringIso8601UTCTest, MaximumMilliseconds) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{23} +
                     std::chrono::minutes{59} + std::chrono::seconds{59} + std::chrono::milliseconds{999};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -71,14 +72,14 @@ TEST(TimeStringIso8601UTCTest, MaximumMilliseconds) {
 }
 
 TEST(TimeStringIso8601UTCTest, MinimumDate) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{1970} / 1 / 1};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
   EXPECT_EQ(std::string_view(buf, static_cast<std::size_t>(end - buf)), "1970-01-01T00:00:00.000Z");
 }
 
 TEST(TimeStringIso8601UTCTest, NegativeMilliseconds) {
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{12} +
                     std::chrono::minutes{34} + std::chrono::seconds{56} - std::chrono::milliseconds{1};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
@@ -88,13 +89,13 @@ TEST(TimeStringIso8601UTCTest, NegativeMilliseconds) {
 
 TEST(TimeStringIso8601UTCTest, RoundTripConversion) {
   // ---- Added fast path tests for DateISO8601UTC ----
-  char buf[24];
+  char buf[ISO8601UTCWithMsStrLen];
   SysTimePoint tp = std::chrono::sys_days{std::chrono::year{2025} / 8 / 14} + std::chrono::hours{12} +
                     std::chrono::minutes{34} + std::chrono::seconds{56} + std::chrono::milliseconds{789};
   char* end = TimeToStringISO8601UTCWithMs(tp, buf);
   std::string_view iso(buf, static_cast<std::size_t>(end - buf));
   SysTimePoint tp2 = StringToTimeISO8601UTC(iso.data(), iso.data() + iso.size());
-  char buf2[24];
+  char buf2[ISO8601UTCWithMsStrLen];
   char* end2 = TimeToStringISO8601UTCWithMs(tp2, buf2);
   EXPECT_EQ(std::string_view(buf2, static_cast<std::size_t>(end2 - buf2)), iso);
 }
@@ -103,7 +104,11 @@ TEST(TimeString, NoSubSecondsWithDot) {
   EXPECT_EQ(StringToTimeISO8601UTC("2025-08-14T12:34:56.Z"), StringToTimeISO8601UTC("2025-08-14T12:34:56Z"));
 }
 
+namespace {
+
 class StringToTimeISO8601UTCTest : public ::testing::Test {};
+
+}  // namespace
 
 // ------------------------ Valid cases ------------------------
 TEST_F(StringToTimeISO8601UTCTest, ParsesBasicISO8601UTC) {

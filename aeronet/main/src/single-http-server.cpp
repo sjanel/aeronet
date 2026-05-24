@@ -809,8 +809,8 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     state.requestDrainAndClose();
   }
 
-  if (_callbacks.metrics) {
-    emitRequestMetrics(request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
+  if (_callbacks.metrics || _accessLog) {
+    emitRequestMetrics(cnxIt->fd(), request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
   }
 
   return shouldClose;
@@ -1048,18 +1048,54 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
 }
 #endif
 
-void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
-                                          bool reusedConnection) const {
-  RequestMetrics metrics;
-  metrics.status = status;
-  metrics.bytesIn = bytesIn;
-  metrics.reusedConnection = reusedConnection;
-  metrics.method = request.method();
-  metrics.version = request.version();
-  metrics.path = request.path();
-  metrics.duration = _connections.now - request.reqStart();
+void SingleHttpServer::emitRequestMetrics(NativeHandle fd, const HttpRequest& request, http::StatusCode status,
+                                          std::size_t bytesIn, bool reusedConnection) {
+  // Format peer IP into a stack buffer (valid for the duration of the callback)
+  std::string_view clientIp = "-";
 
-  _callbacks.metrics(metrics);
+  if (_config.accessLog.useForwardedFor) {
+    const auto xff = request.headerValueOrEmpty("x-forwarded-for");
+    if (!xff.empty()) {
+      // Use the first (leftmost) IP from X-Forwarded-For
+      const auto comma = xff.find(',');
+      clientIp = xff.substr(0, comma);
+      // Trim leading/trailing spaces
+      while (!clientIp.empty() && clientIp.front() == ' ') {
+        clientIp.remove_prefix(1);
+      }
+      while (!clientIp.empty() && clientIp.back() == ' ') {
+        clientIp.remove_suffix(1);
+      }
+    }
+  }
+
+  char ipBuf[46];  // INET6_ADDRSTRLEN = 46
+  if (clientIp == "-") {
+    sockaddr_storage peer{};
+    if (GetPeerAddress(fd, peer)) {
+      const auto len = FormatAddress(peer, ipBuf, sizeof(ipBuf));
+      clientIp = std::string_view{ipBuf, len};
+    }
+  }
+
+  RequestMetrics metrics{status,
+                         request.method(),
+                         request.version(),
+                         reusedConnection,
+                         request.path(),
+                         clientIp,
+                         request.headerValueOrEmpty("user-agent"),
+                         bytesIn,
+                         0,
+                         _connections.now - request.reqStart()};
+
+  if (_accessLog) {
+    _accessLog.log(metrics);
+  }
+
+  if (_callbacks.metrics) {
+    _callbacks.metrics(metrics);
+  }
 }
 
 void SingleHttpServer::eventLoop() {
@@ -1186,6 +1222,10 @@ void SingleHttpServer::eventLoop() {
     _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
 
     sweepIdleConnections();
+
+    if (_accessLog) {
+      _accessLog.flush();
+    }
 
     if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
       closeListener();
@@ -1647,8 +1687,8 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
     assert(pState != nullptr);
     ++pState->requestsServed;
     ++_stats.totalRequestsServed;
-    if (_callbacks.metrics) {
-      emitRequestMetrics(request, status, request.body().size(), pState->requestsServed > 1);
+    if (_callbacks.metrics || _accessLog) {
+      emitRequestMetrics(fd, request, status, request.body().size(), pState->requestsServed > 1);
     }
   });
 

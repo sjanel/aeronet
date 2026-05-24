@@ -2355,6 +2355,15 @@ Characteristics:
 - Dependency-free by default (flags opt-in to spdlog)
 - Planned: pluggable structured sinks / user-defined writer API
 
+### Structured access logging
+
+- Request access logs are configured with `HttpServerConfig::accessLog` and are independent from optional spdlog.
+- Supported formats: `clf` (common log format style) and `json`.
+- Supported sinks: `none`, `stdout`, `file`.
+- Optional client IP behavior: `useForwardedFor=true` uses `X-Forwarded-For` when present, otherwise peer socket address is used.
+- Implementation flushes periodically on maintenance ticks and at shutdown to avoid stale buffered lines.
+- Validation/tests: `aeronet/main/test/access-log-writer_test.cpp`.
+
 Design goals: keep logging off the hot path when disabled, avoid mandatory third-party dependency for minimal builds, allow future structured logging integration without breaking existing code.
 
 Usage example (fallback or spdlog):

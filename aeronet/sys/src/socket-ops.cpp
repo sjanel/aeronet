@@ -1,5 +1,6 @@
 #include "aeronet/socket-ops.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 
@@ -9,6 +10,7 @@
 
 #include <stdexcept>
 #else
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -16,7 +18,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <cassert>
 #endif
 
 #include "aeronet/native-handle.hpp"
@@ -77,7 +78,8 @@ bool SetNoSigPipe(NativeHandle fd) noexcept {
 
 #ifdef AERONET_POSIX
 void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcept {
-  for (NativeHandle pfd : {pipeRd, pipeWr}) {
+  const NativeHandle sockets[]{pipeRd, pipeWr};
+  for (NativeHandle pfd : sockets) {
     int flags = ::fcntl(pfd, F_GETFL, 0);
     assert(flags != -1);
     flags = ::fcntl(pfd, F_SETFL, flags | O_NONBLOCK);
@@ -150,6 +152,29 @@ bool IsLoopback(const sockaddr_storage& addr) noexcept {
     return IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr);
   }
   return false;
+}
+
+std::size_t FormatAddress(const sockaddr_storage& addr, char* buf, std::size_t bufLen) noexcept {
+  assert(bufLen > 1U);
+  const char* result = nullptr;
+  if (addr.ss_family == AF_INET) {
+    const auto* in = reinterpret_cast<const sockaddr_in*>(&addr);
+    result = ::inet_ntop(AF_INET, &in->sin_addr, buf, static_cast<socklen_t>(bufLen));
+  } else if (addr.ss_family == AF_INET6) {
+    const auto* in6 = reinterpret_cast<const sockaddr_in6*>(&addr);
+    result = ::inet_ntop(AF_INET6, &in6->sin6_addr, buf, static_cast<socklen_t>(bufLen));
+  }
+  if (result == nullptr) {
+    buf[0] = '-';
+    buf[1] = '\0';
+    return 1;
+  }
+  // Find length of the formatted string
+  std::size_t len = 0;
+  while (len < bufLen && buf[len] != '\0') {
+    ++len;
+  }
+  return len;
 }
 
 int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {
