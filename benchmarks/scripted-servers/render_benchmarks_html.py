@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -82,10 +83,11 @@ def _build_table(
     lower_is_better: bool = False,
 ) -> str:
     """Build an HTML table for a specific metric."""
+    memory_metric_keys = {"memory", "memory_rss", "memory_peak"}
     rows = []
     for scenario in scenarios:
         scen_data = results.get(scenario, {})
-        if metric_key == "memory":
+        if metric_key in memory_metric_keys:
             values = scen_data.get("memory", {})
         else:
             values = scen_data.get(metric_key, {})
@@ -96,13 +98,14 @@ def _build_table(
         server_values: Dict[str, float] = {}
 
         for srv in servers:
-            if metric_key == "memory":
+            if metric_key in memory_metric_keys:
                 mem_dict = values.get(srv, {})
                 if isinstance(mem_dict, dict):
-                    rss = mem_dict.get("rss_mb")
-                    if isinstance(rss, (int, float)):
-                        cell = f"{rss:.1f}MB"
-                        server_values[srv] = float(rss)
+                    mem_key = "peak_mb" if metric_key == "memory_peak" else "rss_mb"
+                    mem_value = mem_dict.get(mem_key)
+                    if isinstance(mem_value, (int, float)):
+                        cell = f"{mem_value:.1f}MB"
+                        server_values[srv] = float(mem_value)
                     else:
                         cell = "-"
                 else:
@@ -144,6 +147,89 @@ def _build_table(
 
 def _is_websocket(summary: Dict[str, Any]) -> bool:
     return summary.get("benchmark_type") == "websocket"
+
+
+class SummaryValidationError(ValueError):
+    """Raised when benchmark summary JSON is missing required fields."""
+
+
+def _validate_summary_schema(summary: Dict[str, Any], summary_name: str) -> None:
+    """Validate that required keys exist before rendering.
+
+    The renderer should fail loudly in CI when a producer stops writing expected
+    fields instead of silently showing '-' in the HTML tables.
+    """
+    servers = summary.get("servers")
+    if not isinstance(servers, list) or not all(isinstance(s, str) and s for s in servers):
+        raise SummaryValidationError(
+            f"{summary_name}: missing or invalid 'servers' list"
+        )
+
+    scenarios = summary.get("scenarios")
+    if not isinstance(scenarios, list) or not all(isinstance(s, str) and s for s in scenarios):
+        raise SummaryValidationError(
+            f"{summary_name}: missing or invalid 'scenarios' list"
+        )
+
+    results = summary.get("results")
+    if not isinstance(results, dict):
+        raise SummaryValidationError(f"{summary_name}: missing or invalid 'results' object")
+
+    is_ws = _is_websocket(summary)
+    metric_data_keys = {metric[1] for metric in _get_metrics(summary)}
+
+    for scenario in scenarios:
+        scenario_data = results.get(scenario)
+        if not isinstance(scenario_data, dict):
+            raise SummaryValidationError(
+                f"{summary_name}: scenario '{scenario}' missing from 'results'"
+            )
+
+        for data_key in metric_data_keys:
+            if data_key in {"memory_rss", "memory_peak"}:
+                memory = scenario_data.get("memory")
+                if not isinstance(memory, dict):
+                    raise SummaryValidationError(
+                        f"{summary_name}: scenario '{scenario}' missing 'memory' object"
+                    )
+                field = "peak_mb" if data_key == "memory_peak" else "rss_mb"
+                for server in servers:
+                    server_memory = memory.get(server)
+                    if not isinstance(server_memory, dict):
+                        raise SummaryValidationError(
+                            f"{summary_name}: scenario '{scenario}' missing memory for server '{server}'"
+                        )
+                    if field not in server_memory:
+                        raise SummaryValidationError(
+                            f"{summary_name}: scenario '{scenario}' memory for server '{server}' missing '{field}'"
+                        )
+                continue
+
+            metric_map = scenario_data.get(data_key)
+            if not isinstance(metric_map, dict):
+                raise SummaryValidationError(
+                    f"{summary_name}: scenario '{scenario}' missing '{data_key}' object"
+                )
+            invalid_servers = [server for server in metric_map.keys() if server not in servers]
+            if invalid_servers:
+                raise SummaryValidationError(
+                    f"{summary_name}: scenario '{scenario}' metric '{data_key}' has unknown servers {invalid_servers}"
+                )
+
+            if is_ws:
+                # WebSocket runs can intentionally skip server/scenario pairs
+                # (e.g. compression for drogon), so only require at least one
+                # mapped server to avoid silent empty blocks.
+                if not metric_map:
+                    raise SummaryValidationError(
+                        f"{summary_name}: scenario '{scenario}' metric '{data_key}' is empty"
+                    )
+            else:
+                for server in servers:
+                    if server not in metric_map:
+                        raise SummaryValidationError(
+                            f"{summary_name}: scenario '{scenario}' metric '{data_key}' missing server '{server}'"
+                        )
 
 
 # ------ Metric definitions per benchmark type ------------------------------ #
@@ -460,6 +546,13 @@ def main() -> None:
     input_files = [path for group in input_groups for path in group]
 
     summaries = [load_summary(path) for path in input_files]
+
+    try:
+        for path, summary in zip(input_files, summaries):
+            _validate_summary_schema(summary, str(path))
+    except SummaryValidationError as exc:
+        print(f"ERROR: benchmark summary validation failed: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     # Sort by connection count so the selector order is deterministic
     summaries.sort(key=lambda s: s.get("connections", 0) or 0)
