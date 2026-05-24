@@ -29,7 +29,7 @@ inline bool HasAvx2ForToLower() {
   return (cpuInfo[1] & (1 << 5)) != 0;
 }
 #else
-inline bool HasAvx2ForToLower() { return false; }
+constexpr bool HasAvx2ForToLower() { return false; }
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -83,7 +83,7 @@ constexpr uint64_t AsciiLowerMask(uint64_t val) {
 #endif
 }
 
-#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+#ifdef AERONET_HAS_ASCII_LOWER_MASK4
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avx2")))
 #endif
@@ -150,7 +150,7 @@ constexpr void tolower(char* buf, std::size_t len) {
     buf[charPos] = tolower(buf[charPos]);
   }
 
-#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+#ifdef AERONET_HAS_ASCII_LOWER_MASK4
   if (HasAvx2ForToLower()) {
     // Process 32 bytes at a time when AVX2 is available.
     for (; charPos + 32 <= len; charPos += 32) {
@@ -236,7 +236,7 @@ constexpr void tolower_n(const char* from, std::size_t len, char* to) {
 #pragma GCC diagnostic pop
 #endif
 
-#if defined(AERONET_HAS_ASCII_LOWER_MASK4)
+#ifdef AERONET_HAS_ASCII_LOWER_MASK4
 #undef AERONET_HAS_ASCII_LOWER_MASK4
 #endif
 
