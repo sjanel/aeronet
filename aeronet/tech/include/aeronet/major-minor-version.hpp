@@ -27,17 +27,19 @@ class MajorMinorVersion {
     }
   }
 
-  constexpr MajorMinorVersion(std::string_view versionStr) noexcept {
-    if (versionStr.size() == kStrLen) {
-      const char* pStr = versionStr.data();
-      char major = pStr[kPrefix.size()];
-      char minor = pStr[kPrefix.size() + 2UL];
+  constexpr MajorMinorVersion(const char* pStr, std::size_t len) noexcept {
+    if (len == kStrLen) {
+      const char major = pStr[kPrefix.size()];
+      const char minor = pStr[kPrefix.size() + 2UL];
       if (major >= '1' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
         _data = static_cast<std::uint8_t>(static_cast<std::uint8_t>(static_cast<std::uint8_t>(major - '0') << 4U) |
                                           static_cast<std::uint8_t>(minor - '0'));
       }
     }
   }
+
+  constexpr MajorMinorVersion(std::string_view versionStr) noexcept
+      : MajorMinorVersion(versionStr.data(), versionStr.size()) {}
 
   // Get the major version number.
   [[nodiscard]] constexpr std::uint8_t major() const noexcept { return static_cast<std::uint8_t>(_data >> 4U); }

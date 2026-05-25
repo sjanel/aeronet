@@ -26,7 +26,7 @@ inline void Copy(std::string_view sv, char* dst) noexcept {
     if (begin == nullptr) {
       return end;
     }
-    if (begin + 1 < end && *(begin + 1) == '\n') {
+    if (begin + 1 < end && begin[1U] == '\n') {
       return begin;
     }
   }
