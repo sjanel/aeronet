@@ -85,7 +85,6 @@ struct DataEvent {
   }
   return {};
 }
-}  // namespace
 
 /// Test mock for ITunnelBridge that delegates to std::function members.
 class MockTunnelBridge final : public ITunnelBridge {
@@ -266,6 +265,8 @@ class Http2ProtocolLoopback {
   vector<DataEvent> clientData;
   vector<std::pair<uint32_t, ErrorCode>> streamResets;
 };
+
+}  // namespace
 
 TEST(Http2ProtocolHandler, Creation) {
   Http2Config config;
@@ -3719,7 +3720,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), "x-after-mw"), "done");
 }
 
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(push)
 #pragma warning(disable : 4702)
 #endif
@@ -3810,7 +3811,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "500");
 }
 
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(pop)
 #endif
 

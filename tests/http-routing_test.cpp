@@ -1103,7 +1103,7 @@ TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
   EXPECT_TRUE(response.contains("/unmatched-path")) << response;
 }
 
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(push)
 #pragma warning(disable : 4702)
 #endif
@@ -1137,7 +1137,7 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
   EXPECT_TRUE(response.contains("Unknown error")) << response;
 }
 
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(pop)
 #endif
 
@@ -1177,7 +1177,7 @@ TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
                                    throw std::runtime_error("Failed before body ready");
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
 #endif
                                    co_return HttpResponse(http::StatusCodeOK);
@@ -1256,7 +1256,7 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
                                    throw 999;  // Non-std exception
-#ifdef _MSC_VER
+#ifdef AERONET_WINDOWS
 #pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
 #endif
                                    co_return HttpResponse(http::StatusCodeOK);
