@@ -11,7 +11,6 @@
 
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
-- ~~**Structured access logging**~~ ✔ implemented (`HttpServerConfig::accessLog` with `clf`/`json`, sinks `none`/`stdout`/`file`, optional `X-Forwarded-For` extraction).
 - **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
@@ -131,10 +130,6 @@ router.setPath(http::Method::GET, "/slow", handler)
 
 Go (`context.WithTimeout`), Axum (`tower::timeout`), Actix-web (`web::Timeout`) and Spring (`@Transactional(timeout=)`) all provide this. Critical for production resilience.
 
-#### Structured access logging
-
-Standard HTTP access logs in CLF (Common Log Format) or JSON. Emit one log line per request with method, path, status, response size, latency, client IP, and User-Agent. Pluggable sink (stdout, file, syslog). This is the first feature users expect when operating a server in production. Nginx, HAProxy, Caddy, Express (morgan), Go, and every major framework have this built-in.
-
 #### Content negotiation (Accept header)
 
 Parse `Accept` header q-values to select response content type (JSON, YAML, XML, plain text). Return `406 Not Acceptable` when no format matches. Currently only `Accept-Encoding` is negotiated; `Accept` (media type) is left to user code. Frameworks like Spring, Rails, Phoenix, and ASP.NET handle this transparently.
@@ -202,13 +197,11 @@ Compute a weak or strong ETag from the response body (e.g. hash) and handle `If-
 
 - OCSP stapling (passive, cached)
 - Optional CRL / revocation hooks
-- ~~Histogram / percentile metrics~~ ✔
 - Key log (debug only)
 - Security hardening audits (zeroization, memory scrub confirmations)
 
 #### Phase 4 (Future Protocol / Extensibility)
 
-- ~~ALPN "h2" groundwork~~ ✔ (HTTP/2 implemented)
 - Per-SNI mTLS policies
 - Session ticket key rotation scheduling & multi-key window
 - (Stretch) Exploring QUIC/HTTP/3 (would likely be a separate transport layer, so only mention if strategic)
@@ -222,11 +215,12 @@ Goals
 
 Approach and Components
 
-- Deterministic simulated-network unit tests (high priority):
-  - Add an injectable transport/socket abstraction used by protocol layers so tests can replace the real socket with a `TestSocket` implementation.
-    - `TestSocket` capabilities: partial reads/writes, configurable delays (simulated timers), reordering, duplication, injected resets, and deterministic pseudo-randomness with a seed.
-    - Target areas: HTTP/2 frame reassembly and flow-control, HTTP/1.1 chunked transfer edge cases, TLS handshake fragmentation handling, and higher-level timeouts.
-    - Tests are deterministic, fast, and run in PRs.
+- ✅ **Deterministic simulated-network unit tests (DONE)**:
+  - `TestPipe` + `TestTransport`: in-memory transport with `FaultPolicy` for deterministic partial reads/writes, EAGAIN, and connection resets.
+  - `FaultInjectingTransport`: decorator wrapping real transports for integration tests with the full event loop.
+  - Transport test hook (`g_transportDecorator`): compile-time gated (`AERONET_ENABLE_TEST_HOOKS`) global atomic that decorates transports at accept time.
+  - 26 unit tests + 11 integration tests covering partial delivery, EAGAIN, resets, combined faults, pipelining.
+  - Already found and fixed a latent HTTP/1.1 parser bug (header boundary off-by-one).
 
 - Proxy-based user-space fault injection (medium priority):
   - Integrate Toxiproxy or a small custom proxy harness for tests that exercise full binaries without requiring NET_ADMIN privileges.
@@ -240,21 +234,28 @@ Approach and Components
 Test Design & Best Practices
 
 - Start with syscall error injection tests (EINTR, EAGAIN, EPIPE, ECONNRESET) and partial I/O.
-- Prefer deterministic `TestSocket` unit tests for core protocol logic: easier to reproduce and debug.
+- Prefer deterministic `TestTransport` unit tests for core protocol logic: easier to reproduce and debug.
 - For integration tests, capture detailed artifacts on failures: pcap, logs, and deterministic seeds used by the test harness.
 - Expose test-time configuration hooks (shorter timeouts, deterministic timers) so tests run quickly and reliably.
 
 CI Policy
 
-- PRs: run all deterministic unit tests (including `TestSocket` simulated-network tests).
+- PRs: run all deterministic unit tests (including `TestTransport` simulated-network tests) and integration fault-injection tests.
 - Nightly: run proxy-based and `tc netem` integration suites; mark these jobs non-blocking for PRs.
 
-Milestones (suggested)
+Milestones
 
-1. Add `TestSocket` abstraction and 30 deterministic unit tests covering HTTP/2 framing, window-update races, and HTTP/1.1 chunked edge cases.
-2. Add simple Toxiproxy-based harness and a handful of end-to-end tests (connection cut, high latency, truncated responses).
-3. Add `ip netns` + `tc netem` scripts in `tests/e2e/` and integrate nightly CI job.
-4. Collect failure artifacts (pcap + logs) and add tooling to reproduce failing scenarios locally with the same netem parameters.
+1. ✅ Add `TestTransport` abstraction and deterministic unit tests covering partial I/O, EAGAIN, and resets.
+2. ✅ Add `FaultInjectingTransport` + global hook for integration tests with real sockets.
+3. ✅ Integration tests for HTTP/1.1 under faults (partial reads/writes, resets, pipelining).
+4. Add HTTP/2 direct protocol tests using `TestTransport` + `processInput()` for frame-level fault injection.
+5. Add simple Toxiproxy-based harness and a handful of end-to-end tests (connection cut, high latency, truncated responses).
+6. Add `ip netns` + `tc netem` scripts in `tests/e2e/` and integrate nightly CI job.
+7. Collect failure artifacts (pcap + logs) and add tooling to reproduce failing scenarios locally with the same netem parameters.
+
+Known Limitations
+
+- **Read-EAGAIN incompatible with EPOLLET in integration tests**: When `FaultInjectingTransport` returns `{0, ReadReady}` (simulated EAGAIN), the server breaks to wait for a new EPOLLIN edge. But with EPOLLET, the socket already has data so no edge fires — causing a hang. Workaround: EAGAIN on reads is tested only at unit level; integration tests use partial reads (which work because `EPOLL_CTL_ADD` with existing data triggers an initial event).
 
 Acceptance Criteria
 
@@ -264,5 +265,5 @@ Acceptance Criteria
 
 Notes
 
-- Adding a transport abstraction is a small API design change but yields large testability benefits. Keep the abstraction minimal and efficient in production builds (thin indirection).
+- The transport test hook is compile-time gated (`#ifdef AERONET_ENABLE_TEST_HOOKS`) — zero cost in production builds.
 - Proxy-based tests are useful when privileged operations are not available in CI.

@@ -28,7 +28,7 @@ int64_t UnixSocket::send(const void* /*data*/, std::size_t /*len*/) noexcept { r
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/memory-utils.hpp"
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 // Linux supports SOCK_NONBLOCK | SOCK_CLOEXEC atomically at socket creation.
 #else
 #include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec
@@ -51,7 +51,7 @@ constexpr int ToNativeType(UnixSocket::Type type) {
 
 UnixSocket::UnixSocket(Type type) {
   const int nativeType = ToNativeType(type);
-#ifdef __linux__
+#ifdef AERONET_LINUX
   _baseFd = BaseFd(::socket(AF_UNIX, nativeType | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
 #else
   _baseFd = BaseFd(::socket(AF_UNIX, nativeType, 0));
@@ -59,7 +59,7 @@ UnixSocket::UnixSocket(Type type) {
   if (!_baseFd) {
     ThrowSystemError("UnixSocket: socket creation failed");
   }
-#ifndef __linux__
+#ifndef AERONET_LINUX
   // On macOS / others: set non-blocking and close-on-exec via fcntl.
   if (!SetNonBlocking(_baseFd.fd()) || !SetCloseOnExec(_baseFd.fd()) || !SetNoSigPipe(_baseFd.fd())) {
     ThrowSystemError("UnixSocket: fcntl failed");
@@ -76,9 +76,9 @@ int UnixSocket::connect(std::string_view path) noexcept {
 }
 
 int64_t UnixSocket::send(const void* data, std::size_t len) noexcept {
-#ifdef __linux__
+#ifdef AERONET_LINUX
   return static_cast<int64_t>(::send(_baseFd.fd(), data, len, MSG_DONTWAIT | MSG_NOSIGNAL));
-#elifdef __APPLE__
+#elifdef AERONET_MACOS
   // macOS: MSG_DONTWAIT is supported, MSG_NOSIGNAL is not — use SO_NOSIGPIPE on the socket instead.
   return ::send(_baseFd.fd(), data, len, MSG_DONTWAIT);
 #else

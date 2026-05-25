@@ -1,5 +1,9 @@
 aux_source_directory(src AERONET_SRC_LIST)
 
+if(NOT AERONET_ENABLE_TEST_HOOKS)
+    list(REMOVE_ITEM AERONET_SRC_LIST src/transport-test-hook.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet
     ${AERONET_SRC_LIST}
 )
@@ -98,6 +102,10 @@ AeronetAddUnitTest(
     aeronet
     aeronet_test_support
 )
+
+if(AERONET_ENABLE_TEST_HOOKS)
+    target_compile_definitions(aeronet PUBLIC AERONET_ENABLE_TEST_HOOKS)
+endif()
 
 if(AERONET_BUILD_TESTS)
     if(AERONET_ENABLE_OPENSSL)

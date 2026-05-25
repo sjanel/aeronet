@@ -581,7 +581,7 @@ TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 }
 #endif
-#ifdef __linux__
+#ifdef AERONET_LINUX
 // Integration test: request kTLS + zerocopy via server config and exercise large response path.
 TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
   using namespace aeronet::test;

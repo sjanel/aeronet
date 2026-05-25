@@ -19,7 +19,7 @@
 #include <thread>
 #include <utility>
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 #include <sys/resource.h>
 #endif
 
@@ -44,7 +44,7 @@ constexpr std::size_t kCompressionMinBytes = 16UL;  // Compress responses larger
 /// with many concurrent connections (and their associated file sends) do not
 /// hit EMFILE.
 void RaiseFileDescriptorLimit() {
-#ifdef __linux__
+#ifdef AERONET_LINUX
   struct rlimit rl{};
   if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
     rl.rlim_cur = rl.rlim_max;

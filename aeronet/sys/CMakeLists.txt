@@ -126,4 +126,11 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+AeronetAddUnitTest(
+    test-transport_test
+    test/test-transport_test.cpp
+    LIBRARIES
+    aeronet_basic_test_support
+)
+
 endif()
