@@ -36,7 +36,7 @@ TEST(MajorMinorVersion, ParseInvalidFormat) {
   EXPECT_EQ(vers, HttpVer{});
 
   std::string_view s2 = "HTTP/114";  // no dot
-  vers = HttpVer{s2};
+  vers = HttpVer{s2.data(), s2.size()};
   EXPECT_EQ(vers, HttpVer{});
 
   std::string_view s3 = "HTTP/1.y";  // non-numeric minor
@@ -94,7 +94,7 @@ TEST(MajorMinorVersion, InvalidVersion) {
   HttpVer vers3{1, 10};  // minor > 9
   EXPECT_FALSE(vers3.isValid());
 
-  HttpVer vers4{0, 140};  // major == 0
+  HttpVer vers4{static_cast<std::uint8_t>(0), static_cast<std::uint8_t>(1)};  // major == 0
   EXPECT_FALSE(vers4.isValid());
 }
 

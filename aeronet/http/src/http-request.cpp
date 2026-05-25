@@ -224,7 +224,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
 
   // Version
   first = nextSep + 1;
-  _version = http::Version{std::string_view{first, lineLast}};
+  _version = http::Version{first, static_cast<std::size_t>(lineLast - first)};
   if (!_version.isValid()) {
     // malformed version token
     return http::StatusCodeBadRequest;
@@ -234,14 +234,15 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   }
 
   // Headers
-  auto* headersFirst = lineLast + http::CRLF.size();
-  if (headersFirst == last) {
+  first = lineLast + http::CRLF.size();
+  if (first == last) {
     // need more data - the headers are not complete yet
     return kStatusNeedMoreData;
   }
 
   _headers.clear();
-  for (first = headersFirst; first < last; first = lineLast + http::CRLF.size()) {
+  bool foundEmptyLine = false;
+  for (; first < last; first = lineLast + http::CRLF.size()) {
     lineLast = SearchCRLF(first, last);
     if (lineLast == last) {
       // need more data - the headers are not complete yet
@@ -249,6 +250,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
     }
     if (lineLast == first) {
       // we are pointing to a CRLF (empty line) - end of headers
+      foundEmptyLine = true;
       break;
     }
     if (std::cmp_less(maxHeadersBytes, lineLast + http::CRLF.size() - inBuffer.data())) {
@@ -264,6 +266,12 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
                                        mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
+  }
+
+  if (!foundEmptyLine) {
+    // The for-loop exited because first >= last after advancing past the last header's CRLF,
+    // without finding the empty line that terminates the header section.
+    return kStatusNeedMoreData;
   }
 
   // At this point, we have a complete request head, and we point to a CRLF.
