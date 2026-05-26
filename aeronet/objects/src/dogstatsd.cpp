@@ -7,6 +7,8 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <iostream>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -177,20 +179,20 @@ bool DogStatsD::tryReconnect() noexcept {
 }
 
 int DogStatsD::connect() noexcept {
-  std::string_view socketPath = this->socketPath();
+  const std::string_view socketPath = this->socketPath();
 
   assert(_fd);
-
-  const int ret = _fd.connect(socketPath);
-  if (ret == -1) {
-    log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
-               SystemErrorMessage(LastSystemError()));
-    _retryConnectionCounter = 1;
-  } else {
-    _retryConnectionCounter = 0;
+  _retryConnectionCounter = static_cast<uint8_t>(-_fd.connect(socketPath));
+  if (_retryConnectionCounter == 1) {
+    try {
+      log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
+                 SystemErrorMessage(LastSystemError()));
+    } catch (const std::exception& e) {
+      std::cerr << "DogStatsD: unable to connect to socket '" << socketPath << "'. Full error: " << e.what() << "\n";
+    }
   }
 
-  return ret;
+  return -_retryConnectionCounter;
 }
 
 }  // namespace aeronet

@@ -6,11 +6,11 @@
 #include <chrono>
 #include <concepts>
 #include <cstdio>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/time-constants.hpp"
 #ifndef NDEBUG
 #include <system_error>
 #endif
@@ -24,11 +24,14 @@
 #include <unistd.h>
 #endif
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/request-metrics.hpp"
+#include "aeronet/simple-charconv.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
@@ -82,7 +85,7 @@ void AccessLogWriter::log(const RequestMetrics& metrics) {
       break;
   }
 
-  static constexpr RawChars32::size_type kFlushThreshold = 8192;
+  static constexpr decltype(_buffer)::size_type kFlushThreshold = 8192;
 
   if (_buffer.size() >= kFlushThreshold) {
     flush();
@@ -150,7 +153,7 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   *out++ = '"';
   *out++ = '\n';
 
-  _buffer.setSize(static_cast<uint32_t>(out - _buffer.data()));
+  _buffer.setSize(static_cast<decltype(_buffer)::size_type>(out - _buffer.data()));
 }
 
 void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
@@ -199,8 +202,8 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   _buffer.setSize(static_cast<uint32_t>(out - _buffer.data()));
 }
 
-void AccessLogWriter::flush() {
-  if (_buffer.size() == 0) {
+void AccessLogWriter::flush() noexcept {
+  if (_buffer.empty()) {
     return;
   }
 
@@ -229,7 +232,15 @@ void AccessLogWriter::flush() {
     const auto written = ::write(fd, data, remaining);
 #endif
     if (written <= 0) {
-      log::error("access log write failed on fd {}: errno {}", fd, errno);
+      // flush is noexcept and log::error could throw, let's just surround it with a small try-catch and fallback to
+      // cerr if logging fails to avoid losing the error information. Also disable further logging to avoid repeated
+      // errors.
+      try {
+        log::error("access log write failed on fd {}: errno {}", fd, errno);
+      } catch (const std::exception& ex) {
+        std::cerr << "access log write failed on fd " << fd << ": errno " << errno
+                  << " (also failed to log error: " << ex.what() << ")\n";
+      }
       _buffer.clear();
       _sink = AccessLogConfig::Sink::None;  // Disable further logging on error
       return;

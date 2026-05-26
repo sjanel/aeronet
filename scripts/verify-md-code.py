@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -468,6 +469,34 @@ def read_cmake_feature_defines(build_dir: Path) -> List[str]:
     return flags
 
 
+def read_cmake_platform_defines(build_dir: Path) -> List[str]:
+    system_name = read_cache_entry(build_dir, "CMAKE_SYSTEM_NAME")
+    if not system_name:
+        system_name = platform.system()
+    normalized = system_name.lower()
+
+    if normalized.startswith("windows"):
+        return ["-DNOMINMAX=1", "-DAERONET_WINDOWS=1"]
+    if normalized.startswith("darwin"):
+        return ["-DAERONET_POSIX=1", "-DAERONET_MACOS=1"]
+    if normalized.startswith("linux"):
+        return ["-DAERONET_POSIX=1", "-DAERONET_LINUX=1"]
+    return []
+
+
+def has_platform_define(compile_definitions: Sequence[str]) -> bool:
+    platform_defines = {
+        "AERONET_LINUX",
+        "AERONET_MACOS",
+        "AERONET_WINDOWS",
+    }
+    for define in compile_definitions:
+        name = define.split("=", 1)[0]
+        if name in platform_defines:
+            return True
+    return False
+
+
 def dump_output(output: str, limit: int = 200) -> None:
     lines = output.splitlines()
     for line in lines[:limit]:
@@ -847,6 +876,11 @@ def main() -> None:
         fallback_defines = read_defines()
         fallback_defines.extend(read_cmake_feature_defines(build_dir))
         compile_definitions.extend(normalize_define(flag) for flag in fallback_defines)
+
+    if not has_platform_define(compile_definitions):
+        compile_definitions.extend(
+            normalize_define(flag) for flag in read_cmake_platform_defines(build_dir)
+        )
 
     include_dirs.extend(gather_user_include_dirs(args.include))
     include_dirs = dedupe_preserve(include_dirs)
