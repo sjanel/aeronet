@@ -14,7 +14,7 @@
 // Linux-specific system call overrides (epoll, accept4, recvmsg, memfd, etc.)
 // that are not available on macOS or Windows.
 #ifndef AERONET_WANT_SYS_OVERRIDES
-#ifdef __linux__
+#ifdef AERONET_LINUX
 #define AERONET_WANT_SYS_OVERRIDES 1
 #else
 #define AERONET_WANT_SYS_OVERRIDES 0
@@ -52,7 +52,7 @@
 #include <openssl/ssl.h>
 #endif
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 #include <linux/errqueue.h>
 #include <netinet/in.h>
 #endif

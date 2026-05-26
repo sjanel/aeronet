@@ -33,6 +33,7 @@ Single consolidated reference for **aeronet** features.
 1. [HTTP/2 (RFC 9113)](#http2-rfc-9113)
 1. [Future Expansions](#future-expansions)
 1. [Large-body optimization](#large-body-optimization)
+1. [Network Fault Injection Testing](#network-fault-injection-testing)
 
 ## HTTP/1.1 Feature Matrix
 
@@ -3051,6 +3052,31 @@ curl --http2-prior-knowledge http://localhost:8080/hello
 # h2c via upgrade
 curl --http2 http://localhost:8080/hello
 ```
+
+## Network Fault Injection Testing
+
+Test infrastructure for verifying server behavior under realistic network conditions. Compile-time gated via `AERONET_ENABLE_TEST_HOOKS` (automatically set when `AERONET_BUILD_TESTS=ON`).
+
+### Components
+
+- **`FaultPolicy`** (`aeronet/test_support/basic/include/aeronet/fault-policy.hpp`): Configuration struct for deterministic fault injection. Controls partial reads/writes (`maxBytesPerRead`, `maxBytesPerWrite`), periodic EAGAIN simulation (`eagainAfterEveryNReads/Writes`), connection reset thresholds (`resetAfterTotalBytesRead/Written`), one-shot errors (`resetOnNextRead/Write`), and optional PRNG seed for randomized partial sizes.
+
+- **`TestPipe`** (`aeronet/test_support/basic/include/aeronet/test-pipe.hpp`): Bidirectional in-memory byte channel for event-loop-free unit testing. Each side has an independent byte buffer; reads consume from one direction, writes append to the other.
+
+- **`TestTransport`** (`aeronet/test_support/basic/include/aeronet/test-transport.hpp`): In-memory `ITransport` implementation wrapping a `TestPipe` with `FaultPolicy` applied. Used for unit-level protocol testing without sockets or event loops.
+
+- **`FaultInjectingTransport`** (`aeronet/test_support/basic/include/aeronet/fault-injecting-transport.hpp`): Decorator that wraps a real `ITransport` (e.g., `PlainTransport` on a live socket) and applies `FaultPolicy` to all I/O. Used for integration tests with real sockets and the full event loop.
+
+- **Transport test hook** (`aeronet/main/include/aeronet/transport-test-hook.hpp`): Global atomic function pointer (`g_transportDecorator`) and RAII guard (`ScopedTransportDecorator`). When set, the server decorates each newly accepted transport at accept time. Guarded by `#ifdef AERONET_ENABLE_TEST_HOOKS` — zero overhead in production.
+
+### Test coverage
+
+- Unit tests (`aeronet/sys/test/test-transport_test.cpp`): 26 tests covering `TestPipe` and `TestTransport` with various fault policies.
+- Integration tests (`tests/network-fault-injection_test.cpp`): 11 tests exercising partial reads, partial writes, EAGAIN simulation, connection resets, combined faults, and HTTP pipelining under faults — all with real sockets and the full server event loop.
+
+### Limitations
+
+- **Read-EAGAIN with EPOLLET**: Simulated EAGAIN on reads (`eagainAfterEveryNReads`) is incompatible with edge-triggered epoll in integration tests. When the transport returns `{0, ReadReady}`, the server waits for a new EPOLLIN edge, but the socket already has data so no edge fires. EAGAIN simulation works correctly in unit tests (no event loop) and for writes (EPOLLOUT re-triggers because the socket is always writable).
 
 ## Future Expansions
 

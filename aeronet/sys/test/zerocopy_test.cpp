@@ -110,7 +110,7 @@ TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
   EXPECT_TRUE(state.pendingCompletions());
 }
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 TEST(ZeroCopyTest, EnableZerocopyReturnsNotSupportedOnEnoprotopt) {
   int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
   ASSERT_GE(fd, 0);
@@ -147,7 +147,7 @@ TEST(ZeroCopyTest, EnableZerocopyReturnsErrorOnOtherErrno) {
   EXPECT_EQ(result, ZeroCopyEnableResult::Error);
 }
 
-#endif  // __linux__
+#endif  // AERONET_LINUX
 
 // PollZeroCopyCompletions tests moved to zerocopy_completions_test.cpp
 
@@ -164,7 +164,7 @@ TEST(PlainTransportZeroCopy, EnableZerocopyOnTransport) {
   EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_FALSE(transport.hasZerocopyPending());
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
   // No pending completions on new transport
   EXPECT_FALSE(transport.hasZerocopyPending());
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
@@ -267,7 +267,7 @@ TEST(PlainTransportZeroCopy, DisableZerocopyWorks) {
   EXPECT_FALSE(transport.isZerocopyEnabled());
 }
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 
 // Tests for transport zerocopy path using mocked sendmsg
 
@@ -785,6 +785,6 @@ TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
   EXPECT_EQ(recvBuf, head + body);
 }
 
-#endif  // __linux__
+#endif  // AERONET_LINUX
 
 }  // namespace aeronet
