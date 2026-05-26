@@ -31,7 +31,7 @@ class AccessLogWriter {
   void log(const RequestMetrics& metrics);
 
   // Flush any buffered log data to the configured sink.
-  void flush();
+  void flush() noexcept;
 
  private:
   void formatCLF(const RequestMetrics& metrics);
