@@ -78,6 +78,7 @@ jobs:
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
@@ -165,6 +166,7 @@ jobs:
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
             -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
@@ -230,6 +232,7 @@ jobs:
           ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
@@ -549,6 +552,7 @@ jobs:
             -DCMAKE_CXX_COMPILER=${CXX} \
             -DCMAKE_OSX_SYSROOT=${SDKROOT} \
             -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
@@ -600,6 +604,7 @@ jobs:
           cmake -S . -B build -A x64 `
             -DCMAKE_BUILD_TYPE=${{ matrix.build }} `
             -DAERONET_BUILD_TESTS=ON `
+            -DAERONET_ENABLE_TEST_HOOKS=ON `
             -DAERONET_BUILD_EXAMPLES=ON `
             -DAERONET_BUILD_BENCHMARKS=OFF `
             -DAERONET_ENABLE_ASAN=OFF `
@@ -662,6 +667,7 @@ jobs:
           ./scripts/retry.sh cmake -S . -B build-alpine -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             -DAERONET_ENABLE_ASAN=OFF \

@@ -49,6 +49,10 @@
 #include "aeronet/tls-transport.hpp"  // from tls module include directory
 #endif
 
+#ifdef AERONET_ENABLE_TEST_HOOKS
+#include "aeronet/transport-test-hook.hpp"
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -495,6 +499,12 @@ void SingleHttpServer::acceptNewConnections() {
 #else
     state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
 #endif
+
+#ifdef AERONET_ENABLE_TEST_HOOKS
+    // Test hook: allow tests to wrap/decorate the transport for fault injection.
+    state.transport = test::ApplyTransportDecorator(std::move(state.transport));
+#endif
+
     refreshKeepAliveDeadline(cnxIt);
 
     ConnectionState* pCnx = &state;

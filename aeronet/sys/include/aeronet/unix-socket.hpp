@@ -11,9 +11,9 @@ namespace aeronet {
 
 // Maximum length of a Unix domain socket path (platform-dependent, typically 104–108 bytes).
 inline constexpr std::size_t kUnixSocketMaxPath =
-#ifdef __linux__
+#ifdef AERONET_LINUX
     108  // Linux: sizeof(sockaddr_un::sun_path)
-#elifdef __APPLE__
+#elifdef AERONET_MACOS
     104  // macOS: sizeof(sockaddr_un::sun_path)
 #else
     104  // conservative default

@@ -640,7 +640,7 @@ TEST(Http2Streaming, WriteAfterEndIgnored) {
   auto response = client.get("/write-after-end");
   EXPECT_EQ(response.statusCode, 200);
   EXPECT_EQ(response.body, "visible");
-  EXPECT_TRUE(response.body.find("invisible") == std::string::npos);
+  EXPECT_FALSE(response.body.contains("invisible"));
 }
 
 // ============================================================================

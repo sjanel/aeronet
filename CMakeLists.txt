@@ -141,6 +141,13 @@ endif()
 
 option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
+set(AERONET_ENABLE_TEST_HOOKS_DEFAULT OFF)
+if(AERONET_BUILD_TESTS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+  set(AERONET_ENABLE_TEST_HOOKS_DEFAULT ON)
+endif()
+option(AERONET_ENABLE_TEST_HOOKS
+  "Enable transport test hooks (auto-on in non-Release test builds, off by default for Release)"
+  ${AERONET_ENABLE_TEST_HOOKS_DEFAULT})
 option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
 option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})

@@ -5,7 +5,7 @@
 #include <ctime>
 #include <string_view>
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 // Ensure timespec is defined before including linux/errqueue.h
 #include <linux/errqueue.h>
 #include <sys/socket.h>
@@ -46,7 +46,7 @@ struct ZeroCopyState {
   std::uint32_t seqHi{0};
 };
 
-#ifdef __linux__
+#ifdef AERONET_LINUX
 
 /// Enable MSG_ZEROCOPY on a TCP socket. Call once after socket creation.
 /// Returns the result of the operation.
