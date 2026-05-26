@@ -30,16 +30,13 @@
 namespace aeronet {
 
 // (no test helpers declared here)
+class HttpResponseWriter;
 
 namespace {
 
 HttpResponse OkHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeOK); }
 HttpResponse AcceptedHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeAccepted); }
 HttpResponse CreatedHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse(http::StatusCodeCreated); }
-
-}  // namespace
-
-class HttpResponseWriter;
 
 class RouterTest : public ::testing::Test {
  protected:
@@ -51,6 +48,8 @@ class RouterTest : public ::testing::Test {
 
   const HttpRequest& dummyReq() { return *reinterpret_cast<const HttpRequest*>(&httpRequestStorage); }
 };
+
+}  // namespace
 
 TEST_F(RouterTest, RegisterAndMatchNormalHandler) {
   bool called = false;
@@ -948,6 +947,8 @@ TEST_F(RouterTest, ConflictingWildcardAndExact) {
   EXPECT_NE(ex.requestHandler(), nullptr);
 }
 
+namespace {
+
 // Fixture to test behavior across different trailing-slash policies.
 class RouterTestTrailingPolicy : public ::testing::Test {
  protected:
@@ -968,6 +969,8 @@ class RouterTestTrailingPolicy : public ::testing::Test {
     return router;
   }
 };
+
+}  // namespace
 
 TEST_F(RouterTestTrailingPolicy, NormalizeAcceptsBothForms) {
   Router router = RouterTestTrailingPolicy::makeRouter(RouterConfig::TrailingSlashPolicy::Normalize);

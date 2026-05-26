@@ -70,7 +70,7 @@ UnixSocket::UnixSocket(Type type) {
 int UnixSocket::connect(std::string_view path) noexcept {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
-  *Append(path, addr.sun_path) = '\0';
+  Copy(path, addr.sun_path);
   const auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
   return ::connect(_baseFd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen);
 }

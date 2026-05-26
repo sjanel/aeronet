@@ -421,13 +421,17 @@ TEST(HttpDate, ChangesAcrossSecondBoundary) {
   ASSERT_NE(d1, d2) << "Date header did not change across boundary after waiting";
 }
 
+namespace {
+
 struct ErrorCase {
-  const char* name;
-  const char* request;
-  const char* expectedStatus;  // substring (e.g. "400", "505")
+  const char* name{};
+  const char* request{};
+  const char* expectedStatus{};  // substring (e.g. "400", "505")
 };
 
 class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
+
+}  // namespace
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
