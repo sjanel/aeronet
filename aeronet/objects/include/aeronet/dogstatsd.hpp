@@ -65,13 +65,14 @@ class DogStatsD {
 
   [[nodiscard]] int connect() noexcept;
 
-  // To avoid trying to reconnect for every message if there is a durable issue
-  static constexpr uint8_t kReconnectionThreshold = 50U;  // A very arbitrary number to avoid reconnecting too often
-
   RawChars32 _buf;
   UnixSocket _fd;
   uint16_t _socketPathLength{0};
   uint8_t _retryConnectionCounter{kReconnectionThreshold};
+
+  // To avoid trying to reconnect for every message if there is a durable issue
+  // A very arbitrary number to avoid reconnecting too often
+  static constexpr decltype(_retryConnectionCounter) kReconnectionThreshold = 50U;
 };
 
 }  // namespace aeronet

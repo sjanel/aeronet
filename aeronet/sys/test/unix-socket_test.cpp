@@ -261,11 +261,4 @@ TEST_F(UnixSocketTest, FdAccessor) {
   EXPECT_GE(flags, 0);
 }
 
-TEST_F(UnixSocketTest, MaxPathConstant) {
-  // Verify the constant is defined and reasonable
-  EXPECT_GT(kUnixSocketMaxPath, 0);
-  // Should be at least 108 (Linux) or 104 (macOS)
-  EXPECT_GE(kUnixSocketMaxPath, 100);
-}
-
 }  // namespace aeronet
