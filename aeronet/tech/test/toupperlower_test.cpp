@@ -6,11 +6,15 @@
 
 namespace aeronet {
 
+namespace {
+
 template <typename T>
 class ToUpperLowerTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using MyTypes = ::testing::Types<char, unsigned char, signed char>;
 TYPED_TEST_SUITE(ToUpperLowerTest, MyTypes, );

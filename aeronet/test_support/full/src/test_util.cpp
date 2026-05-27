@@ -644,7 +644,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
     auto lineEnd = headers.find('\r', tePos);
     std::string_view val =
         (lineEnd == std::string_view::npos) ? headers.substr(tePos) : headers.substr(tePos, lineEnd - tePos);
-    if (val.find("chunked") != std::string_view::npos || val.find("Chunked") != std::string_view::npos) {
+    if (val.contains("chunked") || val.contains("Chunked")) {
       isChunked = true;
     }
   }

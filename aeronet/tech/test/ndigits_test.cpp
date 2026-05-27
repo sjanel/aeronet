@@ -14,11 +14,15 @@
 
 namespace aeronet {
 
+namespace {
+
 template <typename T>
 class S8NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using S8Types = ::testing::Types<signed char, int8_t>;
 TYPED_TEST_SUITE(S8NDigitsTest, S8Types, );
@@ -41,12 +45,15 @@ TYPED_TEST(S8NDigitsTest, NDigitsS8) {
     static_assert(ndigits(std::numeric_limits<T>::min()) == 3U);
   }
 }
+namespace {
 
 template <typename T>
 class S16NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using S16Types = ::testing::Types<short, int16_t>;
 TYPED_TEST_SUITE(S16NDigitsTest, S16Types, );
@@ -71,11 +78,15 @@ TYPED_TEST(S16NDigitsTest, NDigitsS16) {
   }
 }
 
+namespace {
+
 template <typename T>
 class S32NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using S32Types = ::testing::Types<int, int32_t>;
 TYPED_TEST_SUITE(S32NDigitsTest, S32Types, );
@@ -110,11 +121,15 @@ TYPED_TEST(S32NDigitsTest, NDigitsS32) {
   }
 }
 
+namespace {
+
 template <typename T>
 class S64NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using S64Types = ::testing::Types<long, int64_t>;
 TYPED_TEST_SUITE(S64NDigitsTest, S64Types, );
@@ -165,11 +180,15 @@ TYPED_TEST(S64NDigitsTest, NDigitsS64) {
   }
 }
 
+namespace {
+
 template <typename T>
 class U8NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using U8Types = ::testing::Types<unsigned char, uint8_t>;
 TYPED_TEST_SUITE(U8NDigitsTest, U8Types, );
@@ -187,11 +206,15 @@ TYPED_TEST(U8NDigitsTest, NDigitsU8) {
   }
 }
 
+namespace {
+
 template <typename T>
 class U16NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using U16Types = ::testing::Types<uint16_t, unsigned short>;
 TYPED_TEST_SUITE(U16NDigitsTest, U16Types, );
@@ -210,11 +233,15 @@ TYPED_TEST(U16NDigitsTest, NDigitsU16) {
   }
 }
 
+namespace {
+
 template <typename T>
 class U32NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using U32Types = ::testing::Types<uint32_t, unsigned int>;
 TYPED_TEST_SUITE(U32NDigitsTest, U32Types, );
@@ -239,11 +266,15 @@ TYPED_TEST(U32NDigitsTest, NDigitsU32) {
   }
 }
 
+namespace {
+
 template <typename T>
 class U64NDigitsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+
+}  // namespace
 
 using U64Types = ::testing::Types<uint64_t, unsigned long>;
 TYPED_TEST_SUITE(U64NDigitsTest, U64Types, );
