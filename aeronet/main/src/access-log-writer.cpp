@@ -6,6 +6,7 @@
 #include <chrono>
 #include <concepts>
 #include <cstdio>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -160,7 +161,7 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   auto methodStr = http::MethodToStr(metrics.method);
   auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(metrics.duration).count();
 
-  static constexpr uint32_t kMaxCharsDuration = std::numeric_limits<decltype(durationUs)>::digits10 + 1;
+  static constexpr auto kMaxCharsDuration = std::numeric_limits<decltype(durationUs)>::digits10 + 1;
 
   static constexpr std::string_view kTsPart = R"({"ts":")";
   static constexpr std::string_view kMethodPart = R"(","method":")";
@@ -199,7 +200,7 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   out = Append(metrics.userAgent, out);
   out = Append(kEndPart, out);
 
-  _buffer.setSize(static_cast<uint32_t>(out - _buffer.data()));
+  _buffer.setSize(static_cast<decltype(_buffer)::size_type>(out - _buffer.data()));
 }
 
 void AccessLogWriter::flush() noexcept {
@@ -251,7 +252,7 @@ void AccessLogWriter::flush() noexcept {
   } while (remaining > 0);
 
   assert(data > start);
-  _buffer.erase_front(static_cast<uint32_t>(data - start));
+  _buffer.erase_front(static_cast<decltype(_buffer.size())>(data - start));
 }
 
 }  // namespace aeronet
