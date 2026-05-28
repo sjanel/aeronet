@@ -252,7 +252,7 @@ Behavior summary
 - [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
 - [x] HTTP/2 benchmarks using [h2load](https://nghttp2.org/documentation/h2load-howto.html) (nghttp2). Supports both h2c (cleartext) and h2-tls modes via `run_benchmarks.py --protocol h2c|h2-tls`. All existing benchmark scenarios are supported. Competitor servers (drogon, axum, undertow, go, python/hypercorn) are updated for HTTP/2. Internal micro-benchmarks for HPACK, frame parsing, and flow control are also included. See `benchmarks/scripted-servers/README.md` and `.github/workflows/benchmarks-h2.yml`.
 - [x] WebSocket benchmarks using [k6](https://k6.io/) and optionally [websocket-bench](https://github.com/matttomasetti/websocket-bench). Six scenarios (echo-small, echo-medium, mix text+binary, ping-pong, connection churn, compression) compare aeronet, uWebSockets, and Drogon via a `/ws` echo endpoint. Orchestrated by `run_ws_benchmarks.py`. See `benchmarks/scripted-servers/README.md`.
-- [x] Async handler state pooling for lower per-connection footprint: `ConnectionState` now stores `AsyncHandlerState*` and `ConnectionStorage` allocates/releases async state instances from a dedicated `ObjectPool<ConnectionState::AsyncHandlerState>`. Public API impact: none. Validation references: `aeronet/main/test/connection-storage_test.cpp`, `aeronet/http/test/http-request_test.cpp`, and `aeronet/http/test/connection-state_test.cpp`.
+- [x] Async handler state pooling for lower per-connection footprint: `ConnectionState` now stores `AsyncHandlerState*` and `ConnectionStorage` allocates/releases async state instances from a dedicated `ObjectPool<ConnectionState::AsyncHandlerState>`.
 
 ### Memory Management & std::string_view Safety
 
@@ -1601,6 +1601,27 @@ Empty segments (double slashes `//`) are not allowed.
 - Unnamed captures use `{}`; the router assigns sequential numeric string keys (`"0"`, `"1"`, ...) in segment order.
 - Mixing named and unnamed captures in the same pattern is not allowed - registration (`setPath`) will throw if you mix them.
 - Consecutive parameter fragments with no literal separator (e.g. `{}{}` within a segment) are rejected.
+
+#### Route parameter constraints
+
+Path parameters can include an inline constraint pattern using `{name:pattern}`.
+
+Examples:
+
+- `/users/{id:[0-9]+}` accepts only numeric `id`
+- `/assets/{slug:[a-zA-Z0-9_-]{3,32}}` validates a bounded slug
+- `/files/{name:[^/]+}` captures a single non-slash segment
+
+Behavior and implementation notes:
+
+- Constraint compilation happens at registration time (`setPath()`), not at request time.
+- The matcher uses a two-tier engine:
+  - a fast custom matcher for simple character-class patterns (`[0-9]+`, `\\d+`, `.{3,8}`, `{n,m}`)
+  - automatic fallback to `std::regex` for complex expressions (groups, alternation, anchors)
+- Invalid constraint patterns throw `std::regex_error` (both fast-path parser errors and regex fallback compilation errors).
+- Constraints are evaluated per captured parameter segment during route matching; non-matching constraints make the route candidate fail and matching continues with other candidates.
+- Constrained parameter alternatives are tried before unconstrained parameter fallbacks, independent of registration order.
+- When multiple constrained alternatives at the same position match the same segment, registration order decides which handler wins.
 
 #### Escape sequences for literal special characters
 
