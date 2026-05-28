@@ -28,13 +28,13 @@ using TestTypeCRLF32 = DynamicConcatenatedStrings<kCRLF, uint32_t>;
 using TestTypeComma32 = DynamicConcatenatedStrings<kComma, uint32_t>;
 using TestTypeNull32 = DynamicConcatenatedStrings<kNullCharSep, uint32_t>;
 using TestTypeNull64 = DynamicConcatenatedStrings<kNullCharSep, uint64_t>;
-}  // namespace
 
 template <typename T>
 class DynamicConcatenatedStringsTest : public ::testing::Test {
  public:
-  using List = typename std::list<T>;
+  using List = std::list<T>;
 };
+}  // namespace
 
 using MyTypes = ::testing::Types<TestTypeCommaSpace32, TestTypeCommaSpace64, TestTypeCRLF32, TestTypeComma32,
                                  TestTypeNull32, TestTypeNull64>;
@@ -274,7 +274,7 @@ TYPED_TEST(DynamicConcatenatedStringsTest, FullSize) {
 
 TYPED_TEST(DynamicConcatenatedStringsTest, SizeEmptySingleMultipleClear) {
   TypeParam pool;
-  using size_type_t = typename TypeParam::size_type;
+  using size_type_t = TypeParam::size_type;
   EXPECT_EQ(pool.nbConcatenatedStrings(), size_type_t{0});
 
   pool.append("one");

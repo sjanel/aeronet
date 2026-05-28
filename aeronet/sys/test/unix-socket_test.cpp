@@ -28,6 +28,8 @@ namespace aeronet {
 
 namespace fs = std::filesystem;
 
+namespace {
+
 // Helper to create a unique temporary socket path
 class UnixSocketTest : public ::testing::Test {
  protected:
@@ -45,6 +47,8 @@ class UnixSocketTest : public ::testing::Test {
     }
   }
 };
+
+}  // namespace
 
 TEST_F(UnixSocketTest, InvalidUnixSocketTypeThrows) {
   EXPECT_THROW(
