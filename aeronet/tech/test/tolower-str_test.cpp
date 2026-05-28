@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+
 namespace aeronet {
 
 TEST(ToLowerStrTest, ToLowerInPlace) {
