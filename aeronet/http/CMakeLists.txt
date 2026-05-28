@@ -134,6 +134,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    route-constraint_test
+    test/route-constraint_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     route-group_test
     test/route-group_test.cpp
     LIBRARIES
