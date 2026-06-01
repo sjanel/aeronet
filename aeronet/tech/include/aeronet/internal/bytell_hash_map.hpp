@@ -663,6 +663,7 @@ public:
     convertible_to_iterator erase(const_iterator to_erase)
     {
         LinkedListIt current = { to_erase.index, to_erase.current };
+        bool should_advance;
         if (current.has_next())
         {
             LinkedListIt previous = current;
@@ -672,6 +673,7 @@ public:
                 previous = next;
                 next = next.next(*this);
             }
+            should_advance = next.index > current.index;
             AllocatorTraits::destroy(*this, std::addressof(*current));
             AllocatorTraits::construct(*this, std::addressof(*current), std::move(*next));
             AllocatorTraits::destroy(*this, std::addressof(*next));
@@ -684,9 +686,10 @@ public:
                 find_parent_block(current).clear_next();
             AllocatorTraits::destroy(*this, std::addressof(*current));
             current.set_metadata(Constants::magic_for_empty);
+            should_advance = true;
         }
         --num_elements;
-        return { to_erase.current, to_erase.index };
+        return { current.block, current.index, should_advance };
     }
 
     iterator erase(const_iterator begin_it, const_iterator end_it)
@@ -1172,14 +1175,19 @@ private:
     {
         BlockPointer it;
         size_t index;
+        bool should_advance = true;
 
         operator iterator()
         {
-            return ++iterator{it, index};
+            if (should_advance)
+                return ++iterator{it, index};
+            return {it, index};
         }
         operator const_iterator()
         {
-            return ++iterator{it, index};
+            if (should_advance)
+                return ++iterator{it, index};
+            return {it, index};
         }
     };
 };

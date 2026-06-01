@@ -53,6 +53,8 @@ TEST(flat_hash_map, basic_insert_find) {
   EXPECT_EQ(map1.find("gamma"), map1.end());
 }
 
+namespace {
+
 // Custom allocator that carries an id and does not propagate on move-assignment.
 template <typename T>
 struct TestAlloc {
@@ -75,6 +77,8 @@ struct TestAlloc {
 
   int id;
 };
+
+}  // namespace
 
 TEST(flat_hash_map, move_assignment_allocators_not_equal_emplaces_and_clears_other) {
   using PairAlloc = TestAlloc<std::pair<std::string, int>>;
@@ -124,6 +128,49 @@ TEST(flat_hash_map, erase_and_clear) {
   EXPECT_EQ(map1.erase("nope"), 0U);
   map1.clear();
   EXPECT_TRUE(map1.empty());
+}
+
+namespace {
+
+struct ProgrammableHash {
+  const std::size_t* value = nullptr;
+
+  std::size_t operator()([[maybe_unused]] int val) const noexcept { return *value; }
+};
+
+}  // namespace
+
+TEST(flat_hash_map, erase_iterator_returns_relocated_collision_entry_after_wraparound_collision) {
+  std::size_t hashValue = 0;
+  bool foundWraparoundCase = false;
+
+  for (std::size_t requestedBucketCount = 2; requestedBucketCount <= 64 && !foundWraparoundCase;
+       ++requestedBucketCount) {
+    flat_hash_map<int, int, ProgrammableHash> map(requestedBucketCount, ProgrammableHash{&hashValue});
+
+    for (std::size_t hashCandidate = 0; hashCandidate < map.bucket_count() && !foundWraparoundCase; ++hashCandidate) {
+      map.clear();
+      hashValue = hashCandidate;
+
+      map.emplace(1, 10);
+      map.emplace(2, 20);
+
+      auto it = map.find(1);
+      ASSERT_NE(it, map.end());
+
+      flat_hash_map<int, int, ProgrammableHash>::iterator next = map.erase(it);
+
+      if (next != map.end()) {
+        ASSERT_EQ(map.size(), 1U);
+        EXPECT_EQ(next->first, 2);
+        EXPECT_EQ(next->second, 20);
+        foundWraparoundCase = true;
+      }
+    }
+  }
+
+  ASSERT_TRUE(foundWraparoundCase) << "Failed to find a collision layout where erase(iterator) must return the "
+                                      "relocated element to avoid skipping it";
 }
 
 TEST(flat_hash_map, iteration_and_contents) {

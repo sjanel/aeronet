@@ -65,7 +65,7 @@ AeronetAddUnitTest(
     test/http-codec_test.cpp
     LIBRARIES
     aeronet_http
-    aeronet_basic_test_support
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(
@@ -80,6 +80,7 @@ AeronetAddUnitTest(
     http-headers-view_test
     test/http-headers-view_test.cpp
     LIBRARIES
+    aeronet_objects
     aeronet_basic_test_support
 )
 
@@ -98,18 +99,19 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http-response_test
-    test/http-response_test.cpp
-    LIBRARIES
-    aeronet_http aeronet_test_support
-)
-
-AeronetAddUnitTest(
     http-request_test
     test/http-request_test.cpp
     LIBRARIES
     aeronet_http
-    aeronet_basic_test_support
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
+    http-response_test
+    test/http-response_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(

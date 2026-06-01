@@ -6,8 +6,8 @@
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/fixedcapacityvector.hpp"
-#include "encoding.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-gateway.hpp"
