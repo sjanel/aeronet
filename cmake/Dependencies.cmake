@@ -315,8 +315,8 @@ if(AERONET_ENABLE_GLAZE)
     CONFIG
     TARGETS glaze::glaze
     DECLARE
-      URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.7.0.tar.gz
-      URL_HASH SHA256=fe6a201b2690ee7605dac88f77cf8c4a72a455bb9c61d43aa1f4fc791cdf5a00
+      URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.7.1.tar.gz
+      URL_HASH SHA256=c51217ca374f2a7d556c501a849d3a43dfffff47ba7711b6f0c22020e71ff63d
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
 endif()
