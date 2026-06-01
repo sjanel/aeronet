@@ -124,11 +124,9 @@ class ObjectArrayPool {
 
     const size_type newBlockCapa = getNextBlockCapacity(nbElems);
 
-    // We need to add padding to make sure that the Slot array that follows
-    // the Block header is properly aligned.
-    // malloc itselfs returns memory aligned to max_align_t, which is
-    // sufficient for our needs, but the Block header may have a size
-    // that is not a multiple of Slot alignment.
+    // We need to add padding to make sure that the Slot array that follows the Block header is properly aligned.
+    // malloc itself returns memory aligned to max_align_t, which is sufficient for our needs, but the Block header may
+    // have a size that is not a multiple of Slot alignment.
     Block* newBlock = static_cast<Block*>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockCapa * sizeof(T))));
     if (newBlock == nullptr) {
       throw std::bad_alloc();

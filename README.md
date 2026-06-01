@@ -176,6 +176,8 @@ router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
 
 **Path Parameters**: Use `{name}` for named parameters or `{}` for unnamed (zero-indexed) parameters (but you cannot mix both named and unnamed in the same path):
 
+You can also constrain a parameter inline with `{name:pattern}` (for example `/users/{id:[0-9]+}`) to reject non-matching segments during routing.
+
 ```cpp
 Router router;
 // Matches: /users/42/posts/hello
