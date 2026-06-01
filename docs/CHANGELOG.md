@@ -2,9 +2,11 @@
 
 All notable changes to aeronet are documented in this file.
 
-## [Unreleased]
+## Unreleased
 
-### New features
+## [1.3.0] - 2026-06-01
+
+### 1.3.0 New features
 
 - **Route parameter constraints**: Router path params now support inline constraints with `{name:pattern}` syntax (for example `/users/{id:[0-9]+}`). Constraint patterns are compiled at registration and validated during matching. The engine uses a fast custom matcher for common character-class patterns and falls back to `std::regex` for complex expressions.
 - **Network fault injection test infrastructure** (`aeronet/test_support/basic/`): `FaultPolicy`, `TestPipe`, `TestTransport`, and `FaultInjectingTransport` provide deterministic transport-level fault simulation for both unit and integration testing. A global transport decorator hook (`g_transportDecorator` in `transport-test-hook.hpp`) lets integration tests wrap real transports with fault injection at accept time. The hook is compile-time gated (`AERONET_ENABLE_TEST_HOOKS`, set automatically when `AERONET_BUILD_TESTS=ON`) — zero overhead in production builds. Tests: 26 unit tests + 11 integration tests covering partial delivery, EAGAIN, resets, combined faults, and pipelining.
@@ -19,7 +21,7 @@ All notable changes to aeronet are documented in this file.
 - **Per-route request timeout**: Per-route `requestTimeout` sets a handler deadline enforced during periodic sweeps. For HTTP/1.1, the deadline is checked connection-wide; for HTTP/2, per-stream deadlines are checked independently via `sweepStreams()`. Expired requests receive `408 Request Timeout`.
 - **Route groups** (`RouteGroup`): Lightweight non-owning prefix proxy created via `Router::group(prefix)`. Supports shared configuration (timeout, body/header limits, HTTP/2 enable), CORS policy, and request/response middleware applied to all routes in the group. Groups can be nested with config inheritance, and per-route overrides take precedence over group defaults.
 
-### Bug fixes
+### 1.3.0 Bug fixes
 
 - `flat_hash_map`: fix `erase(iterator)` return semantics when erasing a colliding entry relocates another chained element into the erased slot. The returned iterator now points to the relocated element instead of advancing past it, which fixes erase-while-iterating loops that could skip matching entries under collisions.
 - **HTTP/1.1 parser: fix header boundary off-by-one** - `initTrySetHead` could misidentify a complete request when the input buffer ended exactly at a header CRLF boundary (e.g., `"Host: test\r\n"` as the last byte). The header-parsing loop exited via its for-condition (`first >= last`) without finding the empty line terminator, then fell through to compute `headSpanSize = bufferSize + 2`. The subsequent `erase_front(headSpanSize)` would assert or corrupt state. Fixed by tracking whether the empty-line terminator was actually found and returning `kStatusNeedMoreData` when it was not.
@@ -30,14 +32,14 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
 - HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
 
-### Breaking changes
+### 1.3.0 Breaking changes
 
 - `HttpServerConfig::maxHeaderBytes` changed from `std::size_t` to `std::uint32_t`. No HTTP implementation should need >4 GiB of headers; this change eliminates struct padding and aligns with `PathEntryConfig::maxHeaderBytes`. Callers passing `std::size_t` values may need a narrowing cast.
 - `HttpServerConfig::withMaxHeaderBytes()` parameter changed from `std::size_t` to `std::uint32_t`.
 - `HttpServerConfig::maxPerEventReadBytes` no longer treats `0` as unlimited. It must now be `> 0`; use `std::numeric_limits<uint32_t>::max()` to approximate unlimited behavior.
 - Default `HttpServerConfig::maxPerEventReadBytes` changed from `0` (previous unlimited mode) to `128 KiB` to enforce fairness by default.
 
-### Improvements
+### 1.3.0 Improvements
 
 - Optimized WebSocket frame building by removing some copies and allocations.
 - Slightly improved Router test coverage
@@ -49,7 +51,7 @@ All notable changes to aeronet are documented in this file.
 - Backpressure queueing now rejects additional response chunks immediately once `maxOutboundBufferBytes` marks a connection for drain, avoiding repeated buffer growth/work when streaming handlers ignore a failed `writeBody()` result.
 - **WebSocket output zero-copy: write directly into caller-provided buffer** — Instead of accumulating frames in `_outputBuffer` and then draining it, let the protocol handler accept a caller-provided `HttpResponseData&` and write frames directly into it, bypassing `_outputBuffer` entirely. Eliminates both the intermediate allocation and the drain copy for single-frame responses. Requires a larger interface change (pass the destination buffer into `processInput` or a separate `buildOutput` step). Build on the above move-ownership idea first.
 
-### Other
+### 1.3.0 Other
 
 - Added **WebSocket** benchmarks to CI pipeline with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon.
 - Fix test `http2-protocol-handler_test` when `AERONET_ENABLE_ZLIB` is off and `AERONET_ENABLE_HTTP2` is on.
