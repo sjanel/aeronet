@@ -342,6 +342,8 @@ TEST(ConfigLoaderTest, Http2Config) {
 }
 #endif
 
+#if defined(AERONET_ENABLE_BROTLI) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
+
 // ============================================================================
 // Compression configuration
 // ============================================================================
@@ -386,6 +388,8 @@ TEST(ConfigLoaderTest, CompressionConfig) {
   EXPECT_EQ(allowList[0], "text/html");
   EXPECT_EQ(allowList[1], "application/json");
 }
+
+#endif
 
 // ============================================================================
 // Decompression configuration
@@ -1010,9 +1014,15 @@ TEST(ConfigLoaderTest, KubernetesStyleYaml) {
       "    startupPath: /startupz\n"
       "  compression:\n"
       "    preferredFormats:\n"
+#ifdef AERONET_ENABLE_BROTLI
       "      - br\n"
+#endif
+#ifdef AERONET_ENABLE_ZSTD
       "      - zstd\n"
+#endif
+#ifdef AERONET_ENABLE_ZLIB
       "      - gzip\n"
+#endif
       "    minBytes: 1024\n",
       ConfigFormat::yaml);
   EXPECT_EQ(config.server.port, 8080U);
@@ -1021,8 +1031,10 @@ TEST(ConfigLoaderTest, KubernetesStyleYaml) {
   EXPECT_EQ(config.server.tls.cipherPolicy, TLSConfig::CipherPolicy::Modern);
   EXPECT_TRUE(config.server.builtinProbes.enabled);
   EXPECT_EQ(config.server.builtinProbes.livenessPath(), "/healthz");
+#if defined(AERONET_ENABLE_BROTLI) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
   ASSERT_EQ(config.server.compression.preferredFormats.size(), 3U);
   EXPECT_EQ(config.server.compression.preferredFormats[0], Encoding::br);
+#endif
 }
 
 // ============================================================================
