@@ -690,7 +690,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #endif
 }
 
-bool SingleHttpServer::finalizeTlsHandshakeIfReady(NativeHandle fd, ConnectionState& state) {
+bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle fd, ConnectionState& state) {
   if (state.tlsEstablished || !state.transport->handshakeDone()) {
     return false;
   }

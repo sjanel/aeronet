@@ -11,7 +11,7 @@ AeronetAddProjectLibrary(aeronet_basic_test_support
 target_include_directories(aeronet_basic_test_support PUBLIC include)
 
 target_link_libraries(aeronet_basic_test_support
-    PUBLIC aeronet_tech aeronet_sys aeronet_objects
+    PUBLIC aeronet_tech aeronet_sys
 )
 
 if(AERONET_ENABLE_OPENSSL)

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "aeronet/system-error-message.hpp"
-
 #ifdef AERONET_POSIX
 #include <dlfcn.h>
 #include <sys/socket.h>
@@ -45,6 +43,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "aeronet/system-error-message.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL

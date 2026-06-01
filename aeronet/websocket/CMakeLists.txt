@@ -54,7 +54,7 @@ AeronetAddUnitTest(
     test/websocket-deflate_test.cpp
     LIBRARIES
     aeronet_websocket
-    aeronet_basic_test_support
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(
