@@ -80,6 +80,15 @@ TEST_F(RouterTest, MatchPatternSegmentLiteralMismatchReturnsFalse) {
   EXPECT_EQ(res.requestHandler(), nullptr);
 }
 
+TEST_F(RouterTest, MatchPatternSegmentMissingSeparatorReturnsFalse) {
+  // Pattern expects a literal suffix after the param; here the request's segment lacks that suffix.
+  router.setPath(http::Method::GET, "/files/prefix{}end", OkHandler);
+
+  // Segment 'prefixonly' contains the 'prefix' but not the required trailing 'end' literal.
+  auto res = router.match(http::Method::GET, "/files/prefixonly");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+}
+
 TEST_F(RouterTest, MatchPatternWithLiteralPrefixAndSuffixInSegment) {
   router.setPath(http::Method::GET, "/files/prefix{}end", OkHandler);
 
@@ -97,6 +106,14 @@ TEST_F(RouterTest, MatchPatternWithLiteralPrefixAndSuffixInSegment) {
   ASSERT_EQ(res.pathParams().size(), 1U);
   EXPECT_EQ(res.pathParams()[0].key, "0");
   EXPECT_EQ(res.pathParams()[0].value, "");
+}
+
+TEST_F(RouterTest, MatchPatternLeadingLiteralPartMismatch) {
+  router.setPath(http::Method::GET, "/mix/pre{id}post", OkHandler);
+
+  // Segment does not start with required literal prefix "pre".
+  auto res = router.match(http::Method::GET, "/mix/xre42post");
+  EXPECT_EQ(res.requestHandler(), nullptr);
 }
 
 TEST_F(RouterTest, MatchPatternSegmentConsecutiveParamsReturnsFalse) {
@@ -171,6 +188,114 @@ TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   auto res2 = r2.match(http::Method::GET, "/nope");
   ASSERT_EQ(res2.requestHandler(), nullptr);
   ASSERT_NE(res2.streamingHandler(), nullptr);
+}
+
+TEST_F(RouterTest, MatchedPathHandlerTakesPrecedenceOverGlobalDefault) {
+  router.setDefault(AcceptedHandler);
+  router.setPath(http::Method::GET, "/exact", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/exact");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, MethodNotAllowedDoesNotFallBackToGlobalDefault) {
+  router.setDefault(AcceptedHandler);
+  router.setPath(http::Method::GET, "/exact", OkHandler);
+
+  auto res = router.match(http::Method::POST, "/exact");
+  EXPECT_TRUE(res.methodNotAllowed);
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+}
+
+TEST_F(RouterTest, DefaultCorsPolicyAppliedToMatchedRouteWithoutOverride) {
+  RouterConfig corsCfg;
+  corsCfg.withDefaultCorsPolicy(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
+  Router corsRouter(corsCfg);
+  corsRouter.setPath(http::Method::GET, "/cors", OkHandler);
+
+  auto res = corsRouter.match(http::Method::GET, "/cors");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_NE(res.pCorsPolicy, nullptr);
+  EXPECT_EQ(res.pCorsPolicy, &corsRouter.config().defaultCorsPolicy);
+  EXPECT_TRUE(res.pCorsPolicy->active());
+}
+
+TEST_F(RouterTest, PerRouteCorsOverridesDefaultCorsPolicy) {
+  RouterConfig corsCfg;
+  corsCfg.withDefaultCorsPolicy(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
+  Router corsRouter(corsCfg);
+  corsRouter.setPath(http::Method::GET, "/cors", OkHandler)
+      .cors(CorsPolicy(CorsPolicy::Active::On).allowOrigin("https://route.example"));
+
+  auto res = corsRouter.match(http::Method::GET, "/cors");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_NE(res.pCorsPolicy, nullptr);
+  EXPECT_NE(res.pCorsPolicy, &corsRouter.config().defaultCorsPolicy);
+  EXPECT_TRUE(res.pCorsPolicy->active());
+}
+
+TEST_F(RouterTest, GlobalMiddlewareAccessorsExposeRegistrationOrder) {
+  vector<int> callOrder;
+  router.addRequestMiddleware([&callOrder](HttpRequest&) {
+    callOrder.push_back(1);
+    return MiddlewareResult::Continue();
+  });
+  router.addRequestMiddleware([&callOrder](HttpRequest&) {
+    callOrder.push_back(2);
+    return MiddlewareResult::Continue();
+  });
+  router.addResponseMiddleware([&callOrder](const HttpRequest&, HttpResponse&) { callOrder.push_back(3); });
+  router.addResponseMiddleware([&callOrder](const HttpRequest&, HttpResponse&) { callOrder.push_back(4); });
+
+  ASSERT_EQ(router.globalRequestMiddleware().size(), 2U);
+  ASSERT_EQ(router.globalResponseMiddleware().size(), 2U);
+
+  auto& mutableReq = *reinterpret_cast<HttpRequest*>(&httpRequestStorage);
+  HttpResponse response;
+  EXPECT_TRUE(router.globalRequestMiddleware()[0](mutableReq).shouldContinue());
+  EXPECT_TRUE(router.globalRequestMiddleware()[1](mutableReq).shouldContinue());
+  router.globalResponseMiddleware()[0](dummyReq(), response);
+  router.globalResponseMiddleware()[1](dummyReq(), response);
+
+  ASSERT_EQ(callOrder.size(), 4U);
+  EXPECT_EQ(callOrder[0], 1);
+  EXPECT_EQ(callOrder[1], 2);
+  EXPECT_EQ(callOrder[2], 3);
+  EXPECT_EQ(callOrder[3], 4);
+}
+
+TEST_F(RouterTest, ClearRemovesHandlersDefaultsAndMiddlewareButKeepsConfig) {
+  RouterConfig strictCfg;
+  strictCfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  Router cleared(strictCfg);
+  cleared.setDefault(OkHandler);
+  cleared.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  cleared.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+  cleared.setPath(http::Method::GET, "/literal", OkHandler);
+  cleared.setPath(http::Method::GET, "/users/{id}", AcceptedHandler);
+
+  cleared.clear();
+
+  EXPECT_EQ(cleared.config().trailingSlashPolicy, RouterConfig::TrailingSlashPolicy::Strict);
+  EXPECT_TRUE(cleared.globalRequestMiddleware().empty());
+  EXPECT_TRUE(cleared.globalResponseMiddleware().empty());
+
+  auto literal = cleared.match(http::Method::GET, "/literal");
+  EXPECT_FALSE(literal.hasHandler());
+  EXPECT_FALSE(literal.methodNotAllowed);
+  EXPECT_EQ(cleared.allowedMethods("/literal"), 0U);
+
+  auto dynamic = cleared.match(http::Method::GET, "/users/42");
+  EXPECT_FALSE(dynamic.hasHandler());
+  EXPECT_FALSE(dynamic.methodNotAllowed);
+
+  cleared.setPath(http::Method::GET, "/after-clear", AcceptedHandler);
+  auto reused = cleared.match(http::Method::GET, "/after-clear");
+  ASSERT_NE(reused.requestHandler(), nullptr);
+  EXPECT_EQ((*reused.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
 }
 
 TEST_F(RouterTest, TrailingSlashRedirectAndNormalize) {
@@ -300,6 +425,40 @@ TEST_F(RouterTest, StreamingVsNormalConflictThrows) {
   EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/conf"},
                               StreamingHandler([](const HttpRequest&, HttpResponseWriter&) {})),
                std::logic_error);
+}
+
+TEST_F(RouterTest, NormalizeLiteralEntryWithoutHandlersDoesNotMatch) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
+  router = Router(cfg);
+
+  EXPECT_THROW(router.setPath(http::Method::GET, "/norm-empty", RequestHandler{}), std::invalid_argument);
+
+  auto res = router.match(http::Method::GET, "/norm-empty");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+
+  auto resSlash = router.match(http::Method::GET, "/norm-empty/");
+  EXPECT_EQ(resSlash.requestHandler(), nullptr);
+  EXPECT_FALSE(resSlash.methodNotAllowed);
+  EXPECT_EQ(resSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+}
+
+TEST_F(RouterTest, NormalizePatternRouteWithoutHandlersDoesNotMatch) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);
+  router = Router(cfg);
+
+  EXPECT_THROW(router.setPath(http::Method::GET, "/norm-empty/{id}", RequestHandler{}), std::invalid_argument);
+
+  auto res = router.match(http::Method::GET, "/norm-empty/42");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+
+  auto resSlash = router.match(http::Method::GET, "/norm-empty/42/");
+  EXPECT_EQ(resSlash.requestHandler(), nullptr);
+  EXPECT_FALSE(resSlash.methodNotAllowed);
+  EXPECT_EQ(resSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
 }
 
 TEST_F(RouterTest, TrailingSlashStrictAndNormalize) {
@@ -500,6 +659,57 @@ TEST_F(RouterTest, CopyAssignmentPreservesHandlersAndIsIndependent) {
   EXPECT_EQ(respDest.status(), 200);
 }
 
+TEST_F(RouterTest, CopyAssignmentDeepCopiesMixedSegmentLiteralsAfterSourceDestruction) {
+  bool called = false;
+  Router clone;
+
+  {
+    Router source;
+    source.setPath(http::Method::GET, "/copy/pre{id}post", [&called](const HttpRequest&) {
+      called = true;
+      return HttpResponse(200);
+    });
+
+    clone = source;
+  }
+
+  auto res = clone.match(http::Method::GET, "/copy/pre42post");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+
+  HttpResponse resp = (*res.requestHandler())(dummyReq());
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(called);
+}
+
+TEST_F(RouterTest, CopyAssignmentDeepCopiesSingleParamConstraintAfterSourceDestruction) {
+  bool called = false;
+  Router clone;
+
+  {
+    Router source;
+    source.setPath(http::Method::GET, "/copy/{id:[0-9]+}", [&called](const HttpRequest&) {
+      called = true;
+      return HttpResponse(200);
+    });
+
+    clone = source;
+  }
+
+  auto valid = clone.match(http::Method::GET, "/copy/42");
+  ASSERT_NE(valid.requestHandler(), nullptr);
+  ASSERT_EQ(valid.pathParams().size(), 1U);
+  EXPECT_EQ(valid.pathParams()[0].key, "id");
+  EXPECT_EQ(valid.pathParams()[0].value, "42");
+  EXPECT_EQ((*valid.requestHandler())(dummyReq()).status(), 200);
+  EXPECT_TRUE(called);
+
+  auto invalid = clone.match(http::Method::GET, "/copy/abc");
+  EXPECT_EQ(invalid.requestHandler(), nullptr);
+}
+
 TEST_F(RouterTest, CopyPreservesTrailingSlashVariantsAndMethodTypes) {
   Router rTs;
   rTs.setPath(http::Method::GET, "/ts/", OkHandler);
@@ -566,6 +776,52 @@ TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
   HttpResponse resp = (*resCloneAfter.requestHandler())(dummyReq);
   EXPECT_EQ(resp.status(), 200);  // Clone still has old handler
   EXPECT_EQ(callCount, 3);
+}
+
+TEST_F(RouterTest, CopyAssignmentDeepCopiesLiteralOnlyFastPathAfterSourceDestruction) {
+  bool called = false;
+  Router clone;
+
+  {
+    Router source;
+    source.setPath(http::Method::GET, "/literal/{{}}/end", [&called](const HttpRequest&) {
+      called = true;
+      return HttpResponse(200);
+    });
+
+    clone = source;
+  }
+
+  auto res = clone.match(http::Method::GET, "/literal/{}/end");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), 200);
+  EXPECT_TRUE(called);
+
+  EXPECT_EQ(clone.allowedMethods("/literal/{}/end"), static_cast<http::MethodBmp>(http::Method::GET));
+}
+
+TEST_F(RouterTest, CopyAssignmentHandlesTopLevelCatchAllWithEmptyRootPath) {
+  bool called = false;
+  Router clone;
+
+  {
+    Router source;
+    source.setPath(http::Method::GET, "/*", [&called](const HttpRequest&) {
+      called = true;
+      return HttpResponse(200);
+    });
+
+    clone = source;
+  }
+
+  auto rootRes = clone.match(http::Method::GET, "/");
+  ASSERT_NE(rootRes.requestHandler(), nullptr);
+  EXPECT_EQ((*rootRes.requestHandler())(dummyReq()).status(), 200);
+
+  auto pathRes = clone.match(http::Method::GET, "/anything/here");
+  ASSERT_NE(pathRes.requestHandler(), nullptr);
+  EXPECT_EQ((*pathRes.requestHandler())(dummyReq()).status(), 200);
+  EXPECT_TRUE(called);
 }
 
 TEST_F(RouterTest, RegisterWildcardTwiceExercisesExistingChild) {
@@ -668,6 +924,23 @@ TEST_F(RouterTest, CompilePatternErrorsAndEscapes) {
   EXPECT_NE(res.requestHandler(), nullptr);
 }
 
+TEST_F(RouterTest, EscapedLiteralOnlyRouteSupportsMultipleRegistrations) {
+  router.setPath(http::Method::GET, "/literal/{{}}/end", OkHandler);
+  router.setPath(http::Method::POST, "/literal/{{}}/end", CreatedHandler);
+
+  auto getRes = router.match(http::Method::GET, "/literal/{}/end");
+  ASSERT_NE(getRes.requestHandler(), nullptr);
+  EXPECT_EQ((*getRes.requestHandler())(dummyReq()).status(), 200);
+
+  auto postRes = router.match(http::Method::POST, "/literal/{}/end");
+  ASSERT_NE(postRes.requestHandler(), nullptr);
+  EXPECT_EQ((*postRes.requestHandler())(dummyReq()).status(), 201);
+
+  const auto allowed = router.allowedMethods("/literal/{}/end");
+  EXPECT_NE((allowed & static_cast<http::MethodBmp>(http::Method::GET)), 0U);
+  EXPECT_NE((allowed & static_cast<http::MethodBmp>(http::Method::POST)), 0U);
+}
+
 TEST_F(RouterTest, MixedEscapedBracesAndNamedParams) {
   router.setPath(http::Method::GET, "/mix/{{}}/{id}/{{end}}", OkHandler);
 
@@ -686,6 +959,52 @@ TEST_F(RouterTest, MixedEscapedBracesAndUnnamedParams) {
   ASSERT_EQ(res.pathParams().size(), 1U);
   EXPECT_EQ(res.pathParams()[0].key, "0");
   EXPECT_EQ(res.pathParams()[0].value, "value");
+}
+
+TEST_F(RouterTest, EscapedCloseBraceBeforeParamInSameSegment) {
+  router.setPath(http::Method::GET, "/mix/a}}{id}/end", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/mix/a}42/end");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+}
+
+TEST_F(RouterTest, EscapedCloseBraceAfterConstrainedParamInSameSegment) {
+  // Segment shape is "{param-with-constraint}}}" => constrained param followed by escaped literal '}'.
+  // This is parsed by insertChild paramSegment loop and should exercise the kEscapedCloseBrace branch.
+  router.setPath(http::Method::GET, "/mix/{id:[0-9]+}}}/end", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/mix/42}/end");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+}
+
+TEST_F(RouterTest, EscapedCloseBraceAppendsToExistingLiteralPart) {
+  // Segment shape is "{id}a}}": after parsing {id}, we build a literal part with 'a',
+  // then the escaped close brace should append to that same literal part.
+  router.setPath(http::Method::GET, "/mix/{id}a}}/end", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/mix/42a}/end");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+}
+
+TEST_F(RouterTest, EscapedCloseBraceCreatesLiteralWhenNoPreviousPart) {
+  // Segment starts with escaped close brace before any literal/param part exists.
+  // This should exercise the short-circuit path where !paramParts.empty() is false.
+  router.setPath(http::Method::GET, "/mix/}}{id}/end", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/mix/}42/end");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "42");
 }
 
 TEST_F(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
@@ -815,6 +1134,75 @@ TEST_F(RouterTest, DoubleAsteriskAtTheEndIsNotAWildcard) {
   EXPECT_NE(res4.requestHandler(), nullptr);
 }
 
+TEST_F(RouterTest, ExactMatchStopsAtIntermediateStaticNodeNoWildcardTail) {
+  // Non-literal route creates intermediate static node '/' after param capture.
+  // Stopping exactly there must not match a handler.
+  router.setPath(http::Method::GET, "/users/{id}/view", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/users/42/");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ExactMatchAtParamParentDoesNotFallbackToParamChild) {
+  // Parent has wildcard children, but only Param (no CatchAll).
+  // Exact match at parent must not select param child as fallback.
+  router.setPath(http::Method::GET, "/users/{id}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/users/");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ExactMatchWithParamOnlyWildcardTailDoesNotFallbackToParam) {
+  RouterConfig cfgStrict;
+  cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  Router rStrict(cfgStrict);
+  rStrict.setPath(http::Method::GET, "/users/{id}/*", OkHandler);
+
+  auto res = rStrict.match(http::Method::GET, "/users/");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, ExactMatchWithoutWildcardChildrenReturnsNoHandler) {
+  router.setPath(http::Method::GET, "/teams/{id}/members", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/teams/42");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, ParamsWithLiteralsAndWildcardPriority) {
+  router.setPath(http::Method::GET, "/mix/*", AcceptedHandler);
+  router.setPath(http::Method::GET, "/mix/pre{id}post", OkHandler);
+
+  auto paramMatch = router.match(http::Method::GET, "/mix/pre42post");
+  ASSERT_NE(paramMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*paramMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+  ASSERT_EQ(paramMatch.pathParams().size(), 1U);
+  EXPECT_EQ(paramMatch.pathParams()[0].key, "id");
+  EXPECT_EQ(paramMatch.pathParams()[0].value, "42");
+
+  auto catchAllMatch = router.match(http::Method::GET, "/mix/other/path");
+  ASSERT_NE(catchAllMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAllMatch.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, WildcardOnlyAtEndMatchesAnyTail) {
+  router.setPath(http::Method::GET, "/assets/*", OkHandler);
+
+  auto singleSegment = router.match(http::Method::GET, "/assets/app.js");
+  ASSERT_NE(singleSegment.requestHandler(), nullptr);
+  EXPECT_EQ((*singleSegment.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto nestedTail = router.match(http::Method::GET, "/assets/css/site/app.css");
+  ASSERT_NE(nestedTail.requestHandler(), nullptr);
+  EXPECT_EQ((*nestedTail.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+}
+
 TEST_F(RouterTest, AsteriskPartOfLastSegmentIsNotWildcard) {
   router.setPath(http::Method::GET, "/segment/part**", OkHandler);
   auto res1 = router.match(http::Method::GET, "/segment/part*anything");
@@ -863,6 +1251,41 @@ TEST_F(RouterTest, WildcardConflictAndTerminalRules) {
 
   auto pm = router.match(http::Method::POST, "/files/upload");
   EXPECT_NE(pm.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, StaticPrefixMismatchFallsBackToRememberedCatchAll) {
+  router.setPath(http::Method::GET, "/files/abc", OkHandler);
+  router.setPath(http::Method::GET, "/files/*", AcceptedHandler);
+
+  auto staticMatch = router.match(http::Method::GET, "/files/abc");
+  ASSERT_NE(staticMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*staticMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto catchAllFallback = router.match(http::Method::GET, "/files/abz");
+  ASSERT_NE(catchAllFallback.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAllFallback.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, DeepStaticMismatchFallsBackToRememberedCatchAll) {
+  router.setPath(http::Method::GET, "/files/ab/cd", OkHandler);
+  router.setPath(http::Method::GET, "/files/*", AcceptedHandler);
+
+  auto staticMatch = router.match(http::Method::GET, "/files/ab/cd");
+  ASSERT_NE(staticMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*staticMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto catchAllFallback = router.match(http::Method::GET, "/files/ab/ce");
+  ASSERT_NE(catchAllFallback.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAllFallback.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, StaticPrefixWithoutWildcardReturnsNoHandlerOnMismatch) {
+  router.setPath(http::Method::GET, "/files/bar", OkHandler);
+  router.setPath(http::Method::GET, "/files/zed", AcceptedHandler);
+
+  auto res = router.match(http::Method::GET, "/files/qux");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
 }
 
 TEST_F(RouterTest, AsteriskAllowedInParamName) {
@@ -1224,6 +1647,19 @@ TEST_F(RouterTest, IsWildcardStartAsterisk_StaticBeforeCatchAll) {
   EXPECT_TRUE(router.match(http::Method::POST, "/star/foo/bar").hasHandler());
 }
 
+TEST_F(RouterTest, CatchAllAfterMixedSegmentParamUsesSlashRemainder) {
+  router.setPath(http::Method::GET, "/star{id}", OkHandler);
+  router.setPath(http::Method::GET, "/star/*", AcceptedHandler);
+
+  auto paramMatch = router.match(http::Method::GET, "/star42");
+  ASSERT_NE(paramMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*paramMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto catchAllMatch = router.match(http::Method::GET, "/star/alpha/beta");
+  ASSERT_NE(catchAllMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAllMatch.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
 TEST_F(RouterTest, WildcardStrictTrailingSlashBehavior) {
   router = Router(RouterConfig{}.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict));
 
@@ -1345,6 +1781,43 @@ TEST_F(RouterTest, AllowedMethodsChoosesNoSlashForStrictSlowPath) {
   EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
 }
 
+TEST_F(RouterTest, AllowedMethodsFastPathReturnsZeroForRedirectSlashMismatch) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
+  router = Router(cfg);
+
+  router.setPath(http::Method::GET, "/onlynoslash", OkHandler);
+  auto bmp = router.allowedMethods("/onlynoslash/");
+  EXPECT_EQ(bmp, 0U);
+
+  router.setPath(http::Method::POST, "/onlywithslash/", CreatedHandler);
+  bmp = router.allowedMethods("/onlywithslash");
+  EXPECT_EQ(bmp, 0U);
+}
+
+TEST_F(RouterTest, AllowedMethodsFastPathHonorsRedirectPolicy) {
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect);
+  router = Router(cfg);
+
+  router.setPath(http::Method::GET, "/lit", OkHandler);
+  router.setPath(http::Method::POST, "/lit/", CreatedHandler);
+
+  auto bmp = router.allowedMethods("/lit");
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
+
+  bmp = router.allowedMethods("/lit/");
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::POST)));
+}
+
+TEST_F(RouterTest, AllowedMethodsDoesNotSynthesizeHeadFromGet) {
+  router.setPath(http::Method::GET, "/head-from-get", OkHandler);
+
+  const auto bmp = router.allowedMethods("/head-from-get");
+  EXPECT_TRUE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::GET)));
+  EXPECT_FALSE(http::IsMethodIdxSet(bmp, MethodToIdx(http::Method::HEAD)));
+}
+
 TEST_F(RouterTest, MissingClosingBraceInParamThrows) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/foo/{bar", OkHandler), std::invalid_argument);
   EXPECT_THROW(router.setPath(http::Method::GET, "/foo/{bar{{}}", OkHandler), std::invalid_argument);
@@ -1428,6 +1901,19 @@ TEST_F(RouterTest, ParamRoutePrintsExpectedTree) {
   EXPECT_EQ(ss.str(), kExpected);
 }
 
+TEST_F(RouterTest, ParamRouteWithTrailingSlashPrintsWithSlashFlag) {
+  router = Router(RouterConfig{}.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict));
+  router.setPath(http::Method::GET, "/users/{id}/",
+                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+
+  std::stringstream ss;
+  router.printTree(ss);
+  const std::string output = ss.str();
+
+  EXPECT_NE(output.find("with-slash"), std::string::npos);
+  EXPECT_EQ(output.find("no-slash"), std::string::npos);
+}
+
 TEST_F(RouterTest, DebugOutput) {
   // Tests debug output functionality that was uncovered
   router.setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse("test"); });
@@ -1464,6 +1950,24 @@ TEST_F(RouterTest, CatchAllWithJustStarPath) {
 
   auto res2 = router.match(http::Method::POST, "/test");
   ASSERT_NE(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, CatchAllReregistrationWithStarRemainderAfterSlashPrefix) {
+  router.setPath(http::Method::GET, "/mix/{id:[0-9]+}", OkHandler);
+  router.setPath(http::Method::GET, "/mix/*", AcceptedHandler);
+  router.setPath(http::Method::POST, "/mix/*", CreatedHandler);
+
+  auto constrained = router.match(http::Method::GET, "/mix/42");
+  ASSERT_NE(constrained.requestHandler(), nullptr);
+  EXPECT_EQ((*constrained.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto getCatchAll = router.match(http::Method::GET, "/mix/abc");
+  ASSERT_NE(getCatchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*getCatchAll.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto postCatchAll = router.match(http::Method::POST, "/mix/abc");
+  ASSERT_NE(postCatchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*postCatchAll.requestHandler())(dummyReq()).status(), http::StatusCodeCreated);
 }
 
 TEST_F(RouterTest, CatchAllRouteWithNullRoute) {
@@ -1601,6 +2105,18 @@ TEST_F(RouterTest, CatchAllStrictNoTrailingSlashMatches) {
   EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
 }
 
+TEST_F(RouterTest, CatchAllStrictMatchesEmptySuffix) {
+  // In Strict policy, matching exactly the parent path of a terminal catch-all
+  // should still return the catch-all route when the request has no trailing slash.
+  cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  router = Router(cfg);
+  router.setPath(http::Method::GET, "/files/*", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/files");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+}
+
 TEST_F(RouterTest, ParamRouteExtraSegmentsNoChildrenReturnsNull) {
   // A param route without children must reject paths with extra segments
   router.setPath(http::Method::GET, "/items/{id}", OkHandler);
@@ -1640,6 +2156,376 @@ TEST_F(RouterTest, ClampConfigsPerRouteBodyExceedsGlobalThrows) {
 TEST_F(RouterTest, ClampConfigsLiteralRouteExceedsGlobalThrows) {
   router.setPath(http::Method::GET, "/exact", OkHandler).maxBodyBytes(100);
   EXPECT_THROW(router.clampConfigs(8192, 50), std::invalid_argument);
+}
+
+// --- Route Constraint Integration Tests ---
+
+TEST_F(RouterTest, ConstraintBasicNumericParam) {
+  router.setPath(http::Method::GET, "/users/{id:[0-9]+}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/users/123");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "id");
+  EXPECT_EQ(res.pathParams()[0].value, "123");
+
+  // Non-numeric should not match
+  auto res2 = router.match(http::Method::GET, "/users/abc");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConstraintMultipleParamChildrenDifferentConstraints) {
+  router.setPath(http::Method::GET, "/items/{id:[0-9]+}", OkHandler);
+  router.setPath(http::Method::GET, "/items/{slug:[a-z]+}", AcceptedHandler);
+
+  auto res1 = router.match(http::Method::GET, "/items/42");
+  ASSERT_NE(res1.requestHandler(), nullptr);
+  EXPECT_EQ((*res1.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto res2 = router.match(http::Method::GET, "/items/hello");
+  ASSERT_NE(res2.requestHandler(), nullptr);
+  EXPECT_EQ((*res2.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  // Mixed alphanumeric doesn't match either
+  auto res3 = router.match(http::Method::GET, "/items/abc123");
+  EXPECT_EQ(res3.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConstraintUnconstrainedFallback) {
+  router.setPath(http::Method::GET, "/files/{id:[0-9]+}", OkHandler);
+  router.setPath(http::Method::GET, "/files/{name}", AcceptedHandler);  // unconstrained
+
+  auto res1 = router.match(http::Method::GET, "/files/99");
+  ASSERT_NE(res1.requestHandler(), nullptr);
+  EXPECT_EQ((*res1.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  // Non-numeric falls through to unconstrained
+  auto res2 = router.match(http::Method::GET, "/files/readme.txt");
+  ASSERT_NE(res2.requestHandler(), nullptr);
+  EXPECT_EQ((*res2.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, ConstraintUnconstrainedFallbackWithUnconstrainedRegisteredFirst) {
+  router.setPath(http::Method::GET, "/files/{name}", AcceptedHandler);  // unconstrained
+  router.setPath(http::Method::GET, "/files/{id:[0-9]+}", OkHandler);
+
+  auto res1 = router.match(http::Method::GET, "/files/99");
+  ASSERT_NE(res1.requestHandler(), nullptr);
+  EXPECT_EQ((*res1.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto res2 = router.match(http::Method::GET, "/files/readme.txt");
+  ASSERT_NE(res2.requestHandler(), nullptr);
+  EXPECT_EQ((*res2.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, ConstraintOverlappingConstrainedRoutesUseRegistrationOrder) {
+  router.setPath(http::Method::GET, "/num/{value:[0-9]+}", OkHandler);
+  router.setPath(http::Method::GET, "/num/{two:[0-9]{2}}", AcceptedHandler);
+
+  auto broadFirst = router.match(http::Method::GET, "/num/42");
+  ASSERT_NE(broadFirst.requestHandler(), nullptr);
+  EXPECT_EQ((*broadFirst.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  Router narrowFirstRouter;
+  narrowFirstRouter.setPath(http::Method::GET, "/num/{two:[0-9]{2}}", AcceptedHandler);
+  narrowFirstRouter.setPath(http::Method::GET, "/num/{value:[0-9]+}", OkHandler);
+
+  auto narrowFirst = narrowFirstRouter.match(http::Method::GET, "/num/42");
+  ASSERT_NE(narrowFirst.requestHandler(), nullptr);
+  EXPECT_EQ((*narrowFirst.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto broadFallback = narrowFirstRouter.match(http::Method::GET, "/num/7");
+  ASSERT_NE(broadFallback.requestHandler(), nullptr);
+  EXPECT_EQ((*broadFallback.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+}
+
+TEST_F(RouterTest, ConstraintInsertionStopsAtCatchAllAfterConstrainedSibling) {
+  router.setPath(http::Method::GET, "/mix/{two:[0-9]{2}}", AcceptedHandler);
+  router.setPath(http::Method::GET, "/mix/*", CreatedHandler);
+  router.setPath(http::Method::GET, "/mix/{word:[a-z]+}", OkHandler);
+
+  auto numeric = router.match(http::Method::GET, "/mix/42");
+  ASSERT_NE(numeric.requestHandler(), nullptr);
+  EXPECT_EQ((*numeric.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto alphabetic = router.match(http::Method::GET, "/mix/word");
+  ASSERT_NE(alphabetic.requestHandler(), nullptr);
+  EXPECT_EQ((*alphabetic.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto catchAll = router.match(http::Method::GET, "/mix/7");
+  ASSERT_NE(catchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAll.requestHandler())(dummyReq()).status(), http::StatusCodeCreated);
+}
+
+TEST_F(RouterTest, ConstraintUUIDPattern) {
+  router.setPath(http::Method::GET, "/obj/{id:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}",
+                 OkHandler);
+
+  auto res = router.match(http::Method::GET, "/obj/550e8400-e29b-41d4-a716-446655440000");
+  ASSERT_NE(res.requestHandler(), nullptr);
+
+  auto res2 = router.match(http::Method::GET, "/obj/not-a-uuid");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConstraintPatternCanContainAdditionalColon) {
+  router.setPath(http::Method::GET, "/kv/{pair:[a-z]+:[0-9]+}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/kv/abc:123");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].key, "pair");
+  EXPECT_EQ(res.pathParams()[0].value, "abc:123");
+
+  auto res2 = router.match(http::Method::GET, "/kv/abc-123");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConstraintFailureInMixedSegmentReturnsNoMatch) {
+  router.setPath(http::Method::GET, "/mix/pre{id:[0-9]+}post", OkHandler);
+
+  auto ok = router.match(http::Method::GET, "/mix/pre42post");
+  ASSERT_NE(ok.requestHandler(), nullptr);
+
+  // Captured value is "ab", which fails [0-9]+.
+  auto bad = router.match(http::Method::GET, "/mix/preabpost");
+  EXPECT_EQ(bad.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, MixedSegmentSiblingWithSameConstraintThrows) {
+  router.setPath(http::Method::GET, "/mix/{id}", OkHandler);
+
+  EXPECT_THROW(router.setPath(http::Method::GET, "/mix/{id}x", AcceptedHandler), std::invalid_argument);
+}
+
+TEST_F(RouterTest, ConstraintConflictSameConstraintThrows) {
+  router.setPath(http::Method::GET, "/x/{id:[0-9]+}", OkHandler);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/x/{num:[0-9]+}", AcceptedHandler), std::invalid_argument);
+}
+
+TEST_F(RouterTest, ConstraintInsertionWithExistingCatchAllChild) {
+  router.setPath(http::Method::GET, "/mix/*", AcceptedHandler);
+  router.setPath(http::Method::GET, "/mix/{id:[0-9]+}", OkHandler);
+
+  auto constrained = router.match(http::Method::GET, "/mix/42");
+  ASSERT_NE(constrained.requestHandler(), nullptr);
+  EXPECT_EQ((*constrained.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto catchAll = router.match(http::Method::GET, "/mix/abc");
+  ASSERT_NE(catchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*catchAll.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto nestedCatchAll = router.match(http::Method::GET, "/mix/abc/def");
+  ASSERT_NE(nestedCatchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*nestedCatchAll.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, ConstraintUnterminatedPatternThrows) {
+  EXPECT_THROW(router.setPath(http::Method::GET, "/bad/{id:[0-9]+", OkHandler), std::invalid_argument);
+}
+
+TEST_F(RouterTest, ConstraintParamThenCatchAllSameNode) {
+  router.setPath(http::Method::GET, "/mix/{id:[0-9]+}", OkHandler);
+  EXPECT_NO_THROW(router.setPath(http::Method::GET, "/mix/*", AcceptedHandler));
+
+  auto constrainedMatch = router.match(http::Method::GET, "/mix/42");
+  ASSERT_NE(constrainedMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*constrainedMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto nonConstrained = router.match(http::Method::GET, "/mix/alpha");
+  ASSERT_NE(nonConstrained.requestHandler(), nullptr);
+  EXPECT_EQ((*nonConstrained.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto nestedCatchAll = router.match(http::Method::GET, "/mix/alpha/beta");
+  ASSERT_NE(nestedCatchAll.requestHandler(), nullptr);
+  EXPECT_EQ((*nestedCatchAll.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+}
+
+TEST_F(RouterTest, ConstraintUnnamedParam) {
+  router.setPath(http::Method::GET, "/v/{:[0-9]+}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/v/42");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 1U);
+  EXPECT_EQ(res.pathParams()[0].value, "42");
+
+  auto res2 = router.match(http::Method::GET, "/v/abc");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ConstraintWithSubsequentPathSegments) {
+  router.setPath(http::Method::GET, "/api/{version:[a-z]+}/users/{id:[0-9]+}", OkHandler);
+
+  auto res = router.match(http::Method::GET, "/api/v/users/123");
+  ASSERT_NE(res.requestHandler(), nullptr);
+  ASSERT_EQ(res.pathParams().size(), 2U);
+  EXPECT_EQ(res.pathParams()[0].value, "v");
+  EXPECT_EQ(res.pathParams()[1].value, "123");
+
+  // version must be alphabetic
+  auto res2 = router.match(http::Method::GET, "/api/123/users/123");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, LooseMixedSegmentConstraintInMiddleOfPath) {
+  router.setPath(http::Method::GET, "/api/v{version:[0-9]+}/users/{id:[0-9]+}", OkHandler);
+
+  auto res1 = router.match(http::Method::GET, "/api/v2/users/123");
+  ASSERT_NE(res1.requestHandler(), nullptr);
+  ASSERT_EQ(res1.pathParams().size(), 2U);
+  EXPECT_EQ(res1.pathParams()[0].value, "2");
+  EXPECT_EQ(res1.pathParams()[1].value, "123");
+
+  auto res2 = router.match(http::Method::GET, "/api/vabc/users/123");
+  EXPECT_EQ(res2.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, ExactMatchStrictTrailingSlash) {
+  RouterConfig cfgStrict;
+  cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  Router rStrict(cfgStrict);
+
+  rStrict.setPath(http::Method::GET, "/a/b/*", OkHandler);
+
+  // Exact match on intermediate node "/a/b/" with a CatchAll child.
+  // pathHasTrailingSlash is true because request ends in `/`.
+  auto res1 = rStrict.match(http::Method::GET, "/a/b/");
+  EXPECT_EQ(res1.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, CatchAllAfterParamExactMatchStrictTrailingSlash) {
+  RouterConfig cfgStrict;
+  cfgStrict.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict);
+  Router rStrict(cfgStrict);
+  rStrict.setPath(http::Method::GET, "/foo/{bar}/*", OkHandler);
+  auto res1 = rStrict.match(http::Method::GET, "/foo/123/");
+  EXPECT_EQ(res1.requestHandler(), nullptr);
+}
+
+TEST_F(RouterTest, StaticAndParamSiblingWithoutCatchAllNoFallbackOnStaticDescend) {
+  // Tree: /api/ node has a static child "users" and a param child "{id}", but NO catch-all.
+  // When matching /api/users, rememberCatchAllFallback is called on the /api/ node.
+  // children.back() is the Param node, so nodeType != CatchAll fires and we return early
+  // (no fallback is stored). Verifies this branch is reachable and correct.
+  router.setPath(http::Method::GET, "/api/users", OkHandler);
+  router.setPath(http::Method::GET, "/api/{id}", AcceptedHandler);
+
+  // Static child wins over param for the exact literal segment
+  auto staticMatch = router.match(http::Method::GET, "/api/users");
+  ASSERT_NE(staticMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*staticMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  // Param child matches non-literal segment
+  auto paramMatch = router.match(http::Method::GET, "/api/42");
+  ASSERT_NE(paramMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*paramMatch.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  // Without a catch-all, a deeper mismatch returns no handler (no fallback was stored)
+  auto noMatch = router.match(http::Method::GET, "/api/users/extra");
+  EXPECT_EQ(noMatch.requestHandler(), nullptr);
+  EXPECT_FALSE(noMatch.methodNotAllowed);
+}
+
+TEST_F(RouterTest, DynamicPrefixStaticAndParamSiblingWithoutCatchAllHitsFallbackGuard) {
+  // The literal-only fast path bypasses matchImpl, so use a dynamic prefix to force
+  // traversal through the node where "/users" and "{id}" are siblings.
+  router.setPath(http::Method::GET, "/api/{tenant}/users", OkHandler);
+  router.setPath(http::Method::GET, "/api/{tenant}/{id}", AcceptedHandler);
+
+  auto staticMatch = router.match(http::Method::GET, "/api/acme/users");
+  ASSERT_NE(staticMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*staticMatch.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto paramMatch = router.match(http::Method::GET, "/api/acme/42");
+  ASSERT_NE(paramMatch.requestHandler(), nullptr);
+  EXPECT_EQ((*paramMatch.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  auto noMatch = router.match(http::Method::GET, "/api/acme/users/extra");
+  EXPECT_EQ(noMatch.requestHandler(), nullptr);
+  EXPECT_FALSE(noMatch.methodNotAllowed);
+}
+
+TEST_F(RouterTest, StrictRememberedCatchAllFallbackRejectsTrailingSlashRequest) {
+  router = Router(RouterConfig{}.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict));
+
+  // Force radix traversal through "/api/{tenant}/" so matchImpl remembers the catch-all
+  // before descending into the static "users" child.
+  router.setPath(http::Method::GET, "/api/{tenant}/users", OkHandler);
+  router.setPath(http::Method::GET, "/api/{tenant}/*", AcceptedHandler);
+
+  auto exact = router.match(http::Method::GET, "/api/acme/users");
+  ASSERT_NE(exact.requestHandler(), nullptr);
+  EXPECT_EQ((*exact.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto withoutSlash = router.match(http::Method::GET, "/api/acme/other/path");
+  ASSERT_NE(withoutSlash.requestHandler(), nullptr);
+  EXPECT_EQ((*withoutSlash.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  // This descends into the static "users" child, then falls back to the remembered catch-all
+  // after the deeper mismatch. In Strict mode, that fallback remains valid when the request
+  // itself has no trailing slash.
+  auto rememberedFallback = router.match(http::Method::GET, "/api/acme/users/extra");
+  ASSERT_NE(rememberedFallback.requestHandler(), nullptr);
+  EXPECT_EQ((*rememberedFallback.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
+
+  // The request descends into the static child, then would fall back to the remembered
+  // catch-all after the deeper mismatch. Strict mode must reject that because the request
+  // ended with a trailing slash.
+  auto withSlash = router.match(http::Method::GET, "/api/acme/users/");
+  EXPECT_EQ(withSlash.requestHandler(), nullptr);
+  EXPECT_FALSE(withSlash.methodNotAllowed);
+}
+
+TEST_F(RouterTest, StrictExactMatchAtIntermediateStaticNodeWithoutWildcardChildren) {
+  router = Router(RouterConfig{}.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict));
+
+  // These siblings split the post-param static edge into an intermediate "/v" node.
+  // Matching exactly that prefix lands on a node with no terminal route and no wildcard
+  // children, so the exact-match branch must take the line-1087 false path.
+  router.setPath(http::Method::GET, "/users/{id}/view", OkHandler);
+  router.setPath(http::Method::GET, "/users/{id}/vote", AcceptedHandler);
+
+  auto res = router.match(http::Method::GET, "/users/42/v");
+  EXPECT_EQ(res.requestHandler(), nullptr);
+  EXPECT_EQ(res.streamingHandler(), nullptr);
+  EXPECT_FALSE(res.methodNotAllowed);
+}
+
+TEST_F(RouterTest, StrictExactMatchCatchAllFallbackRejectsTrailingSlashAfterSplit) {
+  router = Router(RouterConfig{}.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Strict));
+
+  // Registering both routes splits the post-param edge into an intermediate "/" node
+  // with a static child ("view") and a trailing catch-all child.
+  router.setPath(http::Method::GET, "/foo/{bar}/view", OkHandler);
+  router.setPath(http::Method::GET, "/foo/{bar}/*", AcceptedHandler);
+
+  auto exactStatic = router.match(http::Method::GET, "/foo/123/view");
+  ASSERT_NE(exactStatic.requestHandler(), nullptr);
+  EXPECT_EQ((*exactStatic.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  // This lands exactly on the intermediate "/" node. In Strict mode, the exact-match
+  // catch-all fallback must reject the request because the original request had a
+  // trailing slash, so line 1093's RHS evaluates false.
+  auto exactWithSlash = router.match(http::Method::GET, "/foo/123/");
+  EXPECT_EQ(exactWithSlash.requestHandler(), nullptr);
+  EXPECT_FALSE(exactWithSlash.methodNotAllowed);
+}
+
+TEST_F(RouterTest, LateFallbackToRememberedCatchAllAfterParamChildMismatch) {
+  // Descend through a static child while remembering the /api/* catch-all,
+  // then match a param child whose continuation forces us onto a child path
+  // that does not match the remaining request. That late mismatch must use
+  // the remembered catch-all via the post-check fallback site.
+  router.setPath(http::Method::GET, "/api/users/{id}/view", OkHandler);
+  router.setPath(http::Method::GET, "/api/*", AcceptedHandler);
+
+  auto exact = router.match(http::Method::GET, "/api/users/42/view");
+  ASSERT_NE(exact.requestHandler(), nullptr);
+  EXPECT_EQ((*exact.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
+
+  auto fallback = router.match(http::Method::GET, "/api/users/42/extra");
+  ASSERT_NE(fallback.requestHandler(), nullptr);
+  EXPECT_EQ((*fallback.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
 }
 
 }  // namespace aeronet

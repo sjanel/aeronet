@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -71,8 +72,7 @@ class DynamicConcatenatedStrings {
     std::string_view buf = _buf;
     while (!buf.empty()) {
       const auto nextSep = buf.find(kSep);
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      if (std::string_view{buf.data(), nextSep} == part) {
+      if (nextSep == part.size() && std::memcmp(buf.data(), part.data(), nextSep) == 0) {
         return true;
       }
       buf.remove_prefix(nextSep + kSep.size());
@@ -86,8 +86,7 @@ class DynamicConcatenatedStrings {
     while (!buf.empty()) {
       const auto nextSep = buf.find(kSep);
       // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      const std::string_view currentPart{buf.data(), nextSep};
-      if (CaseInsensitiveEqual(currentPart, part)) {
+      if (CaseInsensitiveEqual(std::string_view{buf.data(), nextSep}, part)) {
         return true;
       }
       buf.remove_prefix(nextSep + kSep.size());

@@ -15,7 +15,7 @@ namespace aeronet {
 
 class HeadersView {
  public:
-  HeadersView() noexcept : _beg(nullptr), _end(nullptr) {}
+  HeadersView() noexcept = default;
 
   explicit HeadersView(std::string_view sv) noexcept : _beg(sv.data()), _end(sv.data() + sv.size()) {}
 
@@ -27,10 +27,10 @@ class HeadersView {
     using difference_type = std::ptrdiff_t;
     using iterator_category = std::forward_iterator_tag;
 
-    iterator() noexcept : _cur(nullptr), _end(nullptr) {}
+    iterator() noexcept = default;
 
     http::HeaderView operator*() const noexcept {
-      return {std::string_view(_cur, _nameLen), std::string_view(_cur + _nameLen + http::HeaderSep.size(), _valueLen)};
+      return {{_cur, _nameLen}, {_cur + _nameLen + http::HeaderSep.size(), _valueLen}};
     }
 
     iterator& operator++() noexcept {
@@ -42,7 +42,7 @@ class HeadersView {
     }
 
     iterator operator++(int) noexcept {
-      iterator tmp = *this;
+      const auto tmp = *this;
       ++(*this);
       return tmp;
     }
@@ -70,8 +70,8 @@ class HeadersView {
       _valueLen = static_cast<uint32_t>(SearchCRLF(begValue, _end) - begValue);
     }
 
-    const char* _cur;
-    const char* _end;
+    const char* _cur{};
+    const char* _end{};
     uint32_t _nameLen;
     uint32_t _valueLen;
   };
@@ -80,8 +80,8 @@ class HeadersView {
   [[nodiscard]] iterator end() const noexcept { return {_end, _end}; }
 
  private:
-  const char* _beg;
-  const char* _end;
+  const char* _beg{};
+  const char* _end{};
 };
 
 }  // namespace aeronet

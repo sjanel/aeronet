@@ -6,7 +6,6 @@
 #include <iosfwd>
 #include <span>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -16,10 +15,11 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/object-array-pool.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-param-capture.hpp"
-#include "aeronet/raw-chars.hpp"
+#include "aeronet/route-constraint.hpp"
 #include "aeronet/route-group.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
@@ -94,6 +94,7 @@ class Router {
   //   - Keep handlers lightweight; long-running operations should be dispatched to worker
   //     threads to avoid blocking the event loop.
   void setDefault(RequestHandler handler);
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void setDefault(AsyncRequestHandler handler) { _asyncHandler = std::move(handler); }
 #endif
@@ -321,16 +322,13 @@ class Router {
 
     [[nodiscard]] Kind kind() const noexcept { return literal.empty() ? Kind::Param : Kind::Literal; }
 
-    using trivially_relocatable = amc::is_trivially_relocatable<RawChars32>::type;
-
-    RawChars32 literal;  // non empty when Kind::Literal
+    std::string_view literal;  // non empty when Kind::Literal
   };
 
   // Metadata about a compiled route pattern
-  struct CompiledRoute {
-    using trivially_relocatable = amc::is_trivially_relocatable<ConcatenatedStrings32>::type;
-
+  struct Route {
     ConcatenatedStrings32 paramNames;
+    vector<RouteConstraint> paramConstraints;  // one per param (empty = unconstrained)
     bool hasWildcard{false};
     bool hasNoSlashRegistered{false};
     bool hasWithSlashRegistered{false};
@@ -351,7 +349,7 @@ class Router {
     bool hasWithSlashRegistered{false};
   };
 
-  using LiteralRouteMap = flat_hash_map<RawChars32, LiteralRouteEntry, CityHash, std::equal_to<>>;
+  using LiteralRouteMap = flat_hash_map<std::string_view, LiteralRouteEntry, CityHash, std::equal_to<>>;
 
   // A radix tree node using common prefix compression
   struct RadixNode {
@@ -359,17 +357,17 @@ class Router {
     std::size_t incrementChildPrio(std::size_t pos);
 
     // The path fragment stored at this node (common prefix or param name)
-    RawChars32 path;
+    std::string_view path;
 
     // First character of each static child's path for O(1) lookup
     // indices[i] corresponds to children[i]
-    RawChars32 indices;
+    std::span<char> indices;
 
-    // Static children (ordered by priority, highest first)
+    // Static children (ordered by priority, highest first), followed by wildcard children
     vector<RadixNode*> children;
 
     // Route metadata (param names, wildcard flag, etc.) - near children for cache locality during matching
-    CompiledRoute* pRoute{nullptr};
+    Route* pRoute{nullptr};
 
     // Priority for this subtree (number of handlers in children + self)
     // Used to order children for faster lookups of common routes
@@ -383,6 +381,12 @@ class Router {
 
     // Pattern info for param nodes (the parts within a segment like "prefix{id}suffix")
     vector<SegmentPart> paramParts;
+
+    // Constraint for this param node (empty = unconstrained). Only valid when nodeType == Param.
+    RouteConstraint constraint;
+
+    // Constraints for each parameter part in this segment.
+    vector<RouteConstraint> segmentConstraints;
 
     // Handlers registered at this node (single entry, slash variants tracked in CompiledRoute)
     PathHandlerEntry handlers;
@@ -409,23 +413,17 @@ class Router {
 
   // Compile a route pattern and extract param names, wildcard flag, etc.
   // Returns information needed to build the radix tree.
-  struct ParsedRoute {
-    ConcatenatedStrings32 paramNames;
-    bool hasWildcard{false};
-    bool hasNoSlashRegistered{false};
-    bool hasWithSlashRegistered{false};
-  };
-
-  static ParsedRoute ParsePattern(std::string_view path);
+  static Route ParsePattern(std::string_view path);
 
   // Insert a route into the radix tree, splitting edges as needed
-  RadixNode* insertRoute(std::string_view path, ParsedRoute&& route, bool pathHasTrailingSlash);
+  RadixNode* insertRoute(std::string_view path, Route&& route, bool pathHasTrailingSlash);
 
   // Insert a child node at the appropriate position based on priority
-  void insertChild(RadixNode& node, std::string_view path, const ParsedRoute& route);
+  RadixNode* insertChild(RadixNode& node, std::string_view path, const Route& route, uint32_t& paramIdx);
 
-  // Match a parameter pattern against a path segment
-  bool matchParamParts(std::span<const SegmentPart> parts, std::string_view segment);
+  // Match a parameter pattern against a path segment, applying per-param constraints.
+  bool matchParamParts(std::span<const SegmentPart> parts, std::string_view segment,
+                       std::span<const RouteConstraint> constraints);
 
   // Main matching implementation using radix tree traversal
   const RadixNode* matchImpl(std::string_view path, bool requestHasTrailingSlash);
@@ -441,6 +439,11 @@ class Router {
 
   void printNode(std::ostream& os, const RadixNode& node, int depth) const;
 
+  std::string_view unescapeAndAllocate(std::string_view input);
+  std::string_view allocatePath(std::string_view pathFragment);
+  std::span<char> allocateIndices(std::string_view ind);
+  void pushBackIndex(RadixNode& node, char indexChar);
+
   RouterConfig _config;
 
   RequestHandler _handler;
@@ -455,8 +458,9 @@ class Router {
   vector<ResponseMiddleware> _globalPostMiddleware;
 
   ObjectPool<RadixNode> _nodePool;
-  ObjectPool<CompiledRoute> _compiledRoutePool;
+  ObjectPool<Route> _compiledRoutePool;
   RadixNode* _pRootNode{nullptr};
+  ObjectArrayPool<char> _charStorage;
 
   // Literal-only routes are managed exclusively by this map (no radix insertion).
   // Keys are normalized paths (trailing slash handled according to policy).
@@ -465,6 +469,7 @@ class Router {
   // Temporary buffers used during matching; reused across match() calls to minimize allocations.
   vector<PathParamCapture> _pathParamCaptureBuffer;
   vector<std::string_view> _matchStateBuffer;
+  vector<uint32_t> _uint32VectorBuffer;  // for passing to RouteConstraint matching without per-call allocations
 };
 
 }  // namespace aeronet

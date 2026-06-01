@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -20,7 +21,6 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/stringconv.hpp"
 
@@ -33,22 +33,6 @@ namespace {
 
 constexpr std::string_view kEscapedOpenBrace = "{{";
 constexpr std::string_view kEscapedCloseBrace = "}}";
-
-void UnescapePattern(std::string_view input, RawChars32& output) {
-  // Single-pass unescape: {{ → {, }} → }
-  // For path = "/api/{{version}}/data", we want to store "/api/{version}/data"
-  output.assign(input);
-
-  auto dst = output.begin();
-  for (auto src = output.begin(); src != output.end(); ++src, ++dst) {
-    *dst = *src;
-    // Skip duplicate brace
-    if ((*src == '{' || *src == '}') && src + 1 != output.end() && *(src + 1) == *src) {
-      ++src;
-    }
-  }
-  output.setSize(static_cast<uint32_t>(dst - output.begin()));
-}
 
 bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) {
   const auto sz = path.size();
@@ -175,15 +159,31 @@ struct WildcardInfo {
   std::size_t last{std::string_view::npos};
 };
 
-std::size_t FindUnescaped(std::string_view sv, char ch, std::size_t pos = 0) noexcept {
-  for (pos = sv.find(ch, pos); pos != std::string_view::npos;) {
-    if (pos + 1 < sv.size() && sv[pos + 1] == ch) {
-      pos = sv.find(ch, pos + 2U);
-      continue;
-    }
-    break;
+// Extract the constraint pattern from a segment path like "{name:pattern}..." or "{name}..."
+// Returns the constraint pattern text (empty if unconstrained).
+std::string_view ExtractConstraintPattern(std::string_view segPath) noexcept {
+  assert(!segPath.empty());
+  assert(segPath[0] == '{');
+  // Find ':' separator first
+  const auto colonPos = segPath.find(':');
+  if (colonPos == std::string_view::npos) {
+    return {};  // No constraint
   }
-  return pos;
+  // Find matching '}' with brace depth counting (constraint patterns may have {n} quantifiers)
+  int depth = 1;
+  std::size_t closePos = 1;
+  for (; closePos < segPath.size(); ++closePos) {
+    if (segPath[closePos] == '{') {
+      ++depth;
+    } else if (segPath[closePos] == '}') {
+      --depth;
+      if (depth == 0) {
+        break;
+      }
+    }
+  }
+  // Extract constraint pattern (after ':' up to closing '}')
+  return segPath.substr(colonPos + 1, closePos - colonPos - 1);
 }
 
 // Find start of wildcard ('{' for param or '*' for catch-all)
@@ -216,13 +216,13 @@ WildcardInfo FindWildcard(std::string_view path) noexcept {
 
 }  // namespace
 
-Router::ParsedRoute Router::ParsePattern(std::string_view path) {
+Router::Route Router::ParsePattern(std::string_view path) {
   assert(!path.empty());
   if (path.front() != '/') {
     throw std::invalid_argument("Router paths must begin with '/'");
   }
 
-  ParsedRoute route;
+  Route route;
   bool sawNamed = false;
   bool sawUnnamed = false;
   uint32_t paramIdx = 0;
@@ -269,7 +269,43 @@ Router::ParsedRoute Router::ParsePattern(std::string_view path) {
         continue;
       }
 
-      auto closePos = FindUnescaped(segment, '}', idx + 1U);
+      // Find matching '}' — strategy depends on whether there's a constraint pattern
+      // First, check if there's a ':' before the first unescaped '}' (indicating a constraint)
+      std::size_t closePos = std::string_view::npos;
+      std::size_t colonPos2 = std::string_view::npos;
+      for (std::size_t sp = idx + 1; sp < segment.size(); ++sp) {
+        if (segment[sp] == ':' && colonPos2 == std::string_view::npos) {
+          colonPos2 = sp;
+        } else if (segment[sp] == '}') {
+          if (colonPos2 == std::string_view::npos) {
+            // No constraint — use FindUnescaped-style logic: skip }}
+            if (sp + 1 < segment.size() && segment[sp + 1] == '}') {
+              ++sp;  // Skip escaped }}
+              continue;
+            }
+            closePos = sp;
+            break;
+          }
+          // Has constraint — use brace-depth counting from the colon onwards
+          break;
+        }
+      }
+
+      if (colonPos2 != std::string_view::npos) {
+        // Constraint pattern present — find matching '}' with brace-depth counting
+        int braceDepth = 1;
+        for (std::size_t sp = idx + 1; sp < segment.size(); ++sp) {
+          if (segment[sp] == '{') {
+            ++braceDepth;
+          } else if (segment[sp] == '}') {
+            --braceDepth;
+            if (braceDepth == 0) {
+              closePos = sp;
+              break;
+            }
+          }
+        }
+      }
 
       if (closePos == std::string_view::npos) {
         throw std::invalid_argument("Unterminated '{' in router pattern");
@@ -280,7 +316,27 @@ Router::ParsedRoute Router::ParsePattern(std::string_view path) {
       }
       previousWasParam = true;
 
-      const std::string_view paramName = segment.substr(idx + 1U, closePos - idx - 1U);
+      const std::string_view paramContent = segment.substr(idx + 1U, closePos - idx - 1U);
+
+      // Split on first ':' to separate name from constraint pattern
+      const auto colonPos = paramContent.find(':');
+      std::string_view paramName;
+      std::string_view constraintPattern;
+
+      if (colonPos != std::string_view::npos) {
+        paramName = paramContent.substr(0, colonPos);
+        constraintPattern = paramContent.substr(colonPos + 1);
+      } else {
+        paramName = paramContent;
+      }
+
+      // Reject nested braces in param names (only allowed in constraint patterns)
+      // Delimiter scanning above guarantees no unescaped '}' can appear in paramName:
+      // any '}' before closePos is either part of an escaped '}}' pair or the delimiter itself.
+      if (paramName.contains('{')) {
+        throw std::invalid_argument("Invalid character in parameter name");
+      }
+
       if (paramName.empty()) {
         sawUnnamed = true;
         route.paramNames.append(std::string_view(IntegralToCharVector(paramIdx)));
@@ -288,6 +344,10 @@ Router::ParsedRoute Router::ParsePattern(std::string_view path) {
         sawNamed = true;
         route.paramNames.append(paramName);
       }
+
+      // Compile constraint (empty pattern = unconstrained)
+      route.paramConstraints.emplace_back(constraintPattern);
+
       ++paramIdx;
       idx = closePos + 1U;
     }
@@ -309,7 +369,7 @@ Router::ParsedRoute Router::ParsePattern(std::string_view path) {
 std::size_t Router::RadixNode::incrementChildPrio(std::size_t pos) {
   assert(pos < indices.size());
 
-  children[static_cast<uint32_t>(pos)]->priority++;
+  ++children[static_cast<uint32_t>(pos)]->priority;
   const uint32_t prio = children[static_cast<uint32_t>(pos)]->priority;
 
   // Move to front while priority is higher than predecessor
@@ -322,13 +382,15 @@ std::size_t Router::RadixNode::incrementChildPrio(std::size_t pos) {
   // Update indices string if position changed
   if (newPos < pos) {
     // Move element at pos to newPos (shift right)
-    std::rotate(indices.begin() + newPos, indices.begin() + pos, indices.begin() + pos + 1);
+    std::rotate(indices.begin() + static_cast<std::ptrdiff_t>(newPos),
+                indices.begin() + static_cast<std::ptrdiff_t>(pos),
+                indices.begin() + static_cast<std::ptrdiff_t>(pos + 1));
   }
 
   return newPos;
 }
 
-void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]] const ParsedRoute& route) {
+Router::RadixNode* Router::insertChild(RadixNode& node, std::string_view path, const Route& route, uint32_t& paramIdx) {
   RadixNode* pNode = &node;
 
   while (true) {
@@ -337,13 +399,9 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
 
     if (wildcardFirst == std::string_view::npos) {
       // No wildcard found, simply store the path
-      UnescapePattern(path, pNode->path);
-      return;
+      pNode->path = unescapeAndAllocate(path);
+      return pNode;
     }
-
-    // Wildcard conflict should have been caught earlier
-    // Already checked by throw std::invalid_argument("Path conflicts with existing wildcard route");
-    assert(!pNode->hasWildChild);
 
     // Handle param: {name} or {name}literal or prefix{name}
     const std::string_view wildcard(path.data() + wildcardFirst, path.data() + wildcardLast);
@@ -351,7 +409,7 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
     if (wildcard[0] == '{') {
       if (wildcardFirst > 0) {
         // Insert prefix before the wildcard
-        UnescapePattern(path.substr(0, wildcardFirst), pNode->path);
+        pNode->path = unescapeAndAllocate(path.substr(0, wildcardFirst));
         path = path.substr(wildcardFirst);
       }
 
@@ -363,100 +421,175 @@ void Router::insertChild(RadixNode& node, std::string_view path, [[maybe_unused]
       pNode->hasWildChild = true;
       RadixNode* pChild = _nodePool.allocateAndConstruct();
       pChild->nodeType = NodeType::Param;
-      UnescapePattern(paramSegment, pChild->path);
+      pChild->path = unescapeAndAllocate(paramSegment);
+
+      char* currentLiteral = nullptr;
+      std::size_t currentLiteralSize = 0;
+      std::size_t currentLiteralCapacity = 0;
+
+      auto flushLiteral = [&]() {
+        if (currentLiteral == nullptr) {
+          return;
+        }
+
+        _charStorage.shrinkLastAllocated(currentLiteral, currentLiteralSize);
+        pChild->paramParts.push_back({.literal = {currentLiteral, currentLiteralSize}});
+        currentLiteral = nullptr;
+        currentLiteralSize = 0;
+        currentLiteralCapacity = 0;
+      };
+
+      auto appendLiteralChar = [&](char ch, std::size_t literalUpperBound) {
+        if (currentLiteral == nullptr) {
+          assert(literalUpperBound > 0);
+          currentLiteralCapacity = literalUpperBound;
+          currentLiteral = _charStorage.allocateAndDefaultConstruct(currentLiteralCapacity);
+        }
+
+        assert(currentLiteralSize < currentLiteralCapacity);
+        currentLiteral[currentLiteralSize] = ch;
+        ++currentLiteralSize;
+      };
 
       // Parse the segment parts (literal/param alternation)
       for (std::size_t idx = 0; idx < paramSegment.size();) {
         // Handle escaped braces
         if (paramSegment.compare(idx, kEscapedOpenBrace.size(), kEscapedOpenBrace) == 0) {
-          pChild->paramParts.emplace_back().literal.push_back('{');
+          appendLiteralChar('{', paramSegment.size() - idx);
           idx += kEscapedOpenBrace.size();
           continue;
         }
         if (paramSegment.compare(idx, kEscapedCloseBrace.size(), kEscapedCloseBrace) == 0) {
-          if (!pChild->paramParts.empty() && pChild->paramParts.back().kind() == SegmentPart::Kind::Literal) {
-            pChild->paramParts.back().literal.push_back('}');
-          } else {
-            pChild->paramParts.emplace_back().literal.push_back('}');
-          }
+          appendLiteralChar('}', paramSegment.size() - idx);
           idx += kEscapedCloseBrace.size();
           continue;
         }
 
         if (paramSegment[idx] != '{') {
           // Literal character
-          if (pChild->paramParts.empty() || pChild->paramParts.back().kind() != SegmentPart::Kind::Literal) {
-            pChild->paramParts.emplace_back();
-          }
-          pChild->paramParts.back().literal.push_back(paramSegment[idx]);
+          appendLiteralChar(paramSegment[idx], paramSegment.size() - idx);
           ++idx;
           continue;
         }
 
-        // Parameter
-        const std::size_t closePos = paramSegment.find('}', idx + 1);
-        assert(closePos != std::string_view::npos);  // Already validated
+        // Parameter - find matching '}' (strategy depends on whether there's a constraint ':')
+        // Check for ':' before first '}' to determine if constraint pattern is present
+        const auto delimiterPos = paramSegment.find_first_of(":}", idx + 1U);
+        assert(delimiterPos != std::string_view::npos);
+        const bool hasConstraint = paramSegment[delimiterPos] == ':';
+
+        std::size_t closePos = idx + 1;
+        if (hasConstraint) {
+          // Brace-depth counting for constraint patterns with {n} quantifiers
+          int depth = 1;
+          for (;; ++closePos) {
+            assert(closePos < paramSegment.size());
+            if (paramSegment[closePos] == '{') {
+              ++depth;
+            } else if (paramSegment[closePos] == '}') {
+              --depth;
+              if (depth == 0) {
+                break;
+              }
+            }
+          }
+        } else {
+          // FindUnescaped-style: skip }} escape sequences
+          for (;;) {
+            assert(closePos < paramSegment.size());
+            if (paramSegment[closePos] == '}') {
+              if (closePos + 1 < paramSegment.size() && paramSegment[closePos + 1] == '}') {
+                closePos += 2;  // Skip escaped }} and move to next character
+                continue;
+              }
+              break;
+            }
+            ++closePos;
+          }
+        }
+        assert(closePos < paramSegment.size());  // Already validated by ParsePattern
 
         // should have been caught by ParsePattern
-        pChild->paramParts.emplace_back();  // Empty literal = param placeholder
+        flushLiteral();
+        pChild->paramParts.emplace_back();
+        assert(paramIdx < route.paramConstraints.size());
+        pChild->segmentConstraints.emplace_back(route.paramConstraints[paramIdx].pattern(), _charStorage);
+        ++paramIdx;
         idx = closePos + 1U;
       }
 
-      pNode->children.push_back(pChild);
+      flushLiteral();
+
+      // For single-param segments, store constraint on the node for efficient matching
+      if (pChild->paramParts.size() == 1) {
+        assert(paramIdx > 0);
+        assert(paramIdx - 1 < route.paramConstraints.size());
+        pChild->constraint = RouteConstraint(route.paramConstraints[paramIdx - 1].pattern(), _charStorage);
+      }
+
+      const auto firstWildcardChild = pNode->children.begin() + static_cast<ptrdiff_t>(pNode->indices.size());
+      const auto insertPos = [&]() {
+        if (!pChild->constraint.empty()) {
+          // Constrained params stay before unconstrained params and before any catch-all.
+          return std::ranges::find_if(firstWildcardChild, pNode->children.end(), [](const RadixNode* pChild) {
+            return pChild->nodeType != NodeType::Param || pChild->constraint.empty();
+          });
+        }
+        return std::ranges::find_if(firstWildcardChild, pNode->children.end(),
+                                    [](const RadixNode* pChild) { return pChild->nodeType == NodeType::CatchAll; });
+      }();
+      pNode->children.insert(insertPos, pChild);
       pNode = pChild;
       ++pNode->priority;
 
       // If path doesn't end with the param segment, continue with remaining path
-      if (segEnd != std::string_view::npos && segEnd < path.size()) {
+      if (segEnd != std::string_view::npos) {
         path = path.substr(segEnd);
         RadixNode* pNextChild = _nodePool.allocateAndConstruct();
         pNextChild->priority = 1;
         pNode->children.push_back(pNextChild);
-        pNode->indices.push_back('/');
+        pushBackIndex(*pNode, '/');
         pNode = pNextChild;
         continue;
       }
-      return;
+      return pNode;
     }
 
     // Store path up to (but not including) the '/*'
-    if (wildcardFirst > 0) {
-      UnescapePattern(path.substr(0, wildcardFirst - 1), pNode->path);  // Exclude the trailing '/'
-    }
+    assert(wildcardFirst > 0);
+    pNode->path = unescapeAndAllocate(path.substr(0, wildcardFirst - 1));  // Exclude the trailing '/'
 
     // Create catch-all node
     // Note: We don't add catch-all to indices - it's accessed via hasWildChild
     pNode->hasWildChild = true;
     RadixNode* pCatchAllNode = _nodePool.allocateAndConstruct();
     pCatchAllNode->nodeType = NodeType::CatchAll;
-    pCatchAllNode->path.assign("/*");
+    pCatchAllNode->path = allocatePath("/*");
     pNode->children.push_back(pCatchAllNode);
     // Do NOT add to indices: currentNode->indices.push_back('/');
 
-    return;
+    return pCatchAllNode;
   }
 }
 
-Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& route, bool pathHasTrailingSlash) {
+Router::RadixNode* Router::insertRoute(std::string_view path, Route&& route, bool pathHasTrailingSlash) {
   if (_pRootNode == nullptr) {
     _pRootNode = _nodePool.allocateAndConstruct();
   }
 
   RadixNode* pNode = _pRootNode;
   ++pNode->priority;
+  uint32_t paramIdx = 0;
 
   // Empty tree case
-  if (pNode->path.empty() && pNode->indices.empty()) {
-    insertChild(*pNode, path, route);
-
-    // Find the terminal node
-    while (!pNode->children.empty()) {
-      pNode = pNode->children[0];
-    }
+  if (pNode->path.empty()) {
+    assert(pNode->indices.empty());
+    pNode = insertChild(*pNode, path, route, paramIdx);
 
     // Store route metadata
     pNode->pRoute = _compiledRoutePool.allocateAndConstruct();
     pNode->pRoute->paramNames = std::move(route.paramNames);
+    pNode->pRoute->paramConstraints = std::move(route.paramConstraints);
     pNode->pRoute->hasWildcard = route.hasWildcard;
     if (pathHasTrailingSlash) {
       pNode->pRoute->hasWithSlashRegistered = true;
@@ -475,21 +608,21 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
     // Split edge if common prefix is shorter than current node's path
     if (commonPrefixLen < currentPath.size()) {
       // Create a child node with the remainder of the current node's path
-      RadixNode* pChild = _nodePool.allocateAndConstruct();
-      pChild->path.assign(currentPath.substr(commonPrefixLen));
-      pChild->hasWildChild = pNode->hasWildChild;
-      pChild->indices = std::move(pNode->indices);
-      pChild->children = std::move(pNode->children);
-      pChild->handlers = std::move(pNode->handlers);
-      pChild->pRoute = pNode->pRoute;
-      pChild->priority = pNode->priority - 1;
-      pChild->paramParts = std::move(pNode->paramParts);
+      RadixNode& child = *_nodePool.allocateAndConstruct();
+      child.path = currentPath.substr(commonPrefixLen);
+      child.indices = pNode->indices;
+      child.priority = pNode->priority - 1;
+      child.hasWildChild = pNode->hasWildChild;
+      child.paramParts = std::move(pNode->paramParts);
+      child.children = std::move(pNode->children);
+      child.handlers = std::move(pNode->handlers);
+      child.pRoute = pNode->pRoute;
 
       // Current node becomes the common prefix
-      pNode->children = {pChild};
-      pNode->indices.clear();
-      pNode->indices.push_back(currentPath[commonPrefixLen]);
-      pNode->path.assign(currentPath.substr(0, commonPrefixLen));
+      pNode->children = {&child};
+      pNode->indices = {};
+      pushBackIndex(*pNode, currentPath[commonPrefixLen]);
+      pNode->path = currentPath.substr(0, commonPrefixLen);
       pNode->hasWildChild = false;
       pNode->handlers = {};
       pNode->pRoute = nullptr;
@@ -502,7 +635,7 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
       const char firstChar = path[0];
 
       // First, check if a static child with the next path byte exists
-      const std::string_view indices = pNode->indices;
+      const std::string_view indices(pNode->indices.data(), pNode->indices.size());
       const auto foundPos = indices.find(firstChar);
       if (foundPos != std::string_view::npos) {
         pNode = pNode->children[static_cast<uint32_t>(pNode->incrementChildPrio(foundPos))];
@@ -510,47 +643,74 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
       }
 
       // No static match found. If we have a wildcard child and the path starts with a wildcard,
-      // try to use it. Also check for catch-all pattern "/*"
-      if (pNode->hasWildChild && (firstChar == '{' || path == "/*")) {
-        // Wildcard child is always at the end of children array (after static children)
+      // try to use it. Also check for catch-all pattern "/*" or the post-prefix remainder "*".
+      if (pNode->hasWildChild && (firstChar == '{' || path == "*" || path == "/*")) {
+        // Wildcard children are at the end of children array (after static children)
         // Static children count = indices.size()
-        const auto wildcardIdx = indices.size();
-        if (wildcardIdx < pNode->children.size()) {
-          RadixNode* pWildcardChild = pNode->children[static_cast<uint32_t>(wildcardIdx)];
+        const auto staticCount = indices.size();
+        const auto totalChildren = pNode->children.size();
+        bool matched = false;
 
-          if (pWildcardChild->nodeType != NodeType::Static) {
-            pNode = pWildcardChild;
-            ++pNode->priority;
+        for (auto wildIdx = staticCount; wildIdx < totalChildren; ++wildIdx) {
+          RadixNode* pWildcardChild = pNode->children[static_cast<uint32_t>(wildIdx)];
+          assert(pWildcardChild->nodeType != NodeType::Static);
 
-            // Check if the wildcard matches
-            const std::string_view nodePath = pNode->path;
-
-            // Special case for catch-all: if both are catch-all, allow re-registration
-            if (pNode->nodeType == NodeType::CatchAll) {
-              // The remaining path should be either "*" or "/*"
-              if (path == "*" || path == "/*") {
-                // This is the same catch-all pattern, allow it
-                assert(pNode->pRoute != nullptr);
-                assert(pNode->pRoute->hasWildcard);
-                if (pathHasTrailingSlash) {
-                  pNode->pRoute->hasWithSlashRegistered = true;
-                } else {
-                  pNode->pRoute->hasNoSlashRegistered = true;
-                }
-                return pNode;
-              }
-              throw std::invalid_argument("Path conflicts with existing wildcard route");
+          // Special case for catch-all: if both are catch-all, allow re-registration
+          if (pWildcardChild->nodeType == NodeType::CatchAll) {
+            if (path != "*" && path != "/*") {
+              continue;
             }
+            assert(pWildcardChild->pRoute != nullptr);
+            assert(pWildcardChild->pRoute->hasWildcard);
+            if (pathHasTrailingSlash) {
+              pWildcardChild->pRoute->hasWithSlashRegistered = true;
+            } else {
+              pWildcardChild->pRoute->hasNoSlashRegistered = true;
+            }
+            return pWildcardChild;
+          }
 
-            if (path.size() >= nodePath.size() && path.starts_with(nodePath) &&
-                (nodePath.size() >= path.size() || path[nodePath.size()] == '/')) {
+          const std::string_view nodePath = pWildcardChild->path;
+          if (!path.starts_with(nodePath)) {
+            continue;
+          }
+          // Wildcard node paths are whole-segment patterns. If there is remaining text,
+          // it must start at the next segment boundary. Otherwise this is a different
+          // wildcard shape that should fall through to conflict handling below.
+          if (nodePath.size() < path.size() && path[nodePath.size()] != '/') {
+            continue;
+          }
+
+          pNode = pWildcardChild;
+          ++pNode->priority;
+          matched = true;
+          paramIdx += std::ranges::count_if(
+              pNode->paramParts, [](const SegmentPart& part) { return part.kind() == SegmentPart::Kind::Param; });
+          break;
+        }
+
+        if (matched) {
+          continue;
+        }
+
+        // No existing wildcard child matches by path prefix.
+        // Check if this is a true conflict (same constraint, different param names) vs
+        // a legitimate alternative (different constraint).
+        if (firstChar == '{') {
+          const auto newConstraintPattern = ExtractConstraintPattern(path);
+          for (auto wildIdx = staticCount; wildIdx < totalChildren; ++wildIdx) {
+            const RadixNode* pWildcardChild = pNode->children[static_cast<uint32_t>(wildIdx)];
+            if (pWildcardChild->nodeType != NodeType::Param) {
               continue;
             }
 
-            // Wildcard conflict
-            throw std::invalid_argument("Path conflicts with existing wildcard route");
+            const auto existingConstraintPattern = ExtractConstraintPattern(pWildcardChild->path);
+            if (newConstraintPattern == existingConstraintPattern) {
+              throw std::invalid_argument("Path conflicts with existing wildcard route");
+            }
           }
         }
+        // Different constraint - fall through to insert a new wildcard child
       }
 
       // - Param nodes are created in insertChild() like this:
@@ -565,14 +725,15 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
 
       // No matching child found, insert new one
       // Don't create a static child if the path is a catch-all pattern
-      if (firstChar != '{' && path != "/*") {
-        pNode->indices.push_back(firstChar);
+      if (firstChar != '{' && path != "*" && path != "/*") {
+        pushBackIndex(*pNode, firstChar);
         RadixNode* pChild = _nodePool.allocateAndConstruct();
-        // If there's a wildcard child, it must stay at the end.
-        // Insert static child at position indices.size() - 1 (just added index)
-        if (pNode->hasWildChild && !pNode->children.empty()) {
-          // Insert before the wildcard child (which is at the end)
-          pNode->children.insert(pNode->children.end() - 1, pChild);
+        // If there are wildcard children, they must stay at the end.
+        // Insert static child before all wildcard children
+        if (pNode->hasWildChild) {
+          assert(!pNode->children.empty());
+          const auto insertPos = pNode->children.begin() + static_cast<ptrdiff_t>(pNode->indices.size() - 1);
+          pNode->children.insert(insertPos, pChild);
         } else {
           pNode->children.push_back(pChild);
         }
@@ -580,19 +741,23 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
         pNode = pChild;
       }
 
-      insertChild(*pNode, path, route);
-
-      // Find the terminal node
-      while (!pNode->children.empty() && pNode->pRoute == nullptr) {
-        pNode = pNode->children[0];
+      if (path == "*" || path == "/*") {
+        pNode->hasWildChild = true;
+        RadixNode* pCatchAllChild = _nodePool.allocateAndConstruct();
+        pCatchAllChild->nodeType = NodeType::CatchAll;
+        pCatchAllChild->path = allocatePath("/*");
+        pNode->children.push_back(pCatchAllChild);
+        pNode = pCatchAllChild;
+      } else {
+        pNode = insertChild(*pNode, path, route, paramIdx);
       }
 
       // Store route metadata
-      if (pNode->pRoute == nullptr) {
-        pNode->pRoute = _compiledRoutePool.allocateAndConstruct();
-        pNode->pRoute->paramNames = std::move(route.paramNames);
-        pNode->pRoute->hasWildcard = route.hasWildcard;
-      }
+      assert(pNode->pRoute == nullptr);
+      pNode->pRoute = _compiledRoutePool.allocateAndConstruct();
+      pNode->pRoute->paramNames = std::move(route.paramNames);
+      pNode->pRoute->paramConstraints = std::move(route.paramConstraints);
+      pNode->pRoute->hasWildcard = route.hasWildcard;
 
       if (pathHasTrailingSlash) {
         pNode->pRoute->hasWithSlashRegistered = true;
@@ -606,6 +771,7 @@ Router::RadixNode* Router::insertRoute(std::string_view path, ParsedRoute&& rout
     if (pNode->pRoute == nullptr) {
       pNode->pRoute = _compiledRoutePool.allocateAndConstruct();
       pNode->pRoute->paramNames = std::move(route.paramNames);
+      pNode->pRoute->paramConstraints = std::move(route.paramConstraints);
       pNode->pRoute->hasWildcard = route.hasWildcard;
     }
 
@@ -622,7 +788,7 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
                                           HandlerVariant handlerVariant) {
   const bool pathHasTrailingSlash = MayNormalizeHasTrailingSlash(_config.trailingSlashPolicy, path);
 
-  ParsedRoute parsed = ParsePattern(path);
+  Route parsed = ParsePattern(path);
   const bool isLiteralOnly = parsed.paramNames.empty() && !parsed.hasWildcard;
   if (pathHasTrailingSlash) {
     parsed.hasWithSlashRegistered = true;
@@ -632,9 +798,12 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
 
   PathHandlerEntry* pEntry;
   if (isLiteralOnly) {
-    RawChars32 unescapedPath;
-    UnescapePattern(path, unescapedPath);
-    LiteralRouteEntry& literalEntry = _literalOnlyRoutes[std::move(unescapedPath)];
+    const std::string_view literalKey = unescapeAndAllocate(path);
+    auto [it, inserted] = _literalOnlyRoutes.try_emplace(literalKey);
+    if (!inserted) {
+      _charStorage.shrinkLastAllocated(const_cast<char*>(literalKey.data()), 0);
+    }
+    LiteralRouteEntry& literalEntry = it->second;
 
     if (pathHasTrailingSlash) {
       literalEntry.hasWithSlashRegistered = true;
@@ -694,17 +863,19 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
 // Matching Implementation
 // ============================================================================
 
-bool Router::matchParamParts(std::span<const SegmentPart> parts, std::string_view segment) {
+bool Router::matchParamParts(std::span<const SegmentPart> parts, std::string_view segment,
+                             std::span<const RouteConstraint> constraints) {
   std::size_t pos = 0;
+  uint32_t constraintIdx = 0;
 
   for (uint32_t idx = 0; idx < parts.size(); ++idx) {
     const SegmentPart& part = parts[idx];
 
     if (part.kind() == SegmentPart::Kind::Literal) {
       assert(pos <= segment.size());
-      if (!segment.substr(pos).starts_with(part.literal)) {
-        return false;
-      }
+      // With current part construction and capture progression, literal parts are
+      // reached only at already-aligned positions.
+      assert(segment.substr(pos).starts_with(part.literal));
       pos += part.literal.size();
       continue;
     }
@@ -726,7 +897,16 @@ bool Router::matchParamParts(std::span<const SegmentPart> parts, std::string_vie
       pos = segment.size();
     }
 
-    _matchStateBuffer.push_back(segment.substr(captureStart, captureEnd - captureStart));
+    const auto captured = segment.substr(captureStart, captureEnd - captureStart);
+
+    // Validate constraint
+    assert(constraintIdx < constraints.size());
+    if (!constraints[constraintIdx].matches(captured, _uint32VectorBuffer)) {
+      return false;
+    }
+    ++constraintIdx;
+
+    _matchStateBuffer.push_back(captured);
   }
 
   return pos == segment.size();
@@ -739,6 +919,40 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
 
   _matchStateBuffer.clear();
   const RadixNode* pNode = _pRootNode;
+  const RadixNode* pCatchAllFallback = nullptr;
+  decltype(_matchStateBuffer.size()) catchAllFallbackMatchStateSize = 0;
+
+  auto rememberCatchAllFallback = [&](const RadixNode* node) {
+    const auto wildcardIdx = node->indices.size();
+    if (wildcardIdx >= node->children.size()) {
+      return;
+    }
+
+    const RadixNode* pLastWildcardChild = node->children.back();
+    if (pLastWildcardChild->nodeType != NodeType::CatchAll) {
+      return;
+    }
+    assert(pLastWildcardChild->pRoute != nullptr);
+
+    pCatchAllFallback = pLastWildcardChild;
+    catchAllFallbackMatchStateSize = _matchStateBuffer.size();
+  };
+
+  auto fallbackToCatchAll = [&]() -> const RadixNode* {
+    if (pCatchAllFallback == nullptr) {
+      return nullptr;
+    }
+
+    _matchStateBuffer.resize(catchAllFallbackMatchStateSize);
+    if (_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict && requestHasTrailingSlash) {
+      return nullptr;
+    }
+
+    assert(pCatchAllFallback->pRoute != nullptr);
+    assert(_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict ||
+           pCatchAllFallback->pRoute->hasNoSlashRegistered);
+    return pCatchAllFallback;
+  };
 
   // Walk the tree
   while (true) {
@@ -750,13 +964,14 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
         const char firstChar = path[0];
 
         // First, try to match a static child by finding one whose path is a prefix of remaining path
-        const std::string_view indices = pNode->indices;
+        const std::string_view indices(pNode->indices.data(), pNode->indices.size());
         for (std::size_t idx = 0; idx < indices.size(); ++idx) {
           if (indices[idx] == firstChar) {
             const RadixNode* pChild = pNode->children[static_cast<uint32_t>(idx)];
             const std::string_view childPath = pChild->path;
             // Verify this child's path is actually a prefix of remaining path
-            if (path.size() >= childPath.size() && path.starts_with(childPath)) {
+            if (path.starts_with(childPath)) {
+              rememberCatchAllFallback(pNode);
               pNode = pChild;
               goto continueWalk;
             }
@@ -764,88 +979,102 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
           }
         }
 
-        // No static match. Try wildcard child if present
+        // No static match. Try wildcard children if present
         if (pNode->hasWildChild) {
-          // Wildcard child is always at the end of children array (after static children)
-          const auto wildcardIdx = pNode->indices.size();
-          if (wildcardIdx < pNode->children.size()) {
-            const RadixNode* pWildcardChild = pNode->children[static_cast<uint32_t>(wildcardIdx)];
+          // Wildcard children are at the end of children array (after static children)
+          const auto staticCount = pNode->indices.size();
+          const auto totalChildren = pNode->children.size();
 
-            if (pWildcardChild->nodeType != NodeType::Static) {
-              pNode = pWildcardChild;
+          // Find param end (either '/' or path end) - shared by all param children
+          const std::size_t segEnd = path.find('/');
+          const std::string_view segment = path.substr(0, segEnd);
 
-              assert(pNode->nodeType == NodeType::Param || pNode->nodeType == NodeType::CatchAll);
+          // Try each wildcard child in order (constrained first, unconstrained last)
+          for (auto wildIdx = staticCount; wildIdx < totalChildren; ++wildIdx) {
+            const RadixNode* pWildcardChild = pNode->children[static_cast<uint32_t>(wildIdx)];
 
-              if (pNode->nodeType == NodeType::Param) {
-                // Find param end (either '/' or path end)
-                std::size_t segEnd = path.find('/');
-                const std::string_view segment = path.substr(0, segEnd);
+            if (pWildcardChild->nodeType == NodeType::Param) {
+              // Save match state buffer position for backtracking
+              const auto savedBufferSize = _matchStateBuffer.size();
 
-                // Match param pattern if we have parts
-                if (!pNode->paramParts.empty()) {
-                  if (!matchParamParts(pNode->paramParts, segment)) {
-                    return nullptr;
-                  }
-                } else {
-                  // Simple param - capture the whole segment
-                  _matchStateBuffer.push_back(segment);
-                }
-
-                // Continue to next segment if there's more path
-                if (segEnd < path.size()) {
-                  if (!pNode->children.empty()) {
-                    path = path.substr(segEnd);
-                    pNode = pNode->children[0];
-                    goto continueWalk;
-                  }
-                  // More path but no children
-                  return nullptr;
-                }
-
-                // End of path
-                if (pNode->pRoute != nullptr) {
-                  if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict) {
-                    return pNode;
-                  }
-                  if (requestHasTrailingSlash ? pNode->pRoute->hasWithSlashRegistered
-                                              : pNode->pRoute->hasNoSlashRegistered) {
-                    return pNode;
-                  }
-                }
-
-                // Check for trailing slash redirect (TSR) - only in non-strict mode
-                if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict &&
-                    pNode->children.size() == 1) {
-                  const RadixNode* pChild = pNode->children[0];
-                  if (std::string_view(pChild->path) == "/" && pChild->pRoute != nullptr) {
-                    return pNode;  // TSR case
-                  }
-                }
-                return nullptr;
+              // Validate constraint on the captured segment
+              if (!pWildcardChild->constraint.empty() &&
+                  !pWildcardChild->constraint.matches(segment, _uint32VectorBuffer)) {
+                // Constraint failed - try next wildcard child
+                continue;
               }
 
-              // Catch-all matches everything remaining
-              // Wildcards don't produce captures in the current design
-              if (pNode->pRoute != nullptr) {
+              // Match param pattern if we have parts
+              assert(!pWildcardChild->paramParts.empty());
+              const bool matched =
+                  matchParamParts(pWildcardChild->paramParts, segment, pWildcardChild->segmentConstraints);
+
+              if (!matched) {
+                // Restore match state buffer
+                _matchStateBuffer.resize(savedBufferSize);
+                continue;
+              }
+
+              const RadixNode* pParamNode = pWildcardChild;
+
+              // Continue to next segment if there's more path
+              if (segEnd < path.size()) {
+                if (!pParamNode->children.empty()) {
+                  path = path.substr(segEnd);
+                  pNode = pParamNode->children[0];
+                  goto continueWalk;
+                }
+                // More path but no children - restore and try next alternative
+                _matchStateBuffer.resize(savedBufferSize);
+                continue;
+              }
+
+              // End of path
+              if (pParamNode->pRoute != nullptr) {
                 if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict) {
-                  return pNode;
+                  return pParamNode;
                 }
-                // Catch-all with trailing slash in request
-                if (requestHasTrailingSlash) {
-                  return nullptr;  // catch-all registered without slash by design
-                }
-                if (pNode->pRoute->hasNoSlashRegistered) {
-                  return pNode;
-                }
+                // In this end-of-segment path, a trailing slash would have produced
+                // a remaining "/..." child traversal above.
+                assert(!requestHasTrailingSlash);
+                assert(pParamNode->pRoute->hasNoSlashRegistered);
+                return pParamNode;
               }
+
+              // In non-strict policies, trailing slashes are normalized on registration,
+              // so a standalone slash child is not expected to carry a terminal route.
+              assert(_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict ||
+                     pParamNode->children.size() != 1 || pParamNode->children[0]->path != "/" ||
+                     pParamNode->children[0]->pRoute == nullptr);
+
+              // This param child matched structurally but has no handler at this position.
+              // Restore and try next alternative.
+              _matchStateBuffer.resize(savedBufferSize);
+              continue;
+            }
+
+            assert(pWildcardChild->nodeType == NodeType::CatchAll);
+            // Catch-all matches everything remaining
+            pNode = pWildcardChild;
+            assert(pNode->pRoute != nullptr);
+            if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict) {
+              return pNode;
+            }
+            if (requestHasTrailingSlash) {
               return nullptr;
             }
+
+            // Catch-all patterns strictly end in '*' (e.g. "/*"), never in '/'.
+            // Because of this, pathHasTrailingSlash is always false during their registration,
+            // which guarantees that pRoute->hasNoSlashRegistered is set to true.
+            assert(pNode->pRoute->hasNoSlashRegistered);
+            return pNode;
           }
         }
 
         // No matching child found - this path segment does not match any registered route.
         // Return nullptr so the caller can fall back to the default handler (e.g. static files).
-        return nullptr;
+        return fallbackToCatchAll();
       }
     } else if (path == prefix) {
       // Exact match - we should have reached the node containing the handler
@@ -853,35 +1082,39 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
         if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict) {
           return pNode;
         }
-        if (requestHasTrailingSlash ? pNode->pRoute->hasWithSlashRegistered : pNode->pRoute->hasNoSlashRegistered) {
-          return pNode;
-        }
+        // In strict mode, reaching exact node match implies registration exists for this
+        // request slash variant at this node.
+        assert(requestHasTrailingSlash ? pNode->pRoute->hasWithSlashRegistered : pNode->pRoute->hasNoSlashRegistered);
+        return pNode;
       }
 
-      // If there's a wildcard child, check for catch-all
-      if (pNode->hasWildChild) {
-        // Wildcard child is always at index indices.size() (after static children)
-        const auto wildcardIdx = pNode->indices.size();
-        if (wildcardIdx < pNode->children.size()) {
-          const RadixNode* pChild = pNode->children[static_cast<uint32_t>(wildcardIdx)];
-          if (pChild->nodeType == NodeType::CatchAll && pChild->pRoute != nullptr) {
-            if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict || !requestHasTrailingSlash) {
-              return pChild;
-            }
+      // Wildcard children are ordered as params then optional catch-all.
+      // So if any wildcard child exists and the last one is catch-all, that's the only
+      // exact-match fallback candidate at this node.
+      const auto wildcardIdx = pNode->indices.size();
+      if (wildcardIdx < pNode->children.size()) {
+        const RadixNode* pLastWildcardChild = pNode->children.back();
+        if (pLastWildcardChild->nodeType == NodeType::CatchAll) {
+          assert(pLastWildcardChild->pRoute != nullptr);
+          // If we had a trailing slash on the request, but the CatchAll was registered
+          // without it (handled automatically at registration), Strict mode should reject it.
+          if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict || !requestHasTrailingSlash) {
+            return pLastWildcardChild;
           }
         }
       }
     }
 
     // Nothing found
-    // Check for trailing slash redirect (TSR) - only in non-strict mode
-    // This handles the case where node has path "/foo" and we request "/foo/" (prefix matches with trailing /)
-    if (_config.trailingSlashPolicy != RouterConfig::TrailingSlashPolicy::Strict) {
-      if (prefix.size() == path.size() + 1 && prefix[path.size()] == '/' && prefix.starts_with(path) &&
-          pNode->pRoute != nullptr) {
-        return pNode;  // TSR case
-      }
+    if (const RadixNode* pFallback = fallbackToCatchAll(); pFallback != nullptr) {
+      return pFallback;
     }
+
+    // Outside strict mode, registration strips trailing slashes, so the only node whose
+    // prefix exceeds the remaining path by exactly one trailing '/' is an intermediate split node.
+    assert(_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict ||
+           prefix.size() != path.size() + 1 || !prefix.starts_with(path) || prefix[path.size()] != '/' ||
+           pNode->pRoute == nullptr);
 
     return nullptr;
 
@@ -899,9 +1132,10 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
     const PathHandlerEntry* entryPtr = nullptr;
     switch (_config.trailingSlashPolicy) {
       case RouterConfig::TrailingSlashPolicy::Strict:
-        if (pathHasTrailingSlash ? literalEntry.hasWithSlashRegistered : literalEntry.hasNoSlashRegistered) {
-          entryPtr = &literalEntry.handlers;
-        }
+        // Strict mode keeps slash and no-slash literals under distinct map keys, so a successful
+        // exact lookup must have the matching registration bit set on the found entry.
+        assert(pathHasTrailingSlash ? literalEntry.hasWithSlashRegistered : literalEntry.hasNoSlashRegistered);
+        entryPtr = &literalEntry.handlers;
         break;
       case RouterConfig::TrailingSlashPolicy::Normalize:
         if (literalEntry.handlers.hasAnyHandler()) {
@@ -912,13 +1146,15 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
         if (pathHasTrailingSlash) {
           if (literalEntry.hasWithSlashRegistered) {
             entryPtr = &literalEntry.handlers;
-          } else if (literalEntry.hasNoSlashRegistered) {
+          } else {
+            assert(literalEntry.hasNoSlashRegistered);
             result.redirectPathIndicator = RoutingResult::RedirectSlashMode::RemoveSlash;
           }
         } else {
           if (literalEntry.hasNoSlashRegistered) {
             entryPtr = &literalEntry.handlers;
-          } else if (literalEntry.hasWithSlashRegistered) {
+          } else {
+            assert(literalEntry.hasWithSlashRegistered);
             result.redirectPathIndicator = RoutingResult::RedirectSlashMode::AddSlash;
           }
         }
@@ -958,7 +1194,7 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
   setMatchedHandler(method, *entryPtr, result);
 
   // Build path params from match state
-  const CompiledRoute* pRoute = pMatchedNode->pRoute;
+  const Route* pRoute = pMatchedNode->pRoute;
   if (pRoute != nullptr) {
     assert(std::cmp_equal(pRoute->paramNames.nbConcatenatedStrings(), _matchStateBuffer.size()));
 
@@ -1020,20 +1256,9 @@ const PathHandlerEntry* Router::computePathHandlerEntry(const RadixNode& matched
                                                         RoutingResult::RedirectSlashMode& redirectSlashMode) const {
   // We have a single handlers entry per node.
   // The CompiledRoute tracks which slash variants (with/without) were registered.
-  const CompiledRoute* pRoute = matchedNode.pRoute;
+  const Route* pRoute = matchedNode.pRoute;
 
   switch (_config.trailingSlashPolicy) {
-    case RouterConfig::TrailingSlashPolicy::Strict:
-      // In Strict mode, only return handlers if the exact slash variant was registered.
-      // Since paths aren't normalized in Strict mode, different variants are in different nodes.
-      // We just check if the requested variant was registered on this node.
-      if (pRoute != nullptr) {
-        if (pathHasTrailingSlash ? pRoute->hasWithSlashRegistered : pRoute->hasNoSlashRegistered) {
-          return &matchedNode.handlers;
-        }
-      }
-      return nullptr;
-
     case RouterConfig::TrailingSlashPolicy::Normalize:
       // In Normalize mode, both slash variants resolve to the same node.
       // Always return handlers if present.
@@ -1045,24 +1270,29 @@ const PathHandlerEntry* Router::computePathHandlerEntry(const RadixNode& matched
     case RouterConfig::TrailingSlashPolicy::Redirect:
       // In Redirect mode, return handlers if the requested variant was registered.
       // Otherwise, signal a redirect to the registered variant.
-      if (pRoute != nullptr) {
-        if (pathHasTrailingSlash) {
-          if (pRoute->hasWithSlashRegistered) {
-            return &matchedNode.handlers;
-          }
-          if (pRoute->hasNoSlashRegistered) {
-            redirectSlashMode = RoutingResult::RedirectSlashMode::RemoveSlash;
-          }
-        } else {
-          if (pRoute->hasNoSlashRegistered) {
-            return &matchedNode.handlers;
-          }
-          if (pRoute->hasWithSlashRegistered) {
-            redirectSlashMode = RoutingResult::RedirectSlashMode::AddSlash;
-          }
+      // matchImpl only returns route-bearing nodes here; handler sets may still be empty
+      // if registration threw after the route metadata was created.
+      assert(pRoute != nullptr);
+      if (pathHasTrailingSlash) {
+        if (pRoute->hasWithSlashRegistered) {
+          return &matchedNode.handlers;
         }
+        assert(pRoute->hasNoSlashRegistered);
+        redirectSlashMode = RoutingResult::RedirectSlashMode::RemoveSlash;
+      } else {
+        if (pRoute->hasNoSlashRegistered) {
+          return &matchedNode.handlers;
+        }
+        assert(pRoute->hasWithSlashRegistered);
+        redirectSlashMode = RoutingResult::RedirectSlashMode::AddSlash;
       }
       break;
+    default:
+      // In Strict mode matchImpl only returns route-bearing nodes for the requested slash variant.
+      assert(_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict);
+      assert(pRoute != nullptr);
+      assert(pathHasTrailingSlash ? pRoute->hasWithSlashRegistered : pRoute->hasNoSlashRegistered);
+      return &matchedNode.handlers;
   }
   return nullptr;
 }
@@ -1136,8 +1366,10 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
 void Router::cloneNodesFrom(const Router& other) {
   _nodePool.clear();
   _compiledRoutePool.clear();
+  _literalOnlyRoutes.clear();
+  _charStorage.clear();
 
-  flat_hash_map<const CompiledRoute*, CompiledRoute*> routeMap;
+  flat_hash_map<const Route*, Route*> routeMap;
   flat_hash_map<const RadixNode*, RadixNode*> nodeMap;
 
   // Clone strategy using BFS
@@ -1156,25 +1388,41 @@ void Router::cloneNodesFrom(const Router& other) {
 
     nodeMap.emplace(src, dst);
 
-    // Copy basic fields
-    dst->path = src->path;
-    dst->indices = src->indices;
     dst->priority = src->priority;
     dst->nodeType = src->nodeType;
     dst->hasWildChild = src->hasWildChild;
-    dst->paramParts = src->paramParts;
     dst->handlers = src->handlers;
-
-    // Clone or reuse compiled route
-    if (src->pRoute != nullptr) {
-      auto it = routeMap.find(src->pRoute);
-      if (it == routeMap.end()) {
-        CompiledRoute* cloned = _compiledRoutePool.allocateAndConstruct(*src->pRoute);
-        routeMap.emplace(src->pRoute, cloned);
-        dst->pRoute = cloned;
-      } else {
-        dst->pRoute = it->second;
+    dst->path = src->path.empty() ? std::string_view{} : allocatePath(src->path);
+    dst->indices = allocateIndices(std::string_view(src->indices.data(), src->indices.size()));
+    dst->paramParts = src->paramParts;
+    for (auto& part : dst->paramParts) {
+      if (part.kind() == SegmentPart::Kind::Literal) {
+        part.literal = allocatePath(part.literal);
       }
+    }
+    dst->constraint =
+        src->constraint.empty() ? RouteConstraint{} : RouteConstraint(src->constraint.pattern(), _charStorage);
+    dst->segmentConstraints.clear();
+    dst->segmentConstraints.reserve(src->segmentConstraints.size());
+    for (const auto& constraint : src->segmentConstraints) {
+      dst->segmentConstraints.emplace_back(constraint.pattern(), _charStorage);
+    }
+
+    // Each radix node owns its compiled route. Splits move ownership to the child,
+    // so the source tree must not contain two nodes sharing the same Route*.
+    if (src->pRoute != nullptr) {
+      assert(routeMap.find(src->pRoute) == routeMap.end());
+      Route* cloned = _compiledRoutePool.allocateAndConstruct();
+      cloned->paramNames = src->pRoute->paramNames;
+      cloned->paramConstraints.reserve(src->pRoute->paramConstraints.size());
+      for (const auto& constraint : src->pRoute->paramConstraints) {
+        cloned->paramConstraints.emplace_back(constraint.pattern(), _charStorage);
+      }
+      cloned->hasWildcard = src->pRoute->hasWildcard;
+      cloned->hasNoSlashRegistered = src->pRoute->hasNoSlashRegistered;
+      cloned->hasWithSlashRegistered = src->pRoute->hasWithSlashRegistered;
+      routeMap.emplace(src->pRoute, cloned);
+      dst->pRoute = cloned;
     } else {
       dst->pRoute = nullptr;
     }
@@ -1190,7 +1438,10 @@ void Router::cloneNodesFrom(const Router& other) {
   }
 
   // Clone literal-only routes map (stored independently of the radix tree)
-  _literalOnlyRoutes = other._literalOnlyRoutes;
+  _literalOnlyRoutes.reserve(other._literalOnlyRoutes.size());
+  for (const auto& [key, entry] : other._literalOnlyRoutes) {
+    _literalOnlyRoutes.emplace(allocatePath(key), entry);
+  }
 }
 
 void Router::clear() noexcept {
@@ -1203,8 +1454,53 @@ void Router::clear() noexcept {
   _globalPostMiddleware.clear();
   _nodePool.clear();
   _compiledRoutePool.clear();
-  _pRootNode = nullptr;
   _literalOnlyRoutes.clear();
+  _charStorage.clear();
+  _pRootNode = nullptr;
+}
+
+std::string_view Router::unescapeAndAllocate(std::string_view input) {
+  if (input.empty()) {
+    return {};
+  }
+  char* dst = _charStorage.allocateAndDefaultConstruct(input.size());
+  char* pDst = dst;
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    *pDst = input[i];
+    if ((input[i] == '{' || input[i] == '}') && i + 1 < input.size() && input[i + 1] == input[i]) {
+      ++i;
+    }
+    ++pDst;
+  }
+  const auto finalSize = static_cast<std::size_t>(pDst - dst);
+  _charStorage.shrinkLastAllocated(dst, finalSize);
+  return {dst, finalSize};
+}
+
+std::string_view Router::allocatePath(std::string_view pathFragment) {
+  assert(!pathFragment.empty());
+  char* dst = _charStorage.allocateAndDefaultConstruct(pathFragment.size());
+  std::memcpy(dst, pathFragment.data(), pathFragment.size());
+  return {dst, pathFragment.size()};
+}
+
+std::span<char> Router::allocateIndices(std::string_view ind) {
+  if (ind.empty()) {
+    return {};
+  }
+  char* dst = _charStorage.allocateAndDefaultConstruct(ind.size());
+  std::memcpy(dst, ind.data(), ind.size());
+  return {dst, ind.size()};
+}
+
+void Router::pushBackIndex(RadixNode& node, char indexChar) {
+  const auto oldSize = node.indices.size();
+  char* newBuf = _charStorage.allocateAndDefaultConstruct(oldSize + 1);
+  if (oldSize > 0) {
+    std::memcpy(newBuf, node.indices.data(), oldSize);
+  }
+  newBuf[oldSize] = indexChar;
+  node.indices = std::span<char>(newBuf, oldSize + 1);
 }
 
 namespace {
@@ -1243,9 +1539,7 @@ void Router::clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBo
 
       ClampConfig(node->handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
 
-      for (auto* child : node->children) {
-        stack.push_back(child);
-      }
+      std::ranges::copy(node->children, std::back_inserter(stack));
     }
   }
 
