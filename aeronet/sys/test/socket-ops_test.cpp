@@ -226,7 +226,7 @@ TEST_F(SocketOpsTest, IsLoopbackRejectsUnsupportedAddressFamily) {
 
 TEST_F(SocketOpsTest, FormatAddressFormatsIPv4Address) {
   const auto addr = MakeIpv4Address(0x7F000001U);
-  std::array<char, 46> buffer{};
+  std::array<char, kFormattedAddressCapacity> buffer{};
 
   const auto len = FormatAddress(addr, buffer.data(), buffer.size());
   std::string_view addrStr{buffer.data(), len};
@@ -237,7 +237,7 @@ TEST_F(SocketOpsTest, FormatAddressFormatsIPv4Address) {
 
 TEST_F(SocketOpsTest, FormatAddressFormatsIPv6Address) {
   const auto addr = MakeIpv6LoopbackAddress();
-  std::array<char, 46> buffer{};
+  std::array<char, kFormattedAddressCapacity> buffer{};
 
   const auto len = FormatAddress(addr, buffer.data(), buffer.size());
   std::string_view addrStr{buffer.data(), len};
@@ -249,7 +249,7 @@ TEST_F(SocketOpsTest, FormatAddressFormatsIPv6Address) {
 TEST_F(SocketOpsTest, FormatAddressReturnsDashForUnsupportedFamily) {
   sockaddr_storage addr{};
   addr.ss_family = AF_UNIX;
-  std::array<char, 46> buffer{};
+  std::array<char, kFormattedAddressCapacity> buffer{};
 
   const auto len = FormatAddress(addr, buffer.data(), buffer.size());
   std::string_view addrStr{buffer.data(), len};

@@ -159,7 +159,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     state.requestDrainAndClose();
   }
   if (_callbacks.metrics || _accessLog) {
-    emitRequestMetrics(cnxIt->fd(), request, respStatusCode, request.body().size(), state.requestsServed > 0);
+    emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
 
   // End the span after response is finalized
