@@ -150,6 +150,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    rate-limit_test
+    test/rate-limit_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     router_test
     test/router_test.cpp
     LIBRARIES
