@@ -50,7 +50,7 @@ struct from<JSON, std::chrono::milliseconds> {
       assert(!bool(ctx.error));  // Glaze validated JSON structure before calling custom reader
       try {
         value = aeronet::ParseDuration(str);
-      } catch (const std::invalid_argument& ex) {
+      } catch ([[maybe_unused]] const std::invalid_argument& ex) {
         ctx.error = error_code::parse_error;
       }
     } else {
@@ -75,7 +75,7 @@ struct from<YAML, std::chrono::milliseconds> {
     assert(!bool(ctx.error));  // Glaze validated YAML structure before calling custom reader
     try {
       value = aeronet::ParseDuration(str);
-    } catch (const std::invalid_argument&) {
+    } catch ([[maybe_unused]] const std::invalid_argument& ex) {
       ctx.error = error_code::parse_error;
     }
   }
@@ -114,7 +114,7 @@ struct from<JSON, std::chrono::seconds> {
       assert(!bool(ctx.error));  // Glaze validated JSON structure before calling custom reader
       try {
         value = std::chrono::duration_cast<std::chrono::seconds>(aeronet::ParseDuration(str));
-      } catch (const std::invalid_argument&) {
+      } catch ([[maybe_unused]] const std::invalid_argument& ex) {
         ctx.error = error_code::parse_error;
       }
     } else {
@@ -137,7 +137,7 @@ struct from<YAML, std::chrono::seconds> {
     assert(!bool(ctx.error));  // Glaze validated YAML structure before calling custom reader
     try {
       value = std::chrono::duration_cast<std::chrono::seconds>(aeronet::ParseDuration(str));
-    } catch (const std::invalid_argument&) {
+    } catch ([[maybe_unused]] const std::invalid_argument& ex) {
       ctx.error = error_code::parse_error;
     }
   }
