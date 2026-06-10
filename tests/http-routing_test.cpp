@@ -1175,12 +1175,11 @@ TEST(HttpRouting, AsyncHandlerReturnsNullHandle) {
 TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-throw-no-body",
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
-                                   // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
+                                   // Keep coroutine form without creating a compile-time unreachable co_return.
+                                   if (std::chrono::steady_clock::now().time_since_epoch().count() < 0) {
+                                     co_return HttpResponse(http::StatusCodeOK);
+                                   }
                                    throw std::runtime_error("Failed before body ready");
-#ifdef AERONET_WINDOWS
-#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
-#endif
-                                   co_return HttpResponse(http::StatusCodeOK);
                                  });
 
   test::ClientConnection client(ts.port());
@@ -1254,12 +1253,11 @@ TEST(HttpRouting, AsyncHandlerNullHandleWithBodyNotReady) {
 TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-nonstd-no-body",
                                  [](HttpRequest&) -> RequestTask<HttpResponse> {
-                                   // Throw BEFORE coroutine body - caught by dispatchAsyncHandler
+                                   // Keep coroutine form without creating a compile-time unreachable co_return.
+                                   if (std::chrono::steady_clock::now().time_since_epoch().count() < 0) {
+                                     co_return HttpResponse(http::StatusCodeOK);
+                                   }
                                    throw 999;  // Non-std exception
-#ifdef AERONET_WINDOWS
-#pragma warning(suppress : 4702)  // co_return needed to make this a coroutine despite throw above
-#endif
-                                   co_return HttpResponse(http::StatusCodeOK);
                                  });
 
   test::ClientConnection client(ts.port());
