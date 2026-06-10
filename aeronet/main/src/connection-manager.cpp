@@ -404,6 +404,14 @@ void SingleHttpServer::acceptNewConnections() {
 
     state.initializeStateNewConnection(_config, cnxFd, _compressionState);
 
+    sockaddr_storage peer{};
+    if (GetPeerAddress(cnxFd, peer)) {
+      const auto len = FormatAddress(peer, state.clientAddressBuffer, sizeof(state.clientAddressBuffer));
+      state.clientAddressLength = static_cast<uint8_t>(len);
+    } else {
+      state.clientAddressLength = 0;
+    }
+
     // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
     state.corkable = tcpNoDelayActive;
 

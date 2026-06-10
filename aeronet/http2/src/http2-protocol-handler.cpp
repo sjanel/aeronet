@@ -113,6 +113,7 @@ void Http2ProtocolHandler::setupCallbacks() {
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
                                                          [[maybe_unused]] ::aeronet::ConnectionState& state) {
+  _clientAddress.assign(state.clientAddress());
   auto result = _connection.processInput(data);
 
   // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
@@ -632,6 +633,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
 void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   const uint32_t streamId = it->first;
   HttpRequest& request = it->second.request.request;
+  request.setClientAddress(_clientAddress);
 
   // CONNECT requests establish a per-stream TCP tunnel (RFC 7540 §8.3).
   // Handle separately from normal request/response dispatch.

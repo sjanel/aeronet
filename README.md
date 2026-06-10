@@ -172,6 +172,77 @@ router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
 });
 ```
 
+## Rate Limiting Middleware
+
+`aeronet` provides a middleware-first rate limiting API that can be attached globally,
+per-route, or through route groups.
+
+### In-memory token bucket (default)
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/v1/data", [](const HttpRequest&) {
+  return HttpResponse(200).body("ok");
+});
+
+// Uses InMemoryTokenBucketRateLimitStore automatically when `store` is unset.
+router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
+  .config = RateLimitConfig{.requestsPerSecond = 50, .burst = 100},
+  .keyStrategy = RateLimitClientKeyStrategy::PeerAddress
+}.build());
+```
+
+Rejected requests receive `429 Too Many Requests` and a `Retry-After` header.
+
+### Group-scoped limiter
+
+```cpp
+Router router;
+auto api = router.group("/api/v1");
+
+RateLimitRequestMiddlewareBuilder groupLimit;
+groupLimit.config.requestsPerSecond = 20;
+groupLimit.config.burst = 40;
+
+api.addRequestMiddleware(std::move(groupLimit).build());
+api.setPath(http::Method::GET, "/users", [](const HttpRequest&) { return HttpResponse(200); });
+```
+
+### Redis sliding-window adapter contract (optional)
+
+Enable Redis contract types at build time:
+
+```bash
+cmake -S . -B build -DAERONET_ENABLE_REDIS=ON
+```
+
+The Redis store is client-library agnostic. You provide an eval callback that executes
+`RedisEvalRequest` and returns `RedisEvalResponse`.
+
+```cpp
+RedisSlidingWindowConfig redisCfg;
+redisCfg.namespacePrefix = "aeronet:rl";
+redisCfg.windowSeconds = 10;
+redisCfg.preferEvalSha = true;
+
+auto eval = [](const RedisEvalRequest& req) -> std::optional<RedisEvalResponse> {
+  // Adapter boundary:
+  // - req.keys[0] is the window key (default schema: aeronet:rl:{clientKey})
+  // - req.args = [now_ms, window_ms, limit]
+  // - req.script is the Lua body (or req.scriptSha with EVALSHA)
+  // Execute with your Redis client here and map result to {ok, allowed, retryAfterSeconds}.
+  return std::nullopt;  // transport failure in this skeleton
+};
+
+Router router;
+router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
+  .config = RateLimitConfig{.requestsPerSecond = 25, .burst = 50},
+  .store = std::make_shared<RedisSlidingWindowRateLimitStore>(eval, redisCfg),
+}.build());
+```
+
+This boundary allows one shared distributed limit across multiple aeronet instances.
+
 ## Routing Patterns & Path Parameters
 
 **Path Parameters**: Use `{name}` for named parameters or `{}` for unnamed (zero-indexed) parameters (but you cannot mix both named and unnamed in the same path):

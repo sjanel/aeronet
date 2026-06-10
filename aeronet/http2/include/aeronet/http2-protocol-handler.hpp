@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string>
 #include <variant>
 
 #include "aeronet/cors-policy.hpp"
@@ -317,6 +318,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   internal::RequestDecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
+  std::string _clientAddress;
 
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId

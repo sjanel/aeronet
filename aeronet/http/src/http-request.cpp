@@ -479,4 +479,12 @@ bool HttpRequest::decodePath(char* pathStart, char* pathEnd) {
   return true;
 }
 
+void HttpRequest::setClientAddress(std::string_view address) noexcept {
+  const auto copyLen = std::min(address.size(), sizeof(_clientAddressBuffer));
+  if (copyLen != 0U) {
+    std::memcpy(_clientAddressBuffer, address.data(), copyLen);
+  }
+  _clientAddressLength = SafeCast<uint8_t>(copyLen);
+}
+
 }  // namespace aeronet

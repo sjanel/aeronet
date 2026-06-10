@@ -1544,6 +1544,50 @@ SingleHttpServer server(HttpServerConfig{}, std::move(router));
 - Tests: see `tests/http-routing_test.cpp` (`HttpMiddlewareMetrics.RecordsPreAndPostMetrics`,
   `HttpMiddlewareMetrics.MarksShortCircuit`, `HttpMiddlewareMetrics.StreamingFlagPropagates`).
 
+### Rate Limiting Middleware
+
+`build()` builds a request middleware that enforces limits and short-circuits with
+`429 Too Many Requests` + `Retry-After` when over the quota.
+
+In-memory token bucket example:
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/limited", [](const HttpRequest&) {
+  return HttpResponse(200).body("ok");
+});
+
+RateLimitRequestMiddlewareBuilder opts;
+opts.config.requestsPerSecond = 10;
+opts.config.burst = 20;
+opts.keyStrategy = RateLimitClientKeyStrategy::PeerAddress;
+
+router.addRequestMiddleware(std::move(opts).build());
+```
+
+Per-route / group scoping uses the standard middleware APIs:
+
+```cpp
+Router router;
+
+auto api = router.group("/api/v1");
+api.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{}.build());
+```
+
+Redis boundary:
+
+- `RedisSlidingWindowRateLimitStore` does not own a Redis client.
+- You provide an `EvalCallback` consuming `RedisEvalRequest` and producing `RedisEvalResponse`.
+- Script contract shape:
+  - `KEYS[1]`: rate limit key
+  - `ARGV[1]`: now_ms
+  - `ARGV[2]`: window_ms
+  - `ARGV[3]`: limit
+  - return: `{allowed(0|1), retry_after_seconds}`
+- Default key schema helper: `aeronet:rl:{clientKey}` (hash-tag enabled).
+
+This contract is designed for distributed quotas across multiple aeronet processes behind a load balancer.
+
 ### Related Tests
 
 - See `tests/http-routing_test.cpp` for examples covering ordering, short-circuits, and streaming responses.

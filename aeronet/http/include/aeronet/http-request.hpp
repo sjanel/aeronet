@@ -444,6 +444,12 @@ class HttpRequest {
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
   [[nodiscard]] std::string_view tlsVersion() const noexcept;
 
+  // Best-effort client address string captured from peer socket address.
+  // Empty when unavailable.
+  [[nodiscard]] std::string_view clientAddress() const noexcept {
+    return std::string_view{_clientAddressBuffer, _clientAddressLength};
+  }
+
   // ============================
   // HTTP/2-specific accessors
   // ============================
@@ -617,6 +623,8 @@ class HttpRequest {
   // percent-encoding).
   bool decodePath(char* pathStart, char* pathEnd);
 
+  void setClientAddress(std::string_view address) noexcept;
+
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
   struct BodyAccessBridge {
     using AggregateFn = std::string_view (*)(HttpRequest&, void* context);
@@ -663,6 +671,7 @@ class HttpRequest {
   uint32_t _schemeLength{0};
   uint32_t _authorityLength{0};
   uint32_t _decodedQueryParamsLength{0};
+  uint8_t _clientAddressLength{0};
   http::Version _version;
   http::Method _method;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
@@ -670,6 +679,7 @@ class HttpRequest {
   bool _headPinned{false};
   bool _addTrailerHeader{false};
   bool _addVaryAcceptEncoding{false};
+  char _clientAddressBuffer[46]{};
 };
 
 }  // namespace aeronet

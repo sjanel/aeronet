@@ -166,6 +166,11 @@ struct ConnectionState {
   // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
   uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
 
+  [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
+
+  char clientAddressBuffer[46]{};
+  uint8_t clientAddressLength{0};
+
   TLSInfo tlsInfo;
 
   // Connection close lifecycle.
