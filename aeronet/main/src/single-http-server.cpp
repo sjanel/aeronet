@@ -273,8 +273,9 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                  _decompressionState, _telemetry, _sharedBuffers.buf);
+        state.protocolHandler =
+            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
+                                              _telemetry, _sharedBuffers.buf, false, state.clientAddress());
         installH2TunnelBridge(cnxIt->fd(), state);
         return processSpecialProtocolHandler(cnxIt);
       }
@@ -483,8 +484,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       state.inBuffer.erase_front(consumedBytesUpgrade);
 
       // Create HTTP/2 protocol handler using unified dispatch
-      state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                _decompressionState, _telemetry, _sharedBuffers.buf);
+      state.protocolHandler =
+          http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
+                                            _telemetry, _sharedBuffers.buf, false, state.clientAddress());
       ++_connectionSweepState.http2Connections;
       state.protocol = ProtocolType::Http2;
       installH2TunnelBridge(cnxIt->fd(), state);
@@ -810,7 +812,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   }
 
   if (_callbacks.metrics || _accessLog) {
-    emitRequestMetrics(cnxIt->fd(), request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
+    emitRequestMetrics(request, http::StatusCodeOK, request.body().size(), state.requestsServed > 1);
   }
 
   return shouldClose;
@@ -1048,9 +1050,8 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
 }
 #endif
 
-void SingleHttpServer::emitRequestMetrics(NativeHandle fd, const HttpRequest& request, http::StatusCode status,
-                                          std::size_t bytesIn, bool reusedConnection) {
-  // Format peer IP into a stack buffer (valid for the duration of the callback)
+void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+                                          bool reusedConnection) {
   std::string_view clientIp = "-";
 
   if (_config.accessLog.useForwardedFor) {
@@ -1058,23 +1059,14 @@ void SingleHttpServer::emitRequestMetrics(NativeHandle fd, const HttpRequest& re
     if (!xff.empty()) {
       // Use the first (leftmost) IP from X-Forwarded-For
       const auto comma = xff.find(',');
-      clientIp = xff.substr(0, comma);
-      // Trim leading/trailing spaces
-      while (!clientIp.empty() && clientIp.front() == ' ') {
-        clientIp.remove_prefix(1);
-      }
-      while (!clientIp.empty() && clientIp.back() == ' ') {
-        clientIp.remove_suffix(1);
-      }
+      clientIp = TrimOws(xff.substr(0, comma));
     }
   }
 
-  char ipBuf[46];  // INET6_ADDRSTRLEN = 46
   if (clientIp == "-") {
-    sockaddr_storage peer{};
-    if (GetPeerAddress(fd, peer)) {
-      const auto len = FormatAddress(peer, ipBuf, sizeof(ipBuf));
-      clientIp = std::string_view{ipBuf, len};
+    const auto requestClientIp = request.clientAddress();
+    if (!requestClientIp.empty()) {
+      clientIp = requestClientIp;
     }
   }
 
@@ -1688,7 +1680,7 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
     ++pState->requestsServed;
     ++_stats.totalRequestsServed;
     if (_callbacks.metrics || _accessLog) {
-      emitRequestMetrics(fd, request, status, request.body().size(), pState->requestsServed > 1);
+      emitRequestMetrics(request, status, request.body().size(), pState->requestsServed > 1);
     }
   });
 
@@ -1704,8 +1696,9 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
                                             ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                            _decompressionState, _telemetry, _sharedBuffers.buf, true);
+  state.protocolHandler =
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
+                                        _telemetry, _sharedBuffers.buf, true, state.clientAddress());
   ++_connectionSweepState.http2Connections;
   state.protocol = ProtocolType::Http2;
 

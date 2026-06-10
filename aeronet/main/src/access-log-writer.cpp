@@ -96,7 +96,7 @@ void AccessLogWriter::log(const RequestMetrics& metrics) {
 void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   // CLF Combined format:
   // <ip> - - [<timestamp>] "<method> <path> HTTP/<ver>" <status> <bytesOut> "-" "<ua>"
-  // Worst case estimate: 46(ip) + 26(ts) + 10(method) + path + 8(ver) + 6(status) + 20(bytes) + ua + overhead
+  // Worst case estimate: ip + 26(ts) + 10(method) + path + 8(ver) + 6(status) + 20(bytes) + ua + overhead
 
   static constexpr std::string_view kSep1 = " - - [";
   static constexpr std::string_view kReferer = R"( "-" ")";

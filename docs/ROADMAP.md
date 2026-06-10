@@ -82,6 +82,8 @@ Growing in popularity as a lighter alternative to WebSocket for server → clien
 
 Built-in token bucket or sliding window rate limiter. Per-IP and/or per-route. Returns `429 Too Many Requests` with `Retry-After` header. Configurable burst / sustained rates. Pluggable backend interface (in-memory default, extensible to Redis or shared stores). Currently only TLS handshake rate limiting exists (`TLSConfig::handshakeRateLimitPerSecond`); this would extend to HTTP request level.
 
+Status: Initial middleware-first implementation is now available with in-memory token bucket support and a Redis-gated sliding-window store stub for distributed synchronization adapters.
+
 #### Cookie helpers & Session store (`AERONET_ENABLE_SESSIONS`)
 
 - **Cookie builder**: RFC 6265-compliant `Set-Cookie` helper with `SameSite`, `Secure`, `HttpOnly`, `MaxAge`, `Path`, `Domain` attributes. Currently only raw header parsing exists.
@@ -103,6 +105,8 @@ router.setPath(http::Method::GET, "/files/{path:[a-zA-Z0-9/._-]+}", handler); //
 Returns 404 on constraint mismatch. Consider [CTRE](https://github.com/hanickadot/compile-time-regular-expressions) for compile-time regex performance, with `std::regex` fallback. Drogon supports regex routing natively.
 
 #### Route groups & prefix mounting
+
+Status: Delivered in `1.3.0` (`Router::group`, nested groups, shared middleware/config inheritance).
 
 Organize routes under a common prefix with shared middleware, reducing boilerplate for versioned APIs. Inspired by Express.js `Router`, Gin `Group()`, Axum `Router::nest()`:
 

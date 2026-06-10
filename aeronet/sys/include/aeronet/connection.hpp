@@ -1,5 +1,11 @@
 #pragma once
 
+#ifdef AERONET_WINDOWS
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
+
 #include <amc/type_traits.hpp>
 
 #include "aeronet/base-fd.hpp"
@@ -13,7 +19,7 @@ class Connection {
  public:
   Connection() noexcept = default;
 
-  explicit Connection(const Socket& socket);
+  Connection(const Socket& socket, sockaddr_storage& peerAddress);
 
   // Construct a Connection that takes ownership of an existing fd wrapped in BaseFd.
   explicit Connection(BaseFd&& bd) noexcept;

@@ -485,7 +485,7 @@ class SingleHttpServer {
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(NativeHandle fd, const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+  void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
                           bool reusedConnection);
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).

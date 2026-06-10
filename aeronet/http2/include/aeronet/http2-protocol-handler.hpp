@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <variant>
 
 #include "aeronet/cors-policy.hpp"
@@ -67,7 +68,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                        internal::ResponseCompressionState& compressionState,
                        internal::RequestDecompressionState& decompressionState,
-                       tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer);
+                       tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
+                       std::string_view clientAddress = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -317,6 +319,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   internal::RequestDecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
+  std::string_view _clientAddress;
 
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
@@ -341,7 +344,8 @@ std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& 
                                                              internal::ResponseCompressionState& compressionState,
                                                              internal::RequestDecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
-                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls = false);
+                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls = false,
+                                                             std::string_view clientAddress = {});
 
 }  // namespace http2
 }  // namespace aeronet

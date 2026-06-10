@@ -123,6 +123,11 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
   return _ownerState->tlsInfo.negotiatedVersion();
 }
 
+[[nodiscard]] std::string_view HttpRequest::clientAddress() const noexcept {
+  assert(_ownerState != nullptr);
+  return _ownerState->clientAddress();
+}
+
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
 
 HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {

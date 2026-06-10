@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include "aeronet/object-pool.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/tunnel-bridge.hpp"
@@ -39,11 +41,12 @@ class TlsContext;
 #endif
 
 struct ConnectionState {
-  void initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
+  void initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
                                     internal::ResponseCompressionState& compressionState);
 
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
+  [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
 
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
@@ -144,6 +147,9 @@ struct ConnectionState {
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
+
+  TLSInfo tlsInfo;
+
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
   NativeHandle peerFd{kInvalidHandle};
@@ -166,10 +172,15 @@ struct ConnectionState {
   // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
   uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
 
-  TLSInfo tlsInfo;
+  char clientAddressBuffer[kFormattedAddressCapacity];
 
   // Connection close lifecycle.
   enum class CloseMode : uint8_t { None, DrainThenClose };
+
+  static constexpr uint8_t kFormattedAddressCapacityNbBits =
+      static_cast<uint8_t>(std::bit_width(kFormattedAddressCapacity));
+
+  uint8_t clientAddressLength : kFormattedAddressCapacityNbBits{0};
 
   // Pack small lifecycle/protocol state into one allocation unit to reduce
   // per-connection footprint.
@@ -193,7 +204,6 @@ struct ConnectionState {
   bool zerocopyRequested : 1 {false};
 
 #ifdef AERONET_ENABLE_OPENSSL
-
   // Ensures the TLS handshake event callback is emitted at most once per connection.
   bool tlsHandshakeEventEmitted : 1 {false};
 

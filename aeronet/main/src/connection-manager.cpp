@@ -375,7 +375,8 @@ void SingleHttpServer::acceptNewConnections() {
   const auto maxAcceptBatch = _config.maxAcceptBatchSize;
   assert(maxAcceptBatch > 0);
   for (decltype(_config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch;) {
-    Connection cnx(_listenSocket);
+    sockaddr_storage peerAddress;
+    Connection cnx(_listenSocket, peerAddress);
     if (!cnx) {
       // no more waiting connections
       break;
@@ -402,7 +403,7 @@ void SingleHttpServer::acceptNewConnections() {
 
     ConnectionState& state = _connections.connectionState(cnxIt);
 
-    state.initializeStateNewConnection(_config, cnxFd, _compressionState);
+    state.initializeStateNewConnection(_config, peerAddress, _compressionState);
 
     // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
     state.corkable = tcpNoDelayActive;

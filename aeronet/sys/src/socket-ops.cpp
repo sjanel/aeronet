@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #ifdef AERONET_WINDOWS
 #include <io.h>
@@ -154,7 +155,7 @@ bool IsLoopback(const sockaddr_storage& addr) noexcept {
   return false;
 }
 
-std::size_t FormatAddress(const sockaddr_storage& addr, char* buf, std::size_t bufLen) noexcept {
+uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) noexcept {
   assert(bufLen > 1U);
   const char* result = nullptr;
   if (addr.ss_family == AF_INET) {
@@ -170,11 +171,9 @@ std::size_t FormatAddress(const sockaddr_storage& addr, char* buf, std::size_t b
     return 1;
   }
   // Find length of the formatted string
-  std::size_t len = 0;
-  while (len < bufLen && buf[len] != '\0') {
-    ++len;
-  }
-  return len;
+  const char* pEnd = static_cast<const char*>(std::memchr(buf, '\0', bufLen));
+  assert(pEnd != nullptr);  // Should never happen since we passed bufLen to inet_ntop
+  return static_cast<uint8_t>(pEnd - buf);
 }
 
 int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {

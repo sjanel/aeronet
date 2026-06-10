@@ -10,14 +10,17 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
+#ifdef AERONET_WINDOWS
+#include <winsock2.h>
+#endif
 
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
-#include <optional>
 
+#include "aeronet/log.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/sys-test-support.hpp"
 
@@ -64,12 +67,18 @@ extern "C" int accept4(int __fd, struct sockaddr* __addr, socklen_t* __addr_len,
   return real_accept4(__fd, __addr, __addr_len, __flags);
 }
 
+namespace {
+
+sockaddr_storage peerAddress{};
+
+}
+
 TEST(ConnectionTest, AcceptWouldBlockYieldsEmptyConnection) {
   AcceptHookGuard guard;
   SetAcceptActionSequence({AcceptErr(error::kWouldBlock)});
   Socket listener(Socket::Type::Stream);
 
-  Connection conn(listener);
+  Connection conn(listener, peerAddress);
   EXPECT_FALSE(conn);
 }
 
@@ -78,7 +87,9 @@ TEST(ConnectionTest, AcceptFatalErrorYieldsFailure) {
   SetAcceptActionSequence({AcceptErr(EPERM)});
   Socket listener(Socket::Type::Stream);
 
-  Connection conn(listener);
+  log::set_level(log::level::debug);  // Enable debug logging to verify error details are logged.
+
+  Connection conn(listener, peerAddress);
   EXPECT_FALSE(conn);
 }
 
@@ -89,7 +100,7 @@ TEST(ConnectionTest, AcceptSuccessAdoptsFd) {
   SetAcceptActionSequence({AcceptFd(fakeFd)});
 
   Socket listener(Socket::Type::Stream);
-  Connection conn(listener);
+  Connection conn(listener, peerAddress);
   ASSERT_TRUE(conn);
   EXPECT_EQ(conn.fd(), fakeFd);
   conn.close();
@@ -104,9 +115,9 @@ TEST(ConnectionTest, Equality) {
   SetAcceptActionSequence({AcceptFd(fakeFd1), AcceptFd(fakeFd1), AcceptFd(fakeFd2)});
 
   Socket listener(Socket::Type::Stream);
-  Connection conn1(listener);
-  Connection conn2(listener);
-  Connection conn3(listener);
+  Connection conn1(listener, peerAddress);
+  Connection conn2(listener, peerAddress);
+  Connection conn3(listener, peerAddress);
 
   ASSERT_TRUE(conn1);
   ASSERT_TRUE(conn2);

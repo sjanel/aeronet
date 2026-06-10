@@ -3,6 +3,7 @@
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
+#include <netinet/in.h>  // INET6_ADDRSTRLEN
 #include <sys/socket.h>  // sockaddr_storage
 #endif
 
@@ -12,6 +13,9 @@
 #include "aeronet/native-handle.hpp"
 
 namespace aeronet {
+
+// Capacity required for the longest textual IPv6 address, including the null terminator.
+inline constexpr std::size_t kFormattedAddressCapacity = INET6_ADDRSTRLEN;
 
 #ifdef AERONET_WINDOWS
 // Ensure Winsock (WSAStartup) has been called. Thread-safe, idempotent.
@@ -74,9 +78,9 @@ bool IsLoopback(const sockaddr_storage& addr) noexcept;
 
 // Format a sockaddr_storage as a human-readable IP string into the provided buffer.
 // Returns the number of characters written (excluding null terminator), or 0 on failure.
-// The buffer must be at least 46 bytes (INET6_ADDRSTRLEN) for safety.
+// The buffer must be at least kFormattedAddressCapacity bytes for safety.
 // bufLen should be > 1, otherwise it's undefined behaviour.
-std::size_t FormatAddress(const sockaddr_storage& addr, char* buf, std::size_t bufLen) noexcept;
+uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) noexcept;
 
 // Send data on a connected socket with platform-appropriate flags
 // (MSG_NOSIGNAL on Linux, SO_NOSIGPIPE on macOS, none on Windows).

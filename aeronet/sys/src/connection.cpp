@@ -10,30 +10,30 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec
 #include "aeronet/socket.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 
-#ifndef AERONET_LINUX
-#include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec
-#endif
-
 namespace aeronet {
 
 namespace {
-NativeHandle ComputeConnectionFd(NativeHandle socketFd) {
-  sockaddr_in in_addr{};
-  socklen_t in_len = sizeof(in_addr);
+NativeHandle ComputeConnectionFd(NativeHandle socketFd, sockaddr_storage& peerAddress) {
+  socklen_t in_len = sizeof(peerAddress);
+
+  peerAddress = {};
 
 #ifdef AERONET_LINUX
-  NativeHandle fd = ::accept4(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  const NativeHandle fd =
+      ::accept4(socketFd, reinterpret_cast<sockaddr*>(&peerAddress), &in_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
 #else
-  NativeHandle fd = ::accept(socketFd, reinterpret_cast<sockaddr*>(&in_addr), &in_len);
+  const NativeHandle fd = ::accept(socketFd, reinterpret_cast<sockaddr*>(&peerAddress), &in_len);
 #endif
 
   if (fd == kInvalidHandle) [[unlikely]] {
@@ -57,13 +57,20 @@ NativeHandle ComputeConnectionFd(NativeHandle socketFd) {
 #endif
 #endif
 
-  log::debug("Connection fd # {} opened", static_cast<intptr_t>(fd));
+  if (log::get_level() <= log::level::debug) {
+    char peerAddressBuffer[kFormattedAddressCapacity];
+    const auto peerAddressLength =
+        FormatAddress(peerAddress, peerAddressBuffer, static_cast<uint8_t>(sizeof(peerAddressBuffer)));
+    log::debug("Connection fd # {} opened (peer={})", static_cast<intptr_t>(fd),
+               std::string_view(peerAddressBuffer, peerAddressLength));
+  }
   return fd;
 }
 
 }  // namespace
 
-Connection::Connection(const Socket& socket) : _baseFd(ComputeConnectionFd(socket.fd())) {}
+Connection::Connection(const Socket& socket, sockaddr_storage& peerAddress)
+    : _baseFd(ComputeConnectionFd(socket.fd(), peerAddress)) {}
 
 Connection::Connection(BaseFd&& bd) noexcept : _baseFd(std::move(bd)) {}
 

@@ -63,7 +63,8 @@ namespace aeronet::http2 {
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                                            internal::ResponseCompressionState& compressionState,
                                            internal::RequestDecompressionState& decompressionState,
-                                           tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer)
+                                           tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
+                                           std::string_view clientAddress)
     : _connection(config, true),
       _pRouter(&router),
       _fileSendBuffer(64UL * 1024UL),
@@ -71,7 +72,8 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
       _pCompressionState(&compressionState),
       _pDecompressionState(&decompressionState),
       _pTmpBuffer(&tmpBuffer),
-      _pTelemetryContext(&telemetryContext) {
+      _pTelemetryContext(&telemetryContext),
+      _clientAddress(clientAddress) {
   setupCallbacks();
 }
 
@@ -1194,9 +1196,10 @@ std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& 
                                                              internal::ResponseCompressionState& compressionState,
                                                              internal::RequestDecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
-                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls) {
-  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState,
-                                                                decompressionState, telemetryContext, tmpBuffer);
+                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls,
+                                                             std::string_view clientAddress) {
+  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(
+      config, router, serverConfig, compressionState, decompressionState, telemetryContext, tmpBuffer, clientAddress);
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();
