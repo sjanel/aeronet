@@ -622,6 +622,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     }
 
     request.finalizeBeforeHandlerCall(routingResult.pathParams());
+    request.setClientAddress(state.clientAddress());
 
     const bool isStreaming = routingResult.streamingHandler() != nullptr;
 

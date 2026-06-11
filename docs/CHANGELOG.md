@@ -4,6 +4,12 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### Unreleased New features
+
+- **HTTP rate limiting middleware**: Added `RateLimitRequestMiddlewareBuilder` builder object with member factory API (`RateLimitRequestMiddlewareBuilder::build()`) and configurable client-key strategy (peer address, `X-Forwarded-For`, custom header, custom extractor). The default in-memory backend uses a token-bucket limiter and returns `429 Too Many Requests` with `Retry-After` on rejection. It can be installed globally (`Router::addRequestMiddleware`) or per-route (`PathHandlerEntry::before`) including RouteGroup scopes.
+- **Client address access on request**: Added `HttpRequest::clientAddress()` populated from peer socket address for both HTTP/1.1 and HTTP/2 paths.
+- **Optional Redis sliding-window contract**: Added Redis adapter boundary (`RedisEvalRequest` / `RedisEvalResponse`) in `RedisSlidingWindowRateLimitStore`, including Lua script payload exposure and deterministic key-schema helper for distributed multi-instance synchronization adapters.
+
 ## [1.3.0] - 2026-06-01
 
 ### 1.3.0 New features
