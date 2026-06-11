@@ -684,8 +684,8 @@ Router::RadixNode* Router::insertRoute(std::string_view path, Route&& route, boo
           pNode = pWildcardChild;
           ++pNode->priority;
           matched = true;
-          paramIdx += std::ranges::count_if(
-              pNode->paramParts, [](const SegmentPart& part) { return part.kind() == SegmentPart::Kind::Param; });
+          paramIdx += static_cast<uint32_t>(std::ranges::count_if(
+              pNode->paramParts, [](const SegmentPart& part) { return part.kind() == SegmentPart::Kind::Param; }));
           break;
         }
 
