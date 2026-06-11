@@ -278,7 +278,7 @@ class HttpRequest {
       using reference = QueryParam;
       using iterator_category = std::forward_iterator_tag;
 
-      iterator() noexcept : _begKey(nullptr), _endFullQuery(nullptr) {}
+      iterator() noexcept = default;
 
       iterator(const char* begKey, const char* endFullQuery) : _begKey(begKey), _endFullQuery(endFullQuery) {}
 
@@ -300,8 +300,8 @@ class HttpRequest {
      private:
       void advance();
 
-      const char* _begKey;
-      const char* _endFullQuery;
+      const char* _begKey{};
+      const char* _endFullQuery{};
     };
 
     [[nodiscard]] iterator begin() const noexcept { return {_first, _first + _length}; }

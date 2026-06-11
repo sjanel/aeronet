@@ -1,4 +1,4 @@
-#include "aeronet/connection-state.hpp"
+﻿#include "aeronet/connection-state.hpp"
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
@@ -172,7 +172,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
                      tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         }
         requestDrainAndClose();
-        fileSend.active = false;
+        fileSendActive = false;
         return res;
       }
     }
@@ -187,7 +187,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     log::error("{} failed during {} sendfile fd # {} err={}", tlsFlow ? "ReadFile" : "TransmitFile",
                tlsFlow ? "TLS" : "plain", clientFd, errVal);
     requestDrainAndClose();
-    fileSend.active = false;
+    fileSendActive = false;
     return res;
 #endif
   }
@@ -199,7 +199,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     fileSend.filePayload.length -= res.bytesDone;
 
     if (tunnelOrFileBuffer.empty() && fileSend.filePayload.length == 0) {
-      fileSend.active = false;
+      fileSendActive = false;
     }
   } else {
     // Successful transfer: update state based on the modified offset
@@ -212,7 +212,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
       res.enableWritable = true;
     }
     if (fileSend.filePayload.length == 0) {
-      fileSend.active = false;
+      fileSendActive = false;
       tunnelOrFileBuffer.clear();
     }
   }
@@ -370,15 +370,15 @@ void ConnectionState::reset() {
 }
 
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
-  assert(!fileSend.active && "Cannot attach file payload while a previous file send is still active");
+  assert(!fileSendActive && "Cannot attach file payload while a previous file send is still active");
   fileSend.filePayload = std::move(filePayload);
-  fileSend.active = fileSend.filePayload.length > 0;
-  fileSend.headersPending = !outBuffer.empty();
+  fileSendActive = fileSend.filePayload.length > 0;
+  fileSendHeadersPending = !outBuffer.empty();
   if (isSendingFile()) {
     // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
     // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
     // in edge-triggered epoll mode.
-    if (!fileSend.headersPending) {
+    if (!fileSendHeadersPending) {
       return true;
     }
   }
