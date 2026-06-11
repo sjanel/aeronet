@@ -1,4 +1,4 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -89,7 +89,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
     return LoopAction::Break;
   }
 
-  // Save client fd — setupTunnelConnection may rehash the connection map.
+  // Save client fd - setupTunnelConnection may rehash the connection map.
   const auto clientFd = cnxIt->fd();
 
   const auto upstreamFd = setupTunnelConnection(clientFd, host, portStr);
@@ -105,7 +105,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 
   finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
-  // Enter tunneling mode: link client → upstream (upstream → client is set by setupTunnelConnection).
+  // Enter tunneling mode: link client -> upstream (upstream -> client is set by setupTunnelConnection).
   state.peerFd = upstreamFd;
   refreshKeepAliveDeadline(cnxIt);
 
@@ -216,7 +216,7 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpRespon
         // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
         // asynchronously. We must keep the buffer alive until the kernel signals
         // completion via the error queue, otherwise the allocator can reuse the
-        // freed pages while the kernel is still transmitting — causing data corruption.
+        // freed pages while the kernel is still transmitting causing data corruption.
         state.holdBufferIfZerocopyPending(std::move(httpResponseData));
         if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
           flushFilePayload(cnxIt);
@@ -294,8 +294,8 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
     }
   }
 
-  if (state.outBuffer.empty() && state.fileSend.headersPending) {
-    state.fileSend.headersPending = false;
+  if (state.outBuffer.empty() && state.fileSendHeadersPending) {
+    state.fileSendHeadersPending = false;
   }
 
   if (state.isSendingFile()) {
@@ -340,7 +340,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
 
     if (want == TransportHint::Error) [[unlikely]] {
       state.requestDrainAndClose();
-      state.fileSend.active = false;
+      state.fileSendActive = false;
       state.tunnelOrFileBuffer.clear();
       return false;
     }
@@ -353,7 +353,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
     // If buffer is now empty, we're done
     if (state.tunnelOrFileBuffer.empty()) {
       if (state.fileSend.filePayload.length == 0) {
-        state.fileSend.active = false;
+        state.fileSendActive = false;
       }
       return false;
     }
@@ -363,7 +363,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
       if (!state.waitingWritable) {
         enableWritableInterest(cnxIt);
       }
-      // Do NOT set fileSend.active = false here: tunnelOrFileBuffer is still non-empty.
+      // Do NOT set fileSendActive = false here: tunnelOrFileBuffer is still non-empty.
       // Clearing active would cause flushOutbound to disable writable interest before the
       // remaining TLS bytes are actually written, producing truncated responses.
       return true;
@@ -376,11 +376,11 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
 void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 
-  if (state.fileSend.headersPending) {
+  if (state.fileSendHeadersPending) {
     if (!state.outBuffer.empty()) {
       return;
     }
-    state.fileSend.headersPending = false;
+    state.fileSendHeadersPending = false;
   }
 
   // Only treat the send as fully complete when both the file is exhausted AND any
@@ -388,7 +388,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
   // while data is still pending would drop the last chunk of the response and produce
   // truncated bodies on macOS / any platform without kTLS.
   if (state.fileSend.filePayload.length == 0 && state.tunnelOrFileBuffer.empty()) {
-    state.fileSend.active = false;
+    state.fileSendActive = false;
     return;
   }
 
@@ -416,7 +416,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
     }
 
     if (state.fileSend.filePayload.length == 0) {
-      state.fileSend.active = false;
+      state.fileSendActive = false;
       state.tunnelOrFileBuffer.clear();
       return;
     }

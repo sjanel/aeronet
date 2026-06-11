@@ -143,7 +143,7 @@ class DynamicConcatenatedStrings {
   };
 
   // Range helpers
-  [[nodiscard]] iterator begin() const noexcept { return iterator(_buf.data(), _buf.data() + _buf.size()); }
+  [[nodiscard]] iterator begin() const noexcept { return {_buf.data(), _buf.data() + _buf.size()}; }
   [[nodiscard]] iterator end() const noexcept { return {}; }
 
   // Get the full concatenated string

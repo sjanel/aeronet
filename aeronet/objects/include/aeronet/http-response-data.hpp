@@ -22,7 +22,7 @@ class HttpResponseData {
   HttpResponseData(std::string_view head, HttpPayload body) noexcept : _buf(head), _capturedBody(std::move(body)) {}
 
   [[nodiscard]] std::string_view firstBuffer() const noexcept {
-    return _offset >= _buf.size() ? std::string_view{} : std::string_view(_buf.begin() + _offset, _buf.end());
+    return _offset < _buf.size() ? std::string_view(_buf.begin() + _offset, _buf.end()) : std::string_view();
   }
 
   [[nodiscard]] std::string_view secondBuffer() const noexcept {
@@ -50,13 +50,7 @@ class HttpResponseData {
     }
   }
 
-  void append(std::string_view data) {
-    if (_capturedBody.empty()) {
-      _buf.append(data.data(), data.size());
-    } else {
-      _capturedBody.append(data);
-    }
-  }
+  void append(std::string_view data) { append(data.data(), data.size()); }
 
   void append(const char* data, std::size_t size) {
     if (_capturedBody.empty()) {
