@@ -4,6 +4,7 @@ option(AERONET_BENCH_ENABLE_DROGON "Fetch and build drogon for comparative bench
 option(AERONET_BENCH_ENABLE_HTTPLIB "Fetch and build cpp-httplib for comparative benchmarks" ON)
 option(AERONET_BENCH_ENABLE_PISTACHE "Build pistache benchmark server if pistache is found" ON)
 option(AERONET_BENCH_ENABLE_CROW "Build Crow benchmark server (CrowCpp/Crow)" ON)
+option(AERONET_BENCH_ENABLE_BEAST "Build Boost.Beast benchmark server" ON)
 
 option(AERONET_BENCH_ENABLE_UWEBSOCKETS "Fetch and build uWebSockets for comparative WebSocket benchmarks" ON)
 

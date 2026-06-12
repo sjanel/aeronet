@@ -119,6 +119,17 @@ cmake .. -DAERONET_BENCH_ENABLE_CROW=ON
 ninja crow-bench-server
 ```
 
+### Boost.Beast
+
+Boost.Beast support is enabled with `AERONET_BENCH_ENABLE_BEAST=ON` and builds
+the `beast-bench-server` scripted benchmark target.
+
+```bash
+# In your build directory
+cmake .. -DAERONET_BENCH_ENABLE_BEAST=ON
+ninja beast-bench-server
+```
+
 ## Benchmark Scenarios
 
 ### 1. Pure Header Parsing (`headers_stress.lua`)
@@ -237,6 +248,7 @@ run_benchmarks.py --protocol h2c --server aeronet,go --scenario headers,mixed
 | python | Yes | Yes | Hypercorn replaces uvicorn |
 
 Pistache, Drogon and Crow are excluded from HTTP/2 benchmarks (no H2 support).
+Boost.Beast is also excluded from HTTP/2 benchmarks (Beast has no HTTP/2 server transport).
 
 ### Options
 
@@ -252,7 +264,7 @@ run_benchmarks.py --protocol http1   # Protocol: http1 (default), h2c, h2-tls
 run_benchmarks.py --h2-streams 10    # Multiplexed streams per h2 connection (default: 10)
 
 # Run multiple values (comma-separated)
-run_benchmarks.py --server aeronet,python --scenario headers,body,routing
+run_benchmarks.py --server aeronet,beast,python --scenario headers,body,routing
 
 # Available scenarios: headers, body, static, cpu, mixed, files, routing, tls
 ```
@@ -274,7 +286,8 @@ All servers implement identical endpoints:
 | `/*` | GET | Static file serving (aeronet only, with `--static DIR`) |
 | `/r{N}` | GET | Routing test routes (aeronet only, with `--routes N`) |
 | `/users/{id}/posts/{post}` | GET | Pattern-matched route (aeronet only) |
-| `/ws` | WS | WebSocket echo endpoint (aeronet, drogon, uwebsockets) |
+| `/ws-uncompressed` | WS | WebSocket echo endpoint without permessage-deflate |
+| `/ws-compressed` | WS | WebSocket echo endpoint with permessage-deflate (framework-dependent) |
 
 ### Supported Servers
 
@@ -285,6 +298,7 @@ All servers implement identical endpoints:
 | uwebsockets | C++ | `uwebsockets_server.cpp` | High-perf WebSocket-first framework |
 | pistache | C++ | `pistache_server.cpp` | REST framework for C++ |
 | crow | C++ | `crow_server.cpp` | Header-only C++ microframework |
+| beast | C++ | `beast_server.cpp` | Boost.Beast HTTP/1.1 + WebSocket |
 | rust | Rust | `rust_server/` | axum async framework |
 | undertow | Java | `undertow_server/UndertowBenchServer.java` | High-perf Java NIO server |
 | go | Go | `go_server.go` | Standard library net/http |
