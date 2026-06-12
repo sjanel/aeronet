@@ -16,7 +16,7 @@ if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 # Drogon benchmark server (only if drogon is enabled and available)
-if(AERONET_BENCH_ENABLE_DROGON OR AERONET_BENCH_ENABLE_PISTACHE OR AERONET_BENCH_ENABLE_CROW)
+if(AERONET_BENCH_ENABLE_DROGON OR AERONET_BENCH_ENABLE_PISTACHE OR AERONET_BENCH_ENABLE_CROW OR AERONET_BENCH_ENABLE_BEAST)
   # zlib-ng (native mode) is already available from the parent build tree via ZLIBNG::ZLIBNG
   if(NOT TARGET ZLIBNG::ZLIBNG)
     message(FATAL_ERROR "ZLIBNG::ZLIBNG target not found. Enable AERONET_ENABLE_ZLIB for benchmark compression support.")
@@ -126,6 +126,114 @@ else()
   message(STATUS "[aeronet][bench] Crow benchmark server disabled (AERONET_BENCH_ENABLE_CROW=${AERONET_BENCH_ENABLE_CROW})")
 endif()
 
+## Boost.Beast benchmark server
+if(AERONET_BENCH_ENABLE_BEAST)
+  find_path(AERONET_BOOST_INCLUDE_DIR boost/beast.hpp)
+  set(AERONET_BOOST_INCLUDE_DIRS)
+  if(NOT AERONET_BOOST_INCLUDE_DIR)
+    include(FetchContent)
+    FetchContent_Declare(
+      boost_beast
+      URL https://github.com/boostorg/beast/archive/refs/tags/boost-1.91.0.tar.gz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_GetProperties(boost_beast)
+    if(NOT boost_beast_POPULATED)
+      FetchContent_Populate(boost_beast)
+    endif()
+    set(AERONET_BOOST_INCLUDE_DIR ${boost_beast_SOURCE_DIR}/include)
+    list(APPEND AERONET_BOOST_INCLUDE_DIRS ${AERONET_BOOST_INCLUDE_DIR})
+    message(STATUS "[aeronet][bench] Boost.Beast headers fetched from GitHub source")
+  else()
+    list(APPEND AERONET_BOOST_INCLUDE_DIRS ${AERONET_BOOST_INCLUDE_DIR})
+    message(STATUS "[aeronet][bench] Boost headers found at ${AERONET_BOOST_INCLUDE_DIR}")
+  endif()
+
+  # Boost.Beast depends on other Boost headers (notably boost/asio.hpp).
+  # If the selected include path does not provide them, fetch full Boost headers
+  # from GitHub module archives as a fallback.
+  unset(AERONET_BOOST_ASIO_INCLUDE_DIR CACHE)
+  unset(AERONET_BOOST_ASIO_INCLUDE_DIR)
+  find_path(AERONET_BOOST_ASIO_INCLUDE_DIR boost/asio.hpp PATHS ${AERONET_BOOST_INCLUDE_DIR} NO_DEFAULT_PATH)
+  if(NOT AERONET_BOOST_ASIO_INCLUDE_DIR)
+    include(FetchContent)
+    set(AERONET_BOOST_REQUIRED_MODULES
+      asio
+      assert
+      bind
+      config
+      core
+      date_time
+      smart_ptr
+      static_assert
+      system
+      throw_exception
+      type_traits
+      winapi
+      predef
+      optional
+      array
+      align
+      mp11
+      move
+      logic
+      static_string
+      container
+      container_hash
+      describe
+      utility
+      io
+      endian
+      intrusive
+    )
+
+    foreach(boost_module ${AERONET_BOOST_REQUIRED_MODULES})
+      string(REPLACE "/" "_" boost_module_id ${boost_module})
+      set(boost_dep_name boost_${boost_module_id})
+      FetchContent_Declare(
+        ${boost_dep_name}
+        URL https://github.com/boostorg/${boost_module}/archive/refs/tags/boost-1.91.0.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      )
+      FetchContent_GetProperties(${boost_dep_name})
+      if(NOT ${boost_dep_name}_POPULATED)
+        FetchContent_Populate(${boost_dep_name})
+      endif()
+      if(EXISTS ${${boost_dep_name}_SOURCE_DIR}/include)
+        list(APPEND AERONET_BOOST_INCLUDE_DIRS ${${boost_dep_name}_SOURCE_DIR}/include)
+      endif()
+    endforeach()
+
+    find_path(AERONET_BOOST_ASIO_INCLUDE_DIR boost/asio.hpp PATHS ${AERONET_BOOST_INCLUDE_DIRS} NO_DEFAULT_PATH)
+    if(NOT AERONET_BOOST_ASIO_INCLUDE_DIR)
+      message(FATAL_ERROR "[aeronet][bench] Failed to fetch boost/asio.hpp from Boost module archives")
+    endif()
+
+    message(STATUS "[aeronet][bench] Boost module headers fetched from GitHub source (for Asio dependencies)")
+  endif()
+
+  if(AERONET_BOOST_INCLUDE_DIRS STREQUAL "")
+    list(APPEND AERONET_BOOST_INCLUDE_DIRS ${AERONET_BOOST_INCLUDE_DIR})
+  endif()
+
+  find_package(Threads REQUIRED)
+
+  AeronetAddProjectExecutable(beast-bench-server beast_server.cpp)
+  target_link_libraries(beast-bench-server PRIVATE Threads::Threads aeronet_objects)
+  target_include_directories(beast-bench-server SYSTEM PRIVATE ${AERONET_BOOST_INCLUDE_DIRS})
+  target_compile_definitions(beast-bench-server PRIVATE BOOST_ASIO_NO_DEPRECATED)
+  set_target_properties(beast-bench-server PROPERTIES FOLDER "benchmarks/servers")
+
+  if(AERONET_IPO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_property(TARGET beast-bench-server PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "[aeronet][bench] LTO enabled for beast-bench-server")
+  endif()
+
+  message(STATUS "[aeronet][bench] Boost.Beast benchmark server enabled")
+else()
+  message(STATUS "[aeronet][bench] Boost.Beast benchmark server disabled (AERONET_BENCH_ENABLE_BEAST=${AERONET_BENCH_ENABLE_BEAST})")
+endif()
+
 ## uWebSockets benchmark server (WebSocket-only comparison target)
 if(AERONET_BENCH_ENABLE_UWEBSOCKETS AND DEFINED uwebsockets_SOURCE_DIR AND DEFINED usockets_SOURCE_DIR)
   # uSockets is pure C — enable C compiler
@@ -223,6 +331,10 @@ endif()
 
 if(TARGET crow-bench-server)
   add_dependencies(run-scripted-benchmarks crow-bench-server)
+endif()
+
+if(TARGET beast-bench-server)
+  add_dependencies(run-scripted-benchmarks beast-bench-server)
 endif()
 
 if(TARGET uwebsockets-bench-server)

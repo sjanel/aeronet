@@ -82,11 +82,12 @@ class BenchmarkRunner:
         "python": 8084,
         "rust": 8086,
         "crow": 8087,
+        "beast": 8089,
     }
 
-    SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "rust", "undertow", "go", "python"]
+    SERVER_ORDER = ["aeronet", "drogon", "pistache", "crow", "beast", "rust", "undertow", "go", "python"]
 
-    # Servers that support HTTP/2 benchmarks (pistache, crow & drogon lack H2 server support)
+    # Servers that support HTTP/2 benchmarks (pistache, crow, drogon and beast lack H2 server support)
     H2_SERVER_ORDER = ["aeronet", "rust", "undertow", "go", "python"]
 
     # Servers that only support H2 over TLS (not h2c cleartext)
@@ -189,6 +190,7 @@ class BenchmarkRunner:
         self.results_rps_raw: Dict[Tuple[str, str], str] = {}
         self.results_latency: Dict[Tuple[str, str], str] = {}
         self.results_latency_raw: Dict[Tuple[str, str], str] = {}
+        self.results_latency_stats: Dict[Tuple[str, str], Dict[str, str]] = {}
         self.results_transfer: Dict[Tuple[str, str], str] = {}
         self.results_timeouts: Dict[Tuple[str, str], int] = {}
         self.memory_usage: Dict[Tuple[str, str], MemoryStats] = {}
@@ -324,7 +326,7 @@ class BenchmarkRunner:
         self, name: str, extra_args: Optional[Sequence[str]]
     ) -> Tuple[List[str], Optional[Path]]:
         extra_args = list(extra_args or [])
-        if name in {"aeronet", "drogon", "pistache", "crow"}:
+        if name in {"aeronet", "drogon", "pistache", "crow", "beast"}:
             binary = self.build_dir / f"{name}-bench-server"
             if not binary.is_file():
                 raise BenchmarkError(f"Binary not found for {name}: {binary}")
@@ -842,6 +844,12 @@ class BenchmarkRunner:
                 f"{self.wrk_timeout}): {adjusted_latency} (raw: {metrics['latency']})"
             )
 
+        latency_stats = self._extract_latency_stats(output)
+        if metrics["latency"] != "-":
+            latency_stats.setdefault("raw_avg", metrics["latency"])
+        if adjusted_latency != "-":
+            latency_stats["adjusted_avg"] = adjusted_latency
+
         self._store_result(
             server,
             scenario_name,
@@ -850,6 +858,7 @@ class BenchmarkRunner:
             metrics["transfer"],
             rps_raw=metrics["rps"],
             latency_raw=metrics["latency"],
+            latency_stats=latency_stats,
             timeout_errors=err_timeout,
         )
         print(output)
@@ -1281,6 +1290,28 @@ class BenchmarkRunner:
                     e_timeout = e_timeout or 1
         return e_connect, e_read, e_write, e_timeout
 
+    @staticmethod
+    def _extract_latency_stats(output: str) -> Dict[str, str]:
+        stats: Dict[str, str] = {}
+        patterns = (
+            ("raw_avg", re.compile(r"^Avg latency:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("raw_avg", re.compile(r"^Avg:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("p50", re.compile(r"^P50(?: latency)?:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("p90", re.compile(r"^P90(?: latency)?:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("p95", re.compile(r"^P95(?: latency)?:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("p99", re.compile(r"^P99(?: latency)?:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+            ("max", re.compile(r"^Max(?: latency)?:\s*([0-9]*\.?[0-9]+)\s*(us|µs|μs|ms|s)$", re.IGNORECASE)),
+        )
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            for key, pattern in patterns:
+                match = pattern.match(line)
+                if match is None:
+                    continue
+                stats[key] = f"{match.group(1)}{match.group(2)}"
+                break
+        return stats
+
     def _store_result(
         self,
         server: str,
@@ -1291,6 +1322,7 @@ class BenchmarkRunner:
         *,
         rps_raw: Optional[str] = None,
         latency_raw: Optional[str] = None,
+        latency_stats: Optional[Dict[str, str]] = None,
         timeout_errors: Optional[int] = None,
     ) -> None:
         key = (server, scenario)
@@ -1298,6 +1330,8 @@ class BenchmarkRunner:
         self.results_rps_raw[key] = rps if rps_raw is None else rps_raw
         self.results_latency[key] = latency
         self.results_latency_raw[key] = latency if latency_raw is None else latency_raw
+        if latency_stats is not None:
+            self.results_latency_stats[key] = latency_stats
         self.results_transfer[key] = transfer
         if timeout_errors is not None:
             self.results_timeouts[key] = timeout_errors
@@ -1489,6 +1523,28 @@ class BenchmarkRunner:
             "results": {},
         }
         if self.protocol in ("h2c", "h2-tls"):
+            summary["metric_definitions"] = {
+                "latency": {
+                    "chart_field": "latency",
+                    "chart_label": "Average latency",
+                    "description": "Average latency reported by h2load for completed requests in the run.",
+                }
+            }
+        else:
+            summary["metric_definitions"] = {
+                "latency": {
+                    "chart_field": "latency",
+                    "chart_label": "Timeout-adjusted average latency",
+                    "description": (
+                        "Charted HTTP latency is the timeout-adjusted average. It starts from wrk's average latency "
+                        "for completed requests and, when timeouts occur, counts each timeout at wrk_timeout before averaging."
+                    ),
+                    "raw_average_field": "latency_raw",
+                    "stats_field": "latency_stats",
+                    "stats_keys": ["raw_avg", "adjusted_avg", "p50", "p90", "p95", "p99", "max"],
+                }
+            }
+        if self.protocol in ("h2c", "h2-tls"):
             summary["h2_streams"] = self.h2_streams
 
         for scenario in self.scenarios_to_test:
@@ -1497,6 +1553,7 @@ class BenchmarkRunner:
                 "rps_raw": {},
                 "latency": {},
                 "latency_raw": {},
+                "latency_stats": {},
                 "timeouts": {},
                 "transfer": {},
                 "winners": {},
@@ -1510,6 +1567,7 @@ class BenchmarkRunner:
                 rps_raw_val = self.results_rps_raw.get(key)
                 lat_val = self.results_latency.get(key)
                 lat_raw_val = self.results_latency_raw.get(key)
+                lat_stats_val = self.results_latency_stats.get(key)
                 timeout_val = self.results_timeouts.get(key)
                 xfer_val = self.results_transfer.get(key)
                 if rps_val is not None:
@@ -1520,6 +1578,8 @@ class BenchmarkRunner:
                     scenario_entry["latency"][server] = lat_val
                 if lat_raw_val is not None:
                     scenario_entry["latency_raw"][server] = lat_raw_val
+                if lat_stats_val is not None:
+                    scenario_entry["latency_stats"][server] = lat_stats_val
                 if timeout_val is not None:
                     scenario_entry["timeouts"][server] = timeout_val
                 if xfer_val is not None:
@@ -1944,7 +2004,7 @@ def parse_args() -> argparse.Namespace:
         "--server",
         type=str,
         default="all-except-python",
-        help="Comma-separated list of servers (aeronet,drogon,pistache,crow,undertow,go,python,rust), or 'all' or 'all-except-python'",
+        help="Comma-separated list of servers (aeronet,drogon,pistache,crow,beast,undertow,go,python,rust), or 'all' or 'all-except-python'",
     )
     parser.add_argument(
         "--scenario",

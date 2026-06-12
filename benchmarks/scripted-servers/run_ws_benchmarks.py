@@ -50,9 +50,10 @@ SERVER_PORTS: Dict[str, int] = {
     "aeronet": 8080,
     "drogon": 8081,
     "uwebsockets": 8088,
+    "beast": 8089,
 }
 
-SERVER_ORDER = ["aeronet", "uwebsockets", "drogon"]
+SERVER_ORDER = ["aeronet", "uwebsockets", "drogon", "beast"]
 
 
 @dataclass
@@ -166,14 +167,22 @@ class WsBenchmarkRunner:
         return binary
 
     @staticmethod
-    def _wait_for_port(port: int, timeout: float = 10.0) -> bool:
+    def _is_port_in_use(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
+    @classmethod
+    def _wait_for_port(cls, port: int, timeout: float = 10.0, *, proc: Optional[subprocess.Popen] = None) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                    return True
-            except OSError:
-                time.sleep(0.1)
+            if proc is not None and proc.poll() is not None:
+                return False
+            if cls._is_port_in_use(port):
+                return True
+            time.sleep(0.1)
         return False
 
     # ----------------------- Server lifecycle ------------------------------ #
@@ -182,6 +191,12 @@ class WsBenchmarkRunner:
         if name in self.server_processes:
             return True
         port = SERVER_PORTS[name]
+        if self._is_port_in_use(port):
+            print(
+                f"  ERROR: port {port} is already in use before starting {name}; "
+                "stop the stale process and retry"
+            )
+            return False
         binary = self._server_binary(name)
         cmd = [str(binary), "--port", str(port), "--threads", str(int((self.args.threads + 3) / 4))]
         log_path = self.logs_dir / f"{name}_server.log"
@@ -198,8 +213,11 @@ class WsBenchmarkRunner:
         )
         self.server_processes[name] = proc
         self._server_log_fps[name] = log_fp
-        if not self._wait_for_port(port):
-            print(f"  ERROR: {name} did not start on port {port}")
+        if not self._wait_for_port(port, proc=proc):
+            if proc.poll() is not None:
+                print(f"  ERROR: {name} exited during startup (exit={proc.returncode}); see {log_path}")
+            else:
+                print(f"  ERROR: {name} did not start on port {port}")
             self._stop_server(name)
             return False
         print(f"  {name} started (pid={proc.pid}, port={port})")

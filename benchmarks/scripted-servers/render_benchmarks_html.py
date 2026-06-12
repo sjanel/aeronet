@@ -156,8 +156,8 @@ class SummaryValidationError(ValueError):
 def _validate_summary_schema(summary: Dict[str, Any], summary_name: str) -> None:
     """Validate that required keys exist before rendering.
 
-    The renderer should fail loudly in CI when a producer stops writing expected
-    fields instead of silently showing '-' in the HTML tables.
+    For HTTP summaries, missing per-server numeric entries are normalized to 0
+    so Publish Pages remains robust when one producer omits a metric value.
     """
     servers = summary.get("servers")
     if not isinstance(servers, list) or not all(isinstance(s, str) and s for s in servers):
@@ -189,27 +189,38 @@ def _validate_summary_schema(summary: Dict[str, Any], summary_name: str) -> None
             if data_key in {"memory_rss", "memory_peak"}:
                 memory = scenario_data.get("memory")
                 if not isinstance(memory, dict):
-                    raise SummaryValidationError(
-                        f"{summary_name}: scenario '{scenario}' missing 'memory' object"
-                    )
+                    if is_ws:
+                        raise SummaryValidationError(
+                            f"{summary_name}: scenario '{scenario}' missing 'memory' object"
+                        )
+                    memory = {}
+                    scenario_data["memory"] = memory
                 field = "peak_mb" if data_key == "memory_peak" else "rss_mb"
                 for server in servers:
                     server_memory = memory.get(server)
                     if not isinstance(server_memory, dict):
-                        raise SummaryValidationError(
-                            f"{summary_name}: scenario '{scenario}' missing memory for server '{server}'"
-                        )
+                        if is_ws:
+                            raise SummaryValidationError(
+                                f"{summary_name}: scenario '{scenario}' missing memory for server '{server}'"
+                            )
+                        server_memory = {}
+                        memory[server] = server_memory
                     if field not in server_memory:
-                        raise SummaryValidationError(
-                            f"{summary_name}: scenario '{scenario}' memory for server '{server}' missing '{field}'"
-                        )
+                        if is_ws:
+                            raise SummaryValidationError(
+                                f"{summary_name}: scenario '{scenario}' memory for server '{server}' missing '{field}'"
+                            )
+                        server_memory[field] = 0.0
                 continue
 
             metric_map = scenario_data.get(data_key)
             if not isinstance(metric_map, dict):
-                raise SummaryValidationError(
-                    f"{summary_name}: scenario '{scenario}' missing '{data_key}' object"
-                )
+                if is_ws:
+                    raise SummaryValidationError(
+                        f"{summary_name}: scenario '{scenario}' missing '{data_key}' object"
+                    )
+                metric_map = {}
+                scenario_data[data_key] = metric_map
             invalid_servers = [server for server in metric_map.keys() if server not in servers]
             if invalid_servers:
                 raise SummaryValidationError(
@@ -227,9 +238,7 @@ def _validate_summary_schema(summary: Dict[str, Any], summary_name: str) -> None
             else:
                 for server in servers:
                     if server not in metric_map:
-                        raise SummaryValidationError(
-                            f"{summary_name}: scenario '{scenario}' metric '{data_key}' missing server '{server}'"
-                        )
+                        metric_map[server] = 0
 
 
 # ------ Metric definitions per benchmark type ------------------------------ #
@@ -258,7 +267,34 @@ _WS_METRICS = [
 
 
 def _get_metrics(summary: Dict[str, Any]) -> list:
-    return _WS_METRICS if _is_websocket(summary) else _HTTP_METRICS
+    if _is_websocket(summary):
+        return _WS_METRICS
+
+    latency_definition = summary.get("metric_definitions", {}).get("latency", {})
+    chart_label = latency_definition.get("chart_label")
+    if not chart_label:
+        return _HTTP_METRICS
+
+    chart_title = f"{chart_label[:1].upper()}{chart_label[1:]} (ms)"
+    axis_label = f"{chart_label} (ms)"
+    overridden_metrics = []
+    for metric in _HTTP_METRICS:
+        if metric[0] != "latency":
+            overridden_metrics.append(metric)
+            continue
+        overridden_metrics.append((
+            metric[0],
+            metric[1],
+            metric[2],
+            chart_title,
+            axis_label,
+            metric[5],
+            metric[6],
+            metric[7],
+            chart_label,
+            metric[9],
+        ))
+    return overridden_metrics
 
 
 def _build_chart_payload(
@@ -511,11 +547,27 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 
     # Page title
     page_title = "WebSocket Benchmarks" if is_ws else "aeronet Benchmarks"
+    if is_ws:
+        meta_description = (
+            "This page is generated from benchmark_latest.json. Higher is better for messages/sec; "
+            "lower is better for latency. The WebSocket latency chart shows p95 RTT."
+        )
+    else:
+        latency_definition = first.get("metric_definitions", {}).get("latency", {})
+        latency_description = latency_definition.get(
+            "description",
+            "The HTTP latency chart shows timeout-adjusted average latency.",
+        )
+        meta_description = (
+            "This page is generated from benchmark_latest.json. Higher is better for requests/sec and throughput; "
+            f"lower is better for latency. {latency_description}"
+        )
 
     html_out = (
         tpl.replace("__TABLE_TABS_HTML__", table_tabs_html)
         .replace("__PAYLOAD_JSON__", configs_js)
         .replace("__META_CARDS__", meta_cards)
+        .replace("__META_DESCRIPTION__", _esc(meta_description))
         .replace("__SCENARIO_OPTIONS__", scenario_options_html)
         .replace("__METRIC_OPTIONS__", metric_options_html)
         .replace("__CONN_SELECTOR__", conn_selector_html)

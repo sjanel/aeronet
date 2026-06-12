@@ -39,9 +39,8 @@ print(string.format("static_files.lua: script_dir='%s' static_dir='%s'", script_
 local function discover_static_files()
   local list = {}
   -- Use find to list regular files only, print relative paths without leading ./
-  -- Quote the path to handle spaces and ensure it's absolute-relative to the script
-  local safe_path = static_dir:gsub('"', '\\"')
-  local cmd = string.format('find "%s" -maxdepth 1 -type f -printf "%%f\n"', safe_path)
+  -- Use shell-safe quoting and keep the newline escaped for find instead of embedding a literal line break.
+  local cmd = string.format("find %q -maxdepth 1 -type f -printf '%%f\\n'", static_dir)
   local fh = io.popen(cmd)
   if fh then
     for line in fh:lines() do
@@ -103,7 +102,11 @@ function done(summary, latency, requests)
   print(string.format("Errors (timeout): %d", summary.errors.timeout))
   print(string.format("Non-2xx responses: %d", summary.errors.status))
   print(string.format("Transfer rate: %.2f MB/s", summary.bytes / (summary.duration / 1000000) / (1024 * 1024)))
-  print(string.format("Avg latency: %.2f us", latency.mean))
-  print(string.format("P99 latency: %.2f us", latency:percentile(99)))
+  print("Latency distribution:")
+  print(string.format("  Avg: %.2f us", latency.mean))
+  print(string.format("  P50: %.2f us", latency:percentile(50)))
+  print(string.format("  P95: %.2f us", latency:percentile(95)))
+  print(string.format("  P99: %.2f us", latency:percentile(99)))
+  print(string.format("  Max: %.2f us", latency.max))
   print("--------------------------------------")
 end
