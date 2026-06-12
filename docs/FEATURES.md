@@ -5,6 +5,11 @@ Single consolidated reference for **aeronet** features.
 > **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (WSAPoll).
 > Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
 
+## Scripted Benchmark Framework Coverage
+
+- Scripted benchmark orchestration includes a Boost.Beast backend (`beast-bench-server`) for HTTP/1.1 and WebSocket comparisons.
+- Beast is intentionally excluded from scripted HTTP/2 runs because Boost.Beast does not provide HTTP/2 server transport.
+
 ## Index
 
 1. [HTTP/1.1 Feature Matrix](#http11-feature-matrix)
