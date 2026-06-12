@@ -46,7 +46,7 @@ struct ConnectionState {
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
 
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
-  [[nodiscard]] bool isSendingFile() const noexcept { return fileSend.active; }
+  [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
 
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
     return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile();
@@ -171,36 +171,39 @@ struct ConnectionState {
   // Connection close lifecycle.
   enum class CloseMode : uint8_t { None, DrainThenClose };
 
-  CloseMode closeMode{CloseMode::None};
-  bool waitingWritable{false};  // EPOLLOUT registered
-  bool tlsEstablished{false};   // true once TLS handshake completed (if TLS enabled)
-  bool waitingForBody{false};   // true when awaiting missing body bytes (bodyReadTimeout enforcement)
-  bool parsingHeaders{false};   // true while request headers are being received (headerStartTp to head-parsed)
+  // Pack small lifecycle/protocol state into one allocation unit to reduce
+  // per-connection footprint.
+  CloseMode closeMode : 1 {CloseMode::None};
+  ProtocolType protocol : 2 {ProtocolType::Http11};  // Current protocol type.
+  bool waitingWritable : 1 {false};                  // EPOLLOUT registered
+  bool tlsEstablished : 1 {false};                   // true once TLS handshake completed (if TLS enabled)
+  bool waitingForBody : 1 {false};  // true when awaiting missing body bytes (bodyReadTimeout enforcement)
+  bool parsingHeaders : 1 {false};  // true while request headers are being received (headerStartTp to head-parsed)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
-  bool connectPending{false};
-  bool shutdownWritePending{false};  // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
-  bool eofReceived{false};           // true when transportRead returned 0 (EOF)
-  bool corkable{false};              // true when TCP_NODELAY is active; enables TCP_CORK coalescing
-
-  // Current protocol type. Http11 by default, changes after successful upgrade.
-  ProtocolType protocol{ProtocolType::Http11};
+  bool connectPending : 1 {false};
+  bool shutdownWritePending : 1 {false};    // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
+  bool eofReceived : 1 {false};             // true when transportRead returned 0 (EOF)
+  bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
+  bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
+  bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
 
   // Whether the connection should attempt to enable MSG_ZEROCOPY when possible.
   // Determined at accept time based on server configuration and peer/local addresses.
-  bool zerocopyRequested{false};
+  bool zerocopyRequested : 1 {false};
 
 #ifdef AERONET_ENABLE_OPENSSL
-  // Observability / attribution for handshake failures.
-  // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
-  TlsHandshakeObserver tlsHandshakeObserver;
 
   // Ensures the TLS handshake event callback is emitted at most once per connection.
-  bool tlsHandshakeEventEmitted{false};
+  bool tlsHandshakeEventEmitted : 1 {false};
 
   // True while the TLS handshake for this connection is in-flight and counted against
   // concurrency limits.
-  bool tlsHandshakeInFlight{false};
+  bool tlsHandshakeInFlight : 1 {false};
+
+  // Observability / attribution for handshake failures.
+  // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
+  TlsHandshakeObserver tlsHandshakeObserver;
 
   // Keep the TLS context alive for as long as this connection's SSL/handshake may reference
   // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
@@ -209,8 +212,6 @@ struct ConnectionState {
 
   struct FileSendState {
     FilePayload filePayload;
-    bool active{false};
-    bool headersPending{false};
   };
 
   FileSendState fileSend;

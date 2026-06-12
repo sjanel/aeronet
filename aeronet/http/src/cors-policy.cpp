@@ -230,13 +230,6 @@ bool CorsPolicy::isPreflightRequest(const HttpRequest& request) noexcept {
   return request.headerValue(http::AccessControlRequestMethod).has_value();
 }
 
-bool CorsPolicy::originAllowed(std::string_view origin) const noexcept {
-  if (_originMode == OriginMode::Any) {
-    return true;
-  }
-  return _allowedOrigins.containsCI(origin);
-}
-
 bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept {
   const auto effectiveMask = effectiveAllowedMethods(routeMethods);
   if (effectiveMask == 0) {
@@ -290,10 +283,6 @@ void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view o
   if (!_exposedHeaders.empty()) {
     response.header(http::AccessControlExposeHeaders, _exposedHeaders.fullString());
   }
-}
-
-http::MethodBmp CorsPolicy::effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
-  return static_cast<http::MethodBmp>(_allowedMethods & routeMethods);
 }
 
 }  // namespace aeronet

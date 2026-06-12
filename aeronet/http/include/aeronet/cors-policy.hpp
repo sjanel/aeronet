@@ -92,7 +92,9 @@ class CorsPolicy {
 
   [[nodiscard]] static bool isPreflightRequest(const HttpRequest& request) noexcept;
 
-  [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept;
+  [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept {
+    return _originMode == OriginMode::Any || _allowedOrigins.containsCI(origin);
+  }
 
   [[nodiscard]] bool methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept;
 
@@ -100,7 +102,9 @@ class CorsPolicy {
 
   void applyResponseHeaders(HttpResponse& response, std::string_view origin) const;
 
-  [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept;
+  [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
+    return _allowedMethods & routeMethods;
+  }
 
   friend void detail::ApplyCorsPolicyData(const detail::CorsPolicyData& data, CorsPolicy& policy);
   friend detail::CorsPolicyData detail::BuildCorsPolicyData(const CorsPolicy& policy);
