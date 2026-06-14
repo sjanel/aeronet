@@ -40,9 +40,15 @@
 
 namespace aeronet {
 
-void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, NativeHandle cnxFd,
+void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
                                                    internal::ResponseCompressionState& compressionState) {
   request.init(config, compressionState);
+  const bool isIpAddress = peerAddress.ss_family == AF_INET || peerAddress.ss_family == AF_INET6;
+  if (isIpAddress) {
+    clientAddressLength = FormatAddress(peerAddress, clientAddressBuffer, sizeof(clientAddressBuffer));
+  } else {
+    clientAddressLength = 0;
+  }
 
   // Decide per-connection zerocopy preference at accept time.
 
@@ -54,16 +60,12 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
     case ZerocopyMode::Enabled:
       zerocopyRequested = true;
       break;
-    default: {
+    default:
       assert(config.zerocopyMode == ZerocopyMode::Opportunistic);
-      sockaddr_storage peer{};
-      // Disable zerocopy for loopback peers; we don't bother checking the local
-      // address since a server bound to a non-loopback IP while the peer is on
-      // loopback is not a realistic scenario worth optimizing for.
-      const bool peerOk = GetPeerAddress(cnxFd, peer);
-      zerocopyRequested = peerOk && !IsLoopback(peer);
+      // Disable zerocopy for loopback peers; we don't bother checking the local address since a server bound to a
+      // non-loopback IP while the peer is on loopback is not a realistic scenario worth optimizing for.
+      zerocopyRequested = isIpAddress && !IsLoopback(peerAddress);
       break;
-    }
   }
 }
 
@@ -158,13 +160,12 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
           res.code = FileResult::Code::WouldBlock;
         }
         return res;
-      default: {
+      default:
         res.code = FileResult::Code::Error;
         // ECONNRESET / error::kBrokenPipe / ECONNABORTED are normal peer-close events (client closed before
         // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
-        const bool peerClose = (errnoVal == error::kConnectionReset || errnoVal == error::kBrokenPipe ||
-                                errnoVal == error::kConnectionAborted);
-        if (peerClose) {
+        if ((errnoVal == error::kConnectionReset || errnoVal == error::kBrokenPipe ||
+             errnoVal == error::kConnectionAborted)) {
           log::debug("{} peer closed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
                      tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         } else {
@@ -174,7 +175,6 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
         requestDrainAndClose();
         fileSendActive = false;
         return res;
-      }
     }
 #elifdef AERONET_WINDOWS
     const int errVal = static_cast<int>(::GetLastError());
@@ -346,6 +346,7 @@ void ConnectionState::reset() {
   peerStreamId = 0;
   requestsServed = 0;
   trailerLen = 0;
+  clientAddressLength = 0;
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;

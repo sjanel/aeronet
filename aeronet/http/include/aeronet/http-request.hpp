@@ -444,6 +444,9 @@ class HttpRequest {
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
   [[nodiscard]] std::string_view tlsVersion() const noexcept;
 
+  // Best-effort client address string captured from peer socket address.
+  [[nodiscard]] std::string_view clientAddress() const noexcept;
+
   // ============================
   // HTTP/2-specific accessors
   // ============================
@@ -663,8 +666,8 @@ class HttpRequest {
   uint32_t _schemeLength{0};
   uint32_t _authorityLength{0};
   uint32_t _decodedQueryParamsLength{0};
-  http::Version _version;
   http::Method _method;
+  http::Version _version;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
   Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};

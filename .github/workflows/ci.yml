@@ -274,9 +274,18 @@ jobs:
           # Merge all profraw files into a single profdata
           llvm-profdata-21 merge -sparse ../coverage-*.profraw -o coverage.profdata
 
-          # Find a binary that links to all objects (the first test in tests binary)
-          BINARIES=$(find tests -type f -executable -name "*_test" | head -1)
-          OBJECTS=$(find aeronet -type f -executable -name "*_test" | tail -n+2 | sed 's/^/-object /' | tr '\n' ' ')
+          # llvm-cov only reports source files for binaries passed on the command line,
+          # so include every executed *_test binary from both tests/ and aeronet/.
+          mapfile -t COVERAGE_BINARIES < <(find tests aeronet -type f -executable -name "*_test" | sort)
+          if [[ ${#COVERAGE_BINARIES[@]} -eq 0 ]]; then
+            echo "No coverage test binaries found" >&2
+            exit 1
+          fi
+          MAIN_BINARY=${COVERAGE_BINARIES[0]}
+          OBJECT_ARGS=()
+          for ((i = 1; i < ${#COVERAGE_BINARIES[@]}; ++i)); do
+            OBJECT_ARGS+=( -object "${COVERAGE_BINARIES[i]}" )
+          done
 
           # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf
           IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp|internal/city.hpp)'
@@ -285,7 +294,7 @@ jobs:
           llvm-cov-21 export --format=lcov \
             --instr-profile=coverage.profdata \
             --ignore-filename-regex="$IGNORE" \
-            $BINARIES $OBJECTS > coverage.lcov
+            "$MAIN_BINARY" "${OBJECT_ARGS[@]}" > coverage.lcov
 
           # Generate HTML report
           llvm-cov-21 show --format=html \
@@ -293,7 +302,7 @@ jobs:
             --ignore-filename-regex="$IGNORE" \
             --show-branches=count \
             --output-dir=coverage-report \
-            $BINARIES $OBJECTS
+            "$MAIN_BINARY" "${OBJECT_ARGS[@]}"
 
       - name: Upload coverage to Codecov
         if: env.CODECOV_TOKEN != '' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]'
