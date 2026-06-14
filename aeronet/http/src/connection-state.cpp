@@ -45,7 +45,13 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
   request.init(config, compressionState);
   const bool isIpAddress = peerAddress.ss_family == AF_INET || peerAddress.ss_family == AF_INET6;
   if (isIpAddress) {
-    clientAddressLength = FormatAddress(peerAddress, clientAddressBuffer, sizeof(clientAddressBuffer));
+    static constexpr uint8_t kClientAddressLengthMask =
+        static_cast<uint8_t>((1U << kFormattedAddressCapacityNbBits) - 1U);
+    const uint8_t formattedLen =
+        FormatAddress(peerAddress, clientAddressBuffer, static_cast<uint8_t>(sizeof(clientAddressBuffer)));
+    assert(formattedLen <= kClientAddressLengthMask);
+    // clientAddressLength is a 6-bit bitfield: mask explicitly to make the narrowing conversion intentional.
+    clientAddressLength = static_cast<uint8_t>(formattedLen & kClientAddressLengthMask);
   } else {
     clientAddressLength = 0;
   }

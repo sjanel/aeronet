@@ -179,7 +179,7 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
   const auto windowMsNDigits = ndigits(windowMs);
   const auto maxInWindowNDigits = ndigits(maxInWindow);
 
-  const uint8_t neededSize = nowMsNDigits + windowMsNDigits + maxInWindowNDigits;
+  const uint32_t neededSize = static_cast<uint32_t>(nowMsNDigits + windowMsNDigits + maxInWindowNDigits);
   char* pArgs = _charStorage.allocateAndDefaultConstruct(neededSize);
 
   req.args[0] = std::string_view(pArgs, nowMsNDigits);
