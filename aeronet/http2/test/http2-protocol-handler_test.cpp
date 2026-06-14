@@ -4442,4 +4442,82 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 }
 #endif
 
+TEST(Http2ProtocolHandler, CustomSchemeAccepted) {
+  Router router;
+  router.setPath(http::Method::GET, "/test", [](const HttpRequest& req) {
+    return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Send a request with non-http(s) :scheme value; RFC 7540/9113 allow this.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "ftp"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // Verify request is accepted and scheme reaches handler unchanged.
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  auto statusCode = GetHeaderValue(loop.clientHeaders.back(), ":status");
+  EXPECT_EQ(statusCode, "200") << "Server should accept custom :scheme values";
+
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_EQ(loop.clientData.back().data, "scheme: ftp");
+}
+
+TEST(Http2ProtocolHandler, ValidSchemesAccepted) {
+  Router router;
+  router.setPath(http::Method::GET, "/test", [](const HttpRequest& req) {
+    return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
+  });
+  router.setPath(http::Method::GET, "/test2", [](const HttpRequest& req) {
+    return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // Test "https"
+  {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_FALSE(loop.clientHeaders.empty());
+    auto statusCode = GetHeaderValue(loop.clientHeaders.back(), ":status");
+    EXPECT_EQ(statusCode, "200") << "Server should accept 'https' scheme";
+
+    loop.clientHeaders.clear();
+  }
+
+  // Test "http"
+  {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "http"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    hdrs.append(MakeHttp1HeaderLine(":path", "/test2"));
+    ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_FALSE(loop.clientHeaders.empty());
+    auto statusCode = GetHeaderValue(loop.clientHeaders.back(), ":status");
+    EXPECT_EQ(statusCode, "200") << "Server should accept 'http' scheme";
+  }
+}
+
 }  // namespace aeronet::http2
