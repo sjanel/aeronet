@@ -381,7 +381,7 @@ class HttpRequest {
 
   // Indicates whether the body is ready to be read (either fully buffered or streaming bridge established).
   [[nodiscard]] bool isBodyReady() const noexcept {
-    return _bodyAccessBridge != nullptr || _bodyAccessMode == BodyAccessMode::Aggregated;
+    return _pBodyAccessBridge != nullptr || _bodyAccessMode == BodyAccessMode::Aggregated;
   }
 
   // Returns a map-like, case-insensitive view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
@@ -450,19 +450,20 @@ class HttpRequest {
   // ============================
   // HTTP/2-specific accessors
   // ============================
-
+#ifdef AERONET_ENABLE_HTTP2
   // Returns true if this request arrived over HTTP/2.
   [[nodiscard]] bool isHttp2() const noexcept { return _streamId != 0; }
 
   // HTTP/2 stream identifier (0 for HTTP/1.x requests).
   [[nodiscard]] uint32_t streamId() const noexcept { return _streamId; }
 
-  // HTTP/2 :scheme pseudo-header ("https" or "http"); empty for HTTP/1.x.
+  // HTTP/2 :scheme pseudo-header as string ("https", "http" or custom scheme); empty for HTTP/1.x.
   [[nodiscard]] std::string_view scheme() const noexcept { return {_pScheme, _schemeLength}; }
 
   // HTTP/2 :authority pseudo-header (equivalent to Host header); empty for HTTP/1.x.
   // For HTTP/1.x requests, use headerValueOrEmpty("Host") instead.
   [[nodiscard]] std::string_view authority() const noexcept { return {_pAuthority, _authorityLength}; }
+#endif
 
   // Tells whether this request has a 'Expect: 100-continue' header.
   [[nodiscard]] bool hasExpectContinue() const noexcept;
@@ -632,8 +633,10 @@ class HttpRequest {
   };
 
   const char* _pPath{nullptr};
-  const char* _pScheme{nullptr};     // :scheme pseudo-header ("http" or "https")
+#ifdef AERONET_ENABLE_HTTP2
   const char* _pAuthority{nullptr};  // :authority pseudo-header (equivalent to Host)
+  const char* _pScheme{nullptr};     // :scheme pseudo-header ("https", "http" or custom scheme)
+#endif
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
   const char* _pDecodedQueryParams{nullptr};
   const ConcatenatedHeaders* _pGlobalHeaders{nullptr};
@@ -643,7 +646,7 @@ class HttpRequest {
   // When set, markAwaitingCallback() / postCallback() use these instead of _ownerState->asyncState.
   using H2PostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
   H2PostCallbackFn _h2PostCallback;
-  bool* _h2SuspendedFlag{nullptr};
+  bool* _pH2SuspendedFlag{nullptr};
 #endif
 
   HeadersViewMap _headers;
@@ -653,18 +656,20 @@ class HttpRequest {
 
   std::string_view _body;
   std::string_view _activeStreamingChunk;
-  const BodyAccessBridge* _bodyAccessBridge{nullptr};
-  void* _bodyAccessContext{nullptr};
-  ConnectionState* _ownerState{nullptr};
+  const BodyAccessBridge* _pBodyAccessBridge{nullptr};
+  void* _pBodyAccessContext{nullptr};
+  ConnectionState* _pOwnerState{nullptr};
   internal::ResponseCompressionState* _pCompressionState{nullptr};
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};
   tracing::SpanPtr _traceSpan;
-  uint32_t _streamId{0};  // HTTP/2 stream ID (0 indicates HTTP/1.x)
   uint32_t _pathLength{0};
-  uint32_t _schemeLength{0};
+#ifdef AERONET_ENABLE_HTTP2
+  uint32_t _streamId{0};  // HTTP/2 stream ID (0 indicates HTTP/1.x)
   uint32_t _authorityLength{0};
+  uint32_t _schemeLength{0};
+#endif
   uint32_t _decodedQueryParamsLength{0};
   http::Method _method;
   http::Version _version;

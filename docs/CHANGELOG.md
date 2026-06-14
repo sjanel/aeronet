@@ -4,7 +4,11 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
-### Unreleased New features
+### Breaking changes
+
+- `HttpRequest` specific HTTP/2 APIs (`isHttp2()`, `streamId()`, `scheme()`, `authority()`) are now only available when `AERONET_ENABLE_HTTP2` is on, and are removed otherwise. If you used these APIs without HTTP/2, you can either enable HTTP/2 or remove the calls and use the HTTP/1.x equivalents (e.g. `headerValueOrEmpty("Host")` instead of `authority()`).
+
+### New features
 
 - **HTTP rate limiting middleware**: Added `RateLimitRequestMiddlewareBuilder` builder object with member factory API (`RateLimitRequestMiddlewareBuilder::build()`) and configurable client-key strategy (peer address, `X-Forwarded-For`, custom header, custom extractor). The default in-memory backend uses a token-bucket limiter and returns `429 Too Many Requests` with `Retry-After` on rejection. It can be installed globally (`Router::addRequestMiddleware`) or per-route (`PathHandlerEntry::before`) including RouteGroup scopes.
 - **Client address access on request**: Added `HttpRequest::clientAddress()` populated from peer socket address for both HTTP/1.1 and HTTP/2 paths.
