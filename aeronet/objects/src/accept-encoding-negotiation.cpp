@@ -37,15 +37,15 @@ constexpr std::string_view kWhitespace = " \t";
 
 // Parse q-value within a token (portion including parameters); never throws.
 double ParseQ(std::string_view token) {
-  auto scPos = token.find(';');
+  const auto scPos = token.find(';');
   if (scPos == std::string_view::npos) {
     return 1.0;
   }
   std::string_view params = token.substr(scPos + 1);
   while (!params.empty()) {
     params = TrimOws(params);
-    auto nextSemi = params.find(';');
-    std::string_view param = nextSemi == std::string_view::npos ? params : params.substr(0, nextSemi);
+    const auto nextSemi = params.find(';');
+    const std::string_view param = nextSemi == std::string_view::npos ? params : params.substr(0, nextSemi);
     if (nextSemi == std::string_view::npos) {
       params = {};
     } else {
@@ -53,7 +53,7 @@ double ParseQ(std::string_view token) {
     }
     if (param.size() >= 2 && (param[0] == 'q' || param[0] == 'Q') && param[1] == '=') {
       auto val = param.substr(2);
-      while (!val.empty() && kWhitespace.find(val.back()) != std::string_view::npos) {
+      while (!val.empty() && kWhitespace.contains(val.back())) {
         val.remove_suffix(1);
       }
       auto cut = val.find_first_of(" ;\t");
@@ -80,7 +80,7 @@ double ParseQ(std::string_view token) {
         std::errc ec;
       } fcRes{begin + (endPtr - buf), (endPtr != buf) ? std::errc{} : std::errc::invalid_argument};
 #else
-      auto fcRes = std::from_chars(begin, end, qualityValue);
+      const auto fcRes = std::from_chars(begin, end, qualityValue);
 #endif
       if (fcRes.ec != std::errc() || fcRes.ptr != end) {
         return 0.0;  // invalid format

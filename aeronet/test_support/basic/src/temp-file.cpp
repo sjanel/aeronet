@@ -1,5 +1,7 @@
 #include "aeronet/temp-file.hpp"
 
+#include <iostream>
+
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/system-error-message.hpp"
 
@@ -169,10 +171,15 @@ void ScopedTempFile::cleanup() noexcept {
   if (!_path.empty()) {
     std::error_code ec;
     bool removed = std::filesystem::remove(_path, ec);
-    if (ec) {
-      log::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(), ec.message());
-    } else if (!removed) {
-      log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
+    try {
+      if (ec) {
+        log::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(), ec.message());
+      } else if (!removed) {
+        log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
+      }
+    } catch (const std::filesystem::filesystem_error& ex) {
+      std::cerr << "ScopedTempFile::cleanup: exception while removing file " << _path.string() << ": " << ex.what()
+                << '\n';
     }
     _path.clear();
   }

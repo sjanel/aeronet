@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <ostream>
 #include <ranges>
@@ -18,6 +19,7 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -1480,7 +1482,7 @@ std::string_view Router::unescapeAndAllocate(std::string_view input) {
 std::string_view Router::allocatePath(std::string_view pathFragment) {
   assert(!pathFragment.empty());
   char* dst = _charStorage.allocateAndDefaultConstruct(pathFragment.size());
-  std::memcpy(dst, pathFragment.data(), pathFragment.size());
+  Copy(pathFragment, dst);
   return {dst, pathFragment.size()};
 }
 
@@ -1489,7 +1491,7 @@ std::span<char> Router::allocateIndices(std::string_view ind) {
     return {};
   }
   char* dst = _charStorage.allocateAndDefaultConstruct(ind.size());
-  std::memcpy(dst, ind.data(), ind.size());
+  Copy(ind, dst);
   return {dst, ind.size()};
 }
 

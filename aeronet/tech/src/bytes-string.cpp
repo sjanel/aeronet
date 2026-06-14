@@ -47,7 +47,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     const std::uintmax_t intPart = size / divisor;
     const std::uintmax_t rem = size % divisor;
     // frac10 = round(rem * 10 / divisor)
-    const std::uintmax_t frac10 = (rem * 10U + divisor / 2U) / divisor;
+    const std::uintmax_t frac10 = ((rem * 10U) + (divisor / 2U)) / divisor;
     std::uintmax_t finalInt = intPart;
     std::uintmax_t finalFrac = frac10;
     if (frac10 >= 10U) {
@@ -74,7 +74,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
 
   if (size <= kMaxDiv10) {
     // Print integer with rounding (safe because size <= max/10)
-    const std::uintmax_t rounded = (size + divisor / 2U) / divisor;
+    const std::uintmax_t rounded = (size + (divisor / 2U)) / divisor;
     appendIntAndUnit(rounded, units[unitIdx]);
   } else {
     // Integer rounding for large values: safe because we avoid adding divisor to size.

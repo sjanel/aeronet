@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <regex>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/object-array-pool.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -18,9 +20,9 @@ namespace aeronet {
          std::ranges::any_of(ranges, [ch](const CharRange& range) { return ch >= range.lo && ch <= range.hi; });
 }
 
-[[nodiscard]] bool RouteConstraint::FastPattern::matches(std::string_view value,
-                                                         vector<uint32_t>& usedPerAtom) const noexcept {
+[[nodiscard]] bool RouteConstraint::FastPattern::matches(std::string_view value, vector<uint32_t>& usedPerAtom) const {
   const auto numAtoms = static_cast<uint32_t>(atoms.size());
+
   usedPerAtom.resize(numAtoms);
 
   uint32_t atomIdx = 0;
@@ -344,7 +346,7 @@ RouteConstraint::RouteConstraint(RouteConstraint&&) noexcept = default;
 RouteConstraint& RouteConstraint::operator=(RouteConstraint&&) noexcept = default;
 RouteConstraint::~RouteConstraint() = default;
 
-bool RouteConstraint::matches(std::string_view value, vector<uint32_t>& usedPerAtom) const noexcept {
+bool RouteConstraint::matches(std::string_view value, vector<uint32_t>& usedPerAtom) const {
   switch (_kind) {
     case Kind::Fast:
       return _fastPattern.matches(value, usedPerAtom);

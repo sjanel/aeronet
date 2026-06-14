@@ -253,15 +253,15 @@ bool HasMoreBufferedBody([[maybe_unused]] const HttpRequest& request, void* cont
 }  // namespace
 
 void ConnectionState::installAggregatedBodyBridge() {
-  if (request._bodyAccessBridge != nullptr) {
+  if (request._pBodyAccessBridge != nullptr) {
     return;
   }
   static constexpr HttpRequest::BodyAccessBridge kAggregatedBodyBridge{&AggregateBufferedBody, &ReadBufferedBody,
                                                                        &HasMoreBufferedBody};
   bodyStreamContext.body = request._body;
   bodyStreamContext.offset = 0;
-  request._bodyAccessBridge = &kAggregatedBodyBridge;
-  request._bodyAccessContext = &bodyStreamContext;
+  request._pBodyAccessBridge = &kAggregatedBodyBridge;
+  request._pBodyAccessContext = &bodyStreamContext;
 }
 
 #ifdef AERONET_ENABLE_OPENSSL

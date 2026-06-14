@@ -206,7 +206,7 @@ class MultiHttpServer {
   // Post-conditions:
   //   - Returns immediately (non-blocking); servers run in background threads.
   //   - Handler registration becomes immutable after this call.
-  void start();
+  void start() { _internalHandle.emplace(startDetached()); }
 
   // startDetached():
   //   Like start(), but returns an AsyncHandle for explicit lifetime management.

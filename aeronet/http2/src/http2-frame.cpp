@@ -317,18 +317,21 @@ std::size_t WriteRstStreamFrame(RawBytes& buffer, uint32_t streamId, ErrorCode e
 std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> entries) {
   const std::size_t payloadSize = entries.size() * 6;
 
-  buffer.ensureAvailableCapacityExponential(FrameHeader::kSize + (entries.size() * 6));
+  buffer.ensureAvailableCapacityExponential(FrameHeader::kSize + payloadSize);
 
-  WriteFrameHeader(buffer.end(),
+  std::byte* pEnd = buffer.end();
+
+  WriteFrameHeader(pEnd,
                    CreateFrameHeader(FrameType::Settings, FrameFlags::None, 0, static_cast<uint32_t>(payloadSize)));
-  buffer.addSize(FrameHeader::kSize);
+  pEnd += FrameHeader::kSize;
 
   // Write settings entries
   for (const auto& entry : entries) {
-    Write16BE(buffer.end(), static_cast<uint16_t>(entry.id));
-    Write32BE(buffer.end() + 2, entry.value);
-    buffer.addSize(6);
+    Write16BE(pEnd, static_cast<uint16_t>(entry.id));
+    Write32BE(pEnd + 2, entry.value);
+    pEnd += 6;
   }
+  buffer.setSize(static_cast<std::size_t>(pEnd - buffer.data()));
 
   return FrameHeader::kSize + payloadSize;
 }
@@ -338,7 +341,7 @@ std::size_t WriteSettingsAckFrame(RawBytes& buffer) {
 }
 
 std::size_t WritePingFrame(RawBytes& buffer, PingFrame pingFrame) {
-  uint8_t flags = pingFrame.isAck ? FrameFlags::PingAck : FrameFlags::None;
+  const uint8_t flags = pingFrame.isAck ? FrameFlags::PingAck : FrameFlags::None;
   const auto ret = WriteFrame(buffer, FrameType::Ping, flags, 0, sizeof(pingFrame.opaqueData));
   buffer.unchecked_append(pingFrame.opaqueData, sizeof(pingFrame.opaqueData));
   return ret;
@@ -373,7 +376,7 @@ std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t
 
 std::size_t WriteContinuationFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock,
                                    bool endHeaders) {
-  uint8_t flags = endHeaders ? FrameFlags::ContinuationEndHeaders : FrameFlags::None;
+  const uint8_t flags = endHeaders ? FrameFlags::ContinuationEndHeaders : FrameFlags::None;
   const auto ret =
       WriteFrame(buffer, FrameType::Continuation, flags, streamId, static_cast<uint32_t>(headerBlock.size()));
   buffer.unchecked_append(headerBlock);

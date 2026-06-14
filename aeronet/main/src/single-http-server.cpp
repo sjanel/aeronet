@@ -982,7 +982,7 @@ bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& st
   state.bodyAndTrailersBuffer.assign(body.data(), body.size());
   state.request._body = std::string_view(state.bodyAndTrailersBuffer.data(), body.size());
 
-  if (state.request._bodyAccessBridge != nullptr) {
+  if (state.request._pBodyAccessBridge != nullptr) {
     state.bodyStreamContext.body = state.request._body;
   }
 

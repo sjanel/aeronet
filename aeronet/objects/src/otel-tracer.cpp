@@ -113,8 +113,6 @@ opentelemetry::sdk::resource::Resource buildTelemetryResource(const TelemetryCon
   return opentelemetry::sdk::resource::Resource::Create({{"service.name", std::string(cfg.serviceName())}});
 }
 
-}  // namespace
-
 // OpenTelemetry Span implementation
 class OtelSpan final : public Span {
  public:
@@ -132,6 +130,8 @@ class OtelSpan final : public Span {
  private:
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Span> _span;
 };
+
+}  // namespace
 
 // TelemetryContext implementation details
 class TelemetryContextImpl {

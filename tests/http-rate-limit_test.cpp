@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"

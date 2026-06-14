@@ -40,7 +40,7 @@ class RouteConstraint {
 
   // Test whether a captured parameter value satisfies this constraint.
   // Returns true if unconstrained (no pattern).
-  [[nodiscard]] bool matches(std::string_view value, vector<uint32_t>& usedPerAtom) const noexcept;
+  [[nodiscard]] bool matches(std::string_view value, vector<uint32_t>& usedPerAtom) const;
 
   // True if this constraint has no pattern (always matches).
   [[nodiscard]] bool empty() const noexcept { return _kind == Kind::Empty; }
@@ -72,7 +72,7 @@ class RouteConstraint {
   };
 
   struct FastPattern {
-    [[nodiscard]] bool matches(std::string_view value, vector<uint32_t>& usedPerAtom) const noexcept;
+    [[nodiscard]] bool matches(std::string_view value, vector<uint32_t>& usedPerAtom) const;
 
     vector<Atom> atoms;
 

@@ -1,7 +1,6 @@
 #include "aeronet/http2-connection.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -959,7 +958,7 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 // ============================
 
 void Http2Connection::sendSettings() {
-  const std::array<SettingsEntry, 6> entries = {
+  const SettingsEntry entries[] = {
       SettingsEntry{SettingsParameter::HeaderTableSize, _localSettings.headerTableSize},
       SettingsEntry{SettingsParameter::EnablePush, static_cast<uint32_t>(_localSettings.enablePush)},
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, _localSettings.maxConcurrentStreams},

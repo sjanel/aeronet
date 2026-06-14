@@ -72,8 +72,8 @@ std::string_view HttpRequest::body() const {
   // Not the cleanest, but it should appear as const from the caller.
   auto& self = *const_cast<HttpRequest*>(this);
   self._bodyAccessMode = BodyAccessMode::Aggregated;
-  if (self._bodyAccessBridge != nullptr && self._bodyAccessBridge->aggregate != nullptr) {
-    self._body = self._bodyAccessBridge->aggregate(self, self._bodyAccessContext);
+  if (self._pBodyAccessBridge != nullptr && self._pBodyAccessBridge->aggregate != nullptr) {
+    self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
   }
   return _body;
 }
@@ -82,21 +82,21 @@ bool HttpRequest::hasMoreBody() const {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     return false;
   }
-  if (_bodyAccessBridge == nullptr) {
+  if (_pBodyAccessBridge == nullptr) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     // If an async handler started before the body was ready, the server will
     // set asyncState.needsBody and later install the aggregated bridge when
     // body bytes arrive. In that intermediate state, treat the request as
     // having more body so loops using hasMoreBody()+readBodyAsync() will
     // execute and suspend correctly.
-    assert(_ownerState != nullptr);
-    const auto* async = _ownerState->asyncState.get();
+    assert(_pOwnerState != nullptr);
+    const auto* async = _pOwnerState->asyncState.get();
     return async != nullptr && async->active && async->needsBody;
 #else
     return false;
 #endif
   }
-  return _bodyAccessBridge->hasMore(*this, _bodyAccessContext);
+  return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
 }
 
 std::string_view HttpRequest::readBody(std::size_t maxBytes) {
@@ -104,28 +104,28 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
     throw std::logic_error("Cannot call readBody() after body() on the same request");
   }
   _bodyAccessMode = BodyAccessMode::Streaming;
-  _activeStreamingChunk = _bodyAccessBridge->readChunk(*this, _bodyAccessContext, maxBytes);
+  _activeStreamingChunk = _pBodyAccessBridge->readChunk(*this, _pBodyAccessContext, maxBytes);
   return _activeStreamingChunk;
 }
 
 [[nodiscard]] std::string_view HttpRequest::alpnProtocol() const noexcept {
-  assert(_ownerState != nullptr);
-  return _ownerState->tlsInfo.selectedAlpn();
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.selectedAlpn();
 }
 
 [[nodiscard]] std::string_view HttpRequest::tlsCipher() const noexcept {
-  assert(_ownerState != nullptr);
-  return _ownerState->tlsInfo.negotiatedCipher();
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.negotiatedCipher();
 }
 
 [[nodiscard]] std::string_view HttpRequest::tlsVersion() const noexcept {
-  assert(_ownerState != nullptr);
-  return _ownerState->tlsInfo.negotiatedVersion();
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.negotiatedVersion();
 }
 
 [[nodiscard]] std::string_view HttpRequest::clientAddress() const noexcept {
-  assert(_ownerState != nullptr);
-  return _ownerState->clientAddress();
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->clientAddress();
 }
 
 bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
@@ -175,7 +175,7 @@ bool HttpRequest::hasExpectContinue() const noexcept {
 
 bool HttpRequest::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
                                       bool isServerRunning) const {
-  if (!enableKeepAlive || _ownerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
+  if (!enableKeepAlive || _pOwnerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
     return false;
   }
   const std::string_view connVal = headerValueOrEmpty(http::Connection);
@@ -298,8 +298,8 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   _body = {};
   _activeStreamingChunk = {};
   _bodyAccessMode = BodyAccessMode::Undecided;
-  _bodyAccessBridge = nullptr;
-  _bodyAccessContext = nullptr;
+  _pBodyAccessBridge = nullptr;
+  _pBodyAccessContext = nullptr;
   _trailers.clear();
   _pathParams.clear();
   _queryParams.clear();
@@ -421,18 +421,18 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void HttpRequest::markAwaitingBody() const noexcept {
-  auto* asyncState = _ownerState->asyncState.get();
+  auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
 }
 
 void HttpRequest::markAwaitingCallback() const noexcept {
-  if (_h2SuspendedFlag != nullptr) {
-    *_h2SuspendedFlag = true;
+  if (_pH2SuspendedFlag != nullptr) {
+    *_pH2SuspendedFlag = true;
     return;
   }
-  auto* asyncState = _ownerState->asyncState.get();
+  auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
@@ -443,7 +443,7 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
     _h2PostCallback(handle, std::move(work));
     return;
   }
-  auto* asyncState = _ownerState->asyncState.get();
+  auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
   assert(asyncState->postCallback);

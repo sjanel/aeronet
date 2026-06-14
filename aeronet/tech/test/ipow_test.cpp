@@ -34,6 +34,7 @@ TEST(MathHelpers, Power10) {
   static_assert(ipow10(3U) == 1000ULL);
 }
 
+namespace {
 class FuzzIpowRng {
  public:
   explicit FuzzIpowRng(uint64_t seed) : _gen(seed) {}
@@ -44,6 +45,7 @@ class FuzzIpowRng {
   std::mt19937_64 _gen;
   std::uniform_int_distribution<uint32_t> _expDist{0, 20};
 };
+}  // namespace
 
 TEST(MathHelpers, IpowsCalledAtRuntime) {
   constexpr std::size_t kIterations = 1000;

@@ -287,7 +287,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
 }
 
 void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-  auto it = _streams.find(streamId);
+  const auto it = _streams.find(streamId);
   if (it == _streams.end()) [[unlikely]] {
     log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
     return;
@@ -770,7 +770,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::Rou
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
     const SpecialMethodConfig config{
         .tracePolicy = _pServerConfig->traceMethodPolicy,
-        .isTls = !request.scheme().empty() && request.scheme() == "https",
+        .isTls = request.scheme() == "https",
     };
     // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
     // So we pass empty requestData, which will result in 405 Method Not Allowed
@@ -1021,7 +1021,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   pendingRef.suspended = false;
 
   // Install HTTP/2 async callback mechanism on the request NOW
-  pendingRef.streamRequest.request._h2SuspendedFlag = &pendingRef.suspended;
+  pendingRef.streamRequest.request._pH2SuspendedFlag = &pendingRef.suspended;
   pendingRef.streamRequest.request._h2PostCallback = _asyncPostCallback;
 
   // Store in the variant

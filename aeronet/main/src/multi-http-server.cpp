@@ -379,8 +379,6 @@ void MultiHttpServer::stop() noexcept {
   log::info("HttpServer stopped");
 }
 
-void MultiHttpServer::start() { _internalHandle.emplace(startDetached()); }
-
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetached() {
   return startDetachedInternal([] { return false; }, {});
 }

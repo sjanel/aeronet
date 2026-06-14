@@ -71,7 +71,7 @@ class HttpRequestTest : public ::testing::Test {
  protected:
   void SetUp() override {
     globalHeaders.append("server: aeronet");
-    req._ownerState = &cs;
+    req._pOwnerState = &cs;
     req._pGlobalHeaders = &globalHeaders;
     req._pCompressionState = &compressionState;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -119,7 +119,7 @@ class HttpRequestTest : public ::testing::Test {
     static HttpRequest::BodyAccessBridge bridge;
     bridge.readChunk = [](HttpRequest&, void*, std::size_t) -> std::string_view { return {}; };
     bridge.hasMore = [](const HttpRequest&, void*) -> bool { return false; };
-    req._bodyAccessBridge = &bridge;
+    req._pBodyAccessBridge = &bridge;
   }
 
   void setResponsePossibleEncoding(Encoding encoding) { req._responsePossibleEncoding = encoding; }
@@ -167,13 +167,13 @@ class HttpRequestTest : public ::testing::Test {
     static HttpRequest::BodyAccessBridge bridge;
     bridge.readChunk = bridgeReadChunk;
     bridge.hasMore = bridgeHasMore;
-    req._bodyAccessBridge = &bridge;
+    req._pBodyAccessBridge = &bridge;
   }
 
   void installAggregateBridge() {
     static HttpRequest::BodyAccessBridge bridge;
     bridge.aggregate = bridgeAggregate;
-    req._bodyAccessBridge = &bridge;
+    req._pBodyAccessBridge = &bridge;
   }
 
   // Helper to set a custom BodyAccessBridge and explicitly clear the context.
@@ -184,14 +184,14 @@ class HttpRequestTest : public ::testing::Test {
     sbridge.aggregate = aggregate;
     sbridge.readChunk = readChunk;
     sbridge.hasMore = hasMore;
-    req._bodyAccessBridge = &sbridge;
-    req._bodyAccessContext = nullptr;
+    req._pBodyAccessBridge = &sbridge;
+    req._pBodyAccessContext = nullptr;
   }
 
   // Fixture-level helper to mutate the request's private body access context
-  void setRequestBodyAccessContextToNull() { cs.request._bodyAccessContext = nullptr; }
+  void setRequestBodyAccessContextToNull() { cs.request._pBodyAccessContext = nullptr; }
 
-  void setOwnerState(ConnectionState* st) { req._ownerState = st; }
+  void setOwnerState(ConnectionState* st) { req._pOwnerState = st; }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void callPinHeadStorage() { req.pinHeadStorage(cs, asyncStatePoolStorage); }
@@ -199,7 +199,7 @@ class HttpRequestTest : public ::testing::Test {
     req.postCallback(handle, std::move(work));
   }
   void setH2PostCallback(HttpRequest::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
-  void setH2SuspendedFlag(bool* flag) { req._h2SuspendedFlag = flag; }
+  void setH2SuspendedFlag(bool* flag) { req._pH2SuspendedFlag = flag; }
 #endif
 
   // Helper to set a header view pointing at arbitrary bytes (fixture has friend access)
@@ -981,14 +981,16 @@ TEST_F(HttpRequestTest, Http2FieldsShouldBeFilledCorrectlyInHttp1) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
+#ifdef AERONET_ENABLE_HTTP2
   EXPECT_FALSE(req.isHttp2());
   EXPECT_EQ(req.streamId(), 0);
   EXPECT_TRUE(req.scheme().empty());
   EXPECT_TRUE(req.authority().empty());
+#endif
 }
 
 TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
-  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  const auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   installStreamingBridge();
@@ -1000,7 +1002,7 @@ TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
 }
 
 TEST_F(HttpRequestTest, HasMoreBodyWithBridgeTrue) {
-  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  const auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   installStreamingBridge();
