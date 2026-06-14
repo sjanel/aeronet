@@ -190,7 +190,7 @@ class ConnectionStorage {
     ConnectionState* statePtr;
     if (_cachedConnectionStates.empty()) {
       statePtr = _connectionStatePool.allocateAndConstruct();
-      statePtr->request._ownerState = statePtr;
+      statePtr->request._pOwnerState = statePtr;
     } else {
       statePtr = _cachedConnectionStates.back();
       _cachedConnectionStates.pop_back();

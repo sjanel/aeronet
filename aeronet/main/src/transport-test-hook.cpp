@@ -2,6 +2,10 @@
 #include "aeronet/transport-test-hook.hpp"
 
 #include <atomic>
+#include <memory>
+#include <utility>
+
+#include "aeronet/transport.hpp"
 
 namespace aeronet::test {
 namespace {

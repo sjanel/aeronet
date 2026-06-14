@@ -2,13 +2,17 @@
 
 #include <cassert>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/ndigits.hpp"
+#include "aeronet/rate-limit.hpp"
 #include "aeronet/string-trim.hpp"
 
 namespace aeronet {
