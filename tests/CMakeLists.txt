@@ -52,6 +52,12 @@ if(AERONET_ENABLE_TEST_HOOKS)
 	aeronet_http_test(network-fault-injection)
 endif()
 
+# Integration tests that drive the server through the aeronet HttpClient.
+if(AERONET_ENABLE_HTTP_CLIENT)
+	aeronet_http_test(http-client-integration)
+	target_link_libraries(http-client-integration_test PRIVATE aeronet_client)
+endif()
+
 if (AERONET_ENABLE_WEBSOCKET)
 	aeronet_http_test(websocket-integration)
 endif()

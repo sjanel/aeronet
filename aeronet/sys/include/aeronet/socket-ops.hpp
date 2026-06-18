@@ -64,6 +64,15 @@ bool SetTcpCork(NativeHandle fd, bool enable) noexcept;
 // On failure to query, returns the errno from getsockopt itself.
 int GetSocketError(NativeHandle fd) noexcept;
 
+// Probe whether an idle, connected keep-alive socket should NOT be reused, without consuming any data
+// (MSG_PEEK, non-blocking). An idle HTTP/1.1 keep-alive connection must be quiet, so this returns true for
+// anything readable: an orderly close (FIN/EOF), a socket error (e.g. RST), or unexpected pending bytes —
+// the latter notably covers a TLS `close_notify` (sent as a readable record, not EOF) on graceful close.
+// Returns false only when the socket is quiet (no pending data). Intended for an HTTP client to vet a
+// pooled connection before sending a request on it, so a dead connection never silently swallows it. The
+// sole false positive (a TLS session ticket arriving while idle) merely costs one extra reconnect.
+[[nodiscard]] bool IsConnectionStale(NativeHandle fd) noexcept;
+
 // Fill `addr` with the local address bound to `fd`.
 // Returns true on success.
 bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept;

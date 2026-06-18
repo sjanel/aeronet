@@ -5,8 +5,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "aeronet/base-fd.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/vector.hpp"
@@ -55,6 +56,37 @@ struct TestAddrEntry {
   entry.sockType = SOCK_STREAM;
   entry.protocol = IPPROTO_TCP;
   return entry;
+}
+
+// IPv6 loopback (::1) candidate, mirroring how getaddrinfo("localhost") often yields ::1 before 127.0.0.1.
+[[nodiscard]] TestAddrEntry MakeLoopback6Entry(uint16_t port) {
+  TestAddrEntry entry;
+  auto* sin6 = reinterpret_cast<sockaddr_in6*>(&entry.storage);
+  sin6->sin6_family = AF_INET6;
+  sin6->sin6_port = htons(port);
+  sin6->sin6_addr = in6addr_loopback;  // ::1
+  entry.addrlen = sizeof(sockaddr_in6);
+  entry.family = AF_INET6;
+  entry.sockType = SOCK_STREAM;
+  entry.protocol = IPPROTO_TCP;
+  return entry;
+}
+
+// Bind an ephemeral IPv4 loopback port, then release it: returns a port number on which nothing listens,
+// so a subsequent connect is refused. (Real connect()/poll(), not interposed, exercise the fallback path.)
+[[nodiscard]] uint16_t ReserveClosedLoopbackPort() {
+  const BaseFd probe(::socket(AF_INET, SOCK_STREAM, 0));
+  assert(probe.fd() >= 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  [[maybe_unused]] const int bindRc = ::bind(probe.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+  assert(bindRc == 0);
+  socklen_t len = sizeof(addr);
+  [[maybe_unused]] const int nameRc = ::getsockname(probe.fd(), reinterpret_cast<sockaddr*>(&addr), &len);
+  assert(nameRc == 0);
+  return ntohs(addr.sin_port);
 }
 
 struct AddrinfoOverrideData {
@@ -314,7 +346,9 @@ using ::AddrinfoOverrideGuard;
 using ::ConnectErr;
 using ::HookGuard;
 using ::MakeHostPortBuffer;
+using ::MakeLoopback6Entry;
 using ::MakeLoopbackEntry;
+using ::ReserveClosedLoopbackPort;
 using ::SetConnectActionSequence;
 using ::SetSocketErrorSequence;
 
@@ -423,6 +457,47 @@ TEST(TcpConnectorTest, ConnectFailureSetsFailureFlag) {
   if (result.cnx) {
     result.cnx.close();
   }
+}
+
+// The regression at the heart of the dual-stack CI failure: getaddrinfo yields ::1 before 127.0.0.1, but
+// the server only listens on IPv4. With a connect-timeout budget the connector must drive the refused ::1
+// connect to completion and fall back to 127.0.0.1 — returning an established socket, not connectPending.
+TEST(TcpConnectorTest, BlockingFallbackTriesNextAddressOnRefusal) {
+  HookGuard guard;
+  // Real IPv4 loopback listener; nothing listens on ::1.
+  const BaseFd listener(::socket(AF_INET, SOCK_STREAM, 0));
+  ASSERT_TRUE(listener);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  ASSERT_EQ(::bind(listener.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+  socklen_t len = sizeof(addr);
+  ASSERT_EQ(::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &len), 0);
+  ASSERT_EQ(::listen(listener.fd(), 16), 0);
+  const uint16_t port = ntohs(addr.sin_port);
+
+  // Real connect()/poll() (no action override): ::1 is refused, 127.0.0.1 reaches the listener.
+  AddrinfoOverrideGuard override({MakeLoopback6Entry(port), MakeLoopbackEntry(port)});
+  auto buffer = MakeHostPortBuffer("localhost", "0");
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, /*connectTimeoutMs=*/2000);
+  EXPECT_FALSE(result.failure);
+  EXPECT_FALSE(result.connectPending);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+// When every resolved candidate is refused, the blocking fallback exhausts the list and reports failure
+// (rather than handing back a half-open pending socket).
+TEST(TcpConnectorTest, BlockingFallbackFailsWhenAllCandidatesRefused) {
+  HookGuard guard;
+  const uint16_t deadPort = ReserveClosedLoopbackPort();
+  AddrinfoOverrideGuard override({MakeLoopback6Entry(deadPort), MakeLoopbackEntry(deadPort)});
+  auto buffer = MakeHostPortBuffer("localhost", "0");
+  ConnectResult result = ConnectTCP(buffer.host, buffer.port, AF_UNSPEC, /*connectTimeoutMs=*/1000);
+  EXPECT_TRUE(result.failure);
+  EXPECT_FALSE(result.connectPending);
+  EXPECT_FALSE(result.cnx);
 }
 
 }  // namespace

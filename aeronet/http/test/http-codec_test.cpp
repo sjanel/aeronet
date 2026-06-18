@@ -1123,4 +1123,138 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Generic contiguous-body bricks reused by the HTTP client (DecompressFullBody / CompressFullBody).
+// ---------------------------------------------------------------------------
+
+TEST(HttpCodecFullBody, DecompressEachSupportedEncodingRoundTrips) {
+  const std::string payload = test::MakePatternedPayload(8192);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, payload);
+    RequestDecompressionState state;
+    DecompressionConfig cfg;
+    RawChars out;
+    RawChars tmp;
+    std::string_view decoded;
+    const auto res =
+        HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp, decoded);
+    EXPECT_EQ(res.status, http::StatusCodeOK) << GetEncodingStr(enc);
+    EXPECT_EQ(decoded, payload) << GetEncodingStr(enc);
+  }
+}
+
+TEST(HttpCodecFullBody, DecompressStreamingThresholdPath) {
+  const std::string payload = test::MakePatternedPayload(64UL * 1024UL);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, payload);
+    RequestDecompressionState state;
+    DecompressionConfig cfg;
+    cfg.streamingDecompressionThresholdBytes = 1;  // force the streaming-context decode path
+    cfg.decoderChunkSize = 4096;
+    RawChars out;
+    RawChars tmp;
+    std::string_view decoded;
+    const auto res =
+        HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp, decoded);
+    EXPECT_EQ(res.status, http::StatusCodeOK) << GetEncodingStr(enc);
+    EXPECT_EQ(decoded, payload) << GetEncodingStr(enc);
+  }
+}
+
+TEST(HttpCodecFullBody, DecompressIdentityAndEmptyAndUnknown) {
+  RequestDecompressionState state;
+  DecompressionConfig cfg;
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+
+  // identity coding: nothing decoded, body returned verbatim.
+  const auto identityRes = HttpCodec::DecompressFullBody(state, cfg, http::identity, "hello", out, tmp, decoded);
+  EXPECT_EQ(identityRes.status, http::StatusCodeOK);
+  EXPECT_EQ(decoded, "hello");
+
+  // empty Content-Encoding => malformed.
+  const auto emptyRes = HttpCodec::DecompressFullBody(state, cfg, "", "hello", out, tmp, decoded);
+  EXPECT_EQ(emptyRes.status, http::StatusCodeBadRequest);
+
+  // unknown coding => unsupported.
+  const auto unknownRes = HttpCodec::DecompressFullBody(state, cfg, "made-up", "hello", out, tmp, decoded);
+  EXPECT_EQ(unknownRes.status, http::StatusCodeUnsupportedMediaType);
+}
+
+TEST(HttpCodecFullBody, DecompressRejectsOversizedCompressedInput) {
+  RequestDecompressionState state;
+  DecompressionConfig cfg;
+  cfg.maxCompressedBytes = 4;  // tiny cap
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+  const auto res = HttpCodec::DecompressFullBody(state, cfg, http::gzip, "0123456789", out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge);
+}
+
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD) || defined(AERONET_ENABLE_BROTLI)
+TEST(HttpCodecFullBody, DecompressGarbageBodyFails) {
+  const Encoding enc = test::SupportedEncodings().front();
+  RequestDecompressionState state;
+  DecompressionConfig cfg;
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+  const auto res =
+      HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), "definitely-not-a-valid-frame", out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodeBadRequest);
+}
+
+TEST(HttpCodecFullBody, DecompressExpansionRatioGuard) {
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string payload = test::MakePatternedPayload(16384);  // highly compressible => huge expansion ratio
+  const RawChars compressed = test::Compress(enc, payload);
+  RequestDecompressionState state;
+  DecompressionConfig cfg;
+  cfg.maxExpansionRatio = 1.5;  // refuse anything that expands more than 1.5x
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+  const auto res =
+      HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge);
+}
+
+TEST(HttpCodecFullBody, CompressRoundTripsEachEncoding) {
+  const std::string payload = test::MakePatternedPayload(16384);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    CompressionConfig cfg;
+    ResponseCompressionState compressionState(cfg);
+    RawChars out;
+    const std::string_view compressed =
+        HttpCodec::CompressFullBody(compressionState, enc, payload, cfg.maxCompressedBytes(payload.size()), out);
+    ASSERT_FALSE(compressed.empty()) << GetEncodingStr(enc);
+    EXPECT_LT(compressed.size(), payload.size()) << GetEncodingStr(enc);
+    const RawChars decoded = test::Decompress(enc, compressed);
+    EXPECT_EQ(std::string_view(decoded), payload) << GetEncodingStr(enc);
+  }
+}
+
+TEST(HttpCodecFullBody, CompressIncompressibleReturnsEmpty) {
+  const Encoding enc = test::SupportedEncodings().front();
+  const RawChars payload = test::MakeRandomPayload(4096);  // ~incompressible
+  CompressionConfig cfg;
+  ResponseCompressionState compressionState(cfg);
+  RawChars out;
+  // ratio guard (0.6 by default) cannot be met on random data => empty (caller sends uncompressed).
+  const std::string_view compressed = HttpCodec::CompressFullBody(compressionState, enc, std::string_view(payload),
+                                                                  cfg.maxCompressedBytes(payload.size()), out);
+  EXPECT_TRUE(compressed.empty());
+}
+#endif
+
+TEST(HttpCodecFullBody, CompressZeroBudgetReturnsEmpty) {
+  CompressionConfig cfg;
+  ResponseCompressionState compressionState(cfg);
+  RawChars out;
+  const std::string_view compressed = HttpCodec::CompressFullBody(compressionState, Encoding::gzip, "payload", 0, out);
+  EXPECT_TRUE(compressed.empty());
+}
+
 }  // namespace aeronet::internal

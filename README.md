@@ -338,6 +338,72 @@ Test: `curl -k --http2 https://localhost:8443/hello`
 
 See the [full HTTP/2 example](examples/http2.cpp) for more details.
 
+## HTTP Client
+
+Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 client**
+(`aeronet::HttpClient`) built on the very same non-blocking transport, TLS and event-loop bricks as the
+server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default). It is handy for
+service-to-service calls, health checks and tests that exercise a live server.
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+aeronet::HttpClient client;
+
+// Simple GET (http or https). The result is an aeronet::HttpClientResult
+// (std::expected<HttpResponse, HttpClientErrc>): the response on success, an error code otherwise.
+auto result = client.get("https://example.com/health");
+if (result) {
+  const aeronet::HttpResponse& resp = *result;
+  auto body = resp.bodyInMemory();                  // decoded body (chunked already de-framed)
+  auto ctype = resp.headerValueOrEmpty("content-type");
+} else {
+  auto reason = aeronet::ErrcToStr(result.error());  // e.g. "connection failed", "operation timed out"
+}
+
+// POST with a JSON body and a custom header, via the fluent request builder
+aeronet::ClientRequest req(aeronet::http::Method::POST, "https://example.com/api");
+req.headerAddLine("X-Trace-Id", "abc123").body(R"({"key":"value"})", "application/json");
+auto created = client.request(req);
+if (created) {
+  auto status = created->status();
+}
+```
+
+Highlights:
+
+- Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
+- Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
+- `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
+- **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
+- Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
+- Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+aeronet::HttpClientConfig cfg;
+cfg.withRequestCompression(aeronet::Encoding::zstd);  // compress big outbound bodies (opt-in)
+// Response decompression is on by default whenever a codec is compiled in.
+aeronet::HttpClient client(cfg);
+auto result = client.post("https://example.com/api", R"({"key":"value"})", "application/json");
+if (result) {
+  // result->bodyInMemory() is already decoded; the Content-Encoding header has been dropped.
+  auto body = result->bodyInMemory();
+}
+```
+
+The returned response is an `HttpResponse` — a `using` alias of the generic single-buffer `HttpMessage`
+type. Received headers are surfaced losslessly (reserved headers such as `Connection` / `Date` are
+stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-Length` /
+`Transfer-Encoding` are normalized through the body and de-framing).
+
+Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` — none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
+
+> The current client is synchronous (it owns and drives its own event loop). A coroutine-friendly API
+> (`co_await client.get(...)`) integrated with a running server loop, plus a native HTTP/2 client, are
+> tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Detailed Documentation
 
 The following focused docs expand each area without cluttering the high‑level overview:

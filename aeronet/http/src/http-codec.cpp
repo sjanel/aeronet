@@ -126,7 +126,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
 
 inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] RequestDecompressionState& decompressionState,
                                                        [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
-                                                       std::string_view& src, HeadersViewMap::iterator encodingHeaderIt,
+                                                       std::string_view& src, std::string_view contentEncoding,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
                                                        RawChars& tmpBuffer) {
   RawChars* dst = &tmpBuffer;
@@ -135,7 +135,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] RequestD
 
   // Decode in reverse order, algorithm by algorithm.
   // For the first stage, we read from chunks. For subsequent stages, we read from the previous output buffer.
-  for (http::HeaderValueReverseTokensIterator<','> encIt(encodingHeaderIt->second); encIt.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator<','> encIt(contentEncoding); encIt.hasNext();) {
     auto encoding = encIt.next();
     if (encoding.empty()) {
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
@@ -204,6 +204,32 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
     }
   }
   return false;
+}
+
+// Decode a single contiguous compressed `src` with one decoder, either in one-shot mode or, when
+// `useStreaming` is set, by feeding fixed-size chunks into a streaming context (bounded intermediate
+// memory for large payloads). Appends the decompressed bytes to `dst` (cleared first). Returns false on
+// decoder error or when a configured size cap is exceeded. Shared by the inbound (server) request
+// decompression and the outbound (client) response decompression so both stay in lock-step.
+bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, const DecompressionConfig& cfg,
+                      RawChars& dst) {
+  dst.clear();
+  if (!useStreaming) {
+    return decoder.decompressFull(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, dst);
+  }
+  auto* ctx = decoder.makeContext();
+  // The decompress body function cannot be called without body.
+  assert(!src.empty());
+  for (std::size_t processed = 0; processed < src.size();) {
+    const std::size_t remaining = src.size() - processed;
+    const std::size_t chunkLen = std::min(cfg.decoderChunkSize, remaining);
+    const std::string_view chunk(src.data() + processed, chunkLen);
+    processed += chunkLen;
+    if (!ctx->decompressChunk(chunk, processed == src.size(), cfg.maxDecompressedBytes, cfg.decoderChunkSize, dst)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 constexpr CompressResponseResult ConvertEncoderResultErrorToCompressResponseResult(EncoderResult encoderResult) {
@@ -651,28 +677,10 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompre
       [useStreamingDecode =
            UseStreamingDecompression(headersMap, decompressionConfig.streamingDecompressionThresholdBytes),
        &src, &decompressionConfig](auto& decoder, RawChars& dst) {
-        dst.clear();
-        if (!useStreamingDecode) {
-          return decoder.decompressFull(src, decompressionConfig.maxDecompressedBytes,
-                                        decompressionConfig.decoderChunkSize, dst);
-        }
-        auto* ctx = decoder.makeContext();
-        // The decompress body function cannot be called without body
-        assert(!src.empty());
-        for (std::size_t processed = 0; processed < src.size();) {
-          const std::size_t remaining = src.size() - processed;
-          const std::size_t chunkLen = std::min(decompressionConfig.decoderChunkSize, remaining);
-          const std::string_view chunk(src.data() + processed, chunkLen);
-          processed += chunkLen;
-          const bool lastChunk = processed == src.size();
-          if (!ctx->decompressChunk(chunk, lastChunk, decompressionConfig.maxDecompressedBytes,
-                                    decompressionConfig.decoderChunkSize, dst)) {
-            return false;
-          }
-        }
-        return true;
+        return DecodeContiguous(decoder, src, useStreamingDecode, decompressionConfig, dst);
       },
-      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt, compressedSize, bodyAndTrailersBuffer, tmpBuffer);
+      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer,
+      tmpBuffer);
 
   if (res.status != http::StatusCodeOK) {
     if (res.status == http::StatusCodeNotModified) {
@@ -759,7 +767,8 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompression
         }
         return decoder.decompressFull(src, maxPlainBytes, decoderChunkSize, dst);
       },
-      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt, compressedSize, bodyAndTrailersBuffer, tmpBuffer);
+      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer,
+      tmpBuffer);
   if (res.status != http::StatusCodeOK) {
     return res;
   }
@@ -768,6 +777,60 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompression
       FinalizeDecompressedBody(headersMap, encodingHeaderIt, src, additionalCapacity, bodyAndTrailersBuffer);
 
   return {};
+}
+
+RequestDecompressionResult HttpCodec::DecompressFullBody(RequestDecompressionState& decompressionState,
+                                                         const DecompressionConfig& decompressionConfig,
+                                                         std::string_view contentEncoding,
+                                                         std::string_view compressedBody, RawChars& outBuffer,
+                                                         RawChars& tmpBuffer, std::string_view& outDecompressed) {
+  // Default: nothing decoded yet (identity / pass-through result is the input itself).
+  outDecompressed = compressedBody;
+
+  if (contentEncoding.empty()) {
+    // Strict RFC compliance: empty Content-Encoding header is malformed.
+    return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
+  }
+  if (decompressionConfig.maxCompressedBytes != 0 && compressedBody.size() > decompressionConfig.maxCompressedBytes) {
+    return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
+  }
+
+  std::string_view src = compressedBody;
+  const bool useStreaming = decompressionConfig.streamingDecompressionThresholdBytes > 0 &&
+                            compressedBody.size() >= decompressionConfig.streamingDecompressionThresholdBytes;
+
+  RequestDecompressionResult res = DualBufferDecodeLoop(
+      decompressionState,
+      [useStreaming, &src, &decompressionConfig](auto& decoder, RawChars& dst) {
+        return DecodeContiguous(decoder, src, useStreaming, decompressionConfig, dst);
+      },
+      decompressionConfig.maxExpansionRatio, src, contentEncoding, compressedBody.size(), outBuffer, tmpBuffer);
+
+  if (res.status == http::StatusCodeNotModified) {
+    // Only identity codings were present: nothing was decoded, deliver the body verbatim.
+    res.status = http::StatusCodeOK;
+  }
+  // After the loop `src` points to the final decoded buffer (or the input when only identity was present).
+  outDecompressed = src;
+  return res;
+}
+
+std::string_view HttpCodec::CompressFullBody(ResponseCompressionState& compressionState, Encoding encoding,
+                                             std::string_view data, std::size_t maxCompressedBytes,
+                                             RawChars& outBuffer) {
+  outBuffer.clear();
+  if (maxCompressedBytes == 0) {
+    return {};
+  }
+  outBuffer.ensureAvailableCapacity(maxCompressedBytes);
+  const EncoderResult result = compressionState.encodeFull(encoding, data, maxCompressedBytes, outBuffer.data());
+  if (result.hasError()) {
+    // Either the encoding is not compiled in, the encoder failed, or the compressed output did not fit within
+    // maxCompressedBytes (the ratio guard) - signal "not beneficial" so the caller sends the body uncompressed.
+    return {};
+  }
+  outBuffer.setSize(result.written());
+  return outBuffer;
 }
 
 }  // namespace aeronet::internal

@@ -1,6 +1,7 @@
 #include "aeronet/socket-ops.hpp"
 
 #include <cassert>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -130,6 +131,53 @@ int GetSocketError(NativeHandle fd) noexcept {
   }
 #endif
   return err;
+}
+
+bool IsConnectionStale(NativeHandle fd) noexcept {
+  // An idle, fully-consumed HTTP/1.1 keep-alive connection must be quiet: anything readable means do not
+  // reuse it. EOF (peeked == 0) is an orderly close; a hard error is a reset; and any *pending bytes* are
+  // unexpected on an idle connection — most importantly a TLS `close_notify`, which the peer sends (as an
+  // encrypted record, i.e. readable data, not EOF) when it gracefully closes. Treating pending bytes as
+  // stale therefore catches the TLS graceful-close case too; the only false positive is a TLS session
+  // ticket that happened to arrive while idle, which merely costs one reconnect. Uses MSG_PEEK so nothing
+  // is consumed.
+  char probe = 0;
+#ifdef AERONET_WINDOWS
+  // Windows recv() has no MSG_DONTWAIT, so guarantee the peek below cannot block (regardless of the
+  // socket's blocking mode) by first polling readability with a zero-timeout select().
+  fd_set readSet;
+  FD_ZERO(&readSet);
+  FD_SET(fd, &readSet);
+  timeval immediate{};  // {0, 0} => return immediately, never blocks
+  const int ready = ::select(0, &readSet, nullptr, nullptr, &immediate);
+  if (ready == 0) {
+    return false;  // nothing readable: the connection is quiet and presumed alive
+  }
+  if (ready == SOCKET_ERROR) {
+    return true;  // cannot probe the socket: treat it as unusable
+  }
+  // Readable: peek (now guaranteed not to block) to classify what is pending.
+  const int peeked = ::recv(fd, &probe, 1, MSG_PEEK);
+  if (peeked == SOCKET_ERROR) {
+    // Raced away between select() and recv(): WSAEWOULDBLOCK means the peer is quiet (still alive); any
+    // other error (connection reset / aborted) means the connection is dead.
+    return ::WSAGetLastError() != WSAEWOULDBLOCK;
+  }
+  return true;  // EOF (peeked == 0) or unexpected pending bytes (peeked > 0): discard the connection
+#else
+  for (;;) {
+    const ssize_t peeked = ::recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (peeked < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      // EAGAIN/EWOULDBLOCK => no pending data, the connection is quiet and presumed alive; any other
+      // errno (ECONNRESET, ...) => the connection is dead.
+      return errno != EAGAIN && errno != EWOULDBLOCK;
+    }
+    return true;  // EOF (peeked == 0) or unexpected pending bytes (peeked > 0): discard the connection
+  }
+#endif
 }
 
 bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {

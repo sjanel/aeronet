@@ -56,13 +56,48 @@ The following features are inspired by capabilities that make frameworks like **
 
 #### HTTP Client (`AERONET_ENABLE_HTTP_CLIENT`)
 
-Async HTTP/1.1 + HTTP/2 client reusing the existing event loop, TLS stack, and compression codecs. Connection pooling with keep-alive, automatic retry, and redirect following. Coroutine-friendly API:
+Status: **Initial HTTP/1.1 client delivered** (`aeronet/client`, enabled by default via `AERONET_ENABLE_HTTP_CLIENT`).
+
+Delivered in the first iteration (`aeronet::HttpClient`):
+
+- Synchronous request API over aeronet's **non-blocking** transport + event-loop bricks (`ConnectTCP`, `EventLoop`, `PlainTransport`, `TlsTransport`), so no extra I/O stack is introduced.
+- Plain HTTP and HTTPS (the latter reusing the shared OpenSSL `TlsTransport`, with SNI + optional peer/hostname verification, gated on `AERONET_ENABLE_OPENSSL`).
+- Per-origin **keep-alive connection pooling** with bounded idle reuse and a transparent one-shot retry on a stale pooled connection.
+- Response parsing for `Content-Length`, **chunked** transfer-encoding (extensions + trailers tolerated), and connection-close framing; 1xx interim responses discarded.
+- Automatic **redirect following** (301/302/303/307/308) with method/body rewriting per RFC 7231 and a configurable hop limit.
+- Convenience verbs (`get`/`head`/`post`/`put`/`del`) plus a fluent `ClientRequest` builder, returning an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) over the existing aeronet response type (reused as the message container).
+- **Value-based error model**: per-request runtime failures (invalid URL, connect failure, timeout, TLS error, malformed/oversized response, ...) are reported as an `HttpClientErrc` in the result's error state — never thrown. Exceptions stay reserved for hard setup errors (client / TLS-context misconfiguration). A non-2xx status is a normal `HttpResponse` in the success state.
+- **Automatic response decompression** (`gzip`/`deflate`/`br`/`zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads, reusing the server's codec bricks and decoding without an extra copy of the compressed bytes. Driven by `HttpClientConfig::decompression` / `requestCompression` (auto-advertises a default `Accept-Encoding` when decompression is enabled).
+
+Example:
 
 ```cpp
-auto resp = co_await client.get("https://api.example.com/data");
+aeronet::HttpClient client;
+auto result = client.get("https://api.example.com/data");
+if (result && result->status() == 200) {
+  std::string_view body = result->bodyInMemory();
+}
 ```
 
-Essential for microservice architectures (proxying, upstream calls, service-to-service health checks). This is Drogon's most-used feature beyond basic serving and a common request for any HTTP server library aiming at real-world deployments.
+Next steps (not yet implemented):
+
+- **Unify the request buffer with the wire bytes**: `HttpMessage` is a flat, HTTP/1.1-optimised
+  buffer that, for responses, already IS the exact bytes written to the socket. Teaching it a
+  request-line first-line mode ("METHOD target HTTP/1.1") would let the client build the request
+  directly in that buffer and write it with zero reassembly (today the request fields live in an
+  `HttpMessage` and are copied once into the send buffer).
+- **Coroutine-friendly API** (`co_await client.get(...)`) and integration with a *running* server event loop so handlers can issue upstream calls without blocking. The current client owns its own loop and drives it synchronously.
+- **Native HTTP/2 client** (reusing the existing HPACK + frame codecs and `Http2ProtocolHandler`), including ALPN negotiation. *Groundwork landed:* the wire protocol now sits behind the `internal::ClientConnection` seam (HTTP/1.1 = `Http11Connection`), each pooled connection carries a `ClientProtocol` tag, the client advertises/reads ALPN over HTTPS, and the pool no longer assumes a 1:1 connection↔request model. Remaining work is the HTTP/2 engine itself: advertise `h2`, add the `ensureProtocolHandler` branch, and a multiplexing-aware pool path (`ClientConnection::canTakeAnotherStream`).
+- **Zero-copy body delivery** for identity responses (currently the body is copied once into the result), and pluggable timeouts/cancellation.
+- **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
+
+> Server-side prerequisite for efficient client keep-alive: aeronet currently emits empty-body
+> responses (e.g. a bare `302` redirect with only a `Location` header) **without** a
+> `Content-Length: 0` or `Transfer-Encoding` header. Per RFC 7230 §3.3.3 a compliant client must
+> then treat the body as ending at connection close, which defeats keep-alive reuse for such
+> responses (the client waits for the idle timeout). Emitting `Content-Length: 0` for empty-body
+> HTTP/1.1 responses (as nginx/Apache do) would let all keep-alive clients reuse the connection
+> immediately. Tracked as a follow-up server improvement.
 
 #### Server-Sent Events (SSE) convenience layer
 
