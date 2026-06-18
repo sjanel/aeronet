@@ -37,22 +37,12 @@ HttpResponse& HttpResponse::bodyJson(const T& obj) & {
 }
 
 template <class T>
-HttpResponse&& HttpResponse::bodyJson(const T& obj) && {
-  return std::move(bodyJson(obj));
-}
-
-template <class T>
 HttpResponse& HttpResponse::bodyYaml(const T& obj) & {
   std::string buf;
   if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
     throw std::runtime_error("bodyYaml serialization failed: " + glz::format_error(ec));
   }
   return body(std::move(buf), "text/yaml");
-}
-
-template <class T>
-HttpResponse&& HttpResponse::bodyYaml(const T& obj) && {
-  return std::move(bodyYaml(obj));
 }
 
 template <class T>
