@@ -10,10 +10,7 @@
 
 namespace aeronet {
 
-// Forward declarations
 struct ConnectionState;
-class HttpRequest;
-class HttpResponse;
 
 /// Protocol type identifier for runtime protocol switching.
 /// Used after successful Upgrade (101) or ALPN negotiation.

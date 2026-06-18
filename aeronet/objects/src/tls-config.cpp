@@ -48,6 +48,16 @@ void TLSConfig::validate() {
     throw std::invalid_argument("TLS configured: private key missing");
   }
 
+  // requireClientCert implies requestClientCert: enforcing mTLS is meaningless unless the server
+  // actually asks for a certificate during the handshake. Normalize here so every config path
+  // (builders, direct field assignment, JSON/glaze deserialization) converges to a consistent state
+  // before the TLS context is built. Without this, requireClientCert=true combined with
+  // requestClientCert=false would silently disable client-certificate verification and let
+  // certificate-less clients through.
+  if (requireClientCert) {
+    requestClientCert = true;
+  }
+
   if (requireClientCert && trustedClientCertsPem().empty()) {
     // Policy: require at least one trusted client cert when enforcing mTLS
     throw std::invalid_argument("requireClientCert=true but no trustedClientCertsPem configured");

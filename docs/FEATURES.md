@@ -1887,7 +1887,7 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 |------------|--------|-------|
 | TLS termination | ✅ | File or in‑memory PEM cert/key |
 | mTLS (request) | ✅ | `withTlsRequestClientCert()` (non-fatal absence) |
-| mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid) |
+| mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid). Implies *request*: enabling *require* always asks for a client certificate, regardless of the *request* flag. |
 | ALPN negotiation | ✅ | Ordered list via `withTlsAlpnProtocols()` |
 | Strict ALPN enforcement | ✅ | `withTlsAlpnMustMatch(true)` -> fatal if no overlap |
 | Negotiated ALPN in request | ✅ | `HttpRequest::alpnProtocol` |
