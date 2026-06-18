@@ -143,7 +143,10 @@ void ConfigureProtocolBounds(SSL_CTX* ctx, const TLSConfig& cfg) {
 }
 
 void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
-  if (!cfg.requestClientCert) {
+  // requireClientCert implies requestClientCert (normally normalized by TLSConfig::validate). Treat
+  // requireClientCert as sufficient here too, so a TlsContext built from a config that bypassed
+  // validation still enforces mTLS instead of silently accepting certificate-less clients.
+  if (!cfg.requestClientCert && !cfg.requireClientCert) {
     return;
   }
   int verifyMode = SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
