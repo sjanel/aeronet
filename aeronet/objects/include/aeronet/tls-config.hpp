@@ -230,8 +230,10 @@ class TLSConfig {
 
   bool enabled{false};            // Master TLS enable/disable switch
   bool requestClientCert{false};  // Request (but not require) a client certificate
-  bool requireClientCert{false};  // Require + verify client certificate (strict mTLS). Implies requestClientCert.
-  bool alpnMustMatch{false};      // If true and client offers no overlapping ALPN protocol, fail handshake.
+  // Require + verify client certificate (strict mTLS). Implies requestClientCert: validate() forces
+  // requestClientCert=true whenever this is set, so enabling require always asks for the certificate.
+  bool requireClientCert{false};
+  bool alpnMustMatch{false};  // If true and client offers no overlapping ALPN protocol, fail handshake.
   bool logHandshake{false};  // If true, emit info log line on TLS handshake completion (ALPN, cipher, version, peer CN)
   bool disableCompression{true};  // Disable TLS-level compression (CRIME mitigation)
   CipherPolicy cipherPolicy{CipherPolicy::Default};

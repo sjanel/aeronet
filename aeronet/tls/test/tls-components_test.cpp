@@ -395,6 +395,24 @@ TEST(TlsContextTest, InvalidTrustedClientCertPemThrows) {
   EXPECT_THROW(TlsContext{cfg}, std::bad_alloc);
 }
 
+// Defense in depth: even if a TlsContext is built from a config that bypassed TLSConfig::validate()
+// (requireClientCert set without requestClientCert), the context must still enforce client-cert
+// verification rather than silently accepting certificate-less clients.
+TEST(TlsContextTest, RequireClientCertEnforcesVerificationWithoutRequestFlag) {
+  auto certKey = CertKeyCache::Get().localhost;
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.requireClientCert = true;  // requestClientCert intentionally left false
+  cfg.withTlsTrustedClientCert(certKey.first);
+
+  TlsContext ctx(cfg);
+  auto* raw = reinterpret_cast<SSL_CTX*>(ctx.raw());
+  const int mode = ::SSL_CTX_get_verify_mode(raw);
+  EXPECT_NE(mode & SSL_VERIFY_PEER, 0);
+  EXPECT_NE(mode & SSL_VERIFY_FAIL_IF_NO_PEER_CERT, 0);
+}
+
 TEST(TlsContextTest, DisableCompressionFalseConfiguresSslCtx) {
   auto certKey = CertKeyCache::Get().localhost;
   TLSConfig cfg;

@@ -437,13 +437,6 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
 }
 #endif
 
-// Coverage goals:
-// 1. setHeader emits custom headers.
-// 2. Multiple calls with unique names all appear.
-// 3. Overriding Content-Type via setHeader before any body suppresses default text/plain.
-// 4. Calling setHeader after headers were implicitly sent (by first write) has no effect.
-// 5. HEAD request: headers still emitted correctly without body/chunk framing; Content-Length auto added when absent.
-
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
     writer.status(200);

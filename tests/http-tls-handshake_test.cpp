@@ -700,6 +700,35 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
   ASSERT_TRUE(resp.empty());
 }
 
+// Regression: setting requireClientCert directly (mimicking JSON/glaze deserialization or raw field
+// assignment) without the requestClientCert flag must still enforce mTLS. Before the fix the server
+// never asked for a certificate in this configuration and accepted certificate-less clients.
+TEST(HttpTlsMtlsAlpn, RequireClientCertDirectFieldHandshakeFailsWithout) {
+  auto serverCert = CertKeyCache::Get().server;
+  ASSERT_FALSE(serverCert.first.empty());
+  ASSERT_FALSE(serverCert.second.empty());
+  std::string resp;
+  {
+    test::TlsTestServer ts({"http/1.1"}, [&](HttpServerConfig& cfg) {
+      // Deliberately bypass the builder's implication: set requireClientCert on the field directly,
+      // leaving requestClientCert at its default (false). validate() must normalize the invariant.
+      cfg.tls.requireClientCert = true;
+      cfg.withTlsTrustedClientCert(serverCert.first);
+      ASSERT_FALSE(cfg.tls.requestClientCert);
+    });
+    auto port = ts.port();
+    ts.setDefault([](const HttpRequest& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
+    test::TlsClient::Options opts;
+    opts.alpn = {"http/1.1"};
+    // No client cert provided, so the handshake must fail.
+    test::TlsClient client(port, opts);
+    if (client.handshakeOk()) {
+      resp = client.get("/secure");
+    }
+  }
+  ASSERT_TRUE(resp.empty());
+}
+
 TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
   auto serverCert = CertKeyCache::Get().server;
   ASSERT_FALSE(serverCert.first.empty());

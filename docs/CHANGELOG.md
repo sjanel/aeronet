@@ -14,6 +14,10 @@ All notable changes to aeronet are documented in this file.
 - **Client address access on request**: Added `HttpRequest::clientAddress()` populated from peer socket address for both HTTP/1.1 and HTTP/2 paths.
 - **Optional Redis sliding-window contract**: Added Redis adapter boundary (`RedisEvalRequest` / `RedisEvalResponse`) in `RedisSlidingWindowRateLimitStore`, including Lua script payload exposure and deterministic key-schema helper for distributed multi-instance synchronization adapters.
 
+### Bug fixes
+
+- **mTLS enforcement: `requireClientCert` could be silently ignored** - A server configured with `requireClientCert=true` but `requestClientCert=false` (reachable via direct field assignment or JSON/YAML config, since the `withTlsRequireClientCert()` builder set both) did not request a client certificate during the handshake, so certificate-less clients were accepted instead of being rejected. `TLSConfig::validate()` now normalizes the invariant `requireClientCert ⇒ requestClientCert` for every configuration path, and the TLS context layer (`ConfigureClientVerification`) treats `requireClientCert` as sufficient to enable `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` as defense in depth. Strict mTLS now reliably terminates handshakes from clients that present no certificate.
+
 ## [1.3.0] - 2026-06-01
 
 ### 1.3.0 New features

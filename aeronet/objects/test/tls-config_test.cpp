@@ -202,6 +202,23 @@ TEST(TLSConfigTest, RequireClientCertNeedsTrustedCerts) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
+// requireClientCert must imply requestClientCert: otherwise the TLS layer never asks the client for a
+// certificate and strict mTLS is silently disabled. validate() normalizes the flag regardless of how
+// the config was constructed (direct field assignment here mimics JSON/glaze deserialization).
+TEST(TLSConfigTest, RequireClientCertImpliesRequestClientCert) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem);
+  cfg.requireClientCert = true;  // set directly, requestClientCert intentionally left false
+  cfg.withTlsTrustedClientCert("-----BEGIN CERTIFICATE-----\nFAKECLIENT\n-----END CERTIFICATE-----\n");
+  ASSERT_FALSE(cfg.requestClientCert);
+
+  cfg.validate();
+
+  EXPECT_TRUE(cfg.requestClientCert);
+  EXPECT_TRUE(cfg.requireClientCert);
+}
+
 TEST(TLSConfigTest, DisableCompression) {
   TLSConfig cfg;
   cfg.enabled = true;
