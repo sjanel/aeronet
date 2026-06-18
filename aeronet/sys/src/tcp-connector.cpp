@@ -4,10 +4,14 @@
 #include <ws2tcpip.h>
 #else
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #endif
 
 #include <cerrno>
+#include <chrono>
+#include <climits>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <span>
@@ -15,16 +19,52 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
+#include "aeronet/socket-ops.hpp"  // GetSocketError (and SetNonBlocking / SetCloseOnExec off-Linux)
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
-
-#ifndef AERONET_LINUX
-#include "aeronet/socket-ops.hpp"  // SetNonBlocking, SetCloseOnExec
-#endif
 
 namespace aeronet {
 
 namespace {
+
+// Outcome of waiting for a single non-blocking connect() to resolve.
+enum class ConnectWait : uint8_t { Connected, Failed, TimedOut };
+
+// Block until a pending non-blocking connect on `fd` completes, fails, or the deadline elapses.
+// SO_ERROR disambiguates a writable-but-refused socket (POLLOUT is also raised on connect failure).
+ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock::time_point deadline) {
+  for (;;) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      return ConnectWait::TimedOut;
+    }
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    const int timeoutMs = remaining > static_cast<decltype(remaining)>(INT_MAX) ? INT_MAX : static_cast<int>(remaining);
+#ifdef AERONET_WINDOWS
+    WSAPOLLFD pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    const int pr = ::WSAPoll(&pfd, 1, timeoutMs);
+#else
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+    const int pr = ::poll(&pfd, 1, timeoutMs);
+#endif
+    if (pr < 0) {
+      if (LastSystemError() == error::kInterrupted) {
+        continue;  // signal interruption: re-arm with the remaining budget
+      }
+      return ConnectWait::Failed;
+    }
+    if (pr == 0) {
+      return ConnectWait::TimedOut;
+    }
+    return GetSocketError(fd) == 0 ? ConnectWait::Connected : ConnectWait::Failed;
+  }
+}
+
 class CharReplacer {
  public:
   explicit CharReplacer(char* pos) : ch(*pos), pos(pos) { *pos = '\0'; }
@@ -42,7 +82,7 @@ class CharReplacer {
 };
 }  // namespace
 
-ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family) {
+ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family, int connectTimeoutMs) {
 #ifdef AERONET_WINDOWS
   EnsureWinsockInitialized();
 #endif
@@ -69,6 +109,12 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
     connectResult.failure = true;
     return connectResult;
   }
+
+  // When connectTimeoutMs > 0 the caller wants a fully-established socket: each pending connect is driven
+  // to completion here so a failed candidate (e.g. localhost's ::1 against an IPv4-only server) falls back
+  // to the next one. The budget is shared across all candidates.
+  const bool blockingFallback = connectTimeoutMs > 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(connectTimeoutMs);
 
   for (addrinfo* rp = res; rp != nullptr; rp = rp->ai_next) {
 #ifdef AERONET_LINUX
@@ -113,8 +159,21 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
         [[fallthrough]];
       case error::kAlready:
         // EALREADY: a previous non-blocking connect is already in progress on this socket
-        connectResult.connectPending = true;
-        return connectResult;
+        if (!blockingFallback) {
+          connectResult.connectPending = true;
+          return connectResult;  // caller drives completion via its own event loop
+        }
+        switch (WaitForConnectCompletion(connectResult.cnx.fd(), deadline)) {
+          case ConnectWait::Connected:
+            return connectResult;  // connectPending stays false: socket is established
+          case ConnectWait::Failed:
+            continue;  // close this socket (reassigned next iteration) and try the next candidate
+          case ConnectWait::TimedOut:
+            connectResult.cnx = {};
+            connectResult.failure = true;
+            return connectResult;
+        }
+        break;
       case error::kInterrupted:
         // Interrupted system call; treat as transient and try next address
         continue;
@@ -125,6 +184,8 @@ ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family)
         break;
     }
   }
+  // No candidate connected: never hand back a half-open / last-attempted socket on failure.
+  connectResult.cnx = {};
   connectResult.failure = true;
   return connectResult;
 }
