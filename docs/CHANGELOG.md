@@ -18,6 +18,10 @@ All notable changes to aeronet are documented in this file.
 
 - **mTLS enforcement: `requireClientCert` could be silently ignored** - A server configured with `requireClientCert=true` but `requestClientCert=false` (reachable via direct field assignment or JSON/YAML config, since the `withTlsRequireClientCert()` builder set both) did not request a client certificate during the handshake, so certificate-less clients were accepted instead of being rejected. `TLSConfig::validate()` now normalizes the invariant `requireClientCert ⇒ requestClientCert` for every configuration path, and the TLS context layer (`ConfigureClientVerification`) treats `requireClientCert` as sufficient to enable `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` as defense in depth. Strict mTLS now reliably terminates handshakes from clients that present no certificate.
 
+### Improvements
+
+- **Faster small `Copy` / `Append` (`memory-utils.hpp`)**: `aeronet::Copy` now copies runtime-sized spans of at most 32 bytes with a couple of inline overlapping fixed-width stores instead of `std::memcpy`, avoiding the call overhead that dominates for the short fragments the HTTP request/response builders append in bulk (method, header names/values). Compile-time-constant sizes are unaffected (the size dispatch folds away and still emits direct stores), larger copies fall straight back to `std::memcpy`, and every access stays within the source/destination bounds so all existing callers remain correct. A new microbenchmark (`benchmarks/internal/memory-utils_bench.cpp`) measures ~1.9x on isolated small copies and ~1.5x on a realistic HTTP fragment mix.
+
 ## [1.3.0] - 2026-06-01
 
 ### 1.3.0 New features
