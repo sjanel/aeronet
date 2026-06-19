@@ -43,6 +43,79 @@ TEST(StringEqualIgnoreCase, StringViewVariants) {
   EXPECT_FALSE(CaseInsensitiveEqual("foo", "fooo"));
 }
 
+TEST(StringEqualIgnoreCase, SwarBoundariesAndOverlap) {
+  // Exercise the 16-byte SSE/NEON fast path, the 8-byte SWAR path for the [8,16) remainder, and their
+  // overlapping tails across the chunk boundaries, with the difference placed at the first byte, the last
+  // byte, and inside the overlap region. Lengths cover single- and multi-iteration 16-byte blocks (48/64/96)
+  // and every off-by-one around the 8- and 16-byte boundaries where the overlapping tail re-reads bytes.
+  for (std::size_t len :
+       {std::size_t{7},  std::size_t{8},  std::size_t{9},  std::size_t{15}, std::size_t{16}, std::size_t{17},
+        std::size_t{23}, std::size_t{24}, std::size_t{31}, std::size_t{32}, std::size_t{33}, std::size_t{40},
+        std::size_t{47}, std::size_t{48}, std::size_t{49}, std::size_t{63}, std::size_t{64}, std::size_t{65},
+        std::size_t{95}, std::size_t{96}, std::size_t{97}}) {
+    std::string lhs(len, 'a');
+    for (std::size_t i = 0; i < len; ++i) {
+      lhs[i] = static_cast<char>('a' + (i % 26));
+    }
+    // Equal regardless of case.
+    std::string upper = lhs;
+    for (char& ch : upper) {
+      ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    EXPECT_TRUE(CaseInsensitiveEqual(lhs, upper)) << "len=" << len;
+
+    // A real (non-case) difference at first / last / overlap-region positions must be detected.
+    for (std::size_t pos : {std::size_t{0}, len - 1, len / 2}) {
+      std::string diff = upper;
+      diff[pos] = static_cast<char>(diff[pos] ^ 0x01);  // perturb without staying a case-only change
+      EXPECT_FALSE(CaseInsensitiveEqual(lhs, diff)) << "len=" << len << " pos=" << pos;
+    }
+  }
+}
+
+TEST(StringEqualIgnoreCase, NonAsciiBytesComparedRaw) {
+  // High-bit bytes (>= 0x80) must be compared as-is (never lowercased), matching scalar tolower. This is the
+  // path the printable-ASCII fuzz never reaches, and where a SWAR/SSE lowercase bug would surface.
+  const std::string str1 = "caf\xC3\xA9-Header";  // contains 0xC3 0xA9
+  const std::string str2 = "CAF\xC3\xA9-HEADER";  // same non-ASCII bytes, letters case-flipped
+  EXPECT_TRUE(CaseInsensitiveEqual(str1, str2));
+
+  std::string str3 = str2;
+  str3[3] = static_cast<char>(0xC4);  // change a non-ASCII byte -> must differ
+  EXPECT_FALSE(CaseInsensitiveEqual(str1, str3));
+
+  // Bytes 0x80..0xFF are not letters: two strings differing only in such a byte are unequal even though they
+  // would be "equal" under a buggy unsigned-range lowercase.
+  const std::string hi1(10, static_cast<char>(0xE0));
+  std::string hi2 = hi1;
+  hi2[9] = static_cast<char>(0xC0);
+  EXPECT_FALSE(CaseInsensitiveEqual(hi1, hi2));
+  EXPECT_TRUE(CaseInsensitiveEqual(hi1, std::string(10, static_cast<char>(0xE0))));
+
+  // Same checks at >= 16 bytes so the 16-byte SSE/NEON path drives the high-bit handling: the signed
+  // _mm_cmpgt_epi8 / vcgeq_u8 range test must treat bytes >= 0x80 as non-letters (never lowercased). Mixing
+  // ASCII letters (case-flipped, must compare equal) with high bytes (compared raw) in one wide block.
+  const std::string wideA = "X-Caf\xC3\xA9-Custom-Header-Name";  // 24 bytes, spans two 16-byte blocks
+  std::string wideB = wideA;
+  for (char& ch : wideB) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+      ch = static_cast<char>(ch ^ 0x20);  // flip case of ASCII letters only; high bytes untouched
+    }
+  }
+  EXPECT_TRUE(CaseInsensitiveEqual(wideA, wideB));
+  // Perturbing a high byte (a non-letter) in the second 16-byte block must be detected, not masked away.
+  std::string wideC = wideB;
+  wideC[4] = static_cast<char>(0xC4);  // was 0xC3
+  EXPECT_FALSE(CaseInsensitiveEqual(wideA, wideC));
+  // A run of identical high bytes longer than one 16-byte block stays equal; a single differing high byte in
+  // the overlapping tail region is still caught.
+  const std::string hiWide(20, static_cast<char>(0xE0));
+  EXPECT_TRUE(CaseInsensitiveEqual(hiWide, std::string(20, static_cast<char>(0xE0))));
+  std::string hiWide2 = hiWide;
+  hiWide2[19] = static_cast<char>(0xC0);
+  EXPECT_FALSE(CaseInsensitiveEqual(hiWide, hiWide2));
+}
+
 TEST(StringEqualIgnoreCase, HashConsistency) {
   CaseInsensitiveHashFunc hashFunc;
   const std::string_view str1 = "MiXeDCase";
@@ -80,7 +153,9 @@ bool ReferenceCaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
 
 TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
   std::mt19937_64 rng(123456789);
-  std::uniform_int_distribution<std::size_t> lenDist(0, 32);
+  // Up to 100 bytes so the 16-byte SSE/NEON path (multiple iterations + overlapping tail) is fuzzed against
+  // the scalar reference, not just the <= 32-byte sizes.
+  std::uniform_int_distribution<std::size_t> lenDist(0, 100);
   std::uniform_int_distribution<int> charDist(0x20, 0x7E);  // printable ASCII
   std::uniform_int_distribution<int> caseDist(0, 1);
   std::string s1;
