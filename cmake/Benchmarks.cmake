@@ -107,6 +107,7 @@ set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/inter
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
+set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-utils_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
 set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
 
@@ -152,6 +153,9 @@ set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmark
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL})
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS})
+set_target_properties(aeronet-bench-internal-memory-utils PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
 set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")

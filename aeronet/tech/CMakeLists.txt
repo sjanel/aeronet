@@ -96,6 +96,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    memory-utils_test
+    test/memory-utils_test.cpp
+)
+
+AeronetAddUnitTest(
     ndigits_test
     test/ndigits_test.cpp
 )
