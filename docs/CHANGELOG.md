@@ -21,6 +21,7 @@ All notable changes to aeronet are documented in this file.
 ### Improvements
 
 - **Faster small `Copy` / `Append` (`memory-utils.hpp`)**: `aeronet::Copy` now copies runtime-sized spans of at most 32 bytes with a couple of inline overlapping fixed-width stores instead of `std::memcpy`, avoiding the call overhead that dominates for the short fragments the HTTP request/response builders append in bulk (method, header names/values). Compile-time-constant sizes are unaffected (the size dispatch folds away and still emits direct stores), larger copies fall straight back to `std::memcpy`, and every access stays within the source/destination bounds so all existing callers remain correct. A new microbenchmark (`benchmarks/internal/memory-utils_bench.cpp`) measures ~1.9x on isolated small copies and ~1.5x on a realistic HTTP fragment mix.
+- **Faster `CaseInsensitiveEqual` (`string-equal-ignore-case.hpp`)**: header-name matching — one of the hottest operations in the server (71 call sites) — no longer runs a per-byte `tolower` loop. At runtime it lowercases and compares a full SIMD word at a time: **16 bytes** via the new `AsciiLowerEqual16` (SSE2 on x86-64, NEON on ARM). Microbenchmarks (`benchmarks/internal/string-equal-ignore-case_bench.cpp`, fully-inlined apples-to-apples) show the 16-byte path is **~35–57% faster** than the previous 8-byte SWAR on the actual comparison of strings ≥ 16 bytes (equal, or differing late), neutral on hash-map header lookups, and within noise on the differ-at-first-byte case.
 
 ## [1.3.0] - 2026-06-01
 
