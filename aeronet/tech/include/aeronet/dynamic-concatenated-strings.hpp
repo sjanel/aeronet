@@ -69,27 +69,27 @@ class DynamicConcatenatedStrings {
 
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
-    std::string_view buf = _buf;
-    while (!buf.empty()) {
-      const auto nextSep = buf.find(kSep);
-      if (nextSep == part.size() && std::memcmp(buf.data(), part.data(), nextSep) == 0) {
+    std::string_view remaining = _buf;
+    while (!remaining.empty()) {
+      const auto nextSep = remaining.find(kSep);
+      if (nextSep == part.size() && std::memcmp(remaining.data(), part.data(), nextSep) == 0) {
         return true;
       }
-      buf.remove_prefix(nextSep + kSep.size());
+      remaining.remove_prefix(nextSep + kSep.size());
     }
     return false;
   }
 
   // Check whether a given part is already contained (case-insensitive).
   [[nodiscard]] bool containsCI(std::string_view part) const noexcept {
-    std::string_view buf = _buf;
-    while (!buf.empty()) {
-      const auto nextSep = buf.find(kSep);
+    std::string_view remaining = _buf;
+    while (!remaining.empty()) {
+      const auto nextSep = remaining.find(kSep);
       // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      if (CaseInsensitiveEqual(std::string_view{buf.data(), nextSep}, part)) {
+      if (CaseInsensitiveEqual(std::string_view{remaining.data(), nextSep}, part)) {
         return true;
       }
-      buf.remove_prefix(nextSep + kSep.size());
+      remaining.remove_prefix(nextSep + kSep.size());
     }
     return false;
   }
@@ -176,9 +176,9 @@ class DynamicConcatenatedStrings {
   // Get the number of concatenated strings
   [[nodiscard]] size_type nbConcatenatedStrings() const noexcept {
     size_type count = 0;
-    std::string_view buf = _buf;
-    for (std::string_view::size_type pos = 0; pos < buf.size(); ++count) {
-      pos = buf.find(kSep, pos) + kSep.size();
+    std::string_view sv = _buf;
+    for (std::string_view::size_type pos = 0; pos < sv.size(); ++count) {
+      pos = sv.find(kSep, pos) + kSep.size();
     }
     return count;
   }
