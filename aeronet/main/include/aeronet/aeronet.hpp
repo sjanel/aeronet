@@ -45,6 +45,7 @@
 #include "aeronet/tls-config.hpp"             // IWYU pragma: export
 
 // HTTP primitives
+#include "aeronet/http-json.hpp"             // IWYU pragma: export (opt-in JSON/YAML body helpers; no-op without Glaze)
 #include "aeronet/http-request.hpp"          // IWYU pragma: export
 #include "aeronet/http-response-writer.hpp"  // IWYU pragma: export
 #include "aeronet/http-response.hpp"         // IWYU pragma: export

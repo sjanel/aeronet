@@ -3,6 +3,7 @@
 #include <charconv>
 #include <climits>
 #include <concepts>
+#include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -10,10 +11,16 @@
 #include <type_traits>
 
 #include "aeronet/fixedcapacityvector.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/nchars.hpp"
 
 namespace aeronet {
+
+// Logging helpers for StringToIntegral error paths. They are defined out-of-line in stringconv.cpp so
+// that the (heavy) logging dependency stays out of this very widely-included header.
+// Logs (critical) a full decode failure of 'src' into an integral.
+void LogStringToIntegralFailure(std::string_view src);
+// Logs (error) a partial decode: only 'decodedCount' chars of 'src' were consumed, yielding 'value'.
+void LogStringToIntegralPartialDecode(std::ptrdiff_t decodedCount, std::string_view src, std::string_view value);
 
 inline auto IntegralToCharVector(std::integral auto val) {
   using Int = decltype(val);
@@ -41,13 +48,13 @@ Integral StringToIntegral(const char* begPtr, std::size_t len) {
   const auto [ptr, errc] = std::from_chars(begPtr, endPtr, ret);
 
   if (errc != std::errc()) {
-    log::critical("Unable to decode '{}' into integral", std::string_view(begPtr, len));
+    LogStringToIntegralFailure(std::string_view(begPtr, len));
     throw std::invalid_argument("StringToIntegral conversion failed");
   }
 
   if (ptr != endPtr) {
-    log::error("Only '{}' chars from '{}' decoded into integral '{}'", ptr - begPtr, std::string_view(begPtr, len),
-               ret);
+    LogStringToIntegralPartialDecode(ptr - begPtr, std::string_view(begPtr, len),
+                                     std::string_view(IntegralToCharVector(ret)));
   }
   return ret;
 }

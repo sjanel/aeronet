@@ -526,6 +526,7 @@ Example:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
+#include <aeronet/log.hpp>
 using namespace aeronet;
 
 int main() {
@@ -554,6 +555,8 @@ Additional notes:
 Stats aggregation example:
 
 ```cpp
+#include <aeronet/log.hpp>
+
 HttpServer multi(HttpServerConfig{}.withNbThreads(4), Router{});
 auto st = multi.stats();
 for (size_t i = 0; i < st.per.size(); ++i) {
