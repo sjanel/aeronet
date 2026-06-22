@@ -19,6 +19,7 @@
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-json.hpp"  // bodyJson/bodyYaml definitions
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"

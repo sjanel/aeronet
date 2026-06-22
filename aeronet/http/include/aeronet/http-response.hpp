@@ -34,11 +34,6 @@
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
-#ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
-#include <glaze/yaml.hpp>  // IWYU pragma: keep
-#endif
-
 namespace aeronet {
 
 class EncoderContext;
@@ -1005,38 +1000,25 @@ class HttpResponse {
   /// Serialize 'obj' as JSON directly into the response body (Content-Type: application/json).
   /// Avoids intermediate copies: Glaze writes into a std::string which is then moved into the body.
   /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
+  /// Definition lives in <aeronet/http-json.hpp> (include it to use this method) so that translation
+  /// units that do not serialize JSON/YAML do not pay the (heavy) Glaze compilation cost.
   template <class T>
-  HttpResponse& bodyJson(const T& obj) & {
-    std::string buf;
-    if (const auto ec = glz::write<glz::opts{}>(obj, buf)) [[unlikely]] {
-      throw std::runtime_error("bodyJson serialization failed: " + glz::format_error(ec));
-    }
-    return body(std::move(buf), http::ContentTypeApplicationJson);
-  }
+  HttpResponse& bodyJson(const T& obj) &;
 
-  /// Rvalue overload of bodyJson.
+  /// Rvalue overload of bodyJson. See bodyJson(const T&) & and include <aeronet/http-json.hpp>.
   template <class T>
-  HttpResponse&& bodyJson(const T& obj) && {
-    return std::move(bodyJson(obj));
-  }
+  HttpResponse&& bodyJson(const T& obj) &&;
 
   /// Serialize 'obj' as YAML directly into the response body (Content-Type: text/yaml).
   /// Avoids intermediate copies: Glaze writes into a std::string which is then moved into the body.
   /// Throws std::runtime_error on serialization failure (e.g. from a faulty custom Glaze serializer).
+  /// Definition lives in <aeronet/http-json.hpp> (include it to use this method).
   template <class T>
-  HttpResponse& bodyYaml(const T& obj) & {
-    std::string buf;
-    if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
-      throw std::runtime_error("bodyYaml serialization failed: " + glz::format_error(ec));
-    }
-    return body(std::move(buf), "text/yaml");
-  }
+  HttpResponse& bodyYaml(const T& obj) &;
 
-  /// Rvalue overload of bodyYaml.
+  /// Rvalue overload of bodyYaml. See bodyYaml(const T&) & and include <aeronet/http-json.hpp>.
   template <class T>
-  HttpResponse&& bodyYaml(const T& obj) && {
-    return std::move(bodyYaml(obj));
-  }
+  HttpResponse&& bodyYaml(const T& obj) &&;
 #endif
 
  private:
