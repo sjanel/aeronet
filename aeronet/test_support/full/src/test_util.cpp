@@ -62,19 +62,34 @@ void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds t
   const auto start = std::chrono::steady_clock::now();
   const auto maxTs = start + totalTimeout;
 
+  // Bound how long a single blocking send() may park in the kernel. On a *blocking* socket, when the peer
+  // stops draining (e.g. a stalled server), send() blocks indefinitely and the deadline below would never be
+  // observed — that is exactly how http-connect_test could hang for ~100s instead of failing fast. SO_SNDTIMEO
+  // makes send() return EAGAIN periodically so we can re-check the wall-clock deadline. Best-effort: some
+  // callers use mock sockets that do not support SO_SNDTIMEO.
+  try {
+    setSendTimeout(fd, std::min(totalTimeout, std::chrono::milliseconds{100}));
+  } catch (const std::exception& ex) {
+    log::debug("sendAll: setSendTimeout failed ({})", ex.what());
+  }
+
   bool alreadyLoggedError = false;
 
   for (std::size_t remaining = data.size(); remaining > 0;) {
+    if (std::chrono::steady_clock::now() >= maxTs) {
+      log::error("sendAll timed out after {} ms", totalTimeout.count());
+      throw std::runtime_error("sendAll timed out");
+    }
     const auto sent = SafeSend(fd, cursor, remaining);
     if (sent == -1) {
       const auto err = LastSystemError();
+      if (err == error::kWouldBlock) {
+        // SO_SNDTIMEO elapsed with no progress (or the socket is non-blocking): loop back and re-check maxTs.
+        continue;
+      }
       if (!alreadyLoggedError) {
         alreadyLoggedError = true;
         log::error("sendAll failed with error {}", err);
-      }
-      if (std::chrono::steady_clock::now() >= maxTs) {
-        log::error("sendAll timed out after {} ms", totalTimeout.count());
-        throw std::runtime_error("sendAll timed out");
       }
       std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner) include chrono is there
       continue;
@@ -560,6 +575,22 @@ void setRecvTimeout(NativeHandle fd, SysDuration timeout) {
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
 #endif
     ThrowSystemError("Error from setRecvTimeout");
+  }
+}
+
+void setSendTimeout(NativeHandle fd, SysDuration timeout) {
+  const int timeoutMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count());
+#ifdef AERONET_WINDOWS
+  DWORD tv = static_cast<DWORD>(timeoutMs);
+  if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv)) == SOCKET_ERROR) {
+#else
+  // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
+  struct timeval tv{static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
+                    static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000)};
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_SNDTIMEO
+  if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == -1) {
+#endif
+    ThrowSystemError("Error from setSendTimeout");
   }
 }
 
