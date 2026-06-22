@@ -228,7 +228,7 @@ struct glz::meta<aeronet::HttpServerConfig> {
       "minCapturedBodySize", &T::minCapturedBodySize, "maxOutboundBufferBytes", &T::maxOutboundBufferBytes,
       "pollInterval", &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor, "pollIntervalMaxFactor",
       &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout", &T::bodyReadTimeout,
-      "tls", &T::tls,
+      "tls", &T::tls, "httpsRedirect", &T::httpsRedirect,
 #ifdef AERONET_ENABLE_HTTP2
       "http2", &T::http2,
 #endif

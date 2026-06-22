@@ -16,6 +16,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
@@ -100,6 +101,32 @@ struct HttpServerConfig {
   // Zero copy mode for outbound responses.
   // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel).
   ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
+
+  // ===========================================
+  // Automatic HTTP -> HTTPS redirect
+  // ===========================================
+  // When enabled (targetPort != 0), this (plaintext) listener becomes a redirector: every incoming request is
+  // answered with a 3xx redirect to the equivalent https:// URL instead of being routed to handlers. The redirect
+  // host is derived from the request Host header (its port, if any, is replaced by `targetPort`), preserving the
+  // path and query. Typical deployment: run one plaintext listener on port 80 with `withHttpsRedirect(443)`
+  // pointing at a second TLS listener on port 443 (see MultiHttpServer / SingleHttpServer). Connections are closed
+  // after the redirect (the client reconnects over TLS).
+  // It is invalid to enable httpsRedirect together with `tls.enabled` (a TLS listener cannot redirect to itself).
+  struct HttpsRedirectConfig {
+    // Whether the redirect is enabled for this listener.
+    [[nodiscard]] bool enabled() const noexcept { return targetPort != 0; }
+
+    // Target HTTPS port advertised in the redirect URL, and the enable switch: 0 (default) disables the redirect
+    // entirely. When non-zero, the standard port 443 is omitted from the URL (https://host/path) while any other
+    // value is appended (https://host:8443/path).
+    std::uint16_t targetPort{0};
+
+    // Redirect status code. Must be one of 301 (Moved Permanently, default), 302 (Found), 307 (Temporary Redirect),
+    // or 308 (Permanent Redirect). Use 308 to preserve the request method and body on non-GET/HEAD requests.
+    http::StatusCode statusCode{http::StatusCodeMovedPermanently};
+  };
+
+  HttpsRedirectConfig httpsRedirect;
 
   // Minimum response payload size (in bytes) for which to use zerocopy when enabled.
   // Smaller responses are sent via regular `send` to avoid the overhead of pinning and
@@ -458,6 +485,13 @@ struct HttpServerConfig {
 
   // Disable TLS entirely
   HttpServerConfig& withoutTls();
+
+  // Enable automatic HTTP -> HTTPS redirect on this (plaintext) listener.
+  //   targetHttpsPort: HTTPS port advertised in the redirect URL (443 is omitted from the URL). 0 disables it.
+  //   statusCode:      redirect status (301 default, 302, 307 or 308).
+  // It is invalid to combine this with TLS on the same listener (validate() throws).
+  HttpServerConfig& withHttpsRedirect(std::uint16_t targetHttpsPort = 443,
+                                      http::StatusCode statusCode = http::StatusCodeMovedPermanently);
 
   // Enable / configure response compression. Passing by value allows caller to move.
   HttpServerConfig& withCompression(CompressionConfig cfg);

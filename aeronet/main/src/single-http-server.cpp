@@ -34,6 +34,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/https-redirect.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -54,6 +55,7 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -426,6 +428,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       --_connectionSweepState.pendingTimeoutConnections;
     }
     state.parsingHeaders = false;
+
+    // Automatic HTTP -> HTTPS redirect: answer every request on this plaintext listener with a 3xx redirect
+    // to the equivalent https:// URL, bypassing routing, upgrades and body handling. The connection is closed
+    // afterwards (the client reconnects over TLS).
+    if (_config.httpsRedirect.enabled()) {
+      emitHttpsRedirect(cnxIt, request.headSpanSize());
+      break;
+    }
+
     bool isChunked = false;
     const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
     if (optTransferEncoding) {
@@ -1370,6 +1381,54 @@ void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode stat
 
   state.requestDrainAndClose();
   state.request.end(statusCode);
+}
+
+void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consumedBytes) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  HttpRequest& request = state.request;
+
+  // Build the absolute https:// target into a scratch buffer, re-encoding the (decoded) path and query so the
+  // result is always a valid URL / header value. HttpResponse::location() copies it out, so the scratch buffer
+  // can be reused freely afterwards.
+  RawChars& urlBuf = _sharedBuffers.buf;
+  if (!http::AppendHttpsAuthority(urlBuf, request.headerValueOrEmpty(http::Host), _config.httpsRedirect.targetPort)) {
+    // No (or empty) Host header: an absolute https URL cannot be constructed.
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
+    return;
+  }
+  http::AppendUrlEncodedPath(urlBuf, request.path());
+  char querySep = '?';
+  for (const auto& [key, value] : request.queryParamsRange()) {
+    http::AppendUrlEncodedQueryParam(urlBuf, querySep, key, value);
+    querySep = '&';
+  }
+
+  const http::StatusCode statusCode = _config.httpsRedirect.statusCode;
+  HttpResponse resp(statusCode);
+  resp.location(std::string_view(urlBuf));
+
+  ++state.requestsServed;
+  ++_stats.totalRequestsServed;
+
+  clearRequestDeadline(state);
+  state.headerStartTp = {};
+
+  // Force connection close: the redirected client reconnects over TLS, and closing avoids any
+  // request-body framing concerns since the body is intentionally not consumed.
+  HttpResponse::Options opts;
+  opts.close(true);
+  opts.headMethod(request.method() == http::Method::HEAD);
+
+  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
+                                         _config.minCapturedBodySize));
+
+  state.inBuffer.erase_front(consumedBytes);
+  state.requestDrainAndClose();
+
+  if (_callbacks.metrics || _accessLog) {
+    emitRequestMetrics(request, statusCode, request.body().size(), state.requestsServed > 0);
+  }
+  request.end(statusCode);
 }
 
 bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
