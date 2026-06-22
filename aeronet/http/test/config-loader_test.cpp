@@ -215,6 +215,29 @@ TEST(ConfigLoaderTest, TlsPemFields) {
   EXPECT_EQ(config.server.tls.cipherList(), "TLS_AES_256_GCM_SHA384");
 }
 
+TEST(ConfigLoaderTest, HttpsRedirectFields) {
+  auto config = detail::ParseConfigString(R"({
+    "server": {
+      "httpsRedirect": {
+        "targetPort": 8443,
+        "statusCode": 308
+      }
+    }
+  })",
+                                          ConfigFormat::json);
+  EXPECT_TRUE(config.server.httpsRedirect.enabled());
+  EXPECT_EQ(config.server.httpsRedirect.targetPort, 8443);
+  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodePermanentRedirect);
+  EXPECT_NO_THROW(config.server.validate());
+}
+
+TEST(ConfigLoaderTest, HttpsRedirectDefaults) {
+  auto config = detail::ParseConfigString("{}", ConfigFormat::json);
+  EXPECT_FALSE(config.server.httpsRedirect.enabled());
+  EXPECT_EQ(config.server.httpsRedirect.targetPort, 0);
+  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
+}
+
 TEST(ConfigLoaderTest, TlsSessionTickets) {
   auto config = detail::ParseConfigString(R"({
     "server": {

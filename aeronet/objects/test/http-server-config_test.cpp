@@ -12,6 +12,7 @@
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
@@ -410,6 +411,52 @@ TEST(HttpServerConfigTest, WithTcpNoDelayMode) {
   config.withTcpNoDelay(false);
   EXPECT_EQ(config.tcpNoDelay, TcpNoDelayMode::Disabled);
   EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, HttpsRedirectDefaultsDisabled) {
+  HttpServerConfig config;
+  EXPECT_FALSE(config.httpsRedirect.enabled());
+  EXPECT_EQ(config.httpsRedirect.targetPort, 0);
+  EXPECT_EQ(config.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, WithHttpsRedirectBuilder) {
+  HttpServerConfig config;
+  config.withHttpsRedirect(8443, http::StatusCodePermanentRedirect);
+  EXPECT_TRUE(config.httpsRedirect.enabled());
+  EXPECT_EQ(config.httpsRedirect.targetPort, 8443);
+  EXPECT_EQ(config.httpsRedirect.statusCode, http::StatusCodePermanentRedirect);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, WithHttpsRedirectDefaultArgs) {
+  HttpServerConfig config;
+  config.withHttpsRedirect();
+  EXPECT_TRUE(config.httpsRedirect.enabled());
+  EXPECT_EQ(config.httpsRedirect.targetPort, 443);
+  EXPECT_EQ(config.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, HttpsRedirectZeroPortDisablesAndValidates) {
+  HttpServerConfig config;
+  config.withHttpsRedirect(0);  // 0 disables the redirect entirely (no error)
+  EXPECT_FALSE(config.httpsRedirect.enabled());
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, HttpsRedirectRejectsNonRedirectStatus) {
+  HttpServerConfig config;
+  config.withHttpsRedirect(443, http::StatusCodeOK);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, HttpsRedirectRejectsCombinationWithTls) {
+  HttpServerConfig config;
+  config.withHttpsRedirect();
+  config.tls.enabled = true;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 #ifdef AERONET_ENABLE_HTTP2

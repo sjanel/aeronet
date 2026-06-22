@@ -491,6 +491,11 @@ class SingleHttpServer {
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // The connection will be closed after draining buffered writes.
   void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
+
+  // Build & queue an automatic HTTP -> HTTPS redirect response (used when config.httpsRedirect.enabled()).
+  // Derives the target from the request Host header + config.httpsRedirect, then closes the connection.
+  // consumedBytes is the number of bytes of the current request to consume from the inbound buffer.
+  void emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consumedBytes);
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData);
   void flushOutbound(ConnectionIt cnxIt);

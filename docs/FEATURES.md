@@ -1998,6 +1998,63 @@ server.postConfigUpdate([newClientCaPem](HttpServerConfig& cfg) {
 });
 ```
 
+### Automatic HTTP → HTTPS redirect
+
+A plaintext listener can be turned into a pure redirector that answers **every** request with a `3xx`
+redirect to the equivalent `https://` URL, instead of routing it to handlers. This is the typical companion
+to a TLS listener: run one server on port 80 that redirects to a second TLS server on port 443.
+
+> This is a plaintext-side feature and does **not** require `AERONET_ENABLE_OPENSSL` to be built; it only emits
+> a redirect. The TLS endpoint it points at is a separate listener.
+
+```cpp
+// Plaintext redirector on :80 -> https://<host>/<path> (standard port 443 omitted from the URL)
+HttpServerConfig http;
+http.withPort(80).withHttpsRedirect(/*targetHttpsPort=*/443);
+SingleHttpServer redirector(http);
+
+// TLS server on :443 doing the real work
+std::string certPem /* = R"(-----BEGIN CERTIFICATE-----...)" */;
+std::string keyPem /* = R"(-----BEGIN PRIVATE KEY-----...)" */;
+Router router;
+HttpServerConfig https;
+https.withPort(443).withTlsCertKeyMemory(certPem, keyPem);
+SingleHttpServer app(https, std::move(router));
+```
+
+Behaviour:
+
+- The redirect host is taken from the request `Host` header; any port in it is replaced by the configured
+  `targetPort`. The standard HTTPS port `443` is omitted from the URL (`https://host/path`); any other value is
+  appended (`https://host:8443/path`).
+- The original path and query are preserved. Because aeronet decodes the request target during parsing, the path
+  and query are **re-encoded** when building the `Location` value, so it is always a valid, injection-safe URL.
+- The redirect bypasses routing, protocol upgrades (h2c / WebSocket) and request-body handling, and closes the
+  connection afterwards (the client reconnects over TLS).
+- A request without a `Host` header (no absolute URL can be built) receives `400 Bad Request`.
+
+| Setting | Builder | Default | Notes |
+| ------- | ------- | ------- | ----- |
+| Target port | `withHttpsRedirect(port)` / `httpsRedirect.targetPort` | `0` (disabled) | `0` disables the redirect; `443` is omitted from the URL, other ports appended. Plaintext listeners only. |
+| Status code | `withHttpsRedirect(port, code)` / `httpsRedirect.statusCode` | `301` | One of `301`, `302`, `307`, `308` |
+
+The redirect is enabled simply by setting a non-zero `targetPort` (the convenience `httpsRedirect.enabled()`
+accessor returns `targetPort != 0`). Use `308 Permanent Redirect` (`http::StatusCodePermanentRedirect`) instead of
+`301` if you need clients to preserve the method and body on non-`GET`/`HEAD` requests. Enabling `httpsRedirect`
+together with `tls` on the **same** listener is rejected by `HttpServerConfig::validate()` (a TLS listener cannot
+redirect to itself).
+
+JSON / YAML configuration:
+
+```json
+{
+  "server": {
+    "port": 80,
+    "httpsRedirect": { "targetPort": 443, "statusCode": 301 }
+  }
+}
+```
+
 ### Kernel TLS (kTLS) sendfile
 
 **aeronet** supports kTLS when supported by the system. It will attempt to enable kernel TLS sendfile on

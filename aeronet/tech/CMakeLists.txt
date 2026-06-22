@@ -180,6 +180,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    https-redirect_test
+    test/https-redirect_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     url-encode-decode_test
     test/url-encode-decode_test.cpp
     LIBRARIES
