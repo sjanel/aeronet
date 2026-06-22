@@ -21,7 +21,7 @@ jobs:
         shared: [OFF, ON]
         features: [ON, OFF]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install build prereqs
         run: |
@@ -60,7 +60,7 @@ jobs:
       matrix:
         features: [ON, OFF]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install prerequisites
         run: |
