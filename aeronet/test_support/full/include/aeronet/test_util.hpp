@@ -98,6 +98,8 @@ ParsedResponse parseResponseOrThrow(std::string_view raw);
 
 void setRecvTimeout(NativeHandle fd, SysDuration timeout);
 
+void setSendTimeout(NativeHandle fd, SysDuration timeout);
+
 std::string buildRequest(const RequestOptions& opt);
 
 std::optional<std::string> request(uint16_t port, const RequestOptions& opt = {});
