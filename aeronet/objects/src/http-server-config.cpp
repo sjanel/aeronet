@@ -209,6 +209,12 @@ HttpServerConfig& HttpServerConfig::withoutTls() {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withHttpsRedirect(std::uint16_t targetHttpsPort, http::StatusCode statusCode) {
+  httpsRedirect.targetPort = targetHttpsPort;
+  httpsRedirect.statusCode = statusCode;
+  return *this;
+}
+
 // Enable / configure response compression. Passing by value allows caller to move.
 HttpServerConfig& HttpServerConfig::withCompression(CompressionConfig cfg) {
   compression = std::move(cfg);
@@ -360,6 +366,25 @@ void HttpServerConfig::validate() {
 
   telemetry.validate();
   tls.validate();
+
+  if (httpsRedirect.enabled()) {
+    if (tls.enabled) {
+      throw std::invalid_argument("httpsRedirect cannot be enabled together with TLS on the same listener");
+    }
+    switch (httpsRedirect.statusCode) {
+      case http::StatusCodeMovedPermanently:
+        [[fallthrough]];
+      case http::StatusCodeFound:
+        [[fallthrough]];
+      case http::StatusCodeTemporaryRedirect:
+        [[fallthrough]];
+      case http::StatusCodePermanentRedirect:
+        break;
+      default:
+        throw std::invalid_argument("httpsRedirect.statusCode must be one of 301, 302, 307, 308");
+    }
+  }
+
   builtinProbes.validate();
   accessLog.validate();
 #ifdef AERONET_ENABLE_HTTP2

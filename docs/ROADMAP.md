@@ -176,10 +176,6 @@ Process multipart/form-data uploads part-by-part as data arrives, rather than bu
 
 Different `maxBodyBytes` on different endpoints (e.g. `/upload` allows 100 MB, `/api` allows 1 MB). Currently only a global limit exists. Nginx (`client_max_body_size` per `location`), Express (`express.json({limit})`), Spring (`@RequestMapping` with size),  and Gin all support per-route limits.
 
-#### Automatic HTTP → HTTPS redirect
-
-When both a plaintext and a TLS listener are configured, automatically respond with `301 Moved Permanently` from the plaintext port to the HTTPS URL. A one-liner config instead of writing a custom handler. Caddy does this by default, Nginx via `return 301 https://`, Traefik via entrypoint redirect.
-
 #### Graceful config reload via signal (SIGHUP)
 
 Reload the JSON/YAML config file on `SIGHUP` without restarting the server. Apply mutable config changes (timeouts, limits, compression settings, TLS certs) hot. Pairs with the existing Glaze config loader and `postConfigUpdate()`. Nginx, HAProxy, Caddy, and systemd-based services all support `SIGHUP`-driven reload.
