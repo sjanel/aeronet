@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/safe-cast.hpp"
 
 namespace aeronet {
@@ -34,7 +35,7 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, uint64_t sz) : RawBytesBase(sz) {
   if (sz != 0) {
-    std::memcpy(_buf, data, _capacity);
+    Copy(data, sz, _buf);
     _size = _capacity;
   }
 }
@@ -43,7 +44,7 @@ template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : RawBytesBase(rhs.capacity()) {
   _size = rhs.size();
   if (_size != 0) {
-    std::memcpy(_buf, rhs.data(), _size);
+    Copy(rhs.data(), _size, _buf);
   }
 }
 
@@ -76,7 +77,7 @@ RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operat
 #endif
     _size = rhs.size();
     if (_size != 0) {
-      std::memcpy(_buf, rhs.data(), _size);
+      Copy(rhs.data(), _size, _buf);
     }
   }
   return *this;
@@ -97,7 +98,7 @@ void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, u
       assert(static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) >= sz + _size);
     }
     assert(sz + _size <= _capacity);
-    std::memcpy(_buf + _size, data, sz);
+    Copy(data, sz, _buf + _size);
     _size += static_cast<size_type>(sz);
   }
 }
@@ -118,7 +119,7 @@ template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, uint64_t size) {
   if (size != 0) {
     reserve(size);
-    std::memcpy(_buf, data, size);
+    Copy(data, size, _buf);
   }
   _size = static_cast<size_type>(size);
 }
@@ -156,7 +157,7 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
     pointer newBuf = static_cast<pointer>(std::malloc(newCap));
     if (newBuf != nullptr) [[likely]] {
       if (_size != 0) {
-        std::memcpy(newBuf, _buf, _size);
+        Copy(_buf, _size, newBuf);
       }
       std::memset(newBuf + _size, 255, newCap - _size);
       std::free(_buf);
@@ -197,7 +198,7 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
   }
   std::memset(newBuf + _size, 255, newCapacity - _size);
   if (_size != 0) {
-    std::memcpy(newBuf, _buf, _size);
+    Copy(_buf, _size, newBuf);
   }
   std::free(_buf);
 #else

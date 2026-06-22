@@ -7,31 +7,34 @@
 
 namespace aeronet {
 
-// Copy sv.size() bytes from sv into dst.
+// Copy sz bytes from pSrc into pDes, as of std::memcpy(pDest, pSrc, sz).
 //
 // For a compile-time-constant size (the common case: literal header fragments such as CRLF or "Host: ")
 // the size-dispatch below folds away entirely and the compiler emits direct stores, exactly as a bare
-// std::memcpy would. The interesting case is a runtime-sized copy: a bare std::memcpy then lowers to a
-// `call memcpy@PLT`, whose call/dispatch overhead dominates for the short fragments aeronet appends in bulk
-// (method, header names/values). For sizes <= 32 we instead emit a couple of overlapping fixed-width stores
-// inline, avoiding the call. Microbenchmarks (benchmarks/internal/memory-utils_bench.cpp) show ~1.9x on
-// isolated small copies and ~1.5x on a realistic HTTP fragment mix, with no regression above the threshold
-// (it falls straight back to std::memcpy).
+// std::memcpy would. For sizes <= 32 we instead
+// emit a couple of overlapping fixed-width stores inline, avoiding the call. Microbenchmarks
+// (benchmarks/internal/memory-utils_bench.cpp) show ~1.9x on isolated small copies and ~1.5x on a realistic HTTP
+// fragment mix, with no regression above the threshold (it falls straight back to std::memcpy).
 //
-// Safety: every access stays within [ptr, ptr + len) for both src and dst, so no source padding or
+// Safety: every access stays within [pSrc, pSrc + sz) for both pSrc and pDes, so no source padding or
 // destination slack is required and any caller of the old memcpy-based Copy remains correct.
 //
-// Precondition (unchanged from the original memcpy-based Copy): src and dst are non-null. aeronet never
+// Precondition (unchanged from the original memcpy-based Copy): pSrc and pDes are non-null. aeronet never
 // copies an empty/null view, and the assert documents and guards that. See
 // https://en.cppreference.com/w/cpp/string/byte/memcpy.html for why std::memcpy on a null pointer is UB even
-// for a zero-length copy. The size dispatch below performs no store for len == 0, so even a degenerate
+// for a zero-length copy. The size dispatch below performs no store for sz == 0, so even a degenerate
 // release-build call cannot corrupt memory.
-inline void Copy(std::string_view sv, char* dst) noexcept {
-  const char* src = sv.data();
-  const std::size_t len = sv.size();
-  assert(dst != nullptr && src != nullptr);
-  if (len > 32) {
-    std::memcpy(dst, src, len);
+constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
+  static_assert(sizeof(*pSrc) == 1 && sizeof(*pDes) == 1, "Copy only works for byte pointers");
+  if consteval {
+    for (std::size_t i = 0; i < sz; ++i) {
+      pDes[i] = pSrc[i];
+    }
+    return;
+  }
+  assert(pDes != nullptr && pSrc != nullptr);
+  if (sz > 32) {
+    std::memcpy(pDes, pSrc, sz);
   }
   // Overlapping copies. Each branch picks the largest fixed chunk k in {16, 8, 4, 2, 1} with k <= len. Since
   // the next-larger branch was not taken, len < 2k, so the two k-byte windows [0, k) and [len - k, len) are
@@ -48,26 +51,28 @@ inline void Copy(std::string_view sv, char* dst) noexcept {
   //                                      \________________/
   //                                      overlap [2, 8) rewritten with the same bytes
   //     union of writes = [0, 10): exact, no out-of-bounds store (16 bytes moved, 6 of them twice).
-  else if (len >= 16) {
-    std::memcpy(dst, src, 16);
-    std::memcpy(dst + len - 16, src + len - 16, 16);
-  } else if (len >= 8) {
-    std::memcpy(dst, src, 8);
-    std::memcpy(dst + len - 8, src + len - 8, 8);
-  } else if (len >= 4) {
-    std::memcpy(dst, src, 4);
-    std::memcpy(dst + len - 4, src + len - 4, 4);
-  } else if (len >= 2) {
-    std::memcpy(dst, src, 2);
-    std::memcpy(dst + len - 2, src + len - 2, 2);
-  } else if (len == 1) {
-    dst[0] = src[0];
+  else if (sz >= 16) {
+    std::memcpy(pDes, pSrc, 16);
+    std::memcpy(pDes + sz - 16, pSrc + sz - 16, 16);
+  } else if (sz >= 8) {
+    std::memcpy(pDes, pSrc, 8);
+    std::memcpy(pDes + sz - 8, pSrc + sz - 8, 8);
+  } else if (sz >= 4) {
+    std::memcpy(pDes, pSrc, 4);
+    std::memcpy(pDes + sz - 4, pSrc + sz - 4, 4);
+  } else if (sz >= 2) {
+    std::memcpy(pDes, pSrc, 2);
+    std::memcpy(pDes + sz - 2, pSrc + sz - 2, 2);
+  } else if (sz == 1) {
+    pDes[0] = pSrc[0];
   }
 }
 
-[[nodiscard]] inline char* Append(std::string_view sv, char* dst) noexcept {
-  Copy(sv, dst);
-  return dst + sv.size();
+constexpr void Copy(std::string_view sv, char* pDes) noexcept { Copy(sv.data(), sv.size(), pDes); }
+
+[[nodiscard]] constexpr char* Append(std::string_view sv, char* pDes) noexcept {
+  Copy(sv, pDes);
+  return pDes + sv.size();
 }
 
 // Search for CRLF in the range [begin, end). If found, return a pointer to the CR character. Otherwise, return end.
