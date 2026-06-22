@@ -122,17 +122,26 @@ else()
 endif()
 
 # Helper to create a benchmark executable with common properties.
-# Usage: AeronetAddProjectBenchmark(<target> <sources...>)
+# Usage: AeronetAddProjectBenchmark(<target> <sources...> [LIBRARIES <libs...>])
+#
+# By default the benchmark links the umbrella `aeronet` library plus `aeronet_test_support`. Benchmarks that
+# only exercise a lower layer (e.g. header-only `tech` utilities) should pass an explicit, minimal LIBRARIES
+# list (e.g. `LIBRARIES aeronet_tech`): this avoids pulling in (and linking against) the entire library, which
+# noticeably speeds up their build/link.
 function(AeronetAddProjectBenchmark target)
-  if(ARGC LESS 2)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "LIBRARIES")
+  set(sources ${ARG_UNPARSED_ARGUMENTS})
+  if(NOT sources)
     message(FATAL_ERROR "AeronetAddProjectBenchmark requires at least target and one source")
   endif()
-  # Collect sources (all remaining args)
-  set(sources ${ARGN})
 
   # Create the executable using the project's helper macro
   AeronetAddProjectExecutable(${target} ${sources})
-  target_link_libraries(${target} PRIVATE aeronet aeronet_test_support benchmark::benchmark)
+  if(ARG_LIBRARIES)
+    target_link_libraries(${target} PRIVATE ${ARG_LIBRARIES} benchmark::benchmark)
+  else()
+    target_link_libraries(${target} PRIVATE aeronet aeronet_test_support benchmark::benchmark)
+  endif()
   set_target_properties(${target} PROPERTIES FOLDER "benchmarks")
 
   # Enable LTO/IPO if available and in Release builds
@@ -151,10 +160,10 @@ set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "be
 AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
 set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL})
+AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS})
+AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-memory-utils PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
