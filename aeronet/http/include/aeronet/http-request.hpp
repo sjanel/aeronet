@@ -21,11 +21,6 @@
 #include "aeronet/async-handler-state.hpp"
 #endif
 
-#ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
-#include <glaze/yaml.hpp>  // IWYU pragma: keep
-#endif
-
 #include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
@@ -35,7 +30,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -54,6 +48,12 @@ struct HttpServerConfig;
 namespace http2 {
 class Http2ProtocolHandler;
 }  // namespace http2
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// Logs (at error level) a failure to post an async callback back to the event loop.
+// Defined in http-request.cpp so the logging dependency stays out of this widely-included header.
+void LogAsyncCallbackPostFailure(const char* what) noexcept;
+#endif
 
 class HttpRequest {
  public:
@@ -136,7 +136,9 @@ class HttpRequest {
           // typically means the connection was closed while background work was running.
           // The coroutine will never be resumed; the server's idle-sweep or drain-close
           // will eventually reclaim any remaining connection resources.
-          log::error("Exception posting async callback: {}", ex.what());
+          // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
+          // (heavy) logging dependency stays out of this widely-included header.
+          LogAsyncCallbackPostFailure(ex.what());
         }
       }).detach();
     }
@@ -513,27 +515,16 @@ class HttpRequest {
 #ifdef AERONET_ENABLE_GLAZE
   /// Parse the request body as JSON into type T.
   /// Returns the parsed object on success, or an HttpResponse (400 Bad Request) on parse failure.
+  /// Definition lives in <aeronet/http-json.hpp> (include it to use this method) so that translation
+  /// units that do not parse JSON/YAML do not pay the (heavy) Glaze compilation cost.
   template <class T>
-  [[nodiscard]] std::expected<T, HttpResponse> bodyAs() const {
-    T obj{};
-    if (const auto ec = glz::read_json(obj, body())) [[unlikely]] {
-      return std::unexpected(
-          makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
-    }
-    return obj;
-  }
+  [[nodiscard]] std::expected<T, HttpResponse> bodyAs() const;
 
   /// Parse the request body as YAML into type T.
   /// Returns the parsed object on success, or an HttpResponse (400 Bad Request) on parse failure.
+  /// Definition lives in <aeronet/http-json.hpp> (include it to use this method).
   template <class T>
-  [[nodiscard]] std::expected<T, HttpResponse> bodyAsYaml() const {
-    T obj{};
-    if (const auto ec = glz::read<glz::opts{.format = glz::YAML}>(obj, body())) [[unlikely]] {
-      return std::unexpected(
-          makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
-    }
-    return obj;
-  }
+  [[nodiscard]] std::expected<T, HttpResponse> bodyAsYaml() const;
 #endif
 
   // Returns the best encoding that can be used for the response based on the

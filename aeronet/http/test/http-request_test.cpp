@@ -32,6 +32,9 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/http-json.hpp"  // bodyAs / bodyAsYaml definitions
+#endif
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
@@ -175,6 +178,17 @@ class HttpRequestTest : public ::testing::Test {
     bridge.aggregate = bridgeAggregate;
     req._pBodyAccessBridge = &bridge;
   }
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Make req.body() return the given bytes via an aggregate bridge (used to feed bodyAs<T>()).
+  static inline std::string sAggregatedBody;
+  void setAggregatedBody(std::string_view body) {
+    sAggregatedBody.assign(body);
+    static HttpRequest::BodyAccessBridge bridge;
+    bridge.aggregate = [](HttpRequest&, void*) -> std::string_view { return sAggregatedBody; };
+    req._pBodyAccessBridge = &bridge;
+  }
+#endif
 
   // Helper to set a custom BodyAccessBridge and explicitly clear the context.
   void setCustomBridgeWithNullContext(HttpRequest::BodyAccessBridge::AggregateFn aggregate,
@@ -1748,5 +1762,55 @@ TEST_F(HttpRequestTest, MakeResponseWithMultipleGlobalHeaders) {
   EXPECT_EQ(resp.headerValueOrEmpty("x-version"), "1.0");
   EXPECT_EQ(resp.bodyInMemory(), "test");
 }
+
+#ifdef AERONET_ENABLE_GLAZE
+// Must have external linkage for Glaze's compile-time reflection (no anonymous namespace).
+struct JsonPoint {
+  int x{};
+  int y{};
+};
+
+TEST_F(HttpRequestTest, BodyAsJsonParsesValidPayload) {
+  auto st = reqSet(BuildRaw("POST", "/json", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  setAggregatedBody(R"({"x":3,"y":7})");
+
+  auto result = req.bodyAs<JsonPoint>();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->x, 3);
+  EXPECT_EQ(result->y, 7);
+}
+
+TEST_F(HttpRequestTest, BodyAsJsonReturnsBadRequestOnParseError) {
+  auto st = reqSet(BuildRaw("POST", "/json", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  setAggregatedBody("not json at all");
+
+  auto result = req.bodyAs<JsonPoint>();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().status(), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestTest, BodyAsYamlParsesValidPayload) {
+  auto st = reqSet(BuildRaw("POST", "/yaml", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  setAggregatedBody("x: 5\ny: 9\n");
+
+  auto result = req.bodyAsYaml<JsonPoint>();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->x, 5);
+  EXPECT_EQ(result->y, 9);
+}
+
+TEST_F(HttpRequestTest, BodyAsYamlReturnsBadRequestOnParseError) {
+  auto st = reqSet(BuildRaw("POST", "/yaml", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  setAggregatedBody("x: : : not yaml\n\t- broken");
+
+  auto result = req.bodyAsYaml<JsonPoint>();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().status(), http::StatusCodeBadRequest);
+}
+#endif  // AERONET_ENABLE_GLAZE
 
 }  // namespace aeronet

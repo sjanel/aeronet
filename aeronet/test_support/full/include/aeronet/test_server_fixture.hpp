@@ -54,6 +54,8 @@ class TestServer {
   void waitReady(std::chrono::milliseconds timeout) const;
 };
 
+void LogScopedConfigUpdateDestructorError();
+
 // Generic RAII scope guard for temporarily changing an HttpServerConfig field via
 // TestServer::postConfigUpdate(). Captures the previous value on construction and
 // restores it on destruction. Movable so it can be returned from factory functions.
@@ -87,7 +89,7 @@ class ScopedConfigUpdate {
       try {
         _server->postConfigUpdate([this](HttpServerConfig& cfg) { _setter(cfg, _previous); });
       } catch (...) {
-        log::error("Failed to restore HttpServerConfig field in ScopedConfigUpdate destructor");
+        LogScopedConfigUpdateDestructorError();
       }
     }
   }

@@ -688,6 +688,8 @@ payloads with zero-copy `std::string_view` slices referencing the original reque
 ### Basic usage
 
 ```cpp
+#include <aeronet/log.hpp>
+
 Router router;
 router.setPath(http::Method::POST, "/upload", [](const HttpRequest& req) {
   const auto body = req.body();
@@ -1940,6 +1942,8 @@ Strict ALPN: if enabled and no protocol overlap, handshake aborts (connection cl
 You can subscribe to handshake outcomes (succeeded / failed / rejected) with a lightweight callback.
 
 ```cpp
+#include <aeronet/log.hpp>
+
 SingleHttpServer server;
 server.setTlsHandshakeCallback([](const TlsHandshakeEvent& ev) {
   // ev.result is one of: Succeeded, Failed, Rejected
@@ -1957,6 +1961,8 @@ server.setTlsHandshakeCallback([](const TlsHandshakeEvent& ev) {
 `ServerStats::tlsHandshakeFailureReasons` provides best-effort bucketing of why handshakes failed or were rejected.
 
 ```cpp
+#include <aeronet/log.hpp>
+
 SingleHttpServer server;
 const ServerStats st = server.stats();
 for (const auto& kv : st.tlsHandshakeFailureReasons) {
@@ -2395,6 +2401,8 @@ Testing: `tests/http_streaming_test.cpp` covers precedence, conflicts, HEAD supp
 ### Accessing TLS Metrics
 
 ```cpp
+#include <aeronet/log.hpp>
+
 SingleHttpServer server;
 auto st = server.stats();
 log::info("handshakes={} clientCerts={} alpnStrictMismatches={}\n",
@@ -2440,6 +2448,8 @@ Design goals: keep logging off the hot path when disabled, avoid mandatory third
 Usage example (fallback or spdlog):
 
 ```cpp
+#include <aeronet/log.hpp>
+
 log::info("server listening on {}", 8080);
 ```
 
@@ -3217,11 +3227,22 @@ server.saveConfig("/etc/aeronet/config-backup.yaml");
 
 ### Response Body Serialization
 
-Serialize any Glaze-compatible object directly into the response body, avoiding intermediate copies:
+Serialize any Glaze-compatible object directly into the response body, avoiding intermediate copies.
+
+> **Opt-in header.** The `bodyJson` / `bodyYaml` (and request-side `bodyAs` / `bodyAsYaml`) helpers pull in
+> the Glaze dependency, which is expensive to compile. To keep that cost out of the widely-included core
+> headers, their definitions live in `<aeronet/http-json.hpp>`. Include it wherever you serialize/parse
+> JSON or YAML (the `<aeronet/aeronet.hpp>` umbrella already does). Tests:
+> [config-loader_test.cpp](../aeronet/http/test/config-loader_test.cpp) (response side),
+> [http-request_test.cpp](../aeronet/http/test/http-request_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
 
 ```cpp
-#include "aeronet/http-response.hpp"
 #include <unordered_map>
+#include <string>
+
+#include "aeronet/http-request.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-json.hpp"
 
 using MyPayload = std::unordered_map<std::string, std::string>;
 
@@ -3239,10 +3260,10 @@ int main() {
 
 ### Request Body Deserialization
 
-Parse incoming request bodies into typed C++ objects:
+Parse incoming request bodies into typed C++ objects (also via the opt-in `<aeronet/http-json.hpp>` header):
 
 ```cpp
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-json.hpp"
 #include <unordered_map>
 
 using MyPayload = std::unordered_map<std::string, std::string>;

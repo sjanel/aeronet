@@ -128,6 +128,10 @@ void TestServer::waitReady(std::chrono::milliseconds timeout) const {
   }
 }
 
+void LogScopedConfigUpdateDestructorError() {
+  log::error("Failed to restore HttpServerConfig field in ScopedConfigUpdate destructor");
+}
+
 bool WaitForServer(SingleHttpServer& server, bool running, std::chrono::milliseconds timeout) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {

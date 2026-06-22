@@ -153,6 +153,8 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     stringconv_test
     test/stringconv_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(

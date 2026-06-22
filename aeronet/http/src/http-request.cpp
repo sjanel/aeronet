@@ -44,7 +44,17 @@
 #include "aeronet/url-decode.hpp"
 #include "http-method-parse.hpp"
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/log.hpp"
+#endif
+
 namespace aeronet {
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+void LogAsyncCallbackPostFailure(const char* what) noexcept {
+  log::error("Exception posting async callback: {}", what);
+}
+#endif
 
 void HttpRequest::QueryParamRange::iterator::advance() {
   _begKey = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
