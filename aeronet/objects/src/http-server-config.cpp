@@ -19,6 +19,7 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/reserved-headers.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -38,7 +39,7 @@ TLSConfig& HttpServerConfig::ensureTls() {
 }
 
 HttpServerConfig& HttpServerConfig::withNbThreads(uint32_t threads) {
-  this->nbThreads = threads;
+  this->nbThreads = SafeCast<decltype(this->nbThreads)>(threads);
   return *this;
 }
 

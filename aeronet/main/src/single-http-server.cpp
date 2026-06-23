@@ -119,7 +119,7 @@ class ImmutableConfigSnapshot {
   }
 
  private:
-  uint32_t _nbThreads;
+  uint16_t _nbThreads;
   uint16_t _port;
   bool _reusePort;
   TelemetryConfig _telemetry;

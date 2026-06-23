@@ -24,8 +24,10 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
@@ -40,7 +42,6 @@
 #include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 #endif
-#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -103,8 +104,6 @@ MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandl
   return *this;
 }
 
-MultiHttpServer::AsyncHandle::~AsyncHandle() { stop(); }
-
 void MultiHttpServer::AsyncHandle::stop() noexcept {
   if (_stopCalled.exchange(true, std::memory_order_acq_rel)) {
     return;
@@ -166,7 +165,9 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
     : _stopRequested(std::make_shared<std::atomic<bool>>(false)) {
   auto threadCount = cfg.nbThreads;
   if (threadCount == 0) {
-    threadCount = std::thread::hardware_concurrency();
+    // hardware_concurrency() returns unsigned int but is in practice <= a few thousand on the largest machines,
+    // well within the 16-bit nbThreads range.
+    threadCount = SafeCast<decltype(threadCount)>(std::thread::hardware_concurrency());
     if (threadCount == 0) {
       threadCount = 1;
       log::warn("Unable to detect the number of available processors for HttpServer - defaults to {}", threadCount);
@@ -214,7 +215,7 @@ std::string MultiHttpServer::dumpConfig(ConfigFormat format) const {
     throw std::logic_error("Cannot dump config from an empty MultiHttpServer");
   }
   TopLevelConfig config{.server = _servers[0]._config, .router = _servers[0]._router.config()};
-  config.server.nbThreads = nbThreads();
+  config.server.nbThreads = static_cast<std::uint16_t>(nbThreads());
   return detail::SerializeConfig(config, format);
 }
 
@@ -222,8 +223,8 @@ void MultiHttpServer::saveConfig(const std::filesystem::path& filePath) const {
   if (empty()) {
     throw std::logic_error("Cannot save config from an empty MultiHttpServer");
   }
-  auto format = detail::DetectFormat(filePath);
-  auto content = dumpConfig(format);
+  const auto format = detail::DetectFormat(filePath);
+  const auto content = dumpConfig(format);
   std::ofstream ofs(filePath, std::ios::binary);
   if (!ofs) {
     throw std::runtime_error("Failed to open file for writing: " + filePath.string());

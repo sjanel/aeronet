@@ -59,7 +59,7 @@ class MultiHttpServer {
     AsyncHandle& operator=(AsyncHandle&& other) noexcept;
 
     // Destructor automatically stops and joins all background threads (RAII)
-    ~AsyncHandle();
+    ~AsyncHandle() { stop(); }
 
     // Stop all background event loops and join threads (blocking).
     // Safe to call multiple times; subsequent calls are no-ops.

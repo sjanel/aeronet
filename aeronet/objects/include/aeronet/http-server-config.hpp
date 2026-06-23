@@ -39,7 +39,7 @@ struct HttpServerConfig {
   // If 0, the server will use std::thread::hardware_concurrency() for MultiHttpServer,
   // or 1 for SingleHttpServer.
   // Default: 0.
-  std::uint32_t nbThreads{0};
+  std::uint16_t nbThreads{0};
 
   // ============================
   // Listener / socket parameters
