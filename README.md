@@ -975,6 +975,12 @@ Overview relocated to: [Construction Model (RAII & Ephemeral Ports)](docs/FEATUR
 
 See: [TLS Features](docs/FEATURES.md#tls-features)
 
+### Automatic HTTP → HTTPS redirect
+
+A plaintext listener can redirect every request to the equivalent `https://` URL with a one-line config
+(`HttpServerConfig::withHttpsRedirect(targetHttpsPort = 443, statusCode = 301)`), the standard companion to a
+TLS listener. See [Automatic HTTP → HTTPS redirect](docs/FEATURES.md#automatic-http--https-redirect).
+
 ### TLS Metrics Reference
 
 Metrics example: [TLS Features](docs/FEATURES.md#tls-features)
