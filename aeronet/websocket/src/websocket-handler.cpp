@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,6 +17,7 @@
 #include <arm_neon.h>
 #endif
 
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
@@ -264,7 +264,7 @@ ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& fra
     // Declared here because its memory may be pointed by payload
     std::byte controlBuf[kMaxControlFramePayload];
     if (frame.header.masked && !payload.empty()) {
-      std::memcpy(controlBuf, payload.data(), payload.size());
+      Copy(payload.data(), payload.size(), controlBuf);
       ApplyMask(std::span<std::byte>(controlBuf, payload.size()), frame.header.maskingKey);
       payload = {controlBuf, payload.size()};
     }

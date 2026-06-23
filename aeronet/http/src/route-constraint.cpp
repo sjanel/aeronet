@@ -3,13 +3,13 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <memory>
 #include <regex>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/vector.hpp"
 
@@ -322,9 +322,9 @@ RouteConstraint::RouteConstraint(std::string_view pattern, ObjectArrayPool<char>
     return;
   }
 
-  char* dst = charStorage.allocateAndDefaultConstruct(pattern.size());
-  std::memcpy(dst, pattern.data(), pattern.size());
-  _patternStr = {dst, pattern.size()};
+  char* pDes = charStorage.allocateAndDefaultConstruct(pattern.size());
+  Copy(pattern, pDes);
+  _patternStr = {pDes, pattern.size()};
 }
 
 void RouteConstraint::initializeCompiledState(std::string_view pattern) {

@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -259,16 +260,23 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           const auto* beg = reinterpret_cast<const char*>(val.first.get());
           RawChars buf(val.second + data.size());
-          buf.unchecked_append(beg, pos);
-          buf.unchecked_append(data);
-          buf.unchecked_append(beg + pos, val.second - pos);
+          char* pEnd = buf.data();
+          pEnd = Append(beg, pos, pEnd);
+          pEnd = Append(data, pEnd);
+          pEnd = Append(beg + pos, val.second - pos, pEnd);
+          buf.setSize(static_cast<RawChars::size_type>(pEnd - buf.data()));
           _data = std::move(buf);
         } else if constexpr (std::is_same_v<T, std::string_view>) {
           // switch to RawChars to simplify appending
           RawChars buf(val.size() + data.size());
-          buf.unchecked_append(val.data(), pos);  // NOLINT(bugprone-suspicious-stringview-data-usage)
-          buf.unchecked_append(data);
-          buf.unchecked_append(val.data() + pos, val.size() - pos);
+          char* pEnd = buf.data();
+
+          pEnd = Append(val.data(), pos, pEnd);  // NOLINT(bugprone-suspicious-stringview-data-usage)
+          pEnd = Append(data, pEnd);
+          pEnd = Append(val.data() + pos, val.size() - pos, pEnd);
+
+          buf.setSize(static_cast<RawChars::size_type>(pEnd - buf.data()));
+
           _data = std::move(buf);
         }
       },

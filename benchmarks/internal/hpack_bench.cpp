@@ -13,7 +13,7 @@
 
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
