@@ -36,7 +36,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -1418,10 +1418,9 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
             case 100:
               queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
               break;
-            case 102: {
+            case 102:
               queueData(cnxIt, HttpResponseData(http::HTTP11_102_PROCESSING));
               break;
-            }
             default: {
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
 
@@ -1443,10 +1442,9 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
           // Send the provided final response immediately and skip body processing.
           finalizeAndSendResponseForHttp1(cnxIt, std::move(expectationResult.finalResponse), headerEnd, pCorsPolicy);
           return true;
-        case ExpectationResultKind::Continue:
-          break;
         default:
-          std::unreachable();
+          assert(expectationResult.kind == ExpectationResultKind::Continue);
+          break;
       }
     } catch (const std::exception& ex) {
       log::error("Exception in ExpectationHandler: {}", ex.what());

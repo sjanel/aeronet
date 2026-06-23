@@ -1,5 +1,3 @@
-#include "aeronet/memory-utils.hpp"
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -7,6 +5,8 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+
+#include "aeronet/memory-utils-sv.hpp"
 
 namespace aeronet {
 

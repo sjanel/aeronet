@@ -37,7 +37,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"

@@ -12,7 +12,7 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 
 namespace aeronet {

@@ -17,6 +17,7 @@
 #include <stdexcept>
 
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/tls-config.hpp"
 
 namespace aeronet {
@@ -33,7 +34,7 @@ void TlsTicketKeyStore::loadStaticKeys(std::span<const TLSConfig::SessionTicketK
     KeyMaterial& mat = _keys.emplace_back();
     const auto matData = mat.data();
     const auto* ptr = reinterpret_cast<const unsigned char*>(raw.data());
-    std::memcpy(matData.data(), ptr, matData.size());
+    Copy(ptr, matData.size(), matData.data());
     mat.created = now;
 
     if (_keys.size() == _maxKeys) {
@@ -72,7 +73,7 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
     if (::RAND_bytes(iv, ivLen) != 1) {
       return -1;
     }
-    std::memcpy(keyName, key.name.data(), key.name.size());
+    Copy(key.name.data(), key.name.size(), keyName);
     if (::EVP_EncryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, key.aesKey.data(), iv) != 1) {
       return -1;
     }

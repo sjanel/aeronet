@@ -30,6 +30,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -1293,14 +1294,14 @@ HttpResponseData HttpResponse::finalizeForHttp1(SysTimePoint tp, http::Version v
           auto bodyAndTrailersView = _payloadVariant.view();
 
           // Body only without trailers
-          std::memcpy(insertPtr, bodyAndTrailersView.data(), bodySz);
+          Copy(bodyAndTrailersView.data(), bodySz, insertPtr);
           insertPtr += bodySz;
 
           // Write end chunked body
           insertPtr = Append(kEndChunkedBody, insertPtr);
 
           // trailers
-          std::memcpy(insertPtr, bodyAndTrailersView.data() + bodySz, trailersSize());
+          Copy(bodyAndTrailersView.data() + bodySz, trailersSize(), insertPtr);
           insertPtr += trailersSize();
 
           // Final CRLF

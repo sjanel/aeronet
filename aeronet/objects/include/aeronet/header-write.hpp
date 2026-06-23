@@ -11,13 +11,13 @@
 #endif
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
 namespace aeronet {
 
-inline char* WriteHeader(std::string_view key, std::string_view value, char* insertPtr) {
+constexpr char* WriteHeader(std::string_view key, std::string_view value, char* insertPtr) {
   insertPtr = Append(key, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);
   if (!value.empty()) {
@@ -26,7 +26,7 @@ inline char* WriteHeader(std::string_view key, std::string_view value, char* ins
   return insertPtr;
 }
 
-inline char* WriteHeader(std::string_view key, std::integral auto value, char* insertPtr) {
+constexpr char* WriteHeader(std::string_view key, std::integral auto value, char* insertPtr) {
   insertPtr = Append(key, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);
   const auto [ptr, ec] =
@@ -38,27 +38,27 @@ inline char* WriteHeader(std::string_view key, std::integral auto value, char* i
 // Write an HTTP header field to the given buffer, including a last CRLF.
 // Returns the pointer immediately after the last written byte.
 // Header key must not be empty, but header value may be empty.
-inline char* WriteHeaderCRLF(std::string_view key, std::string_view value, char* insertPtr) {
+constexpr char* WriteHeaderCRLF(std::string_view key, std::string_view value, char* insertPtr) {
   return Append(http::CRLF, WriteHeader(key, value, insertPtr));
 }
 
-inline char* WriteHeaderCRLF(std::string_view key, std::integral auto value, char* insertPtr) {
+constexpr char* WriteHeaderCRLF(std::string_view key, std::integral auto value, char* insertPtr) {
   return Append(http::CRLF, WriteHeader(key, value, insertPtr));
 }
 
 // Same as above, but CRLF is first
-inline char* WriteCRLFHeader(std::string_view key, std::string_view value, char* insertPtr) {
+constexpr char* WriteCRLFHeader(std::string_view key, std::string_view value, char* insertPtr) {
   return WriteHeader(key, value, Append(http::CRLF, insertPtr));
 }
 
-inline char* WriteCRLFHeader(std::string_view key, std::integral auto value, char* insertPtr) {
+constexpr char* WriteCRLFHeader(std::string_view key, std::integral auto value, char* insertPtr) {
   return WriteHeader(key, value, Append(http::CRLF, insertPtr));
 }
 
 // Write a Date HTTP header field to the given buffer, including a last CRLF.
 // Returns the pointer immediately after the last written byte.
 // Given buffer requires a size of at least "Date".size() + HeaderSep.size() + RFC7231DateStrLen + CRLF.size().
-inline char* WriteCRLFDateHeader(SysTimePoint tp, char* insertPtr) {
+constexpr char* WriteCRLFDateHeader(SysTimePoint tp, char* insertPtr) {
   insertPtr = Append(http::CRLF, insertPtr);
   insertPtr = Append(http::Date, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);

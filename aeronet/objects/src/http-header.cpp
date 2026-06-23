@@ -1,7 +1,6 @@
 #include "aeronet/http-header.hpp"
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
@@ -9,6 +8,7 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -32,7 +32,7 @@ Header::Header(const Header& rhs)
     : _data(std::make_unique<char[]>(HeaderSep.size() + rhs._nameLen + rhs._valueLen)),
       _nameLen(rhs._nameLen),
       _valueLen(rhs._valueLen) {
-  std::memcpy(_data.get(), rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen);
+  Copy(rhs._data.get(), HeaderSep.size() + rhs._nameLen + rhs._valueLen, _data.get());
 }
 
 Header& Header::operator=(const Header& rhs) {
@@ -45,7 +45,7 @@ Header& Header::operator=(const Header& rhs) {
     }
     _nameLen = rhs._nameLen;
     _valueLen = rhs._valueLen;
-    std::memcpy(_data.get(), rhs._data.get(), rhsTotalSize);
+    Copy(rhs._data.get(), rhsTotalSize, _data.get());
   }
   return *this;
 }

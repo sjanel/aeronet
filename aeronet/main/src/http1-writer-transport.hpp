@@ -14,7 +14,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/nchars.hpp"

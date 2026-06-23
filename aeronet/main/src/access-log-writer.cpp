@@ -29,7 +29,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"

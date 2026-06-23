@@ -4,7 +4,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <iterator>
 #include <ostream>
 #include <ranges>
@@ -19,6 +18,7 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
@@ -1499,7 +1499,7 @@ void Router::pushBackIndex(RadixNode& node, char indexChar) {
   const auto oldSize = node.indices.size();
   char* newBuf = _charStorage.allocateAndDefaultConstruct(oldSize + 1);
   if (oldSize > 0) {
-    std::memcpy(newBuf, node.indices.data(), oldSize);
+    Copy(node.indices.data(), oldSize, newBuf);
   }
   newBuf[oldSize] = indexChar;
   node.indices = std::span<char>(newBuf, oldSize + 1);

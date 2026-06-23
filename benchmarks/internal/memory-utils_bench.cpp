@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 
 namespace {
 
