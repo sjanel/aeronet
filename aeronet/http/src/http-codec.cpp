@@ -25,6 +25,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -541,7 +542,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
     const char* pTrailers = resp.trailersFlatView().data();
     if (hasBodyCaptured) {
       char* pDest = resp._data.data() + bodyCompStartPos + totalCompSize;
-      std::memcpy(pDest, pTrailers, trailersSz);
+      Copy(pTrailers, trailersSz, pDest);
     } else {
       char* pDest = resp._data.data() + (pTrailers - resp._data.data()) + headersShift + totalCompSize - bodySz;
       std::memmove(pDest, pTrailers, trailersSz);
@@ -558,7 +559,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   if (!hasBodyCaptured) {
     // Move body to its final position (after the reserved tail and after the potential headers inserted for Vary and
     // Content-Encoding).
-    std::memcpy(resp._data.data() + newBodyStartPos, pCompBody, totalCompSize);
+    Copy(pCompBody, totalCompSize, resp._data.data() + newBodyStartPos);
     // Update body start position to the new location.
     resp.setBodyStartPos(newBodyStartPos);
   }

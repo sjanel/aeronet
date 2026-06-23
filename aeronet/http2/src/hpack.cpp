@@ -12,7 +12,7 @@
 #include <utility>
 
 #include "aeronet/http-header.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"

@@ -26,7 +26,7 @@ int64_t UnixSocket::send(const void* /*data*/, std::size_t /*len*/) noexcept { r
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 
 #ifdef AERONET_LINUX
 // Linux supports SOCK_NONBLOCK | SOCK_CLOEXEC atomically at socket creation.

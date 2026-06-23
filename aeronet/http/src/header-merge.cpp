@@ -5,7 +5,7 @@
 #include <string_view>
 
 #include "aeronet/headers-view-map.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-chars.hpp"
 
