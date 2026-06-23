@@ -71,8 +71,8 @@ TEST(MultiHttpServer, EmptyChecks) {
 }
 
 TEST(MultiHttpServer, BasicStartAndServe) {
-  const uint32_t threads = 4;
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withNbThreads(static_cast<uint32_t>(threads)));
+  const uint16_t threads = 4;
+  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withNbThreads(threads));
   multi.router().setDefault([]([[maybe_unused]] const HttpRequest& req) {
     HttpResponse resp;
     resp.body("Hello "); /* path not exposed directly */
