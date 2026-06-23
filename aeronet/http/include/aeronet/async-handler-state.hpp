@@ -10,7 +10,6 @@
 
 #include "aeronet/http-response.hpp"
 #include "aeronet/object-pool.hpp"
-#include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {

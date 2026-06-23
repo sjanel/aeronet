@@ -30,7 +30,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/ndigits.hpp"

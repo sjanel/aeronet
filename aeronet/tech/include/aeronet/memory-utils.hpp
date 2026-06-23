@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
-#include <string_view>
 
 namespace aeronet {
 
@@ -68,11 +67,10 @@ constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
   }
 }
 
-constexpr void Copy(std::string_view sv, char* pDes) noexcept { Copy(sv.data(), sv.size(), pDes); }
-
-[[nodiscard]] constexpr char* Append(std::string_view sv, char* pDes) noexcept {
-  Copy(sv, pDes);
-  return pDes + sv.size();
+// Append sz bytes from pSrc into pDes, returning a pointer to the first byte after the appended data.
+constexpr auto* Append(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
+  Copy(pSrc, sz, pDes);
+  return pDes + sz;
 }
 
 // Search for CRLF in the range [begin, end). If found, return a pointer to the CR character. Otherwise, return end.

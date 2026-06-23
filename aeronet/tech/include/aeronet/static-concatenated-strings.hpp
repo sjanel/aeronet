@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 
 namespace aeronet {
 
@@ -102,8 +103,7 @@ class StaticConcatenatedStrings {
       // move tail to the right
       std::memmove(data + oldEndPos + delta, data + oldEndPos, tailSize);
       // copy new part
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      std::memcpy(data + oldBegPos, str.data(), newSize);
+      Copy(str, data + oldBegPos);
       _buf.addSize(static_cast<size_type>(delta));
       // update offsets for subsequent parts
       for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
@@ -114,8 +114,7 @@ class StaticConcatenatedStrings {
       // move tail to the left
       std::memmove(data + oldBegPos + newSize, data + oldEndPos, tailSize);
       if (newSize != 0) {
-        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-        std::memcpy(data + oldBegPos, str.data(), newSize);
+        Copy(str, data + oldBegPos);
       }
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
@@ -123,8 +122,7 @@ class StaticConcatenatedStrings {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
     } else if (newSize != 0) {
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      std::memcpy(data + oldBegPos, str.data(), newSize);
+      Copy(str, data + oldBegPos);
     }
   }
 
