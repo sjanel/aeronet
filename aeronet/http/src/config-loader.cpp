@@ -52,10 +52,12 @@ TopLevelConfig ParseConfigFile(const std::filesystem::path& filePath) {
 TopLevelConfig ParseConfigString(std::string_view content, ConfigFormat format) {
   TopLevelConfig config;
   glz::error_ctx ec;
+  // `content` is a string_view (the public overload accepts any view, not just a terminated
+  // std::string), so tell glaze to honour the end pointer strictly rather than assume a '\0'.
   if (format == ConfigFormat::json) {
-    ec = glz::read_json(config, content);
+    ec = glz::read<glz::opts{.null_terminated = false}>(config, content);
   } else {
-    ec = glz::read<glz::opts{.format = glz::YAML}>(config, content);
+    ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(config, content);
   }
   if (ec) {
     throw std::runtime_error(std::string("Config parse error: ") + glz::format_error(ec, content));
