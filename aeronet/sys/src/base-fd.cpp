@@ -4,7 +4,7 @@
 #include <cstring>
 #include <utility>
 
-#include "aeronet/log.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 
@@ -38,7 +38,7 @@ void BaseFd::close() noexcept {
 #ifdef AERONET_MACOS
     if (!_owns) {
       // Non-owning (borrowed) fd — do not close, just forget.
-      log::debug("fd # {} released (borrowed, not closed)", static_cast<intptr_t>(_fd));
+      log_noexcept::debug("fd # {} released (borrowed, not closed)", static_cast<intptr_t>(_fd));
       _fd = kClosedFd;
       return;
     }
@@ -49,7 +49,8 @@ void BaseFd::close() noexcept {
         if (::_close(static_cast<int>(_fd)) == 0) {
           break;
         }
-        log::error("_close crt fd {} failed: error {}: {}", static_cast<int>(_fd), errno, SystemErrorMessage(errno));
+        log_noexcept::error("_close crt fd {} failed: error {}: {}", static_cast<int>(_fd), errno,
+                            SystemErrorMessage(errno));
         break;
       }
       if (_kind == HandleKind::Win32Handle) {
@@ -57,12 +58,12 @@ void BaseFd::close() noexcept {
         if (::CloseHandle(reinterpret_cast<HANDLE>(_fd))) {
           break;
         }
-        log::error("CloseHandle {} failed: error {}", static_cast<uintptr_t>(_fd), ::GetLastError());
+        log_noexcept::error("CloseHandle {} failed: error {}", static_cast<uintptr_t>(_fd), ::GetLastError());
       } else {
         if (::closesocket(_fd) == 0) {
           break;
         }
-        log::error("closesocket handle {} failed: error {}", static_cast<uintptr_t>(_fd), LastSystemError());
+        log_noexcept::error("closesocket handle {} failed: error {}", static_cast<uintptr_t>(_fd), LastSystemError());
       }
       break;
 #else
@@ -76,11 +77,11 @@ void BaseFd::close() noexcept {
         continue;
       }
       // Other errors: EBADF (benign if race closed elsewhere), ENOSPC (should not happen here), etc.
-      log::error("close fd # {} failed: {}", _fd, SystemErrorMessage(err));
+      log_noexcept::error("close fd # {} failed: {}", _fd, SystemErrorMessage(err));
       break;
 #endif
     }
-    log::debug("fd # {} closed", static_cast<intptr_t>(_fd));
+    log_noexcept::debug("fd # {} closed", static_cast<intptr_t>(_fd));
     _fd = kClosedFd;
   }
 }

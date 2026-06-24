@@ -21,6 +21,7 @@
 #endif
 
 namespace aeronet {
+
 #ifdef AERONET_ENABLE_SPDLOG
 namespace log = spdlog;
 #else

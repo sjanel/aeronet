@@ -121,6 +121,8 @@ class HttpClientConfig {
   // streamed zero-copy alongside the head. Applies to the final (possibly compressed) body. Default: 8 KiB.
   std::size_t maxCapturedRequestBodyBytes{8UL * 1024UL};
 
+  void validate() const;
+
   // Value sent in the User-Agent header when the request does not set one explicitly.
   [[nodiscard]] std::string_view userAgent() const { return _strings[kUserAgent]; }
   HttpClientConfig& withUserAgent(std::string_view userAgent) {
