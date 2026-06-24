@@ -150,7 +150,7 @@ void TlsTransport::shutdown() noexcept {
   ::ERR_clear_error();
 }
 
-void TlsTransport::logErrorIfAny() const noexcept {
+void TlsTransport::logErrorIfAny() const {
   for (auto errVal = ::ERR_get_error(); errVal != 0; errVal = ::ERR_get_error()) {
     char errBuf[256];
     ::ERR_error_string_n(errVal, errBuf, sizeof(errBuf));

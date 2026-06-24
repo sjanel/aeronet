@@ -15,6 +15,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"

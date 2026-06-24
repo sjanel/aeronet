@@ -39,7 +39,7 @@ class TlsTransport final : public ITransport {
 
   [[nodiscard]] SSL* rawSsl() const noexcept { return _ssl.get(); }
 
-  void logErrorIfAny() const noexcept;
+  void logErrorIfAny() const;
 
   /// Attempt to enable kTLS send offload. Call once after handshake completion.
   KtlsEnableResult enableKtlsSend();

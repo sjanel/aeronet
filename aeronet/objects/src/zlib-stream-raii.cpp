@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "aeronet/buffer-cache.hpp"
-#include "aeronet/log.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/zlib-gateway.hpp"
 
 #ifdef AERONET_ENABLE_ZLIBNG
@@ -145,7 +145,7 @@ void ZStreamRAII::end() noexcept {
       return;  // nothing to clean up
   }
   if (ret != Z_OK) [[unlikely]] {
-    log::debug("zlib: end returned {} (ignored)", ret);
+    log_noexcept::debug("zlib: end returned {} (ignored)", ret);
   }
   _variant = Variant::uninitialized;
   _mode = Mode::uninitialized;
