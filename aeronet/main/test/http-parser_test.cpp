@@ -124,7 +124,7 @@ TEST(HttpParserFixedLength, Expect100Continue_ZeroBody_NoInterim) {
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_FALSE(resp.starts_with("HTTP/1.1 100")) << "Should not receive 100 Continue for zero-length body\n" << resp;
+  ASSERT_FALSE(resp.contains("HTTP/1.1 100")) << "Should not receive 100 Continue for zero-length body\n" << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
 

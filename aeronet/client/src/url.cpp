@@ -3,8 +3,8 @@
 #include <charconv>
 #include <cstdint>
 #include <expected>
-#include <optional>
 #include <string_view>
+#include <system_error>
 
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -35,12 +35,15 @@ constexpr bool IsHttpScheme(std::string_view scheme, bool& tls) {
 struct ParsedAuthority {
   std::string_view host;
   std::string_view target;  // origin-form target; "/" when the URL carries no path
-  uint16_t port;
+  uint16_t port{};
 };
 
 // Parse the "host[:port][/path][?query]" slice that follows "scheme://" (or a "//" network-path
-// reference) for an already-resolved scheme. Returns std::nullopt on malformed input.
-std::optional<ParsedAuthority> ParseAuthority(bool tls, std::string_view rest) {
+// reference) for an already-resolved scheme.
+// Returns an empty host on malformed input.
+ParsedAuthority ParseAuthority(bool tls, std::string_view rest) {
+  ParsedAuthority pa;
+
   // Strip fragment (never transmitted).
   if (const auto hashPos = rest.find('#'); hashPos != std::string_view::npos) {
     rest = rest.substr(0, hashPos);
@@ -49,54 +52,55 @@ std::optional<ParsedAuthority> ParseAuthority(bool tls, std::string_view rest) {
   // Authority ends at the first '/' or '?'.
   const auto authorityEnd = rest.find_first_of("/?");
   const std::string_view authority = rest.substr(0, authorityEnd);
-  const std::string_view target =
-      authorityEnd == std::string_view::npos ? std::string_view{"/"} : rest.substr(authorityEnd);
+
+  pa.target = authorityEnd == std::string_view::npos ? std::string_view{"/"} : rest.substr(authorityEnd);
 
   if (authority.empty() || authority.contains('@')) {
-    return std::nullopt;  // empty authority or unsupported userinfo
+    return pa;  // empty authority or unsupported userinfo
   }
 
-  std::string_view hostPart;
   std::string_view portPart;
   if (authority.front() == '[') {
     // IPv6 literal: [::1]:port
     const auto close = authority.find(']');
     if (close == std::string_view::npos) {
-      return std::nullopt;
+      return pa;
     }
-    hostPart = authority.substr(1, close - 1);
     const std::string_view afterBracket = authority.substr(close + 1);
     if (!afterBracket.empty()) {
       if (afterBracket.front() != ':') {
-        return std::nullopt;
+        return pa;
       }
       portPart = afterBracket.substr(1);
     }
+    pa.host = authority.substr(1, close - 1);
   } else {
     const auto colon = authority.rfind(':');
     if (colon == std::string_view::npos) {
-      hostPart = authority;
+      pa.host = authority;
     } else {
-      hostPart = authority.substr(0, colon);
+      pa.host = authority.substr(0, colon);
       portPart = authority.substr(colon + 1);
     }
   }
 
-  if (hostPart.empty()) {
-    return std::nullopt;
+  if (pa.host.empty()) {
+    return pa;
   }
 
-  uint16_t port = tls ? 443 : 80;
-  if (!portPart.empty()) {
+  if (portPart.empty()) {
+    pa.port = tls ? 443 : 80;
+  } else {
     const auto* begin = portPart.data();
     const auto* end = begin + portPart.size();
-    const auto [ptr, ec] = std::from_chars(begin, end, port);
-    if (ec != std::errc{} || ptr != end || port == 0) {
-      return std::nullopt;
+    const auto [ptr, ec] = std::from_chars(begin, end, pa.port);
+    if (ec != std::errc{} || ptr != end || pa.port == 0) {
+      pa.host = {};
+      return pa;
     }
   }
 
-  return ParsedAuthority{hostPart, target, port};
+  return pa;
 }
 
 }  // namespace
@@ -130,11 +134,11 @@ std::expected<Url, HttpClientErrc> Url::Parse(std::string_view url) {
   if (!IsHttpScheme(url.substr(0, schemeEnd), tls)) {
     return std::unexpected(HttpClientErrc::invalidUrl);
   }
-  const std::optional<ParsedAuthority> pa = ParseAuthority(tls, url.substr(schemeEnd + 3));
-  if (!pa) {
+  const ParsedAuthority pa = ParseAuthority(tls, url.substr(schemeEnd + 3));
+  if (pa.host.empty()) {
     return std::unexpected(HttpClientErrc::invalidUrl);
   }
-  return Url(tls, pa->port, pa->host, pa->target);
+  return Url(tls, pa.port, pa.host, pa.target);
 }
 
 std::expected<Url, HttpClientErrc> Url::resolveRedirect(std::string_view location) const {
@@ -150,11 +154,11 @@ std::expected<Url, HttpClientErrc> Url::resolveRedirect(std::string_view locatio
   // Network-path reference: //host[:port][/path] -> inherit scheme. Parse the authority directly and
   // build the canonical buffer once, instead of synthesizing a "scheme://..." string to re-parse and copy.
   if (location.starts_with("//")) {
-    const std::optional<ParsedAuthority> pa = ParseAuthority(tls(), location.substr(2));
-    if (!pa) {
+    const ParsedAuthority pa = ParseAuthority(tls(), location.substr(2));
+    if (pa.host.empty()) {
       return std::unexpected(HttpClientErrc::invalidUrl);
     }
-    return Url(tls(), pa->port, pa->host, pa->target);
+    return Url(tls(), pa.port, pa.host, pa.target);
   }
 
   // Strip fragment from the relative reference.

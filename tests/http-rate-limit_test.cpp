@@ -44,10 +44,10 @@ TEST(HttpRateLimit, GlobalPeerAddressLimiterReturns429AndRetryAfter) {
   router.addRequestMiddleware(std::move(opts).build());
 
   const auto r1 = aeronet::test::simpleGet(ts.port(), "/rl");
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
 
   const auto r2 = aeronet::test::simpleGet(ts.port(), "/rl");
-  EXPECT_TRUE(r2.contains("HTTP/1.1 429")) << r2;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
   EXPECT_TRUE(r2.contains("Retry-After:")) << r2;
 }
 
@@ -66,10 +66,10 @@ TEST(HttpRateLimit, RouteSpecificLimiterOnlyAffectsItsRoute) {
   const auto open1 = aeronet::test::simpleGet(ts.port(), "/open");
   const auto open2 = aeronet::test::simpleGet(ts.port(), "/open");
 
-  EXPECT_TRUE(strict1.contains("HTTP/1.1 200")) << strict1;
-  EXPECT_TRUE(strict2.contains("HTTP/1.1 429")) << strict2;
-  EXPECT_TRUE(open1.contains("HTTP/1.1 200")) << open1;
-  EXPECT_TRUE(open2.contains("HTTP/1.1 200")) << open2;
+  EXPECT_TRUE(strict1.starts_with("HTTP/1.1 200")) << strict1;
+  EXPECT_TRUE(strict2.starts_with("HTTP/1.1 429")) << strict2;
+  EXPECT_TRUE(open1.starts_with("HTTP/1.1 200")) << open1;
+  EXPECT_TRUE(open2.starts_with("HTTP/1.1 200")) << open2;
 }
 
 TEST(HttpRateLimit, ForwardedForStrategyUsesHeaderKey) {
@@ -90,8 +90,8 @@ TEST(HttpRateLimit, ForwardedForStrategyUsesHeaderKey) {
   const auto r1 = aeronet::test::requestOrThrow(ts.port(), req);
   const auto r2 = aeronet::test::requestOrThrow(ts.port(), req);
 
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
-  EXPECT_TRUE(r2.contains("HTTP/1.1 429")) << r2;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
 }
 
 TEST(HttpRateLimit, ForwardedForStrategyBypassesWhenHeaderMissing) {
@@ -107,8 +107,8 @@ TEST(HttpRateLimit, ForwardedForStrategyBypassesWhenHeaderMissing) {
   const auto r1 = aeronet::test::simpleGet(ts.port(), "/xff-missing");
   const auto r2 = aeronet::test::simpleGet(ts.port(), "/xff-missing");
 
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
-  EXPECT_TRUE(r2.contains("HTTP/1.1 200")) << r2;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 200")) << r2;
 }
 
 TEST(HttpRateLimit, HeaderValueStrategyUsesTrimmedHeaderAndConstBuild) {
@@ -130,8 +130,8 @@ TEST(HttpRateLimit, HeaderValueStrategyUsesTrimmedHeaderAndConstBuild) {
   const auto r1 = aeronet::test::requestOrThrow(ts.port(), req);
   const auto r2 = aeronet::test::requestOrThrow(ts.port(), req);
 
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
-  EXPECT_TRUE(r2.contains("HTTP/1.1 429")) << r2;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
 }
 
 TEST(HttpRateLimit, HeaderValueStrategyRequiresHeaderName) {
@@ -155,8 +155,8 @@ TEST(HttpRateLimit, CustomStrategyWithoutExtractorBypassesRequests) {
   const auto r1 = aeronet::test::simpleGet(ts.port(), "/custom-none");
   const auto r2 = aeronet::test::simpleGet(ts.port(), "/custom-none");
 
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
-  EXPECT_TRUE(r2.contains("HTTP/1.1 200")) << r2;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 200")) << r2;
 }
 
 TEST(HttpRateLimit, CustomStrategyUsesExtractorKey) {
@@ -178,8 +178,8 @@ TEST(HttpRateLimit, CustomStrategyUsesExtractorKey) {
   const auto r1 = aeronet::test::requestOrThrow(ts.port(), req);
   const auto r2 = aeronet::test::requestOrThrow(ts.port(), req);
 
-  EXPECT_TRUE(r1.contains("HTTP/1.1 200")) << r1;
-  EXPECT_TRUE(r2.contains("HTTP/1.1 429")) << r2;
+  EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
+  EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
 }
 
 TEST(HttpRateLimit, StoreExceptionsFailOpenWhenConfigured) {
@@ -192,7 +192,7 @@ TEST(HttpRateLimit, StoreExceptionsFailOpenWhenConfigured) {
   router.addRequestMiddleware(std::move(options).build());
 
   const auto response = aeronet::test::simpleGet(ts.port(), "/throw-open");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
 }
 
 TEST(HttpRateLimit, StoreExceptionsFailClosedWithRetryAfterAndBody) {
@@ -206,7 +206,7 @@ TEST(HttpRateLimit, StoreExceptionsFailClosedWithRetryAfterAndBody) {
   router.addRequestMiddleware(std::move(options).build());
 
   const auto response = aeronet::test::simpleGet(ts.port(), "/throw-closed");
-  EXPECT_TRUE(response.contains("HTTP/1.1 429")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 429")) << response;
   EXPECT_TRUE(response.contains("Retry-After: 1")) << response;
   EXPECT_TRUE(response.contains("slow down")) << response;
 }

@@ -222,7 +222,7 @@ TEST(ConnectionManagerErrors, EventLoopAddFailure) {
 
   // Server should remain healthy after handling the error.
   auto resp2 = test::simpleGet(ts.port(), "/after");
-  EXPECT_TRUE(resp2.contains("HTTP/1.1 200")) << resp2;
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
 }
 
 // Test sweepIdleConnections - isImmediateCloseRequested path
@@ -238,7 +238,7 @@ TEST(ConnectionManagerErrors, SweepIdleConnectionsImmediateClose) {
 
   // Normal request should work
   auto resp = test::simpleGet(ts.port(), "/sweep-test");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Test maxPerEventReadBytes fairness cap in handleReadableClient
@@ -253,7 +253,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairness) {
 
   // Send a simple request - verify basic operation with fairness cap enabled
   auto resp = test::simpleGet(ts.port(), "/fairness");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test queueData TransportHint::Error path
@@ -401,7 +401,7 @@ TEST(HttpResponseDispatchErrors, SendfileError) {
   // Expected behavior: headers may already be sent (200), but body will be truncated and the
   // server will close the connection.
   const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_FALSE(resp.contains(std::string_view{kPayload})) << resp;
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms));
 }
@@ -436,7 +436,7 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
   test::sendAll(client.fd(), SimpleGetRequest("/sendfile-retry"));
 
   auto resp = test::recvWithTimeout(client.fd(), 5000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // =============================================================================
@@ -505,7 +505,7 @@ TEST(ConnectionManagerErrors, TlsEofDuringHandshake) {
   test::TlsClient tlsClient(ts.port());
   EXPECT_TRUE(tlsClient.handshakeOk());
   auto resp = tlsClient.get("/after-eof");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 #endif  // AERONET_ENABLE_OPENSSL
@@ -560,7 +560,7 @@ TEST(ConnectionManagerErrors, MaxBufferOverflow) {
 
     const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
     // Pre-routing DoS guard: buffer exceeds global maxHeaderBytes before headers are fully parsed.
-    EXPECT_TRUE(resp.contains("HTTP/1.1 431")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 431")) << resp;
   }
 
   {
@@ -573,7 +573,7 @@ TEST(ConnectionManagerErrors, MaxBufferOverflow) {
     test::sendAll(client.fd(), hugeBody);
 
     const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
-    EXPECT_TRUE(resp.contains("HTTP/1.1 413")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << resp;
   }
 }
 
@@ -598,7 +598,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairnessBudgetExhausted) {
   test::sendAll(client.fd(), largeRequest);
 
   const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Test waitingForBody flag update path (line 330-332 and 555-556)
@@ -624,7 +624,7 @@ TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
   test::sendAll(client.fd(), std::string(256, 'B'));
 
   const auto resp = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   // Verify the body was received correctly
   EXPECT_TRUE(resp.contains(std::string(256, 'A'))) << resp;
 }
@@ -717,7 +717,7 @@ TEST(ConnectionManagerTlsErrors, TlsHandshakeWriteReadyEpollMod) {
 
   // Make a request to verify the connection works after handshake
   const auto resp = client.get("/test");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 
   tlsServer.stop();
 }
@@ -753,7 +753,7 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
   auto resp = client.readAll();
 
   // Connection should be truncated due to pread error
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   // Body will be truncated
   EXPECT_LT(resp.size(), payload.size() + 256);
 }
@@ -792,7 +792,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   // The first writev returns EAGAIN, leaving data in outBuffer.
   // The sweep timer should retry and eventually flush the data.
   auto resp = test::recvWithTimeout(client.fd(), 3000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.contains(largeBody.substr(0, 32))) << resp;
 }
 
@@ -830,7 +830,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
   test::sendAll(client.fd(), SimpleGetRequest("/sweep-file-retry"));
 
   auto resp = test::recvWithTimeout(client.fd(), 5000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // =============================================================================
@@ -897,7 +897,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {
   test::sendAll(client.fd(), SimpleGetRequest("/transport-needs-write"));
 
   auto resp = test::recvWithTimeout(client.fd(), 2000ms);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.contains("needs-write")) << resp;
 }
 
@@ -931,5 +931,5 @@ TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
 
   // Server should still work for subsequent connections
   auto resp = test::simpleGet(localTs.port(), "/after-add-fail");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }

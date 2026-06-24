@@ -149,8 +149,9 @@ class HttpMessage {
   static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
 
   // Minimum initial capacity for HttpMessage internal buffer to avoid too-small allocations.
-  // The minimal valid HTTP response that will be returned by aeronet is
-  // "HTTP/1.1 200\r\nDate: Tue, 07 Jan 2025 12:34:56 GMT\r\n\r\n" (53 bytes).
+  // The minimal valid HTTP response that will be returned by aeronet is (note the mandatory SP after the
+  // status code even when the reason-phrase is empty, per RFC 9112 §4):
+  // "HTTP/1.1 200 \r\nDate: Tue, 07 Jan 2025 12:34:56 GMT\r\n\r\n" (54 bytes).
   static constexpr std::size_t kHttpResponseMinInitialCapacity = 64UL;
 
   // Returns the size needed to store a header / trailer with given name and value lengths.

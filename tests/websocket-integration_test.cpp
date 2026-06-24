@@ -206,7 +206,7 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
   std::string response = test::recvWithTimeout(conn.fd(), std::chrono::seconds{1}, 129UL);
 
   // Verify 101 response
-  EXPECT_TRUE(response.contains("HTTP/1.1 101")) << "Response: " << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 101")) << "Response: " << response;
   EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::Upgrade, websocket::UpgradeValue)))
       << "Response: " << response;
   EXPECT_TRUE(response.contains("Sec-WebSocket-Accept:")) << "Response: " << response;
@@ -233,7 +233,7 @@ TEST_F(WebSocketTest, UpgradeWithInvalidKey) {
   std::string response = test::recvWithTimeout(conn.fd(), 500ms);  // NOLINT(misc-include-cleaner)
 
   // Should get 400 Bad Request
-  EXPECT_TRUE(response.contains("HTTP/1.1 400")) << "Response: " << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 400")) << "Response: " << response;
 }
 
 TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
@@ -257,7 +257,7 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
   std::string response = test::recvWithTimeout(conn.fd(), 1000ms, 1531UL);
 
   // Should get 404 Not Found (no handler for /other)
-  EXPECT_TRUE(response.contains("HTTP/1.1 404")) << "Response: " << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 404")) << "Response: " << response;
 }
 
 TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
@@ -289,7 +289,7 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/echo"));
   std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
-  ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
+  ASSERT_TRUE(upgradeResponse.starts_with("HTTP/1.1 101"));
 
   // Send a text frame
   auto textFrame = BuildClientTextFrame("Hello, WebSocket!");
@@ -339,7 +339,7 @@ TEST_F(WebSocketTest, CloseHandshake) {
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
   std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
-  ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
+  ASSERT_TRUE(upgradeResponse.starts_with("HTTP/1.1 101"));
 
   // Send close frame
   auto closeFrame = BuildClientCloseFrame(CloseCode::Normal, "goodbye");
@@ -388,7 +388,7 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
   // Upgrade
   test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
   std::string upgradeResponse = test::recvWithTimeout(conn.fd(), 1000ms, 129UL);
-  ASSERT_TRUE(upgradeResponse.contains("HTTP/1.1 101"));
+  ASSERT_TRUE(upgradeResponse.starts_with("HTTP/1.1 101"));
 
   // Send a small message (should work)
   auto smallFrame = BuildClientTextFrame("Small message");

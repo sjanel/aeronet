@@ -112,7 +112,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
     return resp;
   });
   std::string out = test::simpleGet(ts.port(), "/e?x=%");
-  EXPECT_TRUE(out.contains("HTTP/1.1 200 OK"));
+  EXPECT_TRUE(out.starts_with("HTTP/1.1 200 OK"));
   EXPECT_TRUE(out.ends_with("\r\n\r\nEDGE1"));
 }
 
@@ -127,7 +127,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
   });
   std::string resp = test::simpleGet(ts.port(), "/e2?a=%A");
 
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with("\r\n\r\nEDGE2"));
 }
 

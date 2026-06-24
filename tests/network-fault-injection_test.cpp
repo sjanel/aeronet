@@ -71,7 +71,7 @@ TEST_F(NetworkFaultTest, PartialReadsOneByteAtATime) {
   test::sendAll(cc.fd(), "GET /hello HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("Hello, World!")) << response;
 }
 
@@ -84,7 +84,7 @@ TEST_F(NetworkFaultTest, PartialReadsSmallChunks) {
   test::sendAll(cc.fd(), "GET /hello HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("Hello, World!")) << response;
 }
 
@@ -100,7 +100,7 @@ TEST_F(NetworkFaultTest, PartialReadsWithLargePostBody) {
   test::sendAll(cc.fd(), request);
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains(body)) << response;
 }
 
@@ -115,7 +115,7 @@ TEST_F(NetworkFaultTest, PartialWritesSmallChunks) {
   test::sendAll(cc.fd(), "GET /large HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains(std::string(100, 'X'))) << "Response should contain large body";
 }
 
@@ -136,7 +136,7 @@ TEST_F(NetworkFaultTest, EagainOnEveryOtherWrite) {
   test::sendAll(cc.fd(), "GET /large HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   // Server should eventually flush all data despite EAGAIN
   EXPECT_TRUE(response.contains(std::string(100, 'X'))) << "Response body incomplete";
 }
@@ -184,7 +184,7 @@ TEST_F(NetworkFaultTest, PartialReadsAndWritesCombined) {
   test::sendAll(cc.fd(), "GET /hello HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("Hello, World!")) << response;
 }
 
@@ -202,7 +202,7 @@ TEST_F(NetworkFaultTest, PartialReadsWithSmallWritesCombined) {
   test::sendAll(cc.fd(), "GET /hello HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   auto response = test::recvUntilClosed(cc.fd());
 
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("Hello, World!")) << response;
 }
 

@@ -62,7 +62,10 @@ constexpr std::size_t kStatusCodeLen = 3U;
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = HttpMessage::HeaderSize(http::Date.size(), RFC7231DateStrLen);
 
-constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kStatusCodeLen;
+// "HTTP/1.1" + SP + 3-digit code + SP. The trailing SP is the mandatory separator before the
+// (possibly empty) reason-phrase: per RFC 9112 §4 the status-line is
+//   HTTP-version SP status-code SP [ reason-phrase ]
+constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kStatusCodeLen + 1U;
 
 // Initial size of the HttpMessage internal buffer, including the status line, Date header and DoubleCRLF.
 constexpr std::size_t kHttpResponseInitialSize =
@@ -82,14 +85,18 @@ constexpr std::string_view AdjustReasonLen(std::string_view reason) {
 constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
 
 inline void InitData(char* data) {
-  data[http::HTTP10Sv.size()] = ' ';
-  data[HttpMessage::kReasonBeg] = '\n';  // marker for no reason
+  data[http::HTTP10Sv.size()] = ' ';         // SP after the HTTP version
+  data[HttpMessage::kReasonBeg - 1U] = ' ';  // mandatory SP before the reason-phrase (RFC 9112 §4)
 #ifndef NDEBUG
   // In debug, this allows for easier inspection of the response data before finalization.
   // In release, it's not needed because the final HTTP version and date will be written at finalization step.
   http::HTTP_1_1.writeFull(data);
   WriteCRLFDateHeader(SysClock::now(), data + kStatusLineMinLenWithoutCRLF);
 #endif
+  // Set last: kStatusLineMinLenWithoutCRLF == kReasonBeg, so the debug pre-write above lands on this byte;
+  // the marker must win so hasReason() stays correct before finalization (it is overwritten by the
+  // status-line CRLF at finalization anyway).
+  data[HttpMessage::kReasonBeg] = '\n';  // marker for no reason
 }
 
 constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t contentTypeSize) {
@@ -286,8 +293,8 @@ HttpMessage& HttpMessage::status(http::StatusCode statusCode) & {
 
 HttpMessage& HttpMessage::reason(std::string_view newReason) & {
   newReason = AdjustReasonLen(newReason);
-  auto oldReasonSz = reasonLength();
-  int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
+  const auto oldReasonSz = reasonLength();
+  const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
   if (diff == 0) {
     if (!newReason.empty()) {
       Copy(newReason, _data.data() + kReasonBeg);
@@ -295,27 +302,18 @@ HttpMessage& HttpMessage::reason(std::string_view newReason) & {
     return *this;
   }
   if (diff > 0) {
-    if (oldReasonSz == 0) {
-      ++diff;  // for the space before first reason char
-    }
     _data.ensureAvailableCapacityExponential(static_cast<uint64_t>(diff));
-  } else if (newReason.empty()) {
-    --diff;  // remove the space that previously separated status and reason
   }
-  const std::string_view oldReason = reason();
-  char* orig = _data.data() + kReasonBeg + oldReasonSz;
-  if (oldReason.empty()) {
-    --orig;  // point to the CR (space placeholder location)
-  }
-  std::memmove(
-      orig + diff, orig,
-      _data.size() - kStatusCodeBeg - kStatusCodeLen - oldReasonSz - static_cast<uint32_t>(!oldReason.empty()));
+  // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
+  // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
+  // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
+  char* reasonEnd = _data.data() + kReasonBeg + oldReasonSz;
+  std::memmove(reasonEnd + diff, reasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
   adjustBodyStart(diff);
   adjustHeadersStart(diff);
   if (newReason.empty()) {
-    _data[kReasonBeg] = '\n';  // needed marker for empty reason
+    _data[kReasonBeg] = '\n';  // marker for empty reason (overwritten by the status-line CRLF at finalization)
   } else {
-    _data[kReasonBeg - 1UL] = ' ';
     Copy(newReason, _data.data() + kReasonBeg);
   }
   _data.adjustSize(diff);

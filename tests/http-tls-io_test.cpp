@@ -118,7 +118,7 @@ TEST(HttpTlsNegative, LargeResponseFragmentation) {
   std::string resp = tlsGetLarge(port);
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("AAAA"));
 }
 
@@ -165,7 +165,7 @@ TEST(HttpTlsStreaming, ChunkedSimpleTls) {
   test::TlsClient client(ts.port());
   auto raw = client.get("/stream", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(raw.contains("6\r\nhello "));  // chunk size 6
   ASSERT_TRUE(raw.contains("3\r\ntls"));     // chunk size 3
 }
@@ -440,7 +440,7 @@ TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
   ASSERT_TRUE(client.handshakeOk());
   auto raw = client.get("/ktls", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 
   const auto stats = ts.stats();
   ASSERT_GE(stats.totalRequestsServed, 1U);
@@ -458,7 +458,7 @@ TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
   ASSERT_TRUE(client.handshakeOk());
   auto raw = client.get("/disabled", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 
   const auto stats = ts.stats();
   EXPECT_EQ(stats.ktlsSendEnabledConnections, 0U);
@@ -477,7 +477,7 @@ TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
   test::ForceNextSslGetWbioNull(1);
   auto raw = client.get("/auto", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 
   const auto stats = ts.stats();
   EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendEnableFallbacks, 1U);
@@ -495,7 +495,7 @@ TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
   test::ForceNextSslGetWbioNull(1);
   auto raw = client.get("/enabled", {});
   ASSERT_FALSE(raw.empty());
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
 
   const auto stats = ts.stats();
   EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendEnableFallbacks, 1U);

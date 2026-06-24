@@ -44,6 +44,7 @@ class Url {
 
     ~HostCStr() { *_sep = _saved; }
 
+    // Returns a null-terminated host C-string, valid for the lifetime of the guard.
     [[nodiscard]] const char* c_str() const noexcept { return _host; }
 
    private:

@@ -56,7 +56,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, std::chrono::milliseconds{10000});
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, 93UL);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
   std::string_view simpleHello = "hello-tunnel";
@@ -122,7 +122,7 @@ TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
 // Test that closing a tunnel connection also cleans up the peer connection.
@@ -143,7 +143,7 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
     ASSERT_GT(fd, 0);
     test::sendAll(fd, req, 5000ms);
     auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
-    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
     // Verify tunnel works by sending and receiving data
     std::string_view testData = "tunnel-peer-test";
@@ -165,7 +165,7 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   test::sendAll(client2.fd(), req2, 1000ms);
   auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
   // 404 is fine - we just need to verify server is still responsive
-  EXPECT_TRUE(resp2.contains("HTTP/1.1")) << resp2;
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1")) << resp2;
 }
 
 // Test tunnel data forwarding with write error on the tunnel peer.
@@ -188,7 +188,7 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, 5000ms);
   auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   // Verify tunnel works first
   std::string_view testData = "write-error-test";
@@ -203,5 +203,5 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   std::string req2 = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   test::sendAll(client2.fd(), req2, 1000ms);
   auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
-  EXPECT_TRUE(resp2.contains("HTTP/1.1")) << resp2;
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1")) << resp2;
 }

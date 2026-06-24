@@ -1,6 +1,7 @@
 #include "aeronet/https-redirect.hpp"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 

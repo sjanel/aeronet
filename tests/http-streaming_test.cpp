@@ -212,7 +212,7 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
 
   std::string resp = BlockingFetch(port, "GET", "/file");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
 
@@ -237,7 +237,7 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
 
   std::string resp = BlockingFetch(port, "HEAD", "/file");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
@@ -281,7 +281,7 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
 
   std::string resp = BlockingFetch(port, "GET", "/file-override-cl");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "35")));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
 
@@ -300,7 +300,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
     writer.end();
   });
   std::string resp = BlockingFetch(port, "HEAD", "/head");
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
   // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
   // The terminating chunk in a chunked response would appear as "\r\n0\r\n\r\n" (preceded by the blank line
@@ -455,8 +455,8 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   std::string headResp = RequestVerb(port, "HEAD", "/hdr");
 
   // Basic status line check
-  ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
-  ASSERT_TRUE(headResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(headResp.starts_with("HTTP/1.1 200"));
   // Custom headers should appear exactly once each.
   ASSERT_TRUE(getResp.contains("X-Custom-A: alpha\r\n"));
   ASSERT_TRUE(getResp.contains("X-Custom-B: beta\r\n"));
@@ -574,7 +574,7 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
   });
   std::string postResp = RequestMethod(port, "POST", "/m405", "data");
   // Expect 405 Method Not Allowed
-  EXPECT_TRUE(postResp.contains("HTTP/1.1 405"));
+  EXPECT_TRUE(postResp.starts_with("HTTP/1.1 405"));
   EXPECT_TRUE(postResp.contains("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
   std::string getResp2 = RequestMethod(port, "GET", "/m405");
@@ -778,7 +778,7 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
   });
   std::string getResp;
   raw(port, "GET", getResp);
-  ASSERT_TRUE(getResp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Ensure our ignored length did not appear.
   ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::ContentLength, "9999")));
@@ -806,7 +806,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   });
   std::string resp;
   rawWith(port, "GET", "Accept-Encoding: gzip\r\n", resp);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // We expect a fixed-length header present.
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(originalSize))));
   // Compression should have activated producing a gzip header (1F 8B in hex) and Content-Encoding header.
@@ -871,7 +871,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   std::string resp = BlockingFetch(port, "GET", "/adaptive");
   auto stats = ts.server.stats();
   EXPECT_GT(stats.totalBytesWrittenImmediate, kLargeSize);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // Validate both chunk headers present: 5 and hex(kLargeSize)
   char hexBuf[32];
   auto res = std::to_chars(hexBuf, hexBuf + sizeof(hexBuf), static_cast<unsigned long long>(kLargeSize), 16);
@@ -1004,7 +1004,7 @@ TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/modify-after-headers");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(response.contains("X-Before: value1"));
   EXPECT_FALSE(response.contains("X-After"));
 }
@@ -1070,7 +1070,7 @@ TEST(HttpResponseWriterFailures, FileNotInOpenedState) {
                       });
 
   const std::string response = test::simpleGet(ts.port(), "/file-wrong-state");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
 }
 
 // Test file() overriding previously declared Content-Length - should warn
@@ -1123,7 +1123,7 @@ TEST(HttpResponseWriterFailures, HeadRequestSuppressesBody) {
   opts.method = "HEAD";
   opts.target = "/head-test";
   const std::string response = test::sendAndCollect(ts.port(), test::buildRequest(opts));
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(test::noBodyAfterHeaders(response));  // HEAD responses have no body
 }
 
@@ -1335,7 +1335,7 @@ TEST(HttpResponseWriterFailures, ContentLengthWhenEnded) {
                       });
 
   const std::string response = test::simpleGet(ts.port(), "/content-length-after-ended");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(response.contains("body-data"));
 }
 
@@ -1351,7 +1351,7 @@ TEST(HttpResponseWriterFailures, ContentLengthAfterHeadersSent) {
                       });
 
   const std::string response = test::simpleGet(ts.port(), "/content-length-headers-sent");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(response.contains("first-chunk"));
   EXPECT_TRUE(response.contains("second-chunk"));
 }
@@ -1385,7 +1385,7 @@ TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
   test::sendAll(fd, req);
   const std::string resp = test::recvUntilClosed(fd);
 
-  EXPECT_TRUE(resp.contains("HTTP/1.1 202"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 202"));
   EXPECT_TRUE(resp.contains("X-Global: gvalue"));
   EXPECT_TRUE(resp.contains("X-Another: anothervalue"));
   EXPECT_TRUE(resp.contains("X-Stream: yes"));
@@ -1457,7 +1457,7 @@ TEST(HttpStreaming, ChunkedRequestWithMalformedContentEncodingRejects400) {
   test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 400"))
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"))
       << "Expected 400 Bad Request for malformed Content-Encoding, got: " << resp;
 }
 
@@ -1486,7 +1486,7 @@ TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
   test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << "Expected 400 Bad Request for empty Content-Encoding, got: " << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << "Expected 400 Bad Request for empty Content-Encoding, got: " << resp;
 }
 
 TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
@@ -1509,7 +1509,7 @@ TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
   test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << "Expected 400 Bad Request for malformed CRLF, got: " << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << "Expected 400 Bad Request for malformed CRLF, got: " << resp;
 }
 
 TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
@@ -1538,7 +1538,7 @@ TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
   test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 413")) << "Expected 413 Payload Too Large, got: " << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << "Expected 413 Payload Too Large, got: " << resp;
 }
 
 #endif
