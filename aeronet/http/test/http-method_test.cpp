@@ -13,6 +13,7 @@
 
 namespace {
 
+using aeronet::http::IsIdempotent;
 using aeronet::http::IsMethodIdxSet;
 using aeronet::http::Method;
 using aeronet::http::MethodBmp;
@@ -150,4 +151,16 @@ TEST(HttpMethodParse, RejectsNearMissTokensWithSameLength) {
   }
 
   EXPECT_FALSE(MethodStrToOptEnum("UNKNOWN").has_value());  // length 7 default branch
+}
+
+TEST(HttpMethod, IdempotencyMatchesRfc) {
+  EXPECT_TRUE(IsIdempotent(Method::GET));
+  EXPECT_TRUE(IsIdempotent(Method::HEAD));
+  EXPECT_TRUE(IsIdempotent(Method::PUT));
+  EXPECT_TRUE(IsIdempotent(Method::DELETE));
+  EXPECT_TRUE(IsIdempotent(Method::OPTIONS));
+  EXPECT_TRUE(IsIdempotent(Method::TRACE));
+  EXPECT_FALSE(IsIdempotent(Method::POST));
+  EXPECT_FALSE(IsIdempotent(Method::PATCH));
+  EXPECT_FALSE(IsIdempotent(Method::CONNECT));
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <string_view>
@@ -138,8 +139,14 @@ class HttpClient : private internal::ClientHost {
   internal::HttpClientTlsContext& tlsContext();
 #endif
 
+  // Draw a uniform value in [0, 1) from the backoff jitter PRNG (a tiny xorshift; quality is irrelevant
+  // here, only spread). Only consulted when RetryConfig::jitter > 0, so a jitter-free client is fully
+  // deterministic. Defined in http-client.cpp.
+  double nextJitterUnit() noexcept;
+
   HttpClientConfig _config;
   EventLoop _loop;
+  uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
   RawChars _requestBuffer;   // reused across requests to avoid reallocations

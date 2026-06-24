@@ -21,7 +21,8 @@
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
-- **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
+- **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, JWT (JWS), etc.
+- **Batteries included**: beyond the server, a matching non‑blocking HTTP/1.1 **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
 - **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
@@ -404,6 +405,40 @@ Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpRespons
 > (`co_await client.get(...)`) integrated with a running server loop, plus a native HTTP/2 client, are
 > tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
+## JWT (JSON Web Tokens)
+
+An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of
+the OpenSSL crypto already linked for TLS — so it adds no new dependency. Enable it with
+`-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out
+of scope.
+
+```cpp
+#include <aeronet/jwt.hpp>
+
+// Sign with an HMAC secret (HS256). Keys can also come from a PEM RSA/EC/Ed25519
+// key (aeronet::JwtKey::FromPem) or a JWK (aeronet::JwtKey::FromJwk).
+aeronet::JwtKey key = aeronet::JwtKey::Hmac("super-secret-signing-key");
+std::string token = aeronet::Jwt::encode(R"({"sub":"alice","exp":4102444800})", key,
+                                         aeronet::JwtAlgorithm::HS256);
+
+// Verify: signature + claim checks. The module is exception-free — failures surface as an
+// invalid key, an empty token, or a JwtError (never thrown).
+aeronet::JwtVerifyOptions opts;
+opts.allowedAlgorithms = aeronet::JwtAlgorithmSet{aeronet::JwtAlgorithm::HS256};
+aeronet::JwtError err = aeronet::JwtError::None;
+if (aeronet::DecodedJwt decoded = aeronet::Jwt::tryDecode(token, key, opts, err)) {
+  std::string_view sub = decoded.subject();  // "alice" (empty view == claim absent)
+}
+```
+
+Highlights:
+
+- Full JWS algorithm suite — HMAC `HS256/384/512`, RSA `RS*` / `PS*`, ECDSA `ES256/384/512`, `EdDSA` (Ed25519).
+- Claim validation: `exp` / `nbf` (with `leeway` and an injectable `clock`), `iss` / `aud` / `sub`; `aud` as a string or an array.
+- Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` — pairs naturally with the HTTP client to fetch an issuer's keys.
+- **Security by construction**: the unsecured `alg:none` is always rejected, a key whose family doesn't match the token `alg` is refused (the RS256↔HS256 confusion is structurally impossible), the signature is verified before any claim is parsed, and HMAC comparison is constant-time.
+- Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see [docs/FEATURES.md](docs/FEATURES.md) for the full reference.
+
 ## Detailed Documentation
 
 The following focused docs expand each area without cluttering the high‑level overview:
@@ -447,6 +482,8 @@ If you are evaluating the library, the feature highlights above plus the minimal
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
 | sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
+| HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS |
+| JWT (JWS) | ✔ (flag) | RFC 7519 sign/verify; HS/RS/ES/PS/EdDSA; JWK/JWKS by `kid`; rejects `alg:none` |
 
 ## Developer / Operational Features
 

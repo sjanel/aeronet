@@ -62,7 +62,7 @@ Delivered in the first iteration (`aeronet::HttpClient`):
 
 - Synchronous request API over aeronet's **non-blocking** transport + event-loop bricks (`ConnectTCP`, `EventLoop`, `PlainTransport`, `TlsTransport`), so no extra I/O stack is introduced.
 - Plain HTTP and HTTPS (the latter reusing the shared OpenSSL `TlsTransport`, with SNI + optional peer/hostname verification, gated on `AERONET_ENABLE_OPENSSL`).
-- Per-origin **keep-alive connection pooling** with bounded idle reuse and a transparent one-shot retry on a stale pooled connection.
+- Per-origin **keep-alive connection pooling** with bounded idle reuse, plus a configurable **retry + exponential-backoff** policy (`RetryConfig`): an always-on, budget-free transparent retry on a stale pooled connection (pre-send only), and opt-in backoff retries for connect failures, retryable statuses (`429`/`503`, honoring `Retry-After`) and idempotent post-send failures.
 - Response parsing for `Content-Length`, **chunked** transfer-encoding (extensions + trailers tolerated), and connection-close framing; 1xx interim responses discarded.
 - Automatic **redirect following** (301/302/303/307/308) with method/body rewriting per RFC 7231 and a configurable hop limit.
 - Convenience verbs (`get`/`head`/`post`/`put`/`del`) plus a fluent `ClientRequest` builder, returning an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) over the existing aeronet response type (reused as the message container).
@@ -193,7 +193,19 @@ router.setPath(http::Method::GET, "/admin", adminHandler).accessPolicy(std::move
 
 #### Authentication helpers (Basic / Bearer / JWT)
 
-Parse `Authorization` header, extract Basic credentials or Bearer tokens, and provide a pluggable validator interface. Optionally integrate with JWT validation (compile-time gated). Every web framework provides at least Basic/Bearer auth middleware (Express `passport`, Axum `axum-extra`, Gin `gin-jwt`, Spring Security, ASP.NET Identity).
+**JWT (JWS profile) delivered** (`aeronet/jwt`, `AERONET_ENABLE_JWT`): standalone module for signing and
+verifying JSON Web Tokens (RFC 7519). It covers the full JWS algorithm suite (HMAC `HS*`, RSA `RS*`/`PS*`,
+ECDSA `ES*`, `EdDSA`), claim validation (`exp`/`nbf`/`iat`/`iss`/`aud`/`sub` with leeway + injectable clock),
+JWK/JWKS parsing with `kid` selection, and the mandatory security posture (reject `alg:none`, family-based
+anti-confusion, constant-time HMAC, signature-before-claims). Design decisions: **no dedicated opt-in flag** —
+it is a `cmake_dependent_option` defaulting ON whenever `AERONET_ENABLE_OPENSSL` + `AERONET_ENABLE_GLAZE` are
+present (it reuses their crypto + JSON, adding no new dependency); **JWE (encryption) is out of scope**. See
+`docs/FEATURES.md` (JWT section) and `aeronet/jwt/test/`.
+
+Still planned: a server-side **middleware** that parses the `Authorization` header, extracts Basic credentials
+or Bearer tokens, and wires the JWT verifier into a pluggable validator interface; plus a client-side
+**JWKS-fetch + cache** helper building on the HTTP client. Every web framework provides at least Basic/Bearer
+auth middleware (Express `passport`, Axum `axum-extra`, Gin `gin-jwt`, Spring Security, ASP.NET Identity).
 
 #### Reverse proxy / HTTP forwarding mode
 

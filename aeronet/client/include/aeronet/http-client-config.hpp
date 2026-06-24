@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/retry-config.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
@@ -57,14 +59,13 @@ class HttpClientConfig {
   std::size_t maxResponseBytes{64UL * 1024UL * 1024UL};
 
   uint32_t maxRedirects{5};
-  // Number of transparent retries allowed for a failure that occurs *before any request byte is written*
-  // — in practice the stale pooled keep-alive race (the origin closed the idle connection just after we
-  // probed it as alive, so the first write fails). The retry establishes a fresh connection. Retrying
-  // stops the instant any request byte has reached the transport, so a non-idempotent request
-  // (POST/PUT/PATCH/...) is never silently re-submitted. 0 disables it. Default: 1.
-  uint32_t maxRetries{1};
   // Maximum idle connections retained per origin in the pool.
   uint32_t maxIdleConnectionsPerHost{8};
+
+  // Transparent retry + exponential-backoff policy (subsumes the previous `maxRetries` knob). The default
+  // (`retry.maxAttempts == 1`) keeps the historical behaviour: the always-safe pre-send stale-pool retry
+  // stays on, while no extra backoff retries happen. See RetryConfig for the full semantics.
+  RetryConfig retry;
 
   bool followRedirects{true};
   bool keepAlive{true};
@@ -178,6 +179,12 @@ class HttpClientConfig {
   // Set the max idle age of pooled keep-alive connections (0 disables expiry).
   HttpClientConfig& withKeepAliveTimeout(Duration timeout) {
     keepAliveTimeout = timeout;
+    return *this;
+  }
+
+  // Set the transparent retry + backoff policy.
+  HttpClientConfig& withRetry(RetryConfig retryConfig) {
+    retry = std::move(retryConfig);
     return *this;
   }
 

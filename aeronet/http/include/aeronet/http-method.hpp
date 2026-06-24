@@ -50,6 +50,14 @@ static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
 // Check if a method is allowed by mask.
 constexpr bool IsMethodSet(MethodBmp mask, Method method) { return (mask & static_cast<MethodBmp>(method)) != 0U; }
 
+// Methods whose repetition has the same observable effect as a single invocation (RFC 9110 §9.2.2), so a
+// fully-sent request is safe to re-submit. POST and PATCH are not idempotent; CONNECT is neither safe nor
+// idempotent. Used by the client retry policy to decide whether a post-send failure may be retried.
+inline constexpr MethodBmp kIdempotentMethods =
+    Method::GET | Method::HEAD | Method::PUT | Method::DELETE | Method::OPTIONS | Method::TRACE;
+
+constexpr bool IsIdempotent(Method method) noexcept { return IsMethodSet(kIdempotentMethods, method); }
+
 constexpr bool IsMethodIdxSet(MethodBmp mask, MethodIdx methodIdx) { return (mask & (1U << methodIdx)) != 0U; }
 
 constexpr MethodIdx MethodToIdx(Method method) {
