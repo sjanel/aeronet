@@ -15,6 +15,8 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"

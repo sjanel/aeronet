@@ -7,6 +7,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace aeronet {
 namespace {

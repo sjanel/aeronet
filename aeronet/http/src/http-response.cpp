@@ -24,6 +24,7 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"

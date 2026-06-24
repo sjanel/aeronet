@@ -27,7 +27,6 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport.hpp"

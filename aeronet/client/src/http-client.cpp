@@ -13,27 +13,39 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/client-connection.hpp"
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-connector.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/url.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 #include "http-client-codec.hpp"
 #include "http11-connection.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/prov_ssl.h>
 #include <openssl/ssl.h>
+#include <openssl/tls1.h>
+#include <openssl/types.h>
+#include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
 #include "aeronet/tls-config.hpp"
@@ -119,6 +131,7 @@ void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
 struct HttpClientTlsContext {
   explicit HttpClientTlsContext(const HttpClientConfig& cfg)
       : ctx(::SSL_CTX_new(::TLS_client_method()), &::SSL_CTX_free) {
+    cfg.validate();
     if (!ctx) {
       throw HttpClientException("SSL_CTX_new(TLS_client_method) failed");
     }
@@ -270,18 +283,14 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // Opt into ConnectTCP's blocking multi-address fallback (bounded by the connect timeout): a host that
   // resolves to several addresses (e.g. "localhost" -> ::1 then 127.0.0.1) must try them in turn instead
   // of committing to the first, whose non-blocking connect would otherwise hide a deferred ECONNREFUSED.
-  const auto connectMs = _config.connectTimeout.count();
-  const int connectTimeoutMs = connectMs <= 1
-                                   ? 1
-                                   : (connectMs > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max()
-                                                                                  : static_cast<int>(connectMs));
+  const auto connectTimeoutMs = static_cast<int>(_config.connectTimeout.count());
   ConnectResult cr =
       ConnectTCP(std::span<char>(const_cast<char*>(url.host().data()), url.host().size()),
                  std::span<char>(portStr, static_cast<std::size_t>(portEnd - portStr)), 0, connectTimeoutMs);
-  ActiveConnection conn;
   if (cr.failure || !cr.cnx) {
     return std::unexpected(HttpClientErrc::connectFailed);
   }
+  ActiveConnection conn;
   conn.cnx = std::move(cr.cnx);
   const NativeHandle fd = conn.cnx.fd();
   SetNoSigPipe(fd);

@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client.hpp"
@@ -108,6 +110,17 @@ TEST(HttpClientConfigTest, ConstructionValidatesCodecConfig) {
     cfg.requestCompression.codec.maxCompressRatio = 2.0F;  // must be in (0, 1)
     EXPECT_THROW(HttpClient{cfg}, std::exception);
   }
+}
+
+TEST(HttpClientConfigTest, Validate) {
+  HttpClientConfig cfg;
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.connectTimeout = std::chrono::milliseconds{0};
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.connectTimeout = std::chrono::milliseconds{std::numeric_limits<int>::max() + 1ULL};
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.connectTimeout = std::chrono::milliseconds{1};
+  EXPECT_NO_THROW(cfg.validate());
 }
 
 #ifdef AERONET_ENABLE_OPENSSL

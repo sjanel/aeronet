@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -96,8 +97,8 @@ TEST(ResponseParserTest, IncrementalDelivery) {
   std::string buf;
   std::string_view chunks[] = {"HTTP/1.1 200 OK\r\n", "Content-Length: 11\r\n\r\n", "hello", " world"};
   ResponseParser::Status st = ResponseParser::Status::NeedMore;
-  for (auto c : chunks) {
-    buf.append(c);
+  for (auto chunk : chunks) {
+    buf.append(chunk);
     st = parser.parse(buf, false, resp, kMax);
   }
   EXPECT_EQ(st, ResponseParser::Status::Complete);
@@ -268,7 +269,7 @@ TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
   HttpResponse resp;
   ResponseParser parser;
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, /*maxBytes=*/10);
+  auto st = parser.parse("HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, 10);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 

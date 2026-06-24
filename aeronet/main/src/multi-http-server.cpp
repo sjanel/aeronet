@@ -19,6 +19,7 @@
 
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -365,7 +366,7 @@ void MultiHttpServer::stop() noexcept {
   _stopRequested->store(true, std::memory_order_relaxed);
   _lifecycleTracker->notifyStopRequested();
 
-  log::debug("HttpServer stopping (instances={})", _servers.size());
+  log_noexcept::debug("HttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
 
   // Stop internal handle if start() was used (non-blocking API)
@@ -377,7 +378,7 @@ void MultiHttpServer::stop() noexcept {
   if (auto completion = _lastHandleCompletion.lock()) {
     completion->wait();
   }
-  log::info("HttpServer stopped");
+  log_noexcept::info("HttpServer stopped");
 }
 
 MultiHttpServer::AsyncHandle MultiHttpServer::startDetached() {

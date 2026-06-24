@@ -4,9 +4,11 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/client-request.hpp"
@@ -22,13 +24,13 @@ class HttpClientIntegration : public ::testing::Test {
   void SetUp() override {
     Router router;
     router.setPath(http::Method::GET, "/echo-query", [](const HttpRequest& req) {
-      return HttpResponse(http::StatusCodeOK, std::string(req.queryParamValueOrEmpty("msg")), "text/plain");
+      return req.makeResponse(http::StatusCodeOK, req.queryParamValueOrEmpty("msg"), "text/plain");
     });
     router.setPath(http::Method::POST, "/upload", [](const HttpRequest& req) {
-      return HttpResponse(http::StatusCodeOK, std::to_string(req.body().size()), "text/plain");
+      return req.makeResponse(http::StatusCodeOK, std::to_string(req.body().size()), "text/plain");
     });
-    router.setPath(http::Method::GET, "/headers", [](const HttpRequest&) {
-      HttpResponse resp(http::StatusCodeOK, "ok", "text/plain");
+    router.setPath(http::Method::GET, "/headers", [](const HttpRequest& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK, "ok", "text/plain");
       resp.headerAddLine("X-Custom", "custom-value");
       return resp;
     });

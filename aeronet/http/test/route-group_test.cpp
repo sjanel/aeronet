@@ -38,12 +38,12 @@ StreamingHandler MakeStreamingHandler() {
   return [](const HttpRequest&, HttpResponseWriter&) {};
 }
 
-}  // namespace
-
 class RouteGroupTest : public ::testing::Test {
  protected:
   Router router;
 };
+
+}  // namespace
 
 TEST_F(RouteGroupTest, PrefixConcatenation) {
   auto api = router.group("/api/v1");

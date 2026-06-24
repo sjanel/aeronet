@@ -2,11 +2,14 @@
 
 #include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"

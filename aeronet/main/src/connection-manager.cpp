@@ -1,3 +1,9 @@
+#ifdef AERONET_WINDOWS
+#include <ws2tcpip.h>
+#else
+#include <sys/socket.h>  // sockaddr_storage
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>

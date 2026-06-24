@@ -2,12 +2,15 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <regex>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "aeronet/object-array-pool.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {

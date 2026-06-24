@@ -8,13 +8,13 @@
 namespace {
 
 volatile std::sig_atomic_t g_signalStatus{};
-std::chrono::milliseconds g_maxDrainPeriod{5000};
+constinit std::chrono::milliseconds::rep g_maxDrainPeriodMs{5000};
 
 }  // namespace
 
 extern "C" void AeronetSignalHandler(int sigNum) {
   ::aeronet::log::warn("Signal {} received, gracefully shutting down with a max drain period of {}ms", sigNum,
-                       std::chrono::duration_cast<std::chrono::milliseconds>(g_maxDrainPeriod).count());
+                       g_maxDrainPeriodMs);
 
   g_signalStatus = sigNum;
 }
@@ -24,7 +24,7 @@ namespace aeronet {
 void SignalHandler::Enable(std::chrono::milliseconds maxDrainPeriod) {
   std::signal(SIGINT, ::AeronetSignalHandler);
   std::signal(SIGTERM, ::AeronetSignalHandler);
-  g_maxDrainPeriod = maxDrainPeriod;
+  g_maxDrainPeriodMs = maxDrainPeriod.count();
 }
 
 void SignalHandler::Disable() {
@@ -34,7 +34,7 @@ void SignalHandler::Disable() {
 
 bool SignalHandler::IsStopRequested() { return g_signalStatus != 0; }
 
-std::chrono::milliseconds SignalHandler::GetMaxDrainPeriod() { return g_maxDrainPeriod; }
+std::chrono::milliseconds SignalHandler::GetMaxDrainPeriod() { return std::chrono::milliseconds{g_maxDrainPeriodMs}; }
 
 void SignalHandler::ResetStopRequest() { g_signalStatus = 0; }
 

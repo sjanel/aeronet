@@ -19,6 +19,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router-config.hpp"
@@ -482,7 +483,7 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
 
   const auto nbActiveConnections = _connections.size();
   if (nbActiveConnections != 0) {
-    log::info("Initiating graceful drain with {} active connection(s)", nbActiveConnections);
+    log_noexcept::info("Initiating graceful drain with {} active connection(s)", nbActiveConnections);
   }
 
   _lifecycle.enterDraining(deadline, hasDeadline);
