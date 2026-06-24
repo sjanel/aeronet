@@ -58,7 +58,9 @@ HttpResponse&& HttpResponse::bodyYaml(const T& obj) && {
 template <class T>
 std::expected<T, HttpResponse> HttpRequest::bodyAs() const {
   T obj{};
-  if (const auto ec = glz::read_json(obj, body())) [[unlikely]] {
+  // body() views the receive buffer and is NOT null-terminated, so glaze must honour the end
+  // pointer strictly (its default assumes a '\0' sentinel and would read past the body).
+  if (const auto ec = glz::read<glz::opts{.null_terminated = false}>(obj, body())) [[unlikely]] {
     return std::unexpected(
         makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
   }
@@ -68,7 +70,7 @@ std::expected<T, HttpResponse> HttpRequest::bodyAs() const {
 template <class T>
 std::expected<T, HttpResponse> HttpRequest::bodyAsYaml() const {
   T obj{};
-  if (const auto ec = glz::read<glz::opts{.format = glz::YAML}>(obj, body())) [[unlikely]] {
+  if (const auto ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(obj, body())) [[unlikely]] {
     return std::unexpected(
         makeResponse(http::StatusCodeBadRequest, glz::format_error(ec, body()), http::ContentTypeTextPlain));
   }
