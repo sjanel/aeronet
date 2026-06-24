@@ -36,6 +36,7 @@ Single consolidated reference for **aeronet** features.
 1. [Access-Control (CORS) Helpers](#access-control-cors-helpers)
 1. [WebSocket (RFC 6455)](#websocket-rfc-6455)
 1. [HTTP/2 (RFC 9113)](#http2-rfc-9113)
+1. [JWT (RFC 7519 — JWS profile)](#jwt-rfc-7519--jws-profile)
 1. [Future Expansions](#future-expansions)
 1. [Large-body optimization](#large-body-optimization)
 1. [Network Fault Injection Testing](#network-fault-injection-testing)
@@ -3214,6 +3215,94 @@ Test infrastructure for verifying server behavior under realistic network condit
 ### Limitations
 
 - **Read-EAGAIN with EPOLLET**: Simulated EAGAIN on reads (`eagainAfterEveryNReads`) is incompatible with edge-triggered epoll in integration tests. When the transport returns `{0, ReadReady}`, the server waits for a new EPOLLIN edge, but the socket already has data so no edge fires. EAGAIN simulation works correctly in unit tests (no event loop) and for writes (EPOLLOUT re-triggers because the socket is always writable).
+
+## JWT (RFC 7519 — JWS profile)
+
+Compile-time module `aeronet_jwt` providing JSON Web Token signing and verification. It implements
+the **JWS (signature) profile** of JWT — JWE (encryption) is intentionally out of scope. The module
+reuses the OpenSSL crypto already linked for TLS and the glaze JSON parser, so it adds **no new
+dependency**: rather than a standalone opt-in flag it is enabled by default whenever both
+prerequisites are present (`AERONET_ENABLE_JWT`, a `cmake_dependent_option` on
+`AERONET_ENABLE_OPENSSL` + `AERONET_ENABLE_GLAZE`, with a kill switch to force it off).
+
+Public headers: `<aeronet/jwt.hpp>` (encode/decode + `JwtVerifyOptions` + `DecodedJwt`),
+`<aeronet/jwt-key.hpp>` (`JwtKey`), `<aeronet/jwks.hpp>` (`Jwks`), `<aeronet/jwt-algorithm.hpp>`,
+`<aeronet/jwt-error.hpp>`.
+
+### Algorithms (RFC 7518 / RFC 8037)
+
+| Family | Algorithms | Key |
+| ------ | ---------- | --- |
+| HMAC | `HS256` `HS384` `HS512` | `JwtKey::Hmac(secret)` |
+| RSA PKCS#1 v1.5 | `RS256` `RS384` `RS512` | `JwtKey::FromPem(pem)` (RSA) |
+| RSA-PSS | `PS256` `PS384` `PS512` | `JwtKey::FromPem(pem)` (RSA) |
+| ECDSA | `ES256` `ES384` `ES512` | `JwtKey::FromPem(pem)` (EC P-256/384/521) |
+| EdDSA | `EdDSA` | `JwtKey::FromPem(pem)` (Ed25519) |
+
+A private-key PEM both signs and verifies; a public-key PEM verifies only. Keys can also be loaded
+from a JWK (RFC 7517): `oct`, `RSA`, `EC`, and `OKP` (Ed25519) public keys via `JwtKey::FromJwk`.
+
+### Security posture
+
+- The unsecured `alg: none` (RFC 7518 §3.6) is **always rejected** at parse time — a stripped
+  signature can never verify.
+- **Algorithm-substitution defense**: `JwtVerifyOptions::allowedAlgorithms` pins the accepted set,
+  and a key is refused outright when its family does not match the token `alg` (an HMAC key cannot
+  verify an `RS256` token → `JwtError::KeyMismatch`), so the classic RS256↔HS256 confusion is
+  structurally impossible.
+- The signature is verified **before** any claim is parsed or trusted.
+- A `crit` header naming an extension aeronet does not implement is rejected (RFC 7515 §4.1.11).
+- HMAC comparison is constant-time (`CRYPTO_memcmp`).
+
+### Error model
+
+The module is **exception-free**: failures are reported through return values, never thrown. The
+`JwtKey` factories return an invalid key (`valid() == false`) on bad input, `Jwt::encode` returns an
+empty string on failure, and `Jwt::tryDecode` returns an empty `DecodedJwt` (`valid() == false`) with
+a `JwtError` reason. Every failure is also logged.
+
+### Claim validation
+
+`Jwt::tryDecode` (returns a `DecodedJwt` — empty / `valid() == false` on failure — plus a `JwtError`) validates the registered claims
+per `JwtVerifyOptions`: `exp` / `nbf` with a configurable
+`leeway` and injectable `clock`, optional `requireExpiration`, and `iss` / `aud` / `sub` matching.
+`aud` is accepted both as a string and as an array. `DecodedJwt` exposes typed accessors
+(`issuer()`, `subject()`, `expiresAt()`, `audiences()`, …) and the verbatim claim JSON via
+`payloadJson()` for application-specific deserialization. To keep the type small, absence is encoded
+by the natural empty state — an empty `string_view` for string claims, a `0` NumericDate for
+`exp` / `nbf` / `iat` — rather than wrapping every field in `std::optional`.
+
+```cpp
+#include <aeronet/jwt.hpp>
+#include <string>
+#include <string_view>
+
+// Sign with an HMAC secret (HS256).
+JwtKey key = JwtKey::Hmac("super-secret-signing-key");
+std::string token = Jwt::encode(R"({"sub":"alice","exp":4102444800})", key, JwtAlgorithm::HS256);
+
+// Verify: signature + standard claim checks (here only allow HS256, and check expiry).
+JwtVerifyOptions options;
+options.allowedAlgorithms = JwtAlgorithmSet{JwtAlgorithm::HS256};
+JwtError err = JwtError::None;
+if (DecodedJwt decoded = Jwt::tryDecode(token, key, options, err)) {
+  std::string_view subject = decoded.subject();  // "alice" (empty view == claim absent)
+  (void)subject;
+}
+```
+
+### JWKS
+
+`Jwks(json)` (a constructor — an unparseable document just leaves the set `empty()`) reads a
+`{"keys":[...]}` set (RFC 7517 §5), skipping unsupported keys, and
+`Jwks::tryDecode(token, options, err)` selects the verifying key by the token `kid` header (or the
+sole key when the set has exactly one and the token carries no `kid`). This pairs naturally with the
+HTTP client to fetch and cache an issuer's keys, but parsing is transport-agnostic.
+
+Tests: `aeronet/jwt/test/` (`jwt-roundtrip_test.cpp` covers every algorithm; `jwt-claims_test.cpp`
+the validations; `jwt-decode-errors_test.cpp` the rejection paths including `alg:none`, `crit`, and
+algorithm/key mismatch; `jwt-jwk_test.cpp` the JWK/JWKS paths) and base64url in
+`aeronet/tech/test/base64url_test.cpp`.
 
 ## Future Expansions
 

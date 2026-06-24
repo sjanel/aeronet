@@ -18,6 +18,11 @@ if(AERONET_ENABLE_HTTP_CLIENT)
   add_subdirectory(client)
 endif()
 
+# Optional JWT (JWS-profile) module — reuses OpenSSL crypto + glaze JSON, no new dependency.
+if(AERONET_ENABLE_JWT)
+  add_subdirectory(jwt)
+endif()
+
 if(AERONET_BUILD_TESTS OR AERONET_BUILD_BENCHMARKS)
   add_subdirectory(test_support)
 endif()

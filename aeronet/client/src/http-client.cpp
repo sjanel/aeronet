@@ -1,5 +1,6 @@
 #include "aeronet/http-client.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include <chrono>
@@ -11,6 +12,7 @@
 #include <span>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
@@ -28,6 +30,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
@@ -70,6 +73,22 @@ constexpr bool IsRedirect(http::StatusCode code) noexcept {
   return code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound ||
          code == http::StatusCodeSeeOther || code == http::StatusCodeTemporaryRedirect ||
          code == http::StatusCodePermanentRedirect;
+}
+
+// Parse a delta-seconds `Retry-After` header value into a non-negative duration capped at `cap`. Returns a
+// negative sentinel when the value is absent or not a bare non-negative integer (an HTTP-date form is
+// intentionally not parsed here) so the caller can distinguish it from a legitimate "Retry-After: 0" and
+// fall back to the computed backoff.
+RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Duration cap) noexcept {
+  uint64_t seconds = 0;
+  const char* end = value.data() + value.size();
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const auto [ptr, ec] = std::from_chars(value.data(), end, seconds);
+  if (ec != std::errc{} || ptr != end) {
+    return RetryConfig::Duration{-1};  // absent / not delta-seconds: caller uses the computed backoff
+  }
+  const auto capSeconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(cap).count());
+  return std::chrono::duration_cast<RetryConfig::Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
 }
 
 }  // namespace
@@ -406,28 +425,58 @@ std::expected<void, HttpClientErrc> HttpClient::EnsureProtocolHandler(ActiveConn
   return {};
 }
 
+double HttpClient::nextJitterUnit() noexcept {
+  // xorshift64* step; map the top 53 bits to a double in [0, 1). Quality is irrelevant here -- this only
+  // spreads backoff delays so a fleet of clients does not retry in lockstep.
+  _jitterState ^= _jitterState << 13;
+  _jitterState ^= _jitterState >> 7;
+  _jitterState ^= _jitterState << 17;
+  return static_cast<double>(_jitterState >> 11) * (1.0 / 9007199254740992.0);  // 1 / 2^53
+}
+
 HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest& req, http::Method method,
                                              bool dropBody) {
-  // Transparent retry budget. We only ever retry a failure that occurred *before any request byte was
-  // written* on a connection taken from the pool: the narrow stale keep-alive race where the origin closed
-  // the idle connection between acquireConnection()'s liveness probe and the first write. The instant any
-  // request byte reaches the transport we stop retrying, so a non-idempotent request is never re-submitted.
-  uint32_t retriesLeft = _config.maxRetries;
+  const RetryConfig& retry = _config.retry;
+  const uint32_t maxAttempts = retry.maxAttempts < 1U ? 1U : retry.maxAttempts;
+  uint32_t attempt = 0;  // backoff retries already consumed (0-based index of the next one)
+
+  // Whether the backoff budget still allows one more retry.
+  const auto canBackoff = [&] { return attempt + 1U < maxAttempts; };
+  // Sleep `delay` (a zero delay -- e.g. "Retry-After: 0" -- means retry immediately) and consume one slot.
+  const auto sleepBackoff = [&](RetryConfig::Duration delay) {
+    if (delay > RetryConfig::Duration::zero()) {
+      std::this_thread::sleep_for(delay);
+    }
+    ++attempt;
+  };
+  // Computed exponential-backoff delay for the upcoming retry (jitter consulted only when enabled).
+  const auto computedBackoff = [&] { return retry.delayFor(attempt, retry.jitter > 0.0F ? nextJitterUnit() : 0.0); };
+
   for (;;) {
     std::expected<ActiveConnection, HttpClientErrc> acquired = acquireConnection(url);
     if (!acquired) {
-      return std::unexpected(acquired.error());  // DNS / connect failure: terminal (fresh connect already tried)
+      // A fresh connect failed (acquireConnection already drained any stale pool entry and reconnected).
+      // Nothing was sent, so a backoff retry is always safe.
+      if (canBackoff()) {
+        sleepBackoff(computedBackoff());
+        continue;
+      }
+      return std::unexpected(acquired.error());
     }
     ActiveConnection conn = std::move(*acquired);
     const bool reused = conn.reused;
     const NativeHandle fd = conn.cnx.fd();
 
     if (!_loop.add(EventLoop::EventFd{fd, EventIn})) {
-      // Could not register; close and (if this was a pooled connection) retry on a fresh one. Nothing was
-      // sent yet, so this is safe regardless of the request method.
+      // Could not register; nothing was sent yet, so retrying is safe regardless of method. A pooled
+      // connection is re-acquired for free (drains the pool, then connects fresh); a fresh one spends a
+      // backoff slot.
       conn = {};
-      if (reused && retriesLeft != 0) {
-        --retriesLeft;
+      if (reused) {
+        continue;
+      }
+      if (canBackoff()) {
+        sleepBackoff(computedBackoff());
         continue;
       }
       return std::unexpected(HttpClientErrc::ioError);
@@ -449,6 +498,26 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     _loop.del(fd);
 
     if (result) {
+      // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
+      // a delta-seconds Retry-After when present) and try again, discarding this response.
+      if (canBackoff() && std::ranges::find(retry.retryStatuses, result->status()) != retry.retryStatuses.end()) {
+        RetryConfig::Duration delay = computedBackoff();
+        if (retry.honorRetryAfter) {
+          const RetryConfig::Duration ra =
+              ParseRetryAfter(result->headerValueOrEmpty(http::RetryAfter), retry.maxDelay);
+          if (ra >= RetryConfig::Duration::zero()) {
+            delay = ra;
+          }
+        }
+        // The connection may still be reusable (keep-alive); hand it back so the retry can reuse it.
+        if (_config.keepAlive && conn.proto->keepAlive()) {
+          releaseConnection(url, std::move(conn));
+        } else {
+          conn = {};
+        }
+        sleepBackoff(delay);
+        continue;
+      }
       if (_config.keepAlive && conn.proto->keepAlive()) {
         releaseConnection(url, std::move(conn));
       }
@@ -456,9 +525,15 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     }
 
     conn = {};  // close the socket / transport
-    if (reused && !requestSent && retriesLeft != 0) {
-      --retriesLeft;
-      continue;  // stale keep-alive race, nothing sent yet: safe to retry on a fresh connection
+    if (reused && !requestSent) {
+      continue;  // stale keep-alive race, nothing sent yet: free retry on a fresh connection (no backoff)
+    }
+    // Genuine failure on a connection we cannot reuse. A pre-send failure is always safe to retry; a
+    // post-send failure only for an idempotent method when the caller explicitly opted in (a re-submission).
+    const bool safeToRetry = !requestSent || (retry.retryIdempotentAfterSend && http::IsIdempotent(method));
+    if (canBackoff() && safeToRetry) {
+      sleepBackoff(computedBackoff());
+      continue;
     }
     return result;  // terminal failure
   }

@@ -35,6 +35,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    base64url_test
+    test/base64url_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     bytes-string_test
     test/bytes-string_test.cpp
     LIBRARIES

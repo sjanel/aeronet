@@ -64,6 +64,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    retry-config_test
+    test/retry-config_test.cpp
+    LIBRARIES
+    aeronet_client
+)
+
+AeronetAddUnitTest(
     client-request_test
     test/client-request_test.cpp
     LIBRARIES
