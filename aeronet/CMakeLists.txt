@@ -14,6 +14,10 @@ if(AERONET_ENABLE_HTTP2)
 endif()
 add_subdirectory(main)
 
+if(AERONET_ENABLE_HTTP_CLIENT)
+  add_subdirectory(client)
+endif()
+
 if(AERONET_BUILD_TESTS OR AERONET_BUILD_BENCHMARKS)
   add_subdirectory(test_support)
 endif()

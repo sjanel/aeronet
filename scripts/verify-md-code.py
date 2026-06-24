@@ -184,6 +184,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet/sys/include",
         "aeronet/tls/include",
         "aeronet/websocket/include",
+        "aeronet/client/include",
     ]
     dirs: List[str] = []
     for root in possible_roots:
@@ -362,6 +363,25 @@ def locate_libraries(build_dir: Path) -> List[str]:
             )
         except subprocess.CalledProcessError:
             print("cmake --build failed; continuing with what we have", file=sys.stderr)
+
+    # The HTTP client lives in a standalone library (aeronet_client) that is NOT a dependency of the
+    # main `aeronet` target, so building only `aeronet` (or an examples-only tree that never references
+    # the client) never produces libaeronet_client.a. README/FEATURES snippets use HttpClient, so make a
+    # best-effort attempt to build the client library too. This is a no-op when the target is already
+    # built, and is tolerated when the target is absent (e.g. AERONET_ENABLE_HTTP_CLIENT=OFF).
+    try:
+        subprocess.run(
+            ["cmake", "--build", ".", "--target", "aeronet_client", "--parallel"],
+            cwd=str(build_dir),
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        print(
+            "cmake --build for aeronet_client failed or target absent; continuing",
+            file=sys.stderr,
+        )
 
     libs: List[str] = []
     primary_path = build_dir / "aeronet" / "main" / "libaeronet.a"
@@ -883,6 +903,12 @@ def main() -> None:
         )
 
     include_dirs.extend(gather_user_include_dirs(args.include))
+    # The HTTP client lives in its own module whose public include tree is not pulled in by the
+    # main `aeronet` target metadata; add it explicitly so documentation snippets using
+    # <aeronet/http-client.hpp> compile (the matching libaeronet_client.a is linked via rglob).
+    client_include = Path("aeronet/client/include")
+    if client_include.is_dir():
+        include_dirs.append(str(client_include.resolve()))
     include_dirs = dedupe_preserve(include_dirs)
     compile_definitions = dedupe_preserve(compile_definitions)
 

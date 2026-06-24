@@ -309,7 +309,38 @@ TEST_F(SocketOpsTest, SafeSendStringViewOverload) {
   }
 }
 
+TEST_F(SocketOpsTest, IsConnectionStaleReportsBadFdAsStale) { EXPECT_TRUE(IsConnectionStale(-1)); }
+
 #ifdef AERONET_POSIX
+
+TEST_F(SocketOpsTest, IsConnectionStaleFalseOnQuietConnectedSocket) {
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  BaseFd endB(sockets[1]);
+  // Connected, no pending data on either side => alive.
+  EXPECT_FALSE(IsConnectionStale(endA.fd()));
+}
+
+TEST_F(SocketOpsTest, IsConnectionStaleTrueAfterPeerClose) {
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  CloseNativeHandle(sockets[1]);  // peer closes => endA observes EOF
+  EXPECT_TRUE(IsConnectionStale(endA.fd()));
+}
+
+TEST_F(SocketOpsTest, IsConnectionStaleTrueWithPendingData) {
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  BaseFd endB(sockets[1]);
+  const char byte = 'x';
+  ASSERT_EQ(1, ::send(endB.fd(), &byte, 1, 0));
+  // An idle keep-alive connection must be quiet: unexpected pending bytes (e.g. a TLS close_notify on
+  // graceful close) mean "do not reuse". The data is only peeked (MSG_PEEK), never consumed.
+  EXPECT_TRUE(IsConnectionStale(endA.fd()));
+}
 
 TEST_F(SocketOpsTest, SetTcpCorkSucceedsOnValidSocket) {
   NativeHandle fd = CreateTestSocket();

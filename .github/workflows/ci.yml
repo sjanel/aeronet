@@ -93,7 +93,8 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
+            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -180,7 +181,8 @@ jobs:
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
+            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -247,6 +249,7 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_HTTP_CLIENT=ON \
             -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
             -DCMAKE_C_COMPILER=clang-21 \
             -DCMAKE_CXX_COMPILER=clang++-21 \
@@ -402,6 +405,7 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_SPDLOG=ON \
             -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_HTTP_CLIENT=ON \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
 
 
@@ -576,7 +580,8 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_OPENTELEMETRY=OFF \
             -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_HTTP_CLIENT=ON
 
       - name: Build
         run: |
@@ -629,7 +634,8 @@ jobs:
             -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
             -DAERONET_ENABLE_OPENTELEMETRY=OFF `
             -DAERONET_ENABLE_SPDLOG=ON `
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON `
+            -DAERONET_ENABLE_HTTP_CLIENT=ON
         shell: pwsh
 
       - name: Build
@@ -691,7 +697,8 @@ jobs:
             -DAERONET_ENABLE_OPENTELEMETRY=ON \
             -DAERONET_ENABLE_OPENSSL=ON \
             -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON
+            -DAERONET_ENABLE_WEBSOCKET=ON \
+            -DAERONET_ENABLE_HTTP_CLIENT=ON
 
         shell: alpine.sh {0}
 

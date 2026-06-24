@@ -13,11 +13,18 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <version>
 
-#ifdef AERONET_MACOS
-#include <cstdlib>
-#include <cstring>
-#include <system_error>
+// std::from_chars for floating-point types is standard since C++17, but libc++ (Apple's default
+// standard library) ships to_chars(double) yet still lacks from_chars(double). Detect the real
+// capability via the <charconv> feature-test macro instead of hard-coding the OS, so any toolchain
+// shipping a complete <charconv> takes the fast from_chars path and only the rest falls back to strtod.
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+#define AERONET_HAS_STD_FLOAT_FROM_CHARS 1
+#else
+#define AERONET_HAS_STD_FLOAT_FROM_CHARS 0
+#include <cstdlib>  // std::strtod
+#include <cstring>  // std::memcpy
 #endif
 
 #include "aeronet/compression-config.hpp"
@@ -66,9 +73,12 @@ double ParseQ(std::string_view token) {
       double qualityValue = 0.0;
       const char* begin = val.data();
       const char* end = begin + val.size();
-      // std::from_chars for floating-point is unavailable on Apple platforms
-      // regardless of SDK/deployment target version, use strtod instead
-#if AERONET_MACOS
+#if AERONET_HAS_STD_FLOAT_FROM_CHARS
+      const auto fcRes = std::from_chars(begin, end, qualityValue);
+#else
+      // No from_chars(double) (see feature-test guard above): copy into a NUL-terminated stack buffer
+      // and use strtod, reconstructing a from_chars_result-like {ptr, ec} so the validation below is
+      // identical on both paths.
       char buf[64];
       const auto len = std::min(val.size(), static_cast<std::string_view::size_type>(sizeof(buf) - 1));
       std::memcpy(buf, begin, len);
@@ -79,8 +89,6 @@ double ParseQ(std::string_view token) {
         const char* ptr;
         std::errc ec;
       } fcRes{begin + (endPtr - buf), (endPtr != buf) ? std::errc{} : std::errc::invalid_argument};
-#else
-      const auto fcRes = std::from_chars(begin, end, qualityValue);
 #endif
       if (fcRes.ec != std::errc() || fcRes.ptr != end) {
         return 0.0;  // invalid format
