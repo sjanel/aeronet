@@ -30,6 +30,7 @@
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 
 namespace aeronet {
@@ -229,8 +230,7 @@ TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
     DrainRequest(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
   });
-  HttpClientConfig cfg;
-  cfg.maxRetries = 0;
+  HttpClientConfig cfg;  // default retry policy: a fresh-connection post-send failure is never retried
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
@@ -245,7 +245,6 @@ TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::milliseconds{150};
-  cfg.maxRetries = 0;
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
@@ -314,7 +313,7 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
     // was written.
     SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
   });
-  HttpClient client;  // default maxRetries = 1
+  HttpClient client;  // default retry policy: a sent request is never re-submitted
   auto result = client.post(MakeUrl(server.port()), "payload");
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
@@ -331,12 +330,191 @@ TEST(HttpClientErrorE2ETest, PostOnStalePooledConnectionUsesFreshConnection) {
     SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
                          : "HTTP/1.1 201 Created\r\nContent-Length: 4\r\n\r\ndone");
   });
-  HttpClient client;                                                          // keep-alive on, default maxRetries = 1
+  HttpClient client;  // keep-alive on; the free pre-send stale-pool retry applies even to POST
   EXPECT_EQ(client.post(MakeUrl(server.port()), "a").value().status(), 200);  // pools the connection
   std::this_thread::sleep_for(std::chrono::milliseconds{60});                 // let the server close conn #0
   const HttpResponse r2 = client.post(MakeUrl(server.port()), "b").value();   // stale pool -> fresh connection
   EXPECT_EQ(r2.status(), 201);
   EXPECT_EQ(r2.bodyInMemory(), "done");
+}
+
+namespace {
+// A small backoff config for retry tests: a couple of attempts with a near-zero delay so the tests stay
+// fast while still exercising the sleep path (a 1ms sleep is still a real sleep_for call).
+RetryConfig FastRetry(uint32_t maxAttempts) {
+  RetryConfig retry;
+  retry.maxAttempts = maxAttempts;
+  retry.baseDelay = std::chrono::milliseconds{1};
+  retry.maxDelay = std::chrono::milliseconds{4};
+  return retry;
+}
+}  // namespace
+
+// A retryable status (503) recovered on the *same* kept-alive connection: the server answers 503 then 200
+// over one connection, so the client retries by reusing the pooled connection (it is never stale here).
+TEST(HttpClientErrorE2ETest, StatusRetryReusesKeepAliveConnection) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+    DrainRequest(fd);  // the retry arrives on the same kept-alive connection
+    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+  });
+  HttpClientConfig cfg;
+  cfg.withRetry(FastRetry(2));  // 429 / 503 are retried by default
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), "ok");
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);  // reused the one connection
+}
+
+// A retry budget that runs out hands back the last (retryable) response in the success state -- a 503 is a
+// normal HttpResponse, not an HttpClientErrc. `Connection: close` forces each retry onto a fresh connection.
+TEST(HttpClientErrorE2ETest, StatusRetryExhaustedReturnsLastResponse) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  });
+  HttpClientConfig cfg;
+  cfg.withRetry(FastRetry(2));
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 503);
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 2);  // initial attempt + one retry
+}
+
+// A status outside the retry set (500 is not in the default {429, 503}) is returned immediately, untouched.
+TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+  });
+  HttpClientConfig cfg;
+  cfg.withRetry(FastRetry(3));
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 500);
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
+}
+
+// A delta-seconds Retry-After is honored (and capped at maxDelay): with maxDelay = 10ms a "Retry-After: 5"
+// is clamped to (effectively) no wait, so the retry still happens promptly and recovers on the same conn.
+TEST(HttpClientErrorE2ETest, StatusRetryHonorsRetryAfter) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\n\r\n");
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+  });
+  RetryConfig retry = FastRetry(2);
+  retry.maxDelay = std::chrono::milliseconds{10};  // Retry-After: 5s is clamped to this
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = client.get(MakeUrl(server.port()));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), "done");
+  // The 5-second Retry-After was capped to maxDelay (10ms): the whole exchange must finish promptly, not
+  // after a literal 5s sleep.
+  EXPECT_LT(elapsed, std::chrono::seconds{2});
+}
+
+// A post-send failure on an *idempotent* method (GET) is retried only when the caller opts in: the first
+// connection truncates its response, the second answers fully.
+TEST(HttpClientErrorE2ETest, IdempotentPostSendFailureRetriedWhenEnabled) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int idx) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort"  // truncated -> malformed
+                         : "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+  });
+  RetryConfig retry = FastRetry(2);
+  retry.retryIdempotentAfterSend = true;
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), "hello");
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 2);
+}
+
+// A non-idempotent method (POST) is never re-submitted after its bytes were written, even with
+// retryIdempotentAfterSend enabled: the truncated response surfaces as an error and the server sees one conn.
+TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
+  });
+  RetryConfig retry = FastRetry(3);
+  retry.retryIdempotentAfterSend = true;  // still excludes POST (not idempotent)
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto result = client.post(MakeUrl(server.port()), "payload");
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  std::this_thread::sleep_for(std::chrono::milliseconds{80});
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
+}
+
+// A connect failure is a pre-send failure, so it is retried (with backoff) up to the attempt budget before
+// surfacing. Jitter is enabled to drive the backoff PRNG. The origin is a torn-down server (refused connects).
+TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
+  auto server = std::make_unique<RawServer>([](NativeHandle fd, int) { DrainRequest(fd); });
+  const uint16_t port = server->port();
+  server.reset();  // nothing listens on `port` now: every connect is refused
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+  RetryConfig retry = FastRetry(3);
+  retry.jitter = 0.5F;  // exercise the jitter PRNG path
+  HttpClientConfig cfg;
+  cfg.connectTimeout = std::chrono::milliseconds{200};
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(port));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
+}
+
+// A maxAttempts of 0 is treated as 1 (a single attempt): a normal request still succeeds.
+TEST(HttpClientErrorE2ETest, ZeroMaxAttemptsTreatedAsSingleAttempt) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+  });
+  RetryConfig retry;
+  retry.maxAttempts = 0;
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
 }
 
 // An IPv6 literal authority must be bracketed in the Host header: "Host: [::1]:<port>", never "::1:<port>".

@@ -185,6 +185,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet/tls/include",
         "aeronet/websocket/include",
         "aeronet/client/include",
+        "aeronet/jwt/include",
     ]
     dirs: List[str] = []
     for root in possible_roots:
@@ -380,6 +381,23 @@ def locate_libraries(build_dir: Path) -> List[str]:
     except subprocess.CalledProcessError:
         print(
             "cmake --build for aeronet_client failed or target absent; continuing",
+            file=sys.stderr,
+        )
+
+    # The JWT module (aeronet_jwt) is likewise a standalone library that is not a dependency of the
+    # main `aeronet` target, so build it best-effort for the README/FEATURES JWT snippets. No-op when
+    # already built, tolerated when absent (AERONET_ENABLE_JWT=OFF).
+    try:
+        subprocess.run(
+            ["cmake", "--build", ".", "--target", "aeronet_jwt", "--parallel"],
+            cwd=str(build_dir),
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        print(
+            "cmake --build for aeronet_jwt failed or target absent; continuing",
             file=sys.stderr,
         )
 

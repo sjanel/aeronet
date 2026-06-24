@@ -10,6 +10,7 @@
 
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/retry-config.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 
 namespace aeronet {
@@ -27,6 +28,18 @@ TEST(HttpClientConfigTest, DefaultsAreSane) {
   EXPECT_EQ(cfg.decompression.enable,
             IsEncodingEnabled(Encoding::zstd) || IsEncodingEnabled(Encoding::br) || IsEncodingEnabled(Encoding::gzip));
   EXPECT_EQ(cfg.maxCapturedRequestBodyBytes, 8UL * 1024UL);
+  // Default retry policy keeps the historical behaviour: only the free pre-send stale-pool retry.
+  EXPECT_EQ(cfg.retry.maxAttempts, 1U);
+}
+
+TEST(HttpClientConfigTest, WithRetryBuilder) {
+  RetryConfig retry;
+  retry.maxAttempts = 4;
+  retry.retryIdempotentAfterSend = true;
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  EXPECT_EQ(cfg.retry.maxAttempts, 4U);
+  EXPECT_TRUE(cfg.retry.retryIdempotentAfterSend);
 }
 
 TEST(HttpClientConfigTest, FluentSettersAreChainable) {
