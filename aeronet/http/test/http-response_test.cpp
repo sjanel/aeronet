@@ -189,7 +189,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
   auto full = concatenated(std::move(resp));
 
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 404\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 404 \r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -213,7 +213,7 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain");
 
   const auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
@@ -245,7 +245,7 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
 TEST_F(HttpResponseTest, HttpPartsSizes) {
   HttpResponse resp("Hello, World!");
 
-  EXPECT_EQ(resp.statusLineSize(), std::string_view("HTTP/1.1 200\r\n").size());
+  EXPECT_EQ(resp.statusLineSize(), std::string_view("HTTP/1.1 200 \r\n").size());
   EXPECT_EQ(resp.statusLineSize(), resp.statusLineLength());
 
   EXPECT_EQ(resp.headersSize(), std::string_view("Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
@@ -254,13 +254,13 @@ TEST_F(HttpResponseTest, HttpPartsSizes) {
                                     .size());
   EXPECT_EQ(resp.headersSize(), resp.headersLength());
 
-  EXPECT_EQ(resp.headSize(), std::string_view("HTTP/1.1 200\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+  EXPECT_EQ(resp.headSize(), std::string_view("HTTP/1.1 200 \r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
                                               "Content-Type: text/plain\r\n"
                                               "Content-Length: 13\r\n\r\n")
                                  .size());
   EXPECT_EQ(resp.headSize(), resp.headLength());
 
-  EXPECT_EQ(resp.sizeInMemory(), std::string_view("HTTP/1.1 200\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+  EXPECT_EQ(resp.sizeInMemory(), std::string_view("HTTP/1.1 200 \r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
                                                   "Content-Type: text/plain\r\n"
                                                   "Content-Length: 13\r\n\r\n"
                                                   "Hello, World!")
@@ -280,7 +280,7 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/my-text");
 
   const auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/my-text")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
   EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
@@ -333,7 +333,7 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
         }
 
         const auto full = concatenated(std::move(resp));
-        EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+        EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
         EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Custom-Header", "CustomValue")),
                   concatenatedHeaders.contains("X-Custom-Header: "));
         EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Another-Header", "AnotherValue")),
@@ -417,7 +417,7 @@ TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   resp.reason("");
   resp.header("x-A", "S");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains("X-A: S\r\n"));
   EXPECT_TRUE(full.contains("X-B: 2\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
@@ -541,7 +541,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   EXPECT_FALSE(resp.hasReason());
   auto full = concatenated(std::move(resp));
 
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
   EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
@@ -1941,7 +1941,7 @@ TEST_F(HttpResponseTest, FileWithClosedFileThrows) {
 TEST_F(HttpResponseTest, HeadBodyWithoutGlobalHeaders) {
   HttpResponse resp("Hello, World!");
   auto full = concatenated(std::move(resp), {}, true, true);
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -2309,7 +2309,7 @@ TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
     EXPECT_TRUE(resp.hasBody());
     EXPECT_TRUE(resp.hasBodyCaptured());
     auto full = concatenated(std::move(resp), {}, false, true, minCapturedBodySize);
-    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
     EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
     EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "13")));
     EXPECT_TRUE(full.ends_with("\r\n\r\nHello, World!"));
@@ -3226,7 +3226,7 @@ TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
     auto full = concatenated(std::move(resp));
 
     // Verify the full response is valid and contains compressed body
-    EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+    EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
     // Headers use lowercase names in internal representation
     const auto contentEncodingLine =
         std::format("{}{}{}{}", http::ContentEncoding, http::HeaderSep, GetEncodingStr(enc), http::CRLF);
@@ -3382,7 +3382,7 @@ TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   resp.header("X-Cycle", "Z");
   resp.body("END");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.starts_with("HTTP/1.1 200\r\n"));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
   EXPECT_TRUE(full.contains("X-Static: STATIC\r\n"));
   EXPECT_TRUE(full.contains("X-Cycle: Z\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
@@ -4298,7 +4298,7 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
 
               std::string exp;
               exp.reserve(result.size());
-              exp += "HTTP/1.1 200\r\n";
+              exp += "HTTP/1.1 200 \r\n";
 
               exp += MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
               if (isPrepared) {
@@ -4434,7 +4434,7 @@ TEST_F(HttpResponseTest, HeadBodyInlineAppend) {
       std::string result = concatenated(std::move(resp), {}, true);
 
       EXPECT_EQ(result,
-                "HTTP/1.1 200\r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/custom\r\ncontent-length: "
+                "HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/custom\r\ncontent-length: "
                 "2\r\nconnection: close\r\n\r\n")
           << "failed for prepared=" << prepared;
     }
@@ -4476,7 +4476,7 @@ TEST_F(HttpResponseTest, HeadBodyAppend) {
     std::string result = concatenated(std::move(resp), {}, true);
 
     EXPECT_EQ(result,
-              "HTTP/1.1 200\r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/plain\r\ncontent-length: "
+              "HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/plain\r\ncontent-length: "
               "2\r\nconnection: close\r\n\r\n")
         << "failed for prepared=" << prepared;
   }
@@ -4534,7 +4534,7 @@ TEST_F(HttpResponseTest, HeadBodyInlineSet) {
       std::string result = concatenated(std::move(resp), {}, true);
 
       EXPECT_EQ(result,
-                "HTTP/1.1 200\r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/custom\r\ncontent-length: "
+                "HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\ncontent-type: text/custom\r\ncontent-length: "
                 "1\r\nconnection: close\r\n\r\n")
           << "failed for prepared=" << prepared;
     }

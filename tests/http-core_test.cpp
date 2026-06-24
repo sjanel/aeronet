@@ -93,7 +93,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 201 Created"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 201 Created"));
   ASSERT_TRUE(resp.contains("X-One: 1"));
   ASSERT_TRUE(resp.contains("X-Two: two"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1")));   // auto generated
@@ -112,7 +112,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("HTTP/1.1 302 Found"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 302 Found"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/new")));
 }
 
@@ -271,7 +271,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
 
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{300});
   ASSERT_FALSE(resp.empty());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
 }
 
@@ -290,7 +290,7 @@ TEST(HttpBasic, SimpleGet) {
   });
   std::string resp = httpGet("/abc");
   ASSERT_FALSE(resp.empty());
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("You requested: /abc"));
   ASSERT_TRUE(resp.contains("X-Test=abc123"));
 }

@@ -117,7 +117,7 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
   test::TlsClient client(multi.port(), opts);
   ASSERT_TRUE(client.handshakeOk());
   auto response = client.get("/alpn");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   auto stats = multi.stats();
   auto it =
       std::ranges::find_if(stats.total.tlsAlpnDistribution, [](const auto& kv) { return kv.first == "http/1.1"; });
@@ -429,7 +429,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
 
   std::string resp1 = test::sendAndCollect(port, req);
 
-  EXPECT_TRUE(resp1.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200"));
 
   multi.postConfigUpdate([](HttpServerConfig& serverCfg) { serverCfg.maxBodyBytes = kBodySize - 1; });
 
@@ -456,7 +456,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
 
   std::string resp2 = test::sendAndCollect(secondPort, req);
 
-  EXPECT_TRUE(resp2.contains("HTTP/1.1 413 Payload Too Large"));
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 413 Payload Too Large"));
 
   EXPECT_EQ(firstPort, secondPort);  // Documented default behavior (same port unless baseConfig mutated externally)
   handle.stop();
@@ -652,7 +652,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   {
     auto resp = test::simpleGet(multi.port(), "/test-cb");
 
-    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
     EXPECT_TRUE(resp.contains("X-After-CB: Yes"));
   }
 
@@ -664,7 +664,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
     test::sendAll(fd, bad);
     // peer may be closed; just ignore the response
     auto resp = test::recvWithTimeout(fd);
-    EXPECT_TRUE(resp.contains("HTTP/1.1 501")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 501")) << resp;
   }
 
   // Validate callbacks were invoked at least once where applicable
