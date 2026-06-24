@@ -227,7 +227,7 @@ TEST(Http10, BasicVersionEcho) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("A"); });
   std::string req = "GET /x HTTP/1.0\r\nHost: h\r\n\r\n";
   std::string resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_TRUE(resp.contains("HTTP/1.0 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
@@ -237,7 +237,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
       "POST /p HTTP/1.0\r\nHost: h\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   std::string resp = test::sendAndCollect(ts.port(), req);
   ASSERT_FALSE(resp.contains("100 Continue"));
-  ASSERT_TRUE(resp.contains("HTTP/1.0 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
 TEST(Http10, RejectTransferEncoding) {
@@ -256,12 +256,12 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   std::string req1 = "GET /k1 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
   std::string first = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(first.contains("HTTP/1.0 200"));
+  ASSERT_TRUE(first.starts_with("HTTP/1.0 200"));
   ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string req2 = "GET /k2 HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(second.contains("HTTP/1.0 200"));
+  ASSERT_TRUE(second.starts_with("HTTP/1.0 200"));
 }
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
@@ -543,7 +543,7 @@ TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
   test::sendAll(fd, req);
   const std::string resp = test::recvUntilClosed(fd);
 
-  EXPECT_TRUE(resp.contains("HTTP/1.1 202"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 202"));
 #ifdef AERONET_ENABLE_HTTP2
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
@@ -568,7 +568,7 @@ TEST(HttpBasic, LargePayload) {
   std::string req = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains(largeBody));
 }
 
@@ -604,7 +604,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
 
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Received " + std::to_string(kNbHeaders) + " custom headers"));
 }
 
@@ -615,14 +615,14 @@ TEST(HttpBasic, InvalidContentLength) {
   std::string req = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: invalid-length\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(clientConnection.fd(), req);
   std::string resp = test::recvUntilClosed(clientConnection.fd());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 400")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 
   // Now try with a negative Content-Length
   test::ClientConnection clientConnection2(ts.port());
   std::string req2 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(clientConnection2.fd(), req2);
   std::string resp2 = test::recvUntilClosed(clientConnection2.fd());
-  EXPECT_TRUE(resp2.contains("HTTP/1.1 400")) << resp2;
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 400")) << resp2;
 
   // Now try with an excessively large Content-Length
   test::ClientConnection clientConnection3(ts.port());
@@ -631,21 +631,21 @@ TEST(HttpBasic, InvalidContentLength) {
       "close\r\n\r\nHELLO";
   test::sendAll(clientConnection3.fd(), req3);
   std::string resp3 = test::recvUntilClosed(clientConnection3.fd());
-  EXPECT_TRUE(resp3.contains("HTTP/1.1 400")) << resp3;
+  EXPECT_TRUE(resp3.starts_with("HTTP/1.1 400")) << resp3;
 
   // Try with a partial match of std::from_chars:
   test::ClientConnection clientConnection4(ts.port());
   std::string req4 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 123abc\r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(clientConnection4.fd(), req4);
   std::string resp4 = test::recvUntilClosed(clientConnection4.fd());
-  EXPECT_TRUE(resp4.contains("HTTP/1.1 400")) << resp4;
+  EXPECT_TRUE(resp4.starts_with("HTTP/1.1 400")) << resp4;
 
   // Empty content length is invalid too
   test::ClientConnection clientConnection5(ts.port());
   std::string req5 = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: \r\nConnection: close\r\n\r\nHELLO";
   test::sendAll(clientConnection5.fd(), req5);
   std::string resp5 = test::recvUntilClosed(clientConnection5.fd());
-  EXPECT_TRUE(resp5.contains("HTTP/1.1 400")) << resp5;
+  EXPECT_TRUE(resp5.starts_with("HTTP/1.1 400")) << resp5;
 }
 
 TEST(HttpBasic, ManyHeadersResponse) {
@@ -665,7 +665,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
   std::string req = "GET /test HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Response with many headers"));
 
   // Verify some of the custom headers are present
@@ -1559,7 +1559,7 @@ TEST(Http1WriterTransport, EmitDataEmptyIsNoOp) {
   });
 
   auto resp = test::simpleGet(localTs.port(), "/empty-data");
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.contains("real-data")) << resp;
 }
 
