@@ -68,7 +68,7 @@ TEST(SingleHttpServer, ConfigPathAndRouterConstructorKeepsProvidedRoutes) {
   const std::string resp = test::simpleGet(server.port(), "/from-router");
   stop.store(true);
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("ok"));
 }
 #endif
@@ -145,7 +145,7 @@ TEST(HttpServerMove, MoveConstructProbesCapturesThis) {
 
   // Expect HTTP status 200 — if the probe handler captured the moved-from 'this' it will read the reset lifecycle
   // and likely return Service Unavailable (503), causing this assertion to fail and reveal the bug.
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 TEST(HttpServerMove, SingleHttpServerMove) {
@@ -348,7 +348,7 @@ TEST(HttpDrain, StopsNewConnections) {
   test::ClientConnection cnx(port);
   test::sendAll(cnx.fd(), SimpleGetRequest("/pre", http::keepalive));
   const auto resp = test::recvWithTimeout(cnx.fd());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   ts.server.beginDrain();
 
@@ -488,10 +488,10 @@ TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAliv
   ts.postRouterUpdate([](Router& router) { router.setDefault([](const HttpRequest&) { return HttpResponse("OK"); }); });
 
   auto readyResp = test::simpleGet(ts.port(), "/readyz");
-  EXPECT_TRUE(readyResp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(readyResp.starts_with("HTTP/1.1 200"));
 
   auto liveResp = test::simpleGet(ts.port(), "/livez");
-  EXPECT_TRUE(liveResp.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(liveResp.starts_with("HTTP/1.1 200"));
 
   // Launch a keep-alive connection to observe readiness probe change during drain
   test::ClientConnection cnx(ts.port());
@@ -507,7 +507,7 @@ TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAliv
   std::this_thread::sleep_for(20ms);  // ensure drain has been initiated
 
   auto raw = test::simpleGet(ts.port(), "/readyz");
-  EXPECT_TRUE(raw.contains("HTTP/1.1 503"));
+  EXPECT_TRUE(raw.starts_with("HTTP/1.1 503"));
 }
 
 TEST(HttpProbes, OverridePaths) {

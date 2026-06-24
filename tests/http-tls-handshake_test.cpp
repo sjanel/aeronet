@@ -94,7 +94,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     auto resp = client.get("/non_strict");
     statsAfter = ts.stats();
     ts.stop();
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   }
   // ALPN not negotiated => empty string
   ASSERT_TRUE(capturedAlpn.empty());
@@ -154,7 +154,7 @@ TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
   test::TlsClient client(ts.port(), std::move(opt));
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/", {});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 TEST(HttpTlsHandshakeCallback, UnknownExceptionRaisedInCallbackIsLoggedAndIgnored) {
@@ -172,7 +172,7 @@ TEST(HttpTlsHandshakeCallback, UnknownExceptionRaisedInCallbackIsLoggedAndIgnore
   test::TlsClient client(ts.port(), std::move(opt));
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/", {});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 TEST(HttpTlsHandshakeCallback, EmitsSuccessEventWithNegotiatedAlpn) {
@@ -582,7 +582,7 @@ TEST(HttpTlsHandshakeTest, TrustStoreUpdateEnablesMutualTlsForNewConnections) {
     test::TlsClient after(ts.port(), std::move(opt));
     ASSERT_TRUE(after.handshakeOk());
     auto resp = after.get("/", {});
-    EXPECT_TRUE(resp.contains("HTTP/1.1 200"));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   }
 }
 
@@ -669,7 +669,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   auto raw = client.get("/moved");
   stop.store(true);
 
-  ASSERT_TRUE(raw.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(raw.contains("MOVEALPN:http/1.1")) << raw;
 }
 
@@ -752,7 +752,7 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
     alpn = client.negotiatedAlpn();
   }
   ASSERT_FALSE(resp.empty());
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("SECURE/secure"));
   ASSERT_EQ(alpn, "http/1.1");
 }
@@ -779,7 +779,7 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
     opts.alpn = {"http/1.1"};
     test::TlsClient client(port, opts);
     auto resp = client.get("/");
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
     statsSnapshot = ts.stats();
     ASSERT_GE(statsSnapshot.tlsHandshakesSucceeded, 1U);
     ASSERT_EQ(statsSnapshot.tlsAlpnStrictMismatches, 0U);
@@ -851,7 +851,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   test::TlsClient client(port, opts);
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/file");
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("FILETLS-http/1.1"));
 }
 
@@ -873,7 +873,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
   ASSERT_TRUE(client.handshakeOk());
   auto resp = client.get("/m");
   auto after = ts.stats();
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_LT(before.tlsClientCertPresent, after.tlsClientCertPresent);
   ASSERT_GE(after.tlsHandshakesSucceeded, 1U);
 }
@@ -899,7 +899,7 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
     test::TlsClient sniClient(server.port(), sniOpts);
     ASSERT_TRUE(sniClient.handshakeOk());
     auto resp = sniClient.get("/sni", {});
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
     ASSERT_TRUE(resp.contains("SNI-EXACT"));
   }
 
@@ -918,7 +918,7 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
     test::TlsClient sniClient(moved.port(), sniOpts);
     ASSERT_TRUE(sniClient.handshakeOk());
     auto resp = sniClient.get("/sni", {});
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
     ASSERT_TRUE(resp.contains("SNI-EXACT"));
   }
 }
@@ -943,7 +943,7 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   test::TlsClient wildcardClient(server.port(), wildcardOpts);
   ASSERT_TRUE(wildcardClient.handshakeOk());
   auto resp = wildcardClient.get("/wild", {});
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("SNI-WILDCARD"));
 
   test::TlsClient::Options missingOpts = wildcardOpts;
@@ -1007,7 +1007,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
     body = client.get("/nocert");
     statsAfter = ts.stats();
   }
-  ASSERT_TRUE(body.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(body.starts_with("HTTP/1.1 200"));
   ASSERT_EQ(statsAfter.tlsClientCertPresent, 0U);
   ASSERT_GE(statsAfter.tlsHandshakesSucceeded, 1U);
 }
@@ -1031,7 +1031,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
     ASSERT_TRUE(client.handshakeOk());
     auto response = client.get("/withcert");
     statsAfter = ts.stats();
-    ASSERT_TRUE(response.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(response.starts_with("HTTP/1.1 200"));
   }
   ASSERT_GE(statsAfter.tlsHandshakesSucceeded, 1U);
   ASSERT_EQ(statsAfter.tlsClientCertPresent, 1U);
@@ -1061,7 +1061,7 @@ TEST(HttpTlsHandshakeTimeout, SuccessfulHandshakeUnaffected) {
   ASSERT_TRUE(client.handshakeOk());
   const auto resp = client.get("/ok");
 
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("handshake-ok"));
 }
 
@@ -1085,7 +1085,7 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
     ASSERT_TRUE(client.handshakeOk());
     auto resp = client.get("/v");
     statsAfter = ts.stats();
-    ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   }
   ASSERT_FALSE(capturedVersion.empty());
   // OpenSSL commonly returns "TLSv1.2"; accept any token containing 1.2

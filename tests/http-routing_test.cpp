@@ -60,19 +60,19 @@ TEST(HttpRouting, BasicPathDispatch) {
   getHello.method = "GET";
   getHello.target = "/hello";
   auto resp1 = test::requestOrThrow(ts.port(), getHello);
-  EXPECT_TRUE(resp1.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp1.contains("world"));
   test::RequestOptions postHello;
   postHello.method = "POST";
   postHello.target = "/hello";
   postHello.headers.emplace_back("Content-Length", "0");
   auto resp2 = test::requestOrThrow(ts.port(), postHello);
-  EXPECT_TRUE(resp2.contains("HTTP/1.1 405"));
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 405"));
   test::RequestOptions getMissing;
   getMissing.method = "GET";
   getMissing.target = "/missing";
   auto resp3 = test::requestOrThrow(ts.port(), getMissing);
-  EXPECT_TRUE(resp3.contains("HTTP/1.1 404"));
+  EXPECT_TRUE(resp3.starts_with("HTTP/1.1 404"));
   EXPECT_TRUE(resp3.contains("<!DOCTYPE html>"));
   EXPECT_TRUE(resp3.contains("aeronet"));
   test::RequestOptions postMulti;
@@ -80,7 +80,7 @@ TEST(HttpRouting, BasicPathDispatch) {
   postMulti.target = "/multi";
   postMulti.headers.emplace_back("Content-Length", "0");
   auto resp4 = test::requestOrThrow(ts.port(), postMulti);
-  EXPECT_TRUE(resp4.contains("HTTP/1.1 200"));
+  EXPECT_TRUE(resp4.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp4.contains("POST!"));
 }
 
@@ -93,7 +93,7 @@ TEST(HttpRouting, AsyncHandlerDispatch) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/async-route");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("async:/async-route")) << response;
 }
 #endif
@@ -565,7 +565,7 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
   entry.after([](const HttpRequest&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-stream-metrics");
-  ASSERT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
 
   ts.server.setMiddlewareMetricsCallback({});
 
@@ -657,7 +657,7 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
 
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_FALSE(resp.empty());
-  EXPECT_TRUE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
   EXPECT_TRUE(handlerInvoked.load(std::memory_order_relaxed));
 }
@@ -711,7 +711,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
   opts.recvTimeout = std::chrono::milliseconds{500};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(sawException.load(std::memory_order_relaxed));
 }
 
@@ -1025,7 +1025,7 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
   opts.headers.emplace_back("Access-Control-Request-Method", "GET");
   opts.headers.emplace_back("Content-Length", "0");
   const std::string preflightResp = test::requestOrThrow(ts.port(), opts);
-  EXPECT_TRUE(preflightResp.contains("HTTP/1.1 204")) << preflightResp;
+  EXPECT_TRUE(preflightResp.starts_with("HTTP/1.1 204")) << preflightResp;
   EXPECT_TRUE(preflightResp.contains(MakeHttp1HeaderLine(http::AccessControlAllowOrigin, "https://example.com")))
       << preflightResp;
 }
@@ -1133,7 +1133,7 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
                                  });
 
   const std::string response = test::simpleGet(ts.port(), "/async-throw-nonstd");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Unknown error")) << response;
 }
 
@@ -1150,7 +1150,7 @@ TEST(HttpRouting, AsyncHandlerReturnsInvalidTask) {
                                  });
 
   const std::string response = test::simpleGet(ts.port(), "/async-invalid-task");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Async handler inactive")) << response;
 }
 
@@ -1197,7 +1197,7 @@ TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
   if (response.empty()) {
     GTEST_SKIP() << "Server closed immediately without response (acceptable for bodyReady=false + immediate error)";
   }
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Failed before body ready")) << response;
 }
 
@@ -1219,7 +1219,7 @@ TEST(HttpRouting, AsyncHandlerInvalidTaskWithBodyNotReady) {
   test::sendAll(client.fd(), request);
 
   const std::string response = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Async handler inactive")) << response;
 }
 
@@ -1245,7 +1245,7 @@ TEST(HttpRouting, AsyncHandlerNullHandleWithBodyNotReady) {
   test::sendAll(client.fd(), request);
 
   const std::string response = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Async handler inactive")) << response;
 }
 
@@ -1278,7 +1278,7 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
     GTEST_SKIP()
         << "Server closed immediately without response (acceptable behavior for bodyReady=false + immediate error)";
   }
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("Unknown error")) << response;
 }
 
@@ -1294,7 +1294,7 @@ TEST(HttpRouting, DeferWorkBasicReturnValue) {
   });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-basic");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("result=42")) << response;
 }
 
@@ -1328,7 +1328,7 @@ TEST(HttpRouting, DeferWorkReturnsOptional) {
       });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-optional");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("found=123")) << response;
 }
 
@@ -1349,7 +1349,7 @@ TEST(HttpRouting, DeferWorkMultipleSequential) {
                                  });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-sequential");
-  EXPECT_TRUE(response.contains("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("first=10,second=20")) << response;
 }
 
@@ -1463,7 +1463,7 @@ TEST(HttpRouting, DeferWorkThrowsStdException) {
       });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-throw-std");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("caught: work failed")) << response;
 }
 
@@ -1483,7 +1483,7 @@ TEST(HttpRouting, DeferWorkThrowsNonStdException) {
       });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-throw-nonstd");
-  EXPECT_TRUE(response.contains("HTTP/1.1 500")) << response;
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
   EXPECT_TRUE(response.contains("caught int: 42")) << response;
 }
 
