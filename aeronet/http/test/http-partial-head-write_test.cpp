@@ -9,8 +9,9 @@
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/transport.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 
+namespace {
 // Fake transport that simulates a partial head write first, then completes remaining head and body.
 class PartialWriteTransport final : public ITransport {
  public:
@@ -43,6 +44,7 @@ class PartialWriteTransport final : public ITransport {
   bool _firstWriteDone{false};
   std::string _out;
 };
+}  // namespace
 
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   PartialWriteTransport plainWriteTransport;
@@ -83,3 +85,5 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   std::string_view s2 = partialWriteTransport.out();
   EXPECT_TRUE(s2.contains("hello world"));
 }
+
+}  // namespace aeronet

@@ -2045,14 +2045,16 @@ TEST_F(WebSocketHandlerTest, DecompressionFailureWithoutOnErrorCallback) {
 // Client-side masking tests
 // ============================================================================
 
+namespace {
 // Helper: parse the first frame from a handler's pending output.
-static FrameParseResult ParseOutputFrame(WebSocketHandler& h) {
-  auto pending = h.getPendingOutput();
+FrameParseResult ParseOutputFrame(WebSocketHandler& handler) {
+  auto pending = handler.getPendingOutput();
   // Client sends masked frames → ParseFrame needs isServerSide=true (expects masking).
   // Server sends unmasked frames → ParseFrame needs isServerSide=false.
-  const bool expectMasked = !h.config().isServerSide;
+  const bool expectMasked = !handler.config().isServerSide;
   return ParseFrame(pending, /*maxPayloadSize=*/0, /*isServerSide=*/expectMasked, /*allowRsv1=*/false);
 }
+}  // namespace
 
 TEST(WebSocketClientMaskingTest, OutgoingFrameIsMasked) {
   auto clientHandler = CreateClientWebSocketHandler();

@@ -6,8 +6,6 @@
 #include <chrono>
 #include <concepts>
 #include <cstdio>
-#include <exception>
-#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -28,6 +26,7 @@
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/request-metrics.hpp"
@@ -233,15 +232,8 @@ void AccessLogWriter::flush() noexcept {
     const auto written = ::write(fd, data, remaining);
 #endif
     if (written <= 0) {
-      // flush is noexcept and log::error could throw, let's just surround it with a small try-catch and fallback to
-      // cerr if logging fails to avoid losing the error information. Also disable further logging to avoid repeated
-      // errors.
-      try {
-        log::error("access log write failed on fd {}: errno {}", fd, errno);
-      } catch (const std::exception& ex) {
-        std::cerr << "access log write failed on fd " << fd << ": errno " << errno
-                  << " (also failed to log error: " << ex.what() << ")\n";
-      }
+      // flush is noexcept, so logging failures must not escape this path.
+      log_noexcept::error("access log write failed on fd {}: errno {}", fd, errno);
       _buffer.clear();
       _sink = AccessLogConfig::Sink::None;  // Disable further logging on error
       return;
