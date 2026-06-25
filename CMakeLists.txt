@@ -171,6 +171,13 @@ option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
 option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ON)
 option(AERONET_ENABLE_HTTP_CLIENT "Enable the HTTP client (HttpClient)" ON)
 
+# JWT (JWS-profile) support reuses the OpenSSL crypto already linked for TLS and the glaze JSON
+# parser; it adds no new dependency. It is therefore not a standalone opt-in: it is available by
+# default whenever both prerequisites are present, and forced OFF (with a kill switch) otherwise.
+include(CMakeDependentOption)
+cmake_dependent_option(AERONET_ENABLE_JWT "Enable JWT (JWS) support"
+    ON "AERONET_ENABLE_OPENSSL;AERONET_ENABLE_GLAZE" OFF)
+
 # zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
 # You can disable it in favor of classic zlib by setting this option to OFF.
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)
@@ -266,6 +273,9 @@ if(AERONET_INSTALL)
   if(AERONET_ENABLE_WEBSOCKET)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_websocket)
   endif()
+  if(AERONET_ENABLE_JWT)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_jwt)
+  endif()
   if(TARGET aeronet_zstd_headers)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_zstd_headers)
   endif()
@@ -297,6 +307,9 @@ if(AERONET_INSTALL)
   endif()
   if(AERONET_ENABLE_HTTP_CLIENT)
     install(DIRECTORY aeronet/client/include/ DESTINATION include)
+  endif()
+  if(AERONET_ENABLE_JWT)
+    install(DIRECTORY aeronet/jwt/include/ DESTINATION include)
   endif()
   install(DIRECTORY aeronet/tech/include/ DESTINATION include)
   install(DIRECTORY aeronet/sys/include/ DESTINATION include)

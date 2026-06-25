@@ -273,6 +273,28 @@ TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
+// A still-incomplete header line whose START is within the limit must still be bounded by the *buffered*
+// size, otherwise a peer that streams an endless un-terminated header grows the receive buffer without
+// limit (the line start never advances, so a `_pos`-only check would never trip).
+TEST(ResponseParserTest, IncompleteHeaderBoundedByBufferedSize) {
+  HttpResponse resp;
+  ResponseParser parser;
+  parser.reset(false);
+  // Status line (17 bytes) fits under maxBytes=50, but the unterminated header pushes the buffer past it.
+  const std::string raw = "HTTP/1.1 200 OK\r\nX: " + std::string(100, 'a');  // no trailing CRLF
+  auto st = parser.parse(raw, /*eof=*/false, resp, /*maxResponseBytes=*/50);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
+// A single oversized but newline-terminated header is rejected (the status-line / empty-line branches used
+// to bypass the per-header size check, so such a head could be accepted whole).
+TEST(ResponseParserTest, OversizedTerminatedHeaderIsError) {
+  HttpResponse resp;
+  const std::string raw = "HTTP/1.1 200 OK\r\nX: " + std::string(100, 'a') + "\r\n\r\n";
+  auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
 TEST(ResponseParserTest, RejectsBadVersionToken) {
   HttpResponse resp;
   auto st = parseAll("HTTPX 200 OK\r\n\r\n", resp, false, true);
