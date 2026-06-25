@@ -659,23 +659,20 @@ jobs:
   alpine-musl-debug:
     name: Alpine (musl) Debug build
     runs-on: ubuntu-latest
+    container:
+      image: alpine:3.24
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Setup latest Alpine Linux
-        uses: jirutka/setup-alpine@v1
-
       - name: Install dependencies
         run: |
-          set -euo pipefail
+          set -eu
           
           cat /etc/alpine-release
           
-          apk update
           apk add --no-cache build-base cmake ninja git bash python3 linux-headers \
             openssl-dev curl-dev protobuf-dev musl-dev
-        shell: alpine.sh --root {0}
 
       - name: Configure with cmake
         run: |
@@ -700,14 +697,10 @@ jobs:
             -DAERONET_ENABLE_WEBSOCKET=ON \
             -DAERONET_ENABLE_HTTP_CLIENT=ON
 
-        shell: alpine.sh {0}
-
       - name: Build
         run: |
           cmake --build build-alpine --parallel
-        shell: alpine.sh {0}
 
       - name: Run unit tests
         run: |
           ctest --test-dir build-alpine --output-on-failure --repeat until-fail:3 --timeout 100
-        shell: alpine.sh {0}

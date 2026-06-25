@@ -11,6 +11,7 @@
 [![H2 h2c Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fh2%2Fbenchmark_badge_h2c.json)](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html)
 [![H2 TLS Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fh2%2Fbenchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
 [![WS Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fws%2Fws_benchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/ws/)
+[![Client Benchmarks](https://img.shields.io/endpoint?url=https%3A%2F%2Fsjanel.github.io%2Faeronet%2Fbenchmarks%2Fclients%2Fclient_benchmark_badge.json)](https://sjanel.github.io/aeronet/benchmarks/clients/)
 [![Release](https://img.shields.io/github/v/release/sjanel/aeronet?style=flat-square)](https://github.com/sjanel/aeronet/releases/latest)
 
 ## Why aeronet?
@@ -45,6 +46,7 @@ You can browse the latest rendered benchmark tables directly on GitHub Pages:
 - [HTTP/2 clear-text Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2c.html)
 - [HTTP/2 TLS Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/h2/benchmarks_h2-tls.html)
 - [WebSocket Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/ws/)
+- [HTTP client Live benchmark dashboard](https://sjanel.github.io/aeronet/benchmarks/clients/) (aeronet `HttpClient` vs libcurl / drogon / beast)
 
 ## Minimal Examples
 

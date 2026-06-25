@@ -171,6 +171,54 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      # Client benchmark (aeronet HttpClient vs libcurl / drogon / beast). Reuses THIS job's build (the
+      # client drivers and aeronet-bench-server are already compiled in build-pages), so it adds no extra
+      # configure/compile. Runs once, on the high-connections matrix entry only.
+      - name: Run client benchmarks
+        if: matrix.conn_label == 'high'
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
+        run: |
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          WARMUP=5s
+          THREADS=4
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+          else
+            # pull_request and non-main pushes
+            DUR=5s
+            WARMUP=2s
+            THREADS=2
+          fi
+
+          echo "Client bench: dur=$DUR threads=$THREADS warmup=$WARMUP"
+
+          ./run_client_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --output "$PWD/results"
+
+      - name: Upload client results (high-connections run only)
+        if: matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-results
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_latest.json
+          retention-days: 3
+
+      - name: Upload client badge (high-connections run only)
+        if: matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-badge
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_badge.json
+          retention-days: 3
+          if-no-files-found: ignore
+
   # ------------------------------------------------------------------ #
   # HTTP/2 bench: h2c/h2-tls × low/high connections via h2load.        #
   # ------------------------------------------------------------------ #
@@ -529,6 +577,25 @@ jobs:
           for f in /tmp/bench-artifacts/ws-bench-html/ws_benchmark_*.html; do
             [[ -f "$f" ]] && cp "$f" /tmp/site/benchmarks/ws/ || true
           done
+
+          # --- HTTP client results (aeronet HttpClient vs libcurl/drogon/beast) ---
+          # Rendered by the very same render_benchmarks_html.py: the client orchestrator emits the
+          # identical summary schema (clients on the 'servers' axis).
+          mkdir -p /tmp/site/benchmarks/clients
+          CLIENT_JSON="/tmp/bench-artifacts/client-bench-results/client_benchmark_latest.json"
+          if [[ -f "$CLIENT_JSON" ]]; then
+            cp "$CLIENT_JSON" /tmp/site/benchmarks/clients/client_benchmark_latest.json
+            benchmarks/scripted-servers/render_benchmarks_html.py \
+              --input "$CLIENT_JSON" \
+              --output /tmp/site/benchmarks/clients/index.html
+          else
+            echo "WARNING: No client benchmark results found; skipping render"
+          fi
+
+          # Copy client badge if available
+          if [[ -f /tmp/bench-artifacts/client-bench-badge/client_benchmark_badge.json ]]; then
+            cp /tmp/bench-artifacts/client-bench-badge/client_benchmark_badge.json /tmp/site/benchmarks/clients/client_benchmark_badge.json
+          fi
 
       - name: Publish site snapshot to gh-pages
         if: ${{ github.event_name != 'pull_request' }}
