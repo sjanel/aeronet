@@ -299,6 +299,13 @@ add_custom_target(run-aeronet-bench-json
 # These are standalone HTTP servers meant to be tested with wrk/lua scripts
 add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benchmarks/scripted-servers)
 
+# Scripted client benchmarks (aeronet HttpClient vs libcurl/drogon/beast against an over-provisioned server).
+# Added after scripted-servers so the beast driver can reuse the Boost include dirs it resolves. Built
+# whenever the HTTP client is enabled; the comparison is only meaningful (and LTO-tuned) in Release.
+if(AERONET_ENABLE_HTTP_CLIENT)
+  add_subdirectory(${AERONET_BENCH_ROOT}/scripted-clients ${CMAKE_BINARY_DIR}/benchmarks/scripted-clients)
+endif()
+
 # TechEmpower Framework Benchmarks
 # Separate builds for official TechEmpower submission
 add_subdirectory(${AERONET_BENCH_ROOT}/techempower/aeronet ${CMAKE_BINARY_DIR}/benchmarks/techempower/aeronet)
