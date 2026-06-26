@@ -136,11 +136,11 @@ if(AERONET_BENCH_ENABLE_BEAST)
       boost_beast
       URL https://github.com/boostorg/beast/archive/refs/tags/boost-1.91.0.tar.gz
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      # We only need the headers: point SOURCE_SUBDIR at a non-existent dir so
+      # FetchContent_MakeAvailable populates the archive without add_subdirectory().
+      SOURCE_SUBDIR aeronet-headers-only
     )
-    FetchContent_GetProperties(boost_beast)
-    if(NOT boost_beast_POPULATED)
-      FetchContent_Populate(boost_beast)
-    endif()
+    FetchContent_MakeAvailable(boost_beast)
     set(AERONET_BOOST_INCLUDE_DIR ${boost_beast_SOURCE_DIR}/include)
     list(APPEND AERONET_BOOST_INCLUDE_DIRS ${AERONET_BOOST_INCLUDE_DIR})
     message(STATUS "[aeronet][bench] Boost.Beast headers fetched from GitHub source")
@@ -194,11 +194,11 @@ if(AERONET_BENCH_ENABLE_BEAST)
         ${boost_dep_name}
         URL https://github.com/boostorg/${boost_module}/archive/refs/tags/boost-1.91.0.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        # Headers only: SOURCE_SUBDIR points at a non-existent dir so
+        # FetchContent_MakeAvailable skips add_subdirectory() on the Boost module.
+        SOURCE_SUBDIR aeronet-headers-only
       )
-      FetchContent_GetProperties(${boost_dep_name})
-      if(NOT ${boost_dep_name}_POPULATED)
-        FetchContent_Populate(${boost_dep_name})
-      endif()
+      FetchContent_MakeAvailable(${boost_dep_name})
       if(EXISTS ${${boost_dep_name}_SOURCE_DIR}/include)
         list(APPEND AERONET_BOOST_INCLUDE_DIRS ${${boost_dep_name}_SOURCE_DIR}/include)
       endif()
@@ -215,6 +215,10 @@ if(AERONET_BENCH_ENABLE_BEAST)
   if(AERONET_BOOST_INCLUDE_DIRS STREQUAL "")
     list(APPEND AERONET_BOOST_INCLUDE_DIRS ${AERONET_BOOST_INCLUDE_DIR})
   endif()
+
+  # Export the resolved Boost include dirs so the scripted-clients beast driver can reuse them without
+  # re-running the (potentially fetched-from-source) resolution above.
+  set(AERONET_BOOST_INCLUDE_DIRS "${AERONET_BOOST_INCLUDE_DIRS}" CACHE INTERNAL "Boost include dirs for benchmarks")
 
   find_package(Threads REQUIRED)
 
