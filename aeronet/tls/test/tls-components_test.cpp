@@ -966,7 +966,18 @@ TEST(TlsContextTest, DefaultCipherPolicyWithCustomCipherList) {
   cfg.cipherPolicy = TLSConfig::CipherPolicy::Default;
   cfg.withCipherList("AES256-SHA:AES128-SHA");
 
-  TlsContext ctx(cfg);
+  EXPECT_NO_THROW(TlsContext{cfg});
+}
+
+TEST(TlsContextTest, InvalidCipherListThrows) {
+  auto certKey = CertKeyCache::Get().localhost;
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.cipherPolicy = TLSConfig::CipherPolicy::Default;
+  cfg.withCipherList("INVALID-CIPHER-1234");
+
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
 }
 
 TEST(TlsContextTest, SessionTicketsWithTlsHandshake) {

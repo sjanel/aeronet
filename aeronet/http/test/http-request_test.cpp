@@ -1274,10 +1274,9 @@ class FuzzRng {
 
 // Generate a random buffer of given size
 RawChars RandomBuffer(FuzzRng& rng, std::size_t size) {
-  RawChars buf;
-  buf.reserve(size);
+  RawChars buf(size);
   for (std::size_t ii = 0; ii < size; ++ii) {
-    buf.push_back(static_cast<char>(rng.byte()));
+    buf.unchecked_push_back(static_cast<char>(rng.byte()));
   }
   return buf;
 }

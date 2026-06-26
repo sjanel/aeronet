@@ -20,7 +20,7 @@
 namespace aeronet {
 
 namespace {
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 auto port = ts.port();
 }  // namespace
 

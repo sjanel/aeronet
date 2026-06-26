@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 
@@ -12,6 +13,7 @@
 #include "aeronet/http-client.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/tls-config.hpp"
 
 namespace aeronet {
 

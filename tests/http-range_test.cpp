@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/static-file-handler.hpp"
@@ -30,7 +29,7 @@ using test::getHeader;
 
 namespace {
 
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 
 }  // namespace
 

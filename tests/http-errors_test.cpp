@@ -59,7 +59,7 @@ struct Capture {
 
 using test::SimpleGetRequest;
 
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 auto port = ts.port();
 
 }  // namespace

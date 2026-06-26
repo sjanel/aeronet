@@ -757,6 +757,8 @@ TEST(flat_hash_map, insert_range_handles_malloc_failure) {
   }
 }
 
+namespace {
+
 // Helper type that throws during construction with a small probability.
 struct MaybeThrow {
   static std::mt19937 rng;
@@ -772,6 +774,8 @@ struct MaybeThrow {
 
   int val;
 };
+
+}  // namespace
 
 std::mt19937 MaybeThrow::rng(1337);
 

@@ -124,7 +124,7 @@ std::string ExtractBody(std::string_view resp) {
   return out;
 }
 
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 const auto port = ts.port();
 }  // namespace
 
@@ -1148,7 +1148,7 @@ TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
 // tries to write large amounts of data that might exceed socket buffers.
 // Ignore SIGPIPE to prevent process termination on broken pipe
 #ifdef AERONET_POSIX
-static const int kSigpipeIgnored = []() {
+static const int kSigpipeIgnored = []() noexcept {
   ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
   return 0;
 }();

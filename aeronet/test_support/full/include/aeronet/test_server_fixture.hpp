@@ -30,12 +30,18 @@ namespace aeronet::test {
 
 class TestServer {
  public:
-  explicit TestServer(HttpServerConfig cfg, RouterConfig routerCfg = {},
-                      std::chrono::milliseconds poll = std::chrono::milliseconds{1});
+  TestServer() noexcept;
 
-  [[nodiscard]] uint16_t port() const { return server.port(); }
+  explicit TestServer(HttpServerConfig cfg, RouterConfig routerCfg = {},
+                      std::chrono::milliseconds poll = std::chrono::milliseconds{1}) noexcept;
+
+  [[nodiscard]] uint16_t port() const noexcept;
+
+  void resetConfig();
 
   void postConfigUpdate(std::function<void(HttpServerConfig&)> updater);
+
+  void resetConfigAndPostUpdate(std::function<void(HttpServerConfig&)> updater);
 
   void postRouterUpdate(std::function<void(Router&)> updater);
 
@@ -44,14 +50,11 @@ class TestServer {
   RouterUpdateProxy resetRouterAndGet(std::function<void(Router&)> initializer = {});
 
   // Cooperative stop; safe to call multiple times.
-  void stop() { server.stop(); }
+  void stop() noexcept { server.stop(); }
 
   void resetRouter(std::function<void(Router&)> initializer = {});
 
   SingleHttpServer server;
-
- private:
-  void waitReady(std::chrono::milliseconds timeout) const;
 };
 
 void LogScopedConfigUpdateDestructorError();

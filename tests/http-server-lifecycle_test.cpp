@@ -335,7 +335,7 @@ TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
 TEST(HttpDrain, StopsNewConnections) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
-  test::TestServer ts(cfg);
+  test::TestServer ts(std::move(cfg));
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
@@ -361,7 +361,7 @@ TEST(HttpDrain, StopsNewConnections) {
 TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
   HttpServerConfig cfg;
   cfg.enableKeepAlive = true;
-  test::TestServer ts(cfg);
+  test::TestServer ts(std::move(cfg));
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
@@ -387,7 +387,7 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
 TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   HttpServerConfig cfg;
   cfg.keepAliveTimeout = 5s;  // ensure default timeout does not interfere with the test window
-  test::TestServer ts(cfg);
+  test::TestServer ts(std::move(cfg));
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
 
@@ -423,7 +423,7 @@ TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
 }
 
 TEST(HttpConfigUpdate, CoalesceWhileRunning) {
-  test::TestServer ts(HttpServerConfig{});
+  test::TestServer ts;
   auto& server = ts.server;
 
   // register a handler that returns current config value
@@ -446,7 +446,7 @@ TEST(HttpConfigUpdate, CoalesceWhileRunning) {
 
 TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   // Ensure router proxy updates applied while server runs are observed by clients.
-  test::TestServer ts(HttpServerConfig{});
+  test::TestServer ts;
 
   // initial handler returns v1
   ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"),
@@ -585,7 +585,7 @@ TEST_F(SignalHandlerGlobalTest, AutoDrainOnStopRequest) {
   // Install global signal handler with 2s drain timeout
   SignalHandler::Enable(2000ms);
 
-  test::TestServer ts(HttpServerConfig{});
+  test::TestServer ts;
 
   ts.router().setDefault([](const HttpRequest&) { return HttpResponse("alive"); });
 

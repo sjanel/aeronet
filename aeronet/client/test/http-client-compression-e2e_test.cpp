@@ -4,8 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/client-request.hpp"
@@ -14,6 +16,7 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 namespace {

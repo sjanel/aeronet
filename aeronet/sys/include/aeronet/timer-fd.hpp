@@ -20,7 +20,7 @@ class TimerFd {
   void armPeriodic(SysDuration interval) const;
 
   // Drain expirations (non-blocking). Safe to call even if the timer has not fired.
-  void drain() const noexcept;
+  void drain() const;
 
   [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 

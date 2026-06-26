@@ -4,8 +4,8 @@
 
 #include <array>
 #include <cstddef>
-#include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -20,13 +20,13 @@ namespace {
   return out;
 }
 
-// Returns the decoded bytes, or std::nullopt when the input is rejected.
-[[nodiscard]] std::optional<std::string> Decode(std::string_view in) {
+// Returns the decoded bytes, or throw invalid_argument when the input is rejected.
+std::string Decode(std::string_view in) {
   std::string out;
   out.resize(B64UrlMaxDecodedLen(in.size()));
   std::size_t outLen = 0;
   if (!B64UrlDecode(in, out.data(), outLen)) {
-    return std::nullopt;
+    throw std::invalid_argument("Invalid base64url input");
   }
   out.resize(outLen);
   return out;
@@ -57,48 +57,46 @@ TEST(Base64Url, UsesUrlSafeAlphabet) {
 }
 
 TEST(Base64Url, RoundTripAllByteValues) {
-  std::string all;
-  all.resize(256);
-  for (std::size_t i = 0; i < 256; ++i) {
+  std::string all(256, '\0');
+  for (std::size_t i = 0; i < all.size(); ++i) {
     all[i] = static_cast<char>(i);
   }
   auto encoded = Encode(all);
   EXPECT_FALSE(encoded.contains('='));
   auto decoded = Decode(encoded);
-  ASSERT_TRUE(decoded.has_value());
-  EXPECT_EQ(*decoded, all);
+  EXPECT_EQ(decoded, all);
 }
 
 TEST(Base64Url, DecodeRfcVectors) {
-  EXPECT_EQ(Decode("").value(), "");
-  EXPECT_EQ(Decode("Zg").value(), "f");
-  EXPECT_EQ(Decode("Zm8").value(), "fo");
-  EXPECT_EQ(Decode("Zm9v").value(), "foo");
-  EXPECT_EQ(Decode("Zm9vYmFy").value(), "foobar");
+  EXPECT_EQ(Decode(""), "");
+  EXPECT_EQ(Decode("Zg"), "f");
+  EXPECT_EQ(Decode("Zm8"), "fo");
+  EXPECT_EQ(Decode("Zm9v"), "foo");
+  EXPECT_EQ(Decode("Zm9vYmFy"), "foobar");
 }
 
 TEST(Base64Url, DecodeToleratesPadding) {
-  EXPECT_EQ(Decode("Zg==").value(), "f");
-  EXPECT_EQ(Decode("Zm8=").value(), "fo");
+  EXPECT_EQ(Decode("Zg=="), "f");
+  EXPECT_EQ(Decode("Zm8="), "fo");
 }
 
 TEST(Base64Url, DecodeRejectsInvalidAlphabet) {
-  EXPECT_FALSE(Decode("Zg+v").has_value());  // '+' is standard base64, not base64url
-  EXPECT_FALSE(Decode("Zg/v").has_value());  // '/' likewise
-  EXPECT_FALSE(Decode("Z m8").has_value());  // space
+  EXPECT_THROW(Decode("Zg+v"), std::invalid_argument);  // '+' is standard base64, not base64url
+  EXPECT_THROW(Decode("Zg/v"), std::invalid_argument);  // '/' likewise
+  EXPECT_THROW(Decode("Z m8"), std::invalid_argument);  // space
 }
 
 TEST(Base64Url, DecodeRejectsTruncatedGroup) {
   // A single leftover character (mod 4 == 1) can never represent a whole byte.
-  EXPECT_FALSE(Decode("Zm9vY").has_value());
+  EXPECT_THROW(Decode("Zm9vY"), std::invalid_argument);
 }
 
 TEST(Base64Url, DecodeAcceptsEveryAlphabetSymbol) {
   // Exercises each arm of the symbol→sextet decoder (upper, lower, digit, '-', '_').
-  EXPECT_EQ(Decode("TQ").value(), "M");    // 'T','Q' upper-case
-  EXPECT_EQ(Decode("bQ").value(), "m");    // lower-case
-  EXPECT_EQ(Decode("MDk").value(), "09");  // digits
-  EXPECT_TRUE(Decode("-_").has_value());   // '-' and '_'
+  EXPECT_EQ(Decode("TQ"), "M");     // 'T','Q' upper-case
+  EXPECT_EQ(Decode("bQ"), "m");     // lower-case
+  EXPECT_EQ(Decode("MDk"), "09");   // digits
+  EXPECT_EQ(Decode("-_"), "\xFB");  // '-' and '_'
 }
 
 }  // namespace aeronet

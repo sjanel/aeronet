@@ -20,7 +20,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -38,10 +37,7 @@ using namespace std::chrono_literals;
 namespace aeronet {
 
 namespace {
-// Use a short poll interval so the server's periodic maintenance (which enforces
-// header read timeouts) runs promptly even when the test runner is under heavy load.
-// This avoids flakiness when the whole test suite is executed in parallel.
-test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+test::TestServer ts;
 auto port = ts.port();
 
 using HeaderReadTimeoutScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
@@ -705,67 +701,55 @@ TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
 // ============================
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
-  // Create a server with zerocopy enabled in Opportunistic mode (default)
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Opportunistic);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Opportunistic); });
 
   // Create a payload larger than the zerocopy threshold (16KB)
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'Z');
 
-  localTs.router().setPath(http::Method::GET, "/large",
-                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large",
+                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large";
-  auto resp = test::requestOrThrow(localTs.port(), opt);
+  auto resp = test::requestOrThrow(ts.port(), opt);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
 }
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
-  // Create a server with zerocopy explicitly disabled
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Disabled);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Disabled); });
 
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'D');
 
-  localTs.router().setPath(http::Method::GET, "/large-disabled",
-                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-disabled",
+                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large-disabled";
-  auto resp = test::requestOrThrow(localTs.port(), opt);
+  auto resp = test::requestOrThrow(ts.port(), opt);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
 }
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
-  // Create a server with zerocopy explicitly enabled (logs warning if unavailable)
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Enabled); });
 
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'E');
 
-  localTs.router().setPath(http::Method::GET, "/large-enabled",
-                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-enabled",
+                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large-enabled";
-  auto resp = test::requestOrThrow(localTs.port(), opt);
+  auto resp = test::requestOrThrow(ts.port(), opt);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
@@ -773,20 +757,17 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
 
 TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
   // Small responses (< 16KB) should bypass zerocopy even when enabled
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Enabled); });
 
   const std::string smallPayload = "Small response body";
 
-  localTs.router().setPath(http::Method::GET, "/small",
-                           [&smallPayload](const HttpRequest&) { return HttpResponse(smallPayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/small",
+                                 [&smallPayload](const HttpRequest& req) { return req.makeResponse(smallPayload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/small";
-  auto resp = test::requestOrThrow(localTs.port(), opt);
+  auto resp = test::requestOrThrow(ts.port(), opt);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(smallPayload));
@@ -797,21 +778,20 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 // ============================
 #ifdef AERONET_LINUX
 TEST(ZerocopyMode, ForcedModeSmallPayload) {
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-  cfg.withZerocopyMinBytes(0);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(0);
+  });
 
   const std::string payload = "ForcedZerocopySmall";
 
-  localTs.router().setPath(http::Method::GET, "/forced-small",
-                           [&payload](const HttpRequest&) { return HttpResponse(payload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/forced-small",
+                                 [&payload](const HttpRequest& req) { return req.makeResponse(payload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/forced-small";
-  auto resp = test::requestOrThrow(localTs.port(), opt);
+  auto resp = test::requestOrThrow(ts.port(), opt);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(payload));
@@ -820,11 +800,10 @@ TEST(ZerocopyMode, ForcedModeSmallPayload) {
 TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
   // Stress test: repeated requests with large payloads to exercise zerocopy + backpressure.
   // Reproduces data corruption seen under sustained zerocopy with virtual network devices (K8s).
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-  cfg.withZerocopyMinBytes(0);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(0);
+  });
 
   // 1 MB payload with deterministic pattern to verify data integrity
   constexpr std::size_t kPayloadSize = 1UL << 20;
@@ -834,8 +813,8 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
     largePayload.push_back(static_cast<char>('A' + (idx % 26)));
   }
 
-  localTs.router().setPath(http::Method::GET, "/stress",
-                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stress",
+                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -844,7 +823,7 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
 
   constexpr int kIterations = 50;
   for (int iter = 0; iter < kIterations; ++iter) {
-    auto resp = test::requestOrThrow(localTs.port(), opt);
+    auto resp = test::requestOrThrow(ts.port(), opt);
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << "iteration " << iter;
     ASSERT_TRUE(resp.ends_with(largePayload)) << "data corruption at iteration " << iter;
   }
@@ -859,10 +838,7 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
   // Note: Forced mode on loopback triggers a kernel-level data corruption (page-aligned 32KB
   // block shifts) under concurrent connections on Linux >= 6.x, which is not reproducible
   // on real NICs where MSG_ZEROCOPY is actually useful.
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Opportunistic);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Opportunistic); });
 
   constexpr std::size_t kPayloadSize = 512UL * 1024;  // 512 KB
   std::string largePayload;
@@ -871,8 +847,8 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
     largePayload.push_back(static_cast<char>('0' + (idx % 10)));
   }
 
-  localTs.router().setPath(http::Method::GET, "/concurrent-stress",
-                           [&largePayload](const HttpRequest&) { return HttpResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/concurrent-stress",
+                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
 
   constexpr int kThreads = 8;
   constexpr int kRequestsPerThread = 20;
@@ -890,7 +866,7 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
 
       for (int req = 0; req < kRequestsPerThread; ++req) {
         try {
-          auto resp = test::requestOrThrow(localTs.port(), opt);
+          auto resp = test::requestOrThrow(ts.port(), opt);
           if (!resp.starts_with("HTTP/1.1 200") || !resp.ends_with(largePayload)) {
             ++failures;
           }
@@ -911,11 +887,10 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
 TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   // Stress test with varying payload sizes exercising both zerocopy and regular write paths.
   // Forces zerocopy even for small payloads to stress the zerocopy completion mechanism.
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-  cfg.withZerocopyMinBytes(0);
-
-  test::TestServer localTs(cfg);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(0);
+  });
 
   // Payloads of different sizes to exercise edge cases
   static constexpr std::size_t sizes[] = {100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
@@ -924,7 +899,8 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
     std::string payload(sz, static_cast<char>('a' + (sz % 26)));
     const std::string path = "/vary-" + std::to_string(sz);
 
-    localTs.router().setPath(http::Method::GET, path, [payload](const HttpRequest&) { return HttpResponse(payload); });
+    ts.resetRouterAndGet().setPath(http::Method::GET, path,
+                                   [payload](const HttpRequest& req) { return req.makeResponse(payload); });
 
     test::RequestOptions opt;
     opt.method = "GET";
@@ -933,7 +909,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
 
     constexpr int kRepeat = 10;
     for (int rp = 0; rp < kRepeat; ++rp) {
-      auto resp = test::requestOrThrow(localTs.port(), opt);
+      auto resp = test::requestOrThrow(ts.port(), opt);
       ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << "size=" << sz << " rep=" << rp;
       ASSERT_TRUE(resp.ends_with(payload)) << "data corruption at size=" << sz << " rep=" << rp;
     }
@@ -943,26 +919,25 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
 TEST(ZerocopyMode, StressKeepAliveBackpressure) {
   // Stress test over a single keep-alive connection with many large responses.
   // This exercises the flushOutbound / outBuffer append paths with zerocopy.
-  HttpServerConfig cfg;
-  cfg.withZerocopyMode(ZerocopyMode::Enabled);
-  cfg.withZerocopyMinBytes(0);
-  cfg.withKeepAliveMode(true);
-  cfg.withMaxRequestsPerConnection(10000);
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(0);
+    cfg.withKeepAliveMode(true);
+    cfg.withMaxRequestsPerConnection(10000);
+  });
 
-  test::TestServer localTs(cfg);
-
-  constexpr std::size_t kPayloadSize = 256UL * 1024;  // 256 KB
+  static constexpr std::size_t kPayloadSize = 256UL * 1024;  // 256 KB
   std::string payload;
   payload.reserve(kPayloadSize);
   for (std::size_t idx = 0; idx < kPayloadSize; ++idx) {
     payload.push_back(static_cast<char>('A' + (idx % 26)));
   }
 
-  localTs.router().setPath(http::Method::GET, "/ka-stress",
-                           [&payload](const HttpRequest&) { return HttpResponse(payload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/ka-stress",
+                                 [&payload](const HttpRequest& req) { return req.makeResponse(payload); });
 
   // Send many requests over a single connection using keep-alive
-  test::ClientConnection cnx(localTs.port());
+  test::ClientConnection cnx(ts.port());
   const NativeHandle fd = cnx.fd();
   test::setRecvTimeout(fd, std::chrono::milliseconds{5000});
 
@@ -971,7 +946,8 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
     const std::string reqStr = "GET /ka-stress HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
     test::sendAll(fd, reqStr);
 
-    auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000});
+    auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000},
+                                      kPayloadSize + 119U);  // 119 = length of HTTP headers
     ASSERT_FALSE(resp.empty()) << "empty response at iteration " << iter;
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << "bad status at iteration " << iter;
     ASSERT_TRUE(resp.contains(payload)) << "data corruption at iteration " << iter;

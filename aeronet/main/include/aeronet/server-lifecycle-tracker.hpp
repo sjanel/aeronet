@@ -21,7 +21,7 @@ class ServerLifecycleTracker {
     _cv.notify_all();
   }
 
-  void notifyServerStopped() {
+  void notifyServerStopped() noexcept {
     std::scoped_lock lock(_mutex);
     assert(_running > 0);
     --_running;

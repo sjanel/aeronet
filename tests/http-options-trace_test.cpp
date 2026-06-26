@@ -21,7 +21,7 @@
 using namespace aeronet;
 
 namespace {
-test::TestServer ts(HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{5});
+test::TestServer ts;
 auto port = ts.port();
 }  // namespace
 
@@ -83,10 +83,9 @@ CorsPolicy MakePolicy() {
       .allowAnyRequestHeaders();
   return policy;
 }
-}  // namespace
 
 class HttpCorsIntegration : public ::testing::Test {
- public:
+ protected:
   static RouterConfig MakeConfigWithCors() {
     RouterConfig cfg{};
     cfg.withDefaultCorsPolicy(MakePolicy());
@@ -95,6 +94,7 @@ class HttpCorsIntegration : public ::testing::Test {
 
   void SetUp() override { ts.router() = Router{MakeConfigWithCors()}; }
 };
+}  // namespace
 
 TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
   ts.router().setPath(http::Method::GET, "/data", [](const HttpRequest&) { return HttpResponse("ok"); });

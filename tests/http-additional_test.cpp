@@ -65,7 +65,7 @@ HttpServerConfig TestServerConfig() {
   return cfg;
 }
 
-test::TestServer ts(TestServerConfig());
+test::TestServer ts;
 
 struct Ipv4Endpoint {
   uint32_t addr{0};

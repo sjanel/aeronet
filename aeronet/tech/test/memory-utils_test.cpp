@@ -1,3 +1,5 @@
+#include "aeronet/memory-utils.hpp"
+
 #include <gtest/gtest.h>
 
 #include <array>

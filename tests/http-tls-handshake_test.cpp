@@ -821,12 +821,6 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   ASSERT_GT(statsSnapshot.tlsHandshakeDurationMaxNs, 0U);
 }
 
-TEST(HttpTlsCipherList, InvalidCipherListThrows) {
-  EXPECT_THROW(
-      { test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsCipherList("INVALID-CIPHER-1234"); }); },
-      std::runtime_error);
-}
-
 TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   auto pair = CertKeyCache::Get().localhost;
   ASSERT_FALSE(pair.first.empty());

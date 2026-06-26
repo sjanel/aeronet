@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 
-#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -130,8 +130,8 @@ TEST(HttpsRedirectIntegration, EmitsRequestMetrics) {
   test::TestServer ts(RedirectConfig());
   std::atomic<http::StatusCode> seenStatus{0};
   std::atomic<int> count{0};
-  ts.server.setMetricsCallback([&](const RequestMetrics& m) {
-    seenStatus.store(m.status);
+  ts.server.setMetricsCallback([&](const RequestMetrics& requestMetrics) {
+    seenStatus.store(requestMetrics.status);
     count.fetch_add(1);
   });
 

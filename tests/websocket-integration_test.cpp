@@ -14,7 +14,6 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -28,6 +27,8 @@ using namespace aeronet;
 using namespace aeronet::websocket;
 
 namespace {
+
+test::TestServer ts;
 
 // Helper to build a valid WebSocket upgrade request
 std::string BuildUpgradeRequest(std::string_view path, std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==") {
@@ -181,8 +182,6 @@ class WebSocketTest : public ::testing::Test {
 };
 
 TEST_F(WebSocketTest, UpgradeSuccessful) {
-  test::TestServer ts(HttpServerConfig{});
-
   // Register a WebSocket endpoint
   ts.postRouterUpdate([this](Router& router) {
     router.setWebSocket(
@@ -213,8 +212,6 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
 }
 
 TEST_F(WebSocketTest, UpgradeWithInvalidKey) {
-  test::TestServer ts(HttpServerConfig{});
-
   ts.postRouterUpdate([](Router& router) {
     router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks({
                                    .onMessage = {},
@@ -237,8 +234,6 @@ TEST_F(WebSocketTest, UpgradeWithInvalidKey) {
 }
 
 TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
-  test::TestServer ts(HttpServerConfig{});
-
   ts.postRouterUpdate([](Router& router) {
     router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks({
                                    .onMessage = {},
@@ -261,8 +256,6 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
 }
 
 TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
-  test::TestServer ts(HttpServerConfig{});
-
   ts.postRouterUpdate([this](Router& router) {
     router.setWebSocket("/echo", WebSocketEndpoint::WithFactory([this](const HttpRequest& /*req*/) {
                           auto handler = std::make_unique<WebSocketHandler>();
@@ -317,8 +310,6 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
 }
 
 TEST_F(WebSocketTest, CloseHandshake) {
-  test::TestServer ts(HttpServerConfig{});
-
   ts.postRouterUpdate([this](Router& router) {
     router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
                                    .onMessage = {},
@@ -364,8 +355,6 @@ TEST_F(WebSocketTest, CloseHandshake) {
 }
 
 TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
-  test::TestServer ts(HttpServerConfig{});
-
   WebSocketConfig config;
   config.maxMessageSize = 100;  // Small limit for testing
 

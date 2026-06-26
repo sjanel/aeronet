@@ -60,15 +60,20 @@ TEST(SafeCastTest, ConstexprAndEdgeCases) {
 
 namespace {
 
-std::mt19937_64 rng{666UL};
-std::uniform_int_distribution<int64_t> s64(std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max());
-std::uniform_int_distribution<uint64_t> u64(std::numeric_limits<uint64_t>::min(), std::numeric_limits<uint64_t>::max());
+class SafeCastRandomTest : public ::testing::Test {
+ protected:
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
+  std::mt19937_64 rng{666UL};
+  std::uniform_int_distribution<int64_t> s64{std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max()};
+  std::uniform_int_distribution<uint64_t> u64{std::numeric_limits<uint64_t>::min(),
+                                              std::numeric_limits<uint64_t>::max()};
+};
 
 }  // namespace
 
-TEST(SafeCastTest, RandomizedUnsignedToUnsigned) {
+TEST_F(SafeCastRandomTest, RandomizedUnsignedToUnsigned) {
   for (int i = 0; i < 1000; ++i) {
-    uint64_t val = u64(rng);
+    const uint64_t val = u64(rng);
     if (std::cmp_less_equal(val, std::numeric_limits<uint32_t>::max())) {
       EXPECT_EQ(SafeCast<uint32_t>(val), static_cast<uint32_t>(val));
     } else {
@@ -77,9 +82,9 @@ TEST(SafeCastTest, RandomizedUnsignedToUnsigned) {
   }
 }
 
-TEST(SafeCastTest, RandomizedSignedToUnsigned) {
+TEST_F(SafeCastRandomTest, RandomizedSignedToUnsigned) {
   for (int i = 0; i < 1000; ++i) {
-    int64_t val = s64(rng);
+    const int64_t val = s64(rng);
     if (val >= 0 && std::cmp_less_equal(val, std::numeric_limits<uint32_t>::max())) {
       EXPECT_EQ(SafeCast<uint32_t>(val), static_cast<uint32_t>(val));
     } else {

@@ -196,7 +196,7 @@ ClientRawResponse RawPost(uint16_t port, std::string_view target,
   return resp;
 }
 
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 
 }  // namespace
 

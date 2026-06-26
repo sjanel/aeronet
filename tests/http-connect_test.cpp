@@ -33,12 +33,16 @@ static const int kSigpipeIgnored = []() {
 }();
 #endif
 
+namespace {
+
 class HttpConnectDefaultConfig : public ::testing::Test {
  public:
-  test::TestServer ts{HttpServerConfig{}};
+  test::TestServer ts;
   test::ClientConnection client{ts.port()};
   NativeHandle fd{client.fd()};
 };
+
+}  // namespace
 
 // This test reproduces a partial-write scenario on the upstream side while tunneling.
 // The upstream echo helper used elsewhere writes back immediately; here we start an
@@ -129,7 +133,7 @@ TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
 // This exercises the closeConnection() path at lines 414-429 in connection-manager.cpp
 // where peerFd != -1 triggers peer lookup and cleanup.
 TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
-  test::TestServer ts{HttpServerConfig{}};
+  test::TestServer ts;
 
   // Start an echo server to act as upstream
   auto echoSrv = test::startEchoServer();
@@ -175,7 +179,7 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
-  test::TestServer ts{HttpServerConfig{}};
+  test::TestServer ts;
 
   // Start an echo server to act as upstream
   auto echoSrv = test::startEchoServer();

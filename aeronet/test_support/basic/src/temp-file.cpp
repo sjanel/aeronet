@@ -1,7 +1,5 @@
 #include "aeronet/temp-file.hpp"
 
-#include <iostream>
-
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/system-error-message.hpp"
 
@@ -35,6 +33,7 @@
 #include <utility>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
@@ -170,16 +169,17 @@ void ScopedTempFile::cleanup() noexcept {
   // Remove only the file we created.
   if (!_path.empty()) {
     std::error_code ec;
-    bool removed = std::filesystem::remove(_path, ec);
+    const bool removed = std::filesystem::remove(_path, ec);
     try {
       if (ec) {
-        log::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(), ec.message());
+        log_noexcept::error("ScopedTempFile::cleanup: remove({}) failed: {} ({})", _path.string(), ec.value(),
+                            ec.message());
       } else if (!removed) {
-        log::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed", _path.string());
+        log_noexcept::error("ScopedTempFile::cleanup: expected to remove file {}, but nothing was removed",
+                            _path.string());
       }
     } catch (const std::filesystem::filesystem_error& ex) {
-      std::cerr << "ScopedTempFile::cleanup: exception while removing file " << _path.string() << ": " << ex.what()
-                << '\n';
+      log_noexcept::error("ScopedTempFile::cleanup: exception while removing file {}: {}", _path.string(), ex.what());
     }
     _path.clear();
   }

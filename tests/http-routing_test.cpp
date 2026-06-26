@@ -46,7 +46,7 @@ using namespace aeronet;
 
 namespace {
 
-test::TestServer ts(HttpServerConfig{});
+test::TestServer ts;
 
 }  // namespace
 
