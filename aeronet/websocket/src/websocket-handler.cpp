@@ -1,5 +1,6 @@
 #include "aeronet/websocket-handler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -17,8 +18,10 @@
 #include <arm_neon.h>
 #endif
 
+#include "aeronet/http-response-data.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"

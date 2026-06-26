@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -7,8 +10,9 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/rate-limit-middleware.hpp"
+#include "aeronet/rate-limit.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -16,7 +20,7 @@ using namespace aeronet;
 
 namespace {
 
-aeronet::test::TestServer ts(HttpServerConfig{});
+aeronet::test::TestServer ts;
 
 class ThrowingRateLimitStore final : public IRateLimitStore {
  public:

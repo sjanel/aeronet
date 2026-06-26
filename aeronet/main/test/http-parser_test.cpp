@@ -9,7 +9,6 @@
 #include <thread>
 
 #include "aeronet/http-request.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -22,12 +21,12 @@ namespace aeronet {
 namespace {
 
 // Shared server used by most tests. A short poll interval keeps NeedMore round-trips fast.
-test::TestServer ts(HttpServerConfig{}, {}, 5ms);
+test::TestServer ts;
 const auto port = ts.port();
 
 // Echo the request body back in the response.
 void InstallEchoHandler() {
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
 }
 
 // Sends an HTTP request with a fixed-length body split into two TCP writes.
@@ -98,24 +97,25 @@ TEST(HttpParserFixedLength, NeedMore_OneByteAtATime) {
 TEST(HttpParserFixedLength, InvalidContentLength_NonNumeric) {
   std::string req = "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\nConnection: close\r\n\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_TRUE(resp.contains("400")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
 // Content-Length with trailing non-numeric chars → 400 Bad Request.
 TEST(HttpParserFixedLength, InvalidContentLength_TrailingGarbage) {
   std::string req = "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5abc\r\nConnection: close\r\n\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_TRUE(resp.contains("400")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
 // Content-Length value exceeds configured maxBodyBytes → 413 Payload Too Large.
 TEST(HttpParserFixedLength, ContentLengthExceedsMaxBodyBytes) {
-  test::TestServer smallTs(HttpServerConfig{}.withMaxBodyBytes(16), {}, 5ms);
-  smallTs.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(16); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
+
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 32\r\nConnection: close\r\n\r\n" + std::string(32, 'X');
-  std::string resp = test::sendAndCollect(smallTs.port(), req);
-  ASSERT_TRUE(resp.contains("413")) << resp;
+  std::string resp = test::sendAndCollect(port, req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 413")) << resp;
 }
 
 // Expect: 100-continue with Content-Length: 0 — server must NOT send 100 Continue.
@@ -124,8 +124,8 @@ TEST(HttpParserFixedLength, Expect100Continue_ZeroBody_NoInterim) {
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_FALSE(resp.contains("HTTP/1.1 100")) << "Should not receive 100 Continue for zero-length body\n" << resp;
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  ASSERT_FALSE(resp.starts_with("HTTP/1.1 100")) << "Should not receive 100 Continue for zero-length body\n" << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
 // Expect: 100-continue with a non-zero body — server sends 100 Continue, then the final 200.
@@ -234,19 +234,19 @@ TEST(HttpParserChunked, InvalidChunkSize_NonHex) {
       "XY\r\nbad\r\n"
       "0\r\n\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_TRUE(resp.contains("400")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
 // Chunk size alone (without data bytes) exceeds maxBodyBytes → 413 Payload Too Large.
 TEST(HttpParserChunked, ChunkSizeExceedsMaxBodyBytes) {
-  test::TestServer smallTs(HttpServerConfig{}.withMaxBodyBytes(8), {}, 5ms);
-  smallTs.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(8U); });
+  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
   // Declare a chunk of 32 bytes which exceeds the 8-byte limit.
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
       "20\r\n" +
       std::string(32, 'A') + "\r\n0\r\n\r\n";
-  std::string resp = test::sendAndCollect(smallTs.port(), req);
+  std::string resp = test::sendAndCollect(port, req);
   ASSERT_TRUE(resp.contains("413")) << resp;
 }
 
@@ -289,7 +289,7 @@ TEST(HttpParserChunked, Expect100Continue) {
 TEST(HttpParserChunkedTrailers, ValidTrailer) {
   ts.router().setDefault([](const HttpRequest& req) {
     auto val = req.trailerValueOrEmpty("X-Checksum");
-    return HttpResponse(std::string(val));
+    return req.makeResponse(std::string(val));
   });
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -306,7 +306,7 @@ TEST(HttpParserChunkedTrailers, ValidTrailer) {
 TEST(HttpParserChunkedTrailers, NeedMore_PartialTrailerLine) {
   ts.router().setDefault([](const HttpRequest& req) {
     auto val = req.trailerValueOrEmpty("X-Tag");
-    return HttpResponse(std::string(val));
+    return req.makeResponse(std::string(val));
   });
   std::string head =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -327,7 +327,7 @@ TEST(HttpParserChunkedTrailers, ForbiddenTrailerHeader) {
       "Transfer-Encoding: chunked\r\n"
       "\r\n";
   std::string resp = test::sendAndCollect(port, req);
-  ASSERT_TRUE(resp.contains("400")) << resp;
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
 // Trailer line without a colon separator → 400 Bad Request.
@@ -345,8 +345,8 @@ TEST(HttpParserChunkedTrailers, MalformedTrailer_NoColon) {
 // Trailer block exceeds maxHeaderBytes → 431 Request Header Fields Too Large.
 TEST(HttpParserChunkedTrailers, TrailerTooLarge) {
   // 128 is the minimum accepted value for maxHeaderBytes.
-  test::TestServer smallTs(HttpServerConfig{}.withMaxHeaderBytes(128), {}, 5ms);
-  smallTs.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(128); });
+  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
   // Build a trailer value long enough to exceed the 128-byte limit.
   std::string longValue(256, 'V');
   std::string req =
@@ -355,8 +355,8 @@ TEST(HttpParserChunkedTrailers, TrailerTooLarge) {
       "0\r\n"
       "X-Big: " +
       longValue + "\r\n\r\n";
-  std::string resp = test::sendAndCollect(smallTs.port(), req);
-  ASSERT_TRUE(resp.contains("431")) << resp;
+  std::string resp = test::sendAndCollect(port, req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 431")) << resp;
 }
 
 // =============================================================================
@@ -367,6 +367,8 @@ TEST(HttpParserChunked, LargeBody_ManyChunks) {
   InstallEchoHandler();
   constexpr std::size_t kChunkDataSize = 512;
   constexpr int kChunkCount = 64;
+
+  ts.resetConfig();
 
   std::string req = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
   std::string expected;
@@ -398,6 +400,9 @@ TEST(HttpParserFixedLength, LargeBody) {
                     "\r\nConnection: close\r\n\r\n" + body;
   test::ClientConnection conn(port);
   NativeHandle fd = conn.fd();
+
+  ts.resetConfig();
+
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;

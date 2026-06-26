@@ -484,7 +484,7 @@ void TlsClient::init() {
   // Avoid test process termination when writing to a closed TLS socket.
   // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
 #ifdef AERONET_POSIX
-  static const int kSigpipeIgnored = []() {
+  static const int kSigpipeIgnored = []() noexcept {
     ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
     return 0;
   }();

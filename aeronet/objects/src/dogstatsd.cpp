@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -106,7 +107,7 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
   try {
     _buf.ensureAvailableCapacity(dataSize);
   } catch (const std::bad_alloc&) {
-    log::error("DogStatsD: unable to allocate memory for metric message");
+    log_noexcept::error("DogStatsD: unable to allocate memory for metric message");
     return;
   }
 
@@ -128,9 +129,10 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
     // and do not mark the connection for immediate reconnect. Other errors indicate
     // a more serious problem with the socket and should trigger a reconnect attempt.
     if (serr == error::kWouldBlock) {
-      log::debug("DogStatsD: dropping metric of size {} due to EAGAIN/EWOULDBLOCK", dataSize);
+      log_noexcept::debug("DogStatsD: dropping metric of size {} due to EAGAIN/EWOULDBLOCK", dataSize);
     } else {
-      log::error("DogStatsD: unable to send message of size {} with error: {}", dataSize, SystemErrorMessage(serr));
+      log_noexcept::error("DogStatsD: unable to send message of size {} with error: {}", dataSize,
+                          SystemErrorMessage(serr));
       _retryConnectionCounter = kReconnectionThreshold;  // mark as disconnected but retry immediately on next send
     }
   }
@@ -184,12 +186,8 @@ int DogStatsD::connect() noexcept {
   assert(_fd);
   _retryConnectionCounter = static_cast<uint8_t>(-_fd.connect(socketPath));
   if (_retryConnectionCounter == 1) {
-    try {
-      log::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
-                 SystemErrorMessage(LastSystemError()));
-    } catch (const std::exception& e) {
-      std::cerr << "DogStatsD: unable to connect to socket '" << socketPath << "'. Full error: " << e.what() << "\n";
-    }
+    log_noexcept::error("DogStatsD: unable to connect to socket '{}'. Full error: {}", socketPath,
+                        SystemErrorMessage(LastSystemError()));
   }
 
   return -_retryConnectionCounter;

@@ -21,7 +21,7 @@
 namespace aeronet {
 
 namespace {
-bool gThrowerDoThrow = false;
+constinit bool gThrowerDoThrow = false;
 }  // namespace
 
 TEST(ObjectPoolTest, TrivialTypeAllocateAndConstruct) {
@@ -80,6 +80,8 @@ TEST(ObjectPoolTest, NonTrivialTypeConstructionAndDestroy) {
   EXPECT_EQ(pool.size(), 0U);
 }
 
+namespace {
+
 struct Counted {
   static int constructions;
   static int destructions;
@@ -94,6 +96,7 @@ struct Counted {
 
   int value;
 };
+}  // namespace
 
 int Counted::constructions = 0;
 int Counted::destructions = 0;

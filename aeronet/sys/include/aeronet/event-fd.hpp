@@ -18,7 +18,7 @@ class EventFd {
   void send() const noexcept;
 
   // Drain / read pending wakeup events.
-  void read() const noexcept;
+  void read() const;
 
   [[nodiscard]] NativeHandle fd() const noexcept { return _baseFd.fd(); }
 

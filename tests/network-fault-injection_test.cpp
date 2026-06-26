@@ -11,8 +11,6 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/transport-test-hook.hpp"
@@ -33,9 +31,20 @@ std::unique_ptr<ITransport> ApplyTestFaultPolicy(std::unique_ptr<ITransport> tra
 
 // --- Test fixture ---
 
+test::TestServer ts;
+
 class NetworkFaultTest : public ::testing::Test {
  protected:
-  void SetUp() override { g_faultPolicy = {}; }
+  void SetUp() override {
+    g_faultPolicy = {};
+
+    // Register test routes
+    ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse("Hello, World!"); });
+    ts.router().setPath(http::Method::POST, "/echo",
+                        [](const HttpRequest& req) { return HttpResponse(std::string{req.body()}); });
+    ts.router().setPath(http::Method::GET, "/large",
+                        [](const HttpRequest&) { return HttpResponse(std::string(8192, 'X')); });
+  }
 
   void TearDown() override { _decorator.reset(); }
 
@@ -47,18 +56,6 @@ class NetworkFaultTest : public ::testing::Test {
  private:
   std::optional<test::ScopedTransportDecorator> _decorator;
 };
-
-test::TestServer ts(HttpServerConfig{}, RouterConfig{}, 5ms);
-
-// Register test routes
-auto registerRoutes = [] {
-  ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse("Hello, World!"); });
-  ts.router().setPath(http::Method::POST, "/echo",
-                      [](const HttpRequest& req) { return HttpResponse(std::string{req.body()}); });
-  ts.router().setPath(http::Method::GET, "/large",
-                      [](const HttpRequest&) { return HttpResponse(std::string(8192, 'X')); });
-  return true;
-}();
 
 // --- Partial read tests ---
 

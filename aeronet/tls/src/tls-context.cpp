@@ -89,7 +89,7 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
   }
 
   // SSL_CTX_use_PrivateKey already validates the key against the loaded certificate.
-  [[maybe_unused]] int keyCheckRc = ::SSL_CTX_check_private_key(ctx);
+  [[maybe_unused]] const int keyCheckRc = ::SSL_CTX_check_private_key(ctx);
   assert(keyCheckRc == 1 && "private key check failed despite use_PrivateKey success");
 }
 
@@ -168,7 +168,9 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
 }
 
-const int kTicketStoreIndex = []() { return ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr); }();
+const int kTicketStoreIndex = []() noexcept {
+  return ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+}();
 
 int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
                           int enc) {
@@ -182,11 +184,11 @@ int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, E
 void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
                              const std::shared_ptr<TlsTicketKeyStore>& ticketStore) {
   if (!cfg.sessionTickets.enabled) {
-    [[maybe_unused]] auto ticketOpts = ::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    [[maybe_unused]] const auto ticketOpts = ::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
     assert((ticketOpts & SSL_OP_NO_TICKET) != 0 && "SSL_CTX_set_options failed to set SSL_OP_NO_TICKET");
     return;
   }
-  [[maybe_unused]] auto clearOpts = ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
+  [[maybe_unused]] const auto clearOpts = ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
   assert((clearOpts & SSL_OP_NO_TICKET) == 0 && "SSL_CTX_clear_options failed to clear SSL_OP_NO_TICKET");
   assert(ticketStore != nullptr);
   ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
@@ -221,16 +223,15 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
       return "ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-SHA:AES128-SHA";
     default:
       // CipherPolicyTls13 throws first for invalid policies, so this is unreachable.
-      assert(false && "Invalid cipher policy in CipherPolicyTls12");
       std::unreachable();
   }
 }
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
   // Hardcoded valid cipher strings — these calls should always succeed.
-  [[maybe_unused]] int suiteRc = ::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy));
+  [[maybe_unused]] const int suiteRc = ::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy));
   assert(suiteRc == 1 && "Failed to set TLS 1.3 cipher suites");
-  [[maybe_unused]] int listRc = ::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy));
+  [[maybe_unused]] const int listRc = ::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy));
   assert(listRc == 1 && "Failed to set TLS cipher list");
 }
 

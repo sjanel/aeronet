@@ -19,8 +19,9 @@
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-json.hpp"  // bodyJson/bodyYaml definitions
+#include "aeronet/http-json.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/multi-http-server.hpp"
@@ -833,6 +834,7 @@ TEST(ConfigLoaderTest, UnknownExtension) {
 // HttpResponse::bodyJson / bodyYaml
 // ============================================================================
 
+// NOLINENEXTLINE(misc-use-internal-linkage)
 struct SampleDto {
   int id{};
   std::string name;
@@ -980,11 +982,14 @@ TEST(HttpResponseBodySerializationTest, BodyJsonVector) {
   EXPECT_EQ(resp.bodyInMemory(), "[10,20,30]");
 }
 
+namespace {
 // A type whose custom Glaze serializer always fails - used to exercise the
 // error path in bodyJson / bodyYaml.
 struct BadSerializerDto {
   int val{};
 };
+
+}  // namespace
 
 }  // namespace aeronet
 
