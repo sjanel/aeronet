@@ -34,7 +34,7 @@ namespace aeronet {
 #ifdef AERONET_LINUX
 
 namespace {
-timespec ToTimespec(SysDuration dur) {
+constexpr timespec ToTimespec(SysDuration dur) {
   using namespace std::chrono;
   if (dur <= SysDuration::zero()) {
     return {0, 0};
@@ -71,7 +71,7 @@ void TimerFd::armPeriodic(SysDuration interval) const {
   }
 }
 
-void TimerFd::drain() const noexcept {
+void TimerFd::drain() const {
   while (true) {
     std::uint64_t expirations = 0;
     const auto ret = ::read(fd(), &expirations, sizeof(expirations));
@@ -117,10 +117,9 @@ void TimerFd::armPeriodic(SysDuration interval) const {
   // Full EVFILT_TIMER integration is a follow-up optimisation.
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(interval).count();
   log::debug("TimerFd armPeriodic interval={}ms (macOS pipe-based, relying on poll timeout)", ms);
-  (void)ms;
 }
 
-void TimerFd::drain() const noexcept {
+void TimerFd::drain() const {
   char buf[64];
   while (::read(_baseFd.fd(), buf, sizeof(buf)) > 0) {
   }
@@ -144,10 +143,9 @@ void TimerFd::armPeriodic(SysDuration interval) const {
   // The socket pair allows the timer fd to be registered in WSAPoll.
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(interval).count();
   log::debug("TimerFd armPeriodic interval={}ms (Windows socket-pair, relying on poll timeout)", ms);
-  (void)ms;
 }
 
-void TimerFd::drain() const noexcept {
+void TimerFd::drain() const {
   char buf[64];
   while (::recv(_baseFd.fd(), buf, sizeof(buf), 0) > 0) {
   }

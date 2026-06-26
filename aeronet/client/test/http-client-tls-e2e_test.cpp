@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -111,6 +113,7 @@ TEST_F(HttpClientTlsE2ETest, BadCaFileThrows) {
   cfg.tlsVerifyPeer = true;
   cfg.withTlsCaFile("/nonexistent/aeronet-no-such-ca.pem");
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get(url("/secure")), HttpClientException);
 }
 
@@ -157,6 +160,7 @@ TEST(HttpClientTlsErrorTest, InvalidMaxVersionThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsMaxVersion(TLSConfig::Version{1, 1});
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
 }
 
@@ -165,6 +169,7 @@ TEST(HttpClientTlsErrorTest, InvalidCipherListThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsCipherList("THIS-IS-NOT-A-REAL-CIPHER");  // matches no cipher -> SSL_CTX_set_cipher_list fails
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
 }
 
@@ -173,6 +178,7 @@ TEST(HttpClientTlsErrorTest, GarbageInMemoryClientCertThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyMemory("not-a-pem-cert", "not-a-pem-key");  // PEM parse fails
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
 }
 
@@ -185,6 +191,7 @@ TEST(HttpClientTlsErrorTest, MismatchedClientCertKeyThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyMemory(certA, keyB);  // cert of A, key of B
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
 }
 
@@ -193,6 +200,7 @@ TEST(HttpClientTlsErrorTest, MissingClientCertFileThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile("/nonexistent/aeronet-no-cert.pem", "/nonexistent/aeronet-no-key.pem");
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
 }
 
@@ -204,6 +212,7 @@ TEST(HttpClientTlsErrorTest, ValidCertFileWithBadKeyFileThrows) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile(certPath.string(), "/nonexistent/aeronet-no-key.pem");
   HttpClient client(cfg);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
   EXPECT_THROW(client.get("https://localhost:9/"), HttpClientException);
   std::filesystem::remove(certPath);
 }

@@ -1,10 +1,12 @@
 #include "aeronet/tcp-connector.hpp"
 
+#include <type_traits>
+
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
 #include <netdb.h>
-#include <poll.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #endif
 
@@ -13,6 +15,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -40,7 +43,10 @@ ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock:
       return ConnectWait::TimedOut;
     }
     const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-    const int timeoutMs = remaining > static_cast<decltype(remaining)>(INT_MAX) ? INT_MAX : static_cast<int>(remaining);
+    const int timeoutMs =
+        remaining > static_cast<std::remove_const_t<decltype(remaining)>>(std::numeric_limits<int>::max())
+            ? std::numeric_limits<int>::max()
+            : static_cast<int>(remaining);
 #ifdef AERONET_WINDOWS
     WSAPOLLFD pfd{};
     pfd.fd = fd;

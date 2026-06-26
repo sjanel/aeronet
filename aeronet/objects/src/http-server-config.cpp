@@ -18,6 +18,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-trim.hpp"

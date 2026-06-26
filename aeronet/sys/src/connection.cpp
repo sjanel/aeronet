@@ -4,7 +4,6 @@
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
-#include <netinet/in.h>
 #include <sys/socket.h>
 #endif
 

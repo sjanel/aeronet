@@ -3,6 +3,8 @@
 #include <string_view>
 
 namespace aeronet {
+
+namespace {
 struct test1 {
   static_assert(JoinStringView_v<>.empty());
 };
@@ -55,6 +57,8 @@ struct test6 {
 
   static_assert(make_joined_string_view<kSep, kStrArr>::value == "apples|bananas|oranges|blueberries|strawberries");
 };
+
+}  // namespace
 
 // IntToStringView
 static_assert(IntToStringView_v<0> == "0");

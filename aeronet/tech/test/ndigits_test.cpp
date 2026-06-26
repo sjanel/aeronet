@@ -463,6 +463,7 @@ int CountDigitsReference(std::unsigned_integral auto n) {
 }  // namespace
 
 TEST(NDigitsTest, CompareToReferenceImplementationNormalDistribution) {
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(20240610);
 
   // Precompute powers of 10 up to 19 digits (fits in uint64_t)

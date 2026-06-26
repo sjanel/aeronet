@@ -14,6 +14,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
@@ -38,25 +39,21 @@ void EventFd::send() const noexcept {
   static constexpr eventfd_t one = 1;
   const auto ret = ::eventfd_write(fd(), one);
   if (ret == kInvalidHandle) {
-    auto savedErr = LastSystemError();
+    const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log::error("Event fd send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log_noexcept::error("Event fd send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
-  } else {
-    log::trace("Event fd send succeeded");
   }
 }
 
-void EventFd::read() const noexcept {
+void EventFd::read() const {
   eventfd_t counterValue;
   const auto ret = ::eventfd_read(fd(), &counterValue);
   if (ret == kInvalidHandle) {
-    auto savedErr = LastSystemError();
+    const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
       log::error("Event fd read failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
-  } else {
-    log::trace("Event fd drained (value={})", static_cast<unsigned long long>(counterValue));
   }
 }
 
@@ -79,16 +76,14 @@ void EventFd::send() const noexcept {
   static constexpr char one = 1;
   const auto ret = ::write(_writeFd.fd(), &one, sizeof(one));
   if (ret == kInvalidHandle) {
-    auto savedErr = LastSystemError();
+    const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log::error("EventFd pipe send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log_noexcept::error("EventFd pipe send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
-  } else {
-    log::trace("EventFd pipe send succeeded");
   }
 }
 
-void EventFd::read() const noexcept {
+void EventFd::read() const {
   char buf[64];
   // Drain all pending bytes from the pipe
   while (true) {
@@ -97,7 +92,6 @@ void EventFd::read() const noexcept {
       break;
     }
   }
-  log::trace("EventFd pipe drained");
 }
 
 // ---- Windows: loopback socket pair ----
@@ -118,21 +112,18 @@ void EventFd::send() const noexcept {
   static constexpr char one = 1;
   const auto ret = ::send(_writeFd.fd(), &one, sizeof(one), 0);
   if (ret == SOCKET_ERROR) {
-    auto savedErr = LastSystemError();
+    const auto savedErr = LastSystemError();
     if (savedErr != error::kWouldBlock) {
-      log::error("EventFd socket send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
+      log_noexcept::error("EventFd socket send failed err={}: {}", savedErr, SystemErrorMessage(savedErr));
     }
-  } else {
-    log::trace("EventFd socket send succeeded");
   }
 }
 
-void EventFd::read() const noexcept {
+void EventFd::read() const {
   char buf[64];
   // Drain all pending bytes from the socket pair
   while (::recv(_baseFd.fd(), buf, sizeof(buf), 0) > 0) {
   }
-  log::trace("EventFd socket drained");
 }
 
 #endif

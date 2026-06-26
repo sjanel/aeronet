@@ -29,6 +29,7 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -525,7 +526,7 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
       [&](NativeHandle fd, int) {
         std::string head = ReadRequestHead(fd);
         {
-          const std::lock_guard<std::mutex> lock(mtx);
+          const std::scoped_lock lock(mtx);
           capturedHead = std::move(head);
         }
         SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
@@ -538,7 +539,7 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   const std::string url = "http://[::1]:" + std::to_string(server.port()) + "/";
   EXPECT_EQ(client.get(url).value().status(), 200);
 
-  const std::lock_guard<std::mutex> lock(mtx);
+  const std::scoped_lock lock(mtx);
   const std::string expected = "Host: [::1]:" + std::to_string(server.port()) + "\r\n";
   EXPECT_NE(capturedHead.find(expected), std::string::npos) << "request head was:\n" << capturedHead;
 }

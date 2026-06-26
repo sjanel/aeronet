@@ -7,7 +7,10 @@ namespace aeronet {
 
 namespace {
 
-const int kIndex = []() { return ::SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr); }();
+// OpenSSL is a C library. SSL_get_ex_new_index() cannot throw C++ exceptions;
+// suppress the false positive from clang-tidy.
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const int kIndex = ::SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
 
 }  // namespace
 
