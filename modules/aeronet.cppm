@@ -110,14 +110,12 @@ using aeronet::StaticConcatenatedStrings;
 
 // ── String utilities (used in public type definitions) ─────────────────────
 
-using aeronet::AppendIntegralToCharBuf;
 using aeronet::CaseInsensitiveEqual;
 using aeronet::CaseInsensitiveEqualFunc;
 using aeronet::CaseInsensitiveHashFunc;
 using aeronet::CaseInsensitiveLess;
 using aeronet::CharToStringView;
 using aeronet::CharToStringView_v;
-using aeronet::IntegralToCharVector;
 using aeronet::IntToStringView;
 using aeronet::IntToStringView_v;
 using aeronet::JoinStringView;
@@ -126,7 +124,6 @@ using aeronet::JoinStringViewWithSep;
 using aeronet::JoinStringViewWithSep_v;
 using aeronet::make_joined_string_view;
 using aeronet::SafeCast;
-using aeronet::StringToIntegral;
 
 // ── MIME utilities ─────────────────────────────────────────────────────────
 

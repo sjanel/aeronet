@@ -73,8 +73,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     // If we already have buffered data from a previous flow-control stall, just append.
     if (!_pendingBuffer.empty()) {
-      _pendingBuffer.ensureAvailableCapacityExponential(data.size());
-      _pendingBuffer.unchecked_append(data);
+      _pendingBuffer.append(data);
       return true;
     }
 
@@ -88,8 +87,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     if (err == ErrorCode::FlowControlError) {
       // Flow control window exhausted - buffer data for later flushing.
-      _pendingBuffer.ensureAvailableCapacityExponential(data.size());
-      _pendingBuffer.unchecked_append(data);
+      _pendingBuffer.append(data);
       return true;
     }
 

@@ -1,9 +1,12 @@
 #pragma once
 
 #include <cassert>
+#include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -31,7 +34,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -152,7 +154,7 @@ class HttpMessage {
   // The minimal valid HTTP response that will be returned by aeronet is (note the mandatory SP after the
   // status code even when the reason-phrase is empty, per RFC 9112 §4):
   // "HTTP/1.1 200 \r\nDate: Tue, 07 Jan 2025 12:34:56 GMT\r\n\r\n" (54 bytes).
-  static constexpr std::size_t kHttpResponseMinInitialCapacity = 64UL;
+  static constexpr std::size_t kHttpResponseMinInitialCapacity = 54U + 17U;
 
   // Returns the size needed to store a header / trailer with given name and value lengths.
   static constexpr std::size_t HeaderSize(std::size_t nameLen, std::size_t valueLen) {
@@ -448,12 +450,13 @@ class HttpMessage {
 
   // Convenient overload adding a header whose value is numeric.
   HttpMessage& headerAddLine(std::string_view key, std::integral auto value) & {
-    return headerAddLine(key, std::string_view(IntegralToCharVector(value)));
+    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
+    return headerAddLine(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
   }
 
   // Convenient overload adding a header whose value is numeric.
   HttpMessage&& headerAddLine(std::string_view key, std::integral auto value) && {
-    return std::move(headerAddLine(key, std::string_view(IntegralToCharVector(value))));
+    return std::move(headerAddLine(key, value));
   }
 
   // Append a header line VERBATIM, bypassing the reserved-header policy enforced by headerAddLine().
@@ -482,12 +485,13 @@ class HttpMessage {
 
   // Convenient overload appending a numeric value.
   HttpMessage& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") & {
-    return headerAppendValue(key, std::string_view(IntegralToCharVector(value)), sep);
+    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
+    return headerAppendValue(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr), sep);
   }
 
   // Convenient overload appending a numeric value.
   HttpMessage&& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") && {
-    return std::move(headerAppendValue(key, std::string_view(IntegralToCharVector(value)), sep));
+    return std::move(headerAppendValue(key, value, sep));
   }
 
   // Add or replace first header 'key' with 'value'.
@@ -503,13 +507,12 @@ class HttpMessage {
 
   // Convenient overload setting a header to a numeric value.
   HttpMessage& header(std::string_view key, std::integral auto value) & {
-    return header(key, std::string_view(IntegralToCharVector(value)));
+    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
+    return header(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
   }
 
   // Convenient overload setting a header to a numeric value.
-  HttpMessage&& header(std::string_view key, std::integral auto value) && {
-    return std::move(header(key, std::string_view(IntegralToCharVector(value))));
-  }
+  HttpMessage&& header(std::string_view key, std::integral auto value) && { return std::move(header(key, value)); }
 
   // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
   // search per RFC 7230). If the header is not found, the HttpMessage is not modified.
@@ -815,9 +818,8 @@ class HttpMessage {
     // If nothing was written, remove the content-type header
     if (written == 0) {
       // erase both content-length and content-type headers
-      _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - http::CRLF.size() -
-                    internalBodyAndTrailersLen());
-      _data.unchecked_append(http::CRLF);
+      _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - internalBodyAndTrailersLen());
+      Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
       setBodyStartPos(_data.size());
     } else {
       // Set final size
@@ -827,8 +829,9 @@ class HttpMessage {
         _data.setSize(static_cast<std::size_t>(insertPtr + written - _data.data()));
       }
 
-      const auto newBodyLenCharVec = IntegralToCharVector(written);
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
+      char buf[std::numeric_limits<decltype(written)>::digits10 + 2];
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                  std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), written).ptr));
     }
 
     return *this;
@@ -905,20 +908,22 @@ class HttpMessage {
       // No data written, remove the content-type header we just added if there is no body
       if (oldBodyLen == 0 && !_opts.isAutomaticDirectCompression()) {
         // erase both content-length and content-type headers
-        _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - http::CRLF.size());
-        _data.unchecked_append(http::CRLF);
+        _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize);
+        Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
         adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
       } else {
         // we need to restore the previous content-length value
-        const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
+        const auto len = maxBodyLen - (maxLen - written);
+        char buf[std::numeric_limits<decltype(len)>::digits10 + 2];
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                    std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), len).ptr));
       }
     } else {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         // during streaming compression, if the output buffer is too small,
         // encoders do NOT fail - they keep compressed data in their internal state and wait for more output space.
-        written = appendEncodedInlineOrThrow(std::string_view(first, first + written));
+        written = appendEncodedInlineOrThrow(first, written);
       }
 #endif
       if (isHead()) {
@@ -926,8 +931,10 @@ class HttpMessage {
       } else {
         _data.addSize(written);
       }
-      const auto newBodyLenCharVec = IntegralToCharVector(maxBodyLen - (maxLen - written));
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
+      const auto len = maxBodyLen - (maxLen - written);
+      char buf[std::numeric_limits<decltype(len)>::digits10 + 2];
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
+                                  std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), len).ptr));
     }
 
     return *this;
@@ -994,12 +1001,13 @@ class HttpMessage {
 
   // Convenient overload adding a trailer whose value is numeric.
   HttpMessage& trailerAddLine(std::string_view key, std::integral auto value) & {
-    return trailerAddLine(key, std::string_view(IntegralToCharVector(value)));
+    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
+    return trailerAddLine(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
   }
 
   // Convenient overload adding a trailer whose value is numeric.
   HttpMessage&& trailerAddLine(std::string_view key, std::integral auto value) && {
-    return std::move(trailerAddLine(key, std::string_view(IntegralToCharVector(value))));
+    return std::move(trailerAddLine(key, value));
   }
 
   // Pre-allocate internal buffer capacity to avoid multiple allocations when building the response with headers and
@@ -1356,7 +1364,7 @@ class HttpMessage {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // Returns the number of written bytes
-  std::size_t appendEncodedInlineOrThrow(std::string_view data);
+  std::size_t appendEncodedInlineOrThrow(const char* pData, std::size_t sz);
 
   void finalizeInlineBody(int64_t additionalCapacity = 0);
 #endif

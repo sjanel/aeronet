@@ -97,20 +97,16 @@ class Url {
   static constexpr std::string_view kSchemeSep = "://";
 
   // Construct from already-validated components; used by resolveRedirect to retarget the current origin.
-  Url(bool tls, uint16_t port, std::string_view host, std::string_view target) {
-    buildCanonical(tls, port, host, target);
-  }
-
   // Materialize the canonical "scheme://host:port" + target buffer and set the slice fields in place.
   // Shared by both constructors so the parsing one fills its fields directly instead of building and
   // move-assigning a throwaway Url.
-  void buildCanonical(bool tls, uint16_t port, std::string_view host, std::string_view target);
+  Url(bool tls, uint16_t port, std::string_view host, std::string_view target);
 
-  RawChars32 _buf;         // "scheme://host:port" + target (single allocation)
-  uint16_t _originKeyLen;  // length of "scheme://host:port" == offset of target
+  uint8_t _schemeLen;      // 4 ("http") or 5 ("https")
   uint16_t _hostLen;       // length of host
   uint16_t _port;          // parsed port
-  uint8_t _schemeLen;      // 4 ("http") or 5 ("https")
+  uint16_t _originKeyLen;  // length of "scheme://host:port" == offset of target
+  RawChars32 _buf;         // "scheme://host:port" + target (single allocation)
 };
 
 }  // namespace aeronet
