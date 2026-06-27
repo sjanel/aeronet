@@ -152,6 +152,7 @@ bool ReferenceCaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
 }  // namespace
 
 TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(123456789);
   // Up to 100 bytes so the 16-byte SSE/NEON path (multiple iterations + overlapping tail) is fuzzed against
   // the scalar reference, not just the <= 32-byte sizes.
@@ -216,6 +217,7 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
 }
 
 TEST(StringLessIgnoreCase, FuzzRandomAsciiLess) {
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(987654321);
   std::uniform_int_distribution<std::size_t> lenDist(0, 32);
   std::uniform_int_distribution<int> charDist(0x20, 0x7E);  // printable ASCII

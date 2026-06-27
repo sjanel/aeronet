@@ -5,7 +5,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -32,13 +31,21 @@ struct RateLimitConfig {
 };
 
 struct RateLimitDecision {
-  [[nodiscard]] static RateLimitDecision Allow() noexcept { return {}; }
+  enum class Status : uint8_t { Allowed, Rejected, Invalid };
+
+  [[nodiscard]] static RateLimitDecision Allow() noexcept { return {Status::Allowed, 0}; }
 
   [[nodiscard]] static RateLimitDecision Reject(uint32_t retryAfterSeconds) noexcept {
-    return {false, retryAfterSeconds};
+    return {Status::Rejected, retryAfterSeconds};
   }
 
-  bool allowed{true};
+  [[nodiscard]] static RateLimitDecision Invalid() noexcept { return {Status::Invalid, 0}; }
+
+  [[nodiscard]] bool allowed() const noexcept { return status == Status::Allowed; }
+  [[nodiscard]] bool rejected() const noexcept { return status == Status::Rejected; }
+  [[nodiscard]] bool invalid() const noexcept { return status == Status::Invalid; }
+
+  Status status{Status::Allowed};
   uint32_t retryAfterSeconds{0};
 };
 
@@ -109,7 +116,7 @@ struct RedisSlidingWindowConfig {
 
 class RedisSlidingWindowRateLimitStore final : public IRateLimitStore {
  public:
-  using EvalCallback = std::function<std::optional<RedisEvalResponse>(const RedisEvalRequest&)>;
+  using EvalCallback = std::function<RedisEvalResponse(const RedisEvalRequest&)>;
 
   RedisSlidingWindowRateLimitStore() noexcept = default;
 
@@ -122,8 +129,8 @@ class RedisSlidingWindowRateLimitStore final : public IRateLimitStore {
   [[nodiscard]] RedisEvalRequest buildConsumeRequest(std::string_view key, std::chrono::steady_clock::time_point now,
                                                      const RateLimitConfig& config);
 
-  [[nodiscard]] static std::optional<RateLimitDecision> parseConsumeResponse(const RedisEvalResponse& response,
-                                                                             const RateLimitConfig& config);
+  [[nodiscard]] static RateLimitDecision parseConsumeResponse(const RedisEvalResponse& response,
+                                                              const RateLimitConfig& config);
 
   [[nodiscard]] static std::string_view luaSlidingWindowScript() noexcept;
   [[nodiscard]] static std::string_view luaSlidingWindowScriptSha1() noexcept;

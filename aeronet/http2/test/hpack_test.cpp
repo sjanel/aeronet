@@ -990,6 +990,7 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
 
   HpackDecoder decoder;
 
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(123456789);  // deterministic seed for reproducibility
   std::uniform_int_distribution<int> byteDist(0, 255);
 

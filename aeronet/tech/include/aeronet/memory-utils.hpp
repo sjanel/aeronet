@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstring>
 
@@ -14,15 +13,6 @@ namespace aeronet {
 // emit a couple of overlapping fixed-width stores inline, avoiding the call. Microbenchmarks
 // (benchmarks/internal/memory-utils_bench.cpp) show ~1.9x on isolated small copies and ~1.5x on a realistic HTTP
 // fragment mix, with no regression above the threshold (it falls straight back to std::memcpy).
-//
-// Safety: every access stays within [pSrc, pSrc + sz) for both pSrc and pDes, so no source padding or
-// destination slack is required and any caller of the old memcpy-based Copy remains correct.
-//
-// Precondition (unchanged from the original memcpy-based Copy): pSrc and pDes are non-null. aeronet never
-// copies an empty/null view, and the assert documents and guards that. See
-// https://en.cppreference.com/w/cpp/string/byte/memcpy.html for why std::memcpy on a null pointer is UB even
-// for a zero-length copy. The size dispatch below performs no store for sz == 0, so even a degenerate
-// release-build call cannot corrupt memory.
 constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
   static_assert(sizeof(*pSrc) == 1 && sizeof(*pDes) == 1, "Copy only works for byte pointers");
   if consteval {
@@ -31,7 +21,6 @@ constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
     }
     return;
   }
-  assert(pDes != nullptr && pSrc != nullptr);
   if (sz > 32) {
     std::memcpy(pDes, pSrc, sz);
   }

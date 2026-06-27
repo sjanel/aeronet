@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"
 #include "aeronet/jwt-key.hpp"
 #include "aeronet/jwt.hpp"

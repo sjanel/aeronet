@@ -29,35 +29,19 @@ namespace aeronet::test {
 ///     return HttpResponse("Hello HTTP/2!");
 ///   });
 struct TlsHttp2TestServer {
-  TestServer server;
-
   using Mutator = std::function<void(HttpServerConfig&)>;
   using Http2Mutator = std::function<void(Http2Config&)>;
   using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
 
-  static HttpServerConfig makeConfig(const Mutator& mut, const Http2Mutator& h2Mut = nullptr) {
-    HttpServerConfig cfg;
-    auto pair = MakeEphemeralCertKey();
-    cfg.withTlsCertKeyMemory(pair.first, pair.second);
-    cfg.withTlsAlpnProtocols({"h2"});  // Always enable h2 for HTTP/2 tests
+  TlsHttp2TestServer() noexcept {
+    server.postConfigUpdate([](HttpServerConfig& cfg) {
+      const auto pair = MakeEphemeralCertKey();
+      cfg.withTlsCertKeyMemory(pair.first, pair.second);
 
-    // Configure HTTP/2
-    Http2Config h2Config;
-    h2Config.enable = true;
-    if (h2Mut) {
-      h2Mut(h2Config);
-    }
-    cfg.withHttp2(h2Config);
-
-    if (mut) {
-      mut(cfg);
-    }
-    return cfg;
+      cfg.withTlsAlpnProtocols({"h2"});
+      cfg.withHttp2(Http2Config{.enable = true});
+    });
   }
-
-  explicit TlsHttp2TestServer(const Mutator& cfgMut = nullptr, const Http2Mutator& h2Mut = nullptr,
-                              std::chrono::milliseconds poll = std::chrono::milliseconds{1})
-      : server(makeConfig(cfgMut, h2Mut), RouterConfig{}, poll) {}
 
   [[nodiscard]] uint16_t port() const { return server.port(); }
   void stop() { server.stop(); }
@@ -67,6 +51,8 @@ struct TlsHttp2TestServer {
 
   [[nodiscard]] auto stats() const { return server.server.stats(); }
   SingleHttpServer& http() { return server.server; }
+
+  TestServer server;
 };
 
 }  // namespace aeronet::test

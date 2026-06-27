@@ -1,8 +1,5 @@
 #include "aeronet/test_tls_client.hpp"
 
-#ifdef AERONET_POSIX
-#include <fcntl.h>
-#endif
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -14,6 +11,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #ifdef AERONET_POSIX
+#include <fcntl.h>
 #include <poll.h>
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>
@@ -484,11 +482,7 @@ void TlsClient::init() {
   // Avoid test process termination when writing to a closed TLS socket.
   // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
 #ifdef AERONET_POSIX
-  static const int kSigpipeIgnored = []() noexcept {
-    ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-    return 0;
-  }();
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
 
   ::SSL_library_init();

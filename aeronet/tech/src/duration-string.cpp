@@ -175,7 +175,7 @@ RawChars32 DurationToString(std::chrono::milliseconds dur, int nbSignificantUnit
       dur = -dur;
     }
 
-    std::ranges::find_if(kDurationUnits, [&dur, &nbSignificantUnits, &ret](const auto& unitDuration) {
+    (void)std::ranges::find_if(kDurationUnits, [&dur, &nbSignificantUnits, &ret](const auto& unitDuration) {
       return AdjustWithUnit(unitDuration, dur, nbSignificantUnits, ret);
     });
   }
@@ -190,7 +190,7 @@ std::string_view::size_type DurationLen(std::chrono::milliseconds dur, int nbSig
     dur = -dur;
   }
 
-  std::ranges::find_if(kDurationUnits, [&dur, &nbSignificantUnits, &ret](const auto& unitDuration) {
+  (void)std::ranges::find_if(kDurationUnits, [&dur, &nbSignificantUnits, &ret](const auto& unitDuration) {
     if (dur >= unitDuration.second) {
       const auto countInThisDurationUnit =
           std::chrono::duration_cast<decltype(unitDuration.second)>(dur).count() / unitDuration.second.count();

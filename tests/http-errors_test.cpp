@@ -142,6 +142,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
 
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> sizeDist(1, 15);
   std::string original;

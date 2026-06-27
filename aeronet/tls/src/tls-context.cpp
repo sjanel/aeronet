@@ -168,9 +168,8 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
 }
 
-const int kTicketStoreIndex = []() noexcept {
-  return ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
-}();
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const int kTicketStoreIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
 
 int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
                           int enc) {
