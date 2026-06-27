@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <new>
 #include <span>
 #include <string_view>
@@ -33,19 +32,9 @@ RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const_pointer data, uint64_t sz) : RawBytesBase(sz) {
-  if (sz != 0) {
-    Copy(data, sz, _buf);
-    _size = _capacity;
-  }
-}
-
-template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : RawBytesBase(rhs.capacity()) {
   _size = rhs.size();
-  if (_size != 0) {
-    Copy(rhs.data(), _size, _buf);
-  }
+  Copy(rhs.data(), _size, _buf);
 }
 
 template <class T, class ViewType, class SizeType>
@@ -76,9 +65,7 @@ RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operat
     }
 #endif
     _size = rhs.size();
-    if (_size != 0) {
-      Copy(rhs.data(), _size, _buf);
-    }
+    Copy(rhs.data(), _size, _buf);
   }
   return *this;
 }
@@ -92,35 +79,10 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
 }
 
 template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::unchecked_append(const_pointer data, uint64_t sz) {
-  if (sz != 0) {
-    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
-      assert(static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) >= sz + _size);
-    }
-    assert(sz + _size <= _capacity);
-    Copy(data, sz, _buf + _size);
-    _size += static_cast<size_type>(sz);
-  }
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::append(const_pointer data, uint64_t sz) {
-  ensureAvailableCapacityExponential(sz);
-  unchecked_append(data, sz);
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::push_back(value_type byte) {
-  ensureAvailableCapacityExponential(1U);
-  unchecked_push_back(byte);
-}
-
-template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, uint64_t size) {
-  if (size != 0) {
-    reserve(size);
-    Copy(data, size, _buf);
-  }
+  reserve(size);
+  Copy(data, size, _buf);
+
   _size = static_cast<size_type>(size);
 }
 
@@ -156,9 +118,7 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     pointer newBuf = static_cast<pointer>(std::malloc(newCap));
     if (newBuf != nullptr) [[likely]] {
-      if (_size != 0) {
-        Copy(_buf, _size, newBuf);
-      }
+      Copy(_buf, _size, newBuf);
       std::memset(newBuf + _size, 255, newCap - _size);
       std::free(_buf);
       _buf = newBuf;
@@ -197,9 +157,7 @@ void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
     throw std::bad_alloc();
   }
   std::memset(newBuf + _size, 255, newCapacity - _size);
-  if (_size != 0) {
-    Copy(_buf, _size, newBuf);
-  }
+  Copy(_buf, _size, newBuf);
   std::free(_buf);
 #else
   pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));

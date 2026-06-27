@@ -1498,9 +1498,7 @@ std::span<char> Router::allocateIndices(std::string_view ind) {
 void Router::pushBackIndex(RadixNode& node, char indexChar) {
   const auto oldSize = node.indices.size();
   char* newBuf = _charStorage.allocateAndDefaultConstruct(oldSize + 1);
-  if (oldSize > 0) {
-    Copy(node.indices.data(), oldSize, newBuf);
-  }
+  Copy(node.indices.data(), oldSize, newBuf);
   newBuf[oldSize] = indexChar;
   node.indices = std::span<char>(newBuf, oldSize + 1);
 }
