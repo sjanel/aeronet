@@ -476,6 +476,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEnabled) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directories(dirPath);
   std::uniform_int_distribution<> dist(0, 1);
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(12345);
 
   vector<std::string> elements;

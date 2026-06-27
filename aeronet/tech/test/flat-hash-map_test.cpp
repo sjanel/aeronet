@@ -429,6 +429,7 @@ TEST(flat_hash_map, fuzz_against_unordered_map) {
   static constexpr int keyRange = 300;
   Map map1;
   std::unordered_map<std::string, int> reference;
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(1337);
   std::uniform_int_distribution<int> keyDist(0, keyRange - 1);
   std::uniform_int_distribution<int> valueDist(-1000, 1000);
@@ -777,6 +778,7 @@ struct MaybeThrow {
 
 }  // namespace
 
+// NOLINTNEXTLINE(bugprone-random-generator-seed,bugprone-throwing-static-initialization)
 std::mt19937 MaybeThrow::rng(1337);
 
 TEST(flat_hash_map, insert_object_that_can_throw_and_malloc_failure_mix) {

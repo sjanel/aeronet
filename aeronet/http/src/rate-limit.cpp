@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <string_view>
 
@@ -194,8 +193,8 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
   return req;
 }
 
-std::optional<RateLimitDecision> RedisSlidingWindowRateLimitStore::parseConsumeResponse(
-    const RedisEvalResponse& response, const RateLimitConfig& config) {
+RateLimitDecision RedisSlidingWindowRateLimitStore::parseConsumeResponse(const RedisEvalResponse& response,
+                                                                         const RateLimitConfig& config) {
   if (response.allowed < 0) {
     return config.failOpen ? RateLimitDecision::Allow() : RateLimitDecision::Reject(1);
   }
@@ -205,7 +204,7 @@ std::optional<RateLimitDecision> RedisSlidingWindowRateLimitStore::parseConsumeR
   }
 
   if (response.allowed != 0) {
-    return std::nullopt;
+    return RateLimitDecision::Invalid();
   }
 
   const auto retryAfter =
@@ -225,16 +224,11 @@ RateLimitDecision RedisSlidingWindowRateLimitStore::consume(std::string_view key
   }
 
   const RedisEvalRequest request = buildConsumeRequest(key, now, config);
-  const auto result = _callback(request);
-  if (!result.has_value()) {
+  const auto decision = parseConsumeResponse(_callback(request), config);
+  if (decision.invalid()) {
     return config.failOpen ? RateLimitDecision::Allow() : RateLimitDecision::Reject(1);
   }
-
-  const auto decision = parseConsumeResponse(*result, config);
-  if (!decision.has_value()) {
-    return config.failOpen ? RateLimitDecision::Allow() : RateLimitDecision::Reject(1);
-  }
-  return *decision;
+  return decision;
 }
 
 }  // namespace aeronet

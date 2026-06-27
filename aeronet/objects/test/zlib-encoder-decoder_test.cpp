@@ -108,9 +108,9 @@ void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_v
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-}  // namespace
-
 class ZlibEncoderDecoderTest : public ::testing::TestWithParam<ZStreamRAII::Variant> {};
+
+}  // namespace
 
 INSTANTIATE_TEST_SUITE_P(Variants, ZlibEncoderDecoderTest,
                          ::testing::Values(ZStreamRAII::Variant::gzip, ZStreamRAII::Variant::deflate));

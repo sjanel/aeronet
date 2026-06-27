@@ -49,17 +49,17 @@ std::pair<bool, std::string> DecompressData(std::span<const std::byte> input, st
   return {true, BytesToString(output)};
 }
 
-}  // namespace
-
-// ============================================================================
-// WebSocketCompressor Tests
-// ============================================================================
-
 class WebSocketCompressorTest : public ::testing::Test {
  protected:
   WebSocketCompressor compressor{6};
   RawBytes output;
 };
+
+}  // namespace
+
+// ============================================================================
+// WebSocketCompressor Tests
+// ============================================================================
 
 TEST_F(WebSocketCompressorTest, CompressEmptyInput) {
   const char* error = compressor.compress(StringToBytes(""), output, false);
@@ -147,11 +147,13 @@ TEST_F(WebSocketCompressorTest, CompressMultipleCompressionLevels) {
 // WebSocketDecompressor Tests
 // ============================================================================
 
+namespace {
 class WebSocketDecompressorTest : public ::testing::Test {
  protected:
   WebSocketDecompressor decompressor;
   RawBytes output;
 };
+}  // namespace
 
 TEST_F(WebSocketDecompressorTest, DecompressEmptyInput) {
   const char* error = decompressor.decompress(StringToBytes(""), output, 0, false);
@@ -396,7 +398,9 @@ TEST_F(WebSocketDecompressorTest, DecompressRepeatingPattern) {
 // Round-trip Tests (Compress then Decompress)
 // ============================================================================
 
+namespace {
 class WebSocketCompressRoundTripTest : public ::testing::Test {};
+}  // namespace
 
 TEST_F(WebSocketCompressRoundTripTest, RoundTripSimpleText) {
   std::string original("Hello World");
@@ -489,8 +493,9 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripContextMaintained) {
 // ============================================================================
 // Edge Cases and Error Paths
 // ============================================================================
-
+namespace {
 class WebSocketCompressEdgeCasesTest : public ::testing::Test {};
+}  // namespace
 
 TEST_F(WebSocketCompressEdgeCasesTest, CompressNullInput) {
   WebSocketCompressor compressor(6);

@@ -1147,18 +1147,12 @@ TEST(HttpResponseWriterFailures, MultipleStatusCalls) {
 // This test attempts to trigger failure by rapidly closing/aborting the connection while the handler
 // tries to write large amounts of data that might exceed socket buffers.
 // Ignore SIGPIPE to prevent process termination on broken pipe
-#ifdef AERONET_POSIX
-static const int kSigpipeIgnored = []() noexcept {
-  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-  return 0;
-}();
-#endif
 
 // Test: ensureHeadersSent() enqueue failure (line 141)
 // Trigger failure when first sending headers by closing connection immediately
 TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
   ts.router().setPath(http::Method::GET, "/ensure-headers-sent-fail",
                       [](const HttpRequest&, HttpResponseWriter& writer) {
@@ -1181,7 +1175,7 @@ TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
 // Chunked response with trailer, close connection to fail last chunk
 TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
   ts.router().setPath(http::Method::GET, "/last-chunk-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
@@ -1210,7 +1204,7 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
 // Non-chunked response with HEAD request (fixed length path), close to fail body write
 TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
   ts.router().setPath(http::Method::HEAD, "/fixed-body-fail", [](const HttpRequest&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
@@ -1235,9 +1229,9 @@ TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
 // Enable compression, close connection to fail final compressed output
 TEST(HttpResponseWriterFailures, EndCompressionFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
-  // Enable compression in server config
+      // Enable compression in server config
   HttpServerConfig cfg;
   cfg.compression.minBytes = 16;
   test::TestServer ts2(cfg);
@@ -1266,9 +1260,9 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
 // Small write below compression threshold, close to fail buffered flush
 TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
-  // Enable compression but write below threshold
+      // Enable compression but write below threshold
   HttpServerConfig cfg;
   cfg.compression.minBytes = 100;  // High threshold
   test::TestServer ts3(cfg);
@@ -1298,7 +1292,7 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
 // This was covered by the original ContentLengthWhenFailed test
 TEST(HttpResponseWriterFailures, EmitChunkFailure) {
 #ifdef AERONET_POSIX
-  (void)kSigpipeIgnored;
+  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
   std::string largeData(10000, 'x');
   ts.router().setPath(http::Method::GET, "/emit-chunk-fail",

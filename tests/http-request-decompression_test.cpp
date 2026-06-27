@@ -14,9 +14,9 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request.hpp"
@@ -27,7 +27,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -35,124 +34,30 @@
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/vector.hpp"
 
-#ifdef AERONET_ENABLE_BROTLI
-#include "aeronet/brotli-encoder.hpp"
-#include "brotli/encode.h"
-#endif
-
-#ifdef AERONET_ENABLE_ZLIB
-#include "aeronet/zlib-encoder.hpp"
-#include "aeronet/zlib-gateway.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ZSTD
-#include "aeronet/zstd-encoder.hpp"
-#endif
-
 namespace aeronet {
 
 namespace {
 
 RawChars buf;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization,bugprone-random-generator-seed)
 std::mt19937 rng(12345);
-std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
-std::uniform_int_distribution<int> toUpper(0, 1);
 
-std::string ContentEncodingConcat(std::span<const std::string_view> encodings) {
+std::string ContentEncodingConcat(std::span<const Encoding> encodings) {
   std::string contentEncodingValue;
 
-  for (std::string_view encoding : encodings) {
+  std::uniform_int_distribution<std::size_t> nbSpaces(0, 3);
+  for (Encoding encoding : encodings) {
     if (!contentEncodingValue.empty()) {
       contentEncodingValue.append(",");
       contentEncodingValue.append(nbSpaces(rng), '\t');
     }
     contentEncodingValue.append(nbSpaces(rng), ' ');
-    contentEncodingValue.append(encoding);
+    contentEncodingValue.append(GetEncodingStr(encoding));
     contentEncodingValue.append(nbSpaces(rng), ' ');
   }
 
   return contentEncodingValue;
-}
-
-// Not constexpr because it could be empty depending on build flags
-const vector<std::string_view> kKnownEncodings = []() {
-  vector<std::string_view> vec;
-#ifdef AERONET_ENABLE_ZLIB
-  vec.push_back(http::gzip);
-  vec.push_back(http::deflate);
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  vec.push_back(http::zstd);
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  vec.push_back(http::br);
-#endif
-  return vec;
-}();
-
-constexpr std::string_view kKnownEncodingsWithIdentity[] = {
-    http::identity,
-#ifdef AERONET_ENABLE_ZLIB
-    http::gzip,     http::deflate,
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-    http::zstd,
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-    http::br,
-#endif
-};
-
-RawChars compress(std::string_view alg, std::string_view input) {
-  CompressionConfig cc;
-  buf.clear();
-  if (CaseInsensitiveEqual(alg, "identity")) {
-    buf.assign(input);
-#ifdef AERONET_ENABLE_ZLIB
-    // NOLINTNEXTLINE(readability-else-after-return)
-  } else if (CaseInsensitiveEqual(alg, "gzip")) {
-    ZlibEncoder encoder(cc.zlib.level);
-    buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
-    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, input, buf.capacity(), buf.data());
-    if (result.hasError()) {
-      throw std::runtime_error("gzip compression failed");
-    }
-    buf.setSize(result.written());
-  } else if (CaseInsensitiveEqual(alg, "deflate")) {
-    ZlibEncoder encoder(cc.zlib.level);
-    buf.reserve(64UL + ZDeflateBound(nullptr, input.size()));
-    const auto result = encoder.encodeFull(ZStreamRAII::Variant::deflate, input, buf.capacity(), buf.data());
-    if (result.hasError()) {
-      throw std::runtime_error("deflate compression failed");
-    }
-    buf.setSize(result.written());
-#endif
-#ifdef AERONET_ENABLE_ZSTD
-  } else if (CaseInsensitiveEqual(alg, "zstd")) {
-    ZstdEncoder encoder(cc.zstd);
-    buf.reserve(ZSTD_compressBound(input.size()));
-    const auto result = encoder.encodeFull(input, buf.capacity(), buf.data());
-    if (result.hasError()) {
-      throw std::runtime_error("zstd compression failed");
-    }
-    buf.setSize(result.written());
-#endif
-#ifdef AERONET_ENABLE_BROTLI
-  } else if (CaseInsensitiveEqual(alg, "br")) {
-    BrotliEncoder encoder(cc.brotli);
-    buf.reserve(BrotliEncoderMaxCompressedSize(input.size()));
-    const auto result = encoder.encodeFull(input, buf.capacity(), buf.data());
-    if (result.hasError()) {
-      throw std::runtime_error("brotli compression failed");
-    }
-    buf.setSize(result.written());
-#endif
-  } else {
-    // Unsupported algorithm, do not compress
-  }
-  return buf;
 }
 
 struct ClientRawResponse {
@@ -212,11 +117,11 @@ TEST(HttpRequestDecompression, SingleSmallPayload) {
     });
   });
 
-  for (std::string_view encoding : kKnownEncodingsWithIdentity) {
-    auto comp = compress(encoding, plain);
-    auto resp = RawPost(ts.port(), "/single", {{"Content-Encoding", encoding}}, comp);
-    EXPECT_EQ(resp.status, http::StatusCodeOK) << "Failed for encoding: " << encoding;
-    EXPECT_EQ(resp.body, plain) << "Failed for encoding: " << encoding;
+  for (Encoding encoding : test::SupportedEncodingWithIdentity()) {
+    auto comp = test::Compress(encoding, plain);
+    auto resp = RawPost(ts.port(), "/single", {{"Content-Encoding", GetEncodingStr(encoding)}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK) << "Failed for encoding: " << GetEncodingStr(encoding);
+    EXPECT_EQ(resp.body, plain) << "Failed for encoding: " << GetEncodingStr(encoding);
   }
 }
 
@@ -227,8 +132,8 @@ TEST(HttpRequestDecompression, SingleNoContentEncoding) {
   ts.postRouterUpdate(
       [](Router& router) { router.setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); }); });
 
-  for (std::string_view encoding : kKnownEncodingsWithIdentity) {
-    auto comp = compress(encoding, plain);
+  for (Encoding encoding : test::SupportedEncodingWithIdentity()) {
+    auto comp = test::Compress(encoding, plain);
     auto resp = RawPost(ts.port(), "/single", {}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
     EXPECT_EQ(resp.body, std::string_view(comp));
@@ -239,21 +144,21 @@ TEST(HttpRequestDecompression, SingleLargePayloadWithHeadersCheck) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   const std::string plain(10000, 'A');
 
-  for (std::string_view encoding : kKnownEncodings) {
-    const auto comp = compress(encoding, plain);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const auto comp = test::Compress(enc, plain);
     const std::size_t compressedSize = comp.size();
 
-    ts.resetRouterAndGet().setDefault([plain, compressedSize, encoding](const HttpRequest& req) {
+    ts.resetRouterAndGet().setDefault([plain, compressedSize, enc](const HttpRequest& req) {
       EXPECT_EQ(req.body(), plain);
       EXPECT_FALSE(req.headerValue(http::ContentEncoding));
-      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), encoding);
+      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), GetEncodingStr(enc));
       EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
 
       EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
 
       return HttpResponse("Z");
     });
-    auto resp = RawPost(ts.port(), "/d", {{"Content-Encoding", encoding}}, comp);
+    auto resp = RawPost(ts.port(), "/d", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, 200);
   }
 }
@@ -264,14 +169,14 @@ TEST(HttpRequestDecompression, DualCompressionWithSpaces) {
   std::ranges::iota(plain.begin(), plain.end(), 'A');
 
   // Loop on all pairs of known encodings (there will be duplicates, but it's ok, we test that also)
-  for (std::string_view firstEnc : kKnownEncodingsWithIdentity) {
-    for (std::string_view secondEnc : kKnownEncodingsWithIdentity) {
-      const auto firstComp = compress(firstEnc, plain);
-      const auto dualComp = compress(secondEnc, firstComp);
+  for (const Encoding firstEnc : test::SupportedEncodingWithIdentity()) {
+    for (const Encoding secondEnc : test::SupportedEncodingWithIdentity()) {
+      const auto firstComp = test::Compress(firstEnc, plain);
+      const auto dualComp = test::Compress(secondEnc, firstComp);
 
-      const bool testHeaders = firstEnc != http::identity || secondEnc != http::identity;
+      const bool testHeaders = firstEnc != Encoding::none || secondEnc != Encoding::none;
 
-      std::string contentEncodingValue = ContentEncodingConcat(vector<std::string_view>{firstEnc, secondEnc});
+      std::string contentEncodingValue = ContentEncodingConcat(vector<Encoding>{firstEnc, secondEnc});
 
       ts.resetRouterAndGet().setDefault(
           [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
@@ -294,18 +199,17 @@ TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
   std::ranges::iota(plain.begin(), plain.end(), 'A');
 
   // Loop on all tuples of known encodings (there will be duplicates, but it's ok, we test that also)
-  for (std::string_view firstEnc : kKnownEncodingsWithIdentity) {
-    for (std::string_view secondEnc : kKnownEncodingsWithIdentity) {
-      for (std::string_view thirdEnc : kKnownEncodingsWithIdentity) {
-        const auto firstComp = compress(firstEnc, plain);
-        const auto dualComp = compress(secondEnc, firstComp);
-        const auto tripleComp = compress(thirdEnc, dualComp);
+  for (const Encoding firstEnc : test::SupportedEncodingWithIdentity()) {
+    for (const Encoding secondEnc : test::SupportedEncodingWithIdentity()) {
+      for (const Encoding thirdEnc : test::SupportedEncodingWithIdentity()) {
+        const auto firstComp = test::Compress(firstEnc, plain);
+        const auto dualComp = test::Compress(secondEnc, firstComp);
+        const auto tripleComp = test::Compress(thirdEnc, dualComp);
 
         const bool testHeaders =
-            firstEnc != http::identity || secondEnc != http::identity || thirdEnc != http::identity;
+            firstEnc != Encoding::none || secondEnc != Encoding::none || thirdEnc != Encoding::none;
 
-        std::string contentEncodingValue =
-            ContentEncodingConcat(vector<std::string_view>{firstEnc, secondEnc, thirdEnc});
+        std::string contentEncodingValue = ContentEncodingConcat(vector<Encoding>{firstEnc, secondEnc, thirdEnc});
 
         ts.resetRouterAndGet().setDefault(
             [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
@@ -339,10 +243,10 @@ TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
   std::string body = "abc";
-  for (std::string_view encoding : kKnownEncodings) {
-    auto compressed = compress(encoding, body);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    auto compressed = test::Compress(enc, body);
     std::string contentEncodingValue("snappy, ");
-    contentEncodingValue.append(encoding);
+    contentEncodingValue.append(GetEncodingStr(enc));
     auto resp = RawPost(ts.port(), "/u", {{"Content-Encoding", contentEncodingValue}}, compressed);
     EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
     contentEncodingValue.append(", identity");
@@ -376,11 +280,11 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   });
   const std::string plain(100, 'A');
 
-  for (std::string_view encoding : kKnownEncodings) {
-    const auto comp = compress(encoding, plain);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const auto comp = test::Compress(enc, plain);
 
     ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
-    auto resp = RawPost(ts.port(), "/d", {{"Content-Encoding", encoding}}, comp);
+    auto resp = RawPost(ts.port(), "/d", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
 
     EXPECT_EQ(resp.body, std::string_view(comp));
@@ -395,14 +299,14 @@ TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
   // We send a body larger than `maxCompressedBytes` to hit the early PayloadTooLarge return.
   std::string plain = "abcdefghijkl";
 
-  for (std::string_view encoding : kKnownEncodings) {
-    auto comp = compress(encoding, plain);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    auto comp = test::Compress(enc, plain);
     ts.postConfigUpdate([&comp](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = comp.size() - 1; });
-    auto resp = RawPost(ts.port(), "/too_big", {{"Content-Encoding", encoding}}, comp);
+    auto resp = RawPost(ts.port(), "/too_big", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
 
     ts.postConfigUpdate([&comp](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = comp.size(); });
-    resp = RawPost(ts.port(), "/nowok", {{"Content-Encoding", encoding}}, comp);
+    resp = RawPost(ts.port(), "/nowok", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
     EXPECT_EQ(resp.body, plain);
   }
@@ -418,9 +322,9 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulativ
   const auto defaultMaxBodyBytes = ts.server.config().maxBodyBytes;
   std::string plain(4096, 'Q');
 
-  for (std::string_view encoding : kKnownEncodings) {
-    const auto comp = compress(encoding, plain);
-    ASSERT_GT(comp.size(), 1U) << "Compressed payload unexpectedly too small for encoding: " << encoding;
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const auto comp = test::Compress(enc, plain);
+    ASSERT_GT(comp.size(), 1U) << "Compressed payload unexpectedly too small for encoding: " << GetEncodingStr(enc);
 
     const std::size_t firstChunkSize = comp.size() - 1;
     const std::size_t secondChunkSize = 1;
@@ -432,7 +336,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulativ
     hdr << "POST /chunked-cumulative-limit HTTP/1.1\r\n";
     hdr << "Host: example.com\r\n";
     hdr << "Transfer-Encoding: chunked\r\n";
-    hdr << "Content-Encoding: " << encoding << "\r\n";
+    hdr << "Content-Encoding: " << GetEncodingStr(enc) << "\r\n";
     hdr << "Connection: close\r\n\r\n";
     hdr << std::hex << firstChunkSize << "\r\n";
 
@@ -452,7 +356,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulativ
     std::string resp = test::recvUntilClosed(fd);
 
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 413"))
-        << "Expected cumulative compressed-size limit to trigger for encoding: " << encoding
+        << "Expected cumulative compressed-size limit to trigger for encoding: " << GetEncodingStr(enc)
         << ", compressed size: " << comp.size() << ", response: " << resp;
   }
 
@@ -469,11 +373,13 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   // Highly compressible large input -> gzip then send; expect rejection if ratio >2
   std::string large(100000, 'A');
 
-  for (std::string_view encoding : kKnownEncodings) {
-    auto comp = compress(encoding, large);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    auto comp = test::Compress(enc, large);
     // Ensure it actually compresses well
     ASSERT_LT(comp.size() * 2, large.size());
-    auto resp = RawPost(ts.port(), "/rg", {{"Content-Encoding", encoding}}, comp);
+    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.maxExpansionRatio = 2.0; });
+
+    auto resp = RawPost(ts.port(), "/rg", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodePayloadTooLarge);
 
     // Now send with a bigger maxExpansionRatio and expect success
@@ -481,7 +387,7 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
     ts.postConfigUpdate([actualExpansionRatio](HttpServerConfig& cfg) {
       cfg.decompression.maxExpansionRatio = actualExpansionRatio + 1;
     });
-    resp = RawPost(ts.port(), "/rg_ok", {{"Content-Encoding", encoding}}, comp);
+    resp = RawPost(ts.port(), "/rg_ok", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
     EXPECT_EQ(resp.body, large);
   }
@@ -496,30 +402,30 @@ TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
 
   std::string plain(4096, 'S');
 
-  for (std::string_view encoding : kKnownEncodings) {
-    auto comp = compress(encoding, plain);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    auto comp = test::Compress(enc, plain);
     ts.postConfigUpdate(
         [&comp](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = comp.size(); });
-    auto resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    auto resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
 
     // disable streaming
     ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = 0; });
 
-    resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
 
     // disable streaming based on size smaller than threshold
     ts.postConfigUpdate(
         [&comp](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = comp.size() + 1; });
 
-    resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", encoding}}, comp);
+    resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
   }
 }
 
 namespace {
-void ExpectTrailers(vector<std::string_view> encodings, bool insertBadTrailer = false, bool corruptData = false) {
+void ExpectTrailers(vector<Encoding> encodings, bool insertBadTrailer = false, bool corruptData = false) {
   std::string plain(10000, 'L');
   std::ranges::iota(plain, 'A');
 
@@ -543,9 +449,9 @@ void ExpectTrailers(vector<std::string_view> encodings, bool insertBadTrailer = 
   std::string contentEncodingValue = ContentEncodingConcat(encodings);
 
   RawChars comp(plain);
-  for (std::string_view encoding : encodings) {
-    comp = compress(encoding, comp);
-    if (corruptData && encoding == encodings.back() && encoding != http::identity) {
+  for (Encoding encoding : encodings) {
+    comp = test::Compress(encoding, comp);
+    if (corruptData && encoding == encodings.back() && encoding != Encoding::none) {
       test::CorruptData(encoding, comp);
     }
   }
@@ -598,8 +504,8 @@ void ExpectTrailers(vector<std::string_view> encodings, bool insertBadTrailer = 
 
 TEST(HttpRequestDecompression, SingleCompressLargeBodyWithBadTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  for (std::string_view encoding : kKnownEncodings) {
-    ExpectTrailers({encoding}, true);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    ExpectTrailers({enc}, true);
   }
 }
 
@@ -609,8 +515,8 @@ TEST(HttpRequestDecompression, SingleCompressLargeBodyWithTrailers) {
   for (std::size_t maxCompressedBytes : kMaxCompressedBytes) {
     ts.postConfigUpdate(
         [maxCompressedBytes](HttpServerConfig& cfg) { cfg.decompression.maxCompressedBytes = maxCompressedBytes; });
-    for (std::string_view encoding : kKnownEncodings) {
-      ExpectTrailers({encoding});
+    for (const Encoding enc : test::SupportedEncodings()) {
+      ExpectTrailers({enc});
     }
   }
 }
@@ -618,8 +524,8 @@ TEST(HttpRequestDecompression, SingleCompressLargeBodyWithTrailers) {
 TEST(HttpRequestDecompression, DualCompressLargeBodyWithTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   for (bool corruptData : {false, true}) {
-    for (std::string_view first : kKnownEncodings) {
-      for (std::string_view second : kKnownEncodings) {
+    for (const Encoding first : test::SupportedEncodings()) {
+      for (const Encoding second : test::SupportedEncodings()) {
         ExpectTrailers({first, second}, false, corruptData);
       }
     }
@@ -631,9 +537,9 @@ TEST(HttpRequestDecompression, TripleCompressLargeBodyWithTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   for (std::size_t maxBodyBytes : kMaxBodyBytes) {
     ts.postConfigUpdate([maxBodyBytes](HttpServerConfig& cfg) { cfg.maxBodyBytes = maxBodyBytes; });
-    for (std::string_view first : kKnownEncodings) {
-      for (std::string_view second : kKnownEncodings) {
-        for (std::string_view third : kKnownEncodings) {
+    for (const Encoding first : test::SupportedEncodings()) {
+      for (const Encoding second : test::SupportedEncodings()) {
+        for (const Encoding third : test::SupportedEncodings()) {
           ExpectTrailers({first, second, third});
         }
       }
@@ -645,15 +551,16 @@ TEST(HttpRequestDecompression, MixedCaseTokens) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
   ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  std::uniform_int_distribution<int> toUpper(0, 1);
 
-  for (std::string_view encoding : kKnownEncodings) {
-    std::string mixedCaseEnc(encoding);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    std::string mixedCaseEnc(GetEncodingStr(enc));
     for (char& ch : mixedCaseEnc) {
       if (toUpper(rng) == 1) {
         ch = toupper(ch);
       }
     }
-    auto comp = compress(encoding, plain);
+    auto comp = test::Compress(enc, plain);
     auto resp = RawPost(ts.port(), "/case", {{"Content-Encoding", mixedCaseEnc}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
     EXPECT_EQ(resp.body, plain);
@@ -676,16 +583,17 @@ TEST(HttpRequestDecompression, CorruptedCompressedData) {
   for (std::size_t threshold : kStreamingThresholds) {
     ts.postConfigUpdate(
         [threshold](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = threshold; });
-    for (std::string_view encoding : kKnownEncodings) {
-      auto comp = compress(encoding, plain);
-      if (encoding == http::identity) {
+    for (const Encoding enc : test::SupportedEncodings()) {
+      auto comp = test::Compress(enc, plain);
+      if (enc == Encoding::none) {
         // identity compression cannot be corrupted
         continue;
       }
-      test::CorruptData(encoding, comp);
+      test::CorruptData(enc, comp);
 
-      auto resp = RawPost(ts.port(), "/corrupt", {{"Content-Encoding", encoding}}, comp);
-      EXPECT_EQ(resp.status, http::StatusCodeBadRequest) << "Expected 400 for corrupted encoding: " << encoding;
+      auto resp = RawPost(ts.port(), "/corrupt", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
+      EXPECT_EQ(resp.status, http::StatusCodeBadRequest)
+          << "Expected 400 for corrupted encoding: " << GetEncodingStr(enc);
     }
   }
 }

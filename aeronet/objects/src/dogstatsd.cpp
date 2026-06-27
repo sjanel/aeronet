@@ -7,15 +7,12 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
-#include <iostream>
 #include <limits>
 #include <new>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/log-noexcept.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error-message.hpp"

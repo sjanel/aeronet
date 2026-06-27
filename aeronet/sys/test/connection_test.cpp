@@ -1,14 +1,12 @@
 #include "aeronet/connection.hpp"
 
+#include <gtest/gtest.h>
+
 #include "aeronet/system-error.hpp"
 
 #ifdef AERONET_POSIX
 #include <dlfcn.h>
-#endif
-#include <gtest/gtest.h>
-#ifdef AERONET_POSIX
 #include <sys/socket.h>
-#include <unistd.h>
 #endif
 #ifdef AERONET_WINDOWS
 #include <winsock2.h>

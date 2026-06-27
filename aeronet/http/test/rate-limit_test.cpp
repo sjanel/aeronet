@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
-#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -44,11 +43,11 @@ TEST(RateLimitStoreTest, AllowsWithinBurstAndRejectsAfter) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
 
   const auto denied = store.consume("ip-a", t0, cfg);
-  EXPECT_FALSE(denied.allowed);
+  EXPECT_FALSE(denied.allowed());
   EXPECT_GE(denied.retryAfterSeconds, 1U);
 }
 
@@ -61,15 +60,15 @@ TEST(RateLimitStoreTest, RefillsOverTime) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed());
 
   const auto t1 = t0 + std::chrono::milliseconds{500};
-  EXPECT_TRUE(store.consume("ip-a", t1, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t1, cfg).allowed());
 
   const auto t2 = t0 + std::chrono::seconds{1};
-  EXPECT_TRUE(store.consume("ip-a", t2, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t2, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, DifferentKeysAreIndependent) {
@@ -80,9 +79,9 @@ TEST(RateLimitStoreTest, DifferentKeysAreIndependent) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_TRUE(store.consume("ip-b", t0, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-b", t0, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, EmptyKeyBypassesLimits) {
@@ -94,7 +93,7 @@ TEST(RateLimitStoreTest, EmptyKeyBypassesLimits) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume({}, t0, cfg).allowed);
+  EXPECT_TRUE(store.consume({}, t0, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, MaxKeysZeroEvictionPathKeepsNewKeyUsable) {
@@ -106,8 +105,8 @@ TEST(RateLimitStoreTest, MaxKeysZeroEvictionPathKeepsNewKeyUsable) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_FALSE(store.consume("ip-a", t0, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, EvictsIdleKeyWhenCapacityReached) {
@@ -120,9 +119,9 @@ TEST(RateLimitStoreTest, EvictsIdleKeyWhenCapacityReached) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-old", t0, cfg).allowed);
-  EXPECT_TRUE(store.consume("ip-new", t0 + std::chrono::seconds{1}, cfg).allowed);
-  EXPECT_FALSE(store.consume("ip-new", t0 + std::chrono::seconds{1}, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-old", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-new", t0 + std::chrono::seconds{1}, cfg).allowed());
+  EXPECT_FALSE(store.consume("ip-new", t0 + std::chrono::seconds{1}, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, EvictsFirstKeyWhenNoIdleKeyExists) {
@@ -135,9 +134,9 @@ TEST(RateLimitStoreTest, EvictsFirstKeyWhenNoIdleKeyExists) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed);
-  EXPECT_TRUE(store.consume("ip-b", t0, cfg).allowed);
-  EXPECT_FALSE(store.consume("ip-b", t0, cfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-b", t0, cfg).allowed());
+  EXPECT_FALSE(store.consume("ip-b", t0, cfg).allowed());
 }
 
 TEST(RateLimitStoreTest, EvictsMultipleIdleKeysAfterLimitIsLowered) {
@@ -150,13 +149,13 @@ TEST(RateLimitStoreTest, EvictsMultipleIdleKeysAfterLimitIsLowered) {
   InMemoryTokenBucketRateLimitStore store;
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, fillCfg).allowed);
-  EXPECT_TRUE(store.consume("ip-b", t0, fillCfg).allowed);
-  EXPECT_TRUE(store.consume("ip-c", t0, fillCfg).allowed);
+  EXPECT_TRUE(store.consume("ip-a", t0, fillCfg).allowed());
+  EXPECT_TRUE(store.consume("ip-b", t0, fillCfg).allowed());
+  EXPECT_TRUE(store.consume("ip-c", t0, fillCfg).allowed());
 
   RateLimitConfig tightCfg = fillCfg;
   tightCfg.maxKeys = 1;
-  EXPECT_TRUE(store.consume("ip-d", t0 + std::chrono::seconds{1}, tightCfg).allowed);
+  EXPECT_TRUE(store.consume("ip-d", t0 + std::chrono::seconds{1}, tightCfg).allowed());
 }
 
 TEST(RateLimitRedisContractTest, BuildsKeyWithHashTagByDefault) {
@@ -225,14 +224,13 @@ TEST(RateLimitRedisContractTest, ParsesBackendErrorUsingFailPolicy) {
 
   cfg.failOpen = true;
   auto decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_TRUE(decision->allowed);
+  EXPECT_TRUE(decision.allowed());
 
   cfg.failOpen = false;
   decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_FALSE(decision->allowed);
-  EXPECT_EQ(decision->retryAfterSeconds, 1U);
+  EXPECT_FALSE(decision.invalid());
+  EXPECT_FALSE(decision.allowed());
+  EXPECT_EQ(decision.retryAfterSeconds, 1U);
 }
 
 TEST(RateLimitRedisContractTest, ParsesAllowedResponse) {
@@ -242,9 +240,8 @@ TEST(RateLimitRedisContractTest, ParsesAllowedResponse) {
 
   const auto decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
 
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_TRUE(decision->allowed);
-  EXPECT_EQ(decision->retryAfterSeconds, 0U);
+  EXPECT_TRUE(decision.allowed());
+  EXPECT_EQ(decision.retryAfterSeconds, 0U);
 }
 
 TEST(RateLimitRedisContractTest, ParsesDeniedResponse) {
@@ -254,9 +251,8 @@ TEST(RateLimitRedisContractTest, ParsesDeniedResponse) {
   resp.retryAfterSeconds = 3;
 
   const auto decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_FALSE(decision->allowed);
-  EXPECT_EQ(decision->retryAfterSeconds, 3U);
+  EXPECT_TRUE(decision.rejected());
+  EXPECT_EQ(decision.retryAfterSeconds, 3U);
 }
 
 TEST(RateLimitRedisContractTest, ParsesDeniedResponseClampsRetryAfter) {
@@ -266,15 +262,13 @@ TEST(RateLimitRedisContractTest, ParsesDeniedResponseClampsRetryAfter) {
 
   resp.retryAfterSeconds = 0;
   auto decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_FALSE(decision->allowed);
-  EXPECT_EQ(decision->retryAfterSeconds, 1U);
+  EXPECT_TRUE(decision.rejected());
+  EXPECT_EQ(decision.retryAfterSeconds, 1U);
 
   resp.retryAfterSeconds = static_cast<int64_t>(std::numeric_limits<uint32_t>::max()) + 1;
   decision = RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg);
-  ASSERT_TRUE(decision.has_value());
-  EXPECT_FALSE(decision->allowed);
-  EXPECT_EQ(decision->retryAfterSeconds, std::numeric_limits<uint32_t>::max());
+  EXPECT_TRUE(decision.rejected());
+  EXPECT_EQ(decision.retryAfterSeconds, std::numeric_limits<uint32_t>::max());
 }
 
 TEST(RateLimitRedisContractTest, MalformedAllowedValueReturnsNoDecision) {
@@ -282,12 +276,12 @@ TEST(RateLimitRedisContractTest, MalformedAllowedValueReturnsNoDecision) {
   RedisEvalResponse resp;
   resp.allowed = 2;
 
-  EXPECT_FALSE(RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg).has_value());
+  EXPECT_TRUE(RedisSlidingWindowRateLimitStore::parseConsumeResponse(resp, cfg).invalid());
 }
 
 TEST(RateLimitRedisStoreTest, EmptyKeyBypassesCallback) {
   bool called = false;
-  RedisSlidingWindowRateLimitStore store([&called](const RedisEvalRequest&) -> std::optional<RedisEvalResponse> {
+  RedisSlidingWindowRateLimitStore store([&called](const RedisEvalRequest&) {
     called = true;
     return RedisEvalResponse{};
   });
@@ -295,7 +289,7 @@ TEST(RateLimitRedisStoreTest, EmptyKeyBypassesCallback) {
 
   const auto decision = store.consume({}, std::chrono::steady_clock::time_point{}, cfg);
 
-  EXPECT_TRUE(decision.allowed);
+  EXPECT_TRUE(decision.allowed());
   EXPECT_FALSE(called);
 }
 
@@ -305,32 +299,31 @@ TEST(RateLimitRedisStoreTest, MissingCallbackUsesFailPolicy) {
   const auto now = std::chrono::steady_clock::time_point{};
 
   cfg.failOpen = true;
-  EXPECT_TRUE(store.consume("client", now, cfg).allowed);
+  EXPECT_TRUE(store.consume("client", now, cfg).allowed());
 
   cfg.failOpen = false;
   const auto denied = store.consume("client", now, cfg);
-  EXPECT_FALSE(denied.allowed);
+  EXPECT_TRUE(denied.rejected());
   EXPECT_EQ(denied.retryAfterSeconds, 1U);
 }
 
 TEST(RateLimitRedisStoreTest, EmptyCallbackResultUsesFailPolicy) {
-  RedisSlidingWindowRateLimitStore store(
-      [](const RedisEvalRequest&) -> std::optional<RedisEvalResponse> { return std::nullopt; });
+  RedisSlidingWindowRateLimitStore store([](const RedisEvalRequest&) { return RedisEvalResponse{}; });
   RateLimitConfig cfg;
   const auto now = std::chrono::steady_clock::time_point{};
 
   cfg.failOpen = true;
-  EXPECT_TRUE(store.consume("client", now, cfg).allowed);
+  EXPECT_TRUE(store.consume("client", now, cfg).allowed());
 
   cfg.failOpen = false;
   const auto denied = store.consume("client", now, cfg);
-  EXPECT_FALSE(denied.allowed);
+  EXPECT_TRUE(denied.rejected());
   EXPECT_EQ(denied.retryAfterSeconds, 1U);
 }
 
 TEST(RateLimitRedisStoreTest, CallbackAllowedResponseAllowsRequest) {
   bool inspected = false;
-  RedisSlidingWindowRateLimitStore store([&inspected](const RedisEvalRequest& req) -> std::optional<RedisEvalResponse> {
+  RedisSlidingWindowRateLimitStore store([&inspected](const RedisEvalRequest& req) {
     inspected = true;
     EXPECT_EQ(req.key, "aeronet:rl:{client}");
     RedisEvalResponse resp;
@@ -341,12 +334,12 @@ TEST(RateLimitRedisStoreTest, CallbackAllowedResponseAllowsRequest) {
 
   const auto decision = store.consume("client", std::chrono::steady_clock::time_point{}, cfg);
 
-  EXPECT_TRUE(decision.allowed);
+  EXPECT_TRUE(decision.allowed());
   EXPECT_TRUE(inspected);
 }
 
 TEST(RateLimitRedisStoreTest, CallbackDeniedResponseRejectsRequest) {
-  RedisSlidingWindowRateLimitStore store([](const RedisEvalRequest&) -> std::optional<RedisEvalResponse> {
+  RedisSlidingWindowRateLimitStore store([](const RedisEvalRequest&) {
     RedisEvalResponse resp;
     resp.allowed = 0;
     resp.retryAfterSeconds = 4;
@@ -356,12 +349,12 @@ TEST(RateLimitRedisStoreTest, CallbackDeniedResponseRejectsRequest) {
 
   const auto decision = store.consume("client", std::chrono::steady_clock::time_point{}, cfg);
 
-  EXPECT_FALSE(decision.allowed);
+  EXPECT_TRUE(decision.rejected());
   EXPECT_EQ(decision.retryAfterSeconds, 4U);
 }
 
 TEST(RateLimitRedisStoreTest, MalformedCallbackResponseUsesFailPolicy) {
-  RedisSlidingWindowRateLimitStore store([](const RedisEvalRequest&) -> std::optional<RedisEvalResponse> {
+  RedisSlidingWindowRateLimitStore store([](const RedisEvalRequest&) {
     RedisEvalResponse resp;
     resp.allowed = 2;
     return resp;
@@ -370,11 +363,11 @@ TEST(RateLimitRedisStoreTest, MalformedCallbackResponseUsesFailPolicy) {
   const auto now = std::chrono::steady_clock::time_point{};
 
   cfg.failOpen = true;
-  EXPECT_TRUE(store.consume("client", now, cfg).allowed);
+  EXPECT_TRUE(store.consume("client", now, cfg).allowed());
 
   cfg.failOpen = false;
   const auto denied = store.consume("client", now, cfg);
-  EXPECT_FALSE(denied.allowed);
+  EXPECT_TRUE(denied.rejected());
   EXPECT_EQ(denied.retryAfterSeconds, 1U);
 }
 

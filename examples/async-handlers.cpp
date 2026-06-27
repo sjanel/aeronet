@@ -22,6 +22,7 @@ struct User {
   std::string email;
 };
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 std::unordered_map<int, User> users{
     {1, {1, "Alice", "alice@example.com"}},
     {2, {2, "Bob", "bob@example.com"}},
