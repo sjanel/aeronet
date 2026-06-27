@@ -85,14 +85,17 @@ inline SysTimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
 /// Returns pointer past last written char.
 constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   using namespace std::chrono;
+
   static constexpr const char* const WEEKDAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   static constexpr const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
   const sys_seconds secTp = time_point_cast<seconds>(tp);
   const auto day_point = floor<days>(secTp);
   const year_month_day ymd{day_point};
   const weekday wd{day_point};
   const hh_mm_ss hms{secTp - day_point};
+
   out = copy3(out, WEEKDAYS[wd.c_encoding()]);
   *out = ',';
   *++out = ' ';
@@ -108,6 +111,7 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   *out = ':';
   out = write2(++out, hms.seconds().count());
   *out = ' ';
+
   return copy3(++out, "GMT");
 }
 

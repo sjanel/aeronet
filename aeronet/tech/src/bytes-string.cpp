@@ -1,12 +1,14 @@
 #include "aeronet/bytes-string.hpp"
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string_view>
 
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/stringconv.hpp"
 
 namespace aeronet {
 
@@ -23,11 +25,14 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
 
   // small helper: append integer value and the unit (with leading space)
   const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
-    const auto buf = IntegralToCharVector(value);
-    out.ensureAvailableCapacityExponential(unit.size() + buf.size() + 1U);
-    out.unchecked_append(buf.data(), buf.size());
-    out.unchecked_push_back(' ');
-    out.unchecked_append(unit);
+    out.ensureAvailableCapacityExponential(ndigits(value) + 1U + unit.size());
+    char* ptr = out.data() + out.size();
+
+    ptr = std::to_chars(ptr, out.data() + out.capacity(), value).ptr;
+    *ptr++ = ' ';
+    ptr = Append(unit, ptr);
+
+    out.setSize(static_cast<std::size_t>(ptr - out.data()));
   };
 
   // Bytes: print integer bytes
@@ -60,15 +65,20 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
       appendIntAndUnit(finalInt, units[unitIdx]);
       return;
     }
+
     // print one decimal: int.frac unit
-    const auto intBuf = IntegralToCharVector(finalInt);
-    const auto fracBuf = IntegralToCharVector(finalFrac);
-    out.ensureAvailableCapacityExponential(intBuf.size() + 1U + fracBuf.size() + 1U + units[unitIdx].size());
-    out.unchecked_append(intBuf.data(), intBuf.size());
-    out.unchecked_push_back('.');
-    out.unchecked_append(fracBuf.data(), fracBuf.size());
-    out.unchecked_push_back(' ');
-    out.unchecked_append(units[unitIdx]);
+    out.ensureAvailableCapacityExponential(ndigits(finalInt) + 1U + ndigits(finalFrac) + 1U + units[unitIdx].size());
+
+    char* ptr = out.data() + out.size();
+
+    ptr = std::to_chars(ptr, out.data() + out.capacity(), finalInt).ptr;
+    *ptr++ = '.';
+    ptr = std::to_chars(ptr, out.data() + out.capacity(), finalFrac).ptr;
+    *ptr++ = ' ';
+    ptr = Append(units[unitIdx], ptr);
+
+    out.setSize(static_cast<std::size_t>(ptr - out.data()));
+
     return;
   }
 

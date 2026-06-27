@@ -9,8 +9,10 @@
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
 #include <cassert>
 #include <cstring>
+#include <limits>
 #endif
 
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/safe-cast.hpp"
 
 namespace aeronet {
@@ -45,7 +47,10 @@ class RawBytesBase {
   explicit RawBytesBase(uint64_t capacity);
 
   // Constructs a buffer initialized with the specified data.
-  explicit RawBytesBase(ViewType data) : RawBytesBase(data.data(), SafeCast<size_type>(data.size())) {}
+  explicit RawBytesBase(ViewType data) : RawBytesBase(data.data(), data.size()) {}
+
+  // Constructs a buffer initialized with the specified data.
+  RawBytesBase(const_pointer data, uint64_t size) : RawBytesBase(size) { unchecked_append(data, size); }
 
   /// Transfers the heap allocation from another RawBytesBase instantiation with a compatible element type.
   /// After this call, other is left in a valid empty state.
@@ -56,9 +61,6 @@ class RawBytesBase {
         _size(std::exchange(rhs._size, 0)),
         _capacity(std::exchange(rhs._capacity, 0)) {}
 
-  // Constructs a buffer initialized with the specified data.
-  RawBytesBase(const_pointer data, uint64_t sz);
-
   RawBytesBase(const RawBytesBase& rhs);
   RawBytesBase(RawBytesBase&& rhs) noexcept;
 
@@ -68,16 +70,28 @@ class RawBytesBase {
   ~RawBytesBase();
 
   // Appends data to the end of the buffer without checking capacity.
-  void unchecked_append(const_pointer data, uint64_t sz);
+  constexpr void unchecked_append(const_pointer data, uint64_t sz) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
+      assert(static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) >= sz + _size);
+    }
+    assert(sz + _size <= _capacity);
+#endif
+    Copy(data, sz, _buf + _size);
+    _size += static_cast<size_type>(sz);
+  }
 
   // Appends data to the end of the buffer without checking capacity.
-  void unchecked_append(ViewType data) { unchecked_append(data.data(), SafeCast<size_type>(data.size())); }
+  void unchecked_append(ViewType data) { unchecked_append(data.data(), data.size()); }
 
   // Appends data to the end of the buffer, reallocating if necessary.
-  void append(const_pointer data, uint64_t sz);
+  void append(const_pointer data, uint64_t sz) {
+    ensureAvailableCapacityExponential(sz);
+    unchecked_append(data, sz);
+  }
 
   // Appends data to the end of the buffer, reallocating if necessary.
-  void append(ViewType data) { append(data.data(), SafeCast<size_type>(data.size())); }
+  void append(ViewType data) { append(data.data(), data.size()); }
 
   // Appends a single byte to the end of the buffer without checking capacity.
   void unchecked_push_back(value_type byte) noexcept {
@@ -88,13 +102,16 @@ class RawBytesBase {
   }
 
   // Appends a single byte to the end of the buffer, reallocating if necessary.
-  void push_back(value_type byte);
+  void push_back(value_type byte) {
+    ensureAvailableCapacityExponential(1U);
+    unchecked_push_back(byte);
+  }
 
   // Assigns new data to the buffer, replacing its current contents.
   void assign(const_pointer data, uint64_t size);
 
   // Assigns new data to the buffer, replacing its current contents.
-  void assign(ViewType data) { assign(data.data(), SafeCast<size_type>(data.size())); }
+  void assign(ViewType data) { assign(data.data(), data.size()); }
 
   // Clears the buffer, setting its size to zero.
   void clear() noexcept {

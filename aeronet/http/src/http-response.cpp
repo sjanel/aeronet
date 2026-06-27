@@ -297,9 +297,7 @@ HttpMessage& HttpMessage::reason(std::string_view newReason) & {
   const auto oldReasonSz = reasonLength();
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
   if (diff == 0) {
-    if (!newReason.empty()) {
-      Copy(newReason, _data.data() + kReasonBeg);
-    }
+    Copy(newReason, _data.data() + kReasonBeg);
     return *this;
   }
   if (diff > 0) {
@@ -565,7 +563,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
 
     _data.setSize(bodyStartPos());
 
-    const auto written = appendEncodedInlineOrThrow(newBody);
+    const auto written = appendEncodedInlineOrThrow(newBody.data(), newBody.size());
 
     _data.setSize(_data.size() + written);
     return;
@@ -582,9 +580,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
   assert(newBody.empty() || newBody.data() <= _data.data() || newBody.data() > _data.data() + _data.size());
 
   _data.adjustSize(diff);
-  if (!newBody.empty()) {
-    Copy(newBody, _data.data() + bodyStartPos());
-  }
+  Copy(newBody, _data.data() + bodyStartPos());
 }
 
 HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view contentType) & {
@@ -628,6 +624,7 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
       const auto it = SearchCRLF(pContentTypeValuePtr, _data.data() + _data.size());
       assert(it != _data.data() + _data.size());
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
+
       neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
     }
 
@@ -645,7 +642,7 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
       _payloadVariant.append(body);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     } else if (_opts.isAutomaticDirectCompression()) {
-      _data.addSize(appendEncodedInlineOrThrow(body));
+      _data.addSize(appendEncodedInlineOrThrow(body.data(), body.size()));
 #endif
     } else {
       _data.unchecked_append(body);
@@ -777,9 +774,7 @@ void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char*
 
   const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
   if (diff == 0) {
-    if (!newValue.empty()) {
-      Copy(newValue, valueFirst);
-    }
+    Copy(newValue, valueFirst);
     return;
   }
 
@@ -790,9 +785,7 @@ void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char*
   }
 
   std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz, _data.size() - valuePos - oldHeaderValueSz);
-  if (!newValue.empty()) {
-    Copy(newValue, valueFirst);
-  }
+  Copy(newValue, valueFirst);
 
   _data.adjustSize(diff);
 
@@ -823,12 +816,8 @@ HttpMessage& HttpMessage::headerAppendValue(std::string_view key, std::string_vi
   std::memmove(insertPtr + extraLen, insertPtr, tailLen);
 
   char* out = insertPtr;
-  if (!sep.empty()) {
-    out = Append(sep, out);
-  }
-  if (!value.empty()) {
-    Copy(value, out);
-  }
+  out = Append(sep, out);
+  Copy(value, out);
 
   _data.addSize(extraLen);
   adjustBodyStart(static_cast<int64_t>(extraLen));
@@ -1450,19 +1439,18 @@ void HttpMessage::replaceHeaderValueNoRealloc(char* first, std::string_view newV
     _data.adjustSize(diff);
     adjustBodyStart(diff);
   }
-  // This function is only called to set reserved headers Content-Length (which is never empty) and Content-Type
-  // (which we never set to empty, it would be rejected by a std::invalid_argument).
   Copy(newValue, first);
 }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
-std::size_t HttpMessage::appendEncodedInlineOrThrow(std::string_view data) {
+std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size_t sz) {
   assert(_opts._pCompressionState != nullptr);
   auto& compressionState = *_opts._pCompressionState;
   auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
-  assert(encoderCtx.minEncodeChunkCapacity(data.size()) <= _data.availableCapacity());
-  const auto result = encoderCtx.encodeChunk(data, _data.availableCapacity(), _data.data() + _data.size());
+  assert(encoderCtx.minEncodeChunkCapacity(sz) <= _data.availableCapacity());
+  const auto result =
+      encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.data() + _data.size());
 
   if (result.hasError()) [[unlikely]] {
     // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
