@@ -107,11 +107,11 @@ class TlsClient {
   Options _opts;
   bool _handshakeOk{false};
   std::string _negotiatedAlpn;
+  std::string _drainedDuringWrite;
   aeronet::test::ClientConnection _cnx;
   // Initialize with valid deleter function pointers so default-constructed state is safe.
   SSL_CTXUniquePtr _ctx{nullptr, ::SSL_CTX_free};
   SSLUniquePtr _ssl{nullptr, ::SSL_free};
   // Bytes SSL_read'd while waiting for POLLOUT in writeAll; see drainedDuringWrite().
-  std::string _drainedDuringWrite;
 };
 }  // namespace aeronet::test

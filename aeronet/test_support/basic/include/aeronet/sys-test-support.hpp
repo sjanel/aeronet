@@ -396,7 +396,7 @@ inline int CreateMemfd(std::string_view name) {
 template <typename Action>
 class ActionQueue {
  public:
-  ActionQueue() = default;
+  ActionQueue() noexcept = default;
   ActionQueue(const ActionQueue&) = delete;
   ActionQueue& operator=(const ActionQueue&) = delete;
 
@@ -441,7 +441,7 @@ class ActionQueue {
 template <typename Key, typename Action, typename Hash = std::hash<Key>, typename Eq = std::equal_to<Key>>
 class KeyedActionQueue {
  public:
-  KeyedActionQueue() = default;
+  KeyedActionQueue() noexcept = default;
   KeyedActionQueue(const KeyedActionQueue&) = delete;
   KeyedActionQueue& operator=(const KeyedActionQueue&) = delete;
 

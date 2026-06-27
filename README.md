@@ -228,13 +228,13 @@ redisCfg.namespacePrefix = "aeronet:rl";
 redisCfg.windowSeconds = 10;
 redisCfg.preferEvalSha = true;
 
-auto eval = [](const RedisEvalRequest& req) -> std::optional<RedisEvalResponse> {
+auto eval = [](const RedisEvalRequest& req) -> RedisEvalResponse {
   // Adapter boundary:
   // - req.keys[0] is the window key (default schema: aeronet:rl:{clientKey})
   // - req.args = [now_ms, window_ms, limit]
   // - req.script is the Lua body (or req.scriptSha with EVALSHA)
   // Execute with your Redis client here and map result to {ok, allowed, retryAfterSeconds}.
-  return std::nullopt;  // transport failure in this skeleton
+  return RedisEvalResponse{};  // transport failure in this skeleton
 };
 
 Router router;

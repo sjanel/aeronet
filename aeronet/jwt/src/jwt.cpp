@@ -150,7 +150,7 @@ template <class Buf>
   if (!B64UrlDecode(b64, out.data(), outLen)) {
     return false;
   }
-  out.setSize(static_cast<typename Buf::size_type>(outLen));
+  out.setSize(static_cast<Buf::size_type>(outLen));
   return true;
 }
 

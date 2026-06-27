@@ -82,6 +82,8 @@ struct TimerfdSettimeCall {
 
 class TimerfdOverrideState {
  public:
+  TimerfdOverrideState() noexcept = default;
+
   void reset() {
     std::scoped_lock<std::mutex> lock(_mutex);
     _createActions.clear();

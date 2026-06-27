@@ -1,15 +1,16 @@
 ﻿#include "aeronet/http-error-build.hpp"
 
+#include <charconv>
 #include <cstddef>
 #include <string_view>
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -21,53 +22,53 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
 
   static constexpr std::size_t kStatusLen = 3U;
 
-  const auto datePos = http::HTTP11Sv.size() + 1UL + kStatusLen + 1UL + reason.size() + http::CRLF.size() +
-                       http::Date.size() + http::HeaderSep.size();
-
   const std::size_t globalHeadersSize = globalHeaders.fullSizeWithLastSep();
   const auto nbCharsBodyLen = nchars(body.size());
 
   // Exact allocation size
-  RawChars out(datePos + RFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() + http::HeaderSep.size() +
-               nbCharsBodyLen + http::CRLF.size() + http::Connection.size() + http::HeaderSep.size() +
-               http::close.size() + http::DoubleCRLF.size() + globalHeadersSize + body.size());
+  RawChars out(http::HTTP11Sv.size() + 1UL + kStatusLen + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
+               http::HeaderSep.size() + RFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() +
+               http::HeaderSep.size() + nbCharsBodyLen + http::CRLF.size() + http::Connection.size() +
+               http::HeaderSep.size() + http::close.size() + http::DoubleCRLF.size() + globalHeadersSize + body.size());
+
+  char* ptr = out.data();
 
   // Status line: HTTP/1.1 404 Not Found\r\n
-  out.unchecked_append(http::HTTP11Sv);
-  out.unchecked_push_back(' ');
-  write3(out.data() + http::HTTP11Sv.size() + 1UL, status);
-  out.addSize(kStatusLen);
-  out.unchecked_push_back(' ');
-  out.unchecked_append(reason);
-  out.unchecked_append(http::CRLF);
+  ptr = Append(http::HTTP11Sv, ptr);
+  *ptr++ = ' ';
+  ptr = write3(ptr, status);
+  *ptr++ = ' ';
+  ptr = Append(reason, ptr);
+  ptr = Append(http::CRLF, ptr);
 
   // date: Wed, 21 Oct 2015 07:28:00 GMT
-  out.unchecked_append(http::Date);
-  out.unchecked_append(http::HeaderSep);
-  TimeToStringRFC7231(SysClock::now(), out.data() + datePos);
-  out.addSize(RFC7231DateStrLen);
-  out.unchecked_append(http::CRLF);
+  ptr = Append(http::Date, ptr);
+  ptr = Append(http::HeaderSep, ptr);
+  ptr = TimeToStringRFC7231(SysClock::now(), ptr);
+  ptr = Append(http::CRLF, ptr);
 
   // content-length
-  out.unchecked_append(http::ContentLength);
-  out.unchecked_append(http::HeaderSep);
-  out.unchecked_append(std::string_view(IntegralToCharVector(body.size())));
-  out.unchecked_append(http::CRLF);
+  ptr = Append(http::ContentLength, ptr);
+  ptr = Append(http::HeaderSep, ptr);
+  ptr = std::to_chars(ptr, ptr + nbCharsBodyLen, body.size()).ptr;
+  ptr = Append(http::CRLF, ptr);
 
   // connection: close
-  out.unchecked_append(http::Connection);
-  out.unchecked_append(http::HeaderSep);
-  out.unchecked_append(http::close);
-  out.unchecked_append(http::CRLF);
+  ptr = Append(http::Connection, ptr);
+  ptr = Append(http::HeaderSep, ptr);
+  ptr = Append(http::close, ptr);
+  ptr = Append(http::CRLF, ptr);
 
   // Append global headers
-  out.unchecked_append(globalHeaders.fullStringWithLastSep());
+  ptr = Append(globalHeaders.fullStringWithLastSep(), ptr);
 
   // End of headers
-  out.unchecked_append(http::CRLF);
+  ptr = Append(http::CRLF, ptr);
 
   // Body
-  out.unchecked_append(body);
+  ptr = Append(body, ptr);
+
+  out.setSize(static_cast<std::size_t>(ptr - out.data()));
 
   return out;
 }

@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <string>
 #include <string_view>
 
@@ -16,7 +15,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -39,7 +37,7 @@ constexpr bool LooksLikeZlib(std::string_view body) {
   return body.size() >= 2 && static_cast<unsigned char>(body[0]) == 0x78;  // ignore second byte variability
 }
 
-test::TestServer ts{HttpServerConfig{}, RouterConfig{}, std::chrono::milliseconds{1}};
+test::TestServer ts;
 
 }  // namespace
 

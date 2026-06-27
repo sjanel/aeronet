@@ -50,10 +50,13 @@ TEST(Http2ConnectTest, DnsFailureReturns502) {
 }
 
 TEST(Http2ConnectTest, AllowlistRejectsTarget) {
-  test::TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  test::TlsHttp2TestServer ts;
+
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     std::array<std::string_view, 1> allowlist = {"example.com"};
     cfg.withConnectAllowlist(allowlist.begin(), allowlist.end());
   });
+
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
@@ -68,9 +71,11 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
   // Use large flow-control windows to minimise WINDOW_UPDATE round-trips.
   static constexpr uint32_t kLargeWindow = 1U << 20;  // 1 MB
 
-  test::TlsHttp2TestServer ts(nullptr, [](Http2Config& h2) {
-    h2.initialWindowSize = kLargeWindow;
-    h2.connectionWindowSize = kLargeWindow * 2;
+  test::TlsHttp2TestServer ts;
+
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.http2.initialWindowSize = kLargeWindow;
+    cfg.http2.connectionWindowSize = kLargeWindow * 2;
   });
 
   {

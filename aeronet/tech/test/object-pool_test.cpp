@@ -234,6 +234,7 @@ TEST(ObjectPoolTest, FuzzAllocFreeCycles) {
   vector<int*> live;
   live.reserve(1024);
 
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(12345);
   std::uniform_int_distribution<int> op(0, 3);
 
@@ -265,6 +266,7 @@ TEST(ObjectPoolTest, FuzzAllocFreeCycles) {
 TEST(ObjectPoolTest, FuzzThrowingConstructor) {
   // deterministic RNGs used by the throwing constructor (globals to avoid
   // static members in a local class)
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(424242);
   std::uniform_int_distribution<int> dist(0, 99);
 

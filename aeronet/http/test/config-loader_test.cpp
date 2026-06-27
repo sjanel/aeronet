@@ -834,7 +834,7 @@ TEST(ConfigLoaderTest, UnknownExtension) {
 // HttpResponse::bodyJson / bodyYaml
 // ============================================================================
 
-// NOLINENEXTLINE(misc-use-internal-linkage)
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct SampleDto {
   int id{};
   std::string name;

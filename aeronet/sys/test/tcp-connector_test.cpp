@@ -100,6 +100,8 @@ struct TestAddrinfoNode {
 };
 
 struct HookState {
+  HookState() noexcept = default;
+
   std::deque<int> socketErrnos;
   std::deque<ConnectAction> connectActions;
   std::optional<AddrinfoOverrideData> addrinfoOverride;

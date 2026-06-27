@@ -5,21 +5,23 @@
 #include <glaze/glaze.hpp>  // IWYU pragma: export
 #include <string>
 
+namespace aeronet::test {
+
 // Test structures for serialization
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct TestMessage {
   std::string message;
 
-  bool operator==(const TestMessage& other) const { return message == other.message; }
+  bool operator==(const TestMessage& other) const = default;
 };
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct TestWorld {
   int id;
   int randomNumber;
 
-  bool operator==(const TestWorld& other) const { return id == other.id && randomNumber == other.randomNumber; }
+  bool operator==(const TestWorld& other) const = default;
 };
-
-namespace aeronet::test {
 
 namespace {
 class JsonSerializerTest : public ::testing::Test {

@@ -16,8 +16,7 @@ namespace aeronet {
 
 namespace {
 std::string B64Url(std::string_view in) {
-  std::string out;
-  out.resize(B64UrlEncodedLen(in.size()));
+  std::string out(B64UrlEncodedLen(in.size()), '\0');
   B64UrlEncode(std::span<const char>(in.data(), in.size()), out.data());
   return out;
 }
@@ -27,10 +26,10 @@ std::string OctJwk(std::string_view kid, std::string_view secret) {
 }
 
 JwtVerifyOptions NoTemporal() {
-  JwtVerifyOptions o;
-  o.validateExpiration = false;
-  o.validateNotBefore = false;
-  return o;
+  JwtVerifyOptions options;
+  options.validateExpiration = false;
+  options.validateNotBefore = false;
+  return options;
 }
 }  // namespace
 
@@ -53,9 +52,14 @@ TEST(Jwk, RsaPublicFromJwk) {
 TEST(Jwk, EcPublicFromJwk) {
   for (const char* curve : {"P-256", "P-384", "P-521"}) {
     test::TestKey ec = test::GenerateEc(curve);
-    JwtAlgorithm alg = std::string_view(curve) == "P-256"   ? JwtAlgorithm::ES256
-                       : std::string_view(curve) == "P-384" ? JwtAlgorithm::ES384
-                                                            : JwtAlgorithm::ES512;
+    JwtAlgorithm alg;
+    if (std::string_view(curve) == "P-256") {
+      alg = JwtAlgorithm::ES256;
+    } else if (std::string_view(curve) == "P-384") {
+      alg = JwtAlgorithm::ES384;
+    } else {
+      alg = JwtAlgorithm::ES512;
+    }
     std::string token = Jwt::encode(R"({"sub":"x"})", JwtKey::FromPem(ec.privatePem), alg);
     JwtError err = JwtError::None;
     EXPECT_TRUE(Jwt::tryDecode(token, JwtKey::FromJwk(ec.jwk), NoTemporal(), err).valid())

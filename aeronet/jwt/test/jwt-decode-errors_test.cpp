@@ -3,13 +3,16 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/pem.h>
+#include <openssl/types.h>
 
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
 
 #include "aeronet/base64url.hpp"
 #include "aeronet/jwt-algorithm-set.hpp"
+#include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"
 #include "aeronet/jwt-key.hpp"
 #include "aeronet/jwt.hpp"
@@ -19,8 +22,7 @@ namespace aeronet {
 
 namespace {
 std::string B64Url(std::string_view in) {
-  std::string out;
-  out.resize(B64UrlEncodedLen(in.size()));
+  std::string out(B64UrlEncodedLen(in.size()), '\0');
   B64UrlEncode(std::span<const char>(in.data(), in.size()), out.data());
   return out;
 }
@@ -42,10 +44,10 @@ JwtError DecodeErr(std::string_view token, const JwtKey& key, const JwtVerifyOpt
 }
 
 JwtVerifyOptions NoTemporal() {
-  JwtVerifyOptions o;
-  o.validateExpiration = false;
-  o.validateNotBefore = false;
-  return o;
+  JwtVerifyOptions options;
+  options.validateExpiration = false;
+  options.validateNotBefore = false;
+  return options;
 }
 }  // namespace
 

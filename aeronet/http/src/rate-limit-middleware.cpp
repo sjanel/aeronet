@@ -69,7 +69,7 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
       decision = RateLimitDecision::Reject(1);
     }
 
-    if (decision.allowed) {
+    if (decision.allowed()) {
       return MiddlewareResult::Continue();
     }
 
