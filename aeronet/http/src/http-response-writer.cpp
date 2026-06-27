@@ -317,8 +317,7 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
 bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
   // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
   // we cross the threshold (or end() is called).
-  _preCompressBuffer.ensureAvailableCapacityExponential(data.size());
-  _preCompressBuffer.unchecked_append(data);
+  _preCompressBuffer.append(data);
   if (_preCompressBuffer.size() < _pCompressionConfig->minBytes) {
     // Still below threshold; do not emit headers/body yet.
     return true;

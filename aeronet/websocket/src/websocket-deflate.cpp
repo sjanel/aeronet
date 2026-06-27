@@ -1,6 +1,7 @@
 #include "aeronet/websocket-deflate.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -10,14 +11,13 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/stringconv.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <algorithm>
-#include <charconv>
 #include <system_error>
 
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -94,11 +94,9 @@ void DeflateConfig::validate() const {
   }
 }
 
-std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extensionOffer,
-                                                         const DeflateConfig& serverConfig) {
+std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::string_view extensionOffer,
+                                                         [[maybe_unused]] const DeflateConfig& serverConfig) {
 #ifndef AERONET_ENABLE_ZLIB
-  (void)extensionOffer;
-  (void)serverConfig;
   return std::nullopt;
 #else
   DeflateNegotiatedParams params;
@@ -138,7 +136,7 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extens
       params.clientNoContextTakeover = true;
     } else if (CaseInsensitiveEqual(name, kServerMaxWindowBits)) {
       if (value.has_value()) {
-        auto bits = ParseWindowBits(*value);
+        const auto bits = ParseWindowBits(*value);
         if (!bits.has_value()) {
           return std::nullopt;  // Invalid parameter value
         }
@@ -147,7 +145,7 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extens
       }
     } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits)) {
       if (value.has_value()) {
-        auto bits = ParseWindowBits(*value);
+        const auto bits = ParseWindowBits(*value);
         if (!bits.has_value()) {
           return std::nullopt;  // Invalid parameter value
         }
@@ -183,32 +181,31 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params) {
 
 void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
   output.ensureAvailableCapacity(ComputeDeflateResponseSize(params));
-  output.unchecked_append(kPermessageDeflate);
+  char* ptr = output.data() + output.size();
+
+  ptr = Append(kPermessageDeflate, ptr);
 
   if (params.serverNoContextTakeover) {
-    output.unchecked_append(kSemicolonSpace);
-    output.unchecked_append(kServerNoContextTakeover);
+    ptr = Append(kSemicolonSpace, ptr);
+    ptr = Append(kServerNoContextTakeover, ptr);
   }
   if (params.clientNoContextTakeover) {
-    output.unchecked_append(kSemicolonSpace);
-    output.unchecked_append(kClientNoContextTakeover);
+    ptr = Append(kSemicolonSpace, ptr);
+    ptr = Append(kClientNoContextTakeover, ptr);
   }
   if (params.serverMaxWindowBits < 15) {
-    output.unchecked_append(kSemicolonSpace);
-    output.unchecked_append(kServerMaxWindowBits);
-    output.unchecked_push_back('=');
-    auto bytesBuf = output.data() + output.size();
-    auto out = AppendIntegralToCharBuf(bytesBuf, params.serverMaxWindowBits);
-    output.addSize(static_cast<std::size_t>(out - bytesBuf));
+    ptr = Append(kSemicolonSpace, ptr);
+    ptr = Append(kServerMaxWindowBits, ptr);
+    *ptr++ = '=';
+    ptr = std::to_chars(ptr, output.data() + output.capacity(), params.serverMaxWindowBits).ptr;
   }
   if (params.clientMaxWindowBits < 15) {
-    output.unchecked_append(kSemicolonSpace);
-    output.unchecked_append(kClientMaxWindowBits);
-    output.unchecked_push_back('=');
-    auto bytesBuf = output.data() + output.size();
-    auto out = AppendIntegralToCharBuf(bytesBuf, params.clientMaxWindowBits);
-    output.addSize(static_cast<std::size_t>(out - bytesBuf));
+    ptr = Append(kSemicolonSpace, ptr);
+    ptr = Append(kClientMaxWindowBits, ptr);
+    *ptr++ = '=';
+    ptr = std::to_chars(ptr, output.data() + output.capacity(), params.clientMaxWindowBits).ptr;
   }
+  output.setSize(static_cast<RawChars::size_type>(ptr - output.data()));
 }
 
 struct DeflateContext::Impl {
@@ -248,25 +245,22 @@ DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConf
 DeflateContext::~DeflateContext() = default;
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-const char* DeflateContext::compress(std::span<const std::byte> input, RawBytes& output) {
+const char* DeflateContext::compress([[maybe_unused]] std::span<const std::byte> input,
+                                     [[maybe_unused]] RawBytes& output) {
 #ifdef AERONET_ENABLE_ZLIB
   return _impl->compressor.compress(input, output, _impl->deflateNoContextTakeover);
 #else
-  (void)input;
-  (void)output;
   return "zlib not enabled in build";
 #endif
 }
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-const char* DeflateContext::decompress(std::span<const std::byte> input, RawBytes& output,
-                                       std::size_t maxDecompressedSize) {
+const char* DeflateContext::decompress([[maybe_unused]] std::span<const std::byte> input,
+                                       [[maybe_unused]] RawBytes& output,
+                                       [[maybe_unused]] std::size_t maxDecompressedSize) {
 #ifdef AERONET_ENABLE_ZLIB
   return _impl->decompressor.decompress(input, output, maxDecompressedSize, _impl->inflateNoContextTakeover);
 #else
-  (void)input;
-  (void)output;
-  (void)maxDecompressedSize;
   return "zlib not enabled in build";
 #endif
 }

@@ -105,24 +105,21 @@ ParsedAuthority ParseAuthority(bool tls, std::string_view rest) {
 
 }  // namespace
 
-void Url::buildCanonical(bool tls, uint16_t port, std::string_view host, std::string_view target) {
-  const std::string_view scheme = tls ? kHttps : kHttp;
-  const auto portLen = ndigits(port);
-  _buf = RawChars32(scheme.size() + kSchemeSep.size() + host.size() + 1U + portLen + target.size());
-
-  char* pEnd = Append(scheme, _buf.data());
+Url::Url(bool tls, uint16_t port, std::string_view host, std::string_view target)
+    : _schemeLen(static_cast<uint8_t>((tls ? kHttps : kHttp).size())),
+      _hostLen(static_cast<uint16_t>(host.size())),
+      _port(port),
+      _originKeyLen(SafeCast<uint16_t>(_schemeLen + kSchemeSep.size() + _hostLen + 1U + ndigits(port))),
+      _buf(_originKeyLen + target.size()) {
+  char* pEnd = Append(tls ? kHttps : kHttp, _buf.data());
   pEnd = Append(kSchemeSep, pEnd);
   pEnd = Append(host, pEnd);
   *pEnd++ = ':';
-  pEnd = std::to_chars(pEnd, pEnd + portLen, port).ptr;
-
-  _schemeLen = SafeCast<uint8_t>(scheme.size());
-  _hostLen = SafeCast<uint16_t>(host.size());
-  _originKeyLen = SafeCast<uint16_t>(pEnd - _buf.data());
-  _port = port;
+  pEnd = std::to_chars(pEnd, _buf.data() + _buf.capacity(), port).ptr;
 
   pEnd = Append(target, pEnd);
-  _buf.setSize(SafeCast<RawChars32::size_type>(pEnd - _buf.data()));
+
+  _buf.setSize(_buf.capacity());
 }
 
 std::expected<Url, HttpClientErrc> Url::Parse(std::string_view url) {
@@ -151,6 +148,7 @@ std::expected<Url, HttpClientErrc> Url::resolveRedirect(std::string_view locatio
   if (location.contains("://")) {
     return Parse(location);
   }
+
   // Network-path reference: //host[:port][/path] -> inherit scheme. Parse the authority directly and
   // build the canonical buffer once, instead of synthesizing a "scheme://..." string to re-parse and copy.
   if (location.starts_with("//")) {

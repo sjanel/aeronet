@@ -113,15 +113,13 @@ class StaticConcatenatedStrings {
       const auto delta = static_cast<size_type>(oldSize - newSize);
       // move tail to the left
       std::memmove(data + oldBegPos + newSize, data + oldEndPos, tailSize);
-      if (newSize != 0) {
-        Copy(str, data + oldBegPos);
-      }
+      Copy(str, data + oldBegPos);
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
       for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
-    } else if (newSize != 0) {
+    } else {
       Copy(str, data + oldBegPos);
     }
   }

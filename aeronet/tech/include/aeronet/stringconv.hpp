@@ -1,7 +1,6 @@
 #pragma once
 
 #include <charconv>
-#include <climits>
 #include <concepts>
 #include <cstddef>
 #include <limits>
@@ -62,12 +61,6 @@ Integral StringToIntegral(const char* begPtr, std::size_t len) {
 template <std::integral Integral>
 Integral StringToIntegral(std::string_view str) {
   return StringToIntegral<Integral>(str.data(), str.size());
-}
-
-constexpr char* AppendIntegralToCharBuf(char* buf, std::integral auto val) {
-  static constexpr auto kMaxCharsInt =
-      std::max(nchars(std::numeric_limits<decltype(val)>::max()), nchars(std::numeric_limits<decltype(val)>::min()));
-  return std::to_chars(buf, buf + kMaxCharsInt, val).ptr;
 }
 
 }  // namespace aeronet
