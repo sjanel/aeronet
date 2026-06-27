@@ -130,7 +130,9 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
 
 #ifdef AERONET_ENABLE_ZLIB
 TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
-  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  TlsHttp2TestServer ts;
+
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 16UL;
     cfg.compression.addVaryAcceptEncodingHeader = true;
   });
@@ -215,7 +217,9 @@ TEST(TlsHttp2Client, CustomHeaders) {
 }
 
 TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
-  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  TlsHttp2TestServer ts;
+
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
     cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
     cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
@@ -246,7 +250,9 @@ TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
 }
 
 TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
-  TlsHttp2TestServer ts([](HttpServerConfig& cfg) {
+  TlsHttp2TestServer ts;
+
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
     cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
   });

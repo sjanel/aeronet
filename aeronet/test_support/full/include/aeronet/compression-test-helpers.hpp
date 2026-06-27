@@ -40,7 +40,7 @@ RawChars Compress(Encoding encoding, std::string_view payload);
 RawChars Decompress(Encoding encoding, std::string_view compressed);
 
 // Corrupt the compressed data in-place for the given encoding.
-void CorruptData(std::string_view encoding, RawChars& data);
+void CorruptData(Encoding encoding, RawChars& data);
 
 EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
 
@@ -60,6 +60,12 @@ inline auto SupportedEncodings() {
 #ifdef AERONET_ENABLE_ZSTD
   encs.push_back(Encoding::zstd);
 #endif
+  return encs;
+}
+
+inline auto SupportedEncodingWithIdentity() {
+  auto encs = SupportedEncodings();
+  encs.push_back(Encoding::none);
   return encs;
 }
 

@@ -22,21 +22,20 @@
 using namespace std::chrono_literals;
 using namespace aeronet;
 
-// Ignore SIGPIPE to prevent the test from being killed when writing to closed sockets
-// (which can happen during the epoll failure simulation). SIGPIPE is raised when trying
-// to write to a socket whose read end has been closed. Without this, test crashes are
-// intermittent and hard to reproduce.
-#ifdef AERONET_POSIX
-static const int kSigpipeIgnored = []() {
-  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-  return 0;
-}();
-#endif
-
 namespace {
 
 class HttpConnectDefaultConfig : public ::testing::Test {
- public:
+ protected:
+  void SetUp() override {
+#ifdef AERONET_POSIX
+    // Ignore SIGPIPE to prevent the test from being killed when writing to closed sockets
+    // (which can happen during the epoll failure simulation). SIGPIPE is raised when trying
+    // to write to a socket whose read end has been closed. Without this, test crashes are
+    // intermittent and hard to reproduce.
+    ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
+#endif
+  }
+
   test::TestServer ts;
   test::ClientConnection client{ts.port()};
   NativeHandle fd{client.fd()};
@@ -52,7 +51,6 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 // peer.tunnelOutBuffer and schedule the peer for writable events so data is
 // eventually forwarded.
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
-  (void)kSigpipeIgnored;  // Ensure SIGPIPE is ignored during this test
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
   auto echoSrv = test::startEchoServer();
   // Build CONNECT request to our upstream

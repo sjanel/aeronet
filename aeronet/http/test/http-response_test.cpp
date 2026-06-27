@@ -54,7 +54,8 @@ class HttpResponseTest : public ::testing::Test {
   static constexpr bool kIsHeadMethod = false;
   static constexpr bool kAddTrailerHeader = false;
   static constexpr std::size_t kMinCapturedBodySize = 4096;
-  static const RawChars kExpectedDateRaw;
+
+  const RawChars kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
   CompressionConfig cfg;
   internal::ResponseCompressionState compressionState{cfg};
@@ -157,8 +158,6 @@ class HttpResponseTest : public ::testing::Test {
   static void FinalizeForHttp2(HttpResponse& resp) { resp.finalizeForHttp2(); }
 #endif
 };
-
-const RawChars HttpResponseTest::kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
 TEST_F(HttpResponseTest, StatusFromRvalue) {
   auto resp = HttpResponse(http::StatusCodeOK).status(404);
@@ -3532,6 +3531,7 @@ auto ExpectedGlobalHeaderValues(const HttpResponse& resp, const ConcatenatedHead
 
 TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
   constexpr int kCases = 64;
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(20251115);
   std::uniform_int_distribution<int> globalCountDist(0, 64);
   std::uniform_int_distribution<int> valueLenDist(1, 24);
@@ -3637,6 +3637,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "some data");
 
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(12345);
   std::uniform_int_distribution<int> opDist(0, 9);
   std::uniform_int_distribution<int> smallLen(0, 12);

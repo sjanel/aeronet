@@ -1764,6 +1764,7 @@ TEST_F(HttpRequestTest, MakeResponseWithMultipleGlobalHeaders) {
 
 #ifdef AERONET_ENABLE_GLAZE
 // Must have external linkage for Glaze's compile-time reflection (no anonymous namespace).
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 struct JsonPoint {
   int x{};
   int y{};
