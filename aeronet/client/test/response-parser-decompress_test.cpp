@@ -4,14 +4,15 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <cstdio>
 #include <string>
 #include <string_view>
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "response-parser.hpp"
@@ -74,8 +75,8 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
   raw.append(GetEncodingStr(enc));
   raw.append("\r\nTransfer-Encoding: chunked\r\n\r\n");
   char hex[32];
-  std::snprintf(hex, sizeof(hex), "%zx\r\n", compressed.size());
-  raw.append(hex);
+  raw.append(hex, to_lower_hex(compressed.size(), hex));
+  raw.append(http::CRLF);
   raw.append(std::string_view(compressed));
   raw.append("\r\n0\r\n\r\n");
 

@@ -6,7 +6,7 @@
 
 #ifdef AERONET_POSIX
 #include <netinet/in.h>
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
