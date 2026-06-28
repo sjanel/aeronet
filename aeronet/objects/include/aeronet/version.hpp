@@ -12,6 +12,7 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/opensslv.h>
 #endif
+
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/decode.h>
 
@@ -22,12 +23,15 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
 #endif
+
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-gateway.hpp"
 #endif
+
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
 #endif
+
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/version.h>
 #endif

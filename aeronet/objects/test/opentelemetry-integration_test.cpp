@@ -6,22 +6,20 @@
 #endif
 
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <ctime>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 
 namespace {
 constexpr bool kDefaultEnabled = aeronet::openTelemetryEnabled();
@@ -207,13 +205,14 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
   test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
   const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
+  std::string_view socketPathView(socketPath.c_str());
 
   BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
   ASSERT_TRUE(serverFd);
 
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
-  std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socketPath.c_str());
+  *Append(socketPathView, addr.sun_path) = '\0';  // Null-terminate the path
   ASSERT_EQ(::bind(serverFd.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
 
   // Use test helper to set a receive timeout on the socket.
@@ -308,3 +307,4 @@ TEST(OpenTelemetryIntegration, ShouldThrowIfDisabledAndAsked) {
 }
 
 #endif  // AERONET_ENABLE_OPENTELEMETRY
+}  // namespace aeronet

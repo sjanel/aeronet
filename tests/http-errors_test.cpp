@@ -19,6 +19,7 @@
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -157,8 +158,8 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
     std::string chunk(static_cast<std::size_t>(sz), static_cast<char>('a' + (i % 26)));
     original += chunk;
     char hex[16];
-    std::snprintf(hex, sizeof(hex), "%x", sz);
-    std::string frame = std::string(hex) + "\r\n" + chunk + "\r\n";
+    std::string frame(hex, to_lower_hex(static_cast<std::size_t>(sz), hex));
+    frame += "\r\n" + chunk + "\r\n";
     std::size_t pos = 0;
     while (pos < frame.size()) {
       std::size_t rem = frame.size() - pos;
