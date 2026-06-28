@@ -4,13 +4,13 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <string>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 
 namespace aeronet {
@@ -258,7 +258,7 @@ class RouterUpdateProxy {
     // Make an owning copy of `path` for the posted callback. The dispatcher may
     // execute the lambda asynchronously on the server thread, so a
     // std::string_view would dangle if the caller's storage is destroyed.
-    (*dispatcher)([entryPtr, method, path = std::string(path), handler = std::move(handler)](Router& router) mutable {
+    (*dispatcher)([entryPtr, method, path = RawChars32(path), handler = std::move(handler)](Router& router) mutable {
       auto& entry = router.setPath(method, path, std::move(handler));
       *entryPtr = &entry;
     });

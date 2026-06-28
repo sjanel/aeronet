@@ -182,13 +182,11 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   auto port = original.port();
 
   // handler captures raw this pointer and returns it as string
-  original.router().setDefault([&original](const HttpRequest&) {
-    HttpResponse resp;
+  original.router().setDefault([&original](const HttpRequest& req) {
     // print the pointer value (implementation detail) to observe which 'this' is used
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%p", static_cast<void*>(&original));
-    resp.body(buf);
-    return resp;
+    return req.makeResponse(buf);
   });
 
   // Move construct (do not re-register handler)

@@ -51,8 +51,8 @@ bool WaitReadable(NativeHandle fd, int timeoutMs) {
   tv.tv_usec = (timeoutMs % 1000) * 1000;
   return ::select(0, &readSet, nullptr, nullptr, &tv) > 0;
 #else
-  pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};
-  return ::poll(&pfd, 1, timeoutMs) > 0;
+  pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};  // NOLINT(misc-include-cleaner)
+  return ::poll(&pfd, 1, timeoutMs) > 0;                 // NOLINT(misc-include-cleaner)
 #endif
 }
 
@@ -147,6 +147,7 @@ class RawServer {
     _listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     EXPECT_NE(_listenFd, kInvalidHandle);
     int one = 1;
+    // NOLINTNEXTLINE(misc-include-cleaner)
     ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -166,6 +167,7 @@ class RawServer {
       return;
     }
     int one = 1;
+    // NOLINTNEXTLINE(misc-include-cleaner)
     ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
     sockaddr_in6 addr{};
     addr.sin6_family = AF_INET6;

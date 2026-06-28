@@ -56,6 +56,11 @@
 #include <netinet/in.h>
 #endif
 
+#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+#include <charconv>
+#include <limits>
+#endif
+
 #ifdef __GLIBC__
 extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
@@ -976,15 +981,19 @@ inline void PushSendmsgAction(int fd, IoAction action) { g_sendmsg_actions.push(
 // Minimal overrides for sendfile(2) and pread(2) to simulate errno paths in tests
 namespace aeronet::test {
 inline std::optional<std::string> PathForFd(int fd) {
-  std::array<char, 64> linkBuf{};
-  std::snprintf(linkBuf.data(), linkBuf.size(), "/proc/self/fd/%d", fd);
-  std::array<char, 512> pathBuf{};
-  const auto len = ::readlink(linkBuf.data(), pathBuf.data(), pathBuf.size() - 1);
+  static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
+  char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
+  char* ptr = Append(kPathPrefix, linkBuf);
+  ptr = std::to_chars(ptr, linkBuf + sizeof(linkBuf), fd).ptr;
+  *ptr = '\0';
+
+  std::string pathBuf(512U, '\0');
+  const auto len = ::readlink(linkBuf, pathBuf.data(), pathBuf.size());
   if (len <= 0) {
     return std::nullopt;
   }
-  pathBuf[static_cast<std::size_t>(len)] = '\0';
-  return std::string(pathBuf.data());
+  pathBuf.resize(static_cast<std::size_t>(len));
+  return pathBuf;
 }
 using PreadFn = ssize_t (*)(int, void*, size_t, off_t);
 using SendfileFn = ssize_t (*)(int, int, off_t*, size_t);
@@ -1010,16 +1019,6 @@ inline SendfileFn ResolveRealSendfile() {
 inline KeyedActionQueue<int, IoAction> g_pread_actions;
 inline KeyedActionQueue<int, IoAction> g_sendfile_actions;            // keyed by out_fd (destination)
 inline KeyedActionQueue<std::string, IoAction> g_pread_path_actions;  // keyed by file path
-
-inline void ResetPreadSendfile() {
-  g_pread_actions.reset();
-  g_sendfile_actions.reset();
-  g_pread_path_actions.reset();
-}
-
-inline void SetPreadActions(int fd, std::initializer_list<IoAction> actions) {
-  g_pread_actions.setActions(fd, actions);
-}
 
 inline void SetSendfileActions(int outFd, std::initializer_list<IoAction> actions) {
   g_sendfile_actions.setActions(outFd, actions);

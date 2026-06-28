@@ -1,4 +1,4 @@
-#include <aeronet/aeronet.hpp>
+#include <aeronet/aeronet-server.hpp>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -31,7 +31,7 @@ std::unordered_map<int, User> users{
 
 // Simulates a blocking database lookup (e.g., network call to a remote DB).
 // In a real application, this could be a call to PostgreSQL, Redis, or any external service.
-std::optional<User> simulateDatabaseLookup(int userId) {
+std::optional<User> SimulateDatabaseLookup(int userId) {
   // Simulate network latency
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -43,7 +43,7 @@ std::optional<User> simulateDatabaseLookup(int userId) {
 }
 
 // Simulates a blocking database update
-bool simulateDatabaseUpdate(int userId, std::string_view newEmail) {
+bool SimulateDatabaseUpdate(int userId, std::string_view newEmail) {
   // Simulate network latency
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
 
       // co_await deferWork(): runs the lambda on a background thread, returns the result.
       // The event loop is free to handle other requests while waiting.
-      std::optional<User> user = co_await req.deferWork([id]() { return simulateDatabaseLookup(id); });
+      std::optional<User> user = co_await req.deferWork([id]() { return SimulateDatabaseLookup(id); });
 
       if (!user) {
         co_return HttpResponse(404, "User not found\n");
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
 
       // co_await deferWork(): run the blocking DB update on a background thread
       bool updated =
-          co_await req.deferWork([id, email = std::string(newEmail)]() { return simulateDatabaseUpdate(id, email); });
+          co_await req.deferWork([id, email = std::string(newEmail)]() { return SimulateDatabaseUpdate(id, email); });
 
       if (!updated) {
         co_return HttpResponse(404, "User not found\n");

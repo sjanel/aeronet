@@ -15,12 +15,15 @@ target_compile_features(aeronet_module PUBLIC cxx_std_23)
 
 # Explicitly set include directories for angle bracket includes
 target_include_directories(aeronet_module PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/main/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/client/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/http/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/http2/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/tech/include>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/sys/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/jwt/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/main/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/objects/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/server/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/sys/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/tech/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/tls/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/websocket/include>
     $<INSTALL_INTERFACE:include>

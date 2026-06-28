@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD 23)
 
 find_package(aeronet CONFIG REQUIRED)
 
-add_executable(consumer-example ../minimal.cpp)
+add_executable(consumer-example ../server-minimal.cpp)
 
 # Link against the imported target installed by aeronet
 # (public headers and transitive usage requirements are propagated)
