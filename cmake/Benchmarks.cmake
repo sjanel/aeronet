@@ -46,7 +46,7 @@ if(AERONET_BENCH_ENABLE_DROGON)
   FetchContent_Declare(
     drogon
     GIT_REPOSITORY https://github.com/drogonframework/drogon.git
-    GIT_TAG v1.9.12
+    GIT_TAG v1.9.13
     GIT_SHALLOW TRUE
     GIT_PROGRESS TRUE
     # Ensure the 'trantor' submodule is fetched so add_subdirectory(trantor) succeeds
@@ -64,8 +64,8 @@ endif()
 if(AERONET_BENCH_ENABLE_HTTPLIB)
   FetchContent_Declare(
     cpp_httplib
-    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.26.0.tar.gz
-    URL_HASH SHA256=a66f908f50ccb119769adce44fe1eac75f81b6ffab7c4ac0211bb663ffeb2688
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.48.0.tar.gz
+    URL_HASH SHA256=d9ed142d319c6e19a961f477257e67f846909ce15288502188df2281941be84e
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(cpp_httplib)
@@ -75,7 +75,7 @@ if(AERONET_BENCH_ENABLE_UWEBSOCKETS)
   FetchContent_Declare(
     uwebsockets
     GIT_REPOSITORY https://github.com/uNetworking/uWebSockets.git
-    GIT_TAG        v20.76.0
+    GIT_TAG        v20.78.0
     GIT_SHALLOW    TRUE
   )
   FetchContent_Declare(

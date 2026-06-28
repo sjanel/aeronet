@@ -12,7 +12,7 @@ use axum::{
 };
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use hyper_util::rt::TokioIo;
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
