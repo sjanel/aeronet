@@ -382,6 +382,19 @@ AeronetAddUnitTest(
     aeronet_objects
 )
 
+AeronetAddUnitTest(
+    version_test
+    test/version_test.cpp
+)
+
+if(AERONET_BUILD_TESTS)
+    if(AERONET_ENABLE_OPENSSL)
+        target_link_libraries(version_test PUBLIC aeronet_tls)
+    else()
+        target_link_libraries(version_test PUBLIC aeronet_objects)
+    endif()
+endif()
+
 if(AERONET_ENABLE_ZLIB)
     AeronetAddUnitTest(
         zlib-encoder-decoder_test

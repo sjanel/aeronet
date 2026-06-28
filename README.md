@@ -23,7 +23,7 @@
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, JWT (JWS), etc.
-- **Batteries included**: beyond the server, a matching non‑blocking HTTP/1.1 **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
+- **Batteries included**: beyond the server, a matching HTTP/1.1 **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
 - **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
@@ -72,7 +72,7 @@ int main() {
 }
 ```
 
-See the [full program](examples/minimal.cpp).
+See the [full program](examples/server-minimal.cpp).
 
 ### Streaming response
 

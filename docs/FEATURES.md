@@ -3205,7 +3205,7 @@ Test infrastructure for verifying server behavior under realistic network condit
 
 - **`FaultInjectingTransport`** (`aeronet/test_support/basic/include/aeronet/fault-injecting-transport.hpp`): Decorator that wraps a real `ITransport` (e.g., `PlainTransport` on a live socket) and applies `FaultPolicy` to all I/O. Used for integration tests with real sockets and the full event loop.
 
-- **Transport test hook** (`aeronet/main/include/aeronet/transport-test-hook.hpp`): Global atomic function pointer (`g_transportDecorator`) and RAII guard (`ScopedTransportDecorator`). When set, the server decorates each newly accepted transport at accept time. Guarded by `#ifdef AERONET_ENABLE_TEST_HOOKS` — zero overhead in production.
+- **Transport test hook** (`aeronet/server/include/aeronet/transport-test-hook.hpp`): Global atomic function pointer (`g_transportDecorator`) and RAII guard (`ScopedTransportDecorator`). When set, the server decorates each newly accepted transport at accept time. Guarded by `#ifdef AERONET_ENABLE_TEST_HOOKS` — zero overhead in production.
 
 ### Test coverage
 

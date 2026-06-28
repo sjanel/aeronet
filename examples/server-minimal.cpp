@@ -1,4 +1,4 @@
-#include <aeronet/aeronet.hpp>
+#include <aeronet/aeronet-server.hpp>
 #include <charconv>
 #include <csignal>
 #include <cstddef>
@@ -10,8 +10,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include "aeronet/version.hpp"
 
 using namespace aeronet;
 

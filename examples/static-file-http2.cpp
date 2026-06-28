@@ -15,7 +15,7 @@
 ///   curl --http2 http://localhost:8080/                         # h2c upgrade
 ///   curl -k --http2 https://localhost:8443/                     # ALPN h2 (TLS)
 
-#include <aeronet/aeronet.hpp>
+#include <aeronet/aeronet-server.hpp>
 #include <charconv>
 #include <csignal>
 #include <cstdint>

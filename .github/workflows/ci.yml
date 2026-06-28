@@ -412,10 +412,11 @@ jobs:
       - name: Build examples
         run: |
           cmake --build ${BUILD_DIR} --parallel --target \
-          aeronet \
+          aeronet_client \
+          aeronet_server \
           aeronet-async-handlers \
           aeronet-http2 \
-          aeronet-minimal \
+          aeronet-server-minimal \
           aeronet-multi \
           aeronet-sendfile \
           aeronet-static-example \
@@ -486,7 +487,7 @@ jobs:
             "${EXAMPLE_DIR}/aeronet-http2" ${BUILD_DIR}/certs/server.crt ${BUILD_DIR}/certs/server.key 19443
 
           run_server_and_curl minimal "http://127.0.0.1:18082/hello" -- \
-            "${EXAMPLE_DIR}/aeronet-minimal" 18082
+            "${EXAMPLE_DIR}/aeronet-server-minimal" 18082
 
           run_server_and_curl multi "http://127.0.0.1:18083/test" -- \
             "${EXAMPLE_DIR}/aeronet-multi" 18083 2

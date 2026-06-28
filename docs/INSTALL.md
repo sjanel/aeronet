@@ -145,7 +145,7 @@ include(FetchContent)
 FetchContent_Declare(
   aeronet
   GIT_REPOSITORY https://github.com/sjanel/aeronet.git
-  GIT_TAG main
+  GIT_TAG main # Or specify a release tag, e.g., v1.0.0
 )
 
 # Enable the features you want before FetchContent_MakeAvailable
@@ -158,7 +158,7 @@ set(AERONET_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE) # toggle as needed
 FetchContent_MakeAvailable(aeronet)
 
 add_executable(my_server src/my_server.cpp)
-target_link_libraries(my_server PRIVATE aeronet)
+target_link_libraries(my_server PRIVATE aeronet_server)
 ```
 
 ## Package Managers
