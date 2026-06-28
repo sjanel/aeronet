@@ -4,18 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.7"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
-flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
-hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["tokio", "http1", "http2"] }
-rand = "0.9"
-rustls-pemfile = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-tokio-rustls = "0.26"
-tower = { version = "0.5", features = ["util"] }
+axum = "0.8.9"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-ng"] }
+hyper = { version = "1.8.1", features = ["full"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "http1", "http2"] }
+rand = "0.10.1"
+rustls-pemfile = "2.2.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-rustls = "0.26.4"
+tower = { version = "0.5.3", features = ["util"] }
 
 [profile.release]
 lto = true
