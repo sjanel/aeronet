@@ -3,11 +3,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <string>
 #include <string_view>
 #include <thread>
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
@@ -375,8 +375,8 @@ TEST(HttpParserChunked, LargeBody_ManyChunks) {
   char hex[16];
   for (int i = 0; i < kChunkCount; ++i) {
     std::string data(kChunkDataSize, static_cast<char>('A' + (i % 26)));
-    std::snprintf(hex, sizeof(hex), "%zx", kChunkDataSize);
-    req += std::string(hex) + "\r\n" + data + "\r\n";
+    req.append(std::string_view(hex, to_lower_hex(kChunkDataSize, hex)));
+    req += "\r\n" + data + "\r\n";
     expected += data;
   }
   req += "0\r\n\r\n";

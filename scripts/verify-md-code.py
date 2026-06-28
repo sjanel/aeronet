@@ -176,16 +176,17 @@ def gather_user_include_dirs(user_includes: Sequence[str]) -> List[str]:
 def fallback_include_dirs() -> List[str]:
     possible_roots = [
         "aeronet",
-        "aeronet/main/include",
+        "aeronet/client/include",
         "aeronet/http/include",
         "aeronet/http2/include",
+        "aeronet/jwt/include",
+        "aeronet/main/include",
         "aeronet/objects/include",
-        "aeronet/tech/include",
+        "aeronet/server/include",
         "aeronet/sys/include",
+        "aeronet/tech/include",
         "aeronet/tls/include",
         "aeronet/websocket/include",
-        "aeronet/client/include",
-        "aeronet/jwt/include",
     ]
     dirs: List[str] = []
     for root in possible_roots:
@@ -351,12 +352,12 @@ def locate_libraries(build_dir: Path) -> List[str]:
     lib_dir = build_dir / "lib"
     if not lib_dir.is_dir():
         print(
-            f"Build dir {lib_dir} not found; invoking cmake --build for target aeronet",
+            f"Build dir {lib_dir} not found; invoking cmake --build for target aeronet_server",
             file=sys.stderr,
         )
         try:
             subprocess.run(
-                ["cmake", "--build", ".", "--target", "aeronet", "--parallel"],
+                ["cmake", "--build", ".", "--target", "aeronet_server", "--parallel"],
                 cwd=str(build_dir),
                 check=True,
                 stdout=subprocess.DEVNULL,

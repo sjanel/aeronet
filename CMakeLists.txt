@@ -263,7 +263,7 @@ if(AERONET_INSTALL)
     @ONLY
   )
 
-  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  set(_AERONET_EXPORT_TARGETS aeronet aeronet_server aeronet_http aeronet_tech aeronet_objects aeronet_sys)
   if(AERONET_ENABLE_HTTP2)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_http2)
   endif()
@@ -301,6 +301,7 @@ if(AERONET_INSTALL)
 
   # Headers: install each public include tree
   install(DIRECTORY aeronet/main/include/ DESTINATION include)
+  install(DIRECTORY aeronet/server/include/ DESTINATION include)
   install(DIRECTORY aeronet/http/include/ DESTINATION include)
   if(AERONET_ENABLE_HTTP2)
     install(DIRECTORY aeronet/http2/include/ DESTINATION include)

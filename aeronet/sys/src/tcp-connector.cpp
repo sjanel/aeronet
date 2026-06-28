@@ -53,10 +53,10 @@ ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock:
     pfd.events = POLLOUT;
     const int pr = ::WSAPoll(&pfd, 1, timeoutMs);
 #else
-    pollfd pfd{};
+    pollfd pfd{};  // NOLINT(misc-include-cleaner)
     pfd.fd = fd;
-    pfd.events = POLLOUT;
-    const int pr = ::poll(&pfd, 1, timeoutMs);
+    pfd.events = POLLOUT;                       // NOLINT(misc-include-cleaner)
+    const int pr = ::poll(&pfd, 1, timeoutMs);  // NOLINT(misc-include-cleaner)
 #endif
     if (pr < 0) {
       if (LastSystemError() == error::kInterrupted) {

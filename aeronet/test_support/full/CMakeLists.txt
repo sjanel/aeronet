@@ -15,7 +15,7 @@ AeronetAddProjectLibrary(aeronet_test_support
 target_include_directories(aeronet_test_support
     PUBLIC
         include
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../main/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../server/include>
 )
 
 target_link_libraries(aeronet_test_support

@@ -6,7 +6,7 @@
 
 # Aeronet benchmark server (always built when benchmarks are enabled)
 AeronetAddProjectExecutable(aeronet-bench-server aeronet_server.cpp)
-target_link_libraries(aeronet-bench-server PRIVATE aeronet)
+target_link_libraries(aeronet-bench-server PRIVATE aeronet_server)
 set_target_properties(aeronet-bench-server PROPERTIES FOLDER "benchmarks/servers")
 
 # Enable LTO for release builds
