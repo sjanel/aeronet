@@ -92,12 +92,21 @@ class HttpClient : private internal::ClientHost {
   struct ActiveConnection {
     [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(cnx); }
 
+    void reset() noexcept {
+      transport.reset();
+      idleSince = {};
+      cnx = {};
+      proto.reset();
+      protocol = ClientProtocol::Http1_1;
+      reused = false;
+    }
+
     std::unique_ptr<ITransport> transport;
+    SteadyClock::time_point idleSince;  // when this connection was returned to the idle pool
     // Wire-protocol engine for this connection (HTTP/1.1 today). Created lazily once the protocol is known
     // (after ALPN), then pooled with the connection so a reused connection keeps its handler/state.
-    std::unique_ptr<internal::ClientConnection> proto;
-    SteadyClock::time_point idleSince;  // when this connection was returned to the idle pool
     Connection cnx;
+    internal::ClientConnection proto;
     ClientProtocol protocol{ClientProtocol::Http1_1};  // negotiated via ALPN (https) or assumed (http)
     bool reused{false};                                // taken from the idle pool
   };
