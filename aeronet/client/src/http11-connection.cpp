@@ -1,5 +1,3 @@
-#include "http11-connection.hpp"
-
 #include <charconv>
 #include <cstddef>
 #include <expected>
@@ -108,8 +106,9 @@ inline constexpr std::string_view kSupportedAcceptEncoding{details::kAcceptEncod
 
 }  // namespace
 
-std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url& url, const ClientRequest& req,
-                                                     http::Method method, bool dropBody) {
+std::string_view ClientConnection::buildRequestBytesForHttp11(ClientHost& host, const Url& url,
+                                                              const ClientRequest& req, http::Method method,
+                                                              bool dropBody) {
   const HttpClientConfig& config = host.config();
   RawChars& requestBuffer = host.requestBuffer();
   requestBuffer.clear();
@@ -117,7 +116,6 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
   // HttpMessage (reused as the field container) manages Content-Type / Content-Length and stores
   // user headers; they all appear in headersFlatView(). We only inject the request-specific framing
   // headers (Host / User-Agent / Accept-Encoding / Connection) when the user did not set them.
-  const HttpMessage& fields = req._fields;
   const std::string_view hostStr = url.host();
   // The host is stored unbracketed even for IPv6 literals (a parsed host only ever contains ':' when it is
   // an IPv6 address), so the Host header must re-add the brackets: "Host: [::1]:8080", never "::1:8080".
@@ -126,12 +124,37 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
   // Request line: "<method> <target> HTTP/1.1\r\n" -- one capacity check for the whole line.
   const std::string_view methodStr = http::MethodToStr(method);
   const std::string_view target = url.target();
-  const bool addHostHeader = !fields.hasHeader(http::Host);
-  const auto ndigitsPort = ndigits(url.port());
   const std::string_view userAgent = config.userAgent();
-  const bool addUserAgent = !userAgent.empty() && !fields.hasHeader(http::UserAgent);
-  bool addAcceptEncoding = !fields.hasHeader(http::AcceptEncoding);
-  const bool addConnectionClose = !config.keepAlive && !fields.hasHeader(http::Connection);
+  std::string_view contentType;
+
+  bool addHostHeader = true;
+  bool addUserAgent = !userAgent.empty();
+  bool addAcceptEncoding = true;
+  bool addConnectionClose = !config.keepAlive;
+  bool hasTransferEncoding = false;
+  bool hasContentEncoding = false;
+  bool hasContentLength = false;
+  for (const auto& [name, value] : req.headers()) {
+    if (CaseInsensitiveEqual(name, http::Host)) {
+      addHostHeader = false;
+    } else if (CaseInsensitiveEqual(name, http::UserAgent)) {
+      addUserAgent = false;
+    } else if (CaseInsensitiveEqual(name, http::AcceptEncoding)) {
+      addAcceptEncoding = false;
+    } else if (CaseInsensitiveEqual(name, http::Connection)) {
+      addConnectionClose = false;
+    } else if (CaseInsensitiveEqual(name, http::TransferEncoding)) {
+      hasTransferEncoding = true;
+    } else if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
+      hasContentEncoding = true;
+    } else if (CaseInsensitiveEqual(name, http::ContentLength)) {
+      hasContentLength = true;
+    } else if (CaseInsensitiveEqual(name, http::ContentType)) {
+      contentType = value;
+    }
+  }
+
+  const auto ndigitsPort = ndigits(url.port());
 
   std::string_view body = dropBody ? std::string_view{} : req.body();
 
@@ -140,8 +163,8 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
   std::string_view contentEncoding;
   if (!dropBody && config.requestCompression.enabled() && !body.empty()) {
     const HttpClientConfig::RequestCompression& rc = config.requestCompression;
-    if (body.size() >= rc.codec.minBytes && IsEncodingEnabled(rc.encoding) &&
-        !fields.hasHeader(http::ContentEncoding) && !fields.hasHeader(http::TransferEncoding)) {
+    if (body.size() >= rc.codec.minBytes && IsEncodingEnabled(rc.encoding) && !hasContentEncoding &&
+        !hasTransferEncoding) {
       const std::size_t maxCompressedBytes = rc.codec.maxCompressedBytes(body.size());
       const std::string_view compressed = internal::HttpCodec::CompressFullBody(
           host.codec().compressionState, rc.encoding, body, maxCompressedBytes, host.codec().compressOut);
@@ -181,34 +204,23 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
     neededSize += kConnectionCloseLine.size();
   }
 
-  const std::string_view headersFlatView = fields.headersFlatView();
   const auto bodySz = body.size();
   const auto ndigitsBodySz = ndigits(bodySz);
-  const bool addZeroContentLength = body.empty() && MethodUsuallyHasBody(method) &&
-                                    !fields.hasHeader(http::ContentLength) && !fields.hasHeader(http::TransferEncoding);
+  const bool addZeroContentLength =
+      body.empty() && MethodUsuallyHasBody(method) && !hasContentLength && !hasTransferEncoding;
   const bool concatenateSmallBody = !body.empty() && bodySz <= config.maxCapturedRequestBodyBytes;
+  const std::string_view headersFlatView = req.headersFlatView();
 
+  neededSize += headersFlatView.size();
   if (dropBody) {
-    for (const auto& [name, value] : fields.headers()) {
-      if (CaseInsensitiveEqual(name, http::ContentType) || CaseInsensitiveEqual(name, http::ContentLength)) {
-        continue;
-      }
-      neededSize += HttpMessage::HeaderSize(name.size(), value.size());
-    }
+    neededSize -= HttpMessage::HeaderSize(http::ContentLength.size(), ndigitsBodySz) +
+                  HttpMessage::HeaderSize(http::ContentType.size(), contentType.size());
   } else if (!contentEncoding.empty()) {
-    for (const auto& [name, value] : fields.headers()) {
-      if (CaseInsensitiveEqual(name, http::ContentLength)) {
-        continue;
-      }
-      neededSize += HttpMessage::HeaderSize(name.size(), value.size());
-    }
+    neededSize -= HttpMessage::HeaderSize(http::ContentLength.size(), ndigitsBodySz);
     neededSize += kContentEncodingHeaderPrefix.size() + contentEncoding.size() + http::CRLF.size() +
                   kContentLengthHeaderPrefix.size() + ndigitsBodySz + http::CRLF.size();
-  } else {
-    neededSize += headersFlatView.size();
-    if (addZeroContentLength) {
-      neededSize += kContentLengthZeroLine.size();
-    }
+  } else if (addZeroContentLength) {
+    neededSize += kContentLengthZeroLine.size();
   }
   if (concatenateSmallBody) {
     neededSize += bodySz;
@@ -266,7 +278,7 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
 
   if (dropBody) {
     // Redirect rewrite to GET: emit user headers but drop the body's Content-Type / Content-Length.
-    for (const auto& [name, value] : fields.headers()) {
+    for (const auto& [name, value] : req.headers()) {
       if (CaseInsensitiveEqual(name, http::ContentType) || CaseInsensitiveEqual(name, http::ContentLength)) {
         continue;
       }
@@ -275,7 +287,7 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
   } else if (!contentEncoding.empty()) {
     // Compressed body: emit the managed/user headers but rewrite Content-Length to the compressed size and
     // append the Content-Encoding header.
-    for (const auto& [name, value] : fields.headers()) {
+    for (const auto& [name, value] : req.headers()) {
       if (CaseInsensitiveEqual(name, http::ContentLength)) {
         continue;
       }
@@ -308,9 +320,11 @@ std::string_view Http11Connection::buildRequestBytes(ClientHost& host, const Url
   return body;
 }
 
-std::expected<void, HttpClientErrc> Http11Connection::writeAll(ClientHost& host, ITransport& transport, NativeHandle fd,
-                                                               std::string_view head, std::string_view body,
-                                                               SteadyClock::time_point deadline, bool& requestSent) {
+std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(ClientHost& host, ITransport& transport,
+                                                                        NativeHandle fd, std::string_view head,
+                                                                        std::string_view body,
+                                                                        SteadyClock::time_point deadline,
+                                                                        bool& requestSent) {
   const std::size_t total = head.size() + body.size();
   std::size_t off = 0;
   while (off < total) {
@@ -339,12 +353,13 @@ std::expected<void, HttpClientErrc> Http11Connection::writeAll(ClientHost& host,
   return {};
 }
 
-HttpClientResult Http11Connection::exchange(ClientHost& host, ITransport& transport, NativeHandle fd, const Url& url,
-                                            const ClientRequest& req, http::Method method, bool dropBody,
-                                            SteadyClock::time_point ioDeadline, bool& requestSent) {
+HttpClientResult ClientConnection::exchangeForHttp11(ClientHost& host, ITransport& transport, NativeHandle fd,
+                                                     const Url& url, const ClientRequest& req, http::Method method,
+                                                     bool dropBody, SteadyClock::time_point ioDeadline,
+                                                     bool& requestSent) {
   const HttpClientConfig& config = host.config();
-  const std::string_view body = buildRequestBytes(host, url, req, method, dropBody);
-  if (auto wr = writeAll(host, transport, fd, host.requestBuffer(), body, ioDeadline, requestSent); !wr) {
+  const std::string_view body = buildRequestBytesForHttp11(host, url, req, method, dropBody);
+  if (auto wr = writeAllForHttp11(host, transport, fd, host.requestBuffer(), body, ioDeadline, requestSent); !wr) {
     return std::unexpected(wr.error());
   }
 
