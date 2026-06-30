@@ -242,12 +242,22 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTrip) {
   const std::string url = "https://localhost:" + std::to_string(port) + "/secure";
 
   HttpClientConfig cfg;
-  cfg.tlsVerifyPeer = false;                              // self-signed server cert
-  cfg.withTlsClientCertKeyMemory(clientCert, clientKey);  // present the client certificate (in-memory PEM)
-  HttpClient client(cfg);
-  auto resp = client.get(url).value();
-  EXPECT_EQ(resp.status(), 200);
-  EXPECT_EQ(resp.bodyInMemory(), "secret");
+  cfg.tlsVerifyPeer = false;  // self-signed server cert
+  for (std::string_view clientCertSv : {std::string_view(), std::string_view(clientCert)}) {
+    for (std::string_view clientKeySv : {std::string_view(), std::string_view(clientKey)}) {
+      cfg.withTlsClientCertKeyMemory(clientCertSv, clientKeySv);
+
+      HttpClient client(cfg);
+      auto httpClientResult = client.get(url);
+      if (clientCertSv.empty() || clientKeySv.empty()) {
+        EXPECT_FALSE(httpClientResult);
+      } else {
+        const auto& resp = httpClientResult.value();
+        EXPECT_EQ(resp.status(), 200);
+        EXPECT_EQ(resp.bodyInMemory(), "secret");
+      }
+    }
+  }
 }
 
 TEST(HttpClientMtlsTest, MutualTlsRoundTripFromFiles) {

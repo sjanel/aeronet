@@ -416,27 +416,33 @@ TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
 // A delta-seconds Retry-After is honored (and capped at maxDelay): with maxDelay = 10ms a "Retry-After: 5"
 // is clamped to (effectively) no wait, so the retry still happens promptly and recovers on the same conn.
 TEST(HttpClientErrorE2ETest, StatusRetryHonorsRetryAfter) {
-  RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 5\r\n\r\n");
-    DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
-  });
-  RetryConfig retry = FastRetry(2);
-  retry.maxDelay = std::chrono::milliseconds{10};  // Retry-After: 5s is clamped to this
-  HttpClientConfig cfg;
-  cfg.withRetry(retry);
-  HttpClient client(cfg);
+  for (std::string_view retryAfterValue : {"5", "5invalid"}) {
+    RawServer server([retryAfterValue](NativeHandle fd, int) {
+      DrainRequest(fd);
+      RawChars data;
+      data.append("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: ");
+      data.append(retryAfterValue);
+      data.append("\r\n\r\n");
+      SendAll(fd, data);
+      DrainRequest(fd);
+      SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+    });
+    RetryConfig retry = FastRetry(2);
+    retry.maxDelay = std::chrono::milliseconds{10};  // Retry-After: 5s is clamped to this
+    HttpClientConfig cfg;
+    cfg.withRetry(retry);
+    HttpClient client(cfg);
 
-  const auto start = std::chrono::steady_clock::now();
-  const auto result = client.get(MakeUrl(server.port()));
-  const auto elapsed = std::chrono::steady_clock::now() - start;
-  ASSERT_TRUE(result);
-  EXPECT_EQ(result->status(), 200);
-  EXPECT_EQ(result->bodyInMemory(), "done");
-  // The 5-second Retry-After was capped to maxDelay (10ms): the whole exchange must finish promptly, not
-  // after a literal 5s sleep.
-  EXPECT_LT(elapsed, std::chrono::seconds{2});
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = client.get(MakeUrl(server.port()));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), 200);
+    EXPECT_EQ(result->bodyInMemory(), "done");
+    // The 5-second Retry-After was capped to maxDelay (10ms): the whole exchange must finish promptly, not
+    // after a literal 5s sleep.
+    EXPECT_LT(elapsed, std::chrono::seconds{2});
+  }
 }
 
 // A post-send failure on an *idempotent* method (GET) is retried only when the caller opts in: the first
