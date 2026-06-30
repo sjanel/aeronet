@@ -3,15 +3,12 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/client-connection.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 
 namespace aeronet {
-
-namespace internal {
-class Http11Connection;  // assembles the request bytes from _fields (see http11-connection.cpp)
-}  // namespace internal
 
 // Describes an outbound HTTP request.
 //
@@ -81,11 +78,23 @@ class ClientRequest {
   // Get the URL (target) for this request.
   [[nodiscard]] std::string_view url() const noexcept { return _fields.reason(); }
 
+  // Get a contiguous view of the current headers stored in this request.
+  // Each header line is formatted as: name + ": " + value + CRLF. If no headers are present, it
+  // returns an empty view.
+  [[nodiscard]] std::string_view headersFlatView() const noexcept { return _fields.headersFlatView(); }
+
+  // Return a non-allocating, iterable view over headers.
+  // Each element is a HeaderView with name and value string_views.
+  // Usage example:
+  //   for (const auto &[name, value] : request.headers()) {
+  //       process(name, value);
+  //   }
+  [[nodiscard]] HeadersView headers() const noexcept { return _fields.headers(); }
+
   [[nodiscard]] std::string_view body() const noexcept { return _fields.bodyInMemory(); }
 
  private:
   friend class HttpClient;
-  friend class internal::Http11Connection;
 
   HttpMessage _fields;  // container used to store url (reason), header + body
   http::Method _method{http::Method::GET};

@@ -19,7 +19,6 @@
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -39,7 +38,6 @@
 #include "aeronet/url.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "http-client-codec.hpp"
-#include "http11-connection.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/evp.h>
@@ -54,6 +52,10 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
+#endif
+
+#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
+#include "aeronet/encoding.hpp"
 #endif
 
 namespace aeronet {
@@ -233,9 +235,11 @@ HttpClient::HttpClient(HttpClientConfig config) : _config(std::move(config)), _l
   _config.decompression.validate();  // no-op when disabled
   if (_config.requestCompression.enabled()) {
     _config.requestCompression.codec.validate();
+#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
     if (!IsEncodingEnabled(_config.requestCompression.encoding)) {
       throw HttpClientException("requestCompression.encoding is not a supported / compiled-in content coding");
     }
+#endif
   }
 }
 
@@ -359,7 +363,8 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
 }
 
 void HttpClient::releaseConnection(const Url& url, ActiveConnection&& conn) {
-  if (!_config.keepAlive || !conn.valid()) {
+  assert(_config.keepAlive);
+  if (!conn.valid()) {
     return;
   }
   // This is the only place the pool needs to own (and therefore allocate) an origin key: create the
@@ -410,7 +415,7 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
 }
 
 std::expected<void, HttpClientErrc> HttpClient::EnsureProtocolHandler(ActiveConnection& conn) {
-  if (conn.proto) {
+  if (!conn.proto.empty()) {
     return {};  // reused from the pool: the protocol engine (and any per-connection state) travels with it
   }
   switch (conn.protocol) {
@@ -421,7 +426,7 @@ std::expected<void, HttpClientErrc> HttpClient::EnsureProtocolHandler(ActiveConn
     case ClientProtocol::Http1_1:
       break;
   }
-  conn.proto = std::make_unique<internal::Http11Connection>();
+  conn.proto = internal::ClientConnection(internal::ClientConnection::Type::Http11);
   return {};
 }
 
@@ -471,7 +476,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
       // Could not register; nothing was sent yet, so retrying is safe regardless of method. A pooled
       // connection is re-acquired for free (drains the pool, then connects fresh); a fresh one spends a
       // backoff slot.
-      conn = {};
+      conn.reset();
       if (reused) {
         continue;
       }
@@ -492,7 +497,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     // exchange later returns an error. Any step short-circuits to its HttpClientErrc.
     HttpClientResult result =
         finishConnect(conn, url, connectDeadline).and_then([&] { return EnsureProtocolHandler(conn); }).and_then([&] {
-          return conn.proto->exchange(*this, *conn.transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
+          return conn.proto.exchange(*this, *conn.transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
         });
 
     _loop.del(fd);
@@ -510,21 +515,21 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
           }
         }
         // The connection may still be reusable (keep-alive); hand it back so the retry can reuse it.
-        if (_config.keepAlive && conn.proto->keepAlive()) {
+        if (_config.keepAlive && conn.proto.keepAlive()) {
           releaseConnection(url, std::move(conn));
         } else {
-          conn = {};
+          conn.reset();
         }
         sleepBackoff(delay);
         continue;
       }
-      if (_config.keepAlive && conn.proto->keepAlive()) {
+      if (_config.keepAlive && conn.proto.keepAlive()) {
         releaseConnection(url, std::move(conn));
       }
       return result;
     }
 
-    conn = {};  // close the socket / transport
+    conn.reset();  // close the socket / transport
     if (reused && !requestSent) {
       continue;  // stale keep-alive race, nothing sent yet: free retry on a fresh connection (no backoff)
     }
