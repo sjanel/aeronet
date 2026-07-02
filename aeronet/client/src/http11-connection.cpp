@@ -9,6 +9,7 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
+#include "aeronet/http-client.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message.hpp"
@@ -106,11 +107,11 @@ inline constexpr std::string_view kSupportedAcceptEncoding{details::kAcceptEncod
 
 }  // namespace
 
-std::string_view ClientConnection::buildRequestBytesForHttp11(ClientHost& host, const Url& url,
+std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client, const Url& url,
                                                               const ClientRequest& req, http::Method method,
                                                               bool dropBody) {
-  const HttpClientConfig& config = host.config();
-  RawChars& requestBuffer = host.requestBuffer();
+  const HttpClientConfig& config = client.config();
+  RawChars& requestBuffer = client.requestBuffer();
   requestBuffer.clear();
 
   // HttpMessage (reused as the field container) manages Content-Type / Content-Length and stores
@@ -167,7 +168,7 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(ClientHost& host, 
         !hasTransferEncoding) {
       const std::size_t maxCompressedBytes = rc.codec.maxCompressedBytes(body.size());
       const std::string_view compressed = internal::HttpCodec::CompressFullBody(
-          host.codec().compressionState, rc.encoding, body, maxCompressedBytes, host.codec().compressOut);
+          client.codec().compressionState, rc.encoding, body, maxCompressedBytes, client.codec().compressOut);
       if (!compressed.empty()) {
         body = compressed;
         contentEncoding = GetEncodingStr(rc.encoding);
@@ -320,7 +321,7 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(ClientHost& host, 
   return body;
 }
 
-std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(ClientHost& host, ITransport& transport,
+std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClient& client, ITransport& transport,
                                                                         NativeHandle fd, std::string_view head,
                                                                         std::string_view body,
                                                                         SteadyClock::time_point deadline,
@@ -346,20 +347,20 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(ClientHo
       return std::unexpected(HttpClientErrc::writeError);
     }
     const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
-    if (!host.waitIo(fd, interest, deadline)) {
+    if (!client.waitIo(fd, interest, deadline)) {
       return std::unexpected(HttpClientErrc::timeout);
     }
   }
   return {};
 }
 
-HttpClientResult ClientConnection::exchangeForHttp11(ClientHost& host, ITransport& transport, NativeHandle fd,
+HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                      const Url& url, const ClientRequest& req, http::Method method,
                                                      bool dropBody, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
-  const HttpClientConfig& config = host.config();
-  const std::string_view body = buildRequestBytesForHttp11(host, url, req, method, dropBody);
-  if (auto wr = writeAllForHttp11(host, transport, fd, host.requestBuffer(), body, ioDeadline, requestSent); !wr) {
+  const HttpClientConfig& config = client.config();
+  const std::string_view body = buildRequestBytesForHttp11(client, url, req, method, dropBody);
+  if (auto wr = writeAllForHttp11(client, transport, fd, client.requestBuffer(), body, ioDeadline, requestSent); !wr) {
     return std::unexpected(wr.error());
   }
 
@@ -368,13 +369,13 @@ HttpClientResult ClientConnection::exchangeForHttp11(ClientHost& host, ITranspor
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
-    parser.setDecodeContext({.state = &host.codec().decompressionState,
+    parser.setDecodeContext({.state = &client.codec().decompressionState,
                              .config = &config.decompression,
-                             .out = &host.codec().decompressOut,
-                             .tmp = &host.codec().decompressTmp});
+                             .out = &client.codec().decompressOut,
+                             .tmp = &client.codec().decompressTmp});
   }
   HttpResponse resp;
-  RawChars& responseBuffer = host.responseBuffer();
+  RawChars& responseBuffer = client.responseBuffer();
   responseBuffer.clear();  // reuse the buffer's allocation across requests
   bool eof = false;
   static constexpr std::size_t kReadChunk = 16384;
@@ -399,13 +400,13 @@ HttpClientResult ClientConnection::exchangeForHttp11(ClientHost& host, ITranspor
       continue;
     }
     if (transportRes.want == TransportHint::ReadReady) {
-      if (!host.waitIo(fd, EventIn, ioDeadline)) {
+      if (!client.waitIo(fd, EventIn, ioDeadline)) {
         return std::unexpected(HttpClientErrc::timeout);
       }
       continue;
     }
     if (transportRes.want == TransportHint::WriteReady) {
-      if (!host.waitIo(fd, EventOut, ioDeadline)) {
+      if (!client.waitIo(fd, EventOut, ioDeadline)) {
         return std::unexpected(HttpClientErrc::timeout);
       }
       continue;
