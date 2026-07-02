@@ -6,6 +6,7 @@
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
+- Create doc pages using **Material for MkDocs** tool (for instance). To create first class documentation for aeronet, we need to have a proper documentation site with a good theme and navigation. This will help users understand how to use the library and its features.
 
 ## Medium priority
 
