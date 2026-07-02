@@ -4,17 +4,15 @@
 #include <expected>
 #include <string_view>
 
-#include "aeronet/event.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
-class HttpClientConfig;
+class HttpClient;
 class ClientRequest;
 class ITransport;
 class Url;
@@ -26,31 +24,19 @@ using HttpClientResult = std::expected<HttpResponse, HttpClientErrc>;
 
 namespace internal {
 
-struct HttpClientCodec;
-
-// Services a per-connection protocol handler borrows from the owning HttpClient: the event loop (driven
-// through waitIo), the lazily-created (de)compression codec and the two reusable scratch buffers. The
-// HttpClient owns all of these once and reuses them across every connection/request; the client is
-// single-threaded and runs one exchange at a time, so sharing the scratch buffers is safe. Passing this
-// thin interface (instead of HttpClient itself) keeps protocol handlers -- including a future HTTP/2 one
-// living in its own translation unit -- decoupled from HttpClient internals.
-class ClientHost {
- public:
-  virtual ~ClientHost() = default;
-
-  // Block (up to `deadline`) until `fd` signals one of `interest` (pumping the event loop). false on timeout.
-  [[nodiscard]] virtual bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) = 0;
-
-  [[nodiscard]] virtual HttpClientCodec& codec() = 0;
-  [[nodiscard]] virtual const HttpClientConfig& config() const noexcept = 0;
-  [[nodiscard]] virtual RawChars& requestBuffer() noexcept = 0;   // reused scratch for the request head
-  [[nodiscard]] virtual RawChars& responseBuffer() noexcept = 0;  // reused scratch for received bytes
-};
-
 // Per-connection protocol engine: the seam between HttpClient's (protocol-agnostic) connection
 // management -- DNS/connect, pooling, redirects, retries -- and the wire protocol. One instance lives
-// alongside each pooled connection. HTTP/1.1 is implemented today; an HTTP/2 engine
-// will derive from this same interface and slot into the pool without touching the surrounding machinery.
+// alongside each pooled connection.
+//
+// A handler borrows the resources it needs straight from the owning HttpClient passed to exchange(): the
+// event loop (HttpClient::waitIo), the lazily-created (de)compression codec and the two reusable scratch
+// buffers. The HttpClient owns all of these once and reuses them across every connection/request; the
+// client is single-threaded and runs one exchange at a time, so sharing the scratch buffers is safe. The
+// HttpClient is passed in rather than stored, so a handler holds no back-reference and the HttpClient stays
+// movable.
+//
+// HTTP/1.1 is implemented today; an HTTP/2 engine will dispatch off the same `Type` enum (no virtual
+// dispatch) and slot into the pool without touching the surrounding connection-management machinery.
 class ClientConnection {
  public:
   enum class Type : uint8_t { Empty, Http11 };
@@ -63,17 +49,16 @@ class ClientConnection {
 
   // Perform a single request/response exchange over `transport`, returning the HttpResponse or an
   // HttpClientErrc on transport failure (never throws). `method` / `dropBody` carry redirect rewriting
-  // without copying the (move-only) request. The owning HttpClient is passed as `host` rather than stored,
-  // so handlers hold no back-reference and the HttpClient stays movable. `requestSent` is set to true (even
-  // when the call later returns an error) as soon as any request byte reaches the transport, so the caller
-  // can tell a pre-send failure (safe to retry) from a post-send one (never retried, to avoid re-submitting
-  // a non-idempotent request).
-  [[nodiscard]] HttpClientResult exchange(ClientHost& host, ITransport& transport, NativeHandle fd, const Url& url,
+  // without copying the (move-only) request. The owning `client` is borrowed for its event loop / scratch
+  // buffers / codec, not stored. `requestSent` is set to true (even when the call later returns an error) as
+  // soon as any request byte reaches the transport, so the caller can tell a pre-send failure (safe to
+  // retry) from a post-send one (never retried, to avoid re-submitting a non-idempotent request).
+  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd, const Url& url,
                                           const ClientRequest& req, http::Method method, bool dropBody,
                                           SteadyClock::time_point ioDeadline, bool& requestSent) {
     // hardcoded for http1/1 for now, but in the future we can switch on _type here and implement in dedicated
     // translation units for each protocol.
-    return exchangeForHttp11(host, transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
+    return exchangeForHttp11(client, transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
   }
 
   // Whether the connection may be returned to the idle pool for a later exchange (verdict of the most
@@ -81,15 +66,15 @@ class ClientConnection {
   [[nodiscard]] bool keepAlive() const noexcept { return _keepAlive; }
 
  private:
-  [[nodiscard]] HttpClientResult exchangeForHttp11(ClientHost& host, ITransport& transport, NativeHandle fd,
+  [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                    const Url& url, const ClientRequest& req, http::Method method,
                                                    bool dropBody, SteadyClock::time_point ioDeadline,
                                                    bool& requestSent);
 
-  // Build the request head into host.requestBuffer() and return the body to send separately (a view into
+  // Build the request head into client.requestBuffer() and return the body to send separately (a view into
   // `req` or the codec's compression buffer, never copied into the head buffer) -- unless the body is small
   // enough to be folded into the head buffer for a single write, in which case an empty view is returned.
-  [[nodiscard]] static std::string_view buildRequestBytesForHttp11(ClientHost& host, const Url& url,
+  [[nodiscard]] static std::string_view buildRequestBytesForHttp11(HttpClient& client, const Url& url,
                                                                    const ClientRequest& req, http::Method method,
                                                                    bool dropBody);
 
@@ -98,7 +83,7 @@ class ClientConnection {
   // never copied into the head buffer. Resumes correctly across partial writes spanning the two. Sets
   // `requestSent` to true as soon as any byte reaches the transport (the request can no longer be retried).
   // Returns an empty result on success or an HttpClientErrc on write failure / timeout.
-  [[nodiscard]] static std::expected<void, HttpClientErrc> writeAllForHttp11(ClientHost& host, ITransport& transport,
+  [[nodiscard]] static std::expected<void, HttpClientErrc> writeAllForHttp11(HttpClient& client, ITransport& transport,
                                                                              NativeHandle fd, std::string_view head,
                                                                              std::string_view body,
                                                                              SteadyClock::time_point deadline,

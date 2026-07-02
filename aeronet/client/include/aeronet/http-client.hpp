@@ -56,9 +56,10 @@ struct HttpClientCodec;       // defined in http-client.cpp (compression/decompr
 // behind the internal::ClientConnection seam (see acquireConnection / performExchange), so an HTTP/2
 // engine slots in beside the HTTP/1.1 one without touching the connection-pool / redirect / retry code.
 //
-// HttpClient implements internal::ClientHost (privately): protocol handlers borrow its event loop,
-// reusable scratch buffers and codec through that thin interface instead of the whole HttpClient.
-class HttpClient : private internal::ClientHost {
+// Protocol handlers borrow HttpClient's event loop, reusable scratch buffers and codec directly from the
+// HttpClient handed to internal::ClientConnection::exchange (see performExchange). ClientConnection is a
+// friend so those resources stay private to HttpClient's public API.
+class HttpClient {
  public:
   explicit HttpClient(HttpClientConfig config = {});
 
@@ -82,7 +83,7 @@ class HttpClient : private internal::ClientHost {
                        std::string_view contentType = "application/octet-stream");
   HttpClientResult del(std::string_view url);
 
-  [[nodiscard]] const HttpClientConfig& config() const noexcept override { return _config; }
+  [[nodiscard]] const HttpClientConfig& config() const noexcept { return _config; }
 
   // Drop all idle pooled connections (e.g. after a server restart). In-flight requests unaffected.
   void clearIdleConnections() { _idle.clear(); }
@@ -132,17 +133,19 @@ class HttpClient : private internal::ClientHost {
   // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine yet (e.g. ALPN "h2").
   static std::expected<void, HttpClientErrc> EnsureProtocolHandler(ActiveConnection& conn);
 
-  // --- internal::ClientHost: resources protocol engines borrow (see client-connection.hpp) ---
+  // --- Resources protocol engines borrow (see client-connection.hpp) ---
+  // internal::ClientConnection reads these (private) accessors during an exchange, so it is a friend.
+  friend class internal::ClientConnection;
 
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.
-  bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) override;
+  bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
 
   // Lazily-created compression/decompression state (decoders, encoders, scratch buffers). Only built on
   // the first request that actually needs a codec, so codec-free usage pays nothing.
-  internal::HttpClientCodec& codec() override;
+  internal::HttpClientCodec& codec();
 
-  [[nodiscard]] RawChars& requestBuffer() noexcept override { return _requestBuffer; }
-  [[nodiscard]] RawChars& responseBuffer() noexcept override { return _responseBuffer; }
+  [[nodiscard]] RawChars& requestBuffer() noexcept { return _requestBuffer; }
+  [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
 
 #ifdef AERONET_ENABLE_OPENSSL
   internal::HttpClientTlsContext& tlsContext();
