@@ -86,7 +86,7 @@ class HttpClient {
   [[nodiscard]] const HttpClientConfig& config() const noexcept { return _config; }
 
   // Drop all idle pooled connections (e.g. after a server restart). In-flight requests unaffected.
-  void clearIdleConnections() { _idle.clear(); }
+  void clearIdleConnections();
 
  private:
   // A live transport (plain or TLS) plus the socket it owns.
@@ -140,6 +140,23 @@ class HttpClient {
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.
   bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
 
+  // Ensure the event loop is watching `fd` for exactly `interest`, reusing the existing registration when
+  // possible. The client keeps a single fd registered at a time (the one it is currently driving): a
+  // request that keeps hitting the same keep-alive connection reuses the registration untouched (no
+  // epoll_ctl on the hot path), and switching to a different connection swaps it (del old + add new).
+  // Returns false if the loop rejects the registration.
+  bool armLoop(NativeHandle fd, EventBmp interest);
+
+  // Drop `fd` from the event loop if it is the currently-registered one. Called right before a socket is
+  // closed so the registration never outlives the fd (and the cache never matches a recycled fd number).
+  void unregisterIfCurrent(NativeHandle fd) noexcept;
+
+  // Close a connection we are done with: unregister its fd from the loop (if current), then reset it.
+  void dropConnection(ActiveConnection& conn) noexcept;
+
+  // Unregister every still-registered fd in `bucket` from the loop, then clear the bucket.
+  void dropIdleBucket(vector<ActiveConnection>& bucket) noexcept;
+
   // Lazily-created compression/decompression state (decoders, encoders, scratch buffers). Only built on
   // the first request that actually needs a codec, so codec-free usage pays nothing.
   internal::HttpClientCodec& codec();
@@ -158,6 +175,12 @@ class HttpClient {
 
   HttpClientConfig _config;
   EventLoop _loop;
+  // Single-fd registration cache for _loop: the fd currently watched (kInvalidHandle if none) and the
+  // interest it is watched for. Keeping only the actively-driven fd registered lets a keep-alive
+  // connection be reused across requests without re-adding / re-arming the loop on every request, while
+  // never leaving idle pooled fds registered (which, level-triggered, could spin the poll loop).
+  NativeHandle _loopFd{kInvalidHandle};
+  EventBmp _loopInterest{0};
   uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
