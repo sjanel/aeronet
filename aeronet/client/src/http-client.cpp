@@ -261,8 +261,67 @@ internal::HttpClientTlsContext& HttpClient::tlsContext() {
 }
 #endif
 
+bool HttpClient::armLoop(NativeHandle fd, EventBmp interest) {
+  if (_loopFd == fd) {
+    // Same connection as the last wait: reuse the registration, re-arming only if the interest changed
+    // (the common response-read path keeps EventIn, so this is a no-op -- no syscall).
+    if (_loopInterest == interest) {
+      return true;
+    }
+    if (!_loop.mod(EventLoop::EventFd{fd, interest})) {
+      return false;
+    }
+    _loopInterest = interest;
+    return true;
+  }
+  // Switching to a different fd: drop the previous registration (a connection was pooled or closed) and
+  // register this one. Only ever one fd is watched at a time, so the poll loop never sees a foreign fd.
+  if (_loopFd != kInvalidHandle) {
+    _loop.del(_loopFd);
+  }
+  if (!_loop.add(EventLoop::EventFd{fd, interest})) {
+    _loopFd = kInvalidHandle;
+    _loopInterest = 0;
+    return false;
+  }
+  _loopFd = fd;
+  _loopInterest = interest;
+  return true;
+}
+
+void HttpClient::unregisterIfCurrent(NativeHandle fd) noexcept {
+  if (fd == _loopFd) {
+    _loop.del(_loopFd);
+    _loopFd = kInvalidHandle;
+    _loopInterest = 0;
+  }
+}
+
+void HttpClient::dropConnection(ActiveConnection& conn) noexcept {
+  if (conn.valid()) {
+    unregisterIfCurrent(conn.cnx.fd());
+  }
+  conn.reset();
+}
+
+void HttpClient::dropIdleBucket(vector<ActiveConnection>& bucket) noexcept {
+  for (ActiveConnection& conn : bucket) {
+    if (conn.valid()) {
+      unregisterIfCurrent(conn.cnx.fd());
+    }
+  }
+  bucket.clear();
+}
+
+void HttpClient::clearIdleConnections() {
+  for (auto& [key, bucket] : _idle) {
+    dropIdleBucket(bucket);
+  }
+  _idle.clear();
+}
+
 bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
-  if (!_loop.mod(EventLoop::EventFd{fd, interest})) {
+  if (!armLoop(fd, interest)) {
     return false;
   }
   for (;;) {
@@ -342,7 +401,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
       // exceeded the idle limit, every older entry has too, so drop the whole bucket and reconnect.
       if (_config.keepAliveTimeout.count() > 0 &&
           SteadyClock::now() - bucket.back().idleSince > _config.keepAliveTimeout) {
-        bucket.clear();
+        dropIdleBucket(bucket);
       } else {
         ActiveConnection conn = std::move(bucket.back());
         bucket.pop_back();
@@ -355,7 +414,8 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
           conn.reused = true;
           return conn;
         }
-        bucket.clear();
+        dropConnection(conn);    // unregister + close the stale connection we popped
+        dropIdleBucket(bucket);  // and its likely-stale siblings
       }
     }
   }
@@ -373,7 +433,8 @@ void HttpClient::releaseConnection(const Url& url, ActiveConnection&& conn) {
   // transparent string_view lookups.
   auto& bucket = _idle.try_emplace(url.originKey()).first->second;
   if (bucket.size() >= _config.maxIdleConnectionsPerHost) {
-    return;  // pool full; let the connection close
+    dropConnection(conn);  // pool full: unregister its fd from the loop before it closes
+    return;
   }
   conn.idleSince = SteadyClock::now();  // stamp for idle-expiry on the next acquire
   bucket.emplace_back(std::move(conn));
@@ -471,21 +532,9 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     ActiveConnection conn = std::move(*acquired);
     const bool reused = conn.reused;
     const NativeHandle fd = conn.cnx.fd();
-
-    if (!_loop.add(EventLoop::EventFd{fd, EventIn})) {
-      // Could not register; nothing was sent yet, so retrying is safe regardless of method. A pooled
-      // connection is re-acquired for free (drains the pool, then connects fresh); a fresh one spends a
-      // backoff slot.
-      conn.reset();
-      if (reused) {
-        continue;
-      }
-      if (canBackoff()) {
-        sleepBackoff(computedBackoff());
-        continue;
-      }
-      return std::unexpected(HttpClientErrc::ioError);
-    }
+    // The fd is registered with the event loop lazily, on the first would-block wait (armLoop). A reused
+    // keep-alive connection is already the loop's registered fd, so it costs no syscall; a request whose
+    // I/O never blocks touches the loop not at all.
 
     const auto now = SteadyClock::now();
     const auto connectDeadline = now + _config.connectTimeout;
@@ -499,8 +548,6 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
         finishConnect(conn, url, connectDeadline).and_then([&] { return EnsureProtocolHandler(conn); }).and_then([&] {
           return conn.proto.exchange(*this, *conn.transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
         });
-
-    _loop.del(fd);
 
     if (result) {
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
@@ -518,18 +565,20 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
         if (_config.keepAlive && conn.proto.keepAlive()) {
           releaseConnection(url, std::move(conn));
         } else {
-          conn.reset();
+          dropConnection(conn);
         }
         sleepBackoff(delay);
         continue;
       }
       if (_config.keepAlive && conn.proto.keepAlive()) {
         releaseConnection(url, std::move(conn));
+      } else {
+        dropConnection(conn);  // not reusable: unregister its fd before the socket closes
       }
       return result;
     }
 
-    conn.reset();  // close the socket / transport
+    dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
     if (reused && !requestSent) {
       continue;  // stale keep-alive race, nothing sent yet: free retry on a fresh connection (no backoff)
     }
