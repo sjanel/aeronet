@@ -337,4 +337,57 @@ TEST_F(HttpClientE2ETest, FollowsPermanentRedirect) {
   EXPECT_EQ(resp.bodyInMemory(), "world");
 }
 
+// A single client keeps only one fd registered in its event loop at a time (the connection it is currently
+// driving). Alternating between two distinct keep-alive origins must swap that registration back and forth
+// (drop the previous fd, add the new one) without leaking state between the two pooled connections. This
+// exercises armLoop's different-fd path in both directions and guards against a stale/mismatched
+// registration corrupting a later exchange.
+TEST_F(HttpClientE2ETest, AlternatingOriginsSwapLoopRegistration) {
+  Router router2;
+  router2.setPath(http::Method::GET, "/hello",
+                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "planet", "text/plain"); });
+  SingleHttpServer server2(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
+                           std::move(router2));
+  const uint16_t port2 = server2.port();
+  server2.start();
+  const std::string url2 = "http://127.0.0.1:" + std::to_string(port2) + "/hello";
+
+  HttpClient client;  // keep-alive on by default: both origins stay pooled across the alternation
+  for (int i = 0; i < 5; ++i) {
+    auto respA = client.get(url("/hello")).value();
+    EXPECT_EQ(respA.status(), 200);
+    EXPECT_EQ(respA.bodyInMemory(), "world");
+    auto respB = client.get(url2).value();
+    EXPECT_EQ(respB.status(), 200);
+    EXPECT_EQ(respB.bodyInMemory(), "planet");
+  }
+}
+
+// A request body large enough to overflow the kernel socket buffers forces the write path to block
+// (EventOut) on the very fd it will then read the response from (EventIn). This exercises armLoop's
+// same-fd re-arm branch (interest change without a full re-register) and round-trips the payload intact
+// across the partial-write / event-loop pump.
+TEST_F(HttpClientE2ETest, LargePostBlocksWriteThenReadsBack) {
+  HttpClient client;
+  const std::string body(16U << 20, 'x');  // 16 MiB: far exceeds socket buffers, so the write must block
+  auto resp = client.post(url("/echo"), body, "application/test").value();
+  EXPECT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.bodyInMemory().size(), body.size());
+  EXPECT_EQ(resp.bodyInMemory(), body);
+}
+
+// clearIdleConnections() over a live pool must unregister the pooled connection's fd from the event loop
+// (not merely forget it), so a subsequent request registers a fresh fd cleanly rather than colliding with a
+// stale registration. Covers dropIdleBucket over a still-registered pooled entry.
+TEST_F(HttpClientE2ETest, ClearIdleConnectionsDropsRegisteredPooledFd) {
+  HttpClient client;
+  auto first = client.get(url("/hello")).value();  // pools a keep-alive connection (its fd is registered)
+  EXPECT_EQ(first.status(), 200);
+  EXPECT_EQ(first.bodyInMemory(), "world");
+  client.clearIdleConnections();                    // must unregister + close the pooled fd
+  auto second = client.get(url("/hello")).value();  // reconnects and re-registers a fresh fd
+  EXPECT_EQ(second.status(), 200);
+  EXPECT_EQ(second.bodyInMemory(), "world");
+}
+
 }  // namespace aeronet
