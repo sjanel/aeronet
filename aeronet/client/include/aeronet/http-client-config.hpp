@@ -6,9 +6,11 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http2-config.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
@@ -67,8 +69,19 @@ class HttpClientConfig {
   // stays on, while no extra backoff retries happen. See RetryConfig for the full semantics.
   RetryConfig retry;
 
+  // HTTP/2 SETTINGS / limits used by the native HTTP/2 engine, mirroring HttpServerConfig::http2 (the
+  // server-only knobs -- enableH2c, enableH2cUpgrade, enablePush, enablePriority -- are ignored here).
+  // Only consulted when a connection actually speaks HTTP/2 (see `httpVersion`) and requires a build with
+  // AERONET_ENABLE_HTTP2.
+  Http2Config http2;
+
   bool followRedirects{true};
   bool keepAlive{true};
+
+  // Which HTTP version(s) the client may speak (see HttpVersionMode). Auto (the default) negotiates
+  // HTTP/2 via ALPN over https when the build has HTTP/2 support and falls back to HTTP/1.1 everywhere
+  // else; Http2 requires HTTP/2 (prior-knowledge h2c over plain http); Http1_1 disables HTTP/2 entirely.
+  HttpVersionMode httpVersion{HttpVersionMode::Auto};
 
   // TCP_NODELAY (disable Nagle). A request/response client almost always wants the request flushed
   // immediately rather than batched, so Auto enables it. Mirrors HttpServerConfig::tcpNoDelay.
@@ -185,6 +198,18 @@ class HttpClientConfig {
   // Set the transparent retry + backoff policy.
   HttpClientConfig& withRetry(RetryConfig retryConfig) {
     retry = std::move(retryConfig);
+    return *this;
+  }
+
+  // Select which HTTP version(s) the client may speak (Auto / Http1_1 / Http2).
+  HttpClientConfig& withHttpVersion(HttpVersionMode mode) {
+    httpVersion = mode;
+    return *this;
+  }
+
+  // Set the HTTP/2 SETTINGS / limits used by the native HTTP/2 engine.
+  HttpClientConfig& withHttp2Config(Http2Config http2Config) {
+    http2 = http2Config;
     return *this;
   }
 

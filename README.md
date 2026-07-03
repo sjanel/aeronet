@@ -343,10 +343,10 @@ See the [full HTTP/2 example](examples/http2.cpp) for more details.
 
 ## HTTP Client
 
-Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 client**
-(`aeronet::HttpClient`) built on the very same non-blocking transport, TLS and event-loop bricks as the
-server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default). It is handy for
-service-to-service calls, health checks and tests that exercise a live server.
+Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 + HTTP/2
+client** (`aeronet::HttpClient`) built on the very same non-blocking transport, TLS, HPACK/frame-codec
+and event-loop bricks as the server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default).
+It is handy for service-to-service calls, health checks and tests that exercise a live server.
 
 ```cpp
 #include <aeronet/http-client.hpp>
@@ -376,6 +376,7 @@ if (created) {
 Highlights:
 
 - Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
+- **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default — https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
 - Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
 - `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
 - **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
@@ -403,9 +404,10 @@ stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-L
 
 Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` — none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
 
-> The current client is synchronous (it owns and drives its own event loop). A coroutine-friendly API
-> (`co_await client.get(...)`) integrated with a running server loop, plus a native HTTP/2 client, are
-> tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+> The current client is synchronous (it owns and drives its own event loop), so an HTTP/2 connection
+> carries one stream at a time. A coroutine-friendly API (`co_await client.get(...)`) integrated with a
+> running server loop — which would unlock true HTTP/2 multiplexing — is tracked in
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## JWT (JSON Web Tokens)
 
