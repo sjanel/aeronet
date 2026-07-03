@@ -23,6 +23,7 @@ struct Http2Config {
 
   /// SETTINGS_ENABLE_PUSH (0x2): Whether server push is enabled.
   /// Modern clients rarely use push, so it's disabled by default.
+  /// Does not make sense for a client to enable push - this is a server-side setting.
   /// Default: false.
   bool enablePush{false};
 
