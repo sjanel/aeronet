@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -43,6 +44,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/vector.hpp"
 
@@ -56,16 +58,36 @@
 #include <netinet/in.h>
 #endif
 
-#ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES
-#include <charconv>
-#include <limits>
-#endif
-
 #ifdef __GLIBC__
 extern "C" void* __libc_malloc(size_t) noexcept;          // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_realloc(void*, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
 extern "C" void* __libc_calloc(size_t, size_t) noexcept;  // NOLINT(bugprone-reserved-identifier)
 #endif
+
+namespace aeronet::test {
+// Resolve a file descriptor back to the filesystem path it was opened with. Both the read/lseek/
+// fstat/fcntl overrides in file-sys-test-support.hpp and the pread/sendfile overrides below key
+// their action queues by path, so this single definition keeps them in agreement.
+#ifdef AERONET_POSIX
+inline std::optional<std::string> PathForFd(int fd) {
+  static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
+  char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
+  char* ptr = Append(kPathPrefix, linkBuf);
+  ptr = std::to_chars(ptr, linkBuf + sizeof(linkBuf), fd).ptr;
+  *ptr = '\0';
+
+  std::string pathBuf(512U, '\0');
+  const auto len = ::readlink(linkBuf, pathBuf.data(), pathBuf.size());
+  if (len <= 0) {
+    return std::nullopt;
+  }
+  pathBuf.resize(static_cast<std::size_t>(len));
+  return pathBuf;
+}
+#else
+inline std::optional<std::string> PathForFd(int /*fd*/) { return std::nullopt; }
+#endif
+}  // namespace aeronet::test
 
 #ifdef AERONET_POSIX
 namespace aeronet::test {
@@ -980,21 +1002,6 @@ inline void PushSendmsgAction(int fd, IoAction action) { g_sendmsg_actions.push(
 
 // Minimal overrides for sendfile(2) and pread(2) to simulate errno paths in tests
 namespace aeronet::test {
-inline std::optional<std::string> PathForFd(int fd) {
-  static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
-  char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
-  char* ptr = Append(kPathPrefix, linkBuf);
-  ptr = std::to_chars(ptr, linkBuf + sizeof(linkBuf), fd).ptr;
-  *ptr = '\0';
-
-  std::string pathBuf(512U, '\0');
-  const auto len = ::readlink(linkBuf, pathBuf.data(), pathBuf.size());
-  if (len <= 0) {
-    return std::nullopt;
-  }
-  pathBuf.resize(static_cast<std::size_t>(len));
-  return pathBuf;
-}
 using PreadFn = ssize_t (*)(int, void*, size_t, off_t);
 using SendfileFn = ssize_t (*)(int, int, off_t*, size_t);
 

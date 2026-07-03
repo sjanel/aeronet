@@ -12,18 +12,15 @@
 
 #include <array>
 #include <cerrno>
-#include <charconv>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
-#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/sys-test-support.hpp"
 
 namespace aeronet::test {
@@ -59,28 +56,6 @@ inline void SetLseekErrors(std::string_view path, std::initializer_list<int> err
 inline void SetFcntlErrors(std::string_view path, std::initializer_list<int> errs) {
   gFcntlErrnos.setActions(std::string(path), errs);
 }
-
-#ifdef AERONET_FILE_SYS_TEST_SUPPORT_USE_EXISTING_PATHFORFD
-using aeronet::test::PathForFd;
-#elif defined(AERONET_POSIX)
-inline std::optional<std::string> PathForFd(int fd) {
-  static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
-  char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
-  char* ptr = Append(kPathPrefix, linkBuf);
-  ptr = std::to_chars(ptr, linkBuf + sizeof(linkBuf), fd).ptr;
-  *ptr = '\0';
-
-  std::string pathBuf(512U, '\0');
-  const auto len = ::readlink(linkBuf, pathBuf.data(), pathBuf.size());
-  if (len <= 0) {
-    return std::nullopt;
-  }
-  pathBuf.resize(static_cast<std::size_t>(len));
-  return pathBuf;
-}
-#else
-inline std::optional<std::string> PathForFd(int /*fd*/) { return std::nullopt; }
-#endif
 
 inline ReadAction PopReadAction(int fd, bool& hasAction) {
   const auto pathOpt = PathForFd(fd);
