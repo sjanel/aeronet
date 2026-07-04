@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -523,10 +525,13 @@ HpackDynamicEntry::HpackDynamicEntry(HpackDynamicEntry&& rhs, std::string_view n
       _nameLength(SafeCast<uint32_t>(name.size())),
       _valueLength(SafeCast<uint32_t>(value.size())) {
   if (rhs.size() < size()) {
-    _pData = static_cast<char*>(std::realloc(_pData, name.size() + value.size()));
-    if (_pData == nullptr) {
+    char* newData = static_cast<char*>(std::realloc(_pData, name.size() + value.size()));
+    if (newData == nullptr) {
+      std::free(_pData);
+      _pData = nullptr;
       throw std::bad_alloc();
     }
+    _pData = newData;
   }
   tolower_n(name.data(), name.size(), _pData);
   Copy(value, _pData + name.size());
@@ -684,7 +689,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
     if ((firstByte & 0x80) != 0) {
       // Indexed Header Field (RFC 7541 §6.1) - Format: 1xxxxxxx
-      auto indexResult = DecodeInteger(data.subspan(pos), 7);
+      const auto indexResult = DecodeInteger(data.subspan(pos), 7);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
         res.errorMessage = "Failed to decode indexed header field index";
         return res;
@@ -750,7 +755,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         name = header.name;
       }
 
-      auto valueResult = decodeString(data.subspan(pos));
+      const auto valueResult = decodeString(data.subspan(pos));
       if (valueResult.consumed == DecodedString::kInvalidConsumed) {
         res.errorMessage = "Failed to decode literal header value";
         return res;
@@ -774,7 +779,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 }
 
 HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte> data) {
-  auto [length, consumed] = DecodeInteger(data, 7);
+  const auto [length, consumed] = DecodeInteger(data, 7);
   HpackDecoder::DecodedString ret({}, length + consumed);
   if (length == DecodedIndex::kInvalidIndex) {
     ret.consumed = DecodedString::kInvalidConsumed;
@@ -787,7 +792,7 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
     return ret;
   }
 
-  auto stringData = data.subspan(consumed, length);
+  const auto stringData = data.subspan(consumed, length);
 
   const bool isHuffman = (static_cast<uint8_t>(data[0]) & 0x80) != 0;
   if (isHuffman) {
@@ -966,22 +971,31 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
     return;
   }
 
-  output.push_back(static_cast<std::byte>(prefixMask | maxPrefix));
   value -= maxPrefix;
 
+  // Bytes needed to varint-encode `value`: 1 byte per 7 bits, minimum 1 byte
+  // (this matches exactly what the while-loop below produces).
+  const std::size_t continuationBytes = value < 128 ? 1 : (static_cast<std::size_t>(std::bit_width(value)) + 6) / 7;
+
+  output.ensureAvailableCapacityExponential(1U + continuationBytes);
+
+  std::byte* pInsertPtr = output.data() + output.size();
+
+  *pInsertPtr++ = static_cast<std::byte>(prefixMask | maxPrefix);
+
   while (value >= 128) {
-    output.push_back(static_cast<std::byte>((value & 0x7F) | 0x80));
+    *pInsertPtr++ = static_cast<std::byte>((value & 0x7F) | 0x80);
     value >>= 7;
   }
-  output.push_back(static_cast<std::byte>(value));
+  *pInsertPtr++ = static_cast<std::byte>(value);
+
+  output.setSize(static_cast<std::size_t>(pInsertPtr - output.data()));
 }
 
 std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
-  std::size_t totalBits = 0;
-  for (const char ch : str) {
-    totalBits += kHuffmanCodes[static_cast<uint8_t>(ch)].bitLength;
-  }
-  return (totalBits + 7) / 8;  // Round up to bytes
+  return std::transform_reduce(str.begin(), str.end(), std::size_t{7}, std::plus<>{},
+                               [](uint8_t ch) { return kHuffmanCodes[ch].bitLength; }) /
+         8;
 }
 
 void EncodeHuffman(RawBytes& output, std::string_view str) {
@@ -990,22 +1004,25 @@ void EncodeHuffman(RawBytes& output, std::string_view str) {
 
   output.ensureAvailableCapacityExponential(HuffmanEncodedLength(str));
 
+  std::byte* pInsertPtr = output.data() + output.size();
+
   for (char ch : str) {
     const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
+
     currentCode = (currentCode << code.bitLength) | code.code;
     currentBits += code.bitLength;
-
     while (currentBits >= 8) {
       currentBits -= 8;
-      output.unchecked_push_back(static_cast<std::byte>((currentCode >> currentBits) & 0xFF));
+      *pInsertPtr++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFF);
     }
   }
 
   // Pad with EOS prefix (all 1s)
   if (currentBits > 0) {
     const uint8_t padding = static_cast<uint8_t>((1U << (8 - currentBits)) - 1);
-    output.unchecked_push_back(static_cast<std::byte>((currentCode << (8 - currentBits)) | padding));
+    *pInsertPtr++ = static_cast<std::byte>((currentCode << (8 - currentBits)) | padding);
   }
+  output.setSize(static_cast<std::size_t>(pInsertPtr - output.data()));
 }
 
 void EncodeString(RawBytes& output, std::string_view str) {
@@ -1032,7 +1049,7 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
   }
 
   // Try to find in tables
-  auto lookup = findHeader(name, value);
+  const auto lookup = findHeader(name, value);
 
   if (lookup.match == HpackLookupResult::Match::Full) {
     // Indexed Header Field (RFC 7541 §6.1)
