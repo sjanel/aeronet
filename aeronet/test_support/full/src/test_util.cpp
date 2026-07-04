@@ -187,20 +187,24 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
         if (clPos != std::string_view::npos) {
           auto lineStart = clPos;
           auto lineEnd = headers.find(http::CRLF, lineStart);
-          if (lineEnd != std::string_view::npos) {
-            auto colonPos = headers.find(':', lineStart);
-            if (colonPos != std::string_view::npos && colonPos < lineEnd) {
-              auto valueStart = colonPos + 1;
-              while (valueStart < lineEnd && headers[valueStart] == ' ') {
-                ++valueStart;
-              }
-              std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
-              std::size_t contentLength = 0;
-              auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
-              if (ec == std::errc{}) {
-                if (out.size() >= bodyStart + contentLength) {
-                  return out;
-                }
+          if (lineEnd == std::string_view::npos) {
+            // Content-Length is the last header line (e.g. an empty-body response ending in
+            // "content-length: 0\r\n\r\n"): its terminating CRLF is part of the DoubleCRLF that is excluded
+            // from `headers`, so the value runs to the end of `headers`.
+            lineEnd = headers.size();
+          }
+          auto colonPos = headers.find(':', lineStart);
+          if (colonPos != std::string_view::npos && colonPos < lineEnd) {
+            auto valueStart = colonPos + 1;
+            while (valueStart < lineEnd && headers[valueStart] == ' ') {
+              ++valueStart;
+            }
+            std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
+            std::size_t contentLength = 0;
+            auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
+            if (ec == std::errc{}) {
+              if (out.size() >= bodyStart + contentLength) {
+                return out;
               }
             }
           }

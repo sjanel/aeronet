@@ -154,6 +154,16 @@ class HttpResponseTest : public ::testing::Test {
     return out;
   }
 
+  // Number of (non-overlapping) occurrences of `needle` in `haystack`.
+  static std::size_t CountSubstr(std::string_view haystack, std::string_view needle) {
+    std::size_t count = 0;
+    for (std::size_t pos = haystack.find(needle); pos != std::string_view::npos;
+         pos = haystack.find(needle, pos + needle.size())) {
+      ++count;
+    }
+    return count;
+  }
+
 #ifdef AERONET_ENABLE_HTTP2
   static void FinalizeForHttp2(HttpResponse& resp) { resp.finalizeForHttp2(); }
 #endif
@@ -338,7 +348,10 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
         EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Another-Header", "AnotherValue")),
                   concatenatedHeaders.contains("X-Another-Header: "));
         EXPECT_EQ(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")), !body.empty());
-        EXPECT_EQ(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(body.size()))), !body.empty());
+        // Empty-body responses now synthesize `content-length: 0` at finalization so keep-alive clients can
+        // frame the (zero-length) body immediately (status 200 permits it) -> a Content-Length line is always
+        // present in the finalized bytes ("0" for an empty body, the real size otherwise).
+        EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(body.size()))));
         EXPECT_TRUE(full.ends_with("\r\n\r\n" + std::string(body)));
       }
     }
@@ -1415,6 +1428,10 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
 
   std::string connectionPrefix(http::Connection);
   connectionPrefix += ": ";
+  // Empty-body responses now synthesize a `content-length: 0` line at finalization; exclude it (like
+  // Date / Connection) from the user-header count.
+  std::string contentLengthPrefix(http::ContentLength);
+  contentLengthPrefix += ": ";
   while (pos < full.size()) {
     auto lineEnd = full.find(http::CRLF, pos);
     ASSERT_NE(lineEnd, std::string_view::npos);
@@ -1423,7 +1440,8 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
       break;
     }
     auto line = full.substr(pos, lineEnd - pos);
-    if (!line.starts_with(datePrefix) && !line.starts_with(connectionPrefix)) {
+    if (!line.starts_with(datePrefix) && !line.starts_with(connectionPrefix) &&
+        !line.starts_with(contentLengthPrefix)) {
       ++userHeaders;
     }
     pos = lineEnd + 2;
@@ -2144,6 +2162,67 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
   EXPECT_FALSE(headers.contains(http::TransferEncoding));
+  // An empty file already declares its own Content-Length: 0; finalization must not synthesize a second one.
+  EXPECT_EQ(CountSubstr(headers, http::ContentLength), 1U);
+}
+
+// -----------------------------------------------------------------------------
+// Synthesized `Content-Length: 0` for empty-body responses (keep-alive framing).
+// Per RFC 7230 §3.3.3, a response without a declared body length is framed by connection close, which
+// defeats keep-alive reuse. aeronet therefore emits `Content-Length: 0` for empty-body responses at
+// finalization (except for body-less statuses, HEAD, file, streaming and direct-compression responses).
+// -----------------------------------------------------------------------------
+
+TEST_F(HttpResponseTest, EmptyBodySynthesizesContentLengthZero) {
+  static constexpr http::StatusCode kStatuses[] = {200, 201, 301, 302, 303, 307, 308, 400, 404, 418, 500, 503};
+  for (http::StatusCode status : kStatuses) {
+    HttpResponse resp(status);
+    const auto full = concatenated(std::move(resp));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << "status " << status << ": " << full;
+    EXPECT_EQ(CountSubstr(full, http::ContentLength), 1U) << "status " << status << ": " << full;
+    EXPECT_FALSE(full.contains(http::TransferEncoding)) << "status " << status << ": " << full;
+    // No Content-Type is synthesized for an empty body.
+    EXPECT_FALSE(full.contains(http::ContentType)) << "status " << status << ": " << full;
+    EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << "status " << status << ": " << full;
+  }
+}
+
+TEST_F(HttpResponseTest, EmptyBodyRedirectWithLocationGetsContentLengthZero) {
+  // The canonical case from the roadmap note: a bare 302 redirect with only a Location header.
+  auto resp = HttpResponse(http::StatusCodeFound).location("https://example.com/new");
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Location, "https://example.com/new"))) << full;
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << full;
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
+}
+
+TEST_F(HttpResponseTest, EmptyBodyBodylessStatusesGetNoContentLength) {
+  // 1xx / 204 / 304 are always terminated by the first empty line and either MUST NOT (1xx, 204) or cannot
+  // reliably (304) carry a synthesized Content-Length (RFC 7230 §3.3.2 / §3.3.3).
+  static constexpr http::StatusCode kStatuses[] = {100, 101, 102, 103, 199, 204, 304};
+  for (http::StatusCode status : kStatuses) {
+    HttpResponse resp(status);
+    const auto full = concatenated(std::move(resp));
+    EXPECT_FALSE(full.contains(http::ContentLength)) << "status " << status << ": " << full;
+    EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << "status " << status << ": " << full;
+  }
+}
+
+TEST_F(HttpResponseTest, EmptyBodyHeadResponseGetsNoSynthesizedContentLength) {
+  // HEAD responses never carry a body regardless (RFC 7230 §3.3.3); we don't fabricate a Content-Length
+  // that may not equal the GET body length.
+  HttpResponse resp(http::StatusCodeOK);
+  const auto full = concatenated(std::move(resp), /*globalHeaders=*/{}, /*head=*/true);
+  EXPECT_FALSE(full.contains(http::ContentLength)) << full;
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
+}
+
+TEST_F(HttpResponseTest, NonEmptyBodyKeepsSingleContentLength) {
+  HttpResponse resp(http::StatusCodeOK, "Hello");
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "5"))) << full;
+  EXPECT_FALSE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << full;
+  EXPECT_EQ(CountSubstr(full, http::ContentLength), 1U) << full;
 }
 
 TEST_F(HttpResponseTest, SetCapturedBodyEmptyFromUniquePtrShouldResetBodyAndRemoveContentType) {
@@ -3883,7 +3962,16 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         }
         EXPECT_EQ(clVal, pr.body.size());
       } else {
-        EXPECT_EQ(clCount, 0);
+        // Empty body: an allowed status now synthesizes `Content-Length: 0` (keep-alive framing).
+        // Body-less statuses (204, and by RFC also 1xx/304) must not carry it. The fuzz only exercises
+        // {200, 204, 404, 418}, so 204 is the sole excluded case here.
+        const bool statusAllowsCL0 = lastStatus >= 200 && lastStatus != 204 && lastStatus != 304;
+        if (statusAllowsCL0) {
+          EXPECT_EQ(clCount, 1);
+          EXPECT_EQ(clVal, 0U);
+        } else {
+          EXPECT_EQ(clCount, 0);
+        }
       }
     }
 
