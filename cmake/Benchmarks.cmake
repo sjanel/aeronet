@@ -174,6 +174,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_target_properties(aeronet-bench-internal-event-loop-poll-timeout PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
+# HTTP client micro-benchmarks (guarded by the HTTP-client feature flag). The response parser lives in the
+# client module's private src/, so link aeronet_client and add that directory to the include path.
+if(AERONET_ENABLE_HTTP_CLIENT)
+  set(AERONET_BENCH_INTERNAL_RESPONSE_PARSE ${AERONET_BENCH_ROOT}/internal/response-parse_bench.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-response-parse ${AERONET_BENCH_INTERNAL_RESPONSE_PARSE} LIBRARIES aeronet_client)
+  target_include_directories(aeronet-bench-internal-response-parse PRIVATE ${CMAKE_SOURCE_DIR}/aeronet/client/src)
+  set_target_properties(aeronet-bench-internal-response-parse PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 # HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)
 if(AERONET_ENABLE_HTTP2)
   set(AERONET_BENCH_INTERNAL_HPACK ${AERONET_BENCH_ROOT}/internal/hpack_bench.cpp)
