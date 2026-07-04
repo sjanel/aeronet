@@ -9,7 +9,6 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -51,8 +50,10 @@ HostPort ParseBaseUrl(std::string_view url) {
 
 class BeastSession {
  public:
-  BeastSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
-      : _spec(spec), _socket(_ioc) {
+  // Boost.Beast's core speaks HTTP/1.1 only; the harness skips this driver for h2c / h2-tls.
+  static constexpr bool kSupportsHttp2 = false;
+
+  BeastSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec) : _spec(spec), _socket(_ioc) {
     const HostPort hp = ParseBaseUrl(cfg.baseUrl);
     _host = hp.host;
     _endpoints = tcp::resolver(_ioc).resolve(hp.host, hp.port);

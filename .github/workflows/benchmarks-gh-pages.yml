@@ -486,18 +486,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Configure git identity for runner
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Assemble site content from main
         run: |
           rm -rf /tmp/site
           mkdir -p /tmp/site
           rsync -a docs/ /tmp/site/docs/
           rsync -a resources/ /tmp/site/resources/
-          cp README.md /tmp/site/index.md
+          # The GitHub Actions Pages deploy serves the artifact statically (no Jekyll), so the
+          # README must be rendered to a real index.html to act as the site landing page.
+          pip install --quiet markdown
+          python3 scripts/render_readme_html.py README.md /tmp/site/index.html \
+            --title "aeronet — high-performance C++23 HTTP server library"
 
       - name: Download all benchmark results
         uses: actions/download-artifact@v8
