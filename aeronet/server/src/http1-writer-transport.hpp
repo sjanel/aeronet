@@ -72,6 +72,10 @@ class Http1WriterTransport final : public IWriterTransport {
       _pCorsPolicy = nullptr;
     }
 
+    // The body is streamed separately (chunked framing or a fixed Content-Length was declared above), so the
+    // buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a Content-Length: 0.
+    response._opts.setStreamingBody();
+
     auto cnxIt = _server->_connections.iterator(_fd);
     _server->queueData(cnxIt, response.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, response._opts, nullptr,
                                                         _server->config().minCapturedBodySize));

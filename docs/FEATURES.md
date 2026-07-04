@@ -84,6 +84,11 @@ Where to look: see "Inbound Request Decompression (Config Details)" for decompre
 ### Response generation & streaming
 
 - [x] Basic fixed body responses
+- [x] Automatic `Content-Length: 0` for empty-body responses (RFC 7230 §3.3.3) so keep-alive clients frame the
+  zero-length body immediately instead of waiting for connection close — excluded for body-less statuses
+  (`1xx`, `204`, `304`), `HEAD`, file, streaming and direct-compression responses. Tests:
+  `aeronet/http/test/http-response_test.cpp` (`EmptyBody*`), `tests/http-core_test.cpp`
+  (`HttpKeepAlive.EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection`).
 - [x] HEAD method (suppressed body, correct Content-Length)
 - [x] Outgoing chunked / streaming responses (basic API: status/headers + incremental write + end, keep-alive capable)
 - [x] Outbound trailer headers (buffered via HttpResponse::trailerAddLine, streaming via HttpResponseWriter::trailerAddLine)
