@@ -21,6 +21,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-trim.hpp"
 
 namespace aeronet::http2 {
 
@@ -858,7 +859,11 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, std::string_view(statusStr, sizeof(statusStr)));
   }
   for (const auto& [name, value] : headersView) {
-    _hpackEncoder.encode(_outputBuffer, name, value);
+    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where
+    // it is tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec
+    // pads Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a
+    // strict peer (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
+    _hpackEncoder.encode(_outputBuffer, name, TrimOws(value));
   }
   if (pGlobalHeaders != nullptr) {
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
@@ -869,7 +874,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
       if (std::ranges::any_of(headersView, [name](const auto& header) { return header.name == name; })) {
         continue;
       }
-      _hpackEncoder.encode(_outputBuffer, name, headerKeyVal.substr(colonPos + http::HeaderSep.size()));
+      _hpackEncoder.encode(_outputBuffer, name, TrimOws(headerKeyVal.substr(colonPos + http::HeaderSep.size())));
     }
   }
 
