@@ -17,9 +17,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-13, clang-21]
-        features: [OFF, ON]
-        build: [Debug, Release]
+        include:
+          - { compiler: gcc-13, features: OFF, build: Debug }
+          - { compiler: gcc-13, features: ON, build: Debug }
+          - { compiler: clang-21, features: OFF, build: Debug }
+          - { compiler: clang-21, features: ON, build: Debug }
+          # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
+          # caught (Release's -DNDEBUG strips assert()-based invariants), and Release is
+          # already exercised independently by the arm/macos/windows/packaging jobs.
+          - { compiler: gcc-13, features: ON, build: Release }
     runs-on: ubuntu-latest
 
     env:
