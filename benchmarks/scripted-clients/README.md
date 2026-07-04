@@ -30,6 +30,9 @@ external load generator*, it is **one over-provisioned server + many client impl
   `sendRequest`, and Beast's blocking I/O are all synchronous).
 * **Apples-to-apples**: all drivers send `Accept-Encoding: identity`, so the server never compresses and we
   compare raw transfer + parsing (no codec asymmetry between clients).
+* **Protocol-agnostic**: the same drivers and scenarios run over HTTP/1.1, cleartext HTTP/2 (`h2c`) and
+  HTTP/2 over TLS (`h2-tls`), selected with `--protocol` (mirroring the scripted-*server* runner). For the
+  HTTP/2 protocols only the HTTP/2-capable clients are measured (see [Protocols](#protocols)).
 
 ## Building
 
@@ -57,10 +60,12 @@ table and writes JSON (and optionally HTML) artifacts:
 
 ```bash
 cd build-release/benchmarks/scripted-clients
-./run_client_benchmarks.py                          # all clients, all scenarios
+./run_client_benchmarks.py                          # all clients, all scenarios (HTTP/1.1)
 ./run_client_benchmarks.py --client aeronet,curl    # subset of clients
 ./run_client_benchmarks.py --scenario small-get,large-get
 ./run_client_benchmarks.py --threads 8 --duration 15s --warmup 3s --html
+./run_client_benchmarks.py --protocol h2c           # cleartext HTTP/2 (aeronet + curl)
+./run_client_benchmarks.py --protocol h2-tls        # HTTP/2 over TLS (ALPN "h2")
 ```
 
 Options:
@@ -68,6 +73,7 @@ Options:
 ```text
 --client a,b         comma-separated client subset (default: aeronet,curl,drogon,beast)
 --scenario a,b       comma-separated scenario subset
+--protocol P         http1 | h2c | h2-tls (default: http1); see Protocols below
 --threads N          client worker threads / connections (default: 4)
 --server-threads N   aeronet-bench-server threads (default: nproc)
 --duration D         measured window per run, e.g. 10s / 500ms (default: 10s)
@@ -77,6 +83,30 @@ Options:
 --html               also write an HTML report with bar charts
 --build-dir DIR      override build-dir auto-detection
 ```
+
+## Protocols
+
+The suite runs over three protocols, selected with `--protocol` exactly as the scripted-*server* runner
+(`../scripted-servers/run_benchmarks.py`) does:
+
+| `--protocol` | Transport        | Server flags              | Clients measured             |
+|--------------|------------------|---------------------------|------------------------------|
+| `http1`      | HTTP/1.1         | *(none)*                  | aeronet, curl, drogon, beast |
+| `h2c`        | cleartext HTTP/2 | `--h2`                    | aeronet, curl                |
+| `h2-tls`     | HTTP/2 over TLS  | `--h2 --tls --cert --key` | aeronet, curl                |
+
+* **HTTP/2 uses prior knowledge**, not the deprecated HTTP/1.1 `Upgrade` dance: `h2c` opens directly with the
+  HTTP/2 preface (RFC 9113 §3.4), `h2-tls` negotiates `h2` via ALPN. aeronet drives its native HTTP/2 engine
+  (`HttpVersionMode::Http2`); libcurl drives nghttp2 (`CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE` / `_2TLS`).
+* **Only HTTP/2-capable clients are measured** for `h2c` / `h2-tls`. **Drogon**'s synchronous client and
+  **Boost.Beast** are HTTP/1.1-only, so they are skipped (a driver invoked directly with an HTTP/2
+  `--protocol` it cannot speak exits with a clear message instead of silently downgrading).
+* **h2-tls** reuses the scripted-server self-signed cert (`../scripted-servers/certs/`), auto-generating it
+  via `setup_bench_resources.py` if missing. The clients skip certificate verification (self-signed), so the
+  measured cost is the TLS record + HTTP/2 framing path, not PKI.
+* **Artifacts** for `h2c` / `h2-tls` are written with a protocol suffix (`client_benchmark_latest_h2c.json`,
+  `..._h2-tls.json`, matching badge + HTML) so successive protocol runs do not clobber one another. The
+  default `http1` keeps the historical unsuffixed filenames.
 
 ### Running a single driver directly
 
@@ -89,6 +119,10 @@ Each driver is a standalone executable with the same CLI (handy for profiling on
 # then point a driver at it
 ./benchmarks/scripted-clients/aeronet-bench-client --url http://127.0.0.1:8090 \
     --scenario small-get --threads 4 --duration 10s --warmup 2s
+
+# HTTP/2 (start the server with --h2; use --protocol h2c and a matching driver)
+./benchmarks/scripted-clients/curl-bench-client --url http://127.0.0.1:8090 \
+    --scenario small-get --protocol h2c --threads 4 --duration 10s --warmup 2s
 ```
 
 ## Scenarios

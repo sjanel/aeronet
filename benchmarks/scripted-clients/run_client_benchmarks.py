@@ -29,6 +29,13 @@ from typing import Dict, List, Optional, Tuple
 CLIENT_ORDER = ["aeronet", "curl", "drogon", "beast"]
 SCENARIO_ORDER = ["small-get", "headers", "large-get", "post", "json", "compress", "no-reuse"]
 
+# Protocols mirror run_benchmarks.py (the scripted-server runner): http1 (HTTP/1.1), h2c (cleartext HTTP/2,
+# prior knowledge) and h2-tls (HTTP/2 over TLS, ALPN "h2"). For the HTTP/2 protocols we only measure the
+# clients that actually speak HTTP/2 (aeronet's native engine and libcurl via nghttp2); Drogon's sync client
+# and Boost.Beast are HTTP/1.1-only and would otherwise silently downgrade, so they are skipped.
+PROTOCOL_CHOICES = ["http1", "h2c", "h2-tls"]
+H2_CAPABLE_CLIENTS = {"aeronet", "curl"}
+
 # Per-scenario request/response body size (bytes) passed via --body-size. Other scenarios ignore it.
 SCENARIO_BODY_SIZE: Dict[str, int] = {
     "large-get": 1 << 20,  # 1 MiB response body
@@ -71,12 +78,37 @@ def wait_for_server(port: int, timeout_s: float = 15.0) -> None:
     raise BenchError(f"Server did not become ready on port {port} within {timeout_s}s")
 
 
-def start_server(server_bin: Path, port: int, threads: int) -> subprocess.Popen:
-    proc = subprocess.Popen(
-        [str(server_bin), "--port", str(port), "--threads", str(threads)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+def find_certs(script_dir: Path) -> Tuple[Path, Path]:
+    """Locate (and, if missing, generate) the self-signed TLS cert/key the h2-tls server needs. Reuses the
+    scripted-server certs so both suites share one CA."""
+    certs_dir = script_dir.parent / "scripted-servers" / "certs"
+    cert, key = certs_dir / "server.crt", certs_dir / "server.key"
+    if cert.is_file() and key.is_file():
+        return cert, key
+    setup = script_dir.parent / "scripted-servers" / "setup_bench_resources.py"
+    if setup.is_file():
+        print(f"  (generating TLS certs via {setup.name})")
+        subprocess.run([sys.executable, str(setup), "--output", str(certs_dir.parent)], check=False)
+    if cert.is_file() and key.is_file():
+        return cert, key
+    raise BenchError(
+        f"h2-tls needs a TLS cert/key at {certs_dir} but none were found and auto-generation failed. "
+        "Generate them first, e.g.:\n"
+        f"  {sys.executable} {setup} --output {certs_dir.parent}"
     )
+
+
+def start_server(server_bin: Path, port: int, threads: int, protocol: str,
+                 certs: Optional[Tuple[Path, Path]] = None) -> subprocess.Popen:
+    cmd = [str(server_bin), "--port", str(port), "--threads", str(threads)]
+    if protocol in ("h2c", "h2-tls"):
+        cmd.append("--h2")  # h2c is on by default, but be explicit (and it drives ALPN under TLS)
+    if protocol == "h2-tls":
+        if certs is None:
+            raise BenchError("h2-tls requires a TLS cert/key (internal error: certs not provided)")
+        cert, key = certs
+        cmd += ["--tls", "--cert", str(cert), "--key", str(key)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait_for_server(port)
     except BenchError:
@@ -101,11 +133,13 @@ def run_driver(
     threads: int,
     duration: str,
     warmup: str,
+    protocol: str,
 ) -> Optional[dict]:
     cmd = [
         str(binary),
         "--url", base_url,
         "--scenario", scenario,
+        "--protocol", protocol,
         "--threads", str(threads),
         "--duration", duration,
         "--warmup", warmup,
@@ -219,7 +253,7 @@ def to_pages_summary(results: List[dict], meta: dict, scenarios: List[str], clie
             "timeouts": {c: 0 for c in rps}, "winners": {"rps": winner} if winner else {},
         }
     return {
-        "protocol": "http1",
+        "protocol": meta["protocol"],
         "tool": "scripted-clients",
         "threads": meta["threads"],
         "connections": meta["threads"],  # one keep-alive connection per worker thread
@@ -252,13 +286,17 @@ def _badge_color(value: float) -> str:
 
 
 def write_artifacts(summary: dict, out_dir: Path) -> Path:
-    """Write the render-compatible `client_benchmark_latest.json`, a timestamped copy, and the
-    shields.io endpoint badge (aeronet peak rps, mirroring the scripted-server badge)."""
+    """Write the render-compatible `client_benchmark_latest[_<proto>].json`, a timestamped copy, and the
+    shields.io endpoint badge (aeronet peak rps, mirroring the scripted-server badge). The default http1
+    protocol keeps the historical unsuffixed filenames (the gh-pages workflow reads them); h2c / h2-tls get
+    a protocol suffix so running several protocols in a row does not clobber one another's artifacts."""
+    protocol = summary["protocol"]
+    suffix = "" if protocol == "http1" else f"_{protocol}"
     out_dir.mkdir(parents=True, exist_ok=True)
-    latest = out_dir / "client_benchmark_latest.json"
+    latest = out_dir / f"client_benchmark_latest{suffix}.json"
     latest.write_text(json.dumps(summary, indent=2))
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    (out_dir / f"client_benchmark_{stamp}.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / f"client_benchmark{suffix}_{stamp}.json").write_text(json.dumps(summary, indent=2))
 
     best = 0.0
     for data in summary["results"].values():
@@ -269,26 +307,28 @@ def write_artifacts(summary: dict, out_dir: Path) -> Path:
             except ValueError:
                 pass
     if best > 0:
+        label = "client peak rps" if protocol == "http1" else f"client peak rps ({protocol})"
         badge = {
             "schemaVersion": 1,
-            "label": "client peak rps",
+            "label": label,
             "message": f"{_badge_value(best)} req/s",
             "color": _badge_color(best),
             "labelColor": "#0f172a",
             "namedLogo": "speedtest",
             "cacheSeconds": 3600,
         }
-        (out_dir / "client_benchmark_badge.json").write_text(json.dumps(badge, indent=2))
+        (out_dir / f"client_benchmark_badge{suffix}.json").write_text(json.dumps(badge, indent=2))
     return latest
 
 
-def render_html(latest_json: Path, script_dir: Path, out_dir: Path) -> Optional[Path]:
+def render_html(latest_json: Path, script_dir: Path, out_dir: Path, protocol: str) -> Optional[Path]:
     """Render the HTML dashboard by reusing the scripted-server renderer (render_benchmarks_html.py)."""
     renderer = script_dir.parent / "scripted-servers" / "render_benchmarks_html.py"
     if not renderer.is_file():
         print(f"  (skipping HTML: renderer not found at {renderer})", file=sys.stderr)
         return None
-    html_path = out_dir / "client_benchmark.html"
+    suffix = "" if protocol == "http1" else f"_{protocol}"
+    html_path = out_dir / f"client_benchmark{suffix}.html"
     subprocess.run([sys.executable, str(renderer), "--input", str(latest_json), "--output", str(html_path)],
                    check=True)
     return html_path
@@ -299,6 +339,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--client", default=",".join(CLIENT_ORDER), help="comma-separated client subset")
     parser.add_argument("--scenario", default=",".join(SCENARIO_ORDER), help="comma-separated scenario subset")
+    parser.add_argument(
+        "--protocol", default="http1", choices=PROTOCOL_CHOICES,
+        help="protocol to benchmark: http1 (HTTP/1.1), h2c (cleartext HTTP/2), h2-tls (HTTP/2 over TLS). "
+             "h2c/h2-tls only measure HTTP/2-capable clients (aeronet, curl).",
+    )
     parser.add_argument("--threads", type=int, default=4, help="client worker threads / connections")
     parser.add_argument(
         "--server-threads", type=int, default=os.cpu_count() or 8,
@@ -318,10 +363,16 @@ def main() -> int:
         raise BenchError(f"aeronet-bench-server not found at {server_bin}")
     client_dir = build_dir / "benchmarks/scripted-clients"
 
+    protocol = args.protocol
+    is_h2 = protocol in ("h2c", "h2-tls")
+
     requested_clients = [c.strip() for c in args.client.split(",") if c.strip()]
     clients = [c for c in CLIENT_ORDER if c in requested_clients]
     available = []
     for name in clients:
+        if is_h2 and name not in H2_CAPABLE_CLIENTS:
+            print(f"  (skipping {name}: HTTP/1.1-only, not measured for {protocol})", file=sys.stderr)
+            continue
         binary = client_dir / f"{name}-bench-client"
         if binary.is_file():
             available.append((name, binary))
@@ -333,9 +384,12 @@ def main() -> int:
     requested_scenarios = [s.strip() for s in args.scenario.split(",") if s.strip()]
     scenarios = [s for s in SCENARIO_ORDER if s in requested_scenarios]
 
-    base_url = f"http://127.0.0.1:{args.port}"
+    certs = find_certs(script_dir) if protocol == "h2-tls" else None
+    scheme = "https" if protocol == "h2-tls" else "http"
+    base_url = f"{scheme}://127.0.0.1:{args.port}"
     meta = {
         "date": _dt.datetime.now().isoformat(timespec="seconds"),
+        "protocol": protocol,
         "threads": args.threads,
         "server_threads": args.server_threads,
         "duration": args.duration,
@@ -344,17 +398,17 @@ def main() -> int:
         "scenarios": scenarios,
     }
 
-    print(f"Server : {server_bin.name} --threads {args.server_threads} (port {args.port})")
+    print(f"Server : {server_bin.name} --threads {args.server_threads} (port {args.port}) [{protocol}]")
     print(f"Clients: {', '.join(n for n, _ in available)}")
     print(f"Threads: {args.threads}  duration: {args.duration}  warmup: {args.warmup}")
 
-    server = start_server(server_bin, args.port, args.server_threads)
+    server = start_server(server_bin, args.port, args.server_threads, protocol, certs)
     results: List[dict] = []
     try:
         for scenario in scenarios:
             print(f"\n--- {scenario} ---")
             for name, binary in available:
-                res = run_driver(binary, base_url, scenario, args.threads, args.duration, args.warmup)
+                res = run_driver(binary, base_url, scenario, args.threads, args.duration, args.warmup, protocol)
                 if res is None:
                     continue
                 results.append(res)
@@ -376,7 +430,7 @@ def main() -> int:
     latest = write_artifacts(summary, out_dir)
     print(f"\nJSON  -> {latest}")
     if args.html:
-        html_path = render_html(latest, script_dir, out_dir)
+        html_path = render_html(latest, script_dir, out_dir, protocol)
         if html_path is not None:
             print(f"HTML  -> {html_path}")
     return 0
