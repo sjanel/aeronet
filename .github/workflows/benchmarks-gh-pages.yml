@@ -29,63 +29,31 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------ #
-  # Bench: two parallel runs with different wrk connection counts.      #
-  # Both use GCC; low connections measures latency accurately, high     #
-  # connections stresses max throughput.                                 #
+  # Build: compile the scripted server + client benchmark binaries ONCE.#
+  # bench / bench-h2 / bench-ws all need the exact same Release build   #
+  # (identical CMake flags) - they only differ in which runtime params  #
+  # they pass to wrk/h2load/k6. Building once and sharing the binaries  #
+  # avoids recompiling aeronet plus every fetched competitor framework  #
+  # (drogon, pistache, crow, beast, uWebSockets, ...) up to 7x per run. #
   # ------------------------------------------------------------------ #
-  bench:
-    name: Bench (${{ matrix.conn_label }})
+  build:
+    name: Build scripted benchmarks
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Low connections: 10/thread - accurate latency, moderate throughput
-          - compiler: gcc-13
-            conn_label: low
-            connections_per_thread: 10
-          # High connections: 50/thread - higher throughput, higher latency
-          - compiler: gcc-13
-            conn_label: high
-            connections_per_thread: 100
     steps:
       - name: Checkout current main
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Install all dependencies with features
+      - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
-          pip install uvicorn starlette
-
-      - name: Install GCC toolchain
-        if: ${{ startsWith(matrix.compiler, 'gcc') }}        
-        run: sudo apt-get install -y ${{ matrix.compiler }}
-
-      - name: Install Clang/LLVM toolchain
-        if: ${{ startsWith(matrix.compiler, 'clang') }}
-        run: |
-            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
-            chmod +x llvm.sh
-            compiler="${{ matrix.compiler }}"
-            version="${compiler##*-}"
-            echo "Detected clang version: $version"
-            sudo ./llvm.sh "$version"
-            sudo apt-get install -y "lld-$version"
+          sudo apt install -y gcc-13 g++-13 libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
 
       - name: Set compiler environment
         run: |
-          compiler="${{ matrix.compiler }}"
-          echo "CC=$compiler" >> $GITHUB_ENV
-          ver="${compiler##*-}"
-          if [[ "$compiler" == gcc-* ]]; then
-            echo "CXX=g++-$ver" >> $GITHUB_ENV
-          else
-            echo "CXX=clang++-$ver" >> $GITHUB_ENV
-          fi
-          echo "Derived compilers: CC=$compiler CXX set for version $ver"
+          echo "CC=gcc-13" >> $GITHUB_ENV
+          echo "CXX=g++-13" >> $GITHUB_ENV
 
       - name: Show compiler version
         run: |
@@ -113,6 +81,62 @@ jobs:
       - name: Build
         run: |
           cmake --build build-pages --parallel
+
+      - name: Package build output
+        run: |
+          # Preserve symlinks (run_benchmarks.py etc. are symlinked back into the
+          # checked-out source tree by CMake) and executable bits: a plain tar
+          # survives actions/upload-artifact intact, unlike zip-based repacking.
+          tar -czf bench-build-output.tar.gz \
+            build-pages/benchmarks/scripted-servers \
+            build-pages/benchmarks/scripted-clients
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-build-output
+          path: bench-build-output.tar.gz
+          retention-days: 1
+
+  # ------------------------------------------------------------------ #
+  # Bench: two parallel runs with different wrk connection counts.      #
+  # Both use GCC; low connections measures latency accurately, high     #
+  # connections stresses max throughput.                                 #
+  # ------------------------------------------------------------------ #
+  bench:
+    name: Bench (${{ matrix.conn_label }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Low connections: 10/thread - accurate latency, moderate throughput
+          - conn_label: low
+            connections_per_thread: 10
+          # High connections: 50/thread - higher throughput, higher latency
+          - conn_label: high
+            connections_per_thread: 100
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          pip install uvicorn starlette
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: bench-build-output
+          path: .
+
+      - name: Extract build artifact
+        run: tar -xzf bench-build-output.tar.gz
 
       - name: Run benchmarks
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
@@ -171,9 +195,9 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # Client benchmark (aeronet HttpClient vs libcurl / drogon / beast). Reuses THIS job's build (the
-      # client drivers and aeronet-bench-server are already compiled in build-pages), so it adds no extra
-      # configure/compile. Runs once, on the high-connections matrix entry only.
+      # Client benchmark (aeronet HttpClient vs libcurl / drogon / beast). Reuses THIS job's
+      # downloaded build (the client drivers and aeronet-bench-server are already compiled),
+      # so it adds no extra configure/compile. Runs once, on the high-connections matrix entry only.
       - name: Run client benchmarks
         if: matrix.conn_label == 'high'
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
@@ -224,6 +248,7 @@ jobs:
   # ------------------------------------------------------------------ #
   bench-h2:
     name: H2 Bench (${{ matrix.protocol }}, ${{ matrix.conn_label }})
+    needs: build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -266,39 +291,16 @@ jobs:
           pip install uvicorn starlette hypercorn[h2]
           h2load --version
 
-      - name: Install GCC 13
+      - name: Download build artifact
         if: steps.filter.outputs.skip != 'true'
-        run: sudo apt-get install -y gcc-13 g++-13
+        uses: actions/download-artifact@v8
+        with:
+          name: bench-build-output
+          path: .
 
-      - name: Set compiler environment
+      - name: Extract build artifact
         if: steps.filter.outputs.skip != 'true'
-        run: |
-          echo "CC=gcc-13" >> $GITHUB_ENV
-          echo "CXX=g++-13" >> $GITHUB_ENV
-
-      - name: Configure build
-        if: steps.filter.outputs.skip != 'true'
-        run: |
-          ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DAERONET_BUILD_TESTS=OFF \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=ON \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
-
-      - name: Build
-        if: steps.filter.outputs.skip != 'true'
-        run: cmake --build build-pages --parallel
+        run: tar -xzf bench-build-output.tar.gz
 
       - name: Run H2 benchmarks
         if: steps.filter.outputs.skip != 'true'
@@ -368,6 +370,7 @@ jobs:
   # ------------------------------------------------------------------ #
   bench-ws:
     name: WS Bench
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -387,35 +390,14 @@ jobs:
             | tar xzf - --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
           k6 version
 
-      - name: Install GCC 13
-        run: sudo apt-get install -y gcc-13 g++-13
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: bench-build-output
+          path: .
 
-      - name: Set compiler environment
-        run: |
-          echo "CC=gcc-13" >> $GITHUB_ENV
-          echo "CXX=g++-13" >> $GITHUB_ENV
-
-      - name: Configure build
-        run: |
-          ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DAERONET_BUILD_TESTS=OFF \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=ON \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
-
-      - name: Build
-        run: cmake --build build-pages --parallel
+      - name: Extract build artifact
+        run: tar -xzf bench-build-output.tar.gz
 
       - name: Run WebSocket benchmarks
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
