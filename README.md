@@ -18,14 +18,14 @@
 
 ## Why aeronet?
 
-**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server library** for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
+**aeronet** is a modern, fast, modular and ergonomic HTTP / WebSocket C++ **server & client** library for **Linux**, **macOS** and **Windows** focused on predictable performance, explicit control and minimal dependencies.
 
 - **Fast & predictable**: edge‑triggered reactor model, zero/low‑allocation hot paths and minimal copies, horizontal scaling with port reuse. In CI benchmarks `aeronet` ranks among the [fastest tested implementations](#performance-at-a-glance) across multiple realistic scenarios.
 - **Modular & opt‑in**: enable only the features you need at compile time to minimize binary size and dependencies
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
-- **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, JWT (JWS), etc.
-- **Batteries included**: beyond the server, a matching HTTP/1.1 **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
+- **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
+- **Batteries included**: beyond the server, a matching HTTP **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
 - **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
@@ -132,7 +132,7 @@ Minimal server examples for typical use cases are provided in [examples](example
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 
-./build/examples/aeronet-minimal 8080   # or omit 8080 for ephemeral
+./build/examples/aeronet-server-minimal 8080   # or omit 8080 for ephemeral
 ```
 
 Test with curl:
@@ -149,7 +149,103 @@ server: aeronet
 Hello from aeronet minimal server! You requested /hello
 ```
 
-## Handler registration
+## Feature Overview
+
+A bird's-eye view of what's implemented, what's still experimental, and where to read the full details.
+
+### Feature Matrix (Concise)
+
+| Category | Implemented (✔) | Notes |
+|----------|-----------------|-------|
+| Core HTTP/1.1 parsing | ✔ | Request line, headers, chunked bodies, pipelining |
+| Routing | ✔ | Exact path + method allow‑lists; streaming + fixed |
+| Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
+| Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out; direct compression |
+| Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
+| TLS | ✔ (flag) | ALPN, mTLS, session tickets, kTLS sendfile, timeouts, metrics |
+| OpenTelemetry | ✔ (flag) | Distributed tracing spans, metrics counters (experimental) |
+| Async wrapper | ✔ | Background thread convenience |
+| Metrics hook | ✔ (alpha) | Per‑request basic stats |
+| Logging | ✔ (flag) | spdlog optional |
+| Duplicate header policy | ✔ | Deterministic, security‑minded |
+| WebSocket | ✔ | RFC 6455 compliant, text/binary frames, ping/pong, close handshake |
+| HTTP/2 | ✔ (flag) | RFC 9113, HPACK, ALPN h2, h2c upgrade, stream multiplexing |
+| Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
+| Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
+| Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
+| sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
+| HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS |
+| JWT (JWS) | ✔ (flag) | RFC 7519 sign/verify; HS/RS/ES/PS/EdDSA; JWK/JWKS by `kid`; rejects `alg:none` |
+
+### Developer / Operational Features
+
+| Feature | Notes |
+|---------|-------|
+| Epoll edge-triggered loop | One thread per `SingleHttpServer`; writev used for header+body scatter-gather |
+| `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
+| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors (N threads) |
+| Async server methods | `start()` (void convenience) and `startDetached()` (returns `AsyncHandle`) |
+| Move semantics | Transfer listening socket & loop state safely |
+| Restarts | `SingleHttpServer` and `MultiHttpServer` can be started again after stop |
+| Graceful draining | `SingleHttpServer::beginDrain(maxWait)` stops new accepts, closes keep-alive after current responses, optional deadline to force-close stragglers |
+| Signal handling | Optional built-in SIGINT/SIGTERM handler to initiate draining when stop requested |
+| Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
+| Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
+| Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
+| Builder-style config | Fluent `HttpServerConfig` setters (`withPort()`, etc.) |
+| Metrics callback | Per-request timing & size scaffold hook |
+| RAII construction | Fully listening after constructor (ephemeral port resolved immediately) |
+| Comprehensive tests | Parsing, limits, streaming, mixed precedence, reuseport, move semantics, keep-alive |
+| Mixed handlers example | Normal + streaming coexistence on same path (e.g. GET streaming, POST fixed) |
+
+### HTTP/1.1 Feature Matrix
+
+For the exhaustive, continually-updated matrix (parsing, transport, bodies, status handling, headers, etc.) and architecture notes, see:
+
+- [HTTP/1.1 Feature Matrix](docs/FEATURES.md#http11-feature-matrix)
+- [Performance / architecture](docs/FEATURES.md#performance--architecture)
+
+### Detailed Documentation
+
+The landing page above plus the minimal examples are usually enough to evaluate the library. Everything below is
+expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) — dive in only when you need the specifics.
+
+#### Core HTTP semantics
+
+- [Routing patterns & path parameters](docs/FEATURES.md#routing-patterns--path-parameters)
+- [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
+- [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
+- [Construction Model (RAII & Ephemeral Ports)](docs/FEATURES.md#construction-model-raii--ephemeral-ports)
+- [HttpServer Lifecycle](docs/FEATURES.md#httpserver-lifecycle)
+- [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
+- [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
+- [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
+- [Streaming Responses (Chunked / Incremental)](docs/FEATURES.md#streaming-responses-chunked--incremental)
+- [Mixed Mode & Dispatch Precedence](docs/FEATURES.md#mixed-mode--dispatch-precedence)
+
+#### Middleware & content processing
+
+- [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware)
+- [CORS Support](docs/FEATURES.md#cors-support)
+- [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
+- [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
+- [Multipart/form-data utilities](docs/FEATURES.md#multipartform-data-utilities-rfc-7578)
+- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
+
+#### Protocols & observability
+
+- [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
+- [HTTP/2](docs/FEATURES.md#http2-rfc-9113)
+- [TLS Features](docs/FEATURES.md#tls-features)
+- [Automatic HTTP → HTTPS redirect](docs/FEATURES.md#automatic-http--https-redirect)
+- [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration)
+- [Logging](docs/FEATURES.md#logging)
+
+## Public objects and usage
+
+Consuming `aeronet` will result in the client code interacting with [handler registration](#handler-registration) and [routing patterns](#routing-patterns--path-parameters), [server objects](#server-objects), [router](#router-configuration-two-safe-ways-to-set-handlers), [http responses](#building-the-http-response), streaming HTTP responses and reading HTTP requests.
+
+### Handler registration
 
 Two approaches:
 
@@ -179,78 +275,7 @@ router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
 });
 ```
 
-## Rate Limiting Middleware
-
-`aeronet` provides a middleware-first rate limiting API that can be attached globally,
-per-route, or through route groups.
-
-### In-memory token bucket (default)
-
-```cpp
-Router router;
-router.setPath(http::Method::GET, "/v1/data", [](const HttpRequest&) {
-  return HttpResponse(200).body("ok");
-});
-
-// Uses InMemoryTokenBucketRateLimitStore automatically when `store` is unset.
-router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
-  .config = RateLimitConfig{.requestsPerSecond = 50, .burst = 100},
-  .keyStrategy = RateLimitClientKeyStrategy::PeerAddress
-}.build());
-```
-
-Rejected requests receive `429 Too Many Requests` and a `Retry-After` header.
-
-### Group-scoped limiter
-
-```cpp
-Router router;
-auto api = router.group("/api/v1");
-
-RateLimitRequestMiddlewareBuilder groupLimit;
-groupLimit.config.requestsPerSecond = 20;
-groupLimit.config.burst = 40;
-
-api.addRequestMiddleware(std::move(groupLimit).build());
-api.setPath(http::Method::GET, "/users", [](const HttpRequest&) { return HttpResponse(200); });
-```
-
-### Redis sliding-window adapter contract (optional)
-
-Enable Redis contract types at build time:
-
-```bash
-cmake -S . -B build -DAERONET_ENABLE_REDIS=ON
-```
-
-The Redis store is client-library agnostic. You provide an eval callback that executes
-`RedisEvalRequest` and returns `RedisEvalResponse`.
-
-```cpp
-RedisSlidingWindowConfig redisCfg;
-redisCfg.namespacePrefix = "aeronet:rl";
-redisCfg.windowSeconds = 10;
-redisCfg.preferEvalSha = true;
-
-auto eval = [](const RedisEvalRequest& req) -> RedisEvalResponse {
-  // Adapter boundary:
-  // - req.keys[0] is the window key (default schema: aeronet:rl:{clientKey})
-  // - req.args = [now_ms, window_ms, limit]
-  // - req.script is the Lua body (or req.scriptSha with EVALSHA)
-  // Execute with your Redis client here and map result to {ok, allowed, retryAfterSeconds}.
-  return RedisEvalResponse{};  // transport failure in this skeleton
-};
-
-Router router;
-router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
-  .config = RateLimitConfig{.requestsPerSecond = 25, .burst = 50},
-  .store = std::make_shared<RedisSlidingWindowRateLimitStore>(eval, redisCfg),
-}.build());
-```
-
-This boundary allows one shared distributed limit across multiple aeronet instances.
-
-## Routing Patterns & Path Parameters
+### Routing Patterns & Path Parameters
 
 **Path Parameters**: Use `{name}` for named parameters or `{}` for unnamed (zero-indexed) parameters (but you cannot mix both named and unnamed in the same path):
 
@@ -306,227 +331,6 @@ router.setPath(http::Method::GET, "/api/{{version}}/data", [](const HttpRequest&
 
 See [docs/FEATURES.md](docs/FEATURES.md#routing-patterns--path-parameters) for complete routing syntax.
 
-## HTTP/2 support
-
-`aeronet` is compatible with HTTP/2, with or without TLS, when built with `-DAERONET_ENABLE_HTTP2=ON`.
-
-When `AERONET_ENABLE_HTTP2` is OFF, the HTTP/2 module is not built and the HTTP/2-specific API surface (e.g. `Http2Config`, `HttpServerConfig::withHttp2()`) is not available.
-
-HTTP/2 uses the same unified `HttpRequest` type as HTTP/1.1:
-
-```cpp
-#include <aeronet/aeronet.hpp>
-
-using namespace aeronet;
-
-int main() {
-  Router router;
-  
-  // Single handler works for both HTTP/1.1 and HTTP/2
-  router.setDefault([](const HttpRequest& req) {
-    if (req.isHttp2()) {
-      return HttpResponse{"Hello from HTTP/2! Stream: " + std::to_string(req.streamId()) + "\n"};
-    }
-    return HttpResponse{"Hello from HTTP/1.1\n"};
-  });
-
-  HttpServerConfig config;
-  config.withPort(8443)
-      .withTlsCertKey("server.crt", "server.key")
-      .withTlsAlpnProtocols({"h2", "http/1.1"})
-      .withHttp2(Http2Config{.enable = true});
-
-  SingleHttpServer server(std::move(config), std::move(router));
-  server.run();
-}
-```
-
-Test: `curl -k --http2 https://localhost:8443/hello`
-
-See the [full HTTP/2 example](examples/http2.cpp) for more details.
-
-## HTTP Client
-
-Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 + HTTP/2
-client** (`aeronet::HttpClient`) built on the very same non-blocking transport, TLS, HPACK/frame-codec
-and event-loop bricks as the server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default).
-It is handy for service-to-service calls, health checks and tests that exercise a live server.
-
-```cpp
-#include <aeronet/http-client.hpp>
-
-aeronet::HttpClient client;
-
-// Simple GET (http or https). The result is an aeronet::HttpClientResult
-// (std::expected<HttpResponse, HttpClientErrc>): the response on success, an error code otherwise.
-auto result = client.get("https://example.com/health");
-if (result) {
-  const aeronet::HttpResponse& resp = *result;
-  auto body = resp.bodyInMemory();                  // decoded body (chunked already de-framed)
-  auto ctype = resp.headerValueOrEmpty("content-type");
-} else {
-  auto reason = aeronet::ErrcToStr(result.error());  // e.g. "connection failed", "operation timed out"
-}
-
-// POST with a JSON body and a custom header, via the fluent request builder
-aeronet::ClientRequest req(aeronet::http::Method::POST, "https://example.com/api");
-req.headerAddLine("X-Trace-Id", "abc123").body(R"({"key":"value"})", "application/json");
-auto created = client.request(req);
-if (created) {
-  auto status = created->status();
-}
-```
-
-Highlights:
-
-- Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
-- **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default — https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
-- Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
-- `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
-- **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
-- Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
-- Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).
-
-```cpp
-#include <aeronet/http-client.hpp>
-
-aeronet::HttpClientConfig cfg;
-cfg.withRequestCompression(aeronet::Encoding::zstd);  // compress big outbound bodies (opt-in)
-// Response decompression is on by default whenever a codec is compiled in.
-aeronet::HttpClient client(cfg);
-auto result = client.post("https://example.com/api", R"({"key":"value"})", "application/json");
-if (result) {
-  // result->bodyInMemory() is already decoded; the Content-Encoding header has been dropped.
-  auto body = result->bodyInMemory();
-}
-```
-
-The returned response is an `HttpResponse` — a `using` alias of the generic single-buffer `HttpMessage`
-type. Received headers are surfaced losslessly (reserved headers such as `Connection` / `Date` are
-stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-Length` /
-`Transfer-Encoding` are normalized through the body and de-framing).
-
-Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` — none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
-
-> The current client is synchronous (it owns and drives its own event loop), so an HTTP/2 connection
-> carries one stream at a time. A coroutine-friendly API (`co_await client.get(...)`) integrated with a
-> running server loop — which would unlock true HTTP/2 multiplexing — is tracked in
-> [docs/ROADMAP.md](docs/ROADMAP.md).
-
-## JWT (JSON Web Tokens)
-
-An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of
-the OpenSSL crypto already linked for TLS — so it adds no new dependency. Enable it with
-`-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out
-of scope.
-
-```cpp
-#include <aeronet/jwt.hpp>
-
-// Sign with an HMAC secret (HS256). Keys can also come from a PEM RSA/EC/Ed25519
-// key (aeronet::JwtKey::FromPem) or a JWK (aeronet::JwtKey::FromJwk).
-aeronet::JwtKey key = aeronet::JwtKey::Hmac("super-secret-signing-key");
-std::string token = aeronet::Jwt::encode(R"({"sub":"alice","exp":4102444800})", key,
-                                         aeronet::JwtAlgorithm::HS256);
-
-// Verify: signature + claim checks. The module is exception-free — failures surface as an
-// invalid key, an empty token, or a JwtError (never thrown).
-aeronet::JwtVerifyOptions opts;
-opts.allowedAlgorithms = aeronet::JwtAlgorithmSet{aeronet::JwtAlgorithm::HS256};
-aeronet::JwtError err = aeronet::JwtError::None;
-if (aeronet::DecodedJwt decoded = aeronet::Jwt::tryDecode(token, key, opts, err)) {
-  std::string_view sub = decoded.subject();  // "alice" (empty view == claim absent)
-}
-```
-
-Highlights:
-
-- Full JWS algorithm suite — HMAC `HS256/384/512`, RSA `RS*` / `PS*`, ECDSA `ES256/384/512`, `EdDSA` (Ed25519).
-- Claim validation: `exp` / `nbf` (with `leeway` and an injectable `clock`), `iss` / `aud` / `sub`; `aud` as a string or an array.
-- Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` — pairs naturally with the HTTP client to fetch an issuer's keys.
-- **Security by construction**: the unsecured `alg:none` is always rejected, a key whose family doesn't match the token `alg` is refused (the RS256↔HS256 confusion is structurally impossible), the signature is verified before any claim is parsed, and HMAC comparison is constant-time.
-- Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see [docs/FEATURES.md](docs/FEATURES.md) for the full reference.
-
-## Detailed Documentation
-
-The following focused docs expand each area without cluttering the high‑level overview:
-
-- [Feature reference (FEATURES)](docs/FEATURES.md)
-
-- [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
-- [HTTP/2](docs/FEATURES.md#http2-rfc-9113)
-- [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
-- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
-- [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
-- [Multipart/form-data utilities](docs/FEATURES.md#multipartform-data-utilities-rfc-7578)
-- [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
-- [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
-- [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
-- [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
-- [Routing patterns & path parameters](docs/FEATURES.md#routing-patterns--path-parameters)
-- [HttpServer Lifecycle](docs/FEATURES.md#httpserver-lifecycle)
-- [TLS Features](docs/FEATURES.md#tls-features)
-
-If you are evaluating the library, the feature highlights above plus the minimal example are usually sufficient. Dive into the docs only when you need specifics.
-
-## Feature Matrix (Concise)
-
-| Category | Implemented (✔) | Notes |
-|----------|-----------------|-------|
-| Core HTTP/1.1 parsing | ✔ | Request line, headers, chunked bodies, pipelining |
-| Routing | ✔ | Exact path + method allow‑lists; streaming + fixed |
-| Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
-| Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out; direct compression |
-| Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
-| TLS | ✔ (flag) | ALPN, mTLS, session tickets, kTLS sendfile, timeouts, metrics |
-| OpenTelemetry | ✔ (flag) | Distributed tracing spans, metrics counters (experimental) |
-| Async wrapper | ✔ | Background thread convenience |
-| Metrics hook | ✔ (alpha) | Per‑request basic stats |
-| Logging | ✔ (flag) | spdlog optional |
-| Duplicate header policy | ✔ | Deterministic, security‑minded |
-| WebSocket | ✔ | RFC 6455 compliant, text/binary frames, ping/pong, close handshake |
-| HTTP/2 | ✔ (flag) | RFC 9113, HPACK, ALPN h2, h2c upgrade, stream multiplexing |
-| Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
-| Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
-| Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
-| sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
-| HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS |
-| JWT (JWS) | ✔ (flag) | RFC 7519 sign/verify; HS/RS/ES/PS/EdDSA; JWK/JWKS by `kid`; rejects `alg:none` |
-
-## Developer / Operational Features
-
-| Feature | Notes |
-|---------|-------|
-| Epoll edge-triggered loop | One thread per `SingleHttpServer`; writev used for header+body scatter-gather |
-| `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
-| Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors (N threads) |
-| Async server methods | `start()` (void convenience) and `startDetached()` (returns `AsyncHandle`) |
-| Move semantics | Transfer listening socket & loop state safely |
-| Restarts | `SingleHttpServer` and `MultiHttpServer` can be started again after stop |
-| Graceful draining | `SingleHttpServer::beginDrain(maxWait)` stops new accepts, closes keep-alive after current responses, optional deadline to force-close stragglers |
-| Signal handling | Optional built-in SIGINT/SIGTERM handler to initiate draining when stop requested |
-| Heterogeneous lookups | Path handler map accepts `std::string`, `std::string_view`, `const char*` |
-| Outbound stats | Bytes queued, immediate vs flush writes, high-water marks |
-| Lightweight logging | Pluggable design (spdlog optional); ISO 8601 UTC timestamps |
-| Builder-style config | Fluent `HttpServerConfig` setters (`withPort()`, etc.) |
-| Metrics callback | Per-request timing & size scaffold hook |
-| RAII construction | Fully listening after constructor (ephemeral port resolved immediately) |
-| Comprehensive tests | Parsing, limits, streaming, mixed precedence, reuseport, move semantics, keep-alive |
-| Mixed handlers example | Normal + streaming coexistence on same path (e.g. GET streaming, POST fixed) |
-
-The sections below provide a more granular feature matrix and usage examples.
-
-## HTTP/1.1 Feature Matrix
-
-Moved out of the landing page to keep things concise. See the full, continually updated matrices in:
-
-- [HTTP/1.1 Feature Matrix](docs/FEATURES.md#http11-feature-matrix)
-- [Performance / architecture](docs/FEATURES.md#performance--architecture)
-
-## Public objects and usage
-
-Consuming `aeronet` will result in the client code interacting with [server objects](#server-objects), [router](#router-configuration-two-safe-ways-to-set-handlers), [http responses](#building-the-http-response), streaming HTTP responses and reading HTTP requests.
-
 ### Server objects
 
 `aeronet` provides 2 types of servers: `SingleHttpServer` and `MultiHttpServer`.
@@ -562,6 +366,67 @@ All configuration of the `SingleHttpServer` is applied per **server instance** (
 `SingleHttpServer` takes a `HttpServerConfig` by value at construction, which allows full control over the server parameters (port, timeouts, limits, TLS setup, compression options, etc). Once constructed, some fields can be updated, even while the server is running thanks to `postConfigUpdate` method.
 
 Note that `nbThreads` field should be 1 for `SingleHttpServer`. If you intend to use multiple threads, consider using `HttpServer` (aka `MultiHttpServer`) instead.
+
+`HttpServerConfig` lives in `aeronet/http-server-config.hpp` and exposes fluent setters (withX naming):
+
+```cpp
+HttpServerConfig cfg;
+cfg.withPort(8080)
+  .withReusePort(true)
+  .withMaxHeaderBytes(16 * 1024)
+  .withMaxBodyBytes(2 * 1024 * 1024)
+  .withKeepAliveTimeout(std::chrono::milliseconds{10'000})
+  .withMaxRequestsPerConnection(500)
+  .withKeepAliveMode(true);
+
+SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then server.setConfig(cfgWithoutPort);
+```
+
+###### Limits
+
+- **431** is returned if the header section exceeds `maxHeaderBytes`.
+- **413** is returned if the declared `content-length` exceeds `maxBodyBytes`.
+- Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
+- Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
+
+###### Performance / Metrics & Backpressure
+
+`SingleHttpServer::stats()` exposes aggregated counters:
+
+- `totalBytesQueued` – bytes accepted into outbound buffering (including those sent immediately)
+- `totalBytesWrittenImmediate` – bytes written synchronously on first attempt (no buffering)
+- `totalBytesWrittenFlush` – bytes written during later flush cycles (EPOLLOUT)
+- `deferredWriteEvents` – number of times EPOLLOUT was registered due to pending data
+- `flushCycles` – number of flush attempts triggered by writable events
+- `maxConnectionOutboundBuffer` – high-water mark of any single connection's buffered bytes
+
+Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When a connection's pending buffer would exceed the configured maximum, it is marked for closure once existing data flushes, preventing unbounded memory growth under slow-reader scenarios.
+
+###### Metrics Callback (Scaffold)
+
+You can install a lightweight per-request metrics callback capturing basic timing and size information:
+
+```cpp
+SingleHttpServer server;
+server.setMetricsCallback([](const SingleHttpServer::RequestMetrics& m){
+  // Export to stats sink / log
+  // m.method, m.target, m.status, m.bytesIn, m.bytesOut (currently 0 for fixed responses), m.duration, m.reusedConnection
+});
+```
+
+Current fields (alpha – subject to change before 1.0):
+
+| Field | Description |
+|-------|-------------|
+| method | Original request method string |
+| target | Request target (decoded path) |
+| status | Response status code (best-effort 200 for streaming if not overridden) |
+| bytesIn | Request body size (after chunk decode) |
+| bytesOut | Placeholder (0 for now, future: capture flushed bytes per response) |
+| duration | Wall time from parse completion to response dispatch end (best effort) |
+| reusedConnection | True if this connection previously served other request(s) |
+
+The callback runs in the event loop thread – keep it non-blocking.
 
 #### Running an asynchronous event loop (non blocking)
 
@@ -853,12 +718,30 @@ such as `c`, `h`, `cpp`, `hpp`, `cc`).
 All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
 This central rule lives in a single helper (`http::IsReservedResponseHeader`).
 
-## Miscellaneous features
+## Middleware & Cross-Cutting Features
 
-### Connection Close Semantics (CloseMode)
+### Rate Limiting Middleware
 
-Full details (modes, triggers, helpers) have been moved out of the landing page:
-See: [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
+`aeronet` provides a middleware-first rate limiting API that can be attached globally, per-route, or through route
+groups. Rejected requests receive `429 Too Many Requests` and a `Retry-After` header. It ships with an in-memory
+token bucket by default; a client-library-agnostic Redis sliding-window adapter (behind `-DAERONET_ENABLE_REDIS=ON`)
+is available for a distributed limit shared across multiple aeronet instances.
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/v1/data", [](const HttpRequest&) {
+  return HttpResponse(200).body("ok");
+});
+
+// Uses InMemoryTokenBucketRateLimitStore automatically when `store` is unset.
+router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
+  .config = RateLimitConfig{.requestsPerSecond = 50, .burst = 100},
+  .keyStrategy = RateLimitClientKeyStrategy::PeerAddress
+}.build());
+```
+
+See [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware) for group-scoped limiters and the Redis
+adapter contract (eval callback, key schema, script shape).
 
 ### Compression (gzip, deflate, zstd, brotli)
 
@@ -875,19 +758,161 @@ See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that
 response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.md#per-response-manual-content-encoding-automatic-compression-suppression)
 
-### Inbound Request Body Decompression
+## Protocols & Modules
 
-Detailed multi-layer decoding behavior, safety limits, examples, and configuration moved here:
-See: [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
+### HTTP/2 support
 
-### CORS (Cross-Origin Resource Sharing)
+`aeronet` is compatible with HTTP/2, with or without TLS, when built with `-DAERONET_ENABLE_HTTP2=ON`.
 
-Full RFC-compliant CORS support with per-route and router-wide configuration:
-See: [CORS Support](docs/FEATURES.md#cors-support)
+When `AERONET_ENABLE_HTTP2` is OFF, the HTTP/2 module is not built and the HTTP/2-specific API surface (e.g. `Http2Config`, `HttpServerConfig::withHttp2()`) is not available.
 
-### Request Header Duplicate Handling
+HTTP/2 uses the same unified `HttpRequest` type as HTTP/1.1:
 
-Detailed policy & implementation moved to: [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
+```cpp
+#include <aeronet/aeronet.hpp>
+
+using namespace aeronet;
+
+int main() {
+  Router router;
+  
+  // Single handler works for both HTTP/1.1 and HTTP/2
+  router.setDefault([](const HttpRequest& req) {
+    if (req.isHttp2()) {
+      return HttpResponse{"Hello from HTTP/2! Stream: " + std::to_string(req.streamId()) + "\n"};
+    }
+    return HttpResponse{"Hello from HTTP/1.1\n"};
+  });
+
+  HttpServerConfig config;
+  config.withPort(8443)
+      .withTlsCertKey("server.crt", "server.key")
+      .withTlsAlpnProtocols({"h2", "http/1.1"})
+      .withHttp2(Http2Config{.enable = true});
+
+  SingleHttpServer server(std::move(config), std::move(router));
+  server.run();
+}
+```
+
+Test: `curl -k --http2 https://localhost:8443/hello`
+
+See the [full HTTP/2 example](examples/http2.cpp) for more details.
+
+### HTTP Client
+
+Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 + HTTP/2
+client** (`aeronet::HttpClient`) built on the very same non-blocking transport, TLS, HPACK/frame-codec
+and event-loop bricks as the server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default).
+It is handy for service-to-service calls, health checks and tests that exercise a live server.
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+aeronet::HttpClient client;
+
+// Simple GET (http or https). The result is an aeronet::HttpClientResult
+// (std::expected<HttpResponse, HttpClientErrc>): the response on success, an error code otherwise.
+auto result = client.get("https://example.com/health");
+if (result) {
+  const aeronet::HttpResponse& resp = *result;
+  auto body = resp.bodyInMemory();                  // decoded body (chunked already de-framed)
+  auto ctype = resp.headerValueOrEmpty("content-type");
+} else {
+  auto reason = aeronet::ErrcToStr(result.error());  // e.g. "connection failed", "operation timed out"
+}
+
+// POST with a JSON body and a custom header, via the fluent request builder
+aeronet::ClientRequest req(aeronet::http::Method::POST, "https://example.com/api");
+req.headerAddLine("X-Trace-Id", "abc123").body(R"({"key":"value"})", "application/json");
+auto created = client.request(req);
+if (created) {
+  auto status = created->status();
+}
+```
+
+Highlights:
+
+- Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
+- **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default — https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
+- Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
+- `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
+- **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
+- Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
+- Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+aeronet::HttpClientConfig cfg;
+cfg.withRequestCompression(aeronet::Encoding::zstd);  // compress big outbound bodies (opt-in)
+// Response decompression is on by default whenever a codec is compiled in.
+aeronet::HttpClient client(cfg);
+auto result = client.post("https://example.com/api", R"({"key":"value"})", "application/json");
+if (result) {
+  // result->bodyInMemory() is already decoded; the Content-Encoding header has been dropped.
+  auto body = result->bodyInMemory();
+}
+```
+
+The returned response is an `HttpResponse` — a `using` alias of the generic single-buffer `HttpMessage`
+type. Received headers are surfaced losslessly (reserved headers such as `Connection` / `Date` are
+stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-Length` /
+`Transfer-Encoding` are normalized through the body and de-framing).
+
+Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` — none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
+
+> The current client is synchronous (it owns and drives its own event loop), so an HTTP/2 connection
+> carries one stream at a time. A coroutine-friendly API (`co_await client.get(...)`) integrated with a
+> running server loop — which would unlock true HTTP/2 multiplexing — is tracked in
+> [docs/ROADMAP.md](docs/ROADMAP.md).
+
+### JWT (JSON Web Tokens)
+
+An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of
+the OpenSSL crypto already linked for TLS — so it adds no new dependency. Enable it with
+`-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out
+of scope.
+
+```cpp
+#include <aeronet/jwt.hpp>
+
+// Sign with an HMAC secret (HS256). Keys can also come from a PEM RSA/EC/Ed25519
+// key (aeronet::JwtKey::FromPem) or a JWK (aeronet::JwtKey::FromJwk).
+aeronet::JwtKey key = aeronet::JwtKey::Hmac("super-secret-signing-key");
+std::string token = aeronet::Jwt::encode(R"({"sub":"alice","exp":4102444800})", key,
+                                         aeronet::JwtAlgorithm::HS256);
+
+// Verify: signature + claim checks. The module is exception-free — failures surface as an
+// invalid key, an empty token, or a JwtError (never thrown).
+aeronet::JwtVerifyOptions opts;
+opts.allowedAlgorithms = aeronet::JwtAlgorithmSet{aeronet::JwtAlgorithm::HS256};
+aeronet::JwtError err = aeronet::JwtError::None;
+if (aeronet::DecodedJwt decoded = aeronet::Jwt::tryDecode(token, key, opts, err)) {
+  std::string_view sub = decoded.subject();  // "alice" (empty view == claim absent)
+}
+```
+
+Highlights:
+
+- Full JWS algorithm suite — HMAC `HS256/384/512`, RSA `RS*` / `PS*`, ECDSA `ES256/384/512`, `EdDSA` (Ed25519).
+- Claim validation: `exp` / `nbf` (with `leeway` and an injectable `clock`), `iss` / `aud` / `sub`; `aud` as a string or an array.
+- Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` — pairs naturally with the HTTP client to fetch an issuer's keys.
+- **Security by construction**: the unsecured `alg:none` is always rejected, a key whose family doesn't match the token `alg` is refused (the RS256↔HS256 confusion is structurally impossible), the signature is verified before any claim is parsed, and HMAC comparison is constant-time.
+- Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see [docs/FEATURES.md](docs/FEATURES.md) for the full reference.
+
+### OpenTelemetry Support (Experimental)
+
+Optional distributed tracing & metrics integration. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON`
+(pulls in `protobuf` as an additional dependency). Each `SingleHttpServer` owns its own `TelemetryContext`
+instance — no global singletons or static state, so multiple servers can run independent telemetry
+configurations without interference, and every telemetry failure is logged via `log::error()` rather than
+silently swallowed. You may also create your own `TelemetryContext` for custom metrics/traces.
+
+See [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration) for the configuration API, built-in
+instrumentation, and testing/observability notes.
+
+## Operational Features
 
 ### Kubernetes style probes
 
@@ -961,6 +986,34 @@ streaming writer path. For plaintext sockets the server uses the kernel `sendfil
 transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
 and writes through the TLS transport.
 
+## Platform Support
+
+| Platform | Status | I/O backend | Notes |
+|----------|--------|-------------|-------|
+| **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile`. Tested on **Ubuntu** and **Alpine** in the CI. |
+| **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+| **Windows** (x64, MSVC) | Supported | WSAPoll | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
+
+Linux-only features (gracefully disabled on other platforms):
+
+- Kernel TLS (`kTLS`) and `sendfile(2)` for zero-copy file serving
+- `MSG_ZEROCOPY` for large payload sends
+- `eventfd` / `timerfd` for internal event loop signaling
+- DogStatsD via Unix domain sockets
+
+## Build & Installation
+
+Full, continually updated build, install, and package manager instructions live in [`docs/INSTALL.md`](docs/INSTALL.md).
+
+Quick start (release build of examples):
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see the INSTALL guide.
+
 ### C++ modules support (experimental)
 
 When `AERONET_BUILD_MODULES=ON` is set in CMake, the library builds an optional C++20 module interface (`aeronet`).
@@ -999,6 +1052,10 @@ int main() {
     server.run();
 }
 ```
+
+### Testing
+
+The test suite uses a unified helper for simple GETs, streaming incremental reads, and multi-request keep-alive batches. See `docs/test-client-helper.md` for guidance when adding new tests.
 
 ## Test Coverage Matrix
 
@@ -1045,171 +1102,6 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Async run | SingleHttpServer::start() behavior | ✅ | `http-server-lifecycle_test.cpp` |
 | Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
 | Implemented | Trailers (outgoing chunked / trailing headers) | ✅ | See tests/http-trailers_test.cpp and http-response-writer.hpp |
-
-## Platform Support
-
-| Platform | Status | I/O backend | Notes |
-|----------|--------|-------------|-------|
-| **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile`. Tested on **Ubuntu** and **Alpine** in the CI. |
-| **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
-| **Windows** (x64, MSVC) | Supported | WSAPoll | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
-
-Linux-only features (gracefully disabled on other platforms):
-
-- Kernel TLS (`kTLS`) and `sendfile(2)` for zero-copy file serving
-- `MSG_ZEROCOPY` for large payload sends
-- `eventfd` / `timerfd` for internal event loop signaling
-- DogStatsD via Unix domain sockets
-
-## Build & Installation
-
-Full, continually updated build, install, and package manager instructions live in [`docs/INSTALL.md`](docs/INSTALL.md).
-
-Quick start (release build of examples):
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
-
-For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see the INSTALL guide.
-
-## Trailing Slash Policy
-
-Full resolution algorithm and matrix moved to: [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
-
-## Construction Model (RAII) & Ephemeral Ports
-
-Overview relocated to: [Construction Model (RAII & Ephemeral Ports)](docs/FEATURES.md#construction-model-raii--ephemeral-ports)
-
-## TLS Features
-
-See: [TLS Features](docs/FEATURES.md#tls-features)
-
-### Automatic HTTP → HTTPS redirect
-
-A plaintext listener can redirect every request to the equivalent `https://` URL with a one-line config
-(`HttpServerConfig::withHttpsRedirect(targetHttpsPort = 443, statusCode = 301)`), the standard companion to a
-TLS listener. See [Automatic HTTP → HTTPS redirect](docs/FEATURES.md#automatic-http--https-redirect).
-
-### TLS Metrics Reference
-
-Metrics example: [TLS Features](docs/FEATURES.md#tls-features)
-
-## OpenTelemetry Support (Experimental)
-
-`aeronet` provides optional OpenTelemetry integration for distributed tracing and metrics. Enable with the CMake flag`-DAERONET_ENABLE_OPENTELEMETRY=ON`. Be aware that it pulls also `protobuf` dependencies.
-
-### Architecture
-
-**Instance-based telemetry:** Each `SingleHttpServer` maintains its own `TelemetryContext` instance. There are no global singletons or static state. This design:
-
-- Allows multiple independent servers with different telemetry configurations
-- Eliminates race conditions and global state issues
-- Makes testing and multi-server scenarios straightforward
-- Ties telemetry lifecycle directly to server lifecycle
-
-All telemetry operations log errors via `log::error()` for debuggability - no silent failures.
-
-You may create your own `TelemetryContext` instance for your custom metrics/traces if needed.
-
-More information in [OpenTelemetry Support](docs/FEATURES.md#opentelemetry-integration).
-
-### Query String & Parameters
-
-Details here: [Query String & Parameters](docs/FEATURES.md#query-string--parameters)
-
-### Logging
-
-Details moved to: [Logging](docs/FEATURES.md#logging)
-
-## Streaming Responses (Chunked / Incremental)
-
-Moved to: [Streaming Responses](docs/FEATURES.md#streaming-responses-chunked--incremental)
-
-### Mixed Mode & Dispatch Precedence
-
-Moved to: [Mixed Mode & Dispatch Precedence](docs/FEATURES.md#mixed-mode--dispatch-precedence)
-
-## Configuration API (builder style)
-
-`HttpServerConfig` lives in `aeronet/http-server-config.hpp` and exposes fluent setters (withX naming):
-
-```cpp
-HttpServerConfig cfg;
-cfg.withPort(8080)
-  .withReusePort(true)
-  .withMaxHeaderBytes(16 * 1024)
-  .withMaxBodyBytes(2 * 1024 * 1024)
-  .withKeepAliveTimeout(std::chrono::milliseconds{10'000})
-  .withMaxRequestsPerConnection(500)
-  .withKeepAliveMode(true);
-
-SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then server.setConfig(cfgWithoutPort);
-```
-
-### Limits
-
-- **431** is returned if the header section exceeds `maxHeaderBytes`.
-- **413** is returned if the declared `content-length` exceeds `maxBodyBytes`.
-- Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
-- Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
-
-### Performance / Metrics & Backpressure
-
-`SingleHttpServer::stats()` exposes aggregated counters:
-
-- `totalBytesQueued` – bytes accepted into outbound buffering (including those sent immediately)
-- `totalBytesWrittenImmediate` – bytes written synchronously on first attempt (no buffering)
-- `totalBytesWrittenFlush` – bytes written during later flush cycles (EPOLLOUT)
-- `deferredWriteEvents` – number of times EPOLLOUT was registered due to pending data
-- `flushCycles` – number of flush attempts triggered by writable events
-- `maxConnectionOutboundBuffer` – high-water mark of any single connection's buffered bytes
-
-Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When a connection's pending buffer would exceed the configured maximum, it is marked for closure once existing data flushes, preventing unbounded memory growth under slow-reader scenarios.
-
-### Metrics Callback (Scaffold)
-
-You can install a lightweight per-request metrics callback capturing basic timing and size information:
-
-```cpp
-SingleHttpServer server;
-server.setMetricsCallback([](const SingleHttpServer::RequestMetrics& m){
-  // Export to stats sink / log
-  // m.method, m.target, m.status, m.bytesIn, m.bytesOut (currently 0 for fixed responses), m.duration, m.reusedConnection
-});
-```
-
-Current fields (alpha – subject to change before 1.0):
-
-| Field | Description |
-|-------|-------------|
-| method | Original request method string |
-| target | Request target (decoded path) |
-| status | Response status code (best-effort 200 for streaming if not overridden) |
-| bytesIn | Request body size (after chunk decode) |
-| bytesOut | Placeholder (0 for now, future: capture flushed bytes per response) |
-| duration | Wall time from parse completion to response dispatch end (best effort) |
-| reusedConnection | True if this connection previously served other request(s) |
-
-The callback runs in the event loop thread – keep it non-blocking.
-
-### Test HTTP Client Helper
-
-The test suite uses a unified helper for simple GETs, streaming incremental reads, and multi-request keep-alive batches. See `docs/test-client-helper.md` for guidance when adding new tests.
-
-### Roadmap additions
-
-- [x] Connection write buffering / partial write handling
-- [x] Outgoing chunked responses & streaming interface (phase 1)
-- [x] Trailing headers exposure for chunked requests
-- [x] Richer routing (wildcards, parameter extraction)
-- [x] TLS (OpenSSL) support (basic HTTPS termination)
-- [x] Benchmarks & perf tuning notes
-
-### TLS (HTTPS) Support
-
-Details merged into: [TLS Features](docs/FEATURES.md#tls-features)
 
 ## Acknowledgements
 
