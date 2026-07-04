@@ -23,6 +23,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/url.hpp"
+#include "client-request-builder.hpp"
 #include "http-client-codec.hpp"
 #include "response-parser.hpp"
 
@@ -46,66 +47,25 @@ constexpr std::string_view kContentEncodingHeaderPrefix = "Content-Encoding: ";
 constexpr std::string_view kContentLengthHeaderPrefix = "Content-Length: ";
 constexpr std::string_view kContentLengthZeroLine = "Content-Length: 0\r\n";
 
-// Comma-separated list of the content codings this build can decode, in aeronet's preference order.
-// Advertised as the default Accept-Encoding when response decompression is enabled and the user did not
-// set an explicit value. Built once at compile time from the codecs compiled in.
-namespace details {
-struct AcceptEncodingCoding {
-  std::string_view name;
-  bool enabled;
-};
-
-// Preference order; gzip and deflate both ride on zlib.
-inline constexpr AcceptEncodingCoding kAcceptEncodingCodings[]{
-    {http::zstd, IsEncodingEnabled(Encoding::zstd)},
-    {http::br, IsEncodingEnabled(Encoding::br)},
-    {http::gzip, IsEncodingEnabled(Encoding::gzip)},
-    {http::deflate, IsEncodingEnabled(Encoding::deflate)},
-};
-
-// Exact byte length of the comma-separated list of the enabled codings (separators included).
-constexpr std::size_t ComputeAcceptEncodingSize() {
-  std::size_t size = 0;
-  for (const auto& coding : kAcceptEncodingCodings) {
-    if (coding.enabled) {
-      if (size != 0) {
-        size += 2;  // ", " separator
-      }
-      size += coding.name.size();
-    }
-  }
-  return size;
-}
-
-// Static storage holding exactly the list bytes; the +1 keeps the array non-empty and null-terminated.
-struct AcceptEncodingStorage {
-  char storage[ComputeAcceptEncodingSize() + 1]{};
-};
-
-constexpr AcceptEncodingStorage MakeAcceptEncoding() {
-  AcceptEncodingStorage out;
-  std::size_t pos = 0;
-  for (const auto& coding : kAcceptEncodingCodings) {
-    if (coding.enabled) {
-      if (pos != 0) {
-        out.storage[pos++] = ',';
-        out.storage[pos++] = ' ';
-      }
-      for (char ch : coding.name) {
-        out.storage[pos++] = ch;
-      }
-    }
-  }
-  return out;
-}
-
-inline constexpr AcceptEncodingStorage kAcceptEncodingStorage = MakeAcceptEncoding();
-}  // namespace details
-
-inline constexpr std::string_view kSupportedAcceptEncoding{details::kAcceptEncodingStorage.storage,
-                                                           details::ComputeAcceptEncodingSize()};
-
 }  // namespace
+
+std::string_view ClientConnection::maybeCompressRequestBody(HttpClient& client, std::string_view body,
+                                                            bool hasContentEncoding, bool hasTransferEncoding,
+                                                            std::string_view& contentEncoding) {
+  const HttpClientConfig::RequestCompression& rc = client.config().requestCompression;
+  if (rc.enabled() && !body.empty() && body.size() >= rc.codec.minBytes && IsEncodingEnabled(rc.encoding) &&
+      !hasContentEncoding && !hasTransferEncoding) {
+    const std::size_t maxCompressedBytes = rc.codec.maxCompressedBytes(body.size());
+    // client.codec() is materialized lazily here: only a request that actually compresses pays for the codec.
+    const std::string_view compressed = HttpCodec::CompressFullBody(client.codec().compressionState, rc.encoding, body,
+                                                                    maxCompressedBytes, client.codec().compressOut);
+    if (!compressed.empty()) {
+      contentEncoding = GetEncodingStr(rc.encoding);
+      return compressed;
+    }
+  }
+  return body;
+}
 
 std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client, const Url& url,
                                                               const ClientRequest& req, http::Method method,
@@ -126,80 +86,33 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client
   const std::string_view methodStr = http::MethodToStr(method);
   const std::string_view target = url.target();
   const std::string_view userAgent = config.userAgent();
-  std::string_view contentType;
 
-  bool addHostHeader = true;
-  bool addUserAgent = !userAgent.empty();
-  bool addAcceptEncoding = true;
-  bool addConnectionClose = !config.keepAlive;
-  bool hasTransferEncoding = false;
-  bool hasContentEncoding = false;
-  bool hasContentLength = false;
-  for (const auto& [name, value] : req.headers()) {
-    if (CaseInsensitiveEqual(name, http::Host)) {
-      addHostHeader = false;
-    } else if (CaseInsensitiveEqual(name, http::UserAgent)) {
-      addUserAgent = false;
-    } else if (CaseInsensitiveEqual(name, http::AcceptEncoding)) {
-      addAcceptEncoding = false;
-    } else if (CaseInsensitiveEqual(name, http::Connection)) {
-      addConnectionClose = false;
-    } else if (CaseInsensitiveEqual(name, http::TransferEncoding)) {
-      hasTransferEncoding = true;
-    } else if (CaseInsensitiveEqual(name, http::ContentEncoding)) {
-      hasContentEncoding = true;
-    } else if (CaseInsensitiveEqual(name, http::ContentLength)) {
-      hasContentLength = true;
-    } else if (CaseInsensitiveEqual(name, http::ContentType)) {
-      contentType = value;
-    }
-  }
-
-  const auto ndigitsPort = ndigits(url.port());
-
-  std::string_view body = dropBody ? std::string_view{} : req.body();
+  // Single scan of the user headers, then derive which framing headers we still inject (see the shared
+  // request-builder helpers -- HTTP/2 mirrors these same decisions).
+  const RequestHeaderScan scan = ScanRequestHeaders(req.headers());
+  const std::string_view contentType = scan.contentType;
+  const bool addHostHeader = scan.host.empty();
+  const bool addUserAgent = !userAgent.empty() && !scan.hasUserAgent;
+  const bool addConnectionClose = !config.keepAlive && !scan.hasConnection;
+  const std::string_view acceptEncoding = ResolveAcceptEncoding(config, scan.hasAcceptEncoding);
+  const bool addAcceptEncoding = !acceptEncoding.empty();
 
   // Optional outbound compression of a large request body (opt-in). On success `contentEncoding` becomes
   // non-empty and `body` points at the compressed bytes held in the codec's reusable buffer.
   std::string_view contentEncoding;
-  if (!dropBody && config.requestCompression.enabled() && !body.empty()) {
-    const HttpClientConfig::RequestCompression& rc = config.requestCompression;
-    if (body.size() >= rc.codec.minBytes && IsEncodingEnabled(rc.encoding) && !hasContentEncoding &&
-        !hasTransferEncoding) {
-      const std::size_t maxCompressedBytes = rc.codec.maxCompressedBytes(body.size());
-      const std::string_view compressed = internal::HttpCodec::CompressFullBody(
-          client.codec().compressionState, rc.encoding, body, maxCompressedBytes, client.codec().compressOut);
-      if (!compressed.empty()) {
-        body = compressed;
-        contentEncoding = GetEncodingStr(rc.encoding);
-      }
-    }
-  }
+  std::string_view body = maybeCompressRequestBody(client, dropBody ? std::string_view{} : req.body(),
+                                                   scan.hasContentEncoding, scan.hasTransferEncoding, contentEncoding);
 
   std::size_t neededSize = methodStr.size() + 1U + target.size() + kRequestLineSuffix.size() + http::CRLF.size();
 
   if (addHostHeader) {
-    neededSize += kHostHeaderPrefix.size() + hostStr.size() + http::CRLF.size();
-    if (hostIsIpv6) {
-      neededSize += 2U;  // surrounding '[' and ']'
-    }
-    if (!url.isDefaultPort()) {
-      neededSize += 1U + ndigitsPort;
-    }
+    neededSize += kHostHeaderPrefix.size() + AuthorityLen(url, hostIsIpv6) + http::CRLF.size();
   }
   if (addUserAgent) {
     neededSize += kUserAgentHeaderPrefix.size() + userAgent.size() + http::CRLF.size();
   }
-  std::string_view acceptEncoding = config.defaultAcceptEncoding();
   if (addAcceptEncoding) {
-    if (acceptEncoding.empty() && config.decompression.enable) {
-      acceptEncoding = kSupportedAcceptEncoding;
-    }
-    if (acceptEncoding.empty()) {
-      addAcceptEncoding = false;
-    } else {
-      neededSize += kAcceptEncodingHeaderPrefix.size() + acceptEncoding.size() + http::CRLF.size();
-    }
+    neededSize += kAcceptEncodingHeaderPrefix.size() + acceptEncoding.size() + http::CRLF.size();
   }
   if (addConnectionClose) {
     neededSize += kConnectionCloseLine.size();
@@ -208,7 +121,7 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client
   const auto bodySz = body.size();
   const auto ndigitsBodySz = ndigits(bodySz);
   const bool addZeroContentLength =
-      body.empty() && MethodUsuallyHasBody(method) && !hasContentLength && !hasTransferEncoding;
+      body.empty() && MethodUsuallyHasBody(method) && !scan.hasContentLength && !scan.hasTransferEncoding;
   const bool concatenateSmallBody = !body.empty() && bodySz <= config.maxCapturedRequestBodyBytes;
   const std::string_view headersFlatView = req.headersFlatView();
 
@@ -245,20 +158,10 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client
   };
 
   if (addHostHeader) {
-    // "Host: " + host (bracketed for IPv6 literals) + optional ":<port>" + CRLF; the port is written
-    // straight into the buffer tail.
+    // "Host: " + authority ("[host]:port", brackets for IPv6 literals, port written straight into the
+    // buffer tail) + CRLF.
     pEnd = Append(kHostHeaderPrefix, pEnd);
-    if (hostIsIpv6) {
-      *pEnd++ = '[';
-    }
-    pEnd = Append(hostStr, pEnd);
-    if (hostIsIpv6) {
-      *pEnd++ = ']';
-    }
-    if (!url.isDefaultPort()) {
-      *pEnd++ = ':';
-      pEnd = std::to_chars(pEnd, pEnd + ndigitsPort, url.port()).ptr;
-    }
+    pEnd = AppendAuthority(pEnd, url, hostIsIpv6);
     pEnd = Append(http::CRLF, pEnd);
   }
   if (addUserAgent) {

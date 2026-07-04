@@ -28,6 +28,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -171,12 +172,24 @@ struct HttpClientTlsContext {
     }
     LoadClientCertificate(ctx.get(), cfg);
     ::SSL_CTX_set_mode(ctx.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    // Advertise the application protocols we can actually speak via ALPN. Today only HTTP/1.1 ("\x08http/1.1"
-    // in OpenSSL's length-prefixed wire format). When the HTTP/2 client engine lands, prepend "\x02h2" here
-    // and add the ClientProtocol::Http2 branch in ensureProtocolHandler(); the negotiated protocol is read
-    // back from SSL_get0_alpn_selected() in finishConnect(). SSL_CTX_set_alpn_protos returns 0 on success.
-    static constexpr unsigned char kAlpnWire[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
-    if (::SSL_CTX_set_alpn_protos(ctx.get(), kAlpnWire, sizeof(kAlpnWire)) != 0) {
+    // Advertise the application protocols we can actually speak via ALPN (OpenSSL's length-prefixed wire
+    // format), driven by cfg.httpVersion: "h2" is offered first (preferred) in Auto, alone in Http2, and
+    // not at all in Http1_1 or a build without HTTP/2 support. The negotiated protocol is read back from
+    // SSL_get0_alpn_selected() in finishConnect(). SSL_CTX_set_alpn_protos returns 0 on success.
+    static constexpr unsigned char kAlpnHttp11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+#ifdef AERONET_ENABLE_HTTP2
+    static constexpr unsigned char kAlpnH2Http11[]{2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+    static constexpr unsigned char kAlpnH2[]{2, 'h', '2'};
+    std::span<const unsigned char> alpnWire(kAlpnHttp11);
+    if (cfg.httpVersion == HttpVersionMode::Auto) {
+      alpnWire = kAlpnH2Http11;
+    } else if (cfg.httpVersion == HttpVersionMode::Http2) {
+      alpnWire = kAlpnH2;
+    }
+#else
+    const std::span<const unsigned char> alpnWire(kAlpnHttp11);
+#endif
+    if (::SSL_CTX_set_alpn_protos(ctx.get(), alpnWire.data(), static_cast<unsigned int>(alpnWire.size())) != 0) {
       throw HttpClientException("Failed to set TLS ALPN protocols");
     }
     if (cfg.tlsVerifyPeer) {
@@ -231,7 +244,9 @@ struct HttpClientTlsContext {
 #endif
 
 HttpClient::HttpClient(HttpClientConfig config) : _config(std::move(config)), _loop(CreateEventLoop()) {
-  // Fail fast on inconsistent codec configuration (mirrors the server's validate-on-construct policy).
+  // Fail fast on inconsistent configuration (mirrors the server's validate-on-construct policy): timeouts,
+  // HTTP version selection (Http2 requires a build with AERONET_ENABLE_HTTP2) and HTTP/2 settings.
+  _config.validate();
   _config.decompression.validate();  // no-op when disabled
   if (_config.requestCompression.enabled()) {
     _config.requestCompression.codec.validate();
@@ -409,8 +424,11 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
         // (its own idle timeout) would otherwise accept the request bytes locally and fail only on the
         // subsequent read, where a transparent retry could re-submit a non-idempotent request. Discard a
         // stale connection here (and its likely-stale siblings) so the request is always issued on a socket
-        // we have just confirmed is still open.
-        if (!IsConnectionStale(conn.cnx.fd())) {
+        // we have just confirmed is still open. IsConnectionStale also treats *pending bytes* as stale,
+        // which for HTTP/2 covers a GOAWAY (or any housekeeping frame) that arrived while idle: the
+        // connection is simply reconnected rather than reused. The engine is additionally consulted so a
+        // multiplexing protocol that cannot host one more stream is never handed out.
+        if (!IsConnectionStale(conn.cnx.fd()) && conn.proto.canTakeAnotherStream()) {
           conn.reused = true;
           return conn;
         }
@@ -459,10 +477,12 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
       return std::unexpected(HttpClientErrc::timeout);
     }
   }
+  // This is the single point where conn.protocol is decided for a fresh connection; a reused pooled
+  // connection keeps the protocol it negotiated originally (re-resolving here is idempotent).
 #ifdef AERONET_ENABLE_OPENSSL
-  // Resolve the negotiated application protocol from ALPN. Only https negotiates ALPN; plain HTTP (and an
-  // empty / unknown selection) stays HTTP/1.1. This is the single point where conn.protocol is decided for
-  // a fresh connection; a reused pooled connection keeps the protocol it negotiated originally.
+  // Resolve the negotiated application protocol from ALPN. Only https negotiates ALPN; an empty / unknown
+  // selection stays HTTP/1.1 -- unless HTTP/2 is required, in which case the connection is unusable
+  // (over TLS, HTTP/2 requires an explicit ALPN "h2" selection, RFC 9113 §3.3).
   if (url.tls() && conn.transport) {
     const unsigned char* alpn = nullptr;
     unsigned int alpnLen = 0;
@@ -470,20 +490,34 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
     if (alpn != nullptr && alpnLen != 0) {
       conn.protocol = ClientProtocolFromAlpnId(std::string_view(reinterpret_cast<const char*>(alpn), alpnLen));
     }
+    if (_config.httpVersion == HttpVersionMode::Http2 && conn.protocol != ClientProtocol::Http2) {
+      log::error("HTTP/2 required but the origin did not select ALPN \"h2\"");
+      return std::unexpected(HttpClientErrc::protocolUnsupported);
+    }
   }
 #endif
+  // Plain http with HTTP/2 required: speak h2c with prior knowledge (RFC 9113 §3.4) -- the client sends
+  // its connection preface directly. Auto stays HTTP/1.1 on cleartext (the Upgrade dance is deprecated).
+  if (!url.tls() && _config.httpVersion == HttpVersionMode::Http2) {
+    conn.protocol = ClientProtocol::Http2;
+  }
   return {};
 }
 
-std::expected<void, HttpClientErrc> HttpClient::EnsureProtocolHandler(ActiveConnection& conn) {
+std::expected<void, HttpClientErrc> HttpClient::ensureProtocolHandler(ActiveConnection& conn) const {
   if (!conn.proto.empty()) {
     return {};  // reused from the pool: the protocol engine (and any per-connection state) travels with it
   }
   switch (conn.protocol) {
     case ClientProtocol::Http2:
-      // We never advertise "h2" yet, so ALPN cannot select it; this is a defensive guard for the day the
-      // advertised list grows before the engine is wired. Construct the HTTP/2 engine here at that point.
+#ifdef AERONET_ENABLE_HTTP2
+      conn.proto = internal::ClientConnection(_config.http2);
+      return {};
+#else
+      // Unreachable in practice: without HTTP/2 support "h2" is never advertised (so ALPN cannot select
+      // it) and HttpVersionMode::Http2 is rejected at construction. Kept as a defensive guard.
       return std::unexpected(HttpClientErrc::protocolUnsupported);
+#endif
     case ClientProtocol::Http1_1:
       break;
   }
@@ -545,7 +579,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     // it the connection. `requestSent` flips to true as soon as any request byte is written, even when the
     // exchange later returns an error. Any step short-circuits to its HttpClientErrc.
     HttpClientResult result =
-        finishConnect(conn, url, connectDeadline).and_then([&] { return EnsureProtocolHandler(conn); }).and_then([&] {
+        finishConnect(conn, url, connectDeadline).and_then([&] { return ensureProtocolHandler(conn); }).and_then([&] {
           return conn.proto.exchange(*this, *conn.transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
         });
 

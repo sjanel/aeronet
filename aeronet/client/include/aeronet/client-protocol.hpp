@@ -5,12 +5,26 @@
 
 namespace aeronet {
 
-// Application protocol spoken over a client connection. Today only HTTP/1.1 is implemented; HTTP/2 is
-// reserved so the connection pool / ALPN negotiation can already carry the distinction (the HTTP/2
-// protocol engine, reusing the server's HPACK + frame codecs, slots in beside the HTTP/1.1 one later).
+// Application protocol spoken over a client connection: HTTP/1.1 or HTTP/2 (native engine reusing the
+// server's HPACK + frame codecs). The connection pool / ALPN negotiation carry the distinction per
+// connection.
 enum class ClientProtocol : uint8_t {
-  Http1_1,  // ALPN "http/1.1" (default, the only protocol with a handler today)
-  Http2,    // ALPN "h2" (reserved -- no handler yet)
+  Http1_1,  // ALPN "http/1.1" (default)
+  Http2,    // ALPN "h2" (https) or h2c prior knowledge (plain http)
+};
+
+// Which HTTP version(s) HttpClient may speak, and how the version is chosen per connection
+// (HttpClientConfig::httpVersion).
+enum class HttpVersionMode : uint8_t {
+  // Negotiate the best version the origin supports: https advertises "h2" + "http/1.1" via ALPN (the
+  // upgrade to HTTP/2 is automatic when the server selects it); plain http stays HTTP/1.1 (RFC 9113
+  // deprecated the cleartext Upgrade mechanism -- use Http2 for prior-knowledge h2c).
+  Auto,
+  // HTTP/1.1 only: never advertise nor speak HTTP/2.
+  Http1_1,
+  // HTTP/2 only: https advertises only "h2" via ALPN (an origin that does not select it fails the request
+  // with HttpClientErrc::protocolUnsupported); plain http speaks h2c with prior knowledge (RFC 9113 §3.4).
+  Http2,
 };
 
 // ALPN protocol identifier advertised / negotiated for a ClientProtocol.
