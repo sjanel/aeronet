@@ -97,6 +97,14 @@ class StaticFileHandlerTest : public ::testing::Test {
 
   auto setHead() { return req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, true, nullptr); }
 
+  // Test-only accessors for the private header cache (the fixture is a friend of StaticFileHandler).
+  // The cache is keyed by the resolved absolute file path, so 'name' is resolved against the handler root.
+  static std::size_t headerCacheSize(const StaticFileHandler& handler) { return handler._headerCache.size(); }
+  static bool headerCacheContains(const StaticFileHandler& handler, std::string_view name) {
+    const auto key = (handler._root / name).string();
+    return handler._headerCache.find(std::string_view(key)) != handler._headerCache.end();
+  }
+
   static void writeFileWithSize(const std::filesystem::path& path, std::size_t size, char fill = 'x') {
     std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
     std::string chunk(1024, fill);
@@ -1392,6 +1400,184 @@ TEST_F(StaticFileHandlerTest, NoEtagWhenDisabledInConfig) {
 
   // When addEtag is false the handler must not emit the ETag header
   EXPECT_FALSE(resp.hasHeader(http::ETag));
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheReturnsConsistentHeadersOnRepeatedRequests) {
+  const auto filePath = tmpDir.dirPath() / "page.html";
+  {
+    std::ofstream(filePath, std::ios::binary) << "<html>hi</html>";
+  }
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq("page.html");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r1 = handler(req);
+  ASSERT_EQ(r1.status(), http::StatusCodeOK);
+  const std::string etag1(r1.headerValueOrEmpty(http::ETag));
+  const std::string lm1(r1.headerValueOrEmpty(http::LastModified));
+  const std::string ct1(r1.headerValueOrEmpty(http::ContentType));
+  ASSERT_FALSE(etag1.empty());
+  ASSERT_FALSE(lm1.empty());
+  EXPECT_EQ(ct1, "text/html");
+
+  // Second request is served from the header cache and must produce byte-identical metadata and body.
+  buildReq("page.html");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r2 = handler(req);
+  ASSERT_EQ(r2.status(), http::StatusCodeOK);
+  EXPECT_EQ(r2.headerValueOrEmpty(http::ETag), etag1);
+  EXPECT_EQ(r2.headerValueOrEmpty(http::LastModified), lm1);
+  EXPECT_EQ(r2.headerValueOrEmpty(http::ContentType), ct1);
+  EXPECT_EQ(r2.bodyInMemory(), r1.bodyInMemory());
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheInvalidatesWhenFileSizeChanges) {
+  const auto filePath = tmpDir.dirPath() / "data.txt";
+  {
+    std::ofstream(filePath, std::ios::binary) << "AAAA";
+  }
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq("data.txt");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r1 = handler(req);
+  const std::string etag1(r1.headerValueOrEmpty(http::ETag));
+  ASSERT_FALSE(etag1.empty());
+
+  // Overwrite with a different length: the file size component of the strong ETag must change.
+  {
+    std::ofstream(filePath, std::ios::binary | std::ios::trunc) << "BBBBBBBBBB";
+  }
+
+  buildReq("data.txt");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r2 = handler(req);
+  EXPECT_NE(r2.headerValueOrEmpty(http::ETag), etag1);
+  EXPECT_EQ(r2.bodyInMemory(), "BBBBBBBBBB");
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheInvalidatesWhenFileMtimeChanges) {
+  const auto filePath = tmpDir.dirPath() / "same-size.txt";
+  {
+    std::ofstream(filePath, std::ios::binary) << "AAAA";
+  }
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq("same-size.txt");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r1 = handler(req);
+  const std::string etag1(r1.headerValueOrEmpty(http::ETag));
+  const std::string lm1(r1.headerValueOrEmpty(http::LastModified));
+  ASSERT_FALSE(etag1.empty());
+
+  // Same content (same size) but a different modification time must still invalidate the cached entry.
+  std::filesystem::last_write_time(filePath, std::filesystem::last_write_time(filePath) + std::chrono::hours(48));
+
+  buildReq("same-size.txt");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse r2 = handler(req);
+  EXPECT_NE(r2.headerValueOrEmpty(http::ETag), etag1);
+  EXPECT_NE(r2.headerValueOrEmpty(http::LastModified), lm1);
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheDisabledServesCorrectly) {
+  const auto filePath = tmpDir.dirPath() / "page.css";
+  {
+    std::ofstream(filePath, std::ios::binary) << "body{}";
+  }
+  StaticFileConfig cfg;
+  cfg.withHeaderCacheCapacity(0);  // caching disabled
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  for (int idx = 0; idx < 3; ++idx) {
+    buildReq("page.css");
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse resp = handler(req);
+    ASSERT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_FALSE(resp.headerValueOrEmpty(http::ETag).empty());
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/css");
+    EXPECT_EQ(resp.bodyInMemory(), "body{}");
+  }
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheBoundEvictsAndKeepsServingCorrectly) {
+  const auto htmlPath = tmpDir.dirPath() / "a.html";
+  const auto cssPath = tmpDir.dirPath() / "b.css";
+  {
+    std::ofstream(htmlPath, std::ios::binary) << "<html></html>";
+  }
+  {
+    std::ofstream(cssPath, std::ios::binary) << "div{}";
+  }
+
+  StaticFileConfig cfg;
+  cfg.withHeaderCacheCapacity(1);  // only one file fits in the cache
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  // Interleaving two files through a size-1 cache evicts the previous entry on every alternation, but each request
+  // must still produce correct, distinct headers, and the cache must never exceed its configured capacity.
+  for (int idx = 0; idx < 3; ++idx) {
+    buildReq("a.html");
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse htmlResp = handler(req);
+    ASSERT_EQ(htmlResp.status(), http::StatusCodeOK);
+    EXPECT_EQ(htmlResp.headerValueOrEmpty(http::ContentType), "text/html");
+    EXPECT_FALSE(htmlResp.headerValueOrEmpty(http::ETag).empty());
+    EXPECT_LE(headerCacheSize(handler), 1U);
+
+    buildReq("b.css");
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse cssResp = handler(req);
+    ASSERT_EQ(cssResp.status(), http::StatusCodeOK);
+    EXPECT_EQ(cssResp.headerValueOrEmpty(http::ContentType), "text/css");
+    EXPECT_FALSE(cssResp.headerValueOrEmpty(http::ETag).empty());
+    EXPECT_EQ(cssResp.bodyInMemory(), "div{}");
+    EXPECT_LE(headerCacheSize(handler), 1U);
+  }
+}
+
+TEST_F(StaticFileHandlerTest, HeaderCacheEvictsLeastRecentlyUsedEntry) {
+  // Create more distinct files than the cache can hold.
+  static constexpr int kNbFiles = 6;
+  static constexpr std::size_t kCapacity = 3;
+  for (int idx = 0; idx < kNbFiles; ++idx) {
+    std::ofstream(tmpDir.dirPath() / ("f" + std::to_string(idx) + ".txt"), std::ios::binary) << "content-" << idx;
+  }
+
+  StaticFileConfig cfg;
+  cfg.withHeaderCacheCapacity(kCapacity);
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  auto request = [&](int idx) {
+    const std::string name = "f" + std::to_string(idx) + ".txt";
+    buildReq(name);
+    EXPECT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_EQ(resp.bodyInMemory(), "content-" + std::to_string(idx));
+  };
+
+  // Warm the cache to capacity with f0, f1, f2 (f0 is now the least-recently used).
+  request(0);
+  request(1);
+  request(2);
+  EXPECT_EQ(headerCacheSize(handler), kCapacity);
+
+  // Touch f0 so it becomes most-recently used; f1 is now the LRU victim.
+  request(0);
+
+  // Insert f3: the cache is full, so the LRU entry (f1) must be evicted, not f0.
+  request(3);
+  EXPECT_EQ(headerCacheSize(handler), kCapacity);
+  EXPECT_TRUE(headerCacheContains(handler, "f0.txt"));   // recently used → retained
+  EXPECT_FALSE(headerCacheContains(handler, "f1.txt"));  // least-recently used → evicted
+  EXPECT_TRUE(headerCacheContains(handler, "f3.txt"));   // newly inserted
+
+  // Churn the remaining files; the cache must stay bounded and keep serving correct content.
+  for (int idx = 0; idx < kNbFiles; ++idx) {
+    request(idx);
+    EXPECT_LE(headerCacheSize(handler), kCapacity);
+  }
 }
 
 #ifdef AERONET_WANT_SENDFILE_PREAD_OVERRIDES

@@ -2348,6 +2348,17 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   validator mismatches.
 - **Headers**: the handler always emits `Accept-Ranges: bytes` so clients learn range capability. `ETag` and
   `Last-Modified` are enabled by default (configurable) and share the same strong validator used by conditionals.
+- **Pre-computed header cache**: the formatted per-file header fragments (`ETag`, `Last-Modified` and the resolved
+  `Content-Type`) are cached keyed by the resolved file path, so repeated requests to the same, unchanged file skip the
+  ETag/date/MIME formatting entirely. Each request still performs a single `fstat()` (done when opening the file); the
+  file **size** and **modification time** it returns double as the cache validation key, so a modified or replaced file
+  transparently rebuilds its entry — cached headers are **never stale**. The cache is per handler instance (hence per
+  server thread, since each thread copies the router) and therefore lock-free. It grows lazily up to
+  `StaticFileConfig::headerCacheCapacity` (default **1024**); once full, inserting a new file evicts the
+  **least-recently-used** entry so the cache stays bounded while keeping the hot working set resident. Set
+  `headerCacheCapacity` to **0** (or use `withHeaderCacheCapacity(0)`) to disable the cache. A
+  `contentTypeResolver` callback, when installed, is invoked at most once per (file, stat) rather than on every request.
+  See [tests](../aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
 
 - **Content-Type resolution**: when serving files the handler resolves the `Content-Type` header with the following
   precedence: (1) a user-provided content-type resolver callback (if installed) and returning a non-empty value,

@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +25,8 @@
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 using namespace aeronet;
 
@@ -49,6 +52,25 @@ TEST(FileTest, SizeAndLoadAllContent) {
   EXPECT_EQ(fileObj.size(), std::string("hello world\n").size());
   const auto content = LoadAllContent(fileObj);
   EXPECT_EQ(content, "hello world\n");
+}
+
+TEST(FileTest, LastModifiedInvalidForDefaultConstructed) {
+  File fileObj;
+  EXPECT_EQ(fileObj.lastModified(), kInvalidTimePoint);
+}
+
+TEST(FileTest, LastModifiedMatchesFilesystem) {
+  ScopedTempDir tmpDir("aeronet-file-mtime");
+  ScopedTempFile tmp(tmpDir, "data");
+  File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  const SysTimePoint mtime = fileObj.lastModified();
+  EXPECT_NE(mtime, kInvalidTimePoint);
+
+  // The mtime captured from fstat() must agree with the filesystem's own view of the modification time.
+  const auto fsMtime = std::chrono::clock_cast<SysClock>(std::filesystem::last_write_time(tmp.filePath()));
+  EXPECT_LT(std::chrono::abs(mtime - fsMtime), std::chrono::seconds(2));
 }
 
 TEST(FileTest, DetectedContentTypeKnownExtension) {

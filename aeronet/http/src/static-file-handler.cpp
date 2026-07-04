@@ -35,6 +35,7 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
@@ -320,35 +321,22 @@ struct DirectoryListingResult {
   return result;
 }
 
-// Helper to append a Last-Modified header using a transient stack buffer. The HttpResponse copies
-// the header value synchronously, so using a local char buffer is safe and avoids an extra std::string.
-void AddLastModifiedHeader(HttpResponse& resp, SysTimePoint tp) {
-  char buf[RFC7231DateStrLen];
-  auto* end = TimeToStringRFC7231(tp, buf);
-  assert(std::cmp_equal(end - buf, RFC7231DateStrLen));
-  resp.headerAddLine(http::LastModified, std::string_view(buf, end));
-}
-
-inline constexpr std::size_t kMaxHexChars = sizeof(std::uint64_t) * 2;
-inline constexpr std::size_t kMaxEtagSize = 1 + kMaxHexChars + 1 + kMaxHexChars + 1;
-
-struct EtagBuf {
-  char buf[kMaxEtagSize];
-  std::uint8_t len{0};
-};
-
-void MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, EtagBuf& etag) {
+// Format a strong ETag ("<hex-size>-<hex-nanos>", quotes included) into 'buf', which must have room for at least
+// StaticFileHandler::kMaxEtagSize bytes. Returns the number of bytes written.
+std::uint8_t MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, char* buf) {
   const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(lastModified.time_since_epoch()).count();
 
   static constexpr char kHexits[] = "0123456789abcdef";
 
-  // start with opening quote
-  etag.buf[etag.len++] = '"';
+  std::uint8_t len = 0;
 
-  // helper to write minimal hex digits of 'value' directly into etag.buf at current len
-  auto write_hex_direct = [&etag](std::uint64_t value) {
+  // start with opening quote
+  buf[len++] = '"';
+
+  // helper to write minimal hex digits of 'value' directly into buf at current len
+  auto write_hex_direct = [&](std::uint64_t value) {
     if (value == 0) {
-      etag.buf[etag.len++] = '0';
+      buf[len++] = '0';
       return;
     }
     // count hex digits
@@ -362,18 +350,20 @@ void MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, EtagBuf& 
     for (std::int32_t pos = static_cast<std::int32_t>(digits) - 1; pos >= 0; --pos) {
       const auto shift = static_cast<std::uint64_t>(pos) * 4U;
       const unsigned int nibble = static_cast<unsigned int>((value >> shift) & 0xFU);
-      etag.buf[etag.len++] = kHexits[nibble];
+      buf[len++] = kHexits[nibble];
     }
   };
 
   // file size
   write_hex_direct(fileSize);
   // hyphen
-  etag.buf[etag.len++] = '-';
+  buf[len++] = '-';
   // nanoseconds timestamp
   write_hex_direct(static_cast<std::uint64_t>(nanos));
   // closing quote
-  etag.buf[etag.len++] = '"';
+  buf[len++] = '"';
+
+  return len;
 }
 
 struct RangeSelection {
@@ -918,6 +908,80 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
   return requestedTrailingSlash ? ResolveResult::NotFound : ResolveResult::RegularFile;
 }
 
+void StaticFileHandler::buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const {
+  out.fileSize = file.size();
+  out.lastModified = file.lastModified();
+  // A successfully opened File always carries a valid mtime from its fstat(); operator() returns 503 before
+  // reaching this point otherwise. So the modification time (and the derived ETag/date) are always well-formed.
+  assert(out.lastModified != kInvalidTimePoint);
+
+  out.etagLen = 0;
+  if (_config.addEtag || _config.enableConditional) {
+    out.etagLen = MakeStrongEtag(out.fileSize, out.lastModified, out.etag);
+  }
+
+  [[maybe_unused]] auto* end = TimeToStringRFC7231(out.lastModified, out.lastModifiedStr);
+  assert(std::cmp_equal(end - out.lastModifiedStr, RFC7231DateStrLen));
+
+  // Resolve content type:
+  //  1) user-provided resolver (may return empty to defer),
+  //  2) MIME type from the file extension,
+  //  3) configured default content type.
+  // Note: std::string_view is safe for use here, it will point to constant memory.
+  std::string_view contentType;
+  if (_config.contentTypeResolver) {
+    contentType = _config.contentTypeResolver(filePath);
+  }
+  if (contentType.empty()) {
+    contentType = DetermineMIMETypeStr(filePath);
+    if (contentType.empty()) {
+      contentType = _config.defaultContentType();
+    }
+  }
+
+  out.pContentType = contentType.data();
+  out.contentTypeLen = SafeCast<uint32_t>(contentType.size());
+}
+
+const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta(std::string_view filePath,
+                                                                                 const File& file,
+                                                                                 CachedFileHeaders& scratch) const {
+  if (_config.headerCacheCapacity == 0) {
+    buildHeaderMeta(filePath, file, scratch);
+    return scratch;
+  }
+
+  // Single hash probe: locate the existing entry or insert a fresh (empty) one. This avoids a second lookup and a
+  // copy of the CachedFileHeaders on the miss path (it is filled in place below), and stays allocation-free on a
+  // hit (the RawChars32 key is only materialized when an entry is actually inserted).
+  auto [it, inserted] = _headerCache.try_emplace(filePath);
+  CachedFileHeaders& entry = it->second;
+  if (!inserted) {
+    // Validate the cached entry against the freshly stat'd metadata; rebuild in place if the file changed.
+    if (entry.fileSize != file.size() || entry.lastModified != file.lastModified()) {
+      buildHeaderMeta(filePath, file, entry);
+    }
+    entry.lruSeq = ++_headerCacheClock;  // mark as most-recently used
+    return entry;
+  }
+
+  // Newly inserted entry: fill it and stamp it as most-recently used *before* any eviction, so it holds the newest
+  // recency stamp and can never be chosen as the victim below.
+  buildHeaderMeta(filePath, file, entry);
+  entry.lruSeq = ++_headerCacheClock;
+
+  // The just-inserted entry may have pushed us one over capacity (note the strict '>': the new key is already in).
+  if (_headerCache.size() <= _config.headerCacheCapacity) {
+    return entry;
+  }
+
+  // Evict the least-recently-used entry. erase() may relocate other elements in the open-addressing table, so
+  // 'entry'/'it' must not be reused afterwards — re-fetch the entry we just inserted (guaranteed present: it holds
+  // the newest stamp, so it was not the victim).
+  _headerCache.erase(std::ranges::min_element(_headerCache, {}, [](const auto& kv) { return kv.second.lruSeq; }));
+  return _headerCache.find(filePath)->second;
+}
+
 HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   HttpResponse resp(HttpResponse::Check::No);
 
@@ -1008,24 +1072,17 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     return resp;
   }
 
-  // Note: Two syscalls required - open() returns fd only, fstat() needed for size/metadata.
-  // POSIX provides no combined operation.
   const std::size_t fileSize = file.size();
-  SysTimePoint lastModified = kInvalidTimePoint;
-  if (_config.addLastModified || _config.enableConditional || _config.addEtag) {
-    std::error_code ec;
-    const auto writeTime = std::filesystem::last_write_time(targetPath, ec);
-    if (!ec) {
-      lastModified = std::chrono::clock_cast<SysClock>(writeTime);
-    }
-  }
 
-  EtagBuf etag;
-  if ((_config.addEtag || _config.enableConditional) && lastModified != kInvalidTimePoint) {
-    MakeStrongEtag(fileSize, lastModified, etag);
-  }
+  // Resolve the per-file formatted headers, reusing the cache when the file is unchanged. The file size and
+  // modification time captured by the File's fstat() double as the cache validation key, so the single stat()
+  // performed at open time covers both serving and cache invalidation (no extra last_write_time() syscall).
+  CachedFileHeaders scratchMeta;
+  const CachedFileHeaders& meta = resolveHeaderMeta(pathString.view, file, scratchMeta);
 
-  std::string_view etagView{etag.buf, etag.len};
+  const SysTimePoint lastModified = meta.lastModified;
+  const std::string_view etagView{meta.etag, meta.etagLen};
+  const std::string_view contentTypeForFile = meta.contentType();
 
   static constexpr std::string_view kBytes = "bytes";
 
@@ -1036,11 +1093,12 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
   resp = HttpResponse(additionalCapacity, http::StatusCodeNotFound);
 
   resp.headerAddLine(http::AcceptRanges, kBytes);
-  if (_config.addEtag && !etagView.empty()) {
+  if (_config.addEtag) {
+    // ETag is always formatted when addEtag is set (a valid File guarantees a valid modification time).
     resp.headerAddLine(http::ETag, etagView);
   }
-  if (_config.addLastModified && lastModified != kInvalidTimePoint) {
-    AddLastModifiedHeader(resp, lastModified);
+  if (_config.addLastModified) {
+    resp.headerAddLine(http::LastModified, std::string_view(meta.lastModifiedStr, RFC7231DateStrLen));
   }
 
   ConditionalOutcome conditionalOutcome;
@@ -1054,23 +1112,6 @@ HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
     if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
       resp.status(http::StatusCodeNotModified);
       return resp;
-    }
-  }
-
-  // Resolve content type.
-  // Algorithm is:
-  // 1) If user provided a content type resolver, use that (it can still return empty to indicate no preference).
-  // 2) If that returned empty (or no content type resolver), try to determine MIME type from file extension.
-  // 3) If that also failed, use default content type from config.
-  std::string_view contentTypeForFile;
-  if (_config.contentTypeResolver) {
-    contentTypeForFile = _config.contentTypeResolver(pathString.view);
-  }
-
-  if (contentTypeForFile.empty()) {
-    contentTypeForFile = DetermineMIMETypeStr(pathString.view);
-    if (contentTypeForFile.empty()) {
-      contentTypeForFile = _config.defaultContentType();
     }
   }
 
