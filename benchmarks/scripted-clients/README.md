@@ -134,7 +134,7 @@ Each run writes, under the output directory (`./results` by default):
   renderer the HTTP/1.1, HTTP/2 and WebSocket dashboards use).
 
 The `benchmarks-gh-pages` workflow runs this suite on every push/PR to `main` (and weekly), renders the page
-with that same renderer, and publishes it to **gh-pages** at
+with that same renderer, and publishes it to **GitHub Pages** at
 [`/benchmarks/clients/`](https://sjanel.github.io/aeronet/benchmarks/clients/); the README "Client Benchmarks"
 badge points at it.
 
