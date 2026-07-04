@@ -1,4 +1,4 @@
-#include "aeronet/http-response.hpp"
+#include "aeronet/http-message.hpp"
 
 #include <algorithm>
 #include <bitset>
@@ -24,7 +24,6 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
-#include "aeronet/http-message.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -106,6 +105,15 @@ constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t co
   }
   return HttpMessage::HeaderSize(http::ContentType.size(), contentTypeSize) +
          HttpMessage::HeaderSize(http::ContentLength.size(), nchars(bodySize));
+}
+
+// Whether an empty-body response with the given status code may carry a synthesized `Content-Length: 0`.
+// Per RFC 7230 §3.3.2 / §3.3.3, 1xx, 204 and 304 responses are always terminated by the first empty line
+// after the header fields and either MUST NOT (1xx, 204) or cannot reliably (304, whose Content-Length must
+// equal the octet count a 200 response would have sent) carry one; every other empty-body response gets it,
+// so keep-alive clients can frame the zero-length body immediately instead of waiting for connection close.
+constexpr bool StatusAllowsSynthesizedContentLengthZero(http::StatusCode status) noexcept {
+  return status >= 200 && status != http::StatusCodeNoContent && status != http::StatusCodeNotModified;
 }
 
 constexpr std::string_view kTrailerValueSep = ", ";
@@ -1093,8 +1101,23 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
   const bool isHeadMethod = opts.isHeadMethod();
   const bool addTrailerHeader = trailersSize() != 0 && opts.isAddTrailerHeader();
 
+  // Synthesize a `Content-Length: 0` for empty-body responses that don't already frame their (absent) body,
+  // so keep-alive clients can reuse the connection immediately instead of waiting for connection close.
+  // Excluded: HEAD responses (RFC 7230 §3.3.3: they never carry a body regardless), file payloads (an empty
+  // file already emits its own `Content-Length: 0`), and streaming responses (the body is streamed separately
+  // with its framing header - chunked or fixed Content-Length - already declared). The direct-compression
+  // guard is likewise essential (not merely defensive): a compression-armed response whose encoder has
+  // buffered its input without yet flushing output has bodyLength() == 0 here, but its real (compressed) body
+  // is emitted by the body branch below, which writes the actual Content-Length - so we must not add one here.
+  const bool addContentLengthZero = bodySz == 0 && !isHeadMethod && !hasBodyFile() && !opts.isStreamingBody() &&
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+                                    !_opts.isAutomaticDirectCompression() &&
+#endif
+                                    StatusAllowsSynthesizedContentLengthZero(status());
+
   std::size_t totalNewHeadersSize =
-      addConnectionHeader ? HeaderSize(http::Connection.size(), connectionValue.size()) : 0;
+      (addConnectionHeader ? HeaderSize(http::Connection.size(), connectionValue.size()) : 0) +
+      (addContentLengthZero ? HeaderSize(http::ContentLength.size(), 1) : 0);
 
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
@@ -1103,7 +1126,7 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
     std::size_t pos = 0;
     assert(pGlobalHeaders != nullptr);
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
-      std::string_view key = headerKeyVal.substr(0, headerKeyVal.find(':'));
+      const std::string_view key = headerKeyVal.substr(0, headerKeyVal.find(':'));
       if (hasHeaders && headerValue(key)) {
         // Header already present, skip it
         globalHeadersToSkipBmp.set(pos);
@@ -1391,6 +1414,12 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
 
   if (addConnectionHeader) {
     headersInsertPtr = WriteCRLFHeader(http::Connection, connectionValue, headersInsertPtr);
+  }
+
+  if (addContentLengthZero) {
+    // headersInsertPtr is guaranteed non-null here: addContentLengthZero implies bodySz == 0 (empty-body
+    // branch) and totalNewHeadersSize != 0, so the branch above set headersInsertPtr.
+    headersInsertPtr = Append("\r\ncontent-length: 0", headersInsertPtr);
   }
 
   _data.addSize(totalNewHeadersSize);
