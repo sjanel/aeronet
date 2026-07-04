@@ -167,10 +167,16 @@ Each run writes, under the output directory (`./results` by default):
   [`../scripted-servers/render_benchmarks_html.py`](../scripted-servers/render_benchmarks_html.py) (the same
   renderer the HTTP/1.1, HTTP/2 and WebSocket dashboards use).
 
-The `benchmarks-gh-pages` workflow runs this suite on every push/PR to `main` (and weekly), renders the page
-with that same renderer, and publishes it to **GitHub Pages** at
-[`/benchmarks/clients/`](https://sjanel.github.io/aeronet/benchmarks/clients/); the README "Client Benchmarks"
-badge points at it.
+The `benchmarks-gh-pages` workflow runs this suite on every push/PR to `main` (and weekly), for **all three
+protocols**, renders the pages with that same renderer, and publishes them to **GitHub Pages** under
+[`/benchmarks/clients/`](https://sjanel.github.io/aeronet/benchmarks/clients/): HTTP/1.1 at
+[`index.html`](https://sjanel.github.io/aeronet/benchmarks/clients/), cleartext HTTP/2 at
+[`client_benchmark_h2c.html`](https://sjanel.github.io/aeronet/benchmarks/clients/client_benchmark_h2c.html)
+and HTTP/2 over TLS at
+[`client_benchmark_h2-tls.html`](https://sjanel.github.io/aeronet/benchmarks/clients/client_benchmark_h2-tls.html).
+Each has its own shields.io badge (`client_benchmark_badge.json` / `..._badge_h2c.json` / `..._badge_h2-tls.json`),
+all three linked from the top of the main README. The HTTP/1.1 client bench runs inside the `bench` job; the
+`h2c` / `h2-tls` client benches run inside the `bench-h2` job (high-connections entry, once per protocol).
 
 ## Tips for accurate measurement
 

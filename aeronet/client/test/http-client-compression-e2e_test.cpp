@@ -10,7 +10,6 @@
 #include <utility>
 
 #include "aeronet/aeronet.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client-config.hpp"
