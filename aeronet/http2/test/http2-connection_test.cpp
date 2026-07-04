@@ -468,6 +468,49 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   EXPECT_NE(TryParseTimeRFC7231(it->second), kInvalidTimePoint);
 }
 
+// RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading or trailing OWS. The HTTP/1.1 serializer
+// legitimately emits such OWS -- most notably the compression codec pads Content-Length with trailing spaces
+// (http-codec.cpp) so it can rewrite the value in place -- so encodeHeaders() must trim before HPACK-encoding.
+// A strict peer (nghttp2 / curl) otherwise treats the padded field as malformed and RST_STREAMs the response.
+TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
+  Http2Config config;
+  Http2Connection server(config, true);
+  AdvanceToOpenAndDrainSettingsAck(server);
+  // Drain the server SETTINGS so the only HEADERS in the next output is the one we send below.
+  while (server.hasPendingOutput()) {
+    server.onOutputWritten(server.getPendingOutput().size());
+  }
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":status", "200"));
+  headers.append(MakeHttp1HeaderLine("content-type", "application/json"));
+  // Trailing OWS, exactly as the compression codec's padded Content-Length arrives here.
+  headers.append(MakeHttp1HeaderLine("content-length", "5979   "));
+  // Both-sides OWS to exercise the leading trim as well.
+  headers.append(MakeHttp1HeaderLine("x-padded", "  value  "));
+
+  ASSERT_EQ(server.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+
+  ASSERT_TRUE(server.hasPendingOutput());
+  const auto out = server.getPendingOutput();
+  const auto wire = DecodeFirstHeadersFromOutput(out);
+  ASSERT_TRUE(wire.foundHeaders) << "No HEADERS frame found in server output";
+  ASSERT_TRUE(wire.decodeSuccess) << "Failed to HPACK-decode server HEADERS";
+
+  auto valueOf = [&](std::string_view name) -> std::string {
+    for (const auto& [hname, hvalue] : wire.headers) {
+      if (hname == name) {
+        return hvalue;
+      }
+    }
+    ADD_FAILURE() << "header '" << name << "' not found in wire-decoded HEADERS";
+    return {};
+  };
+  EXPECT_EQ(valueOf("content-length"), "5979");
+  EXPECT_EQ(valueOf("x-padded"), "value");
+  EXPECT_EQ(valueOf("content-type"), "application/json");  // untouched: no surrounding OWS
+}
+
 // ============================
 // Stream Management Tests
 // ============================
