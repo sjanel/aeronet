@@ -1,0 +1,615 @@
+{
+  "protocol": "h2c",
+  "tool": "h2load",
+  "threads": 2,
+  "connections": 20,
+  "duration": "30s",
+  "warmup": "5s",
+  "wrk_timeout": "10s",
+  "servers": [
+    "aeronet",
+    "rust",
+    "undertow",
+    "go"
+  ],
+  "scenarios": [
+    "headers",
+    "body",
+    "body-codec",
+    "static",
+    "cpu",
+    "mixed",
+    "files",
+    "routing"
+  ],
+  "results": {
+    "headers": {
+      "rps": {
+        "aeronet": "101278.33",
+        "rust": "59259.57",
+        "undertow": "41893.27",
+        "go": "13142.27"
+      },
+      "rps_raw": {
+        "aeronet": "101278.33",
+        "rust": "59259.57",
+        "undertow": "41893.27",
+        "go": "13142.27"
+      },
+      "latency": {
+        "aeronet": "1.90ms",
+        "rust": "3.34ms",
+        "undertow": "4.74ms",
+        "go": "15.21ms"
+      },
+      "latency_raw": {
+        "aeronet": "1.90ms",
+        "rust": "3.34ms",
+        "undertow": "4.74ms",
+        "go": "15.21ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "57.68MB/s",
+        "rust": "34.09MB/s",
+        "undertow": "29.54MB/s",
+        "go": "7.49MB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 14.863,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 14.863,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 7.758,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 7.758,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 283.613,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 283.613,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 22.648,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 39.785,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "body": {
+      "rps": {
+        "aeronet": "356008.67",
+        "rust": "111716.93",
+        "undertow": "52951.73",
+        "go": "18878.97"
+      },
+      "rps_raw": {
+        "aeronet": "356008.67",
+        "rust": "111716.93",
+        "undertow": "52951.73",
+        "go": "18878.97"
+      },
+      "latency": {
+        "aeronet": "307us",
+        "rust": "1.75ms",
+        "undertow": "3.78ms",
+        "go": "10.59ms"
+      },
+      "latency_raw": {
+        "aeronet": "307us",
+        "rust": "1.75ms",
+        "undertow": "3.78ms",
+        "go": "10.59ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "363.96MB/s",
+        "rust": "111.98MB/s",
+        "undertow": "54.36MB/s",
+        "go": "18.89MB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 14.91,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 14.91,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 7.781,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 7.781,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 283.773,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 283.773,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 22.297,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 39.785,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "body-codec": {
+      "rps": {
+        "aeronet": "53727.00",
+        "rust": "29335.73",
+        "undertow": "20542.90",
+        "go": "2373.60"
+      },
+      "rps_raw": {
+        "aeronet": "53727.00",
+        "rust": "29335.73",
+        "undertow": "20542.90",
+        "go": "2373.60"
+      },
+      "latency": {
+        "aeronet": "3.70ms",
+        "rust": "6.80ms",
+        "undertow": "9.72ms",
+        "go": "84.01ms"
+      },
+      "latency_raw": {
+        "aeronet": "3.70ms",
+        "rust": "6.80ms",
+        "undertow": "9.72ms",
+        "go": "84.01ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "54.93MB/s",
+        "rust": "30.10MB/s",
+        "undertow": "21.58MB/s",
+        "go": "2.44MB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 15.004,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 15.004,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 8.117,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 8.117,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 283.82,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 283.82,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 33.387,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 45.215,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "static": {
+      "rps": {
+        "aeronet": "571542.67",
+        "rust": "154731.30",
+        "undertow": "97234.40",
+        "go": "22506.30"
+      },
+      "rps_raw": {
+        "aeronet": "571542.67",
+        "rust": "154731.30",
+        "undertow": "97234.40",
+        "go": "22506.30"
+      },
+      "latency": {
+        "aeronet": "293us",
+        "rust": "1.25ms",
+        "undertow": "2.06ms",
+        "go": "8.88ms"
+      },
+      "latency_raw": {
+        "aeronet": "293us",
+        "rust": "1.25ms",
+        "undertow": "2.06ms",
+        "go": "8.88ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "14.17MB/s",
+        "rust": "4.28MB/s",
+        "undertow": "4.91MB/s",
+        "go": "571.99KB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 15.004,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 15.004,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 8.117,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 8.117,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 283.996,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 283.996,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 21.395,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 45.215,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "cpu": {
+      "rps": {
+        "aeronet": "74954.33",
+        "rust": "50369.87",
+        "undertow": "37293.67",
+        "go": "13859.13"
+      },
+      "rps_raw": {
+        "aeronet": "74954.33",
+        "rust": "50369.87",
+        "undertow": "37293.67",
+        "go": "13859.13"
+      },
+      "latency": {
+        "aeronet": "2.67ms",
+        "rust": "3.96ms",
+        "undertow": "5.32ms",
+        "go": "14.42ms"
+      },
+      "latency_raw": {
+        "aeronet": "2.67ms",
+        "rust": "3.96ms",
+        "undertow": "5.32ms",
+        "go": "14.42ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "4.65MB/s",
+        "rust": "3.32MB/s",
+        "undertow": "3.31MB/s",
+        "go": "880.30KB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 15.004,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 15.004,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 8.117,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 8.117,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 284.027,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 284.027,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 21.16,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 45.215,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "mixed": {
+      "rps": {
+        "aeronet": "200560.00",
+        "rust": "99331.97",
+        "undertow": "65929.77",
+        "go": "18456.33"
+      },
+      "rps_raw": {
+        "aeronet": "200560.00",
+        "rust": "99331.97",
+        "undertow": "65929.77",
+        "go": "18456.33"
+      },
+      "latency": {
+        "aeronet": "968us",
+        "rust": "1.99ms",
+        "undertow": "3.00ms",
+        "go": "10.83ms"
+      },
+      "latency_raw": {
+        "aeronet": "968us",
+        "rust": "1.99ms",
+        "undertow": "3.00ms",
+        "go": "10.83ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "rust": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "39.63MB/s",
+        "rust": "19.96MB/s",
+        "undertow": "15.49MB/s",
+        "go": "3.65MB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 15.004,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 15.004,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "rust": {
+          "rss_mb": 8.117,
+          "peak_mb": 204.578,
+          "vmhwm_mb": 8.117,
+          "vmsize_mb": 140.59,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 284.184,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 284.184,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 22.137,
+          "peak_mb": 1783.949,
+          "vmhwm_mb": 45.215,
+          "vmsize_mb": 1783.949,
+          "swap_mb": 0.0,
+          "threads": 7
+        }
+      }
+    },
+    "files": {
+      "rps": {
+        "aeronet": "123.84",
+        "undertow": "52.10",
+        "go": "29.33"
+      },
+      "rps_raw": {
+        "aeronet": "123.97",
+        "undertow": "52.10",
+        "go": "29.33"
+      },
+      "latency": {
+        "aeronet": "159.33ms",
+        "undertow": "377.88ms",
+        "go": "671.02ms"
+      },
+      "latency_raw": {
+        "aeronet": "159.33ms",
+        "undertow": "377.88ms",
+        "go": "671.02ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "3.03GB/s",
+        "undertow": "1.28GB/s",
+        "go": "745.57MB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 639.766,
+          "peak_mb": 950.203,
+          "vmhwm_mb": 639.766,
+          "vmsize_mb": 886.203,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 630.035,
+          "peak_mb": 7635.297,
+          "vmhwm_mb": 651.695,
+          "vmsize_mb": 7571.297,
+          "swap_mb": 0.0,
+          "threads": 27
+        },
+        "go": {
+          "rss_mb": 14.957,
+          "peak_mb": 1702.242,
+          "vmhwm_mb": 14.957,
+          "vmsize_mb": 1639.375,
+          "swap_mb": 0.0,
+          "threads": 6
+        }
+      }
+    },
+    "routing": {
+      "rps": {
+        "aeronet": "500887.00",
+        "undertow": "94529.50",
+        "go": "22384.53"
+      },
+      "rps_raw": {
+        "aeronet": "500887.00",
+        "undertow": "94529.50",
+        "go": "22384.53"
+      },
+      "latency": {
+        "aeronet": "362us",
+        "undertow": "2.16ms",
+        "go": "8.93ms"
+      },
+      "latency_raw": {
+        "aeronet": "362us",
+        "undertow": "2.16ms",
+        "go": "8.93ms"
+      },
+      "latency_stats": {},
+      "timeouts": {
+        "aeronet": 0,
+        "undertow": 0,
+        "go": 0
+      },
+      "transfer": {
+        "aeronet": "14.81MB/s",
+        "undertow": "5.23MB/s",
+        "go": "678.17KB/s"
+      },
+      "winners": {
+        "rps": "aeronet"
+      },
+      "memory": {
+        "aeronet": {
+          "rss_mb": 10.121,
+          "peak_mb": 242.836,
+          "vmhwm_mb": 10.121,
+          "vmsize_mb": 178.836,
+          "swap_mb": 0.0,
+          "threads": 3
+        },
+        "undertow": {
+          "rss_mb": 254.266,
+          "peak_mb": 7377.27,
+          "vmhwm_mb": 266.148,
+          "vmsize_mb": 7313.289,
+          "swap_mb": 0.0,
+          "threads": 25
+        },
+        "go": {
+          "rss_mb": 17.918,
+          "peak_mb": 1639.375,
+          "vmhwm_mb": 19.074,
+          "vmsize_mb": 1639.375,
+          "swap_mb": 0.0,
+          "threads": 6
+        }
+      }
+    }
+  },
+  "metric_definitions": {
+    "latency": {
+      "chart_field": "latency",
+      "chart_label": "Average latency",
+      "description": "Average latency reported by h2load for completed requests in the run."
+    }
+  },
+  "h2_streams": 10
+}

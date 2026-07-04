@@ -1,0 +1,459 @@
+# CHANGELOG
+
+All notable changes to aeronet are documented in this file.
+
+## Unreleased
+
+### Breaking changes
+
+- `HttpRequest` specific HTTP/2 APIs (`isHttp2()`, `streamId()`, `scheme()`, `authority()`) are now only available when `AERONET_ENABLE_HTTP2` is on, and are removed otherwise. If you used these APIs without HTTP/2, you can either enable HTTP/2 or remove the calls and use the HTTP/1.x equivalents (e.g. `headerValueOrEmpty("Host")` instead of `authority()`).
+- **JSON/YAML body helpers now require `<aeronet/http-json.hpp>`**: `HttpResponse::bodyJson` / `bodyYaml` and `HttpRequest::bodyAs` / `bodyAsYaml` keep their declarations in `http-response.hpp` / `http-request.hpp`, but their definitions (and the Glaze include) moved to the new opt-in header `<aeronet/http-json.hpp>` to keep Glaze's compile cost out of the core headers. **Code that includes `http-response.hpp` / `http-request.hpp` directly and calls these methods will fail to compile until it adds `#include <aeronet/http-json.hpp>`.** No signature or runtime-behaviour change, and code that includes the `<aeronet/aeronet.hpp>` umbrella is unaffected (the umbrella pulls in `http-json.hpp` automatically).
+- **Using the `aeronet::log` API now requires `<aeronet/log.hpp>`**: to keep spdlog out of the widely-included core headers (`stringconv.hpp`, `http-request.hpp`), they no longer pull in `<aeronet/log.hpp>` transitively. Code that calls `aeronet::log::info` / `warn` / `error` / etc. and relied on that transitive include must now `#include <aeronet/log.hpp>` directly (it always was the proper include for the logging API).
+
+### New features
+
+- **HTTP/1.1 client (`HttpClient`)**: first delivery of a synchronous HTTP/1.1 client built directly on aeronet's own non-blocking transport + event-loop bricks. It speaks plain HTTP and — with `AERONET_ENABLE_OPENSSL` — HTTPS over the shared `TlsTransport`, with configurable peer/hostname verification, TLS version bounds, custom CA bundle, cipher list and mutual-TLS client certificates (file or in-memory PEM). The engine provides per-origin keep-alive connection pooling with bounded idle reuse, automatic redirect following with RFC 7231 method/body rewriting, and a configurable transparent retry policy with exponential backoff (`RetryConfig`, which subsumes the former `maxRetries` knob). An always-on, budget-free pre-send retry still re-issues a request that failed *before any byte was written* — the stale keep-alive race, where a pooled connection is first vetted for liveness — so a non-idempotent request is never silently re-submitted; layered on top, an opt-in backoff retry (`maxAttempts`, `baseDelay`/`maxDelay`/`multiplier`/`jitter`) retries connect failures, retryable response statuses (default `429`/`503`, honoring a delta-seconds `Retry-After` capped at `maxDelay`) and — only when explicitly enabled (`retryIdempotentAfterSend`) and only for idempotent methods — post-send failures. IPv6 literal authorities are correctly bracketed in the `Host` header (`Host: [::1]:8080`). Requests reuse `HttpResponse` — now generalized into a shared `HttpMessage` container (`HttpResponse` remains as an alias, so existing server code is unaffected) — as the header/body field store, are assembled into a single reused scratch buffer, and are flushed with a scatter write (head + body, no body copy; small bodies are folded into the head for one contiguous write). Responses are parsed incrementally straight out of the receive buffer (status line, headers, and `Content-Length` / `chunked` / until-close framing) with no intermediate copies. Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while per-request runtime failures (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) are reported as an `HttpClientErrc` (`ErrcToStr()` maps each to a description) without throwing — exceptions are reserved for hard setup errors when building the client / TLS context (codec or certificate misconfiguration, with `std::logic_error` when `https` is requested in a build without OpenSSL). **Automatic compression / decompression ships in the same engine**: `Content-Encoding`'d response bodies (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) are transparently decoded in place from the receive buffer, and large outbound request bodies can optionally be compressed; both directions reuse the exact same high-performance codec bricks as the server (`HttpCodec::DecompressFullBody` / `CompressFullBody`, `RequestDecompressionState` / `ResponseCompressionState`). `HttpClientConfig` mirrors the server config (`decompression` — enabled by default whenever a decoder is compiled in, and auto-advertised in `Accept-Encoding`; opt-in `requestCompression` where `encoding` is the single on/off source of truth; `maxCapturedRequestBodyBytes`; builders `withDecompression()` / `withRequestCompression()` / `withMaxCapturedRequestBodyBytes()`). The wire protocol lives behind an internal `ClientConnection` seam that borrows the event loop, reusable scratch buffers and codec directly from the owning `HttpClient`, and HTTPS advertises ALPN (`http/1.1` today), read back via `SSL_get0_alpn_selected` and mapped with the public `ClientProtocol` / `ToAlpnId` / `ClientProtocolFromAlpnId` / `ProtocolSupportsMultiplexing` helpers (`aeronet/client-protocol.hpp`) — so a future native HTTP/2 engine slots in beside the HTTP/1.1 one (advertise `h2`, add one `ensureProtocolHandler` branch) without touching the pool / redirect / retry machinery, and the pool no longer bakes in a 1:1 connection↔request assumption. A single `HttpClient` is not thread-safe: use one per thread.
+- **Native HTTP/2 client**: `HttpClient` now speaks HTTP/2 natively, reusing the server's HPACK + frame codecs through a client-mode `Http2Connection` (no new dependency; requires `AERONET_ENABLE_HTTP2`). The public API is unchanged — the same `request()` / `get()` / `post()` / ... calls serve both protocols — and the version is selected per client via the new `HttpClientConfig::httpVersion` (`HttpVersionMode`): `Auto` (default) negotiates `h2` via ALPN over https (advertising `h2, http/1.1` and falling back transparently) while plain http stays HTTP/1.1; `Http2` requires HTTP/2 (ALPN `h2` only over https — anything else fails the request with `HttpClientErrc::protocolUnsupported` — and prior-knowledge h2c over plain http per RFC 9113 §3.4); `Http1_1` opts out entirely. HTTP/2 SETTINGS/limits are configurable through the embedded `HttpClientConfig::http2` (`Http2Config`, mirroring the server; validated at construction). The engine drives request + response through the shared flow-control machinery (uploads chunked to the send windows, downloads auto-granting `WINDOW_UPDATE`), lowercases header names and maps `Host` → `:authority` as RFC 9113 requires, strips connection-specific headers, and keeps the whole existing feature set working over HTTP/2: redirects with method/body rewriting, transparent retry, response decompression / request compression, `maxResponseBytes` enforcement. Pooled HTTP/2 connections travel with their engine (negotiated settings, HPACK dynamic tables, stream ids) and are vetted for stream capacity (`ClientConnection::canTakeAnotherStream`) plus GOAWAY-while-idle before reuse; a first request on a fresh connection is sent immediately after the client preface without waiting for the server's SETTINGS (one round trip saved, per RFC 9113 §3.4). The client remains synchronous, so an HTTP/2 connection carries one stream at a time (multiplexing awaits the coroutine client tracked in ROADMAP). End-to-end coverage in `aeronet/client/test/http-client-http2-e2e_test.cpp`.
+- **JWT (JWS profile) support (`aeronet_jwt`, `AERONET_ENABLE_JWT`)**: new standalone module for signing and verifying JSON Web Tokens (RFC 7519). It implements the JWS (signature) profile across the full standard algorithm suite — HMAC (`HS256/384/512`), RSA PKCS#1 v1.5 (`RS*`), RSA-PSS (`PS*`), ECDSA on P-256/384/521 (`ES*`) and `EdDSA` (Ed25519) — over the OpenSSL crypto already linked for TLS. `Jwt::encode` signs a claim set; `Jwt::tryDecode` verifies the signature and validates the registered claims per `JwtVerifyOptions` (`exp`/`nbf` with configurable `leeway` and an injectable `clock`, optional `requireExpiration`, and `iss`/`aud`/`sub` matching, with `aud` accepted as either a string or an array). The module is **exception-free**: the `JwtKey` factories return an invalid key on bad input, `Jwt::encode` returns an empty string on failure, and `Jwt::tryDecode` returns an empty `DecodedJwt` (`valid() == false`) with a `JwtError` reason (each failure is logged). Keys load from a shared HMAC secret (`JwtKey::Hmac`), a PEM private/public key (`JwtKey::FromPem`), or a JWK (`JwtKey::FromJwk`: `oct`/`RSA`/`EC`/`OKP`); a `Jwks` set parses a JWKS document and selects the verifying key by the token `kid`. Security posture is enforced by construction: the unsecured `alg:none` is always rejected, a key whose family does not match the token `alg` is refused (`JwtError::KeyMismatch`, making the RS256↔HS256 confusion structurally impossible), the signature is verified before any claim is parsed, a `crit` header naming an unimplemented extension is rejected, and HMAC comparison is constant-time. The module reuses OpenSSL + glaze and adds no new dependency, so it is not a separate opt-in: `AERONET_ENABLE_JWT` is a `cmake_dependent_option` defaulting ON whenever `AERONET_ENABLE_OPENSSL` and `AERONET_ENABLE_GLAZE` are both enabled (with a kill switch to force it off). JWE (encryption) is intentionally out of scope. A new url-safe, no-padding `base64url` codec (encode + decode) lands in `aeronet/tech` (`<aeronet/base64url.hpp>`).
+- **Automatic HTTP → HTTPS redirect**: A plaintext listener can now answer every request with a 3xx redirect to the equivalent `https://` URL instead of routing it, via `HttpServerConfig::withHttpsRedirect(targetHttpsPort = 443, statusCode = 301)` (or the `httpsRedirect` config object / JSON-YAML `httpsRedirect` block). The redirect is enabled by a non-zero `httpsRedirect.targetPort` (`0`, the default, disables it). The redirect host is derived from the request `Host` header (its port is replaced by the configured HTTPS port — 443 is omitted, other ports appended), and the decoded path and query are re-encoded so the `Location` value is always a valid, injection-safe URL. Requests with no `Host` header receive `400`. The redirect bypasses routing/upgrades/body handling and closes the connection (the client reconnects over TLS). Typical deployment: one plaintext listener on port 80 with `withHttpsRedirect(443)` alongside a TLS listener on 443. Enabling `httpsRedirect` together with `tls.enabled` on the same listener is rejected by `validate()`.
+- **HTTP rate limiting middleware**: Added `RateLimitRequestMiddlewareBuilder` builder object with member factory API (`RateLimitRequestMiddlewareBuilder::build()`) and configurable client-key strategy (peer address, `X-Forwarded-For`, custom header, custom extractor). The default in-memory backend uses a token-bucket limiter and returns `429 Too Many Requests` with `Retry-After` on rejection. It can be installed globally (`Router::addRequestMiddleware`) or per-route (`PathHandlerEntry::before`) including RouteGroup scopes.
+- **Client address access on request**: Added `HttpRequest::clientAddress()` populated from peer socket address for both HTTP/1.1 and HTTP/2 paths.
+- **Optional Redis sliding-window contract**: Added Redis adapter boundary (`RedisEvalRequest` / `RedisEvalResponse`) in `RedisSlidingWindowRateLimitStore`, including Lua script payload exposure and deterministic key-schema helper for distributed multi-instance synchronization adapters.
+
+### Bug fixes
+
+- **HTTP/2 responses larger than the peer's flow-control window could never be delivered** - the server sent an in-memory response body with a single `sendData()` call, which rejects any payload exceeding the current stream/connection send window with `FLOW_CONTROL_ERROR` instead of waiting for window credit. Against a client using the RFC 9113 default `SETTINGS_INITIAL_WINDOW_SIZE` (65535), every non-file, non-streaming response body larger than ~64 KiB failed (`HTTP/2 failed to send response`) and the stream hung until a timeout. The window-exhausted remainder is now deferred through the existing `PendingStreamingSend` machinery (the same path streaming handlers use) and flushed as `WINDOW_UPDATE`s arrive, trailers included. Surfaced by the new native HTTP/2 client, whose default settings advertise the RFC window sizes; covered by `HttpClientHttp2E2ETest.LargeResponseBodyReassembledAcrossDataFrames`.
+- **HTTP/2 server leaked active-stream accounting for responses completed outside frame processing** - a stream that reaches its Closed state through the *send* path (final `END_STREAM` written while half-closed remote) was only finalized by the frame-receive handlers, which mop up synchronously-dispatched responses. Responses completed outside `processInput()` — flow-control-deferred bodies and file payloads flushed from `onOutputWritten`, and async handler completions — left the stream counted as active forever (and its entry unpruned), so a long-lived HTTP/2 connection serving enough such responses eventually died with a `Max concurrent streams exceeded` connection error. `Http2Connection` gains `finalizeSendClosedStream()` and the protocol handler invokes it at every deferred completion point; the native HTTP/2 client uses it too (including `RST_STREAM(NO_ERROR)` abort of a partially-uploaded request when the server answers early, RFC 9113 §8.1). Regression-tested by `Http2Connection.SequentialExchangesReleaseActiveStreamsOnBothSides` and the 150-requests-on-one-connection client e2e test.
+- **glaze JSON/YAML reads could over-read a non-null-terminated buffer** - `HttpRequest::bodyAs<T>()` / `bodyAsYaml<T>()` parse `body()`, which is a `string_view` into the (not null-terminated) receive buffer, and `detail::ParseConfigString` parses an arbitrary `string_view`. glaze defaults to `null_terminated = true`, assuming a `'\0'` sentinel at `data()[size()]` and letting its fast number parser read past the end; on a client-controlled body ending exactly at the buffer boundary this read adjacent/uninitialized bytes (benign in practice only because the receive buffer over-allocates, so the over-read stayed inside the allocation). These reads now pass `glz::opts{.null_terminated = false}` so glaze honours the end pointer strictly. (Surfaced by ASAN while building the new JWT module, which parses tightly-sized decoded buffers.)
+- **mTLS enforcement: `requireClientCert` could be silently ignored** - A server configured with `requireClientCert=true` but `requestClientCert=false` (reachable via direct field assignment or JSON/YAML config, since the `withTlsRequireClientCert()` builder set both) did not request a client certificate during the handshake, so certificate-less clients were accepted instead of being rejected. `TLSConfig::validate()` now normalizes the invariant `requireClientCert ⇒ requestClientCert` for every configuration path, and the TLS context layer (`ConfigureClientVerification`) treats `requireClientCert` as sufficient to enable `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT` as defense in depth. Strict mTLS now reliably terminates handshakes from clients that present no certificate.
+- **Response status-line omitted the mandatory SP before an empty reason-phrase** - when a response carried no reason-phrase (the default), aeronet serialized the status-line as `HTTP/1.1 200\r\n`, dropping the second space that RFC 9112 §4 requires: `status-line = HTTP-version SP status-code SP [ reason-phrase ]` (the `SP` is mandatory even when the reason-phrase is empty). Lenient consumers (curl, browsers, aeronet's own client) accepted it, but strict HTTP/1.1 parsers may reject every such response as malformed. aeronet now always emits the separator (`HTTP/1.1 200 \r\n`), so responses interoperate with strict clients and proxies.
+
+### Improvements
+
+- **`HttpServerConfig::nbThreads` narrowed to `std::uint16_t`** (was `std::uint32_t`), and `withNbThreads()` takes a `std::uint16_t`. One thread maps to one `SingleHttpServer` event loop, and no realistic deployment runs more loops than hardware threads (the largest machines have a few thousand), so the 16-bit range is intentional and documents the valid bound. JSON/YAML config values above 65535 are now rejected at parse time. Source-compatible for normal use (the auto-default `0` and any sane thread count fit).
+- **Lower compile-time footprint of the core HTTP headers (hidden heavy dependencies)**: the two compile-time heaviest third-party dependencies — Glaze (~4.3s/TU to parse) and spdlog (~4.6s/TU) — were leaking into the most widely-included headers, so most translation units paid for them even when they never serialized JSON or logged. They are now hidden.
+- **Faster small `Copy` / `Append` (`memory-utils.hpp`)**: `aeronet::Copy` now copies runtime-sized spans of at most 32 bytes with a couple of inline overlapping fixed-width stores instead of `std::memcpy`, avoiding the call overhead that dominates for the short fragments the HTTP request/response builders append in bulk (method, header names/values). Compile-time-constant sizes are unaffected (the size dispatch folds away and still emits direct stores), larger copies fall straight back to `std::memcpy`, and every access stays within the source/destination bounds so all existing callers remain correct. A new microbenchmark (`benchmarks/internal/memory-utils_bench.cpp`) measures ~1.9x on isolated small copies and ~1.5x on a realistic HTTP fragment mix.
+- **Faster `CaseInsensitiveEqual` (`string-equal-ignore-case.hpp`)**: header-name matching — one of the hottest operations in the server (71 call sites) — no longer runs a per-byte `tolower` loop. At runtime it lowercases and compares a full SIMD word at a time: **16 bytes** via the new `AsciiLowerEqual16` (SSE2 on x86-64, NEON on ARM). Microbenchmarks (`benchmarks/internal/string-equal-ignore-case_bench.cpp`, fully-inlined apples-to-apples) show the 16-byte path is **~35–57% faster** than the previous 8-byte SWAR on the actual comparison of strings ≥ 16 bytes (equal, or differing late), neutral on hash-map header lookups, and within noise on the differ-at-first-byte case.
+- Split server and client in two cmake libraries, `aeronet_server` and `aeronet_client`, respectively. Added a new `aeronet` umbrella interface library that pulls in both, for retro-compatibility with existing code that includes `<aeronet/aeronet.hpp>`.
+
+## [1.3.0] - 2026-06-01
+
+### 1.3.0 New features
+
+- **Route parameter constraints**: Router path params now support inline constraints with `{name:pattern}` syntax (for example `/users/{id:[0-9]+}`). Constraint patterns are compiled at registration and validated during matching. The engine uses a fast custom matcher for common character-class patterns and falls back to `std::regex` for complex expressions.
+- **Network fault injection test infrastructure** (`aeronet/test_support/basic/`): `FaultPolicy`, `TestPipe`, `TestTransport`, and `FaultInjectingTransport` provide deterministic transport-level fault simulation for both unit and integration testing. A global transport decorator hook (`g_transportDecorator` in `transport-test-hook.hpp`) lets integration tests wrap real transports with fault injection at accept time. The hook is compile-time gated (`AERONET_ENABLE_TEST_HOOKS`, set automatically when `AERONET_BUILD_TESTS=ON`) — zero overhead in production builds. Tests: 26 unit tests + 11 integration tests covering partial delivery, EAGAIN, resets, combined faults, and pipelining.
+- Configuration of `HttpServer` by yaml or json config files with `AERONET_ENABLE_GLAZE` (see `SingleHttpServer::SingleHttpServer(const std::filesystem::path&)` and `MultiHttpServer::MultiHttpServer(const std::filesystem::path&)` constructors).
+- **Structured access logging**: Added minimally configurable access logs via `HttpServerConfig::accessLog` with formats `clf` and `json`, sinks `none`, `stdout`, and `file`, and optional `X-Forwarded-For` client IP extraction. Implementation is independent from optional spdlog and uses an aeronet-native buffered writer.
+- **Adaptive event-loop poll timeout**: `HttpServerConfig::pollIntervalMinFactor` / `pollIntervalMaxFactor` (default `1.0F` / `1.0F`) scale `pollInterval` dynamically. Saturated polls drop to the min factor; consecutive idle polls back off exponentially up to the max factor. Builder: `withPollIntervalFactors(minFactor, maxFactor)`. The default `{1, 1}` keeps the previous fixed behavior.
+- **Keep-alive deadline queue**: idle keep-alive reaping now uses an intrusive min-heap keyed by expiry deadline instead of scanning every active connection on each maintenance tick. The common idle HTTP/1.1 path checks only expired deadlines, with full sweeps reserved for active timeout/backpressure/drain maintenance. Added `aeronet-bench-internal-keep-alive-deadline-queue` for 10 K idle-connection measurements.
+- **Configurable accept batch size**: New `HttpServerConfig::maxAcceptBatchSize` (default: 64) controls how many new connections are accepted per event-loop iteration. Prevents connection-burst starvation of existing connections under high concurrency.
+- **Per-route configuration**: `PathEntryConfig` now supports `requestTimeout`, `maxBodyBytes`, and `maxHeaderBytes` overrides. Chainable setters on `PathHandlerEntry` (`.timeout()`, `.maxBodyBytes()`, `.maxHeaderBytes()`) allow per-route configuration inline with handler registration.
+- **Per-route body limit enforcement**: Per-route `maxBodyBytes` is enforced server-side across HTTP/1.1 (sync and async paths) and HTTP/2, returning `413 Content Too Large` when the decoded body exceeds the route-specific limit.
+- **Per-route header limit enforcement**: Per-route `maxHeaderBytes` is enforced after routing in both HTTP/1.1 and HTTP/2, returning `431 Request Header Fields Too Large` when headers exceed the route-specific limit (tighter than the global limit already enforced during parsing).
+- **Per-route request timeout**: Per-route `requestTimeout` sets a handler deadline enforced during periodic sweeps. For HTTP/1.1, the deadline is checked connection-wide; for HTTP/2, per-stream deadlines are checked independently via `sweepStreams()`. Expired requests receive `408 Request Timeout`.
+- **Route groups** (`RouteGroup`): Lightweight non-owning prefix proxy created via `Router::group(prefix)`. Supports shared configuration (timeout, body/header limits, HTTP/2 enable), CORS policy, and request/response middleware applied to all routes in the group. Groups can be nested with config inheritance, and per-route overrides take precedence over group defaults.
+
+### 1.3.0 Bug fixes
+
+- `flat_hash_map`: fix `erase(iterator)` return semantics when erasing a colliding entry relocates another chained element into the erased slot. The returned iterator now points to the relocated element instead of advancing past it, which fixes erase-while-iterating loops that could skip matching entries under collisions.
+- **HTTP/1.1 parser: fix header boundary off-by-one** - `initTrySetHead` could misidentify a complete request when the input buffer ended exactly at a header CRLF boundary (e.g., `"Host: test\r\n"` as the last byte). The header-parsing loop exited via its for-condition (`first >= last`) without finding the empty line terminator, then fell through to compute `headSpanSize = bufferSize + 2`. The subsequent `erase_front(headSpanSize)` would assert or corrupt state. Fixed by tracking whether the empty-line terminator was actually found and returning `kStatusNeedMoreData` when it was not.
+- WebSocket: fix `processInput()` consumed-byte accounting when carry-over input from a previous incomplete frame exists. `bytesConsumed` now reports only bytes consumed from the current caller buffer (excluding already-buffered carry-over), preventing over-erasing the connection input buffer and avoiding `RawBytesBase::erase_front` assertion failures under high-load.
+- Fix connection stall when `maxPerEventReadBytes` fairness cap interrupts a read with data still in the TCP buffer. Edge-triggered polling (EPOLLET on Linux, EV_CLEAR on macOS) does not fire a new read event on a non-empty -> non-empty buffer transition, causing the connection to hang until keepAlive timeout. The fix defers partially-read fds and re-processes them at the start of the next event-loop iteration.
+- Fix tunnel connection hang when `epoll_ctl(EPOLL_CTL_MOD)` fails (e.g. `EACCES` on ARM/Linux CI runners): `forwardTunnelData` now propagates the `enableWritableInterest` failure so the tunnel is closed immediately instead of looping indefinitely between data arrival and deferred drain. Also clear buffered write state on `EventLoop::mod()` failure so `canCloseConnectionForDrain()` can proceed.
+- Honor `HttpServerConfig::minReadChunkBytes` for actual transport reads: `ConnectionState::transportRead()` now uses `chunkSize` as the syscall read length instead of reading the whole currently available buffer capacity. This makes chunk sizing deterministic on long-lived connections and keeps `maxPerEventReadBytes` fairness behavior predictable.
+- HTTP/2: fix stream admission check for peer-initiated HEADERS by enforcing local `SETTINGS_MAX_CONCURRENT_STREAMS` (instead of peer settings), preventing incorrect acceptance/rejection of new incoming streams.
+- HTTP/2: do not send an empty HEADERS frame for deferred file sends without trailers
+
+### 1.3.0 Breaking changes
+
+- `HttpServerConfig::maxHeaderBytes` changed from `std::size_t` to `std::uint32_t`. No HTTP implementation should need >4 GiB of headers; this change eliminates struct padding and aligns with `PathEntryConfig::maxHeaderBytes`. Callers passing `std::size_t` values may need a narrowing cast.
+- `HttpServerConfig::withMaxHeaderBytes()` parameter changed from `std::size_t` to `std::uint32_t`.
+- `HttpServerConfig::maxPerEventReadBytes` no longer treats `0` as unlimited. It must now be `> 0`; use `std::numeric_limits<uint32_t>::max()` to approximate unlimited behavior.
+- Default `HttpServerConfig::maxPerEventReadBytes` changed from `0` (previous unlimited mode) to `128 KiB` to enforce fairness by default.
+
+### 1.3.0 Improvements
+
+- Optimized WebSocket frame building by removing some copies and allocations.
+- Slightly improved Router test coverage
+- Decrease looping allocations in `HttpResponseWriter` by reusing a single buffer for compression
+- HTTP/2 HPACK static table: hash-based encoding lookup (expected CPU gain from internal benches: ~33.5% average on `BM_HpackFindHeader` across 0/10/50/100 dynamic entries)
+- HTTP/2 HPACK dynamic table: reuse evicted-entry buffers in `add()` (expected CPU gain from internal benches: ~46.9% average on `BM_HpackEncode*`, ~19.9% average on `BM_HpackRoundTrip*`; decode overall roughly flat on average)
+- HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
+- Decrease memory usage in connections by offloading async handler states to a separate object that is not allocated for connections that do not use async handlers.
+- Backpressure queueing now rejects additional response chunks immediately once `maxOutboundBufferBytes` marks a connection for drain, avoiding repeated buffer growth/work when streaming handlers ignore a failed `writeBody()` result.
+- **WebSocket output zero-copy: write directly into caller-provided buffer** — Instead of accumulating frames in `_outputBuffer` and then draining it, let the protocol handler accept a caller-provided `HttpResponseData&` and write frames directly into it, bypassing `_outputBuffer` entirely. Eliminates both the intermediate allocation and the drain copy for single-frame responses. Requires a larger interface change (pass the destination buffer into `processInput` or a separate `buildOutput` step). Build on the above move-ownership idea first.
+
+### 1.3.0 Other
+
+- Added **WebSocket** benchmarks to CI pipeline with k6 scenarios (echo, mix, ping-pong, churn, compression) comparing aeronet, uWebSockets, and Drogon.
+- Fix test `http2-protocol-handler_test` when `AERONET_ENABLE_ZLIB` is off and `AERONET_ENABLE_HTTP2` is on.
+
+## [1.2.0] - 2026-03-23
+
+`aeronet` is now available for:
+
+- **macOS** with a kqueue-based event loop backend.
+- **Windows** with an WSAPoll-based event loop backend.
+
+### 1.2.0 Breaking changes
+
+- `HttpServerConfig::tcpNoDelay` becomes an enum with `Auto` mode added instead of a simple boolean. The default value is `Auto` to activate `TCP_NODELAY` for HTTP/2 with TLS connections that benefit the most from it, while keeping it disabled for other connections. `HttpServerConfig::withTcpNoDelay()` stays unchanged.
+
+### 1.2.0 Bug fixes
+
+- `HTTP/2`: Fix `:path` header parsing to correctly extract query parameters mirroring HTTP/1.1 parsing behavior and perform in-place percent-decoding of both path and queries.
+- `Router`: Fix an assertion failure crash when a requested path shares a prefix with a registered path but diverges at a segment that does not match any registered child or wildcard.
+- Malformed CRLF at the end of a chunked body of an HTTP request now correctly returns HTTP error 400 instead of waiting for more data.
+- Prevent OpenSSL per-thread error-queue leakage: call `ERR_clear_error()` after `SSL_shutdown()` in `TlsTransport::shutdown()` to avoid stale errors from a closed connection being misclassified as fatal on subsequent `SSL_read_ex`/`SSL_write_ex` calls (fixes connection recycle/reuse issue).
+- Strictly respect `CompressionConfig.maxCompressRatio` in automatic compression even when HttpResponse allocated buffer has more room than the maximum compressed body size.
+- Do not consider `ENOBUFS` (*No buffer space available*) as a fatal error for **Zerocopy** responses, and fallback to non-zerocopy path instead (e.g. for small files or when the kernel runs out of resources).
+- **Fix data corruption with Zerocopy mode under sustained load** (Kubernetes / virtual network devices). Drain the kernel error queue (completion notifications) before each `MSG_ZEROCOPY` send to prevent resource exhaustion and pinned page accumulation that caused intermittent data corruption with large payloads. Also fix `ENOBUFS` handling for TLS+kTLS zerocopy path.
+- Fix race condition in multi threaded HttpServer when calling `stop()`.
+- Do not sweep tunnel connections
+
+### 1.2.0 New features
+
+- **HTTP/2 CONNECT tunneling** (RFC 7540 §8.3): Full per-stream tunnel support with bidirectional DATA frame forwarding, upstream TCP connections managed by the event loop, connect allowlist enforcement, and graceful cleanup on stream reset / connection close.
+- **HTTP/2 truly asynchronous handlers**: `AsyncRequestHandler` coroutines that use `co_await req.deferWork(...)` now suspend and resume truly asynchronously on HTTP/2, just like HTTP/1.1. Previously, HTTP/2 async handlers were drained synchronously in a tight loop, blocking all other streams on the connection while a `deferWork` operation was in progress. Each HTTP/2 stream now owns its async task independently; when a coroutine suspends, other streams on the same connection continue to be processed.
+- **Multipart / multiple-range responses** (`multipart/byteranges`) support (RFC 7233 multi-range): Full `206 Partial Content` with `multipart/byteranges` MIME body. Ranges are sorted, coalesced, and safety-limited (`maxMultipartRanges`, `maxMultipartBodySize`). See `StaticFileHandler` and `StaticFileConfig`.
+- `StreamingHandler` now fully supports **HTTP/2**
+
+### 1.2.0 Improvements
+
+- Replaced connections map with a simple vector, where the index of a connection object is simply indexed by its fd value.
+- Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
+- Improved `StaticFileHandler` performance
+  - **Small file optimization**: files smaller than a configurable threshold (default 128 KiB) are now read into memory and served as inline bodies instead of using the zero-copy transport path (e.g. `sendfile` on Linux). This can significantly reduce latency for small files by avoiding the overhead of setting up zero-copy transfers, while still benefiting from zero-copy for larger files.
+  - Other optimizations in directory listing, file metadata retrieval, `sendfile` chunk size optimization.
+- Optimized automatic compression for large bodies by starting a streaming compression with a small initial chunk size and exponentially increasing it, which allows to start sending compressed data to the client sooner and reduce latency, while still being efficient for large payloads.
+- Add `HttpServerConfig::zerocopyMinBytes` to configure the minimum HTTP response size for which to use zerocopy transport, default is 128 KiB.
+- Added some telemetry counters for automatic `HttpResponse` compression (`aeronet.http_responses.compression.*`).
+- Improve Brotli one-shot compression performance by reusing encoder state across calls.
+- Do not over allocate memory in `HttpResponseWriter` automatic compression by chunks for `brotli` and `zstd` encoders.
+- Reuse `zstd` contexts for one-shot decompressions for better performance.
+- Added `WebSocketDeflate` configuration validation to fail early if the provided parameters are invalid (e.g. `windowBits` out of range) instead of silently ignoring them and causing unexpected behavior.
+- Less calls to `std::chrono::steady_clock::now()` in the main event loop for better performance
+- Security hardening for HTTP/2.
+- Optimized char buffer search for '\r\n' by using `std::memchr` instead of `std::search` in `SearchCRLF` utility function, which is a hot path in HTTP parsing.
+- Optimized hpack HTTP/2 static header name lookup by using binary search instead of linear search.
+- Update metrics in HTTP/2
+
+### 1.2.0 Other
+
+- Migrated from classic **zlib** to **zlib-ng** (native mode) for gzip/deflate compression and decompression. zlib-ng provides SIMD-optimized deflate/inflate with identical wire-format compatibility (RFC 1950/1951/1952). The migration covers the core encoder/decoder, **WebSocket** permessage-deflate, and scripted benchmark servers (C++ helpers and Rust `flate2` backend). The compile flag `AERONET_ENABLE_ZLIBNG` can be set to `OFF` to stay with classic zlib if needed, but zlib-ng is now the default and recommended option for better performance.
+- Bumped `zlib` dependency to version **1.3.2**.
+- Added new function `fullVersionWithRuntime()` that returns a string with the full version of the library including runtime information (with brotli version).
+- Bumped `clang-format` version to **21**.
+- Fix: Resolve race in TLS handshake handling that caused a flaky test.
+- Addition of **HTTP/2** scripted benchmarks in the CI pipeline, with `h2load`.
+- Fixed compilation of `aeronet` with `AERONET_ENABLE_ZLIB` off but `AERONET_ENABLE_WEBSOCKET` on.
+
+## [1.1.0] - 2026-02-16
+
+### 1.1.0 Bug fixes
+
+- Correctly update the `Content-Length` header when using `bodyAppend()` on `HttpResponse` from captured body.
+- Correctly format the `HttpResponse` when using **HEAD** method with **trailers** (previously erroneously kept the full payload).
+- **HEAD** responses with trailers now correctly omit the body as per RFC 7230 Section 4.3.2, and do not switch to chunked encoding.
+- `Accept-Encoding` header parsing is now closer to RFC 7231 Section 5.3.4 when duplicate encodings with different `q` values are present and picks the highest `q` value.
+- `h2c` (HTTP/2 cleartext) connections now properly handle the HTTP/1.1 Upgrade mechanism and switch to HTTP/2 after the initial request.
+
+### 1.1.0 Breaking Changes
+
+- Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
+- Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
+- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified (see why in [improvements](#improvements) section).
+- Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
+- HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
+- `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range - it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
+- Previously indicated as **undefined behavior**, setting `Content-Type` and `Content-Length` is now prohibited using the `header` and `headerAddLine` methods.
+  You should use the dedicated (already existing) `contentType()` and `contentLength()` methods instead for streaming handlers, and set `content-type` along with the body for normal handlers, otherwise `std::invalid_argument` is thrown.
+
+### 1.1.0 New Features
+
+- **Direct compression**: Inline response bodies created via `HttpRequest::makeResponse()` can now be compressed at `body()` / `bodyAppend()` call time, before finalization. This is controlled by `DirectCompressionMode` (`Auto`, `Off`, `On`) and configured via `CompressionConfig::defaultDirectCompressionMode`. See [Direct Compression](FEATURES.md#direct-compression-inline-body-streaming-compression) for details.
+- `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
+- `HttpRequest::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
+- `size` / `length` method helpers in `HttpResponse`, with `reserve` and capacity getters.
+- Option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
+- `HttpRequest` now exposes a new map-like for query parameters: `queryParams()` which collapses duplicate keys (last-value wins)
+- `HttpRequest` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`, `headerRemoveLine(key)`, `headerRemoveValue(key, value)`.
+- Router paths now accepts asterisk as non terminal segments which are matched as a literal (e.g. `/files/*/metadata`).
+
+### 1.1.0 Improvements
+
+- All Header values stored in `HttpResponse` and `HttpResponseWriter` are now **trimmed** of leading/trailing whitespace on set.
+- `DogStatsD` is now able to **reconnect automatically** if the UDS socket becomes unavailable. The client is also more efficient.
+- `WebSocketConfig.maxMessageSize` is now **strictly respected** when decompressing a `WebSocket` message
+- Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
+- **Faster case insensitive hash using FNV-1a algorithm for header name lookups**, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
+- `HttpRequest::queryParamsRange()` satisfies the **C++20 range** concept.
+- Reuse encoders contexts instead of recreating them on each request for better performance.
+- Faster `HttpResponse::file()` by optimizing body headers update.
+- Smaller memory reallocations when using captured body in `HttpResponse`.
+- **`MSG_ZEROCOPY` support** for plain text and kTLS transport TCP connections on Linux (with fallback path). Configurable via `HttpServerConfig::withZerocopyMode()` with modes: `Disabled`, `Opportunistic` (default), `Enabled`.
+- **`Router` now uses a more efficient path matching algorithm with a radix tree structure**, **it gains around - 40%** in pattern based routes matching speed. Handlers also consume less memory.
+- **Reuse** codec contexts in automatic compression / decompression for better performance.
+- `HttpResponse::bodyAppend` now reserves memory exponentially to reduce the number of reallocations when appending large bodies in multiple calls.
+- **`HttpResponse::body()` capture overloads now require rvalue references**: `body(std::string&&, ...)` and `body(std::vector<std::byte>&&, ...)`. Passing an lvalue `std::string` (e.g. `resp.body(myString)`) now selects the inline `std::string_view` overload. This should not break existing code and would avoid silent copies when the caller passed an lvalue string / vector to the body capture overloads.
+- Automatic compression process has been optimized, especially for captured payloads which are now compressed in-place without memory moves.
+- Invalid chunked transfer encoding length of queries now return `400 Bad Request` instead of `413 Payload Too Large`
+- Decrease memory usage in automatic compression / decompression by using only one shared buffer by server instead of by connection for non-async handlers.
+
+### 1.1.0 Other
+
+- Support of ARM64 (aarch64) architecture in CI builds and tests.
+- Added [Crow](https://github.com/CrowCpp/Crow) to benchmark comparisons in CI.
+- Added `body-codec` scenario to scripted servers benchmarks in CI.
+- New compile time option `AERONET_ENABLE_ASYNC_HANDLERS` to enable asynchronous request handlers (enabled by default)
+- Fix test compilation when `AERONET_ENABLE_WEBSOCKET` is on but `AERONET_ENABLE_ZLIB` is off.
+- In scripted servers benchmarks, `all-except-python` (default) server selection now excludes `python` server by default to avoid skewing results (`all` and `python` are still available).
+- Experimental support for **C++20 modules** by creating a `aeronet` module interface file.
+- Refactored some system calls in `aeronet/sys` directory to prepare for future multi-platform support (currently Linux only).
+- Fixed benchmarks to take timeouts into account
+- Increased default `CompressionConfig::maxCompressRatio` from `0.5` to `0.6` to be more permissive with compression ratio (while still protecting against compression bombs). You can of course still configure it to a lower value if you want to be more strict.
+- Decreased benchmarks default number of connections to **50** per thread (instead of **100**) to reduce timeouts and get more accurate latency measurements in high concurrency scenarios.
+- Split scripted servers benchmarks into 2 configurations - one with a high number of connections, one with a low number of connections - to get more accurate measurements in both low and high concurrency scenarios.
+
+## [1.0.0] - 2026-01-17
+
+### Release Overview
+
+**aeronet v1.0.0** marks the production-ready release of a modern, high-performance HTTP/WebSocket server library for Linux. The library has undergone extensive development and testing, achieving enterprise-grade stability and performance.
+`aeronet` is being used in production in good network conditions.
+
+### Key Milestones
+
+- ✅ **HTTP/1.1 Compliance** - 91.6% feature-complete (87/95 features), fully RFC-compliant
+- ✅ **HTTP/2 Support** - RFC 9113 implementation with HPACK, multiplexing, and flow control
+- ✅ **Enterprise TLS** - OpenSSL integration with ALPN, mTLS, session tickets, kernel TLS offload
+- ✅ **Production Performance** - Benchmarked in HTTP/1.1 against major frameworks (Drogon, Pistache, Go, Rust); consistently top or second in RPS and latency depending on scenario
+- ✅ **Comprehensive Testing** - ~94% code coverage at this time, tracked in CI
+- ✅ **Minimal Technical Debt** - Only 7 minor TODOs (optimizations, not functional gaps)
+- ✅ **Security Hardened** - Comprehensive buffer overflow protection, path traversal mitigation, proper input validation
+
+### Features
+
+#### HTTP/1.1 Core
+
+- [x] Request/response parsing with strict RFC 7230 compliance
+- [x] Persistent connections with keep-alive and pipelining
+- [x] Chunked Transfer-Encoding with trailer header support (RFC 7230)
+- [x] Content-Length body handling with configurable size limits
+- [x] Streaming responses with backpressure management
+- [x] Full HEAD method semantics
+- [x] CONNECT tunneling for HTTP proxying
+- [x] Expect header handling with 100-continue support
+- [x] TRACE method with configurable security policy
+- [x] Request header duplicate handling with proper merge strategies
+
+#### HTTP/2 (RFC 9113)
+
+- [x] HPACK header compression with Huffman encoding
+- [x] Stream multiplexing with per-stream and connection-level flow control
+- [x] ALPN "h2" negotiation over TLS
+- [x] h2c (cleartext prior knowledge) mode
+- [x] HTTP/1.1 → HTTP/2 upgrade via Upgrade header
+- [x] Unified handler API (same HttpRequest type for both protocols)
+- [x] Static file responses with zero-copy sendfile awareness
+- [x] CORS and middleware support
+- [x] PRIORITY frames (optional, configurable)
+- ⚠️ **Note:** HTTP/2 CONNECT tunneling not implemented (use HTTP/1.1 instead)
+
+#### Compression & Content Negotiation
+
+- [x] Accept-Encoding negotiation with q-values and server preference
+- [x] gzip, deflate (zlib), zstd, and brotli support (feature-flag gated)
+- [x] Inbound request body decompression (symmetric with outbound)
+- [x] Per-response compression opt-out
+- [x] Automatic Vary header management
+- [x] Safe decompression limits with proper 413/415 responses
+
+#### TLS/HTTPS
+
+- [x] File-based and in-memory PEM certificate loading
+- [x] SNI-based multi-certificate routing
+- [x] Optional/required mTLS with validation
+- [x] Strict ALPN enforcement with negotiation
+- [x] Min/Max protocol version constraints (TLS 1.2+)
+- [x] Handshake timeout for Slowloris mitigation
+- [x] TLS session tickets with automatic key rotation
+- [x] **Kernel TLS (kTLS) with sendfile** - Linux zero-copy offload (opportunistic/required modes)
+- [x] Per-server statistics (no global state)
+- [x] Hot reload of certificates and trust store
+- [x] Comprehensive metrics (handshake duration, failure reasons, ALPN/cipher distributions)
+
+#### Static File Serving (RFC 7233 / RFC 7232)
+
+- [x] Zero-copy sendfile on plaintext, buffered fallback for TLS
+- [x] Single-range request support (RFC 7233)
+- [x] Conditional request handling (If-None-Match, If-Match, If-Modified-Since, If-Unmodified-Since, If-Range)
+- [x] Strong ETag generation
+- [x] Directory listing with optional custom CSS
+- [x] HTML escaping and URL encoding for safety
+- [x] Path traversal protection (.. segments rejected)
+- [x] Configurable default index fallback
+
+#### WebSocket (RFC 6455)
+
+- [x] Upgrade negotiation and handshake
+- [x] Bidirectional communication with frame handling
+- [x] Per-message compression support
+- [x] Proper closure sequences
+
+#### Streaming & Chunked Responses
+
+- [x] Incremental body writing via HttpResponseWriter
+- [x] Automatic or explicit Content-Length
+- [x] Transfer-Encoding: chunked with proper termination
+- [x] Trailing headers support
+- [x] Backpressure-aware buffering
+
+#### Performance & Architecture
+
+- [x] Single-thread event loop with epoll
+- [x] Horizontal scaling via SO_REUSEPORT
+- [x] Multi-instance orchestration (HttpServer wrapper)
+- [x] writev scatter-gather for efficient I/O
+- [x] Zero-allocation hot paths where possible
+- [x] Smart shrink_to_fit for reused connections
+- [x] Automated CI benchmarks against major frameworks
+
+#### Cloud Native & Observability
+
+- [x] Kubernetes-style health probes (/livez, /readyz, /startupz)
+- [x] OpenTelemetry integration (metrics, tracing)
+- [x] Dogstatsd metrics export
+- [x] JSON stats endpoint
+- [x] Per-server (no global) telemetry state
+- [x] Graceful drain lifecycle (beginDrain/stop)
+
+#### Routing & Middleware
+
+- [x] Simple exact-match path routing
+- [x] Path pattern parameters (e.g., /users/{id}/posts/{post})
+- [x] Wildcard terminal segments (e.g., /files/*)
+- [x] Global and per-path request/response middleware
+- [x] Mixed-mode dispatch (simultaneous fixed and streaming)
+- [x] Configurable trailing slash handling (Strict/Normalize/Redirect)
+
+### Security Enhancements
+
+#### Input Validation & Bounds Checking
+
+- ✅ **Buffer Overflow Protection** - All buffer operations guarded by overflow checks with `std::overflow_error`
+- ✅ **Integer Overflow Detection** - SafeCast utility and compile-time assertions prevent wrapping
+- ✅ **Header Size Limits** - Configurable `maxHeaderBytes` with 431 response
+- ✅ **Body Size Limits** - Configurable `maxBodyBytes` with 413 response
+- ✅ **Chunk Size Validation** - Prevents chunk explosion attacks
+- ✅ **Outbound Buffer Limits** - `maxOutboundBufferBytes` prevents unbounded memory growth
+- ✅ **Multipart Form Safety** - Limits on part count, headers per part, and individual part size
+
+#### Path Traversal Protection
+
+- ✅ **Canonical Path Resolution** - Uses `std::filesystem::weakly_canonical` with fallback to absolute paths
+- ✅ **Segment Filtering** - ".." segments explicitly rejected in static file handler
+- ✅ **Symlink Status Checks** - Uses `symlink_status()` to detect and prevent symlink attacks
+- ✅ **Root Confinement** - All resolved paths guaranteed under configured root directory
+
+#### Protocol Security
+
+- ✅ **Forbidden Trailer Headers** - Authorization, Set-Cookie, Content-* and other unsafe headers rejected
+- ✅ **Malformed Input Handling** - Invalid HTTP parsed as 400 Bad Request
+- ✅ **Slowloris Mitigation** - Header read timeout (configurable, disabled by default)
+- ✅ **Decompression Limits** - Expansion guards and per-stream/connection limits
+- ✅ **Content-Encoding Validation** - Unknown encodings return 415 Unsupported Media Type
+- ✅ **HTTP/2 Frame Validation** - Frame size checks, stream state validation, flow control enforcement
+
+#### Code Quality & Testing
+
+- ✅ **ASAN/UBSAN in CI** - Address and undefined behavior sanitizers catch memory issues
+- ✅ **Comprehensive Testing** - 113 tests covering all critical paths
+- ✅ **Code Coverage** - ~94% coverage tracked in CI
+- ✅ **clang-tidy Enforcement** - Static analysis prevents common pitfalls
+- ✅ **Modern C++23** - RAII-based resource management, no raw pointers in public API
+
+#### No Known Vulnerabilities
+
+- ✓ No buffer overflows detected
+- ✓ No integer overflows possible (checked or prevented at compile time)
+- ✓ No path traversal vulnerabilities
+- ✓ No decompression bombs possible (expansion limits enforced)
+- ✓ No unvalidated state transitions
+- ✓ No global mutable state (thread-safety by design)
+
+### Known Limitations
+
+The following features are NOT implemented in v1.0.0 (planned for future releases):
+
+- ❌ **HTTP/2 CONNECT Tunneling** - Use HTTP/1.1 for proxy tunneling; full implementation requires per-stream tunnel state tracking
+- ❌ **Multi-range Responses** - Single ranges only (RFC 7233 multi-range / `multipart/byteranges`)
+- ❌ **Server Push** - Intentionally disabled (rarely used by modern clients)
+- ❌ **Pluggable Logging Sinks** - Basic logging functional; advanced hooks TBD
+- ❌ **Deterministic Network Fault Tests** - Planned for post-v1.0 robustness improvements
+- ❌ **OCSP Stapling** - Passive stapling and revocation checking planned
+
+### Breaking Changes from 0.8.x
+
+**None.** The public API has remained stable throughout development. Code built against 0.8.x should compile and run unchanged with v1.0.0.
+
+Minor refinements include:
+
+- PR #306: HttpResponse constructors simplified (Status+body instead of Status+reason)
+- PR #304: New `HttpResponse::bodyStatic()` for static storage (backward compatible)
+- PR #302: CORS and middleware support extended to HTTP/2 (new optional features)
+
+### Deprecations
+
+None. All public APIs are stable.
+
+### Build & Compatibility
+
+- **C++ Standard** - C++23 required
+- **Compiler** - GCC 13+, Clang 21+ (Windows, macOS are not supported)
+- **OS** - Linux (glibc and musl libc supported and tested)
+- **Dependencies** - OpenSSL 3+ (optional), spdlog (optional), Conan or vcpkg for dependency management
+
+### Performance
+
+**Benchmarks:** Automated CI benchmarks (wrk-based) show aeronet consistently outperforms competitors:
+
+- ✅ Highest requests/sec in most scenarios
+- ✅ Lower average latency than comparators
+- ✅ Competitive memory usage
+- ✅ Responsive event loop (sub-millisecond latencies typical)
+
+**Metrics:** See [Live Benchmark Dashboard](https://sjanel.github.io/aeronet/benchmarks/) for latest results.
+
+### Installation & Getting Started
+
+Full build and installation instructions: [docs/INSTALL.md](INSTALL.md)
+
+Quick start:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/examples/minimal 8080
+```
+
+### Future Roadmap
+
+See [docs/ROADMAP.md](ROADMAP.md) for planned features including:
+
+- HTTP/2 CONNECT tunneling
+- HTTP/3 / QUIC support (future transport layer)
+- Multi-range responses
+- Advanced TLS features (OCSP stapling)
+- Deterministic network fault testing
+- Performance optimizations (h2load benchmarks, security hardening)
+
+### Security Reporting
+
+If you discover a security vulnerability, please email <dev.sjanel@gmail.com>. Do not open public issues for security concerns.
+
+---
+
+**Download:** [aeronet v1.0.0 Release](https://github.com/sjanel/aeronet/releases/tag/1.0.0)
+
+**License:** Aeronet is licensed under the [LICENSE](../LICENSE) file in the repository.

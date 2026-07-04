@@ -1,0 +1,119 @@
+{
+  "benchmark_type": "websocket",
+  "tool": "k6",
+  "threads": 2,
+  "vus": 50,
+  "duration": "30s",
+  "warmup": "5s",
+  "servers": [
+    "aeronet",
+    "uwebsockets",
+    "drogon",
+    "beast"
+  ],
+  "scenarios": [
+    "echo-small",
+    "echo-medium",
+    "echo-large",
+    "mix",
+    "ping-pong",
+    "churn",
+    "compression"
+  ],
+  "results": {
+    "echo-small": {
+      "rps": {
+        "aeronet": 67773.7,
+        "uwebsockets": 78295.3,
+        "drogon": 71749.1,
+        "beast": 61956.5
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms",
+        "beast": "2.000ms"
+      }
+    },
+    "echo-medium": {
+      "rps": {
+        "aeronet": 55383.3,
+        "uwebsockets": 57739.3,
+        "drogon": 51122.8,
+        "beast": 45229.0
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "3.000ms",
+        "drogon": "3.000ms",
+        "beast": "3.000ms"
+      }
+    },
+    "echo-large": {
+      "rps": {
+        "aeronet": 996.1,
+        "uwebsockets": 996.2,
+        "drogon": 996.3,
+        "beast": 996.3
+      },
+      "latency": {
+        "aeronet": "4.000ms",
+        "uwebsockets": "3.000ms",
+        "drogon": "7.000ms",
+        "beast": "9.000ms"
+      }
+    },
+    "mix": {
+      "rps": {
+        "aeronet": 67375.5,
+        "uwebsockets": 72497.1,
+        "drogon": 67675.8,
+        "beast": 60287.6
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms",
+        "drogon": "2.000ms",
+        "beast": "2.000ms"
+      }
+    },
+    "ping-pong": {
+      "rps": {
+        "aeronet": 72048.6,
+        "uwebsockets": 81786.9,
+        "drogon": 76387.8,
+        "beast": 69847.4
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "1.000ms",
+        "drogon": "2.000ms",
+        "beast": "2.000ms"
+      }
+    },
+    "churn": {
+      "rps": {
+        "aeronet": 8709.0,
+        "uwebsockets": 8583.0,
+        "drogon": 7924.5,
+        "beast": 7983.9
+      },
+      "latency": {
+        "aeronet": "10.000ms",
+        "uwebsockets": "10.000ms",
+        "drogon": "11.000ms",
+        "beast": "11.000ms"
+      }
+    },
+    "compression": {
+      "rps": {
+        "aeronet": 57811.7,
+        "uwebsockets": 61650.6
+      },
+      "latency": {
+        "aeronet": "2.000ms",
+        "uwebsockets": "2.000ms"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "label": "client peak rps",
+  "message": "76k req/s",
+  "color": "yellowgreen",
+  "labelColor": "#0f172a",
+  "namedLogo": "speedtest",
+  "cacheSeconds": 3600
+}
