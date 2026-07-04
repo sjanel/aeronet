@@ -65,6 +65,11 @@ class StaticFileConfig {
     return *this;
   }
 
+  StaticFileConfig& withHeaderCacheCapacity(std::size_t capacity) {
+    headerCacheCapacity = capacity;
+    return *this;
+  }
+
   /// Whether byte-range requests are honored (RFC 7233 single and multi-range).
   bool enableRange{true};
 
@@ -76,6 +81,15 @@ class StaticFileConfig {
   /// If the assembled body would exceed this limit the server falls back to a 200 full-body response.
   /// Default: 32 MiB.
   std::size_t maxMultipartBodySize{32ULL * 1024ULL * 1024ULL};
+
+  /// Maximum number of distinct files whose formatted response headers (Content-Type, ETag, Last-Modified)
+  /// are cached to avoid recomputing them on every request for the same, unchanged file. Each cached entry is
+  /// keyed by the resolved file path and validated on every request against the file size and modification time,
+  /// so a modified (or replaced) file transparently invalidates its entry — cached headers are never stale.
+  /// The cache is per handler instance (and therefore per server thread); it grows lazily up to this bound and,
+  /// once full, inserting a new file evicts the least-recently-used entry (LRU). Set to 0 to disable the cache
+  /// entirely. Default: 1024.
+  std::size_t headerCacheCapacity{1024};
 
   // Whether conditional headers (ETag, If-* preconditions) are processed.
   bool enableConditional{true};
