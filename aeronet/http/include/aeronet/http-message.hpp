@@ -1148,6 +1148,10 @@ class HttpMessage {
     static constexpr BmpType AddVaryAcceptEncoding = 1U << 4;
     static constexpr BmpType HasContentEncoding = 1U << 5;
     static constexpr BmpType AutomaticDirectCompression = 1U << 6;
+    // Set when finalizeForHttp1 only emits the header block of a streaming response: the body is streamed
+    // separately (chunked or fixed Content-Length already declared), so finalize must NOT synthesize a
+    // Content-Length: 0 for the (currently empty) buffer.
+    static constexpr BmpType StreamingBody = 1U << 7;
 
     Options() noexcept = default;
 
@@ -1172,6 +1176,8 @@ class HttpMessage {
     [[nodiscard]] constexpr bool isAutomaticDirectCompression() const noexcept {
       return (_optionsBitmap & AutomaticDirectCompression) != 0;
     }
+
+    [[nodiscard]] constexpr bool isStreamingBody() const noexcept { return (_optionsBitmap & StreamingBody) != 0; }
 
     // Tells whether the response has been pre-configured already.
     // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
@@ -1225,6 +1231,9 @@ class HttpMessage {
         _optionsBitmap &= static_cast<BmpType>(~AutomaticDirectCompression);
       }
     }
+
+    // Streaming responses only ever set this (never clear it), so a set-only setter like setPrepared().
+    constexpr void setStreamingBody() noexcept { _optionsBitmap |= StreamingBody; }
 
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
 

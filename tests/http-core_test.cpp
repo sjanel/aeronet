@@ -314,6 +314,30 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   EXPECT_FALSE(resp2.contains(MakeHttp1HeaderLine(http::Connection, "close")));
 }
 
+TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection) {
+  // An empty-body response must declare Content-Length: 0 so a keep-alive client can frame the (zero-length)
+  // body immediately and reuse the connection, instead of waiting for the idle timeout / connection close.
+  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });  // empty body
+
+  test::ClientConnection cnx(port);
+  NativeHandle fd = cnx.fd();
+
+  std::string req1 = "GET /a HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+  test::sendAll(fd, req1);
+  std::string resp1 = test::recvWithTimeout(fd);
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
+  EXPECT_TRUE(resp1.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << resp1;
+  EXPECT_FALSE(resp1.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp1;
+  EXPECT_TRUE(resp1.ends_with(http::DoubleCRLF)) << resp1;
+
+  // The connection is immediately reusable: a second request on the same fd is served.
+  std::string req2 = "GET /b HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
+  test::sendAll(fd, req2);
+  std::string resp2 = test::recvWithTimeout(fd);
+  EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
+  EXPECT_TRUE(resp2.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << resp2;
+}
+
 namespace {
 std::string rawGet() {
   test::RequestOptions opt;

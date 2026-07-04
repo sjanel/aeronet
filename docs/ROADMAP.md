@@ -92,13 +92,13 @@ Next steps (not yet implemented):
 - **Zero-copy body delivery** for identity responses (currently the body is copied once into the result), and pluggable timeouts/cancellation.
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
 
-> Server-side prerequisite for efficient client keep-alive: aeronet currently emits empty-body
+> ~~Server-side prerequisite for efficient client keep-alive: aeronet currently emits empty-body
 > responses (e.g. a bare `302` redirect with only a `Location` header) **without** a
-> `Content-Length: 0` or `Transfer-Encoding` header. Per RFC 7230 §3.3.3 a compliant client must
-> then treat the body as ending at connection close, which defeats keep-alive reuse for such
-> responses (the client waits for the idle timeout). Emitting `Content-Length: 0` for empty-body
-> HTTP/1.1 responses (as nginx/Apache do) would let all keep-alive clients reuse the connection
-> immediately. Tracked as a follow-up server improvement.
+> `Content-Length: 0` or `Transfer-Encoding` header.~~ *Done:* buffered empty-body HTTP/1.1 responses now
+> synthesize `Content-Length: 0` at finalization (RFC 7230 §3.3.3), so keep-alive clients frame the
+> zero-length body and reuse the connection immediately instead of waiting for connection close. Body-less
+> statuses (`1xx`, `204`, `304`), `HEAD`, file, streaming and direct-compression responses are excluded. See
+> `docs/CHANGELOG.md` and `HttpResponseTest.EmptyBody*`.
 
 #### Server-Sent Events (SSE) convenience layer
 
