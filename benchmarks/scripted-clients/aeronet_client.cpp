@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/client-request.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
@@ -18,18 +19,27 @@ namespace {
 using aeronet::bench::ClientBenchConfig;
 using aeronet::bench::ScenarioSpec;
 
-aeronet::HttpClientConfig MakeConfig(const ScenarioSpec& spec) {
+aeronet::HttpClientConfig MakeConfig(const ClientBenchConfig& cfg, const ScenarioSpec& spec) {
   aeronet::HttpClientConfig config;
-  config.withDecompression(spec.decode)  // aeronet decodes the gzip body natively (its zlib-ng codec)
+  config
+      .withDecompression(spec.decode)  // aeronet decodes the gzip body natively (its zlib-ng codec)
       .withDefaultAcceptEncoding(spec.acceptEncoding)
       .withTcpNoDelay();
+  // Pin the HTTP version: HTTP/2 for h2c (prior-knowledge cleartext) and h2-tls (ALPN "h2"), HTTP/1.1
+  // otherwise. Explicit rather than Auto so the measured path is always the requested protocol.
+  config.withHttpVersion(cfg.isHttp2() ? aeronet::HttpVersionMode::Http2 : aeronet::HttpVersionMode::Http1_1);
+#ifdef AERONET_ENABLE_OPENSSL
+  if (cfg.isTls()) {
+    config.tlsVerifyPeer = false;  // the bench uses a self-signed cert not in any trust store
+  }
+#endif
   return config;
 }
 
 class AeronetSession {
  public:
   AeronetSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
-      : _client(MakeConfig(spec)),
+      : _client(MakeConfig(cfg, spec)),
         _spec(spec),
         _request(spec.method == "POST" ? aeronet::http::Method::POST : aeronet::http::Method::GET,
                  cfg.baseUrl + spec.path) {

@@ -27,6 +27,7 @@
 #include <bit>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -64,17 +65,52 @@ struct ScenarioSpec {
   bool reuse{true};    // keep-alive reuse across requests (false => fresh connection per request)
 };
 
+// ----------------------------- Protocol ----------------------------- //
+
+// Application protocol the driver must speak, mirroring run_benchmarks.py's --protocol values so the client
+// and server suites share one vocabulary: http1 (HTTP/1.1), h2c (cleartext HTTP/2, prior knowledge) and
+// h2-tls (HTTP/2 over TLS, negotiated via ALPN). Drivers that cannot speak HTTP/2 simply ignore h2c/h2-tls;
+// the orchestrator only points HTTP/2-capable clients at these protocols.
+enum class Protocol : std::uint8_t { Http1, H2c, H2Tls };
+
+inline Protocol ParseProtocol(std::string_view sv) {
+  if (sv == "h2c") {
+    return Protocol::H2c;
+  }
+  if (sv == "h2-tls") {
+    return Protocol::H2Tls;
+  }
+  return Protocol::Http1;  // "http1" or anything unknown
+}
+
+inline std::string_view ToString(Protocol protocol) noexcept {
+  switch (protocol) {
+    case Protocol::H2c:
+      return "h2c";
+    case Protocol::H2Tls:
+      return "h2-tls";
+    default:
+      return "http1";
+  }
+}
+
 // ----------------------------- Config ------------------------------- //
 
 struct ClientBenchConfig {
   std::string baseUrl{"http://127.0.0.1:8080"};  // "scheme://host:port"
-  std::string clientName;                         // filled in by the driver
+  std::string clientName;                        // filled in by the driver
   std::string scenario{"small-get"};
   std::size_t bodySize{1UL << 20};  // bytes, used by large-get (response) and post (request)
   std::uint32_t threads{1};
   std::chrono::milliseconds duration{std::chrono::seconds{10}};
   std::chrono::milliseconds warmup{std::chrono::seconds{2}};
+  Protocol protocol{Protocol::Http1};
   bool json{false};
+
+  // HTTP/2 over any transport (h2c or h2-tls); the driver must negotiate/speak HTTP/2.
+  [[nodiscard]] bool isHttp2() const noexcept { return protocol != Protocol::Http1; }
+  // The connection runs over TLS (currently only h2-tls; the bench uses a self-signed cert).
+  [[nodiscard]] bool isTls() const noexcept { return protocol == Protocol::H2Tls; }
 };
 
 // Parse "10s" / "500ms" / "250" (bare number => seconds) into milliseconds.
@@ -100,6 +136,7 @@ inline void PrintUsage(const char* prog) {
                "Usage: %s [options]\n"
                "  --url URL          Base URL scheme://host:port (default http://127.0.0.1:8080)\n"
                "  --scenario NAME    small-get | large-get | post | json | no-reuse (default small-get)\n"
+               "  --protocol P       http1 | h2c | h2-tls (default http1); h2c/h2-tls need an HTTP/2 client\n"
                "  --body-size N      Body size in bytes for large-get/post (default 1048576)\n"
                "  --threads N        Concurrent worker threads/connections (default 1)\n"
                "  --duration D       Measured window, e.g. 10s / 500ms (default 10s)\n"
@@ -121,6 +158,10 @@ inline ClientBenchConfig ParseArgs(int argc, char** argv) {
     } else if (arg == "--scenario") {
       if (const char* v = next()) {
         cfg.scenario = v;
+      }
+    } else if (arg == "--protocol") {
+      if (const char* v = next()) {
+        cfg.protocol = ParseProtocol(v);
       }
     } else if (arg == "--body-size") {
       if (const char* v = next()) {
@@ -257,8 +298,8 @@ class LatencyHistogram {
     if (v < static_cast<std::uint64_t>(kSub)) {
       return static_cast<int>(v);  // 0..15 are exact
     }
-    const int exponent = 63 - std::countl_zero(v);                       // >= 4
-    const std::uint64_t sub = (v >> (exponent - kSubBits)) - kSub;       // 0..kSub-1
+    const int exponent = 63 - std::countl_zero(v);                  // >= 4
+    const std::uint64_t sub = (v >> (exponent - kSubBits)) - kSub;  // 0..kSub-1
     const int idx = (exponent - kSubBits + 1) * kSub + static_cast<int>(sub);
     return idx < kSize ? idx : kSize - 1;
   }
@@ -283,6 +324,7 @@ class LatencyHistogram {
 struct BenchResult {
   std::string client;
   std::string scenario;
+  std::string protocol{"http1"};
   std::uint32_t threads{0};
   std::uint64_t requests{0};
   std::uint64_t errors{0};
@@ -327,21 +369,44 @@ inline void PrintResult(const BenchResult& r) {
 
 inline void PrintResultJson(const BenchResult& r) {
   std::printf(
-      "{\"client\":\"%s\",\"scenario\":\"%s\",\"threads\":%u,\"requests\":%llu,\"errors\":%llu,"
-      "\"bytes\":%llu,\"duration_s\":%.3f,\"rps\":%.1f,\"bytes_per_s\":%.1f,\"avg_us\":%.3f,"
+      "{\"client\":\"%s\",\"scenario\":\"%s\",\"protocol\":\"%s\",\"threads\":%u,\"requests\":%llu,"
+      "\"errors\":%llu,\"bytes\":%llu,\"duration_s\":%.3f,\"rps\":%.1f,\"bytes_per_s\":%.1f,\"avg_us\":%.3f,"
       "\"p50_us\":%.3f,\"p90_us\":%.3f,\"p99_us\":%.3f,\"max_us\":%.3f,\"rss_kb\":%ld}\n",
-      r.client.c_str(), r.scenario.c_str(), r.threads, static_cast<unsigned long long>(r.requests),
-      static_cast<unsigned long long>(r.errors), static_cast<unsigned long long>(r.bytes), r.durationSeconds,
-      r.rps, r.bytesPerSecond, r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.rssKb);
+      r.client.c_str(), r.scenario.c_str(), r.protocol.c_str(), r.threads, static_cast<unsigned long long>(r.requests),
+      static_cast<unsigned long long>(r.errors), static_cast<unsigned long long>(r.bytes), r.durationSeconds, r.rps,
+      r.bytesPerSecond, r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.rssKb);
 }
 
 // ----------------------------- Driver ------------------------------- //
+
+// A driver opts out of HTTP/2 by declaring `static constexpr bool kSupportsHttp2 = false;` on its Session
+// (e.g. Boost.Beast, whose core is HTTP/1.1-only). Drivers that omit the flag are assumed HTTP/2-capable.
+template <class S>
+concept DeclaresHttp2Support = requires {
+  { S::kSupportsHttp2 } -> std::convertible_to<bool>;
+};
+
+template <class Session>
+consteval bool SessionSupportsHttp2() {
+  if constexpr (DeclaresHttp2Support<Session>) {
+    return Session::kSupportsHttp2;
+  } else {
+    return true;
+  }
+}
 
 template <class Session>
 int RunClientBench(int argc, char** argv, std::string_view clientName) {
   ClientBenchConfig cfg = ParseArgs(argc, argv);
   cfg.clientName = std::string(clientName);
   const ScenarioSpec spec = MakeScenario(cfg);
+
+  if (cfg.isHttp2() && !SessionSupportsHttp2<Session>()) {
+    const std::string_view protocolName = ToString(cfg.protocol);
+    std::fprintf(stderr, "[%s] does not support HTTP/2 (requested protocol %.*s); nothing to measure.\n",
+                 cfg.clientName.c_str(), static_cast<int>(protocolName.size()), protocolName.data());
+    return 2;
+  }
 
   struct ThreadOut {
     LatencyHistogram hist;
@@ -389,8 +454,8 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
             ++out.errors;
             continue;
           }
-          out.hist.record(static_cast<std::uint64_t>(
-              std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()));
+          out.hist.record(
+              static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()));
           ++out.requests;
           out.bytes += static_cast<std::uint64_t>(bytes);
         }
@@ -417,6 +482,7 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
   BenchResult result;
   result.client = cfg.clientName;
   result.scenario = spec.name;
+  result.protocol = ToString(cfg.protocol);
   result.threads = cfg.threads;
   LatencyHistogram merged;
   for (const ThreadOut& out : outs) {
@@ -449,7 +515,5 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
 }  // namespace aeronet::bench
 
 // Defines main() for a client driver. `SessionType` must satisfy the Session contract above.
-#define AERONET_CLIENT_BENCH_MAIN(SessionType, ClientName)                  \
-  int main(int argc, char** argv) {                                         \
-    return ::aeronet::bench::RunClientBench<SessionType>(argc, argv, ClientName); \
-  }
+#define AERONET_CLIENT_BENCH_MAIN(SessionType, ClientName) \
+  int main(int argc, char** argv) { return ::aeronet::bench::RunClientBench<SessionType>(argc, argv, ClientName); }
