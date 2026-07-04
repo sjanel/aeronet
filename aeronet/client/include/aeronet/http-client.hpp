@@ -176,6 +176,7 @@ class HttpClient {
 
   [[nodiscard]] RawChars& requestBuffer() noexcept { return _requestBuffer; }
   [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
+  [[nodiscard]] RawChars& bodyBuffer() noexcept { return _bodyBuffer; }
 
 #ifdef AERONET_ENABLE_OPENSSL
   internal::HttpClientTlsContext& tlsContext();
@@ -199,6 +200,10 @@ class HttpClient {
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
   RawChars _requestBuffer;   // reused across requests to avoid reallocations
   RawChars _responseBuffer;  // reused across requests: raw bytes are read straight into its tail
+  // Reassembled response body, kept distinct from _responseBuffer (the receive buffer it is de-framed from).
+  // HTTP/1.1 chunked de-framing writes here (borrowed by ResponseParser); reused across requests so a
+  // keep-alive connection streaming chunked responses never re-grows this allocation.
+  RawChars _bodyBuffer;
   std::unique_ptr<internal::HttpClientCodec> _codec;  // compression/decompression state (lazily created)
 #ifdef AERONET_ENABLE_OPENSSL
   std::unique_ptr<internal::HttpClientTlsContext> _tls;

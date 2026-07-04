@@ -28,6 +28,7 @@ struct Decode {
   DecompressionConfig config;
   RawChars out;
   RawChars tmp;
+  RawChars bodyBuf;  // borrowed by the ResponseParser for chunked reassembly
 
   ResponseParser::DecodeContext ctx() { return {.state = &state, .config = &config, .out = &out, .tmp = &tmp}; }
 };
@@ -49,7 +50,7 @@ TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, payload);
     Decode decode;
-    ResponseParser parser;
+    ResponseParser parser(decode.bodyBuf);
     parser.reset(false);
     parser.setDecodeContext(decode.ctx());
     HttpResponse resp;
@@ -81,7 +82,7 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
   raw.append("\r\n0\r\n\r\n");
 
   Decode decode;
-  ResponseParser parser;
+  ResponseParser parser(decode.bodyBuf);
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
@@ -93,7 +94,7 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
 
 TEST(ResponseParserDecompress, NoContentEncodingPassesThrough) {
   Decode decode;
-  ResponseParser parser;
+  ResponseParser parser(decode.bodyBuf);
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
@@ -104,7 +105,7 @@ TEST(ResponseParserDecompress, NoContentEncodingPassesThrough) {
 
 TEST(ResponseParserDecompress, IdentityEncodingPassesThroughAndDropsHeader) {
   Decode decode;
-  ResponseParser parser;
+  ResponseParser parser(decode.bodyBuf);
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
@@ -116,7 +117,7 @@ TEST(ResponseParserDecompress, IdentityEncodingPassesThroughAndDropsHeader) {
 
 TEST(ResponseParserDecompress, UnsupportedEncodingIsError) {
   Decode decode;
-  ResponseParser parser;
+  ResponseParser parser(decode.bodyBuf);
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
@@ -130,7 +131,7 @@ TEST(ResponseParserDecompress, GarbageCompressedBodyIsError) {
   }
   const Encoding enc = test::SupportedEncodings().front();
   Decode decode;
-  ResponseParser parser;
+  ResponseParser parser(decode.bodyBuf);
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
