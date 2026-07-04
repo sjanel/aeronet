@@ -104,17 +104,24 @@ class TablePrinter:
     def _to_numeric(value: str, _higher_is_better: bool) -> Optional[float]:
         try:
             cleaned = value.replace(",", "")
-            if any(cleaned.endswith(unit) for unit in ("us", "ms", "s")):
-                suffix = "".join(ch for ch in cleaned if not ch.isdigit() and ch != ".")
-                number = float("".join(ch for ch in cleaned if ch.isdigit() or ch == "."))
-                scale = {"us": 1, "ms": 1000, "s": 1_000_000}.get(suffix, 1)
-                return number * scale
-            if any(cleaned.endswith(unit) for unit in ("KB", "MB", "GB")):
+            # Data-rate values (e.g. h2load's "843.95KB/s") end in "/s", which also ends in the
+            # bare letter "s" — strip the rate suffix *before* the latency check below, otherwise
+            # "KB/s" / "MB/s" / "GB/s" get treated as an unrecognized time unit (scale 1) and
+            # byte-size values of different magnitudes get compared as if they were the same unit.
+            is_rate = cleaned.endswith("/s")
+            if is_rate:
+                cleaned = cleaned[: -len("/s")]
+            if is_rate or any(cleaned.endswith(unit) for unit in ("KB", "MB", "GB", "B")):
                 suffix = "".join(ch for ch in cleaned if not ch.isdigit() and ch != ".")
                 number = float("".join(ch for ch in cleaned if ch.isdigit() or ch == "."))
                 scale = {"B": 1, "KB": 1024, "MB": 1_048_576, "GB": 1_073_741_824}.get(
                     suffix, 1
                 )
+                return number * scale
+            if any(cleaned.endswith(unit) for unit in ("us", "ms", "s")):
+                suffix = "".join(ch for ch in cleaned if not ch.isdigit() and ch != ".")
+                number = float("".join(ch for ch in cleaned if ch.isdigit() or ch == "."))
+                scale = {"us": 1, "ms": 1000, "s": 1_000_000}.get(suffix, 1)
                 return number * scale
             return float(cleaned)
         except ValueError:

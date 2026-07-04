@@ -210,57 +210,6 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # Client benchmark (aeronet HttpClient vs libcurl / drogon / beast). Reuses THIS job's
-      # downloaded build (the client drivers and aeronet-bench-server are already compiled),
-      # so it adds no extra configure/compile. Runs once, on the high-connections matrix entry only.
-      - name: Run client benchmarks
-        if: matrix.conn_label == 'high'
-        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
-        env:
-          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
-          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
-        run: |
-          EVENT_NAME=${GITHUB_EVENT_NAME:-}
-          REF=${GITHUB_REF:-}
-          WARMUP=5s
-          THREADS=2
-
-          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
-            DUR=30s
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
-            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
-              DUR="${{ github.event.inputs.bench_duration }}"
-            else
-              DUR=90s
-            fi
-          else
-            # pull_request and non-main pushes
-            DUR=5s
-            WARMUP=2s
-            THREADS=1
-          fi
-
-          echo "Client bench: dur=$DUR threads=$THREADS warmup=$WARMUP"
-
-          ./run_client_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --output "$PWD/results"
-
-      - name: Upload client results (high-connections run only)
-        if: matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v7
-        with:
-          name: client-bench-results
-          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_latest.json
-          retention-days: 3
-
-      - name: Upload client badge (high-connections run only)
-        if: matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v7
-        with:
-          name: client-bench-badge
-          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_badge.json
-          retention-days: 3
-          if-no-files-found: ignore
-
   # ------------------------------------------------------------------ #
   # HTTP/2 bench: h2c/h2-tls × low/high connections via h2load.        #
   # ------------------------------------------------------------------ #
@@ -386,63 +335,6 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      # HTTP/2 client benchmark (aeronet HttpClient vs libcurl over h2c / h2-tls). Mirrors the
-      # HTTP/1.1 client bench in the `bench` job, but for the HTTP/2 protocols. Reuses THIS job's
-      # downloaded build (the client drivers and aeronet-bench-server are already compiled), so it
-      # adds no extra configure/compile. Runs once per protocol, on the high-connections entry only.
-      - name: Run H2 client benchmarks
-        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
-        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
-        env:
-          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
-          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
-        run: |
-          EVENT_NAME=${GITHUB_EVENT_NAME:-}
-          REF=${GITHUB_REF:-}
-          WARMUP=5s
-          THREADS=2
-
-          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
-            DUR=30s
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
-            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
-              DUR="${{ github.event.inputs.bench_duration }}"
-            else
-              DUR=90s
-            fi
-          else
-            # pull_request and non-main pushes
-            DUR=5s
-            WARMUP=2s
-            THREADS=1
-          fi
-
-          echo "H2 client bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS warmup=$WARMUP"
-
-          ./run_client_benchmarks.py \
-            --protocol "${{ matrix.protocol }}" \
-            --duration "$DUR" \
-            --threads "$THREADS" \
-            --warmup "$WARMUP" \
-            --output "$PWD/results"
-
-      - name: Upload H2 client results (high-connections only)
-        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v7
-        with:
-          name: client-bench-results-${{ matrix.protocol }}
-          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_latest_${{ matrix.protocol }}.json
-          retention-days: 3
-
-      - name: Upload H2 client badge (high-connections only)
-        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
-        uses: actions/upload-artifact@v7
-        with:
-          name: client-bench-badge-${{ matrix.protocol }}
-          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_badge_${{ matrix.protocol }}.json
-          retention-days: 3
-          if-no-files-found: ignore
-
   # ------------------------------------------------------------------ #
   # WebSocket bench: k6-based WebSocket scenarios.                      #
   # ------------------------------------------------------------------ #
@@ -535,13 +427,124 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------ #
+  # Client bench: aeronet HttpClient vs libcurl / drogon / beast, once  #
+  # per protocol (http1, h2c, h2-tls). Split out into its own job (used #
+  # to run as a trailing step inside `bench` / `bench-h2`) so it runs   #
+  # in parallel with the server-side matrices instead of stacking      #
+  # after them on the same runner.                                     #
+  # ------------------------------------------------------------------ #
+  bench-client:
+    name: Client Bench (${{ matrix.protocol }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - protocol: http1
+            artifact_suffix: ''
+            file_suffix: ''
+          - protocol: h2c
+            artifact_suffix: '-h2c'
+            file_suffix: '_h2c'
+          - protocol: h2-tls
+            artifact_suffix: '-h2-tls'
+            file_suffix: '_h2-tls'
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Filter protocol (workflow_dispatch)
+        id: filter
+        run: |
+          INPUT_PROTO="${{ github.event.inputs.h2_protocol || 'both' }}"
+          MATRIX_PROTO="${{ matrix.protocol }}"
+          if [[ "$MATRIX_PROTO" != "http1" ]] && [[ "$INPUT_PROTO" != "both" ]] && [[ "$INPUT_PROTO" != "$MATRIX_PROTO" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install runtime dependencies
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          sudo apt update
+          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+
+      - name: Download build artifact
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: bench-build-output
+          path: .
+
+      - name: Extract build artifact
+        if: steps.filter.outputs.skip != 'true'
+        run: tar -xzf bench-build-output.tar.gz
+
+      - name: Run client benchmarks
+        if: steps.filter.outputs.skip != 'true'
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
+        run: |
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          WARMUP=5s
+          THREADS=2
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+          else
+            # pull_request and non-main pushes
+            DUR=5s
+            WARMUP=2s
+            THREADS=1
+          fi
+
+          echo "Client bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS warmup=$WARMUP"
+
+          ./run_client_benchmarks.py \
+            --protocol "${{ matrix.protocol }}" \
+            --duration "$DUR" \
+            --threads "$THREADS" \
+            --warmup "$WARMUP" \
+            --output "$PWD/results"
+
+      - name: Upload client results
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-results${{ matrix.artifact_suffix }}
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_latest${{ matrix.file_suffix }}.json
+          retention-days: 3
+
+      - name: Upload client badge
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-badge${{ matrix.artifact_suffix }}
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_badge${{ matrix.file_suffix }}.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------ #
   # Publish: aggregate all benchmark results and upload the assembled   #
   # site as a GitHub Pages artifact (deployed by the `deploy` job).     #
   # ------------------------------------------------------------------ #
   publish:
     name: Publish Pages
     runs-on: ubuntu-latest
-    needs: [bench, bench-h2, bench-ws]
+    needs: [bench, bench-h2, bench-ws, bench-client]
     if: always() && !cancelled()
     steps:
       - name: Checkout current main
