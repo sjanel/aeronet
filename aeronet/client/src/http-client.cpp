@@ -37,6 +37,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/url.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "http-client-codec.hpp"
 
