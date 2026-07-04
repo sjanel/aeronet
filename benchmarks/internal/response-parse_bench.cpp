@@ -50,7 +50,7 @@ void BM_ChunkedReuseBuffer(benchmark::State& state) {
     HttpResponse resp;
     ResponseParser parser(bodyBuf);
     parser.reset(false);
-    const auto st = parser.parse(kChunkedResponse, false, resp, kMaxResponseBytes);
+    auto st = parser.parse(kChunkedResponse, false, resp, kMaxResponseBytes);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(resp.bodyInMemory().data());
   }
@@ -65,7 +65,7 @@ void BM_ChunkedFreshBuffer(benchmark::State& state) {
     HttpResponse resp;
     ResponseParser parser(bodyBuf);
     parser.reset(false);
-    const auto st = parser.parse(kChunkedResponse, false, resp, kMaxResponseBytes);
+    auto st = parser.parse(kChunkedResponse, false, resp, kMaxResponseBytes);
     benchmark::DoNotOptimize(st);
     benchmark::DoNotOptimize(resp.bodyInMemory().data());
   }
