@@ -84,12 +84,24 @@ jobs:
 
       - name: Package build output
         run: |
+          # Some competitor drivers/servers (drogon + its trantor submodule) are built as
+          # SHARED libraries under build-pages/_deps/ and dynamically linked into the
+          # drogon-bench-{server,client} binaries. The bench jobs only receive this tarball,
+          # not the full build tree, so gather every shared object into a dedicated dir that
+          # travels with the archive. The bench jobs add it to LD_LIBRARY_PATH so the loader
+          # can resolve libdrogon.so.* / libtrantor.so.* at runtime (otherwise: exit 127,
+          # "libdrogon.so.1: cannot open shared object file").
+          mkdir -p build-pages/benchmarks/shared-libs
+          find build-pages -path build-pages/benchmarks/shared-libs -prune -o \
+            \( -name '*.so' -o -name '*.so.*' \) -print0 \
+            | xargs -0 -r cp -a -t build-pages/benchmarks/shared-libs/
           # Preserve symlinks (run_benchmarks.py etc. are symlinked back into the
           # checked-out source tree by CMake) and executable bits: a plain tar
           # survives actions/upload-artifact intact, unlike zip-based repacking.
           tar -czf bench-build-output.tar.gz \
             build-pages/benchmarks/scripted-servers \
-            build-pages/benchmarks/scripted-clients
+            build-pages/benchmarks/scripted-clients \
+            build-pages/benchmarks/shared-libs
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
@@ -140,6 +152,9 @@ jobs:
 
       - name: Run benchmarks
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
           # Decide duration and threads based on event type and inputs.
           # Defaults:
@@ -201,6 +216,9 @@ jobs:
       - name: Run client benchmarks
         if: matrix.conn_label == 'high'
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
@@ -305,6 +323,9 @@ jobs:
       - name: Run H2 benchmarks
         if: steps.filter.outputs.skip != 'true'
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
@@ -365,6 +386,63 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+      # HTTP/2 client benchmark (aeronet HttpClient vs libcurl over h2c / h2-tls). Mirrors the
+      # HTTP/1.1 client bench in the `bench` job, but for the HTTP/2 protocols. Reuses THIS job's
+      # downloaded build (the client drivers and aeronet-bench-server are already compiled), so it
+      # adds no extra configure/compile. Runs once per protocol, on the high-connections entry only.
+      - name: Run H2 client benchmarks
+        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
+        working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-clients
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
+        run: |
+          EVENT_NAME=${GITHUB_EVENT_NAME:-}
+          REF=${GITHUB_REF:-}
+          WARMUP=5s
+          THREADS=4
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            DUR=30s
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
+              DUR="${{ github.event.inputs.bench_duration }}"
+            else
+              DUR=90s
+            fi
+          else
+            # pull_request and non-main pushes
+            DUR=5s
+            WARMUP=2s
+            THREADS=2
+          fi
+
+          echo "H2 client bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS warmup=$WARMUP"
+
+          ./run_client_benchmarks.py \
+            --protocol "${{ matrix.protocol }}" \
+            --duration "$DUR" \
+            --threads "$THREADS" \
+            --warmup "$WARMUP" \
+            --output "$PWD/results"
+
+      - name: Upload H2 client results (high-connections only)
+        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-results-${{ matrix.protocol }}
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_latest_${{ matrix.protocol }}.json
+          retention-days: 3
+
+      - name: Upload H2 client badge (high-connections only)
+        if: steps.filter.outputs.skip != 'true' && matrix.conn_label == 'high'
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-bench-badge-${{ matrix.protocol }}
+          path: build-pages/benchmarks/scripted-clients/results/client_benchmark_badge_${{ matrix.protocol }}.json
+          retention-days: 3
+          if-no-files-found: ignore
+
   # ------------------------------------------------------------------ #
   # WebSocket bench: k6-based WebSocket scenarios.                      #
   # ------------------------------------------------------------------ #
@@ -401,6 +479,9 @@ jobs:
 
       - name: Run WebSocket benchmarks
         working-directory: ${{github.workspace}}/build-pages/benchmarks/scripted-servers
+        env:
+          # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
+          LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
@@ -578,6 +659,24 @@ jobs:
           if [[ -f /tmp/bench-artifacts/client-bench-badge/client_benchmark_badge.json ]]; then
             cp /tmp/bench-artifacts/client-bench-badge/client_benchmark_badge.json /tmp/site/benchmarks/clients/client_benchmark_badge.json
           fi
+
+          # --- HTTP/2 client results (h2c / h2-tls) ---
+          # Same renderer as the HTTP/1.1 client dashboard; one HTML page + badge per protocol.
+          for proto in h2c h2-tls; do
+            CJSON="/tmp/bench-artifacts/client-bench-results-${proto}/client_benchmark_latest_${proto}.json"
+            if [[ -f "$CJSON" ]]; then
+              cp "$CJSON" "/tmp/site/benchmarks/clients/client_benchmark_latest_${proto}.json"
+              benchmarks/scripted-servers/render_benchmarks_html.py \
+                --input "$CJSON" \
+                --output "/tmp/site/benchmarks/clients/client_benchmark_${proto}.html"
+            else
+              echo "WARNING: No ${proto} client benchmark results found; skipping render"
+            fi
+            CBADGE="/tmp/bench-artifacts/client-bench-badge-${proto}/client_benchmark_badge_${proto}.json"
+            if [[ -f "$CBADGE" ]]; then
+              cp "$CBADGE" "/tmp/site/benchmarks/clients/client_benchmark_badge_${proto}.json"
+            fi
+          done
 
       - name: Upload Pages artifact
         if: ${{ github.event_name != 'pull_request' }}

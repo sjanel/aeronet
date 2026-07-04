@@ -33,6 +33,7 @@
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 
