@@ -6,6 +6,20 @@ if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
 endif()
 
+# De-duplicate libraries on link lines based on linker capabilities. Our static
+# libraries depend on each other transitively (e.g. tests link both aeronet_http
+# and aeronet, which itself pulls in aeronet_http), so the traditional link line
+# repeats the same .a. The Apple/LLVM linkers do not need the repetition and emit
+# "ld: warning: ignoring duplicate libraries" for it. CMP0156 (CMake >= 3.29)
+# lets CMake drop the duplicates on Apple/Windows; CMP0179 (CMake >= 3.31) keeps
+# the first occurrence so the project-specified link order is preserved.
+if(POLICY CMP0156)
+  cmake_policy(SET CMP0156 NEW)
+endif()
+if(POLICY CMP0179)
+  cmake_policy(SET CMP0179 NEW)
+endif()
+
 # Centralize version: read from VERSION file at repo root (fallback to 0.0.0 if missing)
 set(AERONET_PROJECT_VERSION "0.0.0")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
