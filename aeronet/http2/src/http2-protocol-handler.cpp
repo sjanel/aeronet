@@ -442,6 +442,10 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     // If the stream has no other active state, remove the entry entirely.
     if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
       it = _streams.erase(it);
+      // The file send completed outside frame processing (from onOutputWritten): finalize the stream's
+      // connection-level lifecycle (active-stream accounting + retention). Our per-stream state is
+      // already erased, so the stream-closed callback finds nothing to re-enter.
+      _connection.finalizeSendClosedStream(streamId);
     } else {
       ++it;
     }
@@ -518,6 +522,10 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
     // If the stream has no other active state, remove the entry entirely.
     if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
       it = _streams.erase(it);
+      // The deferred body (and trailers) completed outside frame processing (from onOutputWritten):
+      // finalize the stream's connection-level lifecycle (active-stream accounting + retention). Our
+      // per-stream state is already erased, so the stream-closed callback finds nothing to re-enter.
+      _connection.finalizeSendClosedStream(streamId);
     } else {
       ++it;
     }
@@ -622,7 +630,16 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
-    _streams.erase(streamId);
+    // sendResponse may have deferred part of the body behind flow control: keep the stream entry alive
+    // so the pending send can complete (mirrors dispatchRequest's cleanup).
+    const auto streamIt = _streams.find(streamId);
+    if (streamIt != _streams.end()) {
+      if (streamIt->second.pending) {
+        streamIt->second.request = {};
+      } else {
+        _streams.erase(streamIt);
+      }
+    }
     return true;
   }
 
@@ -982,11 +999,32 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         assert(!hasTrailers && "file + trailers is not supported by the current HttpResponse API");
       }
     } else {
-      // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize
-      const auto bytes = std::as_bytes(std::span<const char>(bodyView.data(), bodyView.size()));
-      err = _connection.sendData(streamId, bytes, endStreamOnData);
-      if (err != ErrorCode::NoError) {
-        return err;
+      // Send what the flow-control windows allow now and buffer the remainder (plus any trailers) as a
+      // pending streaming send, flushed as WINDOW_UPDATEs arrive. A single sendData() call with the whole
+      // body would be rejected outright with FlowControlError whenever the body exceeds the current
+      // windows (e.g. any response larger than the peer's SETTINGS_INITIAL_WINDOW_SIZE, 65535 by default).
+      // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize.
+      Http2Stream* pStream = _connection.getStream(streamId);
+      assert(pStream != nullptr && "stream vanished between sendHeaders and the body send");
+      const auto windowLimit =
+          static_cast<std::size_t>(std::max(std::min(pStream->sendWindow(), _connection.connectionSendWindow()), 0));
+      const std::size_t immediateSize = std::min(bodyView.size(), windowLimit);
+      if (immediateSize != 0) {
+        const std::string_view immediateView = bodyView.substr(0, immediateSize);
+        const auto bytes = std::as_bytes(std::span<const char>(immediateView.data(), immediateView.size()));
+        err = _connection.sendData(streamId, bytes, endStreamOnData && immediateSize == bodyView.size());
+        if (err != ErrorCode::NoError) {
+          return err;
+        }
+      }
+      if (immediateSize != bodyView.size()) {
+        PendingStreamingSend pendingSend;
+        pendingSend.buffer.assign(bodyView.substr(immediateSize));
+        if (hasTrailers) {
+          pendingSend.trailersData.assign(response.trailersFlatView());
+        }
+        _streams[streamId].pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingSend));
+        return ErrorCode::NoError;  // trailers (if any) ride with the pending send
       }
     }
   }
@@ -1145,6 +1183,10 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     state.request = {};
   } else {
     _streams.erase(it);
+    // The async completion runs outside frame processing, so a response that closed the stream through
+    // the send path must be finalized explicitly (active-stream accounting + retention). Our per-stream
+    // state is already erased, so the stream-closed callback finds nothing to re-enter.
+    _connection.finalizeSendClosedStream(streamId);
   }
 }
 
