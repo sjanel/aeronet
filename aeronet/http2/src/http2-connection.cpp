@@ -988,8 +988,6 @@ void Http2Connection::sendSettings() {
   }
 }
 
-void Http2Connection::sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); }
-
 // ============================
 // Error handling
 // ============================

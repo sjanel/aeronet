@@ -25,8 +25,7 @@ void EnsureGlobalInit() {
 
 class CurlSession {
  public:
-  CurlSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
-      : _spec(spec), _url(cfg.baseUrl + spec.path) {
+  CurlSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec) : _spec(spec), _url(cfg.baseUrl + spec.path) {
     EnsureGlobalInit();
     _handle = curl_easy_init();
     _headers = curl_slist_append(_headers, ("Accept-Encoding: " + spec.acceptEncoding).c_str());
@@ -39,6 +38,24 @@ class CurlSession {
     curl_easy_setopt(_handle, CURLOPT_WRITEFUNCTION, &WriteCallback);
     curl_easy_setopt(_handle, CURLOPT_WRITEDATA, this);
     curl_easy_setopt(_handle, CURLOPT_NOSIGNAL, 1L);
+
+    // Protocol selection, mirroring the aeronet driver: HTTP/1.1, cleartext HTTP/2 (prior knowledge, no
+    // Upgrade dance) or HTTP/2 over TLS (ALPN "h2"). libcurl links nghttp2 so h2 is native here.
+    long httpVersion = CURL_HTTP_VERSION_1_1;
+    switch (cfg.protocol) {
+      case aeronet::bench::Protocol::H2c:
+        httpVersion = CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE;
+        break;
+      case aeronet::bench::Protocol::H2Tls:
+        httpVersion = CURL_HTTP_VERSION_2TLS;
+        // Self-signed bench cert: skip chain + hostname verification (apples-to-apples with aeronet).
+        curl_easy_setopt(_handle, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(_handle, CURLOPT_SSL_VERIFYHOST, 0L);
+        break;
+      case aeronet::bench::Protocol::Http1:
+        break;
+    }
+    curl_easy_setopt(_handle, CURLOPT_HTTP_VERSION, httpVersion);
     if (!spec.reuse) {
       curl_easy_setopt(_handle, CURLOPT_FORBID_REUSE, 1L);
       curl_easy_setopt(_handle, CURLOPT_FRESH_CONNECT, 1L);
@@ -89,8 +106,8 @@ class CurlSession {
   curl_slist* _headers{nullptr};
   const ScenarioSpec& _spec;
   std::string _url;
-  std::string _body;          // raw response body (compress scenario only)
-  std::size_t _received{0};   // discarded-byte counter (non-decode scenarios)
+  std::string _body;         // raw response body (compress scenario only)
+  std::size_t _received{0};  // discarded-byte counter (non-decode scenarios)
 };
 
 }  // namespace

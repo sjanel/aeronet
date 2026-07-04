@@ -22,6 +22,9 @@ using aeronet::bench::ScenarioSpec;
 
 class DrogonSession {
  public:
+  // Drogon's synchronous HttpClient path is HTTP/1.1; the harness skips this driver for h2c / h2-tls.
+  static constexpr bool kSupportsHttp2 = false;
+
   DrogonSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
       : _spec(spec), _baseUrl(cfg.baseUrl), _isPost(spec.method == "POST") {
     _loopThread.run();

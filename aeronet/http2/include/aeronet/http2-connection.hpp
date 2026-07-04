@@ -295,7 +295,7 @@ class Http2Connection {
   // ============================
 
   void sendSettings();
-  void sendSettingsAck();
+  void sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); }
 
   // ============================
   // Error handling
