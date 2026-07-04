@@ -247,6 +247,82 @@ TEST(Http2Connection, ServerSendsSettingsAfterPreface) {
 // Output Buffer Tests
 // ============================
 
+TEST(Http2Connection, ClientCanCreateStreamBeforeServerSettings) {
+  // RFC 9113 §3.4: a client may send requests immediately after its connection preface, without waiting
+  // for the server's SETTINGS (the peer settings hold the RFC defaults until they arrive).
+  Http2Config config;
+  Http2Connection client(config, false);
+
+  EXPECT_FALSE(client.canCreateStreams());  // preface not sent yet
+  client.sendClientPreface();
+  EXPECT_TRUE(client.canCreateStreams());
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "http"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/"));
+  EXPECT_EQ(client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+}
+
+TEST(Http2Connection, SequentialExchangesReleaseActiveStreamsOnBothSides) {
+  // A full request/response exchange (client HEADERS+END_STREAM, server HEADERS + DATA+END_STREAM) must
+  // drop the active-stream count back to zero on BOTH sides -- including the server, whose stream reaches
+  // the Closed state through the *send* path (send END_STREAM while half-closed remote).
+  Http2Config config;
+  Http2Connection server(config, true);
+  Http2Connection client(config, false);
+
+  client.sendClientPreface();
+  const auto pump = [&] {
+    for (int iter = 0; iter < 8 && (client.hasPendingOutput() || server.hasPendingOutput()); ++iter) {
+      if (client.hasPendingOutput()) {
+        const auto out = client.getPendingOutput();
+        ASSERT_NE(server.processInput(out).action, Http2Connection::ProcessResult::Action::Error);
+        client.onOutputWritten(out.size());
+      }
+      if (server.hasPendingOutput()) {
+        const auto out = server.getPendingOutput();
+        ASSERT_NE(client.processInput(out).action, Http2Connection::ProcessResult::Action::Error);
+        server.onOutputWritten(out.size());
+      }
+    }
+  };
+  pump();
+  ASSERT_TRUE(client.isOpen());
+  ASSERT_TRUE(server.isOpen());
+
+  for (uint32_t streamId = 1; streamId <= 5; streamId += 2) {
+    RawChars reqHeaders;
+    reqHeaders.append(MakeHttp1HeaderLine(":method", "GET"));
+    reqHeaders.append(MakeHttp1HeaderLine(":scheme", "http"));
+    reqHeaders.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    reqHeaders.append(MakeHttp1HeaderLine(":path", "/"));
+    ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(reqHeaders), true), ErrorCode::NoError);
+    pump();
+
+    ASSERT_EQ(server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+    const std::array<std::byte, 4> body{std::byte{'b'}, std::byte{'o'}, std::byte{'d'}, std::byte{'y'}};
+    ASSERT_EQ(server.sendData(streamId, body, true), ErrorCode::NoError);
+    // The server stream reached Closed through the send path, outside frame processing: its lifecycle
+    // must be finalized explicitly (the server's protocol handler does this for deferred completions).
+    EXPECT_EQ(server.activeStreamCount(), 1U);
+    server.finalizeSendClosedStream(streamId);
+    pump();
+
+    EXPECT_EQ(client.activeStreamCount(), 0U) << "client leaks streams after exchange on stream " << streamId;
+    EXPECT_EQ(server.activeStreamCount(), 0U) << "server leaks streams after exchange on stream " << streamId;
+  }
+}
+
+TEST(Http2Connection, ServerCannotCreateStreamBeforeSettings) {
+  Http2Config config;
+  Http2Connection server(config, true);
+  // The client-side allowance must not leak into server mode: a server never creates streams before the
+  // connection is fully established.
+  EXPECT_FALSE(server.canCreateStreams());
+}
+
 TEST(Http2Connection, OnOutputWritten) {
   Http2Config config;
   Http2Connection conn(config, true);
