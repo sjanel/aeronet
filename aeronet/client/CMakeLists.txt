@@ -38,48 +38,19 @@ endif()
 # --- Tests ---
 
 AeronetAddUnitTest(
-    url_test
-    test/url_test.cpp
+    client-accept-encoding_test
+    test/client-accept-encoding_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
+    client-protocol_test
+    test/client-protocol_test.cpp
     LIBRARIES
     aeronet_client
 )
 
-AeronetAddUnitTest(
-    response-parser_test
-    test/response-parser_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-if(TARGET response-parser_test)
-    target_include_directories(response-parser_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-endif()
-
-# Parser-level automatic decompression coverage (needs the compression test helpers).
-AeronetAddUnitTest(
-    response-parser-decompress_test
-    test/response-parser-decompress_test.cpp
-    LIBRARIES
-    aeronet_client
-    aeronet_test_support
-)
-if(TARGET response-parser-decompress_test)
-    target_include_directories(response-parser-decompress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-endif()
-
-# Pure-config / pure-builder unit tests (no sockets).
-AeronetAddUnitTest(
-    http-client-config_test
-    test/http-client-config_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-
-AeronetAddUnitTest(
-    retry-config_test
-    test/retry-config_test.cpp
-    LIBRARIES
-    aeronet_client
-)
 
 AeronetAddUnitTest(
     client-request_test
@@ -88,9 +59,10 @@ AeronetAddUnitTest(
     aeronet_client
 )
 
+# Pure-config / pure-builder unit tests (no sockets).
 AeronetAddUnitTest(
-    client-protocol_test
-    test/client-protocol_test.cpp
+    http-client-config_test
+    test/http-client-config_test.cpp
     LIBRARIES
     aeronet_client
 )
@@ -159,3 +131,33 @@ if(AERONET_ENABLE_OPENSSL)
         aeronet_basic_test_support
     )
 endif()
+
+AeronetAddUnitTest(
+    response-parser_test
+    test/response-parser_test.cpp
+    LIBRARIES
+    aeronet_client
+)
+
+# Parser-level automatic decompression coverage (needs the compression test helpers).
+AeronetAddUnitTest(
+    response-parser-decompress_test
+    test/response-parser-decompress_test.cpp
+    LIBRARIES
+    aeronet_client
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
+    retry-config_test
+    test/retry-config_test.cpp
+    LIBRARIES
+    aeronet_client
+)
+
+AeronetAddUnitTest(
+    url_test
+    test/url_test.cpp
+    LIBRARIES
+    aeronet_client
+)

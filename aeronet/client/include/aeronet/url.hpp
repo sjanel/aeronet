@@ -74,6 +74,7 @@ class Url {
   [[nodiscard]] std::string_view host() const noexcept {
     return {_buf.data() + _schemeLen + kSchemeSep.size(), _hostLen};
   }
+
   // Null-terminated host C-string, valid for the lifetime of the returned guard (see HostCStr).
   [[nodiscard]] HostCStr hostCStr() const noexcept {
     // const_cast: _buf is the Url's own mutable heap storage; the guard restores the byte it changes.
