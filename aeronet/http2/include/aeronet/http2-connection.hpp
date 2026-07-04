@@ -87,9 +87,14 @@ class Http2Connection {
   /// Check if the connection is open for new streams.
   [[nodiscard]] bool isOpen() const noexcept { return _state == ConnectionState::Open; }
 
-  /// Check if the connection can accept new streams.
+  /// Check if the connection can accept new streams. A client may create streams as soon as its
+  /// connection preface is sent, before the server's SETTINGS arrives (RFC 9113 §3.4) -- the peer
+  /// settings still hold the RFC defaults until then, which is exactly what the RFC prescribes.
   [[nodiscard]] bool canCreateStreams() const noexcept {
-    return _state == ConnectionState::Open && _activeStreamCount < _peerSettings.maxConcurrentStreams;
+    if (_activeStreamCount >= _peerSettings.maxConcurrentStreams) {
+      return false;
+    }
+    return _state == ConnectionState::Open || (!_isServer && _state == ConnectionState::AwaitingSettings);
   }
 
   /// Process incoming data from the transport.
@@ -179,6 +184,15 @@ class Http2Connection {
   /// @param streamId Stream ID (0 for connection-level)
   /// @param increment Window size increment
   void sendWindowUpdate(uint32_t streamId, uint32_t increment);
+
+  /// Finalize a stream whose Closed state was reached through the *send* path (END_STREAM sent while
+  /// half-closed remote) outside frame processing -- a deferred / flow-controlled send completed from
+  /// onOutputWritten, an async completion, or a client engine finishing an upload after the response.
+  /// Frame-receive paths finalize closed streams automatically; without this call such a stream stays
+  /// accounted as active (eventually exhausting the peer's concurrency budget) and is never pruned.
+  /// Invokes the stream-closed callback, so the caller must have released its own per-stream state
+  /// first. No-op when the stream does not exist or is not closed.
+  void finalizeSendClosedStream(uint32_t streamId);
 
   // ============================
   // Settings
