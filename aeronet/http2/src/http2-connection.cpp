@@ -272,6 +272,13 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
 
 void Http2Connection::sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuffer, pingFrame); }
 
+void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
+  const auto it = _streams.find(streamId);
+  if (it != _streams.end() && it->second.isClosed()) {
+    closeStream(it);
+  }
+}
+
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
 
