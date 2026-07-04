@@ -7,16 +7,19 @@
 #include <string_view>
 
 #include "aeronet/http-response.hpp"
+#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 namespace {
 
 constexpr std::size_t kMax = 1024UL * 1024UL;
 
-// Feed the whole buffer at once (eof=false unless stated).
+// Feed the whole buffer at once (eof=false unless stated). The parser borrows a body-assembly buffer; the
+// tests below mirror this by declaring a local `RawChars bodyBuf;` right before each parser.
 ResponseParser::Status parseAll(std::string_view raw, HttpResponse& resp, bool head = false, bool eof = false,
                                 std::size_t maxBytes = kMax) {
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(head);
   return parser.parse(raw, eof, resp, maxBytes);
 }
@@ -79,7 +82,8 @@ TEST(ResponseParserTest, ChunkedWithExtensionAndTrailer) {
 
 TEST(ResponseParserTest, UntilCloseFraming) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string raw = "HTTP/1.1 200 OK\r\n\r\nbody-bytes";
   auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
@@ -92,7 +96,8 @@ TEST(ResponseParserTest, UntilCloseFraming) {
 
 TEST(ResponseParserTest, IncrementalDelivery) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string buf;
   std::string_view chunks[] = {"HTTP/1.1 200 OK\r\n", "Content-Length: 11\r\n\r\n", "hello", " world"};
@@ -106,20 +111,22 @@ TEST(ResponseParserTest, IncrementalDelivery) {
 }
 
 TEST(ResponseParserTest, KeepAliveDefaults) {
+  RawChars bodyBuf;  // shared: the three parsers below run sequentially
+
   HttpResponse resp1;
-  ResponseParser p1;
+  ResponseParser p1(bodyBuf);
   p1.reset(false);
   p1.parse("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", false, resp1, kMax);
   EXPECT_TRUE(p1.keepAlive());  // HTTP/1.1 default keep-alive
 
   HttpResponse resp2;
-  ResponseParser p2;
+  ResponseParser p2(bodyBuf);
   p2.reset(false);
   p2.parse("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", false, resp2, kMax);
   EXPECT_FALSE(p2.keepAlive());
 
   HttpResponse resp3;
-  ResponseParser p3;
+  ResponseParser p3(bodyBuf);
   p3.reset(false);
   p3.parse("HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n", false, resp3, kMax);
   EXPECT_FALSE(p3.keepAlive());  // HTTP/1.0 default close
@@ -142,7 +149,8 @@ TEST(ResponseParserTest, RejectsGarbageStatusLine) {
 
 TEST(ResponseParserTest, ConsumedTracksHeadPlusBody) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string raw = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcLEFTOVER";
   auto st = parser.parse(raw, false, resp, kMax);
@@ -159,7 +167,8 @@ TEST(ResponseParserTest, ContentLengthTruncatedAtEofIsError) {
 
 TEST(ResponseParserTest, ChunkedIncompleteNeedsMore) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel";
   auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
@@ -185,7 +194,8 @@ TEST(ResponseParserTest, InvalidContentLengthIsError) {
 
 TEST(ResponseParserTest, HeadersNeedMoreWhenIncomplete) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = parser.parse("HTTP/1.1 200 OK\r\nContent-Len", /*eof=*/false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::NeedMore);
@@ -193,7 +203,8 @@ TEST(ResponseParserTest, HeadersNeedMoreWhenIncomplete) {
 
 TEST(ResponseParserTest, Http10KeepAliveHeaderEnablesReuse) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = parser.parse("HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
@@ -203,7 +214,8 @@ TEST(ResponseParserTest, Http10KeepAliveHeaderEnablesReuse) {
 TEST(ResponseParserTest, ConnectionTokenListClosesReuse) {
   // "close" appears as one token of a comma-separated Connection option list (RFC 9110 §7.6.1).
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = parser.parse("HTTP/1.1 200 OK\r\nConnection: close, foo\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
@@ -215,7 +227,8 @@ TEST(ResponseParserTest, ConnectionTokenListClosesReuse) {
 TEST(ResponseParserTest, Http10ConnectionTokenListEnablesReuse) {
   // "keep-alive" buried in a token list still overrides the HTTP/1.0 close default.
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = parser.parse("HTTP/1.0 200 OK\r\nConnection: Keep-Alive, Upgrade\r\nContent-Length: 0\r\n\r\n", false, resp,
                          kMax);
@@ -267,7 +280,8 @@ TEST(ResponseParserTest, ChunkedTrailersTruncatedAtEofIsError) {
 
 TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = parser.parse("HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, 10);
   EXPECT_EQ(st, ResponseParser::Status::Error);
@@ -278,7 +292,8 @@ TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
 // limit (the line start never advances, so a `_pos`-only check would never trip).
 TEST(ResponseParserTest, IncompleteHeaderBoundedByBufferedSize) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   // Status line (17 bytes) fits under maxBytes=50, but the unterminated header pushes the buffer past it.
   const std::string raw = "HTTP/1.1 200 OK\r\nX: " + std::string(100, 'a');  // no trailing CRLF
@@ -327,7 +342,8 @@ TEST(ResponseParserTest, HeaderLineBeyondMaxBytesIsError) {
 
 TEST(ResponseParserTest, ReparseAfterCompleteStaysComplete) {
   HttpResponse resp;
-  ResponseParser parser;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string raw = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::Complete);

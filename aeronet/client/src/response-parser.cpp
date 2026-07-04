@@ -49,7 +49,7 @@ constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, boo
 }  // namespace
 
 void ResponseParser::reset(bool headRequest) noexcept {
-  _bodyBuf.clear();
+  _bodyBuf->clear();
   _pos = 0;
   _bodyStart = 0;
   _contentTypeOff = 0;
@@ -76,7 +76,7 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
   // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are still contiguous in the
   // receive buffer, so they are installed straight from it (resp.body() performs the single owning copy).
   const std::string_view body =
-      _framing == Framing::Chunked ? std::string_view(_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+      _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
 
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
@@ -209,10 +209,10 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         if (_state == State::BodyChunkData) {
           const std::size_t available = buffer.size() - _pos;
           const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
-          if (_bodyBuf.size() + take > maxResponseBytes) {
+          if (_bodyBuf->size() + take > maxResponseBytes) {
             return Status::Error;
           }
-          _bodyBuf.append(buffer.data() + _pos, take);
+          _bodyBuf->append(buffer.data() + _pos, take);
           _pos += take;
           _bodyRemaining -= take;
           if (_bodyRemaining != 0) {

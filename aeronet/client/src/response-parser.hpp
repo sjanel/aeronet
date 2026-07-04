@@ -35,6 +35,13 @@ class ResponseParser {
     Error      // malformed response / limit exceeded
   };
 
+  // `bodyBuf` is the reassembly buffer for chunked bodies (Length / UntilClose bodies stay contiguous in
+  // the caller's receive buffer and never touch it). It is borrowed, not owned: the caller supplies a
+  // reusable buffer (HttpClient::bodyBuffer()) so its allocation persists across exchanges instead of being
+  // freed and re-grown per response. It must outlive the parser and stay distinct from the receive buffer
+  // fed to parse() (de-framing reads from that buffer while writing into this one).
+  explicit ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(&bodyBuf) {}
+
   // Optional automatic response-body decompression. When `state` is non-null and the response carries a
   // (non-identity) Content-Encoding, the body is decoded at install time directly from the receive buffer
   // into `out` (with `tmp` as ping-pong scratch for stacked encodings) and the Content-Encoding header is
@@ -81,10 +88,10 @@ class ResponseParser {
   // Returns Status::Complete on success, or Status::Error if decompression failed.
   Status installBody(HttpResponse& resp, std::string_view buffer) const;
 
-  // Decoded body accumulator. Only used for chunked framing, where the body is interleaved with chunk
-  // metadata and must be reassembled. For Length / UntilClose framing the body is already contiguous in
-  // the caller's receive buffer, so it is installed as a view (no second copy, no allocation here).
-  RawChars _bodyBuf;
+  // Borrowed decoded-body accumulator (see the constructor). Only used for chunked framing, where the body
+  // is interleaved with chunk metadata and must be reassembled. For Length / UntilClose framing the body is
+  // already contiguous in the caller's receive buffer, so it is installed as a view (no second copy here).
+  RawChars* _bodyBuf;
   std::size_t _pos{0};             // absolute cursor into the accumulated buffer
   std::size_t _bodyStart{0};       // absolute offset of the first body byte (Length / UntilClose framing)
   std::size_t _contentTypeOff{0};  // Content-Type value position within the accumulated buffer ...

@@ -267,7 +267,9 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
     return std::unexpected(wr.error());
   }
 
-  ResponseParser parser;
+  // The chunked-body reassembly buffer is borrowed from the client (reused across exchanges) rather than
+  // owned by the parser, so a keep-alive connection streaming chunked responses never re-grows it.
+  ResponseParser parser(client.bodyBuffer());
   parser.reset(method == http::Method::HEAD);
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
