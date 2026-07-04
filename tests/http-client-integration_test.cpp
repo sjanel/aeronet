@@ -11,7 +11,6 @@
 #include <utility>
 
 #include "aeronet/aeronet.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
