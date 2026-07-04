@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ------------------------------------------------------------------ #
@@ -472,7 +472,8 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------ #
-  # Publish: aggregate all benchmark results and deploy to gh-pages.    #
+  # Publish: aggregate all benchmark results and upload the assembled   #
+  # site as a GitHub Pages artifact (deployed by the `deploy` job).     #
   # ------------------------------------------------------------------ #
   publish:
     name: Publish Pages
@@ -597,25 +598,31 @@ jobs:
             cp /tmp/bench-artifacts/client-bench-badge/client_benchmark_badge.json /tmp/site/benchmarks/clients/client_benchmark_badge.json
           fi
 
-      - name: Publish site snapshot to gh-pages
+      - name: Upload Pages artifact
         if: ${{ github.event_name != 'pull_request' }}
-        run: |
-          set -euo pipefail
-          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: /tmp/site
 
-          rm -rf /tmp/gh
-          mkdir -p /tmp/gh
-
-          # Populate the workspace with the snapshot from /tmp/site, then initialize git
-          rsync -a --delete /tmp/site/ /tmp/gh/ || ( echo "rsync failed" && exit 1 )
-
-          git -C /tmp/gh init
-          git -C /tmp/gh checkout -b gh-pages || true
-          git -C /tmp/gh add --all
-          git -C /tmp/gh commit --allow-empty -m "Site snapshot from ${GITHUB_SHA}"
-          # Ensure origin remote exists so lease can be compared correctly
-          git -C /tmp/gh remote add origin "$REPO" || true
-          # Try fetching remote gh-pages to populate refs for --force-with-lease; ignore failure if branch doesn't exist
-          git -C /tmp/gh fetch --no-tags --depth=1 origin gh-pages || true
-          # Push HEAD to gh-pages using --force-with-lease to avoid clobbering concurrent updates
-          git -C /tmp/gh push --force-with-lease origin HEAD:gh-pages
+  # ------------------------------------------------------------------ #
+  # Deploy: publish the uploaded artifact to GitHub Pages natively via  #
+  # actions/deploy-pages (no gh-pages branch). Skipped for PRs.         #
+  # ------------------------------------------------------------------ #
+  deploy:
+    name: Deploy Pages
+    runs-on: ubuntu-latest
+    needs: publish
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        env:
+          # Silence the Node DEP0040 punycode deprecation warning emitted from within the action.
+          NODE_OPTIONS: --no-deprecation
