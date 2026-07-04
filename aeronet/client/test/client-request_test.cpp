@@ -3,9 +3,51 @@
 
 #include <gtest/gtest.h>
 
+#include "../src/client-request-builder.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/url.hpp"
 
 namespace aeronet {
+
+TEST(ClientRequestBuilderTest, AuthorityLenWithDefaultPort) {
+  auto url = Url::Parse("http://example.com:80/path");
+  ASSERT_TRUE(url.has_value());
+
+  EXPECT_EQ(internal::AuthorityLen(*url, false), 11U);  // "example.com"
+  EXPECT_EQ(internal::AuthorityLen(*url, true), 13U);   // "[example.com]"
+}
+
+TEST(ClientRequestBuilderTest, AuthorityLenWithNonDefaultPort) {
+  auto url = Url::Parse("http://example.com:8080/path");
+  ASSERT_TRUE(url.has_value());
+
+  EXPECT_EQ(internal::AuthorityLen(*url, false), 16U);  // "example.com:8080"
+  EXPECT_EQ(internal::AuthorityLen(*url, true), 18U);   // "[example.com:8080]"
+}
+
+TEST(ClientRequestBuilderTest, AppendAuthorityWithDefaultPort) {
+  auto url = Url::Parse("http://example.com:80/path");
+  ASSERT_TRUE(url.has_value());
+
+  char buf[32];
+  std::string_view out(buf, internal::AppendAuthority(buf, *url, false));
+  EXPECT_EQ(out, "example.com");
+
+  out = std::string_view(buf, internal::AppendAuthority(buf, *url, true));
+  EXPECT_EQ(out, "[example.com]");
+}
+
+TEST(ClientRequestBuilderTest, AppendAuthorityWithNonDefaultPort) {
+  auto url = Url::Parse("http://example.com:8080/path");
+  ASSERT_TRUE(url.has_value());
+
+  char buf[32];
+  std::string_view out(buf, internal::AppendAuthority(buf, *url, false));
+  EXPECT_EQ(out, "example.com:8080");
+
+  out = std::string_view(buf, internal::AppendAuthority(buf, *url, true));
+  EXPECT_EQ(out, "[example.com]:8080");
+}
 
 TEST(ClientRequestTest, DefaultConstructed) {
   ClientRequest req;
