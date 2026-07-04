@@ -86,19 +86,19 @@ struct RequestHeaderScan {
 // Append the request authority derived from `url` ("[host]:port", brackets only for an IPv6 literal, port
 // omitted when default) at `pEnd`, returning the new end pointer. AuthorityLen() bytes must already be
 // reserved. Shared by the HTTP/1.1 Host header value and the HTTP/2 :authority pseudo-header.
-[[nodiscard]] inline char* AppendAuthority(char* pEnd, const Url& url, bool hostIsIpv6) {
+[[nodiscard]] inline char* AppendAuthority(char* pBuf, const Url& url, bool hostIsIpv6) {
   if (hostIsIpv6) {
-    *pEnd++ = '[';
+    *pBuf++ = '[';
   }
-  pEnd = Append(url.host(), pEnd);
+  pBuf = Append(url.host(), pBuf);
   if (hostIsIpv6) {
-    *pEnd++ = ']';
+    *pBuf++ = ']';
   }
   if (!url.isDefaultPort()) {
-    *pEnd++ = ':';
-    pEnd = std::to_chars(pEnd, pEnd + ndigits(url.port()), url.port()).ptr;
+    *pBuf++ = ':';
+    pBuf = std::to_chars(pBuf, pBuf + ndigits(url.port()), url.port()).ptr;
   }
-  return pEnd;
+  return pBuf;
 }
 
 }  // namespace aeronet::internal

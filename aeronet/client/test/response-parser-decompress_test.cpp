@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "../src/response-parser.hpp"
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/decompression-config.hpp"
@@ -15,7 +16,6 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "response-parser.hpp"
 
 namespace aeronet {
 namespace {

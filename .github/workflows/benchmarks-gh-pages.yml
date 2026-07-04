@@ -223,7 +223,7 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
-          THREADS=4
+          THREADS=2
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
@@ -237,7 +237,7 @@ jobs:
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
-            THREADS=2
+            THREADS=1
           fi
 
           echo "Client bench: dur=$DUR threads=$THREADS warmup=$WARMUP"
@@ -400,7 +400,7 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
-          THREADS=4
+          THREADS=2
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
@@ -414,7 +414,7 @@ jobs:
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
-            THREADS=2
+            THREADS=1
           fi
 
           echo "H2 client bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS warmup=$WARMUP"
