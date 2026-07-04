@@ -25,12 +25,18 @@ namespace aeronet {
 namespace internal {
 struct HttpClientTlsContext;  // defined in http-client.cpp (OpenSSL-backed, optional)
 struct HttpClientCodec;       // defined in http-client.cpp (compression/decompression state + scratch buffers)
+#ifdef AERONET_ENABLE_HTTP2
+class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 client engine)
+#endif
 }  // namespace internal
 
-// Synchronous HTTP/1.1 client built on aeronet's non-blocking transport + event-loop bricks.
+// Synchronous HTTP/1.1 + HTTP/2 client built on aeronet's non-blocking transport + event-loop bricks.
 //
 // Highlights:
 //   * Plain HTTP and (when AERONET_ENABLE_OPENSSL is set) HTTPS via the shared TlsTransport.
+//   * Native HTTP/2 (when AERONET_ENABLE_HTTP2 is set), reusing the server's HPACK + frame codecs:
+//     negotiated via ALPN over https, or spoken directly over plain http with prior knowledge --
+//     see HttpClientConfig::httpVersion (Auto / Http1_1 / Http2).
 //   * Per-origin keep-alive connection pooling with bounded idle reuse.
 //   * Automatic redirect following and connection-level retry.
 //   * Reuses HttpResponse as the response/request field container (no bespoke header/body types).
@@ -51,10 +57,11 @@ struct HttpClientCodec;       // defined in http-client.cpp (compression/decompr
 // building the client / TLS context (misconfiguration, certificate failures): those still throw
 // HttpClientException (or std::logic_error when https is requested in a build without OpenSSL).
 //
-// NOTE: This is the first, deliberately simple iteration. Coroutine integration with a running
-// server event loop and a native HTTP/2 client are tracked in docs/ROADMAP.md. The wire protocol lives
-// behind the internal::ClientConnection seam (see acquireConnection / performExchange), so an HTTP/2
-// engine slots in beside the HTTP/1.1 one without touching the connection-pool / redirect / retry code.
+// NOTE: This is a deliberately simple synchronous iteration: one exchange runs at a time, so an HTTP/2
+// connection carries one stream at a time (the pool is multiplexing-aware, nothing more). Coroutine
+// integration with a running server event loop is tracked in docs/ROADMAP.md. The wire protocol lives
+// behind the internal::ClientConnection seam (see acquireConnection / performExchange), where the HTTP/2
+// engine sits beside the HTTP/1.1 one without touching the connection-pool / redirect / retry code.
 //
 // Protocol handlers borrow HttpClient's event loop, reusable scratch buffers and codec directly from the
 // HttpClient handed to internal::ClientConnection::exchange (see performExchange). ClientConnection is a
@@ -104,8 +111,9 @@ class HttpClient {
 
     std::unique_ptr<ITransport> transport;
     SteadyClock::time_point idleSince;  // when this connection was returned to the idle pool
-    // Wire-protocol engine for this connection (HTTP/1.1 today). Created lazily once the protocol is known
-    // (after ALPN), then pooled with the connection so a reused connection keeps its handler/state.
+    // Wire-protocol engine for this connection (HTTP/1.1 or HTTP/2). Created lazily once the protocol is
+    // known (after ALPN), then pooled with the connection so a reused connection keeps its handler/state
+    // (for HTTP/2: negotiated settings, HPACK dynamic tables, stream ids).
     Connection cnx;
     internal::ClientConnection proto;
     ClientProtocol protocol{ClientProtocol::Http1_1};  // negotiated via ALPN (https) or assumed (http)
@@ -130,12 +138,17 @@ class HttpClient {
                                                     SteadyClock::time_point deadline);
 
   // Create conn.proto for conn.protocol if it is not already present (fresh connection). Returns
-  // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine yet (e.g. ALPN "h2").
-  static std::expected<void, HttpClientErrc> EnsureProtocolHandler(ActiveConnection& conn);
+  // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine in this build
+  // (ClientProtocol::Http2 without AERONET_ENABLE_HTTP2).
+  std::expected<void, HttpClientErrc> ensureProtocolHandler(ActiveConnection& conn) const;
 
   // --- Resources protocol engines borrow (see client-connection.hpp) ---
-  // internal::ClientConnection reads these (private) accessors during an exchange, so it is a friend.
+  // internal::ClientConnection (and the HTTP/2 engine it owns) read these (private) accessors during an
+  // exchange, so they are friends.
   friend class internal::ClientConnection;
+#ifdef AERONET_ENABLE_HTTP2
+  friend class internal::Http2ClientEngine;
+#endif
 
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.
   bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);

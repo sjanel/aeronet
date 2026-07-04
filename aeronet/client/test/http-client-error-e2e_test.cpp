@@ -26,6 +26,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -552,5 +553,57 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   const std::string expected = "Host: [::1]:" + std::to_string(server.port()) + "\r\n";
   EXPECT_NE(capturedHead.find(expected), std::string::npos) << "request head was:\n" << capturedHead;
 }
+
+#ifdef AERONET_ENABLE_HTTP2
+
+// HTTP/2 (prior-knowledge h2c) error paths against the scriptable raw server. The client sends its
+// connection preface + SETTINGS + HEADERS in one flight; the preface magic ends with "\r\n\r\n" so
+// DrainRequest() still delimits "the client has written its request".
+
+namespace {
+HttpClientConfig Http2RawConfig() {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  return cfg;
+}
+}  // namespace
+
+// The server closes right after the request reaches it: EOF before the stream completed.
+TEST(HttpClientErrorE2ETest, Http2AbruptCloseReturnsConnectionClosed) {
+  RawServer server([](NativeHandle fd, int) { DrainRequest(fd); });
+  HttpClient client(Http2RawConfig());
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+}
+
+// The server answers an HTTP/2 preface with an HTTP/1.1 response: the bytes parse as an oversized
+// frame, a connection-level protocol error surfaced as malformedResponse.
+TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+  });
+  HttpClient client(Http2RawConfig());
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+}
+
+// The server reads the request but never answers; the client must give up at its request deadline.
+TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});  // outlive the client's deadline
+  });
+  HttpClientConfig cfg = Http2RawConfig();
+  cfg.requestTimeout = std::chrono::milliseconds{150};
+  HttpClient client(cfg);
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+#endif  // AERONET_ENABLE_HTTP2
 
 }  // namespace aeronet

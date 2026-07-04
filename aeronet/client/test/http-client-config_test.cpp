@@ -9,8 +9,10 @@
 #include <limits>
 #include <stdexcept>
 
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http2-config.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-config.hpp"
@@ -168,5 +170,41 @@ TEST(HttpClientConfigTest, TlsInMemoryClientCert) {
   EXPECT_EQ(cfg.tlsClientKeyPem(), "KEY-PEM");
 }
 #endif
+
+TEST(HttpClientConfigTest, HttpVersionDefaultsToAuto) {
+  HttpClientConfig cfg;
+  EXPECT_EQ(cfg.httpVersion, HttpVersionMode::Auto);
+}
+
+TEST(HttpClientConfigTest, WithHttpVersionAndHttp2ConfigBuilders) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withMaxConcurrentStreams(7));
+  EXPECT_EQ(cfg.httpVersion, HttpVersionMode::Http2);
+  EXPECT_EQ(cfg.http2.maxConcurrentStreams, 7U);
+}
+
+TEST(HttpClientConfigTest, ValidateChecksHttp2SettingsWhenHttp2IsPossible) {
+  HttpClientConfig cfg;
+  cfg.http2.maxFrameSize = 1;  // below the RFC 9113 minimum
+  // HTTP/1.1-only clients never consult the HTTP/2 settings, so validation ignores them.
+  cfg.withHttpVersion(HttpVersionMode::Http1_1);
+  EXPECT_NO_THROW(cfg.validate());
+#ifdef AERONET_ENABLE_HTTP2
+  cfg.withHttpVersion(HttpVersionMode::Auto);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#else
+  // Requiring HTTP/2 in a build without the engine is rejected outright.
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#endif
+}
+
+TEST(HttpClientConfigTest, ValidateRejectsHttp2Push) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withEnablePush(true));
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
 
 }  // namespace aeronet
