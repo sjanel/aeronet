@@ -31,6 +31,13 @@ class Scenario:
     requires_static: bool = False
     requires_tls: bool = False
     use_https: bool = False
+    # Scale the number of wrk load-generator threads relative to the server thread
+    # count (>1). Use for scenarios where wrk, not the server, is the bottleneck:
+    # zero-copy transfers (e.g. 'files' via sendfile()) leave the server nearly idle
+    # while wrk must still read every response byte, so a 1:1 thread ratio starves
+    # the server. Effective wrk threads are bounded by the cores the server does not
+    # use (cpu_count - server_threads); see _wrk_threads_for.
+    wrk_thread_multiplier: int = 1
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,12 @@ class BenchmarkRunner:
             "/index.html",
             requires_restart=True,
             requires_static=True,
+            # Fast servers serve static files with sendfile() (zero-copy), so the
+            # server barely touches the CPU while wrk must read every byte back. Give
+            # wrk up to ~3x the server threads (bounded by the spare cores the server
+            # does not use, see _wrk_threads_for) so the load generator, and not the
+            # server, saturates the box.
+            wrk_thread_multiplier=3,
         ),
         "routing": Scenario(
             "routing",
@@ -166,9 +179,22 @@ class BenchmarkRunner:
         self.build_dir = self._find_build_dir()
 
         self.threads = max(1, args.threads)
+        self.cpu_count = os.cpu_count() or 1
+        # Pin the server and the load generator (wrk/h2load) to disjoint CPU cores so we
+        # measure server throughput rather than scheduler contention. Only possible on
+        # Linux with taskset(1) and enough cores; disabled otherwise (e.g. 2-core CI VMs).
+        self._cpu_pin_enabled = (
+            not getattr(args, "no_cpu_pin", False)
+            and sys.platform.startswith("linux")
+            and shutil.which("taskset") is not None
+        )
         self.connections = args.connections
         self.duration = args.duration
         self.warmup = args.warmup
+        # Number of measurement samples per (server, scenario); the median-throughput
+        # sample is reported. >1 (weekly/dispatch runs) trades wall-clock for steadier
+        # numbers on noisy shared CI runners. 1 (main/PR) keeps the single-sample path.
+        self.repeat = max(1, getattr(args, "repeat", 1))
         self.wrk_timeout = args.wrk_timeout
         self.wrk_timeout_seconds = self._duration_to_seconds(self.wrk_timeout)
         if self.wrk_timeout_seconds is None:
@@ -184,6 +210,9 @@ class BenchmarkRunner:
         self.logs_dir.mkdir(exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.result_file = self.output_dir / f"benchmark_{timestamp}.txt"
+        # Human-readable date of the benchmark run ("date of the shoot"), embedded in
+        # the txt + JSON reports and surfaced in every rendered HTML report.
+        self.run_datetime = time.strftime("%Y-%m-%d %H:%M:%S %Z")
 
         self.server_processes: Dict[str, ProcessHandle] = {}
         self.results_rps: Dict[Tuple[str, str], str] = {}
@@ -531,28 +560,38 @@ class BenchmarkRunner:
         self._write_memory_summary_table()
         self._write_summary_table()
         self._write_json_summary()
-        # Fail CI only if Aeronet had errors in a scenario where no other
-        # server had errors (i.e. the issue is Aeronet-specific, not environmental).
-        aeronet_only_errors = [
-            scenario
-            for scenario, servers in self._scenario_errors.items()
-            if "aeronet" in servers and servers == {"aeronet"}
-        ]
-        shared_errors = [
-            scenario
-            for scenario, servers in self._scenario_errors.items()
-            if "aeronet" in servers and len(servers) > 1
-        ]
-        if shared_errors:
-            others = {s for sc in shared_errors for s in self._scenario_errors[sc] if s != "aeronet"}
-            print(
-                f"\nNote: Aeronet errors in {shared_errors} also seen in {others} "
-                "— likely environmental, not failing CI for those."
-            )
-        if aeronet_only_errors:
-            print(
-                f"\nBenchmarks complete (Aeronet-only errors in {aeronet_only_errors})\n"
-            )
+        # CI smoke gate: fail the run when aeronet (the project's own server) is broken,
+        # while tolerating environmental flakiness that also hits competitors. Only armed
+        # when aeronet is actually under test.
+        ci_failures: List[str] = []
+        if "aeronet" in self.servers_to_test:
+            # (a) aeronet produced no valid result for a scenario it was expected to run
+            #     — a crash, a failed start, or an aborted load generator. Always its own
+            #     fault (competitors reaching the same wall would not zero aeronet's row).
+            for scenario in self.scenarios_to_test:
+                if self.results_rps.get(("aeronet", scenario), "-") in ("-", None):
+                    ci_failures.append(f"{scenario} (no result: crash/failed-start)")
+            # (b) aeronet reported request errors in a scenario where no other server did
+            #     (i.e. aeronet-specific, not environmental).
+            aeronet_only_errors = [
+                scenario
+                for scenario, servers in self._scenario_errors.items()
+                if servers == {"aeronet"}
+            ]
+            ci_failures += [f"{s} (request errors)" for s in aeronet_only_errors]
+            shared_errors = [
+                scenario
+                for scenario, servers in self._scenario_errors.items()
+                if "aeronet" in servers and len(servers) > 1
+            ]
+            if shared_errors:
+                others = {s for sc in shared_errors for s in self._scenario_errors[sc] if s != "aeronet"}
+                print(
+                    f"\nNote: Aeronet errors in {shared_errors} also seen in {others} "
+                    "— likely environmental, not failing CI for those."
+                )
+        if ci_failures:
+            print(f"\nBenchmarks FAILED — aeronet issues: {ci_failures}\n")
             sys.exit(1)
         print("\nBenchmarks complete!\n")
 
@@ -648,6 +687,11 @@ class BenchmarkRunner:
         except BenchmarkError as exc:
             print(f"Skipping {server}: {exc}")
             return False
+        pin_prefix = self._server_pin_prefix()
+        if pin_prefix:
+            # taskset execs the server in place, so the tracked PID stays the server's.
+            cmd = [*pin_prefix, *cmd]
+            print(f"Pinning {server} to CPUs {pin_prefix[-1]} (server threads: {self.threads})")
         env = os.environ.copy()
         env["BENCH_PORT"] = str(port)
         env["BENCH_THREADS"] = str(self.threads)
@@ -740,6 +784,85 @@ class BenchmarkRunner:
 
     # ---------------------------- Benchmark logic --------------------------- #
 
+    def _wrk_threads_for(self, scenario: Scenario) -> int:
+        """Number of wrk load-generator threads to use for a scenario.
+
+        Most scenarios drive wrk with the same thread count as the server (1:1).
+        Zero-copy scenarios (e.g. 'files', where fast servers reply via sendfile() and
+        barely touch the CPU) make wrk the bottleneck instead — it must read every
+        response byte — so a 1:1 ratio leaves the server cores idle. Those scenarios ask
+        for more wrk threads via ``wrk_thread_multiplier``.
+
+        wrk is capped to the cores the server does NOT use (``cpu_count - server``):
+        the load generator and the server should run on disjoint cores so we measure
+        server throughput, not scheduler contention from oversubscribing the box. When
+        there aren't enough spare cores to let wrk out-scale the server (e.g. a 2-core
+        CI runner, where the server threads already fill the box) scaling is disabled
+        and wrk falls back to the 1:1 server thread count.
+        """
+        if scenario.wrk_thread_multiplier <= 1:
+            return self.threads
+        spare = self.cpu_count - self.threads  # cores not reserved for the server
+        if spare <= self.threads:
+            return self.threads
+        return min(self.threads * scenario.wrk_thread_multiplier, spare)
+
+    @staticmethod
+    def _cpu_range(start: int, count: int) -> str:
+        """Contiguous CPU list for `taskset -c`, e.g. (0, 5) -> '0-4', (5, 1) -> '5'."""
+        return str(start) if count <= 1 else f"{start}-{start + count - 1}"
+
+    def _server_pin_prefix(self) -> List[str]:
+        """`taskset` prefix pinning the server to the first ``self.threads`` cores.
+
+        Only pins when there is also room to give the load generator a disjoint core set
+        for at least a 1:1 run (``2 * server <= cpu_count``); otherwise the server runs
+        unpinned (pinning it to a subset while wrk roams every core would be worse).
+        """
+        if not self._cpu_pin_enabled or 2 * self.threads > self.cpu_count:
+            return []
+        return ["taskset", "-c", self._cpu_range(0, self.threads)]
+
+    def _loadgen_pin_prefix(self, loadgen_threads: int) -> List[str]:
+        """`taskset` prefix pinning wrk/h2load to the cores right after the server's, so
+        the load generator and the server never share a core. Disabled when they would
+        not fit disjointly (kept consistent with :meth:`_server_pin_prefix`)."""
+        if not self._cpu_pin_enabled or self.threads + loadgen_threads > self.cpu_count:
+            return []
+        return ["taskset", "-c", self._cpu_range(self.threads, loadgen_threads)]
+
+    @staticmethod
+    def _lower_median_index(values: Sequence[float]) -> int:
+        """Index (into ``values``) of the lower-median element by value.
+
+        For an even sample count this returns the lower of the two central values,
+        which keeps the selected sample a real, internally-consistent measurement
+        (as opposed to averaging two runs and mixing their sub-metrics)."""
+        order = sorted(range(len(values)), key=lambda idx: values[idx])
+        return order[(len(values) - 1) // 2]
+
+    def _select_median_wrk_output(self, outputs: List[str]) -> str:
+        """Pick the median-throughput wrk run among ``outputs`` (all successful).
+
+        Selecting a whole run by its Requests/sec keeps the reported latency / transfer
+        / error counters consistent with the throughput we report (they all come from
+        the same sample), instead of taking independent per-metric medians."""
+        if len(outputs) == 1:
+            return outputs[0]
+        scored = []
+        for out in outputs:
+            rps = self._parse_float(self._parse_wrk_output(out).get("rps"))
+            scored.append((rps if rps is not None else -1.0, out))
+        scored.sort(key=lambda item: item[0])
+        idx = (len(scored) - 1) // 2
+        median_rps, median_out = scored[idx]
+        sample_str = ", ".join(f"{rps:.0f}" if rps >= 0 else "-" for rps, _ in scored)
+        print(
+            f"    Repeat: {len(outputs)} samples, RPS (sorted) = [{sample_str}], "
+            f"median = {median_rps:.0f}"
+        )
+        return median_out
+
     def _run_single(
         self,
         server: str,
@@ -757,11 +880,14 @@ class BenchmarkRunner:
         scheme = "https" if scenario.use_https else "http"
         endpoint = scenario.endpoint
         url = f"{scheme}://127.0.0.1:{port}{endpoint}"
+        wrk_threads = self._wrk_threads_for(scenario)
+        wrk_pin = self._loadgen_pin_prefix(wrk_threads)
         if warmup:
             print(f">>> Warm-up: {server} / {scenario_name}")
             warmup_cmd = [
+                *wrk_pin,
                 "wrk",
-                f"-t{self.threads}",
+                f"-t{wrk_threads}",
                 f"-c{self.connections}",
                 f"-d{self.warmup}",
                 f"--timeout={self.wrk_timeout}",
@@ -777,9 +903,14 @@ class BenchmarkRunner:
         print(f">>> Running: {server} / {scenario_name}")
         print(f"    Script: {lua_script.relative_to(self.script_dir)}")
         print(f"    URL: {url}")
+        if wrk_threads != self.threads:
+            print(f"    wrk threads: {wrk_threads} (server threads: {self.threads})")
+        if wrk_pin:
+            print(f"    wrk pinned to CPUs {wrk_pin[-1]}")
         bench_cmd = [
+            *wrk_pin,
             "wrk",
-            f"-t{self.threads}",
+            f"-t{wrk_threads}",
             f"-c{self.connections}",
             f"-d{self.duration}",
             f"--timeout={self.wrk_timeout}",
@@ -787,21 +918,31 @@ class BenchmarkRunner:
             str(lua_script),
             url,
         ]
-        try:
-            result = subprocess.run(
-                bench_cmd, capture_output=True, text=True, check=True
-            )
-            output = result.stdout
-        except subprocess.CalledProcessError as exc:
-            output = (exc.stdout or "") + (exc.stderr or "")
-            print(
-                f"ERROR: wrk failed for {server} / {scenario_name} (exit {exc.returncode})"
-            )
-            print(output)
+        # Take `self.repeat` samples and keep the median-throughput one. A failed sample
+        # is tolerated as long as at least one succeeds (repeats exist to be robust to
+        # transient blips); only an all-failed measurement is recorded as a failure.
+        outputs: List[str] = []
+        last_fail_output = ""
+        for sample in range(self.repeat):
+            try:
+                result = subprocess.run(
+                    bench_cmd, capture_output=True, text=True, check=True
+                )
+                outputs.append(result.stdout)
+            except subprocess.CalledProcessError as exc:
+                last_fail_output = (exc.stdout or "") + (exc.stderr or "")
+                sample_note = f" [sample {sample + 1}/{self.repeat}]" if self.repeat > 1 else ""
+                print(
+                    f"ERROR: wrk failed for {server} / {scenario_name} "
+                    f"(exit {exc.returncode}){sample_note}"
+                )
+                print(last_fail_output)
+        if not outputs:
             self._store_result(server, scenario_name, "-", "-", "-", latency_raw="-", timeout_errors=0)
-            self._append_result_block(server, scenario_name, output, error=True)
+            self._append_result_block(server, scenario_name, last_fail_output, error=True)
             self._record_memory_usage(server, scenario_name)
             return
+        output = self._select_median_wrk_output(outputs)
         metrics = self._parse_wrk_output(output)
         # Extract wrk error counters printed by lua scripts
         err_connect, err_read, err_write, err_timeout = self._extract_wrk_errors(output)
@@ -972,8 +1113,11 @@ class BenchmarkRunner:
         conns = h2_scenario.connections if h2_scenario.connections is not None else self.connections
         streams = h2_scenario.streams if h2_scenario.streams is not None else self.h2_streams
 
-        # Build h2load command
+        # Build h2load command. Pin it to cores disjoint from the server's (same policy
+        # as wrk) so the load generator does not steal the server's cores.
+        h2load_pin = self._loadgen_pin_prefix(self.threads)
         cmd: List[str] = [
+            *h2load_pin,
             "h2load",
             f"-c{conns}",
             f"-t{self.threads}",
@@ -1018,31 +1162,15 @@ class BenchmarkRunner:
         print(f"    URL(s): {', '.join(urls)}")
         print(f"    Cmd: {' '.join(cmd)}")
 
-        output, h2load_crashed = self._exec_h2load(cmd)
-        if h2load_crashed:
-            # h2load can crash (SIGABRT from libev epoll assertion) when servers
-            # drop connections under heavy TLS load.  Retry with progressively
-            # fewer connections so we still get usable numbers.
-            for divisor in (4, 16):
-                retry_conns = max(conns // divisor, 4)
-                if retry_conns >= conns:
-                    break
-                print(f"    Retrying with -c{retry_conns} (reduced from {conns})...")
-                retry_cmd = list(cmd)
-                for idx, tok in enumerate(retry_cmd):
-                    if tok.startswith("-c"):
-                        retry_cmd[idx] = f"-c{retry_conns}"
-                        break
-                retry_output, retry_crashed = self._exec_h2load(retry_cmd)
-                if not retry_crashed:
-                    output = retry_output
-                    h2load_crashed = False
-                    break
-                # Use whichever output has more successful requests
-                retry_metrics = self._parse_h2load_output(retry_output)
-                orig_metrics = self._parse_h2load_output(output)
-                if int(retry_metrics.get("succeeded", 0)) > int(orig_metrics.get("succeeded", 0)):
-                    output = retry_output
+        # Take `self.repeat` samples and keep the median-throughput one (by succeeded
+        # request count), preferring non-crashed samples. Each sample carries its own
+        # crash-retry fallback.
+        samples: List[Tuple[int, str, bool]] = []
+        for _sample in range(self.repeat):
+            sample_output, sample_crashed = self._acquire_h2load_output(cmd, conns)
+            succeeded_sample = int(self._parse_h2load_output(sample_output).get("succeeded", 0))
+            samples.append((succeeded_sample, sample_output, sample_crashed))
+        output, h2load_crashed = self._select_median_h2load_output(samples)
 
         metrics = self._parse_h2load_output(output)
         succeeded = int(metrics.get("succeeded", 0))
@@ -1095,6 +1223,57 @@ class BenchmarkRunner:
             server, scenario_name, output, error=(server == "aeronet" and total_errors > 0)
         )
         self._record_memory_usage(server, scenario_name)
+
+    def _acquire_h2load_output(self, cmd: List[str], conns: int) -> Tuple[str, bool]:
+        """Run one h2load sample, with the crash-retry fallback, returning (output, crashed).
+
+        h2load can crash (SIGABRT from a libev epoll assertion) when servers drop
+        connections under heavy TLS load; retry with progressively fewer connections
+        so we still get usable numbers."""
+        output, h2load_crashed = self._exec_h2load(cmd)
+        if h2load_crashed:
+            for divisor in (4, 16):
+                retry_conns = max(conns // divisor, 4)
+                if retry_conns >= conns:
+                    break
+                print(f"    Retrying with -c{retry_conns} (reduced from {conns})...")
+                retry_cmd = list(cmd)
+                for idx, tok in enumerate(retry_cmd):
+                    if tok.startswith("-c"):
+                        retry_cmd[idx] = f"-c{retry_conns}"
+                        break
+                retry_output, retry_crashed = self._exec_h2load(retry_cmd)
+                if not retry_crashed:
+                    output = retry_output
+                    h2load_crashed = False
+                    break
+                # Use whichever output has more successful requests
+                retry_metrics = self._parse_h2load_output(retry_output)
+                orig_metrics = self._parse_h2load_output(output)
+                if int(retry_metrics.get("succeeded", 0)) > int(orig_metrics.get("succeeded", 0)):
+                    output = retry_output
+        return output, h2load_crashed
+
+    def _select_median_h2load_output(
+        self, samples: List[Tuple[int, str, bool]]
+    ) -> Tuple[str, bool]:
+        """Pick the median sample (by succeeded requests) from ``samples``.
+
+        ``samples`` are ``(succeeded, output, crashed)`` tuples. Non-crashed samples are
+        preferred; ties fall back to all samples so a run that only ever crashed still
+        yields its best-effort output for the caller's partial-metric handling."""
+        if len(samples) == 1:
+            return samples[0][1], samples[0][2]
+        pool = [s for s in samples if not s[2]] or samples
+        pool = sorted(pool, key=lambda item: item[0])
+        idx = (len(pool) - 1) // 2
+        _median_succeeded, median_output, median_crashed = pool[idx]
+        sample_str = ", ".join(str(s[0]) for s in sorted(samples, key=lambda item: item[0]))
+        print(
+            f"    Repeat: {len(samples)} samples, succeeded (sorted) = [{sample_str}], "
+            f"median = {pool[idx][0]}"
+        )
+        return median_output, median_crashed
 
     def _exec_h2load(self, cmd: List[str]) -> Tuple[str, bool]:
         """Run h2load and return (output, crashed).
@@ -1434,10 +1613,14 @@ class BenchmarkRunner:
         with self.result_file.open("w", encoding="utf-8") as fp:
             fp.write("HTTP Server Benchmark Results\n")
             fp.write("==============================\n")
-            fp.write(f"Date: {time.ctime()}\n")
+            fp.write(f"Date: {self.run_datetime}\n")
             fp.write(f"Protocol: {self.protocol}\n")
             fp.write(f"Tool: {tool}\n")
             fp.write(f"Threads: {self.threads}\n")
+            if self.repeat > 1:
+                fp.write(f"Samples: median of {self.repeat}\n")
+            fp.write(f"CPU pinning: {'on' if self._cpu_pin_enabled else 'off'} "
+                     f"({self.cpu_count} logical CPUs)\n")
             fp.write(f"Connections: {self.connections}\n")
             fp.write(f"Duration: {self.duration}\n")
             if self.protocol in ("h2c", "h2-tls"):
@@ -1481,7 +1664,9 @@ class BenchmarkRunner:
     def _write_summary_table(self) -> None:
         if not self.results_rps:
             return
-        thread_display = str(self.threads)
+        # For wrk (http1) some scenarios scale the load-generator thread count (e.g.
+        # 'files' via wrk_thread_multiplier); h2load always uses self.threads.
+        is_http1 = self.protocol == "http1"
         with self.result_file.open("a", encoding="utf-8") as fp:
             fp.write("\n=== SUMMARY TABLE ===\n\n")
             header = ["Scenario", "Threads", *self.servers_to_test, "Winner"]
@@ -1493,6 +1678,10 @@ class BenchmarkRunner:
             )
             fp.write(sep + "\n")
             for scenario in self.scenarios_to_test:
+                scen_meta = self.SCENARIOS.get(scenario) if is_http1 else None
+                thread_display = str(
+                    self._wrk_threads_for(scen_meta) if scen_meta else self.threads
+                )
                 row = [f"{scenario:<12}", f"{thread_display:<7}"]
                 best_server = self._best_server_for_scenario(scenario)
                 for server in self.servers_to_test:
@@ -1513,6 +1702,8 @@ class BenchmarkRunner:
         summary = {
             "protocol": self.protocol,
             "tool": "h2load" if self.protocol in ("h2c", "h2-tls") else "wrk",
+            "generated_at": self.run_datetime,
+            "repeat": self.repeat,
             "threads": self.threads,
             "connections": self.connections,
             "duration": self.duration,
@@ -2017,6 +2208,22 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("BENCH_H2_STREAMS", "10")),
         help="Max concurrent HTTP/2 streams per connection (h2load -m, default: 10)",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=int(os.environ.get("BENCH_REPEAT", "1")),
+        help="Number of measurement samples per (server, scenario); the median-throughput "
+        "sample is reported (default: 1). Use >1 (e.g. weekly runs) for steadier numbers "
+        "on noisy CI runners at the cost of wall-clock time.",
+    )
+    parser.add_argument(
+        "--no-cpu-pin",
+        action="store_true",
+        default=os.environ.get("BENCH_NO_CPU_PIN", "") not in ("", "0", "false", "False"),
+        help="Disable pinning the server and load generator (wrk/h2load) to disjoint CPU "
+        "cores. Pinning (Linux + taskset, enough cores) reduces load-generator/server "
+        "contention; auto-disabled on small boxes (e.g. 2-core CI runners).",
     )
     return parser.parse_args()
 

@@ -12,9 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       bench_duration:
-        description: 'Benchmark duration (e.g. 90s)'
+        description: 'Per-sample benchmark duration (e.g. 90s). Empty = per-job default.'
         required: false
-        default: '90s'
+        default: ''
+      bench_repeat:
+        description: 'Samples per case; the median is reported (weekly quality). HTTP/1 + H2 only.'
+        required: false
+        default: '3'
       h2_protocol:
         description: 'H2 protocol filter: h2c, h2-tls, or both'
         required: false
@@ -156,26 +160,31 @@ jobs:
           # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
           LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
-          # Decide duration and threads based on event type and inputs.
+          # Decide duration, threads and sample count based on event type and inputs.
           # Defaults:
-          #  - pull_request / non-main push => 5s, 1 thread (fast)
-          #  - push to main => 30s, 2 threads
-          #  - schedule or workflow_dispatch => use workflow input (or default 90s), 2 threads
+          #  - pull_request / non-main push => 5s, 1 thread, 1 sample (fast)
+          #  - push to main => 30s, 2 threads, 1 sample
+          #  - schedule / workflow_dispatch => 45s x 3-sample median, 2 threads (weekly
+          #    quality). Several shorter samples + median beat one long sample on noisy
+          #    shared runners; DUR x REPEAT is kept within the 6h per-job budget across
+          #    all servers x scenarios. Both are overridable via workflow_dispatch inputs.
 
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
           THREADS=2
+          REPEAT=1
           CPT=${{ matrix.connections_per_thread }}
           CONN=$((THREADS * CPT))
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            REPEAT="${{ github.event.inputs.bench_repeat || '3' }}"
             if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
               DUR="${{ github.event.inputs.bench_duration }}"
             else
-              DUR=90s
+              DUR=45s
             fi
           else
             # pull_request and non-main pushes
@@ -185,14 +194,14 @@ jobs:
             CONN=$((THREADS * CPT))
           fi
 
-          echo "Event: $EVENT_NAME ref: $REF -> $DUR, $THREADS threads, $CONN connections ($CPT/thread)"
+          echo "Event: $EVENT_NAME ref: $REF -> ${DUR}x${REPEAT}, $THREADS threads, $CONN connections ($CPT/thread)"
 
           BENCH_WRK_TIMEOUT=${BENCH_WRK_TIMEOUT:-10s}
           BODY_CODEC_MAX_PAYLOAD_KB=${BODY_CODEC_MAX_PAYLOAD_KB:-4096}
           export BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB
           echo "Using BENCH_WRK_TIMEOUT=$BENCH_WRK_TIMEOUT BODY_CODEC_MAX_PAYLOAD_KB=$BODY_CODEC_MAX_PAYLOAD_KB"
 
-          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN"
+          ./run_benchmarks.py --duration "$DUR" --threads "$THREADS" --warmup "$WARMUP" --connections "$CONN" --repeat "$REPEAT"
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
@@ -280,17 +289,21 @@ jobs:
           REF=${GITHUB_REF:-}
           WARMUP=5s
           THREADS=2
+          REPEAT=1
           CPT=${{ matrix.connections_per_thread }}
           CONN=$((THREADS * CPT))
           H2_STREAMS=10
 
+          # See the HTTP/1 job for the event -> duration/repeat rationale. schedule /
+          # workflow_dispatch take a 3-sample median at a shorter per-sample duration.
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$EVENT_NAME" = "schedule" ]; then
+            REPEAT="${{ github.event.inputs.bench_repeat || '3' }}"
             if [ -n "${{ github.event.inputs.bench_duration }}" ]; then
               DUR="${{ github.event.inputs.bench_duration }}"
             else
-              DUR=90s
+              DUR=45s
             fi
           else
             DUR=5s
@@ -299,7 +312,7 @@ jobs:
             CONN=$((THREADS * CPT))
           fi
 
-          echo "H2 bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS conn=$CONN streams=$H2_STREAMS"
+          echo "H2 bench: protocol=${{ matrix.protocol }} dur=${DUR}x${REPEAT} threads=$THREADS conn=$CONN streams=$H2_STREAMS"
 
           ./run_benchmarks.py \
             --protocol "${{ matrix.protocol }}" \
@@ -307,7 +320,8 @@ jobs:
             --threads "$THREADS" \
             --warmup "$WARMUP" \
             --connections "$CONN" \
-            --h2-streams "$H2_STREAMS"
+            --h2-streams "$H2_STREAMS" \
+            --repeat "$REPEAT"
 
       - name: Upload H2 results
         if: steps.filter.outputs.skip != 'true'
