@@ -36,11 +36,61 @@ local static_dir = script_dir .. "/../static"
 -- Debugging help: print resolved paths so it's clear what the script thinks the static dir is.
 print(string.format("static_files.lua: script_dir='%s' static_dir='%s'", script_dir, static_dir))
 
-local function discover_static_files()
+-- wrk runs this chunk once per worker thread. Enumerate the static directory
+-- WITHOUT forking a subprocess: the previous io.popen("find ...") implementation
+-- forked a `find` per thread, and under concurrency (many wrk threads) some popen
+-- calls came back empty, so discovery reported zero files and init() aborted the
+-- entire run with a PANIC. LuaJIT's FFI lets us call readdir() in-process, which is
+-- thread-safe, fork-free and faster. The `find` path is kept only as a fallback for
+-- environments where the FFI path is unavailable.
+local has_ffi, ffi = pcall(require, "ffi")
+if has_ffi then
+  -- glibc dirent layout (Linux, LP64). d_type == DT_DIR (4) marks subdirectories.
+  pcall(ffi.cdef, [[
+    typedef struct __dirstream DIR;
+    struct dirent { uint64_t d_ino; int64_t d_off; uint16_t d_reclen; uint8_t d_type; char d_name[256]; };
+    DIR *opendir(const char *name);
+    struct dirent *readdir(DIR *dirp);
+    int closedir(DIR *dirp);
+  ]])
+end
+
+local DT_DIR = 4
+
+local function discover_static_files_ffi(dir)
+  if not has_ffi then
+    return nil
+  end
+  local ok, list = pcall(function()
+    local dirp = ffi.C.opendir(dir)
+    if dirp == nil then
+      return nil
+    end
+    local out = {}
+    while true do
+      local ent = ffi.C.readdir(dirp)
+      if ent == nil then break end
+      local name = ffi.string(ent.d_name)
+      if name ~= "." and name ~= ".." and ent.d_type ~= DT_DIR then
+        table.insert(out, "/" .. name)
+      end
+    end
+    ffi.C.closedir(dirp)
+    return out
+  end)
+  if ok then
+    return list
+  end
+  return nil
+end
+
+-- Fallback: forks a `find` subprocess. Not reliable under high wrk thread counts,
+-- so it is only used when the FFI readdir path is unavailable.
+local function discover_static_files_find(dir)
   local list = {}
   -- Use find to list regular files only, print relative paths without leading ./
   -- Use shell-safe quoting and keep the newline escaped for find instead of embedding a literal line break.
-  local cmd = string.format("find %q -maxdepth 1 -type f -printf '%%f\\n'", static_dir)
+  local cmd = string.format("find %q -maxdepth 1 -type f -printf '%%f\\n'", dir)
   local fh = io.popen(cmd)
   if fh then
     for line in fh:lines() do
@@ -54,7 +104,15 @@ local function discover_static_files()
   return list
 end
 
--- Populate files; fall back to a small default set if discovery fails
+local function discover_static_files()
+  local list = discover_static_files_ffi(static_dir)
+  if not list or #list == 0 then
+    list = discover_static_files_find(static_dir)
+  end
+  return list
+end
+
+-- Populate files; FFI readdir first, falling back to `find` if unavailable.
 do
   files = discover_static_files()
 end

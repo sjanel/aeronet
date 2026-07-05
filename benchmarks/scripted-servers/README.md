@@ -194,6 +194,19 @@ Tests static file handler with various file sizes. Requires setup first.
 wrk -t4 -c100 -d30s -s lua/static_files.lua http://127.0.0.1:8080/index.html
 ```
 
+> **Note — wrk uses more threads here.** Fast servers (aeronet, drogon, …) serve
+> static files with `sendfile()`/`splice()`, so the server does almost no per-request
+> work while `wrk` still has to read every response byte back off the socket. At a 1:1
+> thread ratio `wrk` becomes the bottleneck and leaves the server cores idle. The
+> `run_benchmarks.py` runner therefore scales `wrk` up for the `files` scenario
+> (`Scenario.wrk_thread_multiplier`, 3×), **bounded by the cores the server does not
+> use** (`cpu_count - server_threads`) so the load generator and the server run on
+> disjoint cores rather than fighting for the same ones. On a box too small to spare
+> those cores (e.g. a 2-core CI runner) the scaling auto-disables and `wrk` falls back
+> to the 1:1 server thread count. The **server** thread count is never changed, so the
+> comparison stays fair, and the per-scenario `Threads` column in the summary table
+> reflects the effective `wrk` thread count.
+
 ### 7. Router Stress Test (`routing_stress.lua`)
 
 Tests router lookup performance with large route tables (1000+ routes).
@@ -262,6 +275,8 @@ run_benchmarks.py --scenario headers # Only run specific scenario(s)
 run_benchmarks.py --output results/  # Output directory for result artifacts
 run_benchmarks.py --protocol http1   # Protocol: http1 (default), h2c, h2-tls
 run_benchmarks.py --h2-streams 10    # Multiplexed streams per h2 connection (default: 10)
+run_benchmarks.py --repeat 3         # Take N samples per case, report the median (default: 1)
+run_benchmarks.py --no-cpu-pin       # Disable automatic taskset pinning of server vs load generator
 
 # Run multiple values (comma-separated)
 run_benchmarks.py --server aeronet,beast,python --scenario headers,body,routing
@@ -395,7 +410,7 @@ for each scenario/server combination. The table is derived directly from `/proc/
 1. **Disable CPU frequency scaling**: `sudo cpupower frequency-set -g performance`
 2. **Pin processes to cores**: Use `taskset` to avoid NUMA effects
 3. **Warm up**: Run a short warmup before the real test (especially for JIT runtimes)
-4. **Multiple runs**: Take the median of 3-5 runs
+4. **Multiple runs**: Take the median of 3-5 runs — `--repeat N` does this automatically (runs each case N times and reports the median-throughput sample). The CI weekly/manual runs use it for steadier numbers; the run date is recorded in every result file and shown on the rendered HTML report.
 5. **Same machine vs remote**: Local tests eliminate network variance but may cause resource contention
 6. **Check for errors**: Verify `Non-2xx responses` count is zero
 7. **Use keep-alive**: All Lua scripts include `Connection: keep-alive` header. Some servers (e.g., Pistache) default to `Connection: Close` if no header is sent, which drastically reduces throughput
@@ -480,8 +495,8 @@ taskset -c 4-5 ./wrk -t2 -c200 -d30s -s lua/mixed_workload.lua http://127.0.0.1:
 Notes:
 
 - Keep `wrk` off the same cores as the server to avoid CPU contention. Dedicate at least one core for `wrk` threads.
+- When it starts the servers itself, `run_benchmarks.py` **does this pinning automatically** (Linux + `taskset`): the server is pinned to the first `--threads` cores and the load generator (wrk/h2load) to the cores just after it, so they never share a core. It auto-disables when the box is too small to split them (e.g. a 2-core runner running `--threads 2`); disable it explicitly with `--no-cpu-pin`. Manual pinning as shown above is only needed if you start the server yourself.
 - Disabling turbo will reduce peak throughput but increases repeatability. Toggle turbo back after measurements if desired.
-- If `run_benchmarks.py` starts servers for you, prefer starting the server manually pinned (as above) and point the runner at the running server to ensure pinning takes effect.
 - If you want automation, consider a small wrapper script that sets governor, pins processes, warms, runs the bench, and restores settings afterwards.
 
 ## WebSocket Benchmarks
