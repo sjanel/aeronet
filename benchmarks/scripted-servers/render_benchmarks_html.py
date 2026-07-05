@@ -367,6 +367,24 @@ def _build_chart_cards_html(metrics: list) -> str:
     return "\n        ".join(parts)
 
 
+def _extra_meta_cards(summary: Dict[str, Any]) -> str:
+    """Meta cards shared by every report: the run date and (when >1) the sample count.
+
+    Emitted conditionally so older JSON summaries without these fields still render."""
+    cards = ""
+    generated_at = summary.get("generated_at")
+    if generated_at:
+        cards += (
+            f'\n  <div><span>Date</span><strong>{_esc(str(generated_at))}</strong></div>'
+        )
+    repeat = summary.get("repeat")
+    if isinstance(repeat, int) and repeat > 1:
+        cards += (
+            f'\n  <div><span>Samples</span><strong>median of {repeat}</strong></div>'
+        )
+    return cards
+
+
 def _conn_label(summary: Dict[str, Any]) -> str:
     """Human-readable label for a connection-count configuration."""
     conns = summary.get("connections")
@@ -494,7 +512,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
   <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
   <div><span>VUs</span><strong>{_esc(str(vus))}</strong></div>
   <div><span>Duration</span><strong>{_esc(str(duration))}</strong></div>
-  <div><span>Warmup</span><strong>{_esc(str(warmup))}</strong></div>
+  <div><span>Warmup</span><strong>{_esc(str(warmup))}</strong></div>{_extra_meta_cards(first)}
 </div>
 """
     else:
@@ -510,7 +528,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
         if h2_streams is not None:
             meta_cards += f"""
   <div><span>H2 Streams/conn</span><strong>{h2_streams}</strong></div>"""
-        meta_cards += """
+        meta_cards += _extra_meta_cards(first) + """
 </div>
 """
 
