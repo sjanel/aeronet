@@ -94,6 +94,9 @@ class WsBenchmarkRunner:
         self.result_file = self.output_dir / f"ws_benchmark_{timestamp}.txt"
         self.json_file = self.output_dir / f"ws_benchmark_{timestamp}.json"
         self.html_file = self.output_dir / f"ws_benchmark_{timestamp}.html"
+        # Human-readable date of the benchmark run ("date of the shoot"), embedded in
+        # the JSON summary and surfaced in the rendered HTML report.
+        self.run_datetime = time.strftime("%Y-%m-%d %H:%M:%S %Z")
 
         self.servers_to_test = self._resolve_servers(args.server)
         self.scenarios_to_test = self._resolve_scenarios(args.scenario)
@@ -922,6 +925,7 @@ class WsBenchmarkRunner:
         data = {
             "benchmark_type": "websocket",
             "tool": "k6",
+            "generated_at": self.run_datetime,
             "threads": self.args.threads,
             "vus": self.vus,
             "duration": self.duration,
