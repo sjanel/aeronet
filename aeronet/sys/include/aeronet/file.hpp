@@ -10,6 +10,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
@@ -43,6 +44,10 @@ class File {
   // Return the file size in bytes, at the time of opening.
   [[nodiscard]] std::size_t size() const noexcept { return _fileSize; }
 
+  // Return the last modification time captured from the same fstat() performed at open time.
+  // Returns kInvalidTimePoint if the metadata could not be obtained (in which case the File is also closed).
+  [[nodiscard]] SysTimePoint lastModified() const noexcept { return _mtime; }
+
   // Read up to dst.size() bytes starting at the given absolute offset.
   // Uses pread() so it does not modify the file's current offset.
   // Returns the number of bytes read (0 on EOF). Returns kError on error.
@@ -63,6 +68,7 @@ class File {
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
   std::size_t _fileSize{kError};
+  SysTimePoint _mtime{SysTimePoint::max()};  // == kInvalidTimePoint sentinel when metadata is unavailable
 };
 
 }  // namespace aeronet

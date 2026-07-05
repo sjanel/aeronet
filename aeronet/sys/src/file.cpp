@@ -15,6 +15,7 @@
 #endif
 
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <span>
@@ -27,6 +28,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/system-error-message.hpp"
+#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
@@ -79,29 +81,46 @@ inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 #endif
 }
 
-inline std::size_t GetFileSize(BaseFd& fd) {
+// Stat the descriptor once, filling both size and last-modification time. On failure the descriptor is
+// closed, the size is set to File::kError and the mtime is left at the kInvalidTimePoint sentinel.
+inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut) {
 #ifdef AERONET_POSIX
   struct stat st{};
   if (fd && ::fstat(fd.fd(), &st) == 0) {
-    return static_cast<std::size_t>(st.st_size);
+    sizeOut = static_cast<std::size_t>(st.st_size);
+    // POSIX names the modification-time timespec `st_mtim`; Apple/BSD name it `st_mtimespec`.
+#ifdef AERONET_MACOS
+    const auto& mtimespec = st.st_mtimespec;
+#else
+    const auto& mtimespec = st.st_mtim;
+#endif
+    mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(std::chrono::seconds{mtimespec.tv_sec} +
+                                                                    std::chrono::nanoseconds{mtimespec.tv_nsec})};
+    return;
   }
 #elifdef AERONET_WINDOWS
   struct _stat64 st{};
   if (fd && _fstat64(static_cast<int>(fd.fd()), &st) == 0) {
-    return static_cast<std::size_t>(st.st_size);
+    sizeOut = static_cast<std::size_t>(st.st_size);
+    mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(std::chrono::seconds{st.st_mtime})};
+    return;
   }
 #endif
   fd.close();
-  return File::kError;
+  sizeOut = File::kError;
 }
 
 }  // namespace
 
 File::File(std::string_view path, OpenMode mode)
-    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)), _fileSize(GetFileSize(_fd)) {}
+    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
+  StatFile(_fd, _fileSize, _mtime);
+}
 
 File::File(const char* path, OpenMode mode)
-    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)), _fileSize(GetFileSize(_fd)) {}
+    : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
+  StatFile(_fd, _fileSize, _mtime);
+}
 
 std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
   for (;;) {
