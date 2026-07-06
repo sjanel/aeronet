@@ -16,11 +16,22 @@
 namespace aeronet {
 namespace {
 
+// Reflects a handful of request headers back so a test can observe exactly what the request builder put
+// on the wire (which framing headers it injected, and which user-supplied ones suppressed the injection).
+HttpResponse ReflectRequestHeaders(const HttpRequest& req) {
+  HttpResponse resp(http::StatusCodeOK, "reflect", "text/plain");
+  resp.header("echo-host", req.headerValueOrEmpty("host"));
+  resp.header("echo-ua-present", req.hasHeader("user-agent") ? "yes" : "no");
+  return resp;
+}
+
 // Spins up a plain-HTTP aeronet server on an ephemeral port with a handful of routes.
 class HttpClientE2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
     Router router;
+    router.setPath(http::Method::GET, "/reflect", ReflectRequestHeaders);
+    router.setPath(http::Method::POST, "/reflect", ReflectRequestHeaders);
     router.setPath(http::Method::GET, "/hello",
                    [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "world", "text/plain"); });
     router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req) {
@@ -386,6 +397,61 @@ TEST_F(HttpClientE2ETest, ClearIdleConnectionsDropsRegisteredPooledFd) {
   EXPECT_EQ(first.bodyInMemory(), "world");
   client.clearIdleConnections();                    // must unregister + close the pooled fd
   auto second = client.get(url("/hello")).value();  // reconnects and re-registers a fresh fd
+  EXPECT_EQ(second.status(), 200);
+  EXPECT_EQ(second.bodyInMemory(), "world");
+}
+
+// --- Request-builder header injection decisions -----------------------------
+
+// A user-supplied Host header suppresses the auto-injected one and is sent verbatim (the builder emits the
+// user's Host rather than deriving it from the URL authority).
+TEST_F(HttpClientE2ETest, ExplicitHostHeaderSuppressesInjected) {
+  HttpClient client;
+  ClientRequest req(http::Method::GET, url("/reflect"));
+  req.header("Host", "custom-authority.example:1234");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-host"), "custom-authority.example:1234");
+}
+
+// An empty configured User-Agent suppresses the User-Agent header entirely (no empty line emitted).
+TEST_F(HttpClientE2ETest, EmptyUserAgentConfigOmitsHeader) {
+  HttpClient client(HttpClientConfig{}.withUserAgent(""));
+  auto resp = client.get(url("/reflect")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-ua-present"), "no");
+}
+
+// With keep-alive off the builder would inject "Connection: close"; a user-supplied Connection header
+// suppresses that injection (the user's directive wins). The exchange still completes.
+TEST_F(HttpClientE2ETest, ExplicitConnectionHeaderWithKeepAliveOff) {
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+  ClientRequest req(http::Method::GET, url("/reflect"));
+  req.header("Connection", "close");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "reflect");
+}
+
+// A HEAD following a 302 keeps its method: the POST->GET rewrite for 301/302 fires only for methods that
+// are neither GET nor HEAD, so a HEAD request is redirected as HEAD (body stays absent).
+TEST_F(HttpClientE2ETest, HeadFollowsRedirectWithoutMethodRewrite) {
+  HttpClient client;
+  ClientRequest req(http::Method::HEAD, url("/redirect"));  // 302 -> /hello
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(resp.bodyInMemory().empty());  // HEAD: no body on the final response either
+}
+
+// With keep-alive idle expiry disabled (keepAliveTimeout == 0), a pooled connection is reused without the
+// staleness/age check firing -- the second request rides the same connection.
+TEST_F(HttpClientE2ETest, KeepAliveWithoutExpiryReusesConnection) {
+  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{0}));
+  auto first = client.get(url("/hello")).value();
+  EXPECT_EQ(first.status(), 200);
+  auto second = client.get(url("/hello")).value();  // reuses the pooled connection (no expiry check)
   EXPECT_EQ(second.status(), 200);
   EXPECT_EQ(second.bodyInMemory(), "world");
 }

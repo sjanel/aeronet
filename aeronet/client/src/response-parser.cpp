@@ -1,5 +1,6 @@
 #include "response-parser.hpp"
 
+#include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -111,9 +112,11 @@ ResponseParser::Status ResponseParser::decideFraming() {
   // The cursor sits on the first body byte (just past the blank line ending the header block).
   _bodyStart = _pos;
 
+  // 1xx interim responses are discarded (and the parser restarted) in parse() before decideFraming() runs,
+  // so the status is always a final one (>= 200) here: only 204/304 (and a HEAD request) are bodyless.
+  assert(_statusCode >= 200);
   const http::StatusCode code = _statusCode;
-  const bool bodyless = _headRequest || code == http::StatusCodeNoContent || code == http::StatusCodeNotModified ||
-                        (code >= 100 && code < 200);
+  const bool bodyless = _headRequest || code == http::StatusCodeNoContent || code == http::StatusCodeNotModified;
 
   if (bodyless) {
     _framing = Framing::None;
@@ -232,25 +235,22 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
           continue;
         }
 
-        if (_state == State::BodyChunkTrailers) {
-          // Consume trailer lines until an empty line. Trailers are not surfaced.
-          for (;;) {
-            const auto nl = buffer.find('\n', _pos);
-            if (nl == std::string_view::npos) {
-              return eof ? Status::Error : Status::NeedMore;
-            }
-            std::string_view line = buffer.substr(_pos, nl - _pos);
-            const bool emptyLine = line.empty() || line == "\r";
-            _pos = nl + 1;
-            if (emptyLine) {
-              _state = State::Done;
-              return Status::Complete;
-            }
+        // The three sub-states above each return or `continue`, so the only state left here is the trailer
+        // block. Consume trailer lines until an empty line. Trailers are not surfaced.
+        assert(_state == State::BodyChunkTrailers);
+        for (;;) {
+          const auto nl = buffer.find('\n', _pos);
+          if (nl == std::string_view::npos) {
+            return eof ? Status::Error : Status::NeedMore;
+          }
+          std::string_view line = buffer.substr(_pos, nl - _pos);
+          const bool emptyLine = line.empty() || line == "\r";
+          _pos = nl + 1;
+          if (emptyLine) {
+            _state = State::Done;
+            return Status::Complete;
           }
         }
-
-        // The four chunked sub-states above each return or `continue`; control never falls through here.
-        std::unreachable();
       }
     }
 
