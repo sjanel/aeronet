@@ -83,6 +83,14 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
       resp.header("x-server", "aeronet");
       return resp;
     });
+    // 303 See Other -> rewrite to GET /headers with the request body dropped. A user header set on the
+    // original POST must survive the drop-body rewrite and reach /headers (where it is reflected back).
+    router.setPath(http::Method::POST, "/see-other-headers", [this](const HttpRequest& req) {
+      observe(req);
+      HttpResponse resp(http::StatusCodeSeeOther);
+      resp.location("/headers");
+      return resp;
+    });
 
     _server = std::make_unique<SingleHttpServer>(
         HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}), std::move(router));
@@ -263,6 +271,28 @@ TEST_F(HttpClientHttp2E2ETest, UserFramingHeadersRespected) {
   EXPECT_EQ(resp.bodyInMemory(), "payload");
 }
 
+TEST_F(HttpClientHttp2E2ETest, NonTrailersTeHeaderIsDropped) {
+  // "TE: trailers" is the one TE value HTTP/2 permits; any other TE value is connection-specific and must
+  // be dropped from the header block (unlike the kept "TE: trailers" case). The request still completes.
+  HttpClient client = MakeHttp2Client();
+  ClientRequest req(http::Method::POST, url("/echo"));
+  req.header("TE", "gzip").body("payload", "text/plain");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "payload");
+}
+
+TEST_F(HttpClientHttp2E2ETest, DropBodyRedirectKeepsUserHeader) {
+  // A 303 rewrites POST -> GET and drops the body: the body's Content-Type is dropped from the rewritten
+  // header block, but an unrelated user header survives and reaches the redirect target.
+  HttpClient client = MakeHttp2Client();
+  ClientRequest req(http::Method::POST, url("/see-other-headers"));
+  req.header("x-custom-token", "kept-across-redirect").body("discard-me", "text/plain");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("x-echoed"), "kept-across-redirect");
+}
+
 TEST_F(HttpClientHttp2E2ETest, TransferAndContentEncodingRequestHeadersDisableCompression) {
   // A request already carrying Transfer-Encoding / Content-Encoding is never auto-compressed; the
   // (forbidden) Transfer-Encoding header itself is dropped from the HTTP/2 header block.
@@ -275,6 +305,21 @@ TEST_F(HttpClientHttp2E2ETest, TransferAndContentEncodingRequestHeadersDisableCo
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "raw-body");
+}
+
+TEST_F(HttpClientHttp2E2ETest, TransferEncodingAloneDisablesCompression) {
+  // Only Transfer-Encoding present (no Content-Encoding): the compression gate still bails on the
+  // pre-existing framing header, and TE is then dropped from the HTTP/2 block, so the server receives the
+  // raw body unencoded. Distinct from the case above where Content-Encoding short-circuits the gate first.
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withRequestCompression(true);
+  cfg.requestCompression.codec.minBytes = 1;
+  HttpClient client(cfg);
+  ClientRequest req(http::Method::POST, url("/echo"));
+  req.header("Transfer-Encoding", "chunked").body("raw-te-body", "text/plain");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "raw-te-body");
 }
 
 TEST_F(HttpClientHttp2E2ETest, ServerGoAwayAfterStreamBudgetReconnects) {
