@@ -314,17 +314,17 @@ void HttpClient::unregisterIfCurrent(NativeHandle fd) noexcept {
 }
 
 void HttpClient::dropConnection(ActiveConnection& conn) noexcept {
-  if (conn.valid()) {
-    unregisterIfCurrent(conn.cnx.fd());
-  }
+  // Only ever called on a live connection: freshly connected, or just popped from the idle pool.
+  assert(conn.valid());
+  unregisterIfCurrent(conn.cnx.fd());
   conn.reset();
 }
 
 void HttpClient::dropIdleBucket(vector<ActiveConnection>& bucket) noexcept {
   for (ActiveConnection& conn : bucket) {
-    if (conn.valid()) {
-      unregisterIfCurrent(conn.cnx.fd());
-    }
+    // Pooled entries are always live: releaseConnection never stores an invalid connection.
+    assert(conn.valid());
+    unregisterIfCurrent(conn.cnx.fd());
   }
   bucket.clear();
 }
@@ -443,9 +443,8 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
 
 void HttpClient::releaseConnection(const Url& url, ActiveConnection&& conn) {
   assert(_config.keepAlive);
-  if (!conn.valid()) {
-    return;
-  }
+  // Only released after a completed exchange, so the connection is always live at this point.
+  assert(conn.valid());
   // This is the only place the pool needs to own (and therefore allocate) an origin key: create the
   // bucket on first release for this origin so subsequent requests can actually reuse the connection.
   // The key is materialized once per distinct origin and never rebuilt; all other accesses are

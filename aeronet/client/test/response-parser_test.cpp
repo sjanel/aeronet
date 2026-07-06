@@ -420,4 +420,72 @@ TEST(ResponseParserTest, AcceptsBareLfInChunkedBody) {
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
 
+// A trailing comma in a Connection option list leaves an empty final token: the scanner must consume the
+// list to the end (the loop re-checks its `!value.empty()` guard rather than exiting through the comma).
+TEST(ResponseParserTest, ConnectionTrailingCommaClosesReuse) {
+  HttpResponse resp;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  auto st = parser.parse("HTTP/1.1 200 OK\r\nConnection: close,\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_FALSE(parser.keepAlive());
+}
+
+// A chunk-size position holding a bare, empty line (no digits at all) is malformed: the empty token fails
+// the hex parse rather than being mistaken for a zero-length final chunk.
+TEST(ResponseParserTest, ChunkedEmptySizeLineIsError) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\n", resp);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
+// Chunk data cut short (fewer bytes than the announced chunk size) at EOF is an error, not a silent wait.
+TEST(ResponseParserTest, ChunkedDataTruncatedAtEofIsError) {
+  HttpResponse resp;
+  auto st =
+      parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel", resp, /*head=*/false, /*eof=*/true);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
+// Chunk data fully delivered but the trailing CRLF not yet arrived (and no EOF): the parser waits for more.
+TEST(ResponseParserTest, ChunkedDataCrlfPendingNeedsMore) {
+  HttpResponse resp;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello";
+  auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
+  EXPECT_EQ(st, ResponseParser::Status::NeedMore);
+  raw += "\r\n0\r\n\r\n";
+  st = parser.parse(raw, /*eof=*/false, resp, kMax);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+}
+
+// A terminating zero-length chunk whose trailer block is not yet closed (and no EOF): keep waiting.
+TEST(ResponseParserTest, ChunkedTrailersPendingNeedsMore) {
+  HttpResponse resp;
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n";
+  auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
+  EXPECT_EQ(st, ResponseParser::Status::NeedMore);
+  raw += "\r\n";  // close the (empty) trailer block
+  st = parser.parse(raw, /*eof=*/false, resp, kMax);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+// A status line with no reason phrase ("HTTP/1.1 200") is accepted: the code is parsed and the (absent)
+// reason is simply left empty.
+TEST(ResponseParserTest, StatusLineWithoutReasonPhrase) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n", resp);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(resp.reason().empty());
+}
+
 }  // namespace aeronet
