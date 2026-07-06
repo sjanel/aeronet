@@ -664,6 +664,58 @@ TEST(TlsTransportTest, SyscallDuringWriteWithErrnoZeroRetried) {
   EXPECT_EQ(res.bytesProcessed, 0U);
 }
 
+// Regression tests for a rare truncated-body flake on large TLS transfers.
+//
+// The OpenSSL error queue is per-thread, shared by every SSL connection driven by one
+// event-loop thread. SSL_get_error() consults ERR_peek_error() *before* the WANT_READ /
+// WANT_WRITE state, so if any operation returns a fatal error but leaves that error on the
+// queue, the *next* connection's would-block SSL_read/SSL_write is misread as a fatal
+// SSL_ERROR_SSL. On the write path that made flushUserSpaceTlsBuffer drop the still-pending
+// TLS record and close the connection, so a large response arrived short by ~one 16 KiB
+// record. The fix is not to paper over a dirty queue before each op, but to make every
+// TlsTransport operation drain (log + consume) the error it inspected, so no fatal path ever
+// leaves the shared queue dirty. These tests assert that invariant: after a fatal error the
+// queue is empty. A plaintext peer hitting the TLS port (like the test-server readiness probe)
+// is the canonical poisoner — its handshake fails with "unexpected eof / http request".
+TEST(TlsTransportTest, FatalHandshakeErrorDrainsSharedErrorQueue) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  // Speak plaintext HTTP to the TLS server: the first "record" byte 'G' is not a TLS record
+  // type, so SSL_do_handshake fails with a queued SSL_R_HTTP_REQUEST / wrong-version error.
+  // The peer socket stays open, so the server's alert write does not raise SIGPIPE.
+  static constexpr std::string_view kHttpNoise = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+  ASSERT_EQ(::send(pair.clientFd.fd(), kHttpNoise.data(), kHttpNoise.size(), 0),
+            static_cast<ssize_t>(kHttpNoise.size()));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  ERR_clear_error();  // clean baseline
+  char buf[16];
+  auto res = transport.read(buf, sizeof(buf));  // drives the failing handshake
+  EXPECT_EQ(res.want, TransportHint::Error);
+  EXPECT_EQ(ERR_peek_error(), 0UL) << "fatal handshake must not leak onto the shared error queue";
+}
+
+TEST(TlsTransportTest, FatalReadErrorDrainsSharedErrorQueue) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  // Inject a complete but cryptographically-invalid application_data record straight onto the
+  // server socket (bypassing the client SSL). The AEAD tag check fails, so SSL_read_ex returns
+  // SSL_ERROR_SSL and queues a "bad record mac" error. 17-byte payload = the TLS 1.3 minimum
+  // (1 content-type byte + 16-byte tag).
+  static constexpr unsigned char kBadRecord[] = {0x17, 0x03, 0x03, 0x00, 0x11, 0,  1,  2,  3,  4,  5,
+                                                 6,    7,    8,    9,    10,   11, 12, 13, 14, 15, 16};
+  ASSERT_EQ(::send(pair.clientFd.fd(), kBadRecord, sizeof(kBadRecord), 0), static_cast<ssize_t>(sizeof(kBadRecord)));
+  SetNonBlocking(pair.serverFd.fd());
+
+  ERR_clear_error();  // clean baseline
+  char buf[64];
+  auto res = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(res.want, TransportHint::Error);
+  EXPECT_EQ(ERR_peek_error(), 0UL) << "fatal read error must not leak onto the shared error queue";
+}
+
 TEST(TlsTransportTest, SyscallDuringWriteFatalSetsErrorHint) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
