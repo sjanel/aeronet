@@ -92,9 +92,12 @@ class HttpClientE2ETest : public ::testing::Test {
       return resp;
     });
 
+    // Generous server keep-alive idle timeout: a short one reaps a freshly-accepted connection whose client
+    // is descheduled (heavy parallel-test load) between the TCP handshake and sending its request, which
+    // surfaces as a rare terminal failure of the in-flight request. See the compression e2e test for detail.
     _server = std::make_unique<SingleHttpServer>(HttpServerConfig{}
                                                      .withPort(0)
-                                                     .withKeepAliveTimeout(std::chrono::milliseconds{200})
+                                                     .withKeepAliveTimeout(std::chrono::seconds{5})
                                                      .withPollInterval(std::chrono::milliseconds{20}),
                                                  std::move(router));
     _port = _server->port();
