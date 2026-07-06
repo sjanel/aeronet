@@ -447,6 +447,34 @@ TEST(HttpClientErrorE2ETest, StatusRetryHonorsRetryAfter) {
   }
 }
 
+// A retryable status with keep-alive disabled and Retry-After honoring turned off: the client drops the
+// (non-poolable) connection between attempts and ignores the server's Retry-After, using its own computed
+// backoff instead. Two fresh connections; the long Retry-After never delays the retry.
+TEST(HttpClientErrorE2ETest, StatusRetryWithoutKeepAliveIgnoresRetryAfter) {
+  std::atomic<int> connections{0};
+  RawServer server([&](NativeHandle fd, int idx) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, idx == 0 ? "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 9\r\n\r\n"
+                         : "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+  });
+  RetryConfig retry = FastRetry(2);
+  retry.honorRetryAfter = false;  // ignore the server's Retry-After header; use computed backoff
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;  // no pooling: each attempt runs on (and drops) a fresh connection
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto result = client.get(MakeUrl(server.port()));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), "ok");
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 2);  // two fresh connections, no reuse
+  EXPECT_LT(elapsed, std::chrono::seconds{1});                // Retry-After: 9s was ignored, not honored
+}
+
 // A post-send failure on an *idempotent* method (GET) is retried only when the caller opts in: the first
 // connection truncates its response, the second answers fully.
 TEST(HttpClientErrorE2ETest, IdempotentPostSendFailureRetriedWhenEnabled) {

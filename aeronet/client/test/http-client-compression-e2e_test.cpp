@@ -167,6 +167,17 @@ TEST_F(HttpClientCompressionE2E, SmallRequestBodyBelowThresholdIsNotCompressed) 
   EXPECT_EQ(resp.bodyInMemory(), "tiny");
 }
 
+// A bodyless request (GET) with request compression enabled short-circuits the compression path on the
+// empty-body guard -- no Content-Encoding is emitted and the request is sent as-is.
+TEST_F(HttpClientCompressionE2E, RequestCompressionSkippedForBodylessGet) {
+  HttpClientConfig cfg;
+  cfg.withRequestCompression(true);
+  cfg.requestCompression.codec.minBytes = 1;  // aggressive threshold: only the empty body prevents compression
+  HttpClient client(cfg);
+  auto resp = client.get(url("/accept-encoding")).value();
+  EXPECT_EQ(resp.status(), 200);
+}
+
 // --- Captured vs scattered request write ------------------------------------
 
 TEST_F(HttpClientCompressionE2E, CapturedAndScatteredBodiesBothRoundTrip) {

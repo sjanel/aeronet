@@ -1,3 +1,4 @@
+#include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <expected>
@@ -293,10 +294,10 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
     if (st == ResponseParser::Status::Error) {
       return std::unexpected(HttpClientErrc::malformedResponse);
     }
-    // NeedMore: read straight into the buffer's tail (no bounce buffer, no extra copy).
-    if (eof) {
-      return std::unexpected(HttpClientErrc::connectionClosed);
-    }
+    // NeedMore: read straight into the buffer's tail (no bounce buffer, no extra copy). The parser resolves
+    // every framing to Complete/Error once eof is set (each NeedMore return is guarded by !eof), so reaching
+    // NeedMore here always means the connection is still open and more bytes can arrive.
+    assert(!eof);
     responseBuffer.ensureAvailableCapacityExponential(kReadChunk);
     const ITransport::TransportResult transportRes =
         transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
