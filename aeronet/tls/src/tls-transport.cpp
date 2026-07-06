@@ -65,6 +65,12 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
       return ret;
     }
   }
+  // Fatal error: SSL_get_error() reached here only because ERR_peek_error() was non-empty (or
+  // a real SYSCALL errno). Drain and log the queued error so it can never leak onto the shared
+  // per-thread OpenSSL error queue, where it would poison SSL_get_error() for the next I/O op
+  // on any connection of this event-loop thread. (write() already does this; keep read/write
+  // symmetric so every non-retryable path leaves the queue empty.)
+  logErrorIfAny();
   ret.want = TransportHint::Error;
   return ret;
 }
@@ -175,6 +181,10 @@ TransportHint TlsTransport::handshake(TransportHint want) {
           return want;
         }
       }
+      // Fatal handshake failure (e.g. a plaintext probe against the TLS port hangs up, leaving
+      // "unexpected eof while reading" queued). Drain and log it here so the error cannot linger
+      // on the shared per-thread queue and corrupt SSL_get_error() for a later I/O op.
+      logErrorIfAny();
       return TransportHint::Error;
     }
   }
