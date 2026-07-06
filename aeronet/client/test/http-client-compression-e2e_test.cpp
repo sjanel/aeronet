@@ -39,9 +39,14 @@ class HttpClientCompressionE2E : public ::testing::Test {
     router.setPath(http::Method::GET, "/blob",
                    [this](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, _blob, "text/plain"); });
 
+    // Keep the server keep-alive idle timeout generous. A short timeout (e.g. 200ms) reaps a
+    // freshly-accepted connection whose client, under CPU contention (parallel ctest on a loaded macOS
+    // runner), is descheduled for >timeout between the TCP handshake completing and sending its request:
+    // the server closes the never-used connection and the client's non-idempotent POST fails terminally
+    // (default retry.maxAttempts == 1). Mirrors the TLS e2e test's choice for the same reason.
     HttpServerConfig cfg = HttpServerConfig{}
                                .withPort(0)
-                               .withKeepAliveTimeout(std::chrono::milliseconds{200})
+                               .withKeepAliveTimeout(std::chrono::seconds{5})
                                .withPollInterval(std::chrono::milliseconds{20});
     cfg.compression.minBytes = 16;  // compress even small response bodies
     _server = std::make_unique<SingleHttpServer>(std::move(cfg), std::move(router));
