@@ -201,7 +201,8 @@ template <>
 struct glz::meta<aeronet::BuiltinProbesConfig> {
   using T = aeronet::BuiltinProbesConfig;
   static constexpr auto value =
-      glz::object("enabled", &T::enabled, "contentType", &T::contentType, "livenessPath",
+      glz::object("enabled", &T::enabled, "contentType", &T::contentType, "dedicatedPort", &T::dedicatedPort,
+                  "livenessStaleThreshold", &T::livenessStaleThreshold, "livenessPath",
                   glz::custom<[](T& self, const std::string& path) { self.withLivenessPath(path); },
                               [](const T& self) { return self.livenessPath(); }>,
                   "readinessPath",

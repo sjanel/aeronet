@@ -9,6 +9,12 @@
 
 namespace aeronet::internal {
 
+// Steady clock reading expressed in nanoseconds since its epoch, as a plain integer suitable for a lock-free atomic.
+[[nodiscard]] inline std::int64_t SteadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 struct Lifecycle {
   enum class State : uint8_t { Idle, Running, Draining, Stopping };
 
@@ -19,6 +25,7 @@ struct Lifecycle {
   // Explicit move so that atomics can be copied safely (we copy their values rather than moving them).
   Lifecycle(Lifecycle&& other) noexcept
       : drainDeadline(std::exchange(other.drainDeadline, {})),
+        lastLoopNs(other.lastLoopNs.exchange(0, std::memory_order_relaxed)),
         wakeupFd(std::move(other.wakeupFd)),
         state(other.state.exchange(State::Idle, std::memory_order_relaxed)),
         drainDeadlineEnabled(std::exchange(other.drainDeadlineEnabled, false)) {}
@@ -28,6 +35,7 @@ struct Lifecycle {
   Lifecycle& operator=(Lifecycle&& other) noexcept {
     if (this != &other) {
       drainDeadline = std::exchange(other.drainDeadline, {});
+      lastLoopNs.store(other.lastLoopNs.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
       wakeupFd = std::move(other.wakeupFd);
       state.store(other.state.exchange(State::Idle, std::memory_order_relaxed), std::memory_order_relaxed);
       drainDeadlineEnabled = std::exchange(other.drainDeadlineEnabled, false);
@@ -45,6 +53,7 @@ struct Lifecycle {
       if (state.compare_exchange_weak(expected, State::Idle, std::memory_order_relaxed)) {
         drainDeadline = {};
         drainDeadlineEnabled = false;
+        lastLoopNs.store(0, std::memory_order_relaxed);
         return;
       }
     }
@@ -101,7 +110,28 @@ struct Lifecycle {
   [[nodiscard]] bool started() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
   [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
 
+  // Loop heartbeat used by a dedicated probe listener to detect a wedged event loop.
+  // Published once per iteration at the top of the loop (see SingleHttpServer::eventLoop): if the loop is stuck
+  // inside a request handler (or otherwise not polling), this timestamp stops advancing and goes stale. It reuses
+  // the loop's already-computed 'now', so it costs a single relaxed store and is published unconditionally.
+  // Note: an idle loop only refreshes it once per poll cycle, so a healthy loop can look up to
+  // pollInterval * pollIntervalMaxFactor stale - callers must keep the staleness threshold well above that.
+  void loopHeartbeat(std::chrono::steady_clock::time_point now) noexcept {
+    lastLoopNs.store(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count(),
+                     std::memory_order_relaxed);
+  }
+
+  // Returns true if the loop published a heartbeat within thresholdNs (i.e. it is progressing), or has not started
+  // yet (lastLoopNs == 0). nowNs is a caller-provided SteadyNowNs() reading so a batch check reuses one clock read.
+  [[nodiscard]] bool loopHealthy(std::int64_t nowNs, std::int64_t thresholdNs) const noexcept {
+    const auto last = lastLoopNs.load(std::memory_order_relaxed);
+    return last == 0 || (nowNs - last) <= thresholdNs;
+  }
+
   std::chrono::steady_clock::time_point drainDeadline;
+  // See loopHeartbeat(): steady-clock ns at which the event loop last reached the top of an iteration, or 0 before it
+  // has started. A stuck loop stops advancing this, which is how the dedicated probe listener detects a wedge.
+  std::atomic<std::int64_t> lastLoopNs{0};
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd wakeupFd;
   std::atomic<State> state{State::Idle};

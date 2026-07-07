@@ -1112,6 +1112,11 @@ void SingleHttpServer::eventLoop() {
   const auto now = std::chrono::steady_clock::now();
   _connections.now = now;
 
+  // Publish the loop heartbeat (see internal::Lifecycle::loopHeartbeat): a single relaxed store of the 'now' we just
+  // read. A dedicated probe listener (MultiHttpServer, see BuiltinProbesConfig::dedicatedPort) reads it to tell a loop
+  // wedged inside a request handler from an idle or progressing one - without any bookkeeping on the handler hot path.
+  _lifecycle.loopHeartbeat(now);
+
   bool maintenanceTick = false;
 
   if (events.data() == nullptr) [[unlikely]] {

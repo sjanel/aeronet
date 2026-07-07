@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -79,6 +80,8 @@ class MultiHttpServer {
                 std::shared_ptr<std::function<void()>> onStop, std::shared_ptr<HandleCompletion> completion,
                 std::shared_ptr<ServerLifecycleTracker> lifecycleTracker, std::shared_ptr<void> stopTokenBinding);
 
+    void notifyCompletion() noexcept;
+
     vector<SingleHttpServer::AsyncHandle> _serverHandles;
     std::shared_ptr<std::atomic<bool>> _stopRequested;  // shared with server logic
     std::shared_ptr<std::function<void()>> _onStop;
@@ -87,8 +90,6 @@ class MultiHttpServer {
     std::shared_ptr<void> _stopTokenBinding;
     std::exception_ptr _storedError;
     std::atomic<bool> _stopCalled{false};
-
-    void notifyCompletion() noexcept;
   };
 
   // Construct a MultiHttpServer that does nothing.
@@ -258,6 +259,13 @@ class MultiHttpServer {
   // nbThreads(): Number of underlying SingleHttpServer instances (and threads) configured.
   [[nodiscard]] uint32_t nbThreads() const { return _servers.capacity(); }
 
+  // probePort(): TCP port of the dedicated probe listener, or 0 when the dedicated probe listener is disabled
+  // (builtinProbes.dedicatedPort == 0 / builtinProbes disabled). See BuiltinProbesConfig::dedicatedPort.
+  // Precondition: empty() is false, otherwise returns 0.
+  [[nodiscard]] uint16_t probePort() const {
+    return empty() ? uint16_t{0} : _servers.front().config().builtinProbes.dedicatedPort;
+  }
+
 #ifdef AERONET_ENABLE_GLAZE
   // Serialize the current server and router configuration as a JSON or YAML string.
   [[nodiscard]] std::string dumpConfig(ConfigFormat format = ConfigFormat::json) const;
@@ -292,9 +300,16 @@ class MultiHttpServer {
   void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
+  // Aggregated read-only view of the worker event loops, consulted by the dedicated probe listener's handlers.
+  struct ProbeState;
+
   void canSetCallbacks() const;
 
   void ensureNextServersBuilt();
+
+  // (Re)build the dedicated probe listener and its ProbeState when builtinProbes.dedicatedPort is configured.
+  // Called from ensureNextServersBuilt() once the worker event loops (and their resolved port) exist.
+  void buildProbeServerIfEnabled();
 
   [[nodiscard]] vector<SingleHttpServer*> collectServerPointers();
 
@@ -314,6 +329,16 @@ class MultiHttpServer {
   // We must therefore ensure that the pointed-to SingleHttpServer objects remain alive until after the jthreads join.
   // Destruction order is reverse of declaration order, so declare 'servers' BEFORE 'threads'.
   vector<SingleHttpServer> _servers;  // created on start()
+
+  // Optional dedicated probe listener: its own event loop / thread bound to builtinProbes.dedicatedPort, answering
+  // only the probe endpoints so probe availability is isolated from application load. Rebuilt on each start().
+  // Declared right after _servers (and before _internalHandle) so the background threads captured by _internalHandle
+  // are joined before this listener is destroyed, mirroring the servers-before-threads lifetime rule.
+  // Held by unique_ptr so a MultiHttpServer move only transfers the pointer (the listener keeps its heap address, like
+  // the _servers buffer), keeping the move noexcept and the pointer captured by the probe thread stable.
+  // The aggregated worker view (ProbeState) read by its route handlers is owned by those handlers' captures, so it
+  // lives and dies with this listener - no separate member needed.
+  std::unique_ptr<SingleHttpServer> _probeServer;
 
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.
