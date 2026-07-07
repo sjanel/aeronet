@@ -89,6 +89,10 @@ class Url {
     return {_buf.data() + _originKeyLen, _buf.size() - _originKeyLen};
   }
 
+  // Absolute-form request target "scheme://host:port/path?query" (the whole canonical buffer). Used as the
+  // HTTP/1.1 request target when a cleartext request is sent to a forward proxy (RFC 9112 section 3.2.2).
+  [[nodiscard]] std::string_view full() const noexcept { return {_buf.data(), _buf.size()}; }
+
   // True when the port is the scheme default (80 for http, 443 for https): the Host header then omits it.
   [[nodiscard]] bool isDefaultPort() const noexcept { return _port == (tls() ? 443 : 80); }
 

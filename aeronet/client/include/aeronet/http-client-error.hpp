@@ -23,6 +23,7 @@ enum class HttpClientErrc : uint8_t {
   connectionClosed,     // peer closed the connection before a complete response was received
   malformedResponse,    // response could not be parsed, or exceeded maxResponseBytes
   protocolUnsupported,  // peer negotiated an application protocol we have no engine for (e.g. ALPN h2)
+  proxyError,           // the forward proxy refused or failed to establish the CONNECT tunnel
   ioError,              // event-loop registration or other internal I/O failure
 };
 
@@ -46,6 +47,8 @@ enum class HttpClientErrc : uint8_t {
       return "malformed or oversized response";
     case HttpClientErrc::protocolUnsupported:
       return "negotiated application protocol is not supported";
+    case HttpClientErrc::proxyError:
+      return "forward proxy failed to establish the CONNECT tunnel";
     case HttpClientErrc::ioError:
       return "internal I/O error";
   }
