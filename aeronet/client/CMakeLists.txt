@@ -111,6 +111,16 @@ AeronetAddUnitTest(
     aeronet_client
 )
 
+# Forward-proxy support (absolute-form http, CONNECT tunnel for https) driven by a tiny hand-rolled proxy.
+AeronetAddUnitTest(
+    http-client-proxy-e2e_test
+    test/http-client-proxy-e2e_test.cpp
+    LIBRARIES
+    aeronet_client
+    aeronet
+    aeronet_basic_test_support
+)
+
 # End-to-end automatic compression / decompression against a live aeronet server.
 AeronetAddUnitTest(
     http-client-compression-e2e_test

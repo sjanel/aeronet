@@ -12,7 +12,8 @@ TEST(HttpClientErrcTest, EveryCodeHasNonEmptyDescription) {
   constexpr std::array kAll{
       HttpClientErrc::invalidUrl,        HttpClientErrc::connectFailed,       HttpClientErrc::tlsError,
       HttpClientErrc::timeout,           HttpClientErrc::writeError,          HttpClientErrc::connectionClosed,
-      HttpClientErrc::malformedResponse, HttpClientErrc::protocolUnsupported, HttpClientErrc::ioError,
+      HttpClientErrc::malformedResponse, HttpClientErrc::protocolUnsupported, HttpClientErrc::proxyError,
+      HttpClientErrc::ioError,
   };
   for (const HttpClientErrc errc : kAll) {
     EXPECT_FALSE(ErrcToStr(errc).empty()) << static_cast<int>(errc);
@@ -28,6 +29,7 @@ TEST(HttpClientErrcTest, DescriptionsAreStable) {
   EXPECT_EQ(ErrcToStr(HttpClientErrc::connectionClosed), "connection closed before a complete response was received");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::malformedResponse), "malformed or oversized response");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::protocolUnsupported), "negotiated application protocol is not supported");
+  EXPECT_EQ(ErrcToStr(HttpClientErrc::proxyError), "forward proxy failed to establish the CONNECT tunnel");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::ioError), "internal I/O error");
 }
 
