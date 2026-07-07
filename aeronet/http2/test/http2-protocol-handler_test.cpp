@@ -89,13 +89,13 @@ struct DataEvent {
 /// Test mock for ITunnelBridge that delegates to std::function members.
 class MockTunnelBridge final : public ITunnelBridge {
  public:
-  std::function<NativeHandle(uint32_t, std::string_view, std::string_view)> onSetup;
+  std::function<NativeHandle(uint32_t, std::string_view, uint16_t)> onSetup;
   std::function<void(NativeHandle, std::span<const std::byte>)> onWrite;
   std::function<void(NativeHandle)> onShutdownWrite;
   std::function<void(NativeHandle)> onClose;
   std::function<void(NativeHandle)> onWindowUpdate;
 
-  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
+  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
     return onSetup ? onSetup(streamId, host, port) : kInvalidHandle;
   }
 
@@ -454,7 +454,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   // Install a tunnel bridge that should never be called.
   bool setupCalled = false;
   MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle {
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return kInvalidHandle;
   };
@@ -483,7 +483,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
   loop.connect();
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kInvalidHandle; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Target with empty port → 400.
@@ -508,7 +508,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
   loop.connect();
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kInvalidHandle; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Target with empty host → 400.
@@ -525,6 +525,67 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
 }
 
+TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // The tunnel bridge must never be reached: a non-numeric port is rejected before resolution.
+  bool setupCalled = false;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
+    setupCalled = true;
+    return kInvalidHandle;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // authority-form requires a numeric port; a service name → 400 (not handed to the resolver).
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:https"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+  EXPECT_FALSE(setupCalled);
+}
+
+TEST(Http2ProtocolHandler, ConnectOutOfRangePortReturns400) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  bool setupCalled = false;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
+    setupCalled = true;
+    return kInvalidHandle;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  // Port > 65535 does not fit in a uint16_t → 400.
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:99999"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+  EXPECT_FALSE(setupCalled);
+}
+
 TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
   Router router;
   router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
@@ -536,7 +597,7 @@ TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
 
   bool setupCalled = false;
   MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle {
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return 42;
   };
@@ -566,7 +627,7 @@ TEST(Http2ProtocolHandler, ConnectSetupFailureReturns502) {
 
   // Setup returns -1 → upstream connect failed → 502.
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kInvalidHandle; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
   loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
@@ -591,11 +652,11 @@ TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
 
   int capturedStreamId = -1;
   std::string capturedHost;
-  std::string capturedPort;
+  uint16_t capturedPort{};
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t streamId, std::string_view host, std::string_view port) -> NativeHandle {
+  bridge.onSetup = [&](uint32_t streamId, std::string_view host, uint16_t port) -> NativeHandle {
     capturedStreamId = static_cast<int>(streamId);
     capturedHost = host;
     capturedPort = port;
@@ -616,7 +677,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
   // Verify the setup callback was called with the correct parameters.
   EXPECT_EQ(capturedStreamId, 1);
   EXPECT_EQ(capturedHost, "example.com");
-  EXPECT_EQ(capturedPort, "443");
+  EXPECT_EQ(capturedPort, 443);
 
   // Verify the tunnel is now active.
   EXPECT_TRUE(loop.handler.isTunnelStream(1));
@@ -639,7 +700,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelForwardsDataClientToUpstream) {
   std::string writtenData;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle upstreamFd, std::span<const std::byte> data) {
     EXPECT_EQ(upstreamFd, kFakeUpstreamFd);
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
@@ -679,7 +740,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelInjectsDataUpstreamToClient) {
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish the tunnel on stream 1.
@@ -721,7 +782,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   NativeHandle shutdownWriteFd = kInvalidHandle;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onShutdownWrite = [&](NativeHandle upstreamFd) {
     shutdownWriteCalled = true;
     shutdownWriteFd = upstreamFd;
@@ -759,7 +820,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
@@ -794,7 +855,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
@@ -830,7 +891,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
   bool closeCalled = false;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onClose = [&](NativeHandle) { closeCalled = true; };
   loop.handler.setTunnelBridge(&bridge);
 
@@ -865,7 +926,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
   std::string allWrittenData;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     allWrittenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
@@ -918,7 +979,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
   std::string writtenData;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
@@ -961,7 +1022,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   NativeHandle nextFd = kFakeUpstreamFd1;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle {
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     NativeHandle fd = nextFd++;
     return fd;
   };
@@ -1009,7 +1070,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
   NativeHandle nextFd = kFakeUpstreamFd1;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, std::string_view) -> NativeHandle { return nextFd++; };
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle { return nextFd++; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish two tunnels.
@@ -1052,7 +1113,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   loop.handler.setTunnelBridge(&bridge);
 
   // Establish a tunnel on stream 1.
@@ -2407,7 +2468,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelWindowUpdateConnectionLevel) {
   int windowUpdateCount = 0;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWindowUpdate = [&](NativeHandle fd) {
     EXPECT_EQ(fd, kFakeUpstreamFd);
     ++windowUpdateCount;
@@ -2656,7 +2717,7 @@ TEST(Http2ProtocolHandler, TunnelConnectFailedOnExistingStreamSendsRst) {
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
   MockTunnelBridge bridge;
-  bridge.onSetup = [](uint32_t, std::string_view, std::string_view) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onClose = [](NativeHandle) {};
   loop.handler.setTunnelBridge(&bridge);
 

@@ -1672,7 +1672,7 @@ class H2TunnelBridge final : public ITunnelBridge {
  public:
   H2TunnelBridge(SingleHttpServer& server, NativeHandle clientFd) noexcept : _server(server), _clientFd(clientFd) {}
 
-  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) override {
+  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
     return _server.setupH2Tunnel(_clientFd, streamId, host, port);
   }
 
@@ -1781,7 +1781,7 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
 }
 
 NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host,
-                                             std::string_view port) {
+                                             uint16_t port) {
   const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
   if (upstreamFd == kInvalidHandle) {
     return kInvalidHandle;

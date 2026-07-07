@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cerrno>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -218,19 +219,17 @@ class AddrinfoOverrideGuard {
 struct HostPortBuffer {
   aeronet::RawChars storage;
   std::span<char> host;
-  std::span<char> port;
+  uint16_t port{};
 };
 
 [[nodiscard]] HostPortBuffer MakeHostPortBuffer(std::string_view host, std::string_view port) {
   HostPortBuffer buffer;
-  buffer.storage.reserve(host.size() + port.size() + 2);
+  // getaddrinfo (via ConnectTCP) needs a writable host buffer with one spare byte at the end.
+  buffer.storage.reserve(host.size() + 1);
   buffer.storage.append(host);
   buffer.storage.push_back('\0');
-  const std::size_t portOffset = buffer.storage.size();
-  buffer.storage.append(port);
-  buffer.storage.push_back('\0');
   buffer.host = std::span<char>(buffer.storage.data(), host.size());
-  buffer.port = std::span<char>(buffer.storage.data() + portOffset, port.size());
+  std::from_chars(port.data(), port.data() + port.size(), buffer.port);
   return buffer;
 }
 
