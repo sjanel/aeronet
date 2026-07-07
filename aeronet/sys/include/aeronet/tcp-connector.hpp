@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <span>
 
 #include "aeronet/connection.hpp"
@@ -30,11 +31,11 @@ struct ConnectResult {
 // platform macros like AF_UNSPEC in the header to keep includes minimal.
 // Parameters:
 // - host: span hostname or IP address to connect to
-// - port: span port number or service name
+// - port: numeric TCP port to connect to
 // - family: address family hint (0 == unspecified == AF_UNSPEC)
 // - connectTimeoutMs: > 0 enables blocking multi-address fallback within this millisecond budget
-// Note: the buffers pointed by given spans SHOULD be 1 byte writable at their end,
-// as getaddrinfo expects null-terminated strings.
-ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family = 0, int connectTimeoutMs = 0);
+// Note: the host buffer pointed by the given span SHOULD be 1 byte writable at its end,
+// as getaddrinfo expects a null-terminated string.
+ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family = 0, int connectTimeoutMs = 0);
 
 }  // namespace aeronet

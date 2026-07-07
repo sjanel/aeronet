@@ -11,6 +11,7 @@
 #endif
 
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -88,30 +89,32 @@ class CharReplacer {
 };
 }  // namespace
 
-ConnectResult ConnectTCP(std::span<char> host, std::span<char> port, int family, int connectTimeoutMs) {
+ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs) {
 #ifdef AERONET_WINDOWS
   EnsureWinsockInitialized();
 #endif
   addrinfo* res = nullptr;
 
+  char portStr[std::numeric_limits<uint16_t>::digits10 + 2];
+  auto endPtr = std::to_chars(portStr, portStr + sizeof(portStr), port).ptr;
+  *endPtr = '\0';
+
   int gai;
   {
     CharReplacer hostReplacer(host.data() + host.size());
-    CharReplacer portReplacer(port.data() + port.size());
 
     addrinfo hints{};
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
 
     // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-    gai = ::getaddrinfo(host.data(), port.data(), &hints, &res);
+    gai = ::getaddrinfo(host.data(), portStr, &hints, &res);
   }
   std::unique_ptr<addrinfo, void (*)(addrinfo*)> resRAII(res, &::freeaddrinfo);
   ConnectResult connectResult;
 
   if (gai != 0) [[unlikely]] {
-    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", std::string_view(host), std::string_view(port),
-               ::gai_strerror(gai));
+    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", std::string_view(host), portStr, ::gai_strerror(gai));
     connectResult.failure = true;
     return connectResult;
   }

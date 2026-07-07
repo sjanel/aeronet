@@ -536,7 +536,7 @@ class SingleHttpServer {
   /// Create a TCP connection to target host:port, register it in the event loop,
   /// and insert an upstream ConnectionState linked to clientFd.
   /// @return The upstream fd on success, kInvalidHandle on failure.
-  NativeHandle setupTunnelConnection(NativeHandle clientFd, std::string_view host, std::string_view port);
+  NativeHandle setupTunnelConnection(NativeHandle clientFd, std::string_view host, uint16_t port);
 
   /// Forward data to a tunnel peer with write-buffering and EPOLLOUT arming.
   /// @return false on fatal transport error (caller should close the connection).
@@ -604,7 +604,7 @@ class SingleHttpServer {
 
   // Set up a CONNECT tunnel upstream TCP connection for an HTTP/2 stream.
   // Delegates to setupTunnelConnection() and additionally sets peerStreamId.
-  NativeHandle setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host, std::string_view port);
+  NativeHandle setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host, uint16_t port);
 
   // Handle readable events from an HTTP/2 CONNECT tunnel upstream.
   // Reads data and injects it as DATA frames into the HTTP/2 stream.

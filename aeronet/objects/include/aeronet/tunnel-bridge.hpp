@@ -25,7 +25,7 @@ class ITunnelBridge {
 
   /// Set up a TCP connection to the given target host:port.
   /// @return The upstream fd on success, kInvalidHandle on failure.
-  [[nodiscard]] virtual NativeHandle setupTunnel(uint32_t streamId, std::string_view host, std::string_view port) = 0;
+  [[nodiscard]] virtual NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) = 0;
 
   /// Write data to an upstream tunnel fd. The server handles buffering and EPOLLOUT.
   virtual void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) = 0;

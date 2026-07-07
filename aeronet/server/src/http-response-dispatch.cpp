@@ -1,9 +1,11 @@
 ﻿#include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
@@ -82,6 +84,15 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   const std::string_view host(target.data(), colonPos);
   const std::string_view portStr(target.begin() + static_cast<ptrdiff_t>(colonPos + 1), target.end());
 
+  // authority-form requires a numeric port (RFC 9110 §9.3.6 / RFC 3986 port = *DIGIT). Reject anything
+  // else (empty, non-numeric, or > 65535) up front with 400 instead of handing it to the resolver.
+  uint16_t port{};
+  const auto [portEnd, portEc] = std::from_chars(portStr.data(), portStr.data() + portStr.size(), port);
+  if (portEc != std::errc{} || portEnd != portStr.data() + portStr.size() || port == 0) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
+    return LoopAction::Break;
+  }
+
   // Enforce CONNECT allowlist if present
   const auto& connectAllowList = _config.connectAllowlist();
   if (!connectAllowList.empty() && !connectAllowList.containsCI(host)) {
@@ -92,7 +103,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   // Save client fd - setupTunnelConnection may rehash the connection map.
   const auto clientFd = cnxIt->fd();
 
-  const auto upstreamFd = setupTunnelConnection(clientFd, host, portStr);
+  const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
   if (upstreamFd == kInvalidHandle) {
     emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
     return LoopAction::Break;
