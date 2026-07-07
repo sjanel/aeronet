@@ -85,7 +85,10 @@ std::string_view ClientConnection::buildRequestBytesForHttp11(HttpClient& client
 
   // Request line: "<method> <target> HTTP/1.1\r\n" -- one capacity check for the whole line.
   const std::string_view methodStr = http::MethodToStr(method);
-  const std::string_view target = url.target();
+  // Talking to a forward proxy over cleartext http: the request-target is absolute-form
+  // ("http://origin/path") so the proxy knows which origin to reach (RFC 9112 section 3.2.2). A tunnelled
+  // https origin (the CONNECT already selected the origin) and any direct connection use origin-form.
+  const std::string_view target = (config.hasProxy() && !url.tls()) ? url.full() : url.target();
   const std::string_view userAgent = config.userAgent();
 
   // Single scan of the user headers, then derive which framing headers we still inject (see the shared

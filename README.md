@@ -836,6 +836,7 @@ Highlights:
 - Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
 - **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default — https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
 - Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
+- **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy — an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).
 - `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
 - **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
 - Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
@@ -853,6 +854,22 @@ if (result) {
   // result->bodyInMemory() is already decoded; the Content-Encoding header has been dropped.
   auto body = result->bodyInMemory();
 }
+```
+
+Route every request through a cleartext HTTP forward proxy. For an https origin the client opens an HTTP
+`CONNECT` tunnel to the origin and completes the TLS handshake through it; a plain http origin is sent to
+the proxy in absolute-form. The optional second argument is a CA bundle used to verify an intercepting
+proxy that re-signs origin certificates (mitmproxy and friends). A malformed proxy URL or an `https` proxy
+throws `HttpClientException` at construction; a proxy that refuses the `CONNECT` yields
+`HttpClientErrc::proxyError`.
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+aeronet::HttpClientConfig cfg;
+cfg.withProxy("http://127.0.0.1:8080");  // or withProxy(url, "/etc/mitmproxy/ca.pem") for an intercepting proxy
+aeronet::HttpClient client(cfg);
+auto result = client.get("https://example.com/health");  // reached through a CONNECT tunnel
 ```
 
 The returned response is an `HttpResponse` — a `using` alias of the generic single-buffer `HttpMessage`

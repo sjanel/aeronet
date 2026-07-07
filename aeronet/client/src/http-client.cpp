@@ -29,7 +29,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-connector.hpp"
@@ -93,6 +95,36 @@ RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Durat
   }
   const auto capSeconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(cap).count());
   return std::chrono::duration_cast<RetryConfig::Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
+}
+
+// Parse a forward-proxy endpoint. Accepts a full URL ("http://host:port") or a bare "host[:port]" (assumed
+// http, default port 80). Reuses Url::Parse for host/port/IPv6 handling, so it returns the same
+// HttpClientErrc::invalidUrl on malformed input.
+std::expected<Url, HttpClientErrc> ParseProxyUrl(std::string_view proxy) {
+  if (proxy.contains("://")) {
+    return Url::Parse(proxy);
+  }
+  static constexpr std::string_view kHttpScheme = "http://";
+  RawChars withScheme(kHttpScheme.size() + proxy.size());
+  withScheme.unchecked_append(kHttpScheme);
+  withScheme.unchecked_append(proxy);
+  return Url::Parse(withScheme);
+}
+
+// Interpret the status line of a proxy CONNECT response ("HTTP/1.x <code> <reason>"). A 2xx code means the
+// tunnel is open; anything else (or a line we cannot parse a status code out of) is a proxy failure.
+std::expected<void, HttpClientErrc> CheckProxyTunnelStatus(std::string_view statusLine) {
+  const auto sp = statusLine.find(' ');
+  if (sp == std::string_view::npos) {
+    return std::unexpected(HttpClientErrc::proxyError);
+  }
+  const std::string_view rest = statusLine.substr(sp + 1);
+  uint32_t code = 0;
+  const auto [ptr, ec] = std::from_chars(rest.data(), rest.data() + rest.size(), code);
+  if (ec != std::errc{} || code < 200 || code >= 300) {
+    return std::unexpected(HttpClientErrc::proxyError);
+  }
+  return {};
 }
 
 }  // namespace
@@ -196,9 +228,16 @@ struct HttpClientTlsContext {
     if (cfg.tlsVerifyPeer) {
       ::SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
       bool trustLoaded = false;
-      if (!cfg.tlsCaFile().empty() || !cfg.tlsCaPath().empty()) {
-        const char* caFile = cfg.tlsCaFile().empty() ? nullptr : cfg.tlsCaFileCStr();
-        const char* caPath = cfg.tlsCaPath().empty() ? nullptr : cfg.tlsCaPathCStr();
+      // A forward proxy that intercepts TLS re-signs origin certificates with its own CA: verify against
+      // that CA (proxyCaFile) in preference to the general tlsCaFile / default trust store.
+      const char* caFile = nullptr;
+      if (!cfg.proxyCaFile().empty()) {
+        caFile = cfg.proxyCaFileCStr();
+      } else if (!cfg.tlsCaFile().empty()) {
+        caFile = cfg.tlsCaFileCStr();
+      }
+      const char* caPath = cfg.tlsCaPath().empty() ? nullptr : cfg.tlsCaPathCStr();
+      if (caFile != nullptr || caPath != nullptr) {
         trustLoaded = ::SSL_CTX_load_verify_locations(ctx.get(), caFile, caPath) == 1;
         if (!trustLoaded) {
           throw HttpClientException("Failed to load TLS CA trust store");
@@ -256,6 +295,21 @@ HttpClient::HttpClient(HttpClientConfig config) : _config(std::move(config)), _l
       throw HttpClientException("requestCompression.encoding is not a supported / compiled-in content coding");
     }
 #endif
+  }
+  // Resolve the forward-proxy endpoint once (if configured): a bad proxy URL is a hard setup error, so it
+  // throws here deterministically rather than failing every request. Only cleartext (http) proxies are
+  // supported. _proxyHost keeps a spare trailing byte for ConnectTCP's transient null-termination.
+  if (_config.hasProxy()) {
+    std::expected<Url, HttpClientErrc> proxy = ParseProxyUrl(_config.proxyUrl());
+    if (!proxy) {
+      throw HttpClientException("Invalid forward-proxy URL");
+    }
+    if (proxy->tls()) {
+      throw HttpClientException("Only cleartext (http) forward proxies are supported");
+    }
+    _proxyHost = RawChars(proxy->host().size() + 1U);
+    _proxyHost.unchecked_append(proxy->host());
+    _proxyPort = proxy->port();
   }
 }
 
@@ -373,18 +427,26 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 #endif
   }
 
+  // With a forward proxy configured, connect to the proxy instead of the origin (the origin is reached
+  // through it -- via CONNECT for https, absolute-form requests for http). Otherwise connect straight to the
+  // origin. Both host spans keep a spare writable byte for ConnectTCP's transient null-termination.
+  const bool proxied = usesProxy();
+  const std::span<char> connectHost = proxied
+                                          ? std::span<char>(_proxyHost.data(), _proxyHost.size())
+                                          : std::span<char>(const_cast<char*>(url.host().data()), url.host().size());
+  const uint16_t connectPort = proxied ? _proxyPort : url.port();
+
   // getaddrinfo (via ConnectTCP) needs writable host/port buffers with one spare byte at the end.
   // Build transient buffers here (only on a real connect, never on pool reuse).
   char portStr[std::numeric_limits<uint16_t>::digits10 + 2];
-  [[maybe_unused]] const auto [portEnd, portEc] = std::to_chars(portStr, portStr + sizeof(portStr), url.port());
+  [[maybe_unused]] const auto [portEnd, portEc] = std::to_chars(portStr, portStr + sizeof(portStr), connectPort);
   assert(portEc == std::errc{});
   // Opt into ConnectTCP's blocking multi-address fallback (bounded by the connect timeout): a host that
   // resolves to several addresses (e.g. "localhost" -> ::1 then 127.0.0.1) must try them in turn instead
   // of committing to the first, whose non-blocking connect would otherwise hide a deferred ECONNREFUSED.
   const auto connectTimeoutMs = static_cast<int>(_config.connectTimeout.count());
-  ConnectResult cr =
-      ConnectTCP(std::span<char>(const_cast<char*>(url.host().data()), url.host().size()),
-                 std::span<char>(portStr, static_cast<std::size_t>(portEnd - portStr)), 0, connectTimeoutMs);
+  ConnectResult cr = ConnectTCP(connectHost, std::span<char>(portStr, static_cast<std::size_t>(portEnd - portStr)), 0,
+                                connectTimeoutMs);
   if (cr.failure || !cr.cnx) {
     return std::unexpected(HttpClientErrc::connectFailed);
   }
@@ -397,6 +459,18 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   if (_config.tcpNoDelay != TcpNoDelayMode::Disabled) {
     SetTcpNoDelay(fd);
   }
+  // For an https origin reached through a proxy, open the CONNECT tunnel to the origin now -- before the
+  // (origin) TLS handshake driven later by finishConnect. The tunnel exchange runs on the raw socket via a
+  // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
+  // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
+  if (proxied && url.tls()) {
+    PlainTransport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
+    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, url, SteadyClock::now() + _config.connectTimeout);
+        !tunnel) {
+      unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
+      return std::unexpected(tunnel.error());
+    }
+  }
 #ifdef AERONET_ENABLE_OPENSSL
   if (url.tls()) {
     // The context is already built above; makeTransport only wraps the freshly connected fd.
@@ -407,6 +481,96 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
     conn.transport = std::make_unique<PlainTransport>(fd, ZerocopyMode::Disabled, ~0U);
   }
   return conn;
+}
+
+std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport& transport, NativeHandle fd,
+                                                                     const Url& url, SteadyClock::time_point deadline) {
+  static constexpr std::string_view kConnect = "CONNECT ";
+  static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
+  // CONNECT needs an explicit "host:port" authority (RFC 9110 section 9.3.6); IPv6 literals are bracketed.
+  const std::string_view host = url.host();
+  const bool ipv6 = host.contains(':');
+  const uint16_t port = url.port();
+  const auto portDigits = ndigits(port);
+  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portDigits;
+
+  RawChars& reqBuffer = _requestBuffer;
+  reqBuffer.clear();
+  reqBuffer.ensureAvailableCapacity(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen +
+                                    http::DoubleCRLF.size());
+  const auto appendAuthority = [&](char* out) {
+    if (ipv6) {
+      *out++ = '[';
+    }
+    out = Append(host, out);
+    if (ipv6) {
+      *out++ = ']';
+    }
+    *out++ = ':';
+    return std::to_chars(out, out + portDigits, port).ptr;
+  };
+  char* pEnd = reqBuffer.data();
+  pEnd = Append(kConnect, pEnd);
+  pEnd = appendAuthority(pEnd);
+  pEnd = Append(kConnectMid, pEnd);
+  pEnd = appendAuthority(pEnd);
+  pEnd = Append(http::DoubleCRLF, pEnd);
+  reqBuffer.setSize(static_cast<std::size_t>(pEnd - reqBuffer.data()));
+
+  // Write the CONNECT request in full, pumping the event loop on would-block.
+  const std::string_view head(reqBuffer.data(), reqBuffer.size());
+  std::size_t off = 0;
+  while (off < head.size()) {
+    const ITransport::TransportResult wr = transport.write(head.substr(off));
+    off += wr.bytesProcessed;
+    if (off >= head.size()) {
+      break;
+    }
+    if (wr.want == TransportHint::Error) {
+      return std::unexpected(HttpClientErrc::proxyError);
+    }
+    const EventBmp interest = (wr.want == TransportHint::ReadReady) ? EventIn : EventOut;
+    if (!waitIo(fd, interest, deadline)) {
+      return std::unexpected(HttpClientErrc::timeout);
+    }
+  }
+
+  // Read the proxy response up to the end-of-headers marker. A CONNECT response is small; cap the buffered
+  // size so a misbehaving proxy cannot make us read unbounded data.
+  static constexpr std::size_t kMaxTunnelResponse = 8192;
+  static constexpr std::size_t kReadChunk = 512;
+  RawChars& respBuffer = _responseBuffer;
+  respBuffer.clear();
+  for (;;) {
+    const std::string_view view(respBuffer.data(), respBuffer.size());
+    if (const auto endPos = view.find(http::DoubleCRLF); endPos != std::string_view::npos) {
+      // Status line is everything up to the first CRLF (guaranteed present within [0, endPos]).
+      return CheckProxyTunnelStatus(view.substr(0, view.find(http::CRLF)));
+    }
+    if (respBuffer.size() >= kMaxTunnelResponse) {
+      return std::unexpected(HttpClientErrc::proxyError);
+    }
+    respBuffer.ensureAvailableCapacityExponential(kReadChunk);
+    const ITransport::TransportResult rd = transport.read(respBuffer.data() + respBuffer.size(), kReadChunk);
+    if (rd.bytesProcessed > 0) {
+      respBuffer.addSize(rd.bytesProcessed);
+      continue;
+    }
+    if (rd.want == TransportHint::ReadReady) {
+      if (!waitIo(fd, EventIn, deadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+      continue;
+    }
+    if (rd.want == TransportHint::WriteReady) {
+      if (!waitIo(fd, EventOut, deadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+      continue;
+    }
+    // 0 bytes and no want => the proxy closed before completing the tunnel handshake.
+    return std::unexpected(HttpClientErrc::proxyError);
+  }
 }
 
 std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireConnection(const Url& url) {
