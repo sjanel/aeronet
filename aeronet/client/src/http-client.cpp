@@ -512,7 +512,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   reqBuffer.setSize(static_cast<std::size_t>(pEnd - reqBuffer.data()));
 
   // Write the CONNECT request in full, pumping the event loop on would-block.
-  const std::string_view head(reqBuffer.data(), reqBuffer.size());
+  const std::string_view head = reqBuffer;
   std::size_t off = 0;
   while (off < head.size()) {
     const ITransport::TransportResult wr = transport.write(head.substr(off));

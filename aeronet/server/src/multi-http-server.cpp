@@ -17,8 +17,13 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/errno-throw.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
@@ -66,6 +71,37 @@ struct MultiHttpServer::HandleCompletion {
   std::mutex mutex;
   std::condition_variable cv;
   bool completed{false};
+};
+
+// Aggregated, read-only snapshot of the worker event loops consulted by the dedicated probe listener. The vector of
+// Lifecycle pointers is repopulated on every start() (workers are rebuilt), while the shared_ptr keeps the object
+// alive for as long as the probe route handlers (which capture it) exist.
+struct MultiHttpServer::ProbeState {
+  // Readiness: the pod can serve traffic if any worker is accepting normal traffic (all draining => not ready).
+  [[nodiscard]] bool ready() const noexcept {
+    return std::ranges::any_of(workers, [](const internal::Lifecycle* lc) { return lc->ready(); });
+  }
+
+  // Startup: the pod has started once any worker has entered its event loop.
+  [[nodiscard]] bool started() const noexcept {
+    return std::ranges::any_of(workers, [](const internal::Lifecycle* lc) { return lc->started(); });
+  }
+
+  // Liveness (heartbeat): the pod is live unless EVERY worker loop has stopped making progress beyond the threshold.
+  // Each worker publishes a heartbeat at the top of every event loop iteration (internal::Lifecycle::loopHeartbeat);
+  // a loop stuck inside a request handler (or otherwise not polling) stops advancing it. Live if at least one worker
+  // is idle or still progressing, so a busy-but-progressing worker (or a free sibling) keeps the pod alive while a
+  // full deadlock across all workers trips it.
+  [[nodiscard]] bool live() const noexcept {
+    // The probe listener is only built alongside a non-empty worker pool (see buildProbeServerIfEnabled).
+    assert(!workers.empty());
+    const std::int64_t nowNs = internal::SteadyNowNs();
+    return std::ranges::any_of(
+        workers, [&](const internal::Lifecycle* lc) { return lc->loopHealthy(nowNs, livenessThresholdNs); });
+  }
+
+  vector<const internal::Lifecycle*> workers;
+  std::int64_t livenessThresholdNs{0};
 };
 
 MultiHttpServer::AsyncHandle::AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles,
@@ -252,6 +288,7 @@ MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
     : _stopRequested(std::move(other._stopRequested)),
       _lifecycleTracker(std::move(other._lifecycleTracker)),
       _servers(std::move(other._servers)),
+      _probeServer(std::move(other._probeServer)),
       _internalHandle(std::move(other._internalHandle)),
       _lastHandleStopFn(std::move(other._lastHandleStopFn)),
       _lastHandleCompletion(std::move(other._lastHandleCompletion)),
@@ -267,6 +304,7 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     _stopRequested = std::move(other._stopRequested);
     _lifecycleTracker = std::move(other._lifecycleTracker);
     _servers = std::move(other._servers);
+    _probeServer = std::move(other._probeServer);
     _internalHandle = std::move(other._internalHandle);
     _lastHandleStopFn = std::move(other._lastHandleStopFn);
     _lastHandleCompletion = std::move(other._lastHandleCompletion);
@@ -314,7 +352,11 @@ RouterUpdateProxy MultiHttpServer::router() {
 
 std::string MultiHttpServer::AggregatedStats::json_str() const {
   std::string out;
-  out.reserve(128UL * per.size());
+#ifdef AERONET_ENABLE_OPENSSL
+  out.reserve(768UL * per.size());
+#else
+  out.reserve(256UL * per.size());
+#endif
   out.push_back('[');
   for (const auto& st : per) {
     if (out.size() > 1UL) {
@@ -368,6 +410,9 @@ void MultiHttpServer::stop() noexcept {
 
   log_noexcept::debug("HttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
+  if (_probeServer) {
+    _probeServer->stop();
+  }
 
   // Stop internal handle if start() was used (non-blocking API)
   if (_internalHandle) {
@@ -492,11 +537,89 @@ void MultiHttpServer::ensureNextServersBuilt() {
     auto& nextServer = _servers.emplace_back(firstServer, sharedListenFd);
     nextServer._lifecycleTracker = _lifecycleTracker;
   }
+
+  // (Re)build the dedicated probe listener and its ProbeState when builtinProbes.dedicatedPort is configured.
+  // Called from ensureNextServersBuilt() once the worker event loops (and their resolved port) exist.
+  buildProbeServerIfEnabled();
+}
+
+void MultiHttpServer::buildProbeServerIfEnabled() {
+  // Drop any listener from a previous run cycle before (re)building. Resetting it also releases the previous
+  // ProbeState, which is owned by the route-handler lambdas captured in the listener's router (nowhere else).
+  _probeServer.reset();
+
+  const BuiltinProbesConfig& probesCfg = _servers.front()._config.builtinProbes;
+  if (!probesCfg.enabled || probesCfg.dedicatedPort == 0) {
+    return;  // Inline probes (or no probes): nothing dedicated to build.
+  }
+
+  // The workers' listening port is already resolved (bound at construction), even if it was ephemeral (0) in the
+  // user config. A dedicated probe listener sharing that port would be meaningless (and unbindable).
+  const uint16_t appPort = _servers.front().port();
+  if (probesCfg.dedicatedPort == appPort) {
+    throw std::invalid_argument("builtinProbes.dedicatedPort must differ from the server listening port");
+  }
+
+  // Build the aggregated worker view captured by the probe route handlers.
+  auto probeState = std::make_shared<ProbeState>();
+  probeState->livenessThresholdNs =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(probesCfg.livenessStaleThreshold).count();
+  probeState->workers.reserve(_servers.size());
+  for (SingleHttpServer& server : _servers) {
+    probeState->workers.push_back(&server._lifecycle);
+  }
+
+  // A minimal, plaintext HTTP/1.1 listener dedicated to the probe endpoints. We start from a default config (no TLS,
+  // no HTTPS redirect, builtin probes disabled) so nothing on this port can block or redirect a Kubernetes httpGet
+  // probe, then trim it to the bare minimum: it sees roughly one request per second, runs no application handlers and
+  // only ever emits three tiny fixed responses. Every knob below shrinks its idle memory / CPU footprint without
+  // hurting probe responsiveness - an incoming connection always wakes the poll immediately, whatever pollInterval is.
+  HttpServerConfig probeCfg;
+  probeCfg.port = probesCfg.dedicatedPort;
+  probeCfg.nbThreads = 1;
+  probeCfg.enableKeepAlive = false;                 // probes are single-shot; never hold an idle connection open
+  probeCfg.maxCachedConnections = 1U;               // one recycled ConnectionState is plenty (requests never overlap)
+  probeCfg.maxAcceptBatchSize = 4U;                 // a prober never opens a burst of connections
+  probeCfg.maxHeaderBytes = 1024U;                  // a probe request is a few hundred bytes at most (floor is 128)
+  probeCfg.maxBodyBytes = 1024U;                    // probes carry no body; bound anything unexpected sent to this port
+  probeCfg.pollInterval = std::chrono::seconds{2};  // almost always idle: block in poll for seconds, not ms
+  probeCfg.pollIntervalMaxFactor = 4.0F;            // back off up to ~8s between wakeups while idle
+  probeCfg.builtinProbes.enabled = false;
+  _probeServer = std::make_unique<SingleHttpServer>(std::move(probeCfg));
+  SingleHttpServer& probeServer = *_probeServer;
+
+  // Register the three probe routes reading the aggregated worker view (mirrors the inline probe responses).
+  const auto liveness = probesCfg.livenessPath();
+  const auto readiness = probesCfg.readinessPath();
+  const auto startup = probesCfg.startupPath();
+  probeServer._router.setPath(http::Method::GET, liveness, [probeState](const HttpRequest& req) {
+    const bool live = probeState->live();
+    return req.makeResponse(live ? http::StatusCodeOK : http::StatusCodeServiceUnavailable, live ? "OK" : "Unhealthy");
+  });
+  probeServer._router.setPath(http::Method::GET, readiness, [probeState](const HttpRequest& req) {
+    const bool ready = probeState->ready();
+    return req.makeResponse(ready ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                            ready ? "OK" : "Not Ready");
+  });
+  probeServer._router.setPath(http::Method::GET, startup, [probeState](const HttpRequest& req) {
+    const bool started = probeState->started();
+    return req.makeResponse(started ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                            started ? "OK" : "Starting");
+  });
+
+  log::debug("HttpServer dedicated probe listener bound on port :{}", probeServer.port());
 }
 
 vector<SingleHttpServer*> MultiHttpServer::collectServerPointers() {
-  vector<SingleHttpServer*> serverPtrs(_servers.size());
-  std::ranges::transform(_servers, serverPtrs.begin(), [](SingleHttpServer& server) { return &server; });
+  // Every background-thread server: the workers plus, when configured, the dedicated probe listener.
+  vector<SingleHttpServer*> serverPtrs;
+  serverPtrs.reserve(_servers.size() + (_probeServer ? 1U : 0U));
+  for (SingleHttpServer& server : _servers) {
+    serverPtrs.push_back(&server);
+  }
+  if (_probeServer) {
+    serverPtrs.push_back(_probeServer.get());
+  }
   return serverPtrs;
 }
 
@@ -542,23 +665,24 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   log::debug("HttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
 
-  vector<SingleHttpServer::AsyncHandle> serverHandles;
-  serverHandles.reserve(_servers.size());
-
   if (!extraStopCondition) {
     extraStopCondition = [] { return false; };
   }
 
-  auto serverPtrs = collectServerPointers();
+  // Workers + optional dedicated probe listener: launched, stopped and joined uniformly.
+  const auto serverPtrs = collectServerPointers();
+
+  vector<SingleHttpServer::AsyncHandle> serverHandles;
+  serverHandles.reserve(serverPtrs.size());
+
   auto lifecycleTracker = _lifecycleTracker;
 
   auto serversAlive = _serversAlive;
-  auto stopCallback =
-      std::make_shared<std::function<void()>>([serverPtrs = std::move(serverPtrs), serversAlive]() noexcept {
-        if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
-          std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
-        }
-      });
+  auto stopCallback = std::make_shared<std::function<void()>>([serverPtrs, serversAlive]() noexcept {
+    if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
+      std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
+    }
+  });
 
   _lastHandleStopFn = stopCallback;
   auto handleCompletion = std::make_shared<HandleCompletion>();
@@ -579,27 +703,33 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
         std::make_shared<std::stop_callback<decltype(stopAction)>>(externalStopToken, std::move(stopAction));
   }
 
-  // Launch threads (each captures a stable pointer to its SingleHttpServer element).
-  for (auto& server : _servers) {
+  // Each worker/probe thread stops when the shared flag is set, or when the caller's extra stop condition fires
+  // (in which case it also latches the shared flag and triggers the shared stop callback for the whole group).
+  auto makeStopPredicate = [this, &extraStopCondition, &stopCallback, &lifecycleTracker]() {
     std::atomic<bool>* stopRequested = _stopRequested.get();
     auto threadExtraStop = extraStopCondition;
-    serverHandles.push_back(
-        server.startDetachedAndStopWhen([stopRequested, threadExtraStop, stopCallback, lifecycleTracker]() {
-          if (stopRequested->load(std::memory_order_relaxed)) {
-            return true;
+    return [stopRequested, threadExtraStop, stopCallback, lifecycleTracker]() {
+      if (stopRequested->load(std::memory_order_relaxed)) {
+        return true;
+      }
+      if (threadExtraStop()) {
+        const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
+        if (!alreadySet && stopCallback && *stopCallback) {
+          (*stopCallback)();
+          if (lifecycleTracker) {
+            lifecycleTracker->notifyStopRequested();
           }
-          if (threadExtraStop()) {
-            const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
-            if (!alreadySet && stopCallback && *stopCallback) {
-              (*stopCallback)();
-              if (lifecycleTracker) {
-                lifecycleTracker->notifyStopRequested();
-              }
-            }
-            return true;
-          }
-          return false;
-        }));
+        }
+        return true;
+      }
+      return false;
+    };
+  };
+
+  // Launch threads (each captures a stable pointer to its SingleHttpServer). The dedicated probe listener, when
+  // present, is the last entry and runs on its own thread, so its availability is never affected by worker load.
+  for (SingleHttpServer* server : serverPtrs) {
+    serverHandles.push_back(server->startDetachedAndStopWhen(makeStopPredicate()));
   }
   log::info("HttpServer started with {} thread(s) on port :{}", _servers.size(), port());
 

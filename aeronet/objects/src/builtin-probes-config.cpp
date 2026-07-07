@@ -1,6 +1,7 @@
 #include "aeronet/builtin-probes-config.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <string_view>
 
@@ -28,6 +29,11 @@ void BuiltinProbesConfig::validate() const {
     checkPath(livenessPath(), "livenessPath");
     checkPath(readinessPath(), "readinessPath");
     checkPath(startupPath(), "startupPath");
+
+    if (dedicatedPort != 0 && livenessStaleThreshold <= std::chrono::milliseconds::zero()) {
+      log::critical("builtin probe livenessStaleThreshold must be strictly positive when a dedicated port is set");
+      throw std::invalid_argument("builtin probe livenessStaleThreshold must be strictly positive");
+    }
   }
 }
 

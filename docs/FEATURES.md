@@ -1858,9 +1858,55 @@ entirely by the server, and do not require application handlers to be installed 
 - `BuiltinProbesConfig::contentType` (enum): response Content-Type used by the probe responses.
 - `BuiltinProbesConfig::withLivenessPath / withReadinessPath / withStartupPath`: customize probe paths. Paths must be
   non-empty and begin with `/` - invalid values are rejected by `BuiltinProbesConfig::validate()`.
+- `BuiltinProbesConfig::withDedicatedPort` (uint16, `0` = disabled): serve the probes from a dedicated listener on
+  their own port/thread instead of inline on the application port. See below. `MultiHttpServer` only.
+- `BuiltinProbesConfig::withLivenessStaleThreshold` (duration, default `10s`): liveness heartbeat window used by the
+  dedicated listener (see below). Must be strictly positive when a dedicated port is set.
 
 When enabled, if an application handler is already registered on the same path(s) the server will override them
 with the probes handlers.
+
+### Dedicated probe listener (isolating probes from application load)
+
+Inline probes share the worker event loops, so a request handler that blocks a worker for a long time (a heavy CPU
+task, a slow blocking dependency call, ...) can delay a probe answered by that same worker. Under Kubernetes this can
+turn a merely-busy pod into a probe timeout and an unwanted restart. The common workaround — over-provisioning worker
+threads to "reserve" one for probes — is not deterministic: with `SO_REUSEPORT` the kernel, not the application,
+picks which listener a probe connection lands on.
+
+Setting `BuiltinProbesConfig::withDedicatedPort(port)` on a `MultiHttpServer` starts an extra single-threaded event
+loop bound to `port` whose sole job is answering the probe endpoints. Because that loop never runs application
+handlers, probe availability is fully isolated from application load. Point your Kubernetes probes at that port
+(a different `containerPort`). When `dedicatedPort == 0` (the default) probes remain inline on the application port
+(unchanged, backward-compatible). A standalone `SingleHttpServer` ignores `dedicatedPort` (it has no worker pool to
+isolate probes from).
+
+The dedicated listener reflects the state of the worker pool rather than its own:
+
+- **Readiness** (`/readyz`): `200` while any worker is accepting traffic, `503` once all workers are draining.
+- **Startup** (`/startupz`): `200` once any worker has entered its event loop.
+- **Liveness** (`/livez`): heartbeat-based. Each worker publishes a heartbeat at the top of every event-loop
+  iteration; a loop wedged inside a request handler (or otherwise not polling) stops advancing it. The pod is
+  reported `200` unless **every** worker's heartbeat has been stale for longer than `livenessStaleThreshold` (a full
+  deadlock); a worker that is idle, progressing, or merely busy under the threshold keeps the pod live. Because an
+  idle worker only refreshes its heartbeat once per poll cycle, a healthy loop can look up to
+  `pollInterval * pollIntervalMaxFactor` stale — so keep `livenessStaleThreshold` comfortably above both your longest
+  legitimate handler runtime and the worker poll interval (the default `10s` sits well above the default `500ms`
+  `pollInterval`). This matters most with only one or two threads, where a single long handler can trip it.
+
+```cpp
+HttpServerConfig cfg;
+cfg.withNbThreads(4).withReusePort();
+BuiltinProbesConfig probesCfg;
+probesCfg.enabled = true;
+probesCfg.withDedicatedPort(9091);                    // probes served on :9091, application traffic elsewhere
+probesCfg.withLivenessStaleThreshold(std::chrono::seconds{15});
+cfg.withBuiltinProbes(std::move(probesCfg));
+
+MultiHttpServer server(std::move(cfg));
+// server.router().setDefault(...);  application routes on the main port
+// server.probePort() == 9091
+```
 
 ### Probes Notes & recommendations
 
@@ -1892,6 +1938,10 @@ SingleHttpServer server(std::move(cfg));
 
 - The test suite includes `http_probes_test.cpp` which validates startup/readiness transitions and drain-time
   behavior. Tests also cover collision detection for probe paths.
+- The dedicated probe listener is covered by the `MultiHttpServerDedicatedProbes` suite in
+  [tests/multi-http-server_test.cpp](../tests/multi-http-server_test.cpp): probes served off the application port,
+  a probe staying responsive while a worker is blocked in a handler, the liveness heartbeat tripping on a wedged
+  worker and recovering, readiness reporting `503` during drain, and dedicated-port validation.
 
 ## TLS Features
 

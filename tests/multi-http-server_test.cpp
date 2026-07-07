@@ -21,6 +21,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -32,6 +33,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/signal-handler.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -941,3 +943,213 @@ TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
   firstServer.stop();
 }
 #endif
+
+namespace {
+// Grab two currently-free, distinct TCP ports by binding two ephemeral listeners at once, then releasing them.
+// REUSEADDR (always set by SingleHttpServer) lets those ports be rebound immediately afterwards.
+std::pair<uint16_t, uint16_t> GrabTwoFreePorts() {
+  SingleHttpServer a(HttpServerConfig{}.withPort(0));
+  SingleHttpServer b(HttpServerConfig{}.withPort(0));
+  return {a.port(), b.port()};
+}
+
+MultiHttpServer MakeProbeServer(uint16_t appPort, uint16_t probePort, uint16_t nbThreads,
+                                std::chrono::milliseconds livenessThreshold, Router router) {
+  HttpServerConfig cfg;
+  // The liveness heartbeat is published once per worker event-loop iteration, so an idle worker only refreshes it
+  // every pollInterval. Keep pollInterval well below the (deliberately tiny) livenessThreshold used in these tests
+  // so an idle-but-healthy worker never looks stale; production keeps the default 10s threshold >> 500ms pollInterval.
+  cfg.withPort(appPort).withReusePort().withNbThreads(nbThreads).withPollInterval(std::chrono::milliseconds{20});
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withDedicatedPort(probePort).withLivenessStaleThreshold(livenessThreshold);
+  cfg.withBuiltinProbes(bp);
+  return MultiHttpServer{std::move(cfg), std::move(router)};
+}
+}  // namespace
+
+TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort) {
+  const auto [appPort, probePort] = GrabTwoFreePorts();
+
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse("APP"); });
+
+  HttpServerConfig cfg;
+  cfg.withPort(appPort).withReusePort().withNbThreads(2U);
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withDedicatedPort(probePort);
+  cfg.withBuiltinProbes(bp);
+
+  MultiHttpServer multi(std::move(cfg), std::move(router));
+  EXPECT_EQ(multi.probePort(), probePort);
+
+  auto handle = multi.startDetached();
+  ASSERT_EQ(multi.port(), appPort);
+
+  // Probes answered on the dedicated port.
+  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(test::simpleGet(probePort, "/startupz").starts_with("HTTP/1.1 200"));
+
+  // The probe endpoints are NOT exposed on the (contended) application port: they hit the default app handler.
+  EXPECT_TRUE(test::simpleGet(appPort, "/livez").contains("APP"));
+  EXPECT_TRUE(test::simpleGet(appPort, "/readyz").contains("APP"));
+
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHandler) {
+  const auto [appPort, probePort] = GrabTwoFreePorts();
+
+  Router router;
+  router.setDefault([](const HttpRequest& req) {
+    if (req.path() == "/slow") {
+      std::this_thread::sleep_for(1000ms);  // monopolises the single worker event loop
+    }
+    return HttpResponse("APP");
+  });
+
+  // Single worker on purpose (the scenario where a big query would starve inline probes), generous liveness
+  // threshold so the heartbeat never trips: we only assert probe availability here.
+  MultiHttpServer multi = MakeProbeServer(appPort, probePort, 1U, 30s, std::move(router));
+  auto handle = multi.startDetached();
+
+  // Occupy the single worker with a slow request in the background.
+  std::thread slow([appPort = appPort]() { (void)test::simpleGet(appPort, "/slow"); });
+  std::this_thread::sleep_for(100ms);  // let the slow handler start blocking the worker
+
+  // The dedicated probe listener must answer promptly, far below the slow handler's runtime.
+  const auto start = std::chrono::steady_clock::now();
+  const std::string live = test::simpleGet(probePort, "/livez");
+  const std::string ready = test::simpleGet(probePort, "/readyz");
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_TRUE(live.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(ready.starts_with("HTTP/1.1 200"));
+  EXPECT_LT(elapsed, 700ms) << "probe port was starved by the busy worker";
+
+  slow.join();
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerDedicatedProbes, LivenessTripsWhenWorkerWedgedBeyondThreshold) {
+  const auto [appPort, probePort] = GrabTwoFreePorts();
+
+  Router router;
+  router.setDefault([](const HttpRequest& req) {
+    if (req.path() == "/wedge") {
+      std::this_thread::sleep_for(800ms);
+    }
+    return HttpResponse("APP");
+  });
+
+  // Short liveness threshold: a handler blocking the (only) worker beyond it must report the pod unhealthy.
+  MultiHttpServer multi = MakeProbeServer(appPort, probePort, 1U, 100ms, std::move(router));
+  auto handle = multi.startDetached();
+
+  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
+
+  std::thread wedger([appPort = appPort]() { (void)test::simpleGet(appPort, "/wedge"); });
+
+  bool saw503 = false;
+  bool readyStayed200 = true;
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 503")) {
+      saw503 = true;
+      // Readiness must remain 200 while the worker is merely busy (still Running, not draining).
+      readyStayed200 = test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200");
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  wedger.join();
+
+  EXPECT_TRUE(saw503) << "liveness never reported the wedged worker unhealthy";
+  EXPECT_TRUE(readyStayed200) << "readiness should stay 200 for a busy-but-Running worker";
+
+  // Once the handler returns, the heartbeat clears and liveness recovers.
+  std::this_thread::sleep_for(50ms);
+  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
+
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerDedicatedProbes, ReadinessReportsNotReadyWhileDraining) {
+  const auto [appPort, probePort] = GrabTwoFreePorts();
+
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse("APP"); });
+
+  HttpServerConfig cfg;
+  cfg.withPort(appPort).withReusePort().withNbThreads(2U).withKeepAliveTimeout(2000ms);
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withDedicatedPort(probePort);
+  cfg.withBuiltinProbes(bp);
+
+  MultiHttpServer multi(std::move(cfg), std::move(router));
+  auto handle = multi.startDetached();
+
+  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200"));
+
+  // Keep a connection alive so drain does not complete instantly (workers stay in Draining state).
+  test::ClientConnection cnx(appPort);
+  test::sendAll(cnx.fd(), test::SimpleGetRequest("/keep", http::keepalive));
+  std::this_thread::sleep_for(30ms);
+
+  multi.beginDrain(SignalHandler::GetMaxDrainPeriod());
+  std::this_thread::sleep_for(30ms);
+
+  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 503"));
+  // Liveness and startup stay healthy while draining (the loops are progressing and have started).
+  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(test::simpleGet(probePort, "/startupz").starts_with("HTTP/1.1 200"));
+
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServerDedicatedProbes, DedicatedPortEqualToAppPortThrows) {
+  const auto [appPort, unused] = GrabTwoFreePorts();
+  (void)unused;
+
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse("APP"); });
+
+  HttpServerConfig cfg;
+  cfg.withPort(appPort).withNbThreads(1U);
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withDedicatedPort(appPort);  // clashes with the application port
+  cfg.withBuiltinProbes(bp);
+
+  MultiHttpServer multi(std::move(cfg), std::move(router));
+  EXPECT_THROW((void)multi.startDetached(), std::invalid_argument);
+}
+
+TEST(MultiHttpServerDedicatedProbes, ZeroDedicatedPortKeepsInlineProbes) {
+  Router router;
+  router.setDefault([](const HttpRequest&) { return HttpResponse("APP"); });
+
+  HttpServerConfig cfg;
+  cfg.withReusePort().withNbThreads(2U);
+  cfg.enableBuiltinProbes(true);  // dedicatedPort stays 0 => inline probes on the app port
+
+  MultiHttpServer multi(std::move(cfg), std::move(router));
+  EXPECT_EQ(multi.probePort(), 0);
+
+  auto handle = multi.startDetached();
+  const auto appPort = multi.port();
+
+  // Inline probes answered on the application port (legacy behaviour, fully backward compatible).
+  EXPECT_TRUE(test::simpleGet(appPort, "/readyz").starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(test::simpleGet(appPort, "/livez").starts_with("HTTP/1.1 200"));
+
+  handle.stop();
+  handle.rethrowIfError();
+}
