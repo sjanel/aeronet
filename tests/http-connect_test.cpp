@@ -127,6 +127,31 @@ TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
+TEST_F(HttpConnectDefaultConfig, NonNumericConnectPortReturns400) {
+  // authority-form requires a numeric port; a service name is rejected up front with 400 (not handed to
+  // the resolver, which would otherwise map it via /etc/services).
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, "CONNECT example.com:https HTTP/1.1\r\nHost: example.com\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
+TEST_F(HttpConnectDefaultConfig, OutOfRangeConnectPortReturns400) {
+  // Port > 65535 does not fit in a uint16_t -> 400 Bad Request.
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, "CONNECT example.com:99999 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
+TEST_F(HttpConnectDefaultConfig, EmptyConnectPortReturns400) {
+  // Trailing ':' with no digits -> 400 Bad Request.
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, "CONNECT example.com: HTTP/1.1\r\nHost: example.com\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
 // Test that closing a tunnel connection also cleans up the peer connection.
 // This exercises the closeConnection() path at lines 414-429 in connection-manager.cpp
 // where peerFd != -1 triggers peer lookup and cleanup.

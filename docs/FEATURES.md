@@ -193,6 +193,11 @@ Behavior summary
   non-blocking TCP connection to the upstream address. If the connect attempt succeeds (or is in progress), the server
   replies `200 Connection Established` and links the client and upstream sockets into a tunneling pair. From that
   point the connections bypass HTTP parsing and are proxied bidirectionally until either side closes.
+- The authority-form target must carry a **numeric** port (RFC 9110 §9.3.6 / RFC 3986 `port = *DIGIT`); a missing
+  separator, an empty/non-numeric port, or a value `> 65535` is rejected with `400 Bad Request` before any name
+  resolution (service names such as `host:https` are not accepted). Tests:
+  [http-connect_test.cpp](../tests/http-connect_test.cpp) (`NonNumericConnectPortReturns400`,
+  `OutOfRangeConnectPortReturns400`, `EmptyConnectPortReturns400`).
 - The server uses a small `ConnectResult` helper to capture whether the upstream connection completed immediately or is
   still pending (`EINPROGRESS`) on a non-blocking socket. Pending connects are tracked using a `connectPending` flag
   on the upstream `ConnectionState`; when the event loop notifies writable readiness we check `SO_ERROR` to determine
@@ -225,8 +230,9 @@ alongside normal request/response streams on a single HTTP/2 connection.
 
 Behavior summary
 
-- On receiving a CONNECT request, the handler validates the `:authority` pseudo-header (must be `host:port`), checks
-  the connect allowlist, and delegates TCP connection setup to the server's event loop via a `TunnelCallbacks` interface.
+- On receiving a CONNECT request, the handler validates the `:authority` pseudo-header (must be `host:port` with a
+  numeric port; a non-numeric or out-of-range port is rejected with `400`), checks the connect allowlist, and delegates
+  TCP connection setup to the server's event loop via a `TunnelCallbacks` interface.
 - On success, a `200` response is sent on the stream **without** `END_STREAM`. Subsequent `DATA` frames on the stream
   carry tunneled bytes bidirectionally.
 - Client → upstream: `DATA` frames received on the tunnel stream are forwarded to the upstream fd via the write callback.

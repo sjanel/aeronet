@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -436,17 +435,12 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
                                           : std::span<char>(const_cast<char*>(url.host().data()), url.host().size());
   const uint16_t connectPort = proxied ? _proxyPort : url.port();
 
-  // getaddrinfo (via ConnectTCP) needs writable host/port buffers with one spare byte at the end.
-  // Build transient buffers here (only on a real connect, never on pool reuse).
-  char portStr[std::numeric_limits<uint16_t>::digits10 + 2];
-  [[maybe_unused]] const auto [portEnd, portEc] = std::to_chars(portStr, portStr + sizeof(portStr), connectPort);
-  assert(portEc == std::errc{});
-  // Opt into ConnectTCP's blocking multi-address fallback (bounded by the connect timeout): a host that
-  // resolves to several addresses (e.g. "localhost" -> ::1 then 127.0.0.1) must try them in turn instead
-  // of committing to the first, whose non-blocking connect would otherwise hide a deferred ECONNREFUSED.
+  // getaddrinfo (via ConnectTCP) needs a writable host buffer with one spare byte at the end (done at
+  // construction). Opt into ConnectTCP's blocking multi-address fallback (bounded by the connect timeout): a host
+  // that resolves to several addresses (e.g. "localhost" -> ::1 then 127.0.0.1) must try them in turn instead of
+  // committing to the first, whose non-blocking connect would otherwise hide a deferred ECONNREFUSED.
   const auto connectTimeoutMs = static_cast<int>(_config.connectTimeout.count());
-  ConnectResult cr = ConnectTCP(connectHost, std::span<char>(portStr, static_cast<std::size_t>(portEnd - portStr)), 0,
-                                connectTimeoutMs);
+  ConnectResult cr = ConnectTCP(connectHost, connectPort, 0, connectTimeoutMs);
   if (cr.failure || !cr.cnx) {
     return std::unexpected(HttpClientErrc::connectFailed);
   }
