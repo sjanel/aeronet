@@ -870,10 +870,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 // Shared CONNECT tunnel helpers (HTTP/1.1 + HTTP/2)
 // ============================================================================
 
-NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std::string_view host,
-                                                     std::string_view port) {
-  ConnectResult cres = ConnectTCP(std::span<char>(const_cast<char*>(host.data()), host.size()),
-                                  std::span<char>(const_cast<char*>(port.data()), port.size()));
+NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std::string_view host, uint16_t port) {
+  ConnectResult cres = ConnectTCP(std::span<char>(const_cast<char*>(host.data()), host.size()), port);
   if (cres.failure) {
     return kInvalidHandle;
   }
@@ -889,7 +887,7 @@ NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std:
   // Insert upstream connection state. Inserting may rehash the map — callers must
   // not hold iterators across this call. Duplicate fd for a newly connected socket
   // indicates a library bug (the kernel assigns unique fds for each socket()).
-  auto upIt = _connections.emplace(std::move(cres.cnx));
+  const auto upIt = _connections.emplace(std::move(cres.cnx));
   ConnectionState& state = _connections.connectionState(upIt);
 
   // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -200,8 +202,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
   // Pass 1 : compute total headers storage
-  // +1 for :authority \r char for setupTunnelConnection
-  std::size_t headersTotalLen = 1U;
+  std::size_t headersTotalLen = 0U;
   for (const auto& [name, value] : headers) {
     headersTotalLen += name.size() + value.size();
   }
@@ -229,7 +230,6 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
       } else if (storedName == ":authority") {
         req._pAuthority = storedValue.data();
         req._authorityLength = SafeCast<decltype(req._authorityLength)>(storedValue.size());
-        *buf++ = '\r';  // sentinel char for setupTunnelConnection
       } else if (storedName == ":path") {
         // Split :path at '?' to separate path from query string, mirroring HTTP/1.1 parsing.
         // The stored value lives in headerStorage which we own, so in-place decoding is safe.
@@ -860,9 +860,16 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& 
   const std::string_view host = target.substr(0, colonPos);
   const std::string_view portStr = target.substr(colonPos + 1);
 
-  // this extra char is needed for setupTunnelConnection (should be added in onHeadersDecodedReceived when parsing
-  // :authority)
-  assert(*(portStr.data() + portStr.size()) == '\r');
+  // authority-form requires a numeric port (RFC 9110 §9.3.6 / RFC 3986 port = *DIGIT). Reject anything
+  // else (non-numeric or > 65535) up front with 400 instead of handing it to the resolver.
+  uint16_t port{};
+  const auto [portEnd, portEc] = std::from_chars(portStr.data(), portStr.data() + portStr.size(), port);
+  if (portEc != std::errc{} || portEnd != portStr.data() + portStr.size() || port == 0) {
+    log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, target);
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"),
+                       /*isHeadMethod=*/false);
+    return;
+  }
 
   // Enforce CONNECT allowlist if configured.
   const auto& allowList = _pServerConfig->connectAllowlist();
@@ -874,7 +881,7 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& 
   }
 
   // Delegate TCP connection setup to the server (which owns the event loop).
-  const auto upstreamFd = _tunnelBridge->setupTunnel(streamId, host, portStr);
+  const auto upstreamFd = _tunnelBridge->setupTunnel(streamId, host, port);
   if (upstreamFd == kInvalidHandle) {
     log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, target);
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
