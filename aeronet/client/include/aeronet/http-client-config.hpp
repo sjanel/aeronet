@@ -213,6 +213,33 @@ class HttpClientConfig {
     return *this;
   }
 
+  // --- Forward proxy (HTTP CONNECT tunnelling) ---
+  //
+  // Route every request through an HTTP forward proxy given as an absolute URL ("http://host:port"; a bare
+  // "host[:port]" is also accepted and assumed to be http, defaulting to port 80). For an https origin the
+  // client opens a tunnel to the origin with an HTTP CONNECT request to the proxy, then performs the origin
+  // TLS handshake through it; for a plain http origin the request is sent to the proxy in absolute-form
+  // ("GET http://origin/path HTTP/1.1"). Only cleartext (http) proxies are supported -- HttpClient
+  // construction throws HttpClientException for an https proxy URL or a malformed one. Empty disables it.
+  [[nodiscard]] bool hasProxy() const { return !_strings[kProxyUrl].empty(); }
+  [[nodiscard]] std::string_view proxyUrl() const { return _strings[kProxyUrl]; }
+  HttpClientConfig& withProxy(std::string_view proxyUrl) {
+    _strings.set(kProxyUrl, proxyUrl);
+    return *this;
+  }
+
+  // Optional CA bundle used to verify the origin TLS handshake when the proxy intercepts (re-signs) it --
+  // e.g. a debugging proxy such as mitmproxy that presents certificates signed by its own CA. When set it
+  // overrides the default trust store / tlsCaFile for proxied https requests. Empty keeps the normal TLS
+  // trust settings. Only meaningful for https origins in an OpenSSL build (ignored otherwise).
+  [[nodiscard]] std::string_view proxyCaFile() const { return _strings[kProxyCaFile]; }
+  [[nodiscard]] const char* proxyCaFileCStr() const { return _strings.c_str(kProxyCaFile); }
+  HttpClientConfig& withProxy(std::string_view proxyUrl, std::string_view caFile) {
+    _strings.set(kProxyUrl, proxyUrl);
+    _strings.set(kProxyCaFile, caFile);
+    return *this;
+  }
+
 #ifdef AERONET_ENABLE_OPENSSL
   // Optional CA bundle file / directory. When both empty, the system default trust store is used.
   [[nodiscard]] std::string_view tlsCaFile() const { return _strings[kCaFile]; }
@@ -279,10 +306,13 @@ class HttpClientConfig {
     kClientKeyFile,
     kClientCertPem,
     kClientKeyPem,
+    kProxyUrl,
+    kProxyCaFile,
     kNbStrings,
   };
 
-  // [userAgent, acceptEncoding, caFile, caPath, cipherList, clientCertFile, clientKeyFile, clientCertPem, clientKeyPem]
+  // [userAgent, acceptEncoding, caFile, caPath, cipherList, clientCertFile, clientKeyFile, clientCertPem,
+  //  clientKeyPem, proxyUrl, proxyCaFile]
   StaticConcatenatedStrings<kNbStrings, uint32_t> _strings;
 };
 

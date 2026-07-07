@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <string_view>
 
 #include "aeronet/http-client-error.hpp"
@@ -41,6 +42,17 @@ TEST(UrlTest, ParsesExplicitPort) {
   const Url url = Url::Parse("http://localhost:8080/").value();
   EXPECT_EQ(url.port(), 8080);
   EXPECT_FALSE(url.isDefaultPort());
+}
+
+TEST(UrlTest, FullReturnsAbsoluteForm) {
+  // full() is the canonical "scheme://host:port/path?query" buffer used as the request-target for a
+  // cleartext forward proxy; the port is always spelled out (even when it is the scheme default).
+  const Url explicitPort = Url::Parse("http://example.com:8080/path?q=1").value();
+  EXPECT_EQ(explicitPort.full(), "http://example.com:8080/path?q=1");
+  EXPECT_EQ(explicitPort.full(), std::string(explicitPort.originKey()) + std::string(explicitPort.target()));
+
+  const Url defaultPort = Url::Parse("http://example.com/x").value();
+  EXPECT_EQ(defaultPort.full(), "http://example.com:80/x");
 }
 
 TEST(UrlTest, HttpsExplicitDefaultPortIsDefault) {

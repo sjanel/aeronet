@@ -11,6 +11,7 @@
 
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/retry-config.hpp"
@@ -205,6 +206,51 @@ TEST(HttpClientConfigTest, ValidateRejectsHttp2Push) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withEnablePush(true));
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(HttpClientConfigTest, ProxyDefaultsToDisabled) {
+  HttpClientConfig cfg;
+  EXPECT_FALSE(cfg.hasProxy());
+  EXPECT_TRUE(cfg.proxyUrl().empty());
+  EXPECT_TRUE(cfg.proxyCaFile().empty());
+}
+
+TEST(HttpClientConfigTest, WithProxyUrlOnly) {
+  HttpClientConfig cfg;
+  cfg.withProxy("http://127.0.0.1:8080");
+  EXPECT_TRUE(cfg.hasProxy());
+  EXPECT_EQ(cfg.proxyUrl(), "http://127.0.0.1:8080");
+  EXPECT_TRUE(cfg.proxyCaFile().empty());
+}
+
+TEST(HttpClientConfigTest, WithProxyUrlAndCaFile) {
+  HttpClientConfig cfg;
+  cfg.withProxy("http://proxy.local:3128", "/etc/mitmproxy/ca.pem");
+  EXPECT_TRUE(cfg.hasProxy());
+  EXPECT_EQ(cfg.proxyUrl(), "http://proxy.local:3128");
+  EXPECT_EQ(cfg.proxyCaFile(), "/etc/mitmproxy/ca.pem");
+  EXPECT_STREQ(cfg.proxyCaFileCStr(), "/etc/mitmproxy/ca.pem");
+}
+
+// Constructing an HttpClient parses the proxy endpoint eagerly: a malformed proxy URL or an unsupported
+// (https) proxy scheme is a hard setup error surfaced as HttpClientException, not a per-request failure.
+TEST(HttpClientConfigTest, InvalidProxyUrlThrowsAtConstruction) {
+  HttpClientConfig cfg;
+  cfg.withProxy("ftp://proxy.local:3128");  // non-http scheme
+  EXPECT_THROW(HttpClient{cfg}, HttpClientException);
+}
+
+TEST(HttpClientConfigTest, HttpsProxyRejectedAtConstruction) {
+  HttpClientConfig cfg;
+  cfg.withProxy("https://proxy.local:3128");  // only cleartext proxies are supported
+  EXPECT_THROW(HttpClient{cfg}, HttpClientException);
+}
+
+// A bare "host:port" (no scheme) is accepted and assumed to be an http proxy.
+TEST(HttpClientConfigTest, SchemelessProxyUrlAccepted) {
+  HttpClientConfig cfg;
+  cfg.withProxy("127.0.0.1:8080");
+  EXPECT_NO_THROW(HttpClient{cfg});
 }
 
 }  // namespace aeronet

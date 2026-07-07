@@ -130,6 +130,16 @@ class HttpClient {
 
   std::expected<ActiveConnection, HttpClientErrc> connectNew(const Url& url);
 
+  // Whether a forward proxy is configured (see HttpClientConfig::withProxy). When true, connectNew connects
+  // to the proxy and, for an https origin, opens a CONNECT tunnel before the TLS handshake.
+  [[nodiscard]] bool usesProxy() const noexcept { return !_proxyHost.empty(); }
+
+  // Open an HTTP CONNECT tunnel to `url`'s origin through the configured proxy, on the already-connected raw
+  // socket `fd` (wrapped by the throwaway plain `transport`). Drives the request/response on the event loop
+  // up to `deadline`; returns an empty result once the proxy answers 2xx, or an HttpClientErrc otherwise.
+  std::expected<void, HttpClientErrc> establishProxyTunnel(ITransport& transport, NativeHandle fd, const Url& url,
+                                                           SteadyClock::time_point deadline);
+
   void releaseConnection(const Url& url, ActiveConnection&& conn);
 
   // Drive the TLS handshake to completion (the TCP connect is already established by connectNew), then
@@ -195,6 +205,7 @@ class HttpClient {
   // never leaving idle pooled fds registered (which, level-triggered, could spin the poll loop).
   NativeHandle _loopFd{kInvalidHandle};
   EventBmp _loopInterest{0};
+  uint16_t _proxyPort{0};                        // forward-proxy port (see _proxyHost)
   uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
@@ -204,6 +215,10 @@ class HttpClient {
   // HTTP/1.1 chunked de-framing writes here (borrowed by ResponseParser); reused across requests so a
   // keep-alive connection streaming chunked responses never re-grows this allocation.
   RawChars _bodyBuffer;
+  // Forward-proxy host, empty when no proxy is configured (parsed once from HttpClientConfig::proxyUrl at
+  // construction). Kept with one spare trailing byte so it can be handed to ConnectTCP (which transiently
+  // null-terminates its host span) exactly like a Url host.
+  RawChars _proxyHost;
   std::unique_ptr<internal::HttpClientCodec> _codec;  // compression/decompression state (lazily created)
 #ifdef AERONET_ENABLE_OPENSSL
   std::unique_ptr<internal::HttpClientTlsContext> _tls;
