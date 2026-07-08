@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <glaze/glaze.hpp>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/jwt-error.hpp"
 #include "aeronet/jwt-key.hpp"
@@ -30,9 +29,8 @@ Jwks::Jwks(std::string_view jwksJson) {
       continue;
     }
     // Unsupported / malformed individual keys come back invalid — skip them, keep the rest usable.
-    JwtKey key = JwtKey::FromJwk(*keyJson);
-    if (key.valid()) {
-      _keys.emplace_back(std::move(key));
+    if (!_keys.emplace_back(JwtKey::FromJwk(*keyJson)).valid()) {
+      _keys.pop_back();
     }
   }
 }
