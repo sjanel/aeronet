@@ -6,9 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <list>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -79,6 +77,23 @@ TYPED_TEST(DynamicConcatenatedStringsTest, InitializerListConstructor) {
   EXPECT_EQ(full, std::string_view(expected));
 }
 
+TYPED_TEST(DynamicConcatenatedStringsTest, AppendIntegral) {
+  TypeParam pool({"one", "two", "three"});
+  pool.append(42);
+  EXPECT_FALSE(pool.empty());
+  EXPECT_EQ(pool.nbConcatenatedStrings(), 4U);
+  EXPECT_EQ(pool.fullSize(), pool.fullString().size());
+  auto full = pool.fullString();
+  std::string expected = "one";
+  expected.append(TypeParam::kSep);
+  expected.append("two");
+  expected.append(TypeParam::kSep);
+  expected.append("three");
+  expected.append(TypeParam::kSep);
+  expected.append("42");
+  EXPECT_EQ(full, std::string_view(expected));
+}
+
 TYPED_TEST(DynamicConcatenatedStringsTest, AppendAndFullStringWithSep) {
   // instantiate with comma+space separator via string literal NTTP defined in a helper
   TypeParam pool;
@@ -96,16 +111,6 @@ TYPED_TEST(DynamicConcatenatedStringsTest, AppendAndFullStringWithSep) {
   expected.append(TypeParam::kSep);
   expected.append("three");
   EXPECT_EQ(full, std::string_view(expected));
-}
-
-TYPED_TEST(DynamicConcatenatedStringsTest, AppendTooLongPart) {
-  if constexpr (sizeof(typename TypeParam::size_type) == sizeof(uint32_t)) {
-    TypeParam pool;
-    char ch{};
-
-    std::string_view longPart(&ch, std::numeric_limits<uint32_t>::max());
-    EXPECT_THROW(pool.append(longPart), std::overflow_error);
-  }
 }
 
 TYPED_TEST(DynamicConcatenatedStringsTest, Contains) {

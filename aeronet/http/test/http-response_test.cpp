@@ -9,6 +9,7 @@
 #include <cstring>
 #include <format>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <random>
@@ -1616,7 +1617,10 @@ TEST_F(HttpResponseTest, AppendBodyBytesSpan) {
       expected += "XY";
       EXPECT_EQ(resp.bodyInMemory(), expected);
       EXPECT_EQ(resp.bodyInMemoryLength(), bodyLen);
-      EXPECT_EQ(resp.headerValue(http::ContentLength), std::string_view(IntegralToCharVector(bodyLen)));
+
+      char bodyLenStr[std::numeric_limits<decltype(bodyLen)>::digits10 + 1];
+      const char* pEnd = std::to_chars(bodyLenStr, bodyLenStr + sizeof(bodyLenStr), bodyLen).ptr;
+      EXPECT_EQ(resp.headerValue(http::ContentLength), std::string_view(bodyLenStr, pEnd));
     }
   }
 }
@@ -4739,8 +4743,9 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
 
     EXPECT_EQ(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)), !head);
     if (head) {
-      EXPECT_TRUE(result.contains(
-          MakeHttp1HeaderLine(http::ContentLength, std::string_view(IntegralToCharVector(sizeof(data) - 1)))));
+      char dataSzBuf[std::numeric_limits<std::size_t>::digits10 + 1];
+      const char* pEnd = std::to_chars(dataSzBuf, dataSzBuf + sizeof(dataSzBuf), sizeof(data) - 1).ptr;
+      EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, std::string_view(dataSzBuf, pEnd))));
       EXPECT_FALSE(result.contains("5\r\nHello\r\n0\r\n"));
       EXPECT_FALSE(result.contains("X-Final: yes\r\n"));
       EXPECT_TRUE(result.ends_with("\r\n\r\n"));

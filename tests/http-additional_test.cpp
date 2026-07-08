@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -36,7 +37,6 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -594,9 +594,14 @@ TEST(HttpBasic, ManyHeadersRequest) {
   req.unchecked_append("GET /test HTTP/1.1\r\nHost: localhost\r\n");
   for (int headerPos = 0; headerPos < kNbHeaders; ++headerPos) {
     req.append("X-Custom-");
-    req.append(std::string_view(IntegralToCharVector(headerPos)));
+    char headerPosCharStr[std::numeric_limits<decltype(headerPos)>::digits10 + 2];
+    const char* pEnd = std::to_chars(headerPosCharStr, headerPosCharStr + sizeof(headerPosCharStr), headerPos).ptr;
+
+    std::string_view headerPosStr(headerPosCharStr, pEnd);
+
+    req.append(headerPosStr);
     req.append(": value");
-    req.append(std::string_view(IntegralToCharVector(headerPos)));
+    req.append(headerPosStr);
     req.append(http::CRLF);
   }
   req.append("Content-Length: 0\r\nConnection: close");

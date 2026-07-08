@@ -24,7 +24,6 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
-#include "aeronet/stringconv.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
@@ -341,7 +340,7 @@ Router::Route Router::ParsePattern(std::string_view path) {
 
       if (paramName.empty()) {
         sawUnnamed = true;
-        route.paramNames.append(std::string_view(IntegralToCharVector(paramIdx)));
+        route.paramNames.append(paramIdx);
       } else {
         sawNamed = true;
         route.paramNames.append(paramName);
