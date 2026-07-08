@@ -33,6 +33,14 @@ JwtVerifyOptions NoTemporal() {
 }
 }  // namespace
 
+TEST(JwtKey, SelfMoveAssignmentOperatorDoesNothing) {
+  JwtKey key = JwtKey::Hmac("secret");
+  JwtKey& ref = key;
+  ref = std::move(key);
+  EXPECT_EQ(&key, &ref);
+  EXPECT_TRUE(key.valid());
+}
+
 TEST(Jwk, OctRoundTrip) {
   const std::string_view secret = "shared-hmac-secret-material";
   std::string token = Jwt::encode(R"({"sub":"x"})", JwtKey::Hmac(secret), JwtAlgorithm::HS256);

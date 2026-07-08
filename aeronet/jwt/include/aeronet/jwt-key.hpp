@@ -1,6 +1,6 @@
 #pragma once
 
-#include <memory>
+#include <cstdint>
 #include <string_view>
 #include <type_traits>
 
@@ -33,21 +33,22 @@ class Jwks;
 //                       verify; a public key can only verify.
 //   * FromJwk(json)   — a single JSON Web Key (RFC 7517): "oct" (HMAC), "RSA", "EC", or "OKP".
 //
-// OpenSSL is hidden behind a pImpl so this public header pulls in no crypto headers. Keys are
-// created rarely and live across many requests, so the single owning allocation is irrelevant.
-//
 // Move-only (it owns key material). The factories never throw: on malformed input they log the
 // reason and return an invalid key (valid() == false), so callers check the result rather than
 // catching exceptions.
 class JwtKey {
  public:
-  // An empty, invalid key (valid() == false). Useful as a not-found sentinel.
-  JwtKey() noexcept;
+  // Cryptographic family a key belongs to, derived once at construction.
+  enum class KeyFamily : std::uint8_t { Empty, Hmac, Rsa, Ec, Ed25519 };
 
-  JwtKey(const JwtKey&) = delete;
-  JwtKey& operator=(const JwtKey&) = delete;
+  // An empty, invalid key (valid() == false). Useful as a not-found sentinel.
+  JwtKey() noexcept = default;
+
   JwtKey(JwtKey&&) noexcept;
   JwtKey& operator=(JwtKey&&) noexcept;
+  JwtKey(const JwtKey&) = delete;
+  JwtKey& operator=(const JwtKey&) = delete;
+
   ~JwtKey();
 
   // Symmetric secret for HS256/HS384/HS512. The bytes are copied.
@@ -59,20 +60,18 @@ class JwtKey {
   // Load a single JSON Web Key object (RFC 7517).
   [[nodiscard]] static JwtKey FromJwk(std::string_view jwkJson);
 
-  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] bool valid() const noexcept { return family != KeyFamily::Empty; }
+
   [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
 
   // The "kid" carried by a JWK, or empty for HMAC/PEM keys (or a JWK without one).
-  [[nodiscard]] std::string_view keyId() const noexcept;
+  [[nodiscard]] std::string_view keyId() const noexcept { return kid; }
 
   using trivially_relocatable = std::true_type;
 
  private:
   friend class Jwt;
   friend class Jwks;
-
-  struct Impl;
-  explicit JwtKey(std::unique_ptr<Impl> impl) noexcept;
 
   // True when the key's cryptographic family can be used with `alg` (HMAC↔HS*, RSA↔RS*/PS*,
   // EC↔ES*, Ed25519↔EdDSA). A negative answer maps to JwtError::KeyMismatch.
@@ -88,7 +87,10 @@ class JwtKey {
   // Build a key from a pre-parsed JWK object view (used by Jwks to avoid a second parse).
   [[nodiscard]] static JwtKey FromJwkDoc(const jwt_detail::JwkDocView& doc);
 
-  std::unique_ptr<Impl> _impl;
+  KeyFamily family{KeyFamily::Empty};
+  RawChars secret;  // populated for KeyFamily::Hmac
+  RawChars kid;     // optional, from a JWK
+  void* pKey{};     // populated for the asymmetric families
 };
 
 }  // namespace aeronet
