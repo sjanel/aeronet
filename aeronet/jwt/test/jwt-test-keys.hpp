@@ -75,9 +75,10 @@ inline std::string EcJwk(EVP_PKEY* key) {
   std::size_t pointLen = 0;
   ::EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_PUB_KEY, point, sizeof(point), &pointLen);
   // Uncompressed point: 0x04 || X || Y, each coordinate exactly `coord` bytes.
-  const std::string x = B64Url(point + 1, coord);
-  const std::string y = B64Url(point + 1 + coord, coord);
-  return std::string(R"({"kty":"EC","kid":"test-kid","crv":")") + crv + R"(","x":")" + x + R"(","y":")" + y + R"("})";
+  const std::string xCoord = B64Url(point + 1, coord);
+  const std::string yCoord = B64Url(point + 1 + coord, coord);
+  return std::string(R"({"kty":"EC","kid":"test-kid","crv":")") + crv + R"(","x":")" + xCoord + R"(","y":")" + yCoord +
+         R"("})";
 }
 
 inline std::string OkpJwk(EVP_PKEY* key) {
