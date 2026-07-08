@@ -64,7 +64,7 @@ enum class JsonStringState : std::uint8_t { Absent, String, PresentNonString };
 void AppendB64Url(std::string& dst, const char* pSrc, std::size_t srcLen) {
   const auto base = dst.size();
   const auto encLen = B64UrlEncodedLen(srcLen);
-  dst.resize_and_overwrite(base + encLen, [&](char* buf, std::size_t newSize) {
+  dst.resize_and_overwrite(base + encLen, [pSrc, srcLen, base](char* buf, std::size_t newSize) {
     B64UrlEncode(std::span<const char>(pSrc, srcLen), buf + base);
     return newSize;
   });
@@ -144,7 +144,7 @@ char* AppendJsonString(std::string_view str, char* pInsertPtr) {
 // so RawChars32 is enough for the stored header/payload.
 template <class Buf>
 [[nodiscard]] bool DecodeSegment(std::string_view b64, Buf& out) {
-  out.clear();
+  assert(out.empty());
   out.ensureAvailableCapacity(B64UrlMaxDecodedLen(b64.size()));
   std::size_t outLen = 0;
   if (!B64UrlDecode(b64, out.data(), outLen)) {
@@ -225,7 +225,7 @@ std::string Jwt::encode(std::string_view claimsJson, const JwtKey& key, JwtAlgor
 
   // Reserve the "header.payload" signing input in a single allocation (the signature, whose size we
   // only know after signing, is appended afterwards).
-  token.reserve(B64UrlEncodedLen(buf.size()) + 1U + B64UrlEncodedLen(claimsJson.size()));
+  token.reserve(B64UrlEncodedLen(buf.size()) + 1U + B64UrlEncodedLen(claimsJson.size()) + 1U);
   AppendB64Url(token, buf.data(), buf.size());
   token.push_back('.');
   AppendB64Url(token, claimsJson.data(), claimsJson.size());
@@ -320,7 +320,7 @@ DecodedJwt Jwt::tryDecodeImpl(std::string_view token, KeyResolver resolveKey, co
     err = JwtError::Malformed;
     return out;
   }
-  if (!pKey->verify(alg, signingInput, std::string_view(signature.data(), signature.size()))) {
+  if (!pKey->verify(alg, signingInput, signature)) {
     err = JwtError::InvalidSignature;
     return out;
   }
@@ -328,9 +328,7 @@ DecodedJwt Jwt::tryDecodeImpl(std::string_view token, KeyResolver resolveKey, co
   // --- claims ---
   RawChars32 payloadJson;
   glz::generic claims;
-  if (!DecodeSegment(payloadB64, payloadJson) ||
-      glz::read<glz::opts{.null_terminated = false}>(claims,
-                                                     std::string_view(payloadJson.data(), payloadJson.size())) ||
+  if (!DecodeSegment(payloadB64, payloadJson) || glz::read<glz::opts{.null_terminated = false}>(claims, payloadJson) ||
       !claims.is_object()) {
     err = JwtError::Malformed;
     return out;
