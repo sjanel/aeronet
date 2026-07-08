@@ -829,9 +829,7 @@ class HttpMessage {
         _data.setSize(static_cast<std::size_t>(insertPtr + written - _data.data()));
       }
 
-      char buf[std::numeric_limits<decltype(written)>::digits10 + 2];
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
-                                  std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), written).ptr));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), written);
     }
 
     return *this;
@@ -913,10 +911,7 @@ class HttpMessage {
         adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
       } else {
         // we need to restore the previous content-length value
-        const auto len = maxBodyLen - (maxLen - written);
-        char buf[std::numeric_limits<decltype(len)>::digits10 + 2];
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
-                                    std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), len).ptr));
+        replaceHeaderValueNoRealloc(getContentLengthValuePtr(), maxBodyLen - (maxLen - written));
       }
     } else {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -931,10 +926,7 @@ class HttpMessage {
       } else {
         _data.addSize(written);
       }
-      const auto len = maxBodyLen - (maxLen - written);
-      char buf[std::numeric_limits<decltype(len)>::digits10 + 2];
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(),
-                                  std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), len).ptr));
+      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), maxBodyLen - (maxLen - written));
     }
 
     return *this;
@@ -1369,7 +1361,18 @@ class HttpMessage {
     }
   }
 
-  void replaceHeaderValueNoRealloc(char* first, std::string_view newValue);
+  char* resizeHeaderValue(char* first, std::size_t newValueLen);
+
+  void replaceHeaderValueNoRealloc(char* first, std::string_view newValue) {
+    resizeHeaderValue(first, newValue.size());
+    Copy(newValue, first);
+  }
+
+  void replaceHeaderValueNoRealloc(char* first, std::size_t newValue) {
+    const auto newValueLen = nchars(newValue);
+    resizeHeaderValue(first, newValueLen);
+    std::to_chars(first, first + newValueLen, newValue);
+  }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // Returns the number of written bytes

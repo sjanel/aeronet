@@ -7,10 +7,6 @@
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
-#include <type_traits>
-
-#include "aeronet/fixedcapacityvector.hpp"
-#include "aeronet/nchars.hpp"
 
 namespace aeronet {
 
@@ -20,22 +16,6 @@ namespace aeronet {
 void LogStringToIntegralFailure(std::string_view src);
 // Logs (error) a partial decode: only 'decodedCount' chars of 'src' were consumed, yielding 'value'.
 void LogStringToIntegralPartialDecode(std::ptrdiff_t decodedCount, std::string_view src, std::string_view value);
-
-inline auto IntegralToCharVector(std::integral auto val) {
-  using Int = decltype(val);
-
-  // +1 for minus, +1 for additional partial ranges coverage
-  static constexpr auto kMaxSize = std::numeric_limits<Int>::digits10 + 1 + static_cast<int>(std::is_signed_v<Int>);
-
-  using CharVector = FixedCapacityVector<char, kMaxSize>;
-
-  CharVector ret(nchars(val));
-
-  // no need to check the return value here, it cannot fail as we sized the vector accordingly
-  std::to_chars(ret.data(), ret.data() + ret.size(), val);
-
-  return ret;
-}
 
 template <std::integral Integral>
 Integral StringToIntegral(const char* begPtr, std::size_t len) {
@@ -52,8 +32,10 @@ Integral StringToIntegral(const char* begPtr, std::size_t len) {
   }
 
   if (ptr != endPtr) {
-    LogStringToIntegralPartialDecode(ptr - begPtr, std::string_view(begPtr, len),
-                                     std::string_view(IntegralToCharVector(ret)));
+    char bufRet[std::numeric_limits<decltype(ret)>::digits10 + 2];
+    const char* pEndBuf = std::to_chars(bufRet, bufRet + sizeof(bufRet), ret).ptr;
+    std::string_view retStr(bufRet, pEndBuf);
+    LogStringToIntegralPartialDecode(ptr - begPtr, std::string_view(begPtr, len), retStr);
   }
   return ret;
 }
