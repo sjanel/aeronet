@@ -51,7 +51,7 @@
 
 namespace aeronet {
 
-struct MultiHttpServer::HandleCompletion {
+struct MultiHttpServer::HandleState {
   void notify() {
     {
       std::scoped_lock lock(mutex);
@@ -68,6 +68,9 @@ struct MultiHttpServer::HandleCompletion {
     cv.wait(lock, [this] { return completed; });
   }
 
+  // Stops every server of the group. Invoked by AsyncHandle::stop(), by the worker stop predicates and by the
+  // stop-token binding; mutated to a no-op by ~MultiHttpServer when the server is destroyed before this handle.
+  std::function<void()> onStop;
   std::mutex mutex;
   std::condition_variable cv;
   bool completed{false};
@@ -105,24 +108,17 @@ struct MultiHttpServer::ProbeState {
 };
 
 MultiHttpServer::AsyncHandle::AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles,
-                                          std::shared_ptr<std::atomic<bool>> stopRequested,
-                                          std::shared_ptr<std::function<void()>> onStop,
-                                          std::shared_ptr<HandleCompletion> completion,
-                                          std::shared_ptr<ServerLifecycleTracker> lifecycleTracker,
+                                          std::shared_ptr<ControlBlock> control, std::shared_ptr<HandleState> state,
                                           std::shared_ptr<void> stopTokenBinding)
     : _serverHandles(std::move(serverHandles)),
-      _stopRequested(std::move(stopRequested)),
-      _onStop(std::move(onStop)),
-      _completion(std::move(completion)),
-      _lifecycleTracker(std::move(lifecycleTracker)),
+      _control(std::move(control)),
+      _state(std::move(state)),
       _stopTokenBinding(std::move(stopTokenBinding)) {}
 
 MultiHttpServer::AsyncHandle::AsyncHandle(AsyncHandle&& other) noexcept
     : _serverHandles(std::move(other._serverHandles)),
-      _stopRequested(std::move(other._stopRequested)),
-      _onStop(std::move(other._onStop)),
-      _completion(std::move(other._completion)),
-      _lifecycleTracker(std::move(other._lifecycleTracker)),
+      _control(std::move(other._control)),
+      _state(std::move(other._state)),
       _stopTokenBinding(std::move(other._stopTokenBinding)),
       _stopCalled(other._stopCalled.exchange(true, std::memory_order_relaxed)) {}
 
@@ -131,10 +127,8 @@ MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandl
     stop();
 
     _serverHandles = std::move(other._serverHandles);
-    _stopRequested = std::move(other._stopRequested);
-    _onStop = std::move(other._onStop);
-    _completion = std::move(other._completion);
-    _lifecycleTracker = std::move(other._lifecycleTracker);
+    _control = std::move(other._control);
+    _state = std::move(other._state);
     _stopTokenBinding = std::move(other._stopTokenBinding);
     _stopCalled.store(other._stopCalled.exchange(true, std::memory_order_relaxed), std::memory_order_relaxed);
   }
@@ -146,15 +140,13 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
     return;
   }
 
-  if (_stopRequested) {
-    _stopRequested->store(true, std::memory_order_relaxed);
-    if (_lifecycleTracker) {
-      _lifecycleTracker->notifyStopRequested();
-    }
+  if (_control) {
+    _control->stopRequested.store(true, std::memory_order_relaxed);
+    _control->lifecycleTracker.notifyStopRequested();
   }
 
-  if (_onStop && *_onStop) {
-    (*_onStop)();
+  if (_state && _state->onStop) {
+    _state->onStop();
   }
 
   std::ranges::for_each(_serverHandles, [](auto& handle) { handle.stop(); });
@@ -171,12 +163,12 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
     }
   }
 
-  // Release the shared stop callback so any weak_ptr held by the MultiHttpServer
-  // instance can expire when the caller has stopped the AsyncHandle. Clear the
-  // local thread vector to reflect there are no active background threads.
-  _onStop.reset();
+  // Clear the local thread vector to reflect there are no active background threads and signal completion, then release
+  // the shared per-start state. Any weak_ptr held by the MultiHttpServer instance then expires - unless a stop-token
+  // binding still references the state, mirroring the previous stop-callback lifetime exactly.
   _serverHandles.clear();
   notifyCompletion();
+  _state.reset();
 }
 
 void MultiHttpServer::AsyncHandle::rethrowIfError() {
@@ -188,9 +180,8 @@ void MultiHttpServer::AsyncHandle::rethrowIfError() {
 }
 
 void MultiHttpServer::AsyncHandle::notifyCompletion() noexcept {
-  if (_completion) {
-    _completion->notify();
-    _completion.reset();
+  if (_state) {
+    _state->notify();
   }
 }
 
@@ -198,8 +189,7 @@ bool MultiHttpServer::AsyncHandle::started() const noexcept {
   return std::ranges::any_of(_serverHandles, [](const auto& handle) { return handle.started(); });
 }
 
-MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
-    : _stopRequested(std::make_shared<std::atomic<bool>>(false)) {
+MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router) {
   auto threadCount = cfg.nbThreads;
   if (threadCount == 0) {
     // hardware_concurrency() returns unsigned int but is in practice <= a few thousand on the largest machines,
@@ -233,7 +223,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router)
   cfg.nbThreads = 1;  // will be applied for each SingleHttpServer.
   auto& firstServer = _servers.emplace_back(std::move(cfg), std::move(router));
 
-  firstServer._lifecycleTracker = _lifecycleTracker;
+  firstServer._lifecycleTracker = lifecycleTrackerPtr();
 }
 
 #ifdef AERONET_ENABLE_GLAZE
@@ -270,30 +260,27 @@ void MultiHttpServer::saveConfig(const std::filesystem::path& filePath) const {
 }
 #endif
 
-MultiHttpServer::MultiHttpServer(const MultiHttpServer& other)
-    : _stopRequested(std::make_shared<std::atomic<bool>>(false)),
-      _lifecycleTracker(std::make_shared<ServerLifecycleTracker>()),
-      _serversAlive(std::make_shared<std::atomic<bool>>(true)) {
+MultiHttpServer::MultiHttpServer(const MultiHttpServer& other) {
+  // A copy gets a fresh ControlBlock / serversAlive guard (default member initializers): it must not share lifecycle
+  // state with the source (see class comment).
   if (other.isRunning()) {
     throw std::logic_error("Cannot copy-construct a running HttpServer");
   }
 
   _servers.reserve(other._servers.capacity());
   std::ranges::for_each(other._servers, [this](const auto& server) {
-    _servers.emplace_back(server)._lifecycleTracker = _lifecycleTracker;
+    _servers.emplace_back(server)._lifecycleTracker = lifecycleTrackerPtr();
   });
 }
 
 MultiHttpServer::MultiHttpServer(MultiHttpServer&& other) noexcept
-    : _stopRequested(std::move(other._stopRequested)),
-      _lifecycleTracker(std::move(other._lifecycleTracker)),
+    : _control(std::move(other._control)),
       _servers(std::move(other._servers)),
       _probeServer(std::move(other._probeServer)),
       _internalHandle(std::move(other._internalHandle)),
-      _lastHandleStopFn(std::move(other._lastHandleStopFn)),
-      _lastHandleCompletion(std::move(other._lastHandleCompletion)),
+      _lastHandleState(std::move(other._lastHandleState)),
       _serversAlive(std::move(other._serversAlive)) {
-  std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = _lifecycleTracker; });
+  std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = lifecycleTrackerPtr(); });
 }
 
 MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
@@ -301,16 +288,14 @@ MultiHttpServer& MultiHttpServer::operator=(MultiHttpServer&& other) noexcept {
     // Ensure we are not leaking running threads; stop existing group first.
     stop();
 
-    _stopRequested = std::move(other._stopRequested);
-    _lifecycleTracker = std::move(other._lifecycleTracker);
+    _control = std::move(other._control);
     _servers = std::move(other._servers);
     _probeServer = std::move(other._probeServer);
     _internalHandle = std::move(other._internalHandle);
-    _lastHandleStopFn = std::move(other._lastHandleStopFn);
-    _lastHandleCompletion = std::move(other._lastHandleCompletion);
+    _lastHandleState = std::move(other._lastHandleState);
     _serversAlive = std::move(other._serversAlive);
 
-    std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = _lifecycleTracker; });
+    std::ranges::for_each(_servers, [this](auto& server) { server._lifecycleTracker = lifecycleTrackerPtr(); });
   }
   return *this;
 }
@@ -333,8 +318,8 @@ MultiHttpServer& MultiHttpServer::operator=(const MultiHttpServer& other) {
 MultiHttpServer::~MultiHttpServer() {
   stop();
 
-  if (auto cb = _lastHandleStopFn.lock()) {
-    *cb = []() {};
+  if (auto state = _lastHandleState.lock()) {
+    state->onStop = []() {};
   }
 
   if (_serversAlive) {
@@ -405,8 +390,8 @@ void MultiHttpServer::stop() noexcept {
   if (_servers.empty()) {
     return;
   }
-  _stopRequested->store(true, std::memory_order_relaxed);
-  _lifecycleTracker->notifyStopRequested();
+  _control->stopRequested.store(true, std::memory_order_relaxed);
+  _control->lifecycleTracker.notifyStopRequested();
 
   log_noexcept::debug("HttpServer stopping (instances={})", _servers.size());
   std::ranges::for_each(_servers, [](SingleHttpServer& server) { server.stop(); });
@@ -420,8 +405,8 @@ void MultiHttpServer::stop() noexcept {
     _internalHandle.reset();
   }
 
-  if (auto completion = _lastHandleCompletion.lock()) {
-    completion->wait();
+  if (auto state = _lastHandleState.lock()) {
+    state->wait();
   }
   log_noexcept::info("HttpServer stopped");
 }
@@ -535,7 +520,7 @@ void MultiHttpServer::ensureNextServersBuilt() {
 #endif
   while (_servers.size() < targetCount) {
     auto& nextServer = _servers.emplace_back(firstServer, sharedListenFd);
-    nextServer._lifecycleTracker = _lifecycleTracker;
+    nextServer._lifecycleTracker = lifecycleTrackerPtr();
   }
 
   // (Re)build the dedicated probe listener and its ProbeState when builtinProbes.dedicatedPort is configured.
@@ -634,12 +619,12 @@ void MultiHttpServer::runBlocking(std::function<bool()> predicate, std::string_v
 
   // Use a local AsyncHandle to manage the servers.
   // We do NOT store it in _internalHandle to avoid race conditions with stop().
-  // stop() will signal _stopRequested and wait for us via _lastHandleStopFn.
+  // stop() will signal _control->stopRequested and wait for us via _lastHandleState.
   AsyncHandle handle = startDetachedInternal(std::move(predicate), {});
 
-  const bool started = _lifecycleTracker->waitUntilAnyRunning(*_stopRequested);
-  if (!_stopRequested->load(std::memory_order_relaxed) && started) {
-    _lifecycleTracker->waitUntilAllStopped(*_stopRequested);
+  const bool started = _control->lifecycleTracker.waitUntilAnyRunning(_control->stopRequested);
+  if (!_control->stopRequested.load(std::memory_order_relaxed) && started) {
+    _control->lifecycleTracker.waitUntilAllStopped(_control->stopRequested);
   }
 
   log::info("HttpServer {}{}stopped", modeLabel, modeLabel.empty() ? "" : " ");
@@ -656,12 +641,12 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
     throw std::logic_error("HttpServer already started");
   }
 
-  _lifecycleTracker->clear();
+  _control->lifecycleTracker.clear();
 
   // Create the remaining servers.
   ensureNextServersBuilt();
 
-  _stopRequested->store(false, std::memory_order_relaxed);
+  _control->stopRequested.store(false, std::memory_order_relaxed);
 
   log::debug("HttpServer starting with {} thread(s) on port :{}", _servers.size(), port());
 
@@ -675,29 +660,28 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   vector<SingleHttpServer::AsyncHandle> serverHandles;
   serverHandles.reserve(serverPtrs.size());
 
-  auto lifecycleTracker = _lifecycleTracker;
+  auto control = _control;
 
   auto serversAlive = _serversAlive;
-  auto stopCallback = std::make_shared<std::function<void()>>([serverPtrs, serversAlive]() noexcept {
+
+  // Per-start shared state. Its stop callback stops every server of the group, guarded by serversAlive so a stale
+  // callback outliving the _servers buffer becomes a no-op instead of dereferencing dangling pointers.
+  auto state = std::make_shared<HandleState>();
+  state->onStop = [serverPtrs, serversAlive]() noexcept {
     if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
       std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
     }
-  });
-
-  _lastHandleStopFn = stopCallback;
-  auto handleCompletion = std::make_shared<HandleCompletion>();
-  _lastHandleCompletion = handleCompletion;
+  };
+  _lastHandleState = state;
 
   std::shared_ptr<void> externalStopBinding;
   if (externalStopToken.stop_possible()) {
-    auto stopAction = [stopRequested = _stopRequested, stopCallback, lifecycleTracker]() {
-      const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
-      if (!alreadySet && stopCallback && *stopCallback) {
-        (*stopCallback)();
+    auto stopAction = [control, state]() {
+      const bool alreadySet = control->stopRequested.exchange(true, std::memory_order_acq_rel);
+      if (!alreadySet && state->onStop) {
+        state->onStop();
       }
-      if (lifecycleTracker) {
-        lifecycleTracker->notifyStopRequested();
-      }
+      control->lifecycleTracker.notifyStopRequested();
     };
     externalStopBinding =
         std::make_shared<std::stop_callback<decltype(stopAction)>>(externalStopToken, std::move(stopAction));
@@ -705,20 +689,18 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   // Each worker/probe thread stops when the shared flag is set, or when the caller's extra stop condition fires
   // (in which case it also latches the shared flag and triggers the shared stop callback for the whole group).
-  auto makeStopPredicate = [this, &extraStopCondition, &stopCallback, &lifecycleTracker]() {
-    std::atomic<bool>* stopRequested = _stopRequested.get();
+  auto makeStopPredicate = [this, &extraStopCondition, &state, &control]() {
+    std::atomic<bool>* stopRequested = &_control->stopRequested;
     auto threadExtraStop = extraStopCondition;
-    return [stopRequested, threadExtraStop, stopCallback, lifecycleTracker]() {
+    return [stopRequested, threadExtraStop, state, control]() {
       if (stopRequested->load(std::memory_order_relaxed)) {
         return true;
       }
       if (threadExtraStop()) {
         const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
-        if (!alreadySet && stopCallback && *stopCallback) {
-          (*stopCallback)();
-          if (lifecycleTracker) {
-            lifecycleTracker->notifyStopRequested();
-          }
+        if (!alreadySet && state->onStop) {
+          state->onStop();
+          control->lifecycleTracker.notifyStopRequested();
         }
         return true;
       }
@@ -735,9 +717,8 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   // Move threads into the handle - this clears _threads so isRunning() will return false
   // but the handle owns the threads now.
-  // Share the _stopRequested pointer so both MultiHttpServer and AsyncHandle can control stopping.
-  return {std::move(serverHandles),    _stopRequested,    std::move(stopCallback),
-          std::move(handleCompletion), _lifecycleTracker, std::move(externalStopBinding)};
+  // Share the ControlBlock so both MultiHttpServer and AsyncHandle can control stopping.
+  return {std::move(serverHandles), _control, std::move(state), std::move(externalStopBinding)};
 }
 
 MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
