@@ -593,6 +593,14 @@ class SingleHttpServer {
 
   [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
 
+  // True when this server is a MultiHttpServer worker whose probes are served by a dedicated probe listener.
+  // Such workers skip registering the inline probe routes (they live on the dedicated port); the probe listener reads
+  // their loop heartbeat (see internal::Lifecycle::loopHeartbeat, published by every event loop) to detect a wedge.
+  // A standalone SingleHttpServer ignores dedicatedPort: it has no worker pool to isolate probes from.
+  [[nodiscard]] bool probesAreDedicated() const noexcept {
+    return _config.builtinProbes.enabled && _config.builtinProbes.dedicatedPort != 0 && isInMultiHttpServer();
+  }
+
 #ifdef AERONET_ENABLE_HTTP2
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame),

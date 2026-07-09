@@ -495,6 +495,11 @@ void SingleHttpServer::registerBuiltInProbes() {
   if (!_config.builtinProbes.enabled) {
     return;
   }
+  if (probesAreDedicated()) {
+    // Probes are answered by MultiHttpServer's dedicated probe listener on its own port/thread; registering them
+    // inline here too would just re-expose them on the (contended) application port, defeating the isolation.
+    return;
+  }
 
   // Liveness: Always returns 200 OK if the server is responding.
   // Indicates the application is alive (not deadlocked/crashed).

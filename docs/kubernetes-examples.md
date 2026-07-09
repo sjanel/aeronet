@@ -278,12 +278,64 @@ kubectl apply -f aeronet-json-configmap.yaml
 kubectl apply -f aeronet-json-deployment.yaml
 ```
 
+## Isolating Probes on a Dedicated Port
+
+When a `MultiHttpServer` worker is busy for a long time inside a request handler (a heavy computation, a slow blocking
+dependency call, ...), an *inline* probe answered by that same worker can time out — and Kubernetes may restart a pod
+that is merely busy. To avoid this, serve the probes from a dedicated listener on their own port/thread that never runs
+application handlers, and point the Kubernetes probes at that port.
+
+Enable it with `builtinProbes.dedicatedPort` (server config), then expose the extra port and target it in the probes:
+
+```yaml
+server:
+  port: 8080
+  # nbThreads: 0  # 0 => one worker per CPU
+  builtinProbes:
+    enabled: true
+    dedicatedPort: 9091          # probes served here, isolated from application load on :8080
+    livenessStaleThreshold: 15s  # report unhealthy only if ALL workers are wedged in a handler this long
+    livenessPath: /livez
+    readinessPath: /readyz
+    startupPath: /startupz
+```
+
+```yaml
+# ... in the container spec:
+ports:
+  - name: http
+    containerPort: 8080
+  - name: probes
+    containerPort: 9091
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: probes          # target the dedicated probe port, not http
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: probes
+  periodSeconds: 5
+startupProbe:
+  httpGet:
+    path: /startupz
+    port: probes
+  periodSeconds: 5
+  failureThreshold: 30
+```
+
+`dedicatedPort: 0` (the default, or omitting it) keeps the probes inline on the application port, matching the earlier
+examples. See [FEATURES.md](FEATURES.md#dedicated-probe-listener-isolating-probes-from-application-load) for the
+readiness/startup/liveness semantics of the dedicated listener.
+
 ## Probe Tuning Guidance
 
 1. Keep liveness checks strict enough to catch hangs, but avoid false positives under transient load.
 2. Keep readiness checks representative of traffic readiness, not just process up/down.
 3. Use startup probe for slow warmup paths so liveness does not restart pods too early.
 4. Prefer named ports (`port: http`) in probes to avoid drift when container ports change.
+5. For latency-sensitive services, serve probes on a dedicated port (see above) so application load cannot starve them.
 
 ## Common Validation Commands
 
