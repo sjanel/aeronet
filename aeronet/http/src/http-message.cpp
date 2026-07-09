@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bitset>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,7 +39,6 @@
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tolower-str.hpp"
@@ -446,9 +446,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       removeBodyAndItsHeaders();
     }
   } else {
-    const auto newBodyLenCharVec = IntegralToCharVector(newBodySize);
     const auto newContentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValue.size());
-    const auto newContentLengthHeaderSize = HeaderSize(http::ContentLength.size(), newBodyLenCharVec.size());
+    const auto newContentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(newBodySize));
     const bool setInlineBody = context == BodySetContext::Inline && !isHead();
 
     std::size_t neededNewSize = newContentTypeHeaderSize + newContentLengthHeaderSize;
@@ -550,7 +549,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 #endif
       insertPtr = Append(contentTypeValue, getContentTypeValuePtr());
     }
-    insertPtr = WriteCRLFHeader(http::ContentLength, std::string_view(newBodyLenCharVec), insertPtr);
+    insertPtr = WriteCRLFHeader(http::ContentLength, newBodySize, insertPtr);
     insertPtr = Append(http::DoubleCRLF, insertPtr);
     const auto newBodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
     setBodyStartPos(newBodyStartPos);
@@ -641,7 +640,7 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
     if (!contentType.empty()) {
       replaceHeaderValueNoRealloc(getContentTypeValuePtr(), contentType);
     }
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(IntegralToCharVector(newBodyLen)));
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), newBodyLen);
 
     if (isHead()) {
       assert(!capturedBody || _payloadVariant.isSizeOnly());
@@ -1174,8 +1173,6 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
           flatTrailersView = std::string_view(newTrailersDataPtr, flatTrailersView.size());
         }
 
-        const auto bodySzStrVec = IntegralToCharVector(bodySz);
-
         char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr() + http::CRLF.size());
         insertPtr = Append(http::HeaderSep, insertPtr);
         bool isFirst = true;
@@ -1191,7 +1188,9 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
         insertPtr = Append(http::ContentLength, insertPtr);
         insertPtr = Append(http::HeaderSep, insertPtr);
 
-        insertPtr = Append(std::string_view(bodySzStrVec), insertPtr);
+        insertPtr =
+            std::to_chars(insertPtr, insertPtr + std::numeric_limits<decltype(bodySz)>::digits10 + 1, bodySz).ptr;
+
         insertPtr = Append(http::DoubleCRLF, insertPtr);
         const auto newBodyStartPos = static_cast<std::size_t>(insertPtr - _data.data());
         _data.setSize(newBodyStartPos);
@@ -1452,23 +1451,23 @@ void HttpMessage::bodyAppendUpdateHeaders(std::string_view givenContentType, std
     if (!givenContentType.empty()) {
       replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
     }
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(IntegralToCharVector(totalBodyLen)));
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), totalBodyLen);
   }
 }
 
-void HttpMessage::replaceHeaderValueNoRealloc(char* first, std::string_view newValue) {
+char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
   char* last = first;
   while (*last != '\r') {
     ++last;
   }
   const auto oldValueLen = static_cast<std::size_t>(last - first);
-  if (newValue.size() != oldValueLen) {
-    const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldValueLen);
+  if (newValueLen != oldValueLen) {
+    const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
     std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
     _data.adjustSize(diff);
     adjustBodyStart(diff);
   }
-  Copy(newValue, first);
+  return first;
 }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -1516,10 +1515,9 @@ void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
     _data.addSize(written);
     oldBodyLen += written;
 
-    const auto newBodyLenCharVec = IntegralToCharVector(oldBodyLen);
     // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
     // bytes) by playing on 'spaces' after the content-length value.
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), std::string_view(newBodyLenCharVec));
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), oldBodyLen);
   }
 }
 

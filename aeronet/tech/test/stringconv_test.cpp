@@ -3,35 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
 
 namespace aeronet {
-
-TEST(IntegralToCharVector, PositiveValueInt8) {
-  int8_t val = 117;
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(3))), "3");
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(54))), "54");
-  EXPECT_EQ(std::string_view(IntegralToCharVector(val)), "117");
-}
-
-TEST(IntegralToCharVector, NegativeValueInt8) {
-  int8_t val = -11;
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(-8))), "-8");
-  EXPECT_EQ(std::string_view(IntegralToCharVector(val)), "-11");
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int8_t>(-123))), "-123");
-}
-
-TEST(IntegralToCharVector, PositiveValueInt) { EXPECT_EQ(std::string_view(IntegralToCharVector(34)), "34"); }
-
-TEST(IntegralToCharVector, NegativeValueInt16) {
-  EXPECT_EQ(std::string_view(IntegralToCharVector(static_cast<int16_t>(-31678))), "-31678");
-}
-
-TEST(IntegralToCharVector, PositiveValueUint64) {
-  EXPECT_EQ(std::string_view(IntegralToCharVector(std::numeric_limits<uint64_t>::max())), "18446744073709551615");
-}
 
 TEST(StringToIntegral, PositiveValue) {
   EXPECT_EQ(StringToIntegral<uint32_t>("0"), 0);

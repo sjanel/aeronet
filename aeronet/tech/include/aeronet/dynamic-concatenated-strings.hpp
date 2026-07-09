@@ -1,17 +1,20 @@
 #pragma once
 
 #include <cassert>
+#include <charconv>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
 
 #include "aeronet/internal/raw-bytes-base.hpp"
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
@@ -50,18 +53,24 @@ class DynamicConcatenatedStrings {
   // Append a new string part.
   // The string must not contain the separator character.
   void append(std::string_view str) {
-    if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
-      const auto maxSize = static_cast<std::string_view::size_type>(std::numeric_limits<size_type>::max());
-      if (str.size() + kSep.size() > maxSize) {
-        throw std::overflow_error("DynamicConcatenatedStrings::append: part too large");
-      }
-    }
     if (str.contains(kSep)) {
       throw std::invalid_argument("DynamicConcatenatedStrings::append: part contains separator");
     }
     _buf.ensureAvailableCapacityExponential(str.size() + kSep.size());
     _buf.unchecked_append(str);
     _buf.unchecked_append(kSep);
+  }
+
+  // Append a new string part, from the string representation of an integral value.
+  void append(std::integral auto value) {
+    const auto len = nchars(value);
+
+    _buf.ensureAvailableCapacityExponential(len + kSep.size());
+
+    char* pInsertPtr = _buf.data() + _buf.size();
+    pInsertPtr = std::to_chars(pInsertPtr, pInsertPtr + len, value).ptr;
+    pInsertPtr = Append(kSep, pInsertPtr);
+    _buf.setSize(static_cast<decltype(_buf)::size_type>(pInsertPtr - _buf.data()));
   }
 
   // Insert one element for native Glaze readable array support.

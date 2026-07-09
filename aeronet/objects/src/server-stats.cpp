@@ -1,114 +1,215 @@
-
 #include "aeronet/server-stats.hpp"
 
+#include <cassert>
+#include <charconv>
+#include <concepts>
+#include <cstddef>
 #include <string>
 #include <string_view>
 
-#include "aeronet/features.hpp"
-#include "aeronet/stringconv.hpp"
+#include "aeronet/nchars.hpp"
 
 namespace aeronet {
 
-std::string ServerStats::json_str() const {
-  std::string out;
-  if constexpr (aeronet::openSslEnabled()) {
-    out.reserve(512UL);
-  } else {
-    out.reserve(256UL);
-  }
-  out.push_back('{');
-  out.append("\"totalBytesQueued\":").append(std::string_view(IntegralToCharVector(totalBytesQueued))).push_back(',');
-  out.append("\"totalBytesWrittenImmediate\":")
-      .append(std::string_view(IntegralToCharVector(totalBytesWrittenImmediate)))
-      .push_back(',');
-  out.append("\"totalBytesWrittenFlush\":")
-      .append(std::string_view(IntegralToCharVector(totalBytesWrittenFlush)))
-      .push_back(',');
-  out.append("\"deferredWriteEvents\":")
-      .append(std::string_view(IntegralToCharVector(deferredWriteEvents)))
-      .push_back(',');
-  out.append("\"flushCycles\":").append(std::string_view(IntegralToCharVector(flushCycles))).push_back(',');
-  out.append("\"epollModFailures\":").append(std::string_view(IntegralToCharVector(epollModFailures))).push_back(',');
-  out.append("\"maxConnectionOutboundBuffer\":")
-      .append(std::string_view(IntegralToCharVector(maxConnectionOutboundBuffer)));
-  out.push_back(',');
-  out.append("\"totalRequestsServed\":").append(std::string_view(IntegralToCharVector(totalRequestsServed)));
+namespace {
+
+void Append(std::string& out, std::integral auto value) {
+  const std::size_t oldSize = out.size();
+  const std::size_t width = nchars(value);
+  out.resize_and_overwrite(oldSize + width, [oldSize, width, value](char* data, std::size_t /*n*/) {
+    std::to_chars(data + oldSize, data + oldSize + width, value);
+    return oldSize + width;
+  });
+}
+
+// ---- Static json fragments -------------------------------------------
+
+constexpr std::string_view kOpen = "{";
+constexpr std::string_view kClose = "}";
+constexpr std::string_view kComma = ",";
+
+constexpr std::string_view kTotalBytesQueued = R"("totalBytesQueued":)";
+constexpr std::string_view kTotalBytesWrittenImmediate = R"(,"totalBytesWrittenImmediate":)";
+constexpr std::string_view kTotalBytesWrittenFlush = R"(,"totalBytesWrittenFlush":)";
+constexpr std::string_view kDeferredWriteEvents = R"(,"deferredWriteEvents":)";
+constexpr std::string_view kFlushCycles = R"(,"flushCycles":)";
+constexpr std::string_view kEpollModFailures = R"(,"epollModFailures":)";
+constexpr std::string_view kMaxConnectionOutboundBuffer = R"(,"maxConnectionOutboundBuffer":)";
+constexpr std::string_view kTotalRequestsServed = R"(,"totalRequestsServed":)";
+
 #ifdef AERONET_ENABLE_OPENSSL
-  out.append(",\"ktlsSendEnabledConnections\":")
-      .append(std::string_view(IntegralToCharVector(ktlsSendEnabledConnections)));
-  out.append(",\"ktlsSendEnableFallbacks\":").append(std::string_view(IntegralToCharVector(ktlsSendEnableFallbacks)));
-  out.append(",\"ktlsSendForcedShutdowns\":").append(std::string_view(IntegralToCharVector(ktlsSendForcedShutdowns)));
-  out.append(",\"ktlsSendBytes\":").append(std::string_view(IntegralToCharVector(ktlsSendBytes)));
-  out.append(",\"tlsHandshakesSucceeded\":").append(std::string_view(IntegralToCharVector(tlsHandshakesSucceeded)));
-  out.append(",\"tlsHandshakesFull\":").append(std::string_view(IntegralToCharVector(tlsHandshakesFull)));
-  out.append(",\"tlsHandshakesResumed\":").append(std::string_view(IntegralToCharVector(tlsHandshakesResumed)));
-  out.append(",\"tlsHandshakesFailed\":").append(std::string_view(IntegralToCharVector(tlsHandshakesFailed)));
-  out.append(",\"tlsHandshakesRejectedConcurrency\":")
-      .append(std::string_view(IntegralToCharVector(tlsHandshakesRejectedConcurrency)));
-  out.append(",\"tlsHandshakesRejectedRateLimit\":")
-      .append(std::string_view(IntegralToCharVector(tlsHandshakesRejectedRateLimit)));
-  out.append(",\"tlsClientCertPresent\":").append(std::string_view(IntegralToCharVector(tlsClientCertPresent)));
-  out.append(",\"tlsAlpnStrictMismatches\":").append(std::string_view(IntegralToCharVector(tlsAlpnStrictMismatches)));
-  // ALPN distribution
-  out.append(",\"tlsAlpnDistribution\":[");
-  for (const auto& kv : tlsAlpnDistribution) {
-    if (out.back() != '[') {
-      out.push_back(',');
+constexpr std::string_view kKtlsSendEnabledConnections = R"(,"ktlsSendEnabledConnections":)";
+constexpr std::string_view kKtlsSendEnableFallbacks = R"(,"ktlsSendEnableFallbacks":)";
+constexpr std::string_view kKtlsSendForcedShutdowns = R"(,"ktlsSendForcedShutdowns":)";
+constexpr std::string_view kKtlsSendBytes = R"(,"ktlsSendBytes":)";
+constexpr std::string_view kTlsHandshakesSucceeded = R"(,"tlsHandshakesSucceeded":)";
+constexpr std::string_view kTlsHandshakesFull = R"(,"tlsHandshakesFull":)";
+constexpr std::string_view kTlsHandshakesResumed = R"(,"tlsHandshakesResumed":)";
+constexpr std::string_view kTlsHandshakesFailed = R"(,"tlsHandshakesFailed":)";
+constexpr std::string_view kTlsHandshakesRejectedConcurrency = R"(,"tlsHandshakesRejectedConcurrency":)";
+constexpr std::string_view kTlsHandshakesRejectedRateLimit = R"(,"tlsHandshakesRejectedRateLimit":)";
+constexpr std::string_view kTlsClientCertPresent = R"(,"tlsClientCertPresent":)";
+constexpr std::string_view kTlsAlpnStrictMismatches = R"(,"tlsAlpnStrictMismatches":)";
+
+constexpr std::string_view kTlsAlpnDistribution = R"(,"tlsAlpnDistribution":[)";
+constexpr std::string_view kTlsHandshakeFailureReasons = R"(,"tlsHandshakeFailureReasons":[)";
+constexpr std::string_view kTlsVersionCounts = R"(,"tlsVersionCounts":[)";
+constexpr std::string_view kTlsCipherCounts = R"(,"tlsCipherCounts":[)";
+constexpr std::string_view kArrayClose = "]";
+
+constexpr std::string_view kProtocolPrefix = R"({"protocol":")";
+constexpr std::string_view kReasonPrefix = R"({"reason":")";
+constexpr std::string_view kVersionPrefix = R"({"version":")";
+constexpr std::string_view kCipherPrefix = R"({"cipher":")";
+constexpr std::string_view kCountInfix = R"(","count":)";
+constexpr std::string_view kEntryClose = "}";
+
+constexpr std::string_view kTlsHandshakeDurationCount = R"(,"tlsHandshakeDurationCount":)";
+constexpr std::string_view kTlsHandshakeDurationTotalNs = R"(,"tlsHandshakeDurationTotalNs":)";
+constexpr std::string_view kTlsHandshakeDurationMaxNs = R"(,"tlsHandshakeDurationMaxNs":)";
+
+// Exact size of an entry `{"<label>":"<key>","count":<n>}`.
+std::size_t EntrySize(std::string_view prefix, std::string_view key, std::integral auto count) {
+  return prefix.size() + key.size() + kCountInfix.size() + nchars(count) + kEntryClose.size();
+}
+
+// Exact size of the complete JSON array (bounds + separators + entries).
+template <typename Map>
+std::size_t MapSize(std::string_view arrayOpen, std::string_view entryPrefix, const Map& map) {
+  std::size_t size = arrayOpen.size() + kArrayClose.size();
+  bool first = true;
+  for (const auto& kv : map) {
+    if (!first) {
+      size += kComma.size();
     }
-    out.append(R"({"protocol":")")
-        .append(kv.first)
-        .append(R"(","count":)")
-        .append(std::string_view(IntegralToCharVector(kv.second)))
-        .append("}");
+    first = false;
+    size += EntrySize(entryPrefix, kv.first, kv.second);
   }
-  out.push_back(']');
-  // TLS handshake failure reasons
-  out.append(",\"tlsHandshakeFailureReasons\":[");
-  for (const auto& kv : tlsHandshakeFailureReasons) {
-    if (out.back() != '[') {
-      out.push_back(',');
+  return size;
+}
+
+// Writes the complete JSON array. Exact mirror of MapSize above.
+template <typename Map>
+void AppendMap(std::string& out, std::string_view arrayOpen, std::string_view entryPrefix, const Map& map) {
+  out.append(arrayOpen);
+  bool first = true;
+  for (const auto& kv : map) {
+    if (!first) {
+      out.append(kComma);
     }
-    out.append(R"({\"reason\":\")")
-        .append(kv.first)
-        .append(R"(\",\"count\":)")
-        .append(std::string_view(IntegralToCharVector(kv.second)))
-        .append("}");
+    first = false;
+    out.append(entryPrefix);
+    out.append(kv.first);
+    out.append(kCountInfix);
+    Append(out, kv.second);
+    out.append(kEntryClose);
   }
-  out.push_back(']');
-  // TLS version counts
-  out.append(",\"tlsVersionCounts\":[");
-  for (const auto& kv : tlsVersionCounts) {
-    if (out.back() != '[') {
-      out.push_back(',');
-    }
-    out.append(R"({"version":")")
-        .append(kv.first)
-        .append(R"(","count":)")
-        .append(std::string_view(IntegralToCharVector(kv.second)))
-        .append("}");
-  }
-  out.push_back(']');
-  // TLS cipher counts
-  out.append(",\"tlsCipherCounts\":[");
-  for (const auto& kv : tlsCipherCounts) {
-    if (out.back() != '[') {
-      out.push_back(',');
-    }
-    out.append(R"({"cipher":")")
-        .append(kv.first)
-        .append(R"(","count":)")
-        .append(std::string_view(IntegralToCharVector(kv.second)))
-        .append("}");
-  }
-  out.push_back(']');
-  out.append(",\"tlsHandshakeDurationCount\":")
-      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationCount)));
-  out.append(",\"tlsHandshakeDurationTotalNs\":")
-      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationTotalNs)));
-  out.append(",\"tlsHandshakeDurationMaxNs\":")
-      .append(std::string_view(IntegralToCharVector(tlsHandshakeDurationMaxNs)));
+  out.append(kArrayClose);
+}
 #endif
-  out.push_back('}');
+
+}  // namespace
+
+std::string ServerStats::json_str() const {
+  // ---- First pass - compute exact size of the json str -----------------------------
+  std::size_t size = kOpen.size() + kClose.size();
+  size += kTotalBytesQueued.size() + nchars(totalBytesQueued);
+  size += kTotalBytesWrittenImmediate.size() + nchars(totalBytesWrittenImmediate);
+  size += kTotalBytesWrittenFlush.size() + nchars(totalBytesWrittenFlush);
+  size += kDeferredWriteEvents.size() + nchars(deferredWriteEvents);
+  size += kFlushCycles.size() + nchars(flushCycles);
+  size += kEpollModFailures.size() + nchars(epollModFailures);
+  size += kMaxConnectionOutboundBuffer.size() + nchars(maxConnectionOutboundBuffer);
+  size += kTotalRequestsServed.size() + nchars(totalRequestsServed);
+
+#ifdef AERONET_ENABLE_OPENSSL
+  size += kKtlsSendEnabledConnections.size() + nchars(ktlsSendEnabledConnections);
+  size += kKtlsSendEnableFallbacks.size() + nchars(ktlsSendEnableFallbacks);
+  size += kKtlsSendForcedShutdowns.size() + nchars(ktlsSendForcedShutdowns);
+  size += kKtlsSendBytes.size() + nchars(ktlsSendBytes);
+  size += kTlsHandshakesSucceeded.size() + nchars(tlsHandshakesSucceeded);
+  size += kTlsHandshakesFull.size() + nchars(tlsHandshakesFull);
+  size += kTlsHandshakesResumed.size() + nchars(tlsHandshakesResumed);
+  size += kTlsHandshakesFailed.size() + nchars(tlsHandshakesFailed);
+  size += kTlsHandshakesRejectedConcurrency.size() + nchars(tlsHandshakesRejectedConcurrency);
+  size += kTlsHandshakesRejectedRateLimit.size() + nchars(tlsHandshakesRejectedRateLimit);
+  size += kTlsClientCertPresent.size() + nchars(tlsClientCertPresent);
+  size += kTlsAlpnStrictMismatches.size() + nchars(tlsAlpnStrictMismatches);
+
+  size += MapSize(kTlsAlpnDistribution, kProtocolPrefix, tlsAlpnDistribution);
+  size += MapSize(kTlsHandshakeFailureReasons, kReasonPrefix, tlsHandshakeFailureReasons);
+  size += MapSize(kTlsVersionCounts, kVersionPrefix, tlsVersionCounts);
+  size += MapSize(kTlsCipherCounts, kCipherPrefix, tlsCipherCounts);
+
+  size += kTlsHandshakeDurationCount.size() + nchars(tlsHandshakeDurationCount);
+  size += kTlsHandshakeDurationTotalNs.size() + nchars(tlsHandshakeDurationTotalNs);
+  size += kTlsHandshakeDurationMaxNs.size() + nchars(tlsHandshakeDurationMaxNs);
+#endif
+
+  // ---- Second pass - single allocation, then direct writing  ------------
+  std::string out;
+  out.reserve(size);
+
+  out.append(kOpen);
+  out.append(kTotalBytesQueued);
+  Append(out, totalBytesQueued);
+  out.append(kTotalBytesWrittenImmediate);
+  Append(out, totalBytesWrittenImmediate);
+  out.append(kTotalBytesWrittenFlush);
+  Append(out, totalBytesWrittenFlush);
+  out.append(kDeferredWriteEvents);
+  Append(out, deferredWriteEvents);
+  out.append(kFlushCycles);
+  Append(out, flushCycles);
+  out.append(kEpollModFailures);
+  Append(out, epollModFailures);
+  out.append(kMaxConnectionOutboundBuffer);
+  Append(out, maxConnectionOutboundBuffer);
+  out.append(kTotalRequestsServed);
+  Append(out, totalRequestsServed);
+
+#ifdef AERONET_ENABLE_OPENSSL
+  out.append(kKtlsSendEnabledConnections);
+  Append(out, ktlsSendEnabledConnections);
+  out.append(kKtlsSendEnableFallbacks);
+  Append(out, ktlsSendEnableFallbacks);
+  out.append(kKtlsSendForcedShutdowns);
+  Append(out, ktlsSendForcedShutdowns);
+  out.append(kKtlsSendBytes);
+  Append(out, ktlsSendBytes);
+  out.append(kTlsHandshakesSucceeded);
+  Append(out, tlsHandshakesSucceeded);
+  out.append(kTlsHandshakesFull);
+  Append(out, tlsHandshakesFull);
+  out.append(kTlsHandshakesResumed);
+  Append(out, tlsHandshakesResumed);
+  out.append(kTlsHandshakesFailed);
+  Append(out, tlsHandshakesFailed);
+  out.append(kTlsHandshakesRejectedConcurrency);
+  Append(out, tlsHandshakesRejectedConcurrency);
+  out.append(kTlsHandshakesRejectedRateLimit);
+  Append(out, tlsHandshakesRejectedRateLimit);
+  out.append(kTlsClientCertPresent);
+  Append(out, tlsClientCertPresent);
+  out.append(kTlsAlpnStrictMismatches);
+  Append(out, tlsAlpnStrictMismatches);
+
+  AppendMap(out, kTlsAlpnDistribution, kProtocolPrefix, tlsAlpnDistribution);
+  AppendMap(out, kTlsHandshakeFailureReasons, kReasonPrefix, tlsHandshakeFailureReasons);
+  AppendMap(out, kTlsVersionCounts, kVersionPrefix, tlsVersionCounts);
+  AppendMap(out, kTlsCipherCounts, kCipherPrefix, tlsCipherCounts);
+
+  out.append(kTlsHandshakeDurationCount);
+  Append(out, tlsHandshakeDurationCount);
+  out.append(kTlsHandshakeDurationTotalNs);
+  Append(out, tlsHandshakeDurationTotalNs);
+  out.append(kTlsHandshakeDurationMaxNs);
+  Append(out, tlsHandshakeDurationMaxNs);
+#endif
+
+  out.append(kClose);
+
+  assert(out.size() == size);
   return out;
 }
 
