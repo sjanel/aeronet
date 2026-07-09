@@ -101,31 +101,60 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
 
     RawChars received;
     std::size_t offset = 0;
+
+    // Overall safety deadline. Even if the tunnel is torn down mid-transfer (e.g. the
+    // upstream echo server trips its send timeout under CI load and half-closes the
+    // stream), the loop below must never spin forever: once the server has sent
+    // END_STREAM, receiveTunnelData() returns immediately, so a naive "wait for
+    // WINDOW_UPDATE" branch would busy-loop until the CTest timeout kills the whole
+    // binary. The deadline + the canReceive() check below turn any such stall into a
+    // fast, explicit failure instead of a ~100 s hang.
+    const auto sendDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+
+    // Cap the amount of sent-but-not-yet-echoed ("in-flight") data. If the client
+    // races ahead by its full flow-control window, the echo server's socket buffers
+    // fill faster than the round-trip can drain them and it trips its send timeout,
+    // tearing the tunnel down. Keeping the backlog small (well under a socket buffer)
+    // prevents that regardless of how heavily loaded the runner is.
+    static constexpr std::size_t kMaxInFlight = 128UL << 10;  // 128 KB
+    static constexpr int32_t kMaxSendChunk = 16 << 10;        // 16 KB
+
     while (offset < data.size()) {
+      ASSERT_LT(std::chrono::steady_clock::now(), sendDeadline) << "tunnel send loop stalled";
+
       auto* stream = client.connection().getStream(streamId);
       ASSERT_NE(stream, nullptr);
 
-      int32_t streamWin = stream->sendWindow();
-      int32_t connWin = client.connection().connectionSendWindow();
-      int32_t win = std::min(streamWin, connWin);
+      // The server half-closed its side (upstream gone): no more DATA/WINDOW_UPDATE
+      // frames will arrive, so stop instead of spinning on an already-complete stream.
+      if (!stream->canReceive()) {
+        break;
+      }
 
-      if (win <= 0) {
-        // Wait for WINDOW_UPDATE
+      int32_t win = std::min(stream->sendWindow(), client.connection().connectionSendWindow());
+      const bool inFlightFull = (offset - received.size()) >= kMaxInFlight;
+
+      if (win <= 0 || inFlightFull) {
+        // Blocked on flow control or throttled: drain incoming echo data, which also
+        // processes WINDOW_UPDATE frames and reopens our send window. Note: `stream`
+        // may be invalidated here, so it must be re-fetched at the top of the loop.
         client.receiveTunnelData(received, streamId, std::chrono::milliseconds{100});
         continue;
       }
 
-      // Cap each send to avoid blocking in writeAll (which would deadlock if the
-      // echo server can't drain because our TCP recv buffer is full).
-      static constexpr int32_t kMaxSendChunk = 16 << 10;  // 16 KB
       int32_t sendWin = std::min(win, kMaxSendChunk);
       std::size_t chunkSize = std::min(data.size() - offset, static_cast<std::size_t>(sendWin));
       ASSERT_TRUE(client.sendTunnelData(streamId, data.subspan(offset, chunkSize), false));
       offset += chunkSize;
 
-      // Non-blocking drain of incoming echo data to keep the TCP receive buffer
-      // from filling up (which would prevent the server from writing).
-      client.receiveTunnelData(received, streamId, std::chrono::milliseconds{0});
+      // Drain everything immediately available so our advertised receive window stays
+      // open and the server keeps reading from (and writing to) the echo upstream.
+      for (std::size_t before = received.size();; before = received.size()) {
+        client.receiveTunnelData(received, streamId, std::chrono::milliseconds{0});
+        if (received.size() == before) {
+          break;
+        }
+      }
     }
 
     // Send empty END_STREAM
