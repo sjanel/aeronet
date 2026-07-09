@@ -38,6 +38,21 @@ class File {
   // On failure, operator bool() returns false.
   explicit File(const char* path, OpenMode mode = OpenMode::ReadOnly);
 
+  // Copy: duplicates the underlying descriptor (dup/_dup) so the copy owns an independent, valid handle to the
+  // same underlying file. size()/lastModified()/detectedContentType() metadata is copied as-is from the source
+  // (not re-queried), since it describes the same file at the same open-time snapshot.
+  // If duplication fails, the resulting File behaves like a failed open: operator bool() is false, size() is
+  // kError, lastModified() is the invalid sentinel.
+  File(const File& rhs);
+  File& operator=(const File& rhs);
+
+  // Declaring the copy ops above suppresses implicit move generation, so restore it explicitly: moving just
+  // steals the BaseFd (no dup()) and copies the trivial metadata fields.
+  File(File&&) noexcept = default;
+  File& operator=(File&&) noexcept = default;
+
+  ~File() = default;
+
   // Returns true when the File currently holds an opened descriptor.
   explicit operator bool() const noexcept { return static_cast<bool>(_fd); }
 

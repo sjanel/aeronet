@@ -488,10 +488,9 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   const auto portDigits = ndigits(port);
   const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portDigits;
 
-  RawChars& reqBuffer = _requestBuffer;
+  RawChars& reqBuffer = _reqBodyScratch;
   reqBuffer.clear();
-  reqBuffer.ensureAvailableCapacity(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen +
-                                    http::DoubleCRLF.size());
+  reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
   const auto appendAuthority = [&](char* out) {
     if (ipv6) {
       *out++ = '[';
@@ -785,7 +784,101 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
   }
 }
 
+bool HttpClient::cacheEligible(const ClientRequest& req) const noexcept {
+  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method());
+}
+
+std::string_view HttpClient::buildCacheKey(const ClientRequest& req) {
+  const std::string_view url = req.url();
+  const std::string_view headers = req.headersFlatView();
+  const std::string_view body = req.body();
+  // Layout: [1 method-idx byte][url]['\n'][headers]['\n'][body]. The two '\n' separators keep the key
+  // unambiguous (a URL never contains a raw newline, and the flat header block ends each line with CRLF), so
+  // distinct (url, headers, body) triples can never collide by concatenation.
+  _cacheKeyScratch.clear();
+  _cacheKeyScratch.reserve(1U + url.size() + 1U + headers.size() + 1U + body.size());
+  char* ptr = _cacheKeyScratch.data();
+  *ptr++ = static_cast<char>(http::MethodToIdx(req.method()));
+  ptr = Append(url, ptr);
+  *ptr++ = '\n';
+  ptr = Append(headers, ptr);
+  *ptr++ = '\n';
+  ptr = Append(body, ptr);
+  _cacheKeyScratch.setSize(static_cast<std::size_t>(ptr - _cacheKeyScratch.data()));
+  return _cacheKeyScratch;
+}
+
+void HttpClient::pruneExpiredCache(SteadyClock::time_point now) {
+  const auto refresh = _config.cache.refreshPeriod;
+  for (auto it = _cache.begin(); it != _cache.end();) {
+    if (std::chrono::duration_cast<HttpClientConfig::Duration>(now - it->second.lastUpdated) >= refresh) {
+      it = _cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
+  // Amortized housekeeping: every so often sweep expired entries so a cache of one-shot URLs does not keep
+  // dead entries around until it hits maxEntries. Cheap relative to a network round trip.
+  static constexpr uint32_t kCachePruneInterval = 256;
+  if (++_cachePruneCounter >= kCachePruneInterval) {
+    _cachePruneCounter = 0;
+    pruneExpiredCache(SteadyClock::now());
+  }
+  auto it = _cache.find(key);
+  if (it == _cache.end()) {
+    return nullptr;  // miss
+  }
+  if (std::chrono::duration_cast<HttpClientConfig::Duration>(SteadyClock::now() - it->second.lastUpdated) >=
+      _config.cache.refreshPeriod) {
+    return nullptr;  // stale: caller refetches and overwrites this entry
+  }
+  return &it->second.response;
+}
+
+void HttpClient::cacheStore(std::string_view key, const HttpResponse& resp) {
+  const auto now = SteadyClock::now();
+
+  auto cloned = resp.cloneFinalized();
+  auto [it, inserted] = _cache.try_emplace(key, std::move(cloned), now);
+
+  if (!inserted) {
+    // The above move actually did not happen, so it's safe to move again here.
+    it->second.response = std::move(cloned);
+    it->second.lastUpdated = now;
+    return;
+  }
+
+  if (_cache.size() > _config.cache.maxEntries) {
+    pruneExpiredCache(now);
+    if (_cache.size() > _config.cache.maxEntries) {
+      _cache.erase(std::ranges::min_element(_cache, {}, [](const auto& kv) { return kv.second.lastUpdated; }));
+    }
+  }
+}
+
 HttpClientResult HttpClient::request(const ClientRequest& req) {
+  const bool isCacheEligible = cacheEligible(req);
+
+  std::string_view cacheKey;
+  if (isCacheEligible) {
+    cacheKey = buildCacheKey(req);
+    if (HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey)) {
+      return pCachedHttpResponse->cloneFinalized();  // fresh cache hit: hand back an independent copy
+    }
+  }
+  HttpClientResult result = requestUncached(req);
+  // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
+  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
+    cacheStore(cacheKey, *result);
+  }
+
+  return result;
+}
+
+HttpClientResult HttpClient::requestUncached(const ClientRequest& req) {
   std::expected<Url, HttpClientErrc> parsed = Url::Parse(req.url());
   if (!parsed) {
     return std::unexpected(parsed.error());  // malformed / unsupported URL

@@ -49,6 +49,14 @@ class HttpPayload {
 
   explicit HttpPayload(FilePayload filePayload) noexcept : _data(std::move(filePayload)) {}
 
+  HttpPayload(const HttpPayload& rhs);
+  HttpPayload& operator=(const HttpPayload& rhs);
+
+  HttpPayload(HttpPayload&&) noexcept = default;
+  HttpPayload& operator=(HttpPayload&&) noexcept = default;
+
+  ~HttpPayload() = default;
+
   [[nodiscard]] constexpr bool empty() const noexcept { return _data.index() == 0; }
 
   [[nodiscard]] constexpr bool isFilePayload() const noexcept { return std::holds_alternative<FilePayload>(_data); }

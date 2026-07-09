@@ -10,6 +10,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
@@ -74,6 +75,34 @@ class HttpClientConfig {
   // Only consulted when a connection actually speaks HTTP/2 (see `httpVersion`) and requires a build with
   // AERONET_ENABLE_HTTP2.
   Http2Config http2;
+
+  // --- Built-in response cache for safe / idempotent requests ---
+  //
+  // A simple in-process TTL cache: while a cached response is
+  // younger than `refreshPeriod`, a repeated eligible request is served straight from memory with no network
+  // round trip; once older, the next request refetches and refreshes the entry. It is a pure time-based
+  // cache and deliberately does NOT interpret HTTP cache-control semantics (`Cache-Control`, `ETag`,
+  // `Vary`, `Age`, ...): the refresh period is authoritative. Entries are keyed by request method + URL +
+  // request headers + body, so requests that differ in any of those (e.g. a different `Authorization`) never
+  // share an entry. Only successful (2xx) responses are stored, and only for methods in `methods` (default
+  // GET + HEAD). Disabled by default (`refreshPeriod == 0`); enable it by setting a positive refresh period
+  // (`Duration::max()` caches for the client's whole lifetime). The cache lives in the HttpClient and shares
+  // its single-threaded assumption.
+  struct RequestCache {
+    // Whether the cache is active. A zero refresh period keeps it off (opt-in).
+    [[nodiscard]] bool enabled() const noexcept { return refreshPeriod > Duration::zero(); }
+
+    // Time-to-live of a cached response: an entry at least this old is refetched on the next request. 0
+    // disables the cache; Duration::max() never expires an entry.
+    Duration refreshPeriod{Duration::zero()};
+    // Hard cap on the number of cached entries (memory guard). When inserting into a full cache, expired
+    // entries are pruned first, then -- if still full -- the least-recently-refreshed entry is evicted.
+    std::uint32_t maxEntries{1024};
+    // Request methods eligible for caching. Must be a subset of the safe methods (GET / HEAD / OPTIONS):
+    // caching an unsafe or non-idempotent method's response is nonsensical and is rejected by validate().
+    http::MethodBmp methods{http::Method::GET | http::Method::HEAD};
+  };
+  RequestCache cache;
 
   bool followRedirects{true};
   bool keepAlive{true};
@@ -198,6 +227,29 @@ class HttpClientConfig {
   // Set the transparent retry + backoff policy.
   HttpClientConfig& withRetry(RetryConfig retryConfig) {
     retry = std::move(retryConfig);
+    return *this;
+  }
+
+  // Enable (or, with a zero period, disable) the built-in response cache and set its TTL (see `cache`).
+  HttpClientConfig& withCache(Duration refreshPeriod) {
+    cache.refreshPeriod = refreshPeriod;
+    return *this;
+  }
+
+  // Set the maximum number of cached responses retained before eviction (see `cache.maxEntries`).
+  HttpClientConfig& withCacheMaxEntries(std::uint32_t maxEntries) {
+    cache.maxEntries = maxEntries;
+    return *this;
+  }
+
+  // Restrict which request methods are eligible for caching (subset of GET / HEAD / OPTIONS). Pass a single
+  // method or an OR-combination (e.g. http::Method::GET | http::Method::HEAD).
+  HttpClientConfig& withCacheMethods(http::MethodBmp methods) {
+    cache.methods = methods;
+    return *this;
+  }
+  HttpClientConfig& withCacheMethods(http::Method method) {
+    cache.methods = static_cast<http::MethodBmp>(method);
     return *this;
   }
 
