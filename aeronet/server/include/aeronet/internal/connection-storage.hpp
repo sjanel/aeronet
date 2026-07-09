@@ -140,6 +140,20 @@ class ConnectionStorage {
   ConnectionIt iterator(NativeHandle fd) {
 #ifdef AERONET_WINDOWS
     return ConnectionIt(_activeConnections.find(fd));
+#elifdef AERONET_MACOS
+    // macOS only. `fd` comes straight from the poller here, and macOS kqueue has been observed to
+    // deliver a late event for an already-closed fd. That fd's slot may already have been nulled and
+    // trimmed by shrink_to_fit(), leaving the vector shorter than the fd, so indexing begin() +
+    // (fd - 1) would read past it (the raw-pointer iterator is not bounds-checked) - an out-of-bounds
+    // read surfacing as an operator[] assertion in connectionState(). Map any out-of-range fd to
+    // end() (invalid / negative fds wrap to a huge index and land here too) so IsValid() reports it
+    // as gone, exactly how the event loop already handles a stale fd. Linux epoll needs none of this:
+    // epoll_ctl(DEL) + close() reliably purge pending events, so the poller never returns a closed fd.
+    const auto idx = static_cast<ConnectionIdx>(fd - 1);
+    if (idx >= _activeConnections.size()) [[unlikely]] {
+      return _activeConnections.end();
+    }
+    return _activeConnections.begin() + idx;
 #else
     return _activeConnections.begin() + (fd - 1);
 #endif
@@ -221,6 +235,10 @@ class ConnectionStorage {
 [[nodiscard]] inline bool IsValid([[maybe_unused]] ConnectionStorage& storage, ConnectionStorage::ConnectionIt cnxIt) {
 #ifdef AERONET_WINDOWS
   return cnxIt != storage.end();
+#elifdef AERONET_MACOS
+  // macOS only: iterator(fd) returns end() for a stale / out-of-range fd (see there); guard it
+  // before dereferencing the raw-pointer iterator.
+  return cnxIt != storage.end() && static_cast<bool>(*cnxIt);
 #else
   return static_cast<bool>(*cnxIt);
 #endif

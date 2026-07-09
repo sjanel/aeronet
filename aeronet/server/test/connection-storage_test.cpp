@@ -151,6 +151,45 @@ TEST(ConnectionStorage, ShrinkToFitTrimsTrailingNulls) {
   EXPECT_FALSE(storage.empty());
 }
 
+// macOS only: this reproduces the out-of-bounds read behind the crash observed there during graceful
+// drain, where a late kqueue event references a connection whose trailing vector slot shrink_to_fit()
+// has already trimmed. On macOS iterator(fd) must map such an out-of-range fd to end() so IsValid()
+// reports it as gone, instead of computing begin() + (fd - 1) and letting IsValid dereference past the
+// vector. Linux epoll never delivers such a stale fd, so the guard (and this test) are macOS-only.
+#ifdef AERONET_MACOS
+TEST(ConnectionStorage, StaleFdBeyondShrunkVectorIsReportedGone) {
+  ConnectionStorage storage;
+
+  // Emplace 10 connections; the vector is indexed by (fd - 1), so it grows to hold fd 110.
+  for (NativeHandle fd = 101; fd <= 110; ++fd) {
+    ASSERT_TRUE(storage.emplace(Connection(BaseFd(fd))) != storage.end());
+  }
+
+  // Close the three highest fds and trim the trailing null slots: the vector now ends at fd 107.
+  for (NativeHandle fd = 108; fd <= 110; ++fd) {
+    RecycleConnection(storage, 10, storage.iterator(fd));
+  }
+  storage.shrink_to_fit();
+  ASSERT_EQ(storage.end() - storage.begin(), 107);
+
+  // A live, in-range fd stays valid.
+  EXPECT_TRUE(IsValid(storage, storage.iterator(107)));
+
+  // A dead but in-range fd (slot present yet empty) is reported gone via the emptiness check.
+  EXPECT_FALSE(IsValid(storage, storage.iterator(50)));
+
+  // Stale fds whose (fd - 1) index now lands at/after the shrunk vector end must be reported gone;
+  // previously IsValid dereferenced past the vector here (out-of-bounds read / operator[] assertion).
+  for (NativeHandle staleFd = 108; staleFd <= 115; ++staleFd) {
+    EXPECT_FALSE(IsValid(storage, storage.iterator(staleFd))) << "stale fd " << staleFd;
+  }
+
+  // Invalid / non-positive fds wrap to a huge index and are likewise reported gone.
+  EXPECT_FALSE(IsValid(storage, storage.iterator(0)));
+  EXPECT_FALSE(IsValid(storage, storage.iterator(kInvalidHandle)));
+}
+#endif  // AERONET_MACOS
+
 TEST(ConnectionStorage, ShrinkToFitShrinksLargeCapacity) {
   ConnectionStorage storage;
 
