@@ -1,9 +1,12 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/client-connection.hpp"
@@ -95,6 +98,10 @@ class HttpClient {
   // Drop all idle pooled connections (e.g. after a server restart). In-flight requests unaffected.
   void clearIdleConnections();
 
+  // Evict every entry from the built-in response cache, forcing the next eligible request to refetch. No-op
+  // when the cache is disabled. See HttpClientConfig::cache.
+  void clearResponseCache() noexcept { _cache.clear(); }
+
  private:
   // A live transport (plain or TLS) plus the socket it owns.
   struct ActiveConnection {
@@ -103,27 +110,49 @@ class HttpClient {
     void reset() noexcept {
       transport.reset();
       idleSince = {};
-      cnx = {};
       proto.reset();
+      cnx = {};
       protocol = ClientProtocol::Http1_1;
       reused = false;
     }
 
+    using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<internal::ClientConnection> &&
+                                                     amc::is_trivially_relocatable_v<Connection>>::type;
+
     std::unique_ptr<ITransport> transport;
     SteadyClock::time_point idleSince;  // when this connection was returned to the idle pool
+    internal::ClientConnection proto;
     // Wire-protocol engine for this connection (HTTP/1.1 or HTTP/2). Created lazily once the protocol is
     // known (after ALPN), then pooled with the connection so a reused connection keeps its handler/state
     // (for HTTP/2: negotiated settings, HPACK dynamic tables, stream ids).
     Connection cnx;
-    internal::ClientConnection proto;
     ClientProtocol protocol{ClientProtocol::Http1_1};  // negotiated via ALPN (https) or assumed (http)
     bool reused{false};                                // taken from the idle pool
   };
+
+  // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
+  // this with the cache lookup/store when caching is enabled and the request is eligible.
+  HttpClientResult requestUncached(const ClientRequest& req);
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. `method` / `dropBody` carry redirect rewriting without copying the
   // (move-only) request.
   HttpClientResult performExchange(const Url& url, const ClientRequest& req, http::Method method, bool dropBody);
+
+  // --- Built-in response cache (see HttpClientConfig::cache) ---
+  // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
+  [[nodiscard]] bool cacheEligible(const ClientRequest& req) const noexcept;
+  // Build the cache key (method + url + headers + body) into the reusable _cacheKeyScratch buffer and return
+  // a view of it. The view stays valid until the next buildCacheKey call (requestUncached never touches it).
+  std::string_view buildCacheKey(const ClientRequest& req);
+  // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
+  // Amortized periodic pruning of expired entries happens here.
+  HttpResponse* cacheLookupFresh(std::string_view key);
+  // Store (a deep copy of) `resp` under `key`, refreshing an existing entry or inserting a new one; enforces
+  // the cache.maxEntries bound (prune expired, then evict the least-recently-refreshed entry).
+  void cacheStore(std::string_view key, const HttpResponse& resp);
+  // Erase every cache entry at least refreshPeriod old.
+  void pruneExpiredCache(SteadyClock::time_point now);
 
   // Acquire a connection for the origin: reuse an idle pooled one or establish a fresh one.
   std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const Url& url);
@@ -184,9 +213,12 @@ class HttpClient {
   // the first request that actually needs a codec, so codec-free usage pays nothing.
   internal::HttpClientCodec& codec();
 
-  [[nodiscard]] RawChars& requestBuffer() noexcept { return _requestBuffer; }
+  // requestBuffer() and bodyBuffer() intentionally return the same buffer (_reqBodyScratch): a request is
+  // always fully written before its response body is de-framed, so the two roles never overlap in time. The
+  // distinct names keep call sites self-documenting; see the _reqBodyScratch declaration.
+  [[nodiscard]] RawChars& requestBuffer() noexcept { return _reqBodyScratch; }
   [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
-  [[nodiscard]] RawChars& bodyBuffer() noexcept { return _bodyBuffer; }
+  [[nodiscard]] RawChars& bodyBuffer() noexcept { return _reqBodyScratch; }
 
 #ifdef AERONET_ENABLE_OPENSSL
   internal::HttpClientTlsContext& tlsContext();
@@ -204,17 +236,32 @@ class HttpClient {
   // connection be reused across requests without re-adding / re-arming the loop on every request, while
   // never leaving idle pooled fds registered (which, level-triggered, could spin the poll loop).
   NativeHandle _loopFd{kInvalidHandle};
+  uint32_t _cachePruneCounter{0};  // amortizes the periodic sweep of expired cache entries
   EventBmp _loopInterest{0};
   uint16_t _proxyPort{0};                        // forward-proxy port (see _proxyHost)
   uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
+
+  // A cached response plus the timestamp it was last refreshed (for TTL expiry).
+  struct CacheEntry {
+    HttpResponse response;
+    SteadyClock::time_point lastUpdated;
+  };
+
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
-  RawChars _requestBuffer;   // reused across requests to avoid reallocations
+  // Built-in response cache keyed by request identity (method + url + headers + body); transparent
+  // string_view lookup. Empty / unused unless HttpClientConfig::cache is enabled.
+  flat_hash_map<RawChars32, CacheEntry, CityHash, std::equal_to<>> _cache;
+  RawChars _cacheKeyScratch;  // reused buffer to build lookup keys without per-request allocation
+  // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are
+  // never live at once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy
+  // CONNECT line); once it is fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target
+  // (borrowed by ResponseParser, which clears it in reset()). Kept distinct from _responseBuffer because
+  // chunked de-framing reads from that receive buffer while writing into this one. HTTP/2 only uses the
+  // phase-1 role. Reused across requests so a keep-alive connection never re-grows the allocation. Exposed
+  // through the requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
+  RawChars _reqBodyScratch;
   RawChars _responseBuffer;  // reused across requests: raw bytes are read straight into its tail
-  // Reassembled response body, kept distinct from _responseBuffer (the receive buffer it is de-framed from).
-  // HTTP/1.1 chunked de-framing writes here (borrowed by ResponseParser); reused across requests so a
-  // keep-alive connection streaming chunked responses never re-grows this allocation.
-  RawChars _bodyBuffer;
   // Forward-proxy host, empty when no proxy is configured (parsed once from HttpClientConfig::proxyUrl at
   // construction). Kept with one spare trailing byte so it can be handed to ConnectTCP (which transiently
   // null-terminates its host span) exactly like a Url host.

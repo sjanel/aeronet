@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/http-constants.hpp"
@@ -110,6 +111,26 @@ inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut) {
   sizeOut = File::kError;
 }
 
+inline BaseFd DuplicateFileBaseFd(const BaseFd& src) {
+  if (!src) {
+    return BaseFd();
+  }
+#ifdef AERONET_POSIX
+  const int fd = ::dup(src.fd());
+  if (fd == -1) [[unlikely]] {
+    log::error("Unable to duplicate file descriptor {} (error {}: {})", src.fd(), errno, SystemErrorMessage(errno));
+  }
+  return BaseFd(fd);
+#elifdef AERONET_WINDOWS
+  const int fd = _dup(static_cast<int>(src.fd()));
+  if (fd == -1) [[unlikely]] {
+    log::error("Unable to duplicate file descriptor {} (error {}: {})", static_cast<int>(src.fd()), errno,
+               SystemErrorMessage(errno));
+  }
+  return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
+#endif
+}
+
 }  // namespace
 
 File::File(std::string_view path, OpenMode mode)
@@ -120,6 +141,23 @@ File::File(std::string_view path, OpenMode mode)
 File::File(const char* path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
   StatFile(_fd, _fileSize, _mtime);
+}
+
+File::File(const File& rhs)
+    : _fd(DuplicateFileBaseFd(rhs._fd)),
+      _mimeMappingIdx(rhs._mimeMappingIdx),
+      _fileSize(_fd ? rhs._fileSize : kError),
+      _mtime(_fd ? rhs._mtime : SysTimePoint::max()) {}
+
+File& File::operator=(const File& rhs) {
+  if (this != &rhs) {
+    BaseFd newFd = DuplicateFileBaseFd(rhs._fd);
+    _mimeMappingIdx = rhs._mimeMappingIdx;
+    _fileSize = newFd ? rhs._fileSize : kError;
+    _mtime = newFd ? rhs._mtime : SysTimePoint::max();
+    _fd = std::move(newFd);  // old fd (if any) closed by BaseFd's move-assignment
+  }
+  return *this;
 }
 
 std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
