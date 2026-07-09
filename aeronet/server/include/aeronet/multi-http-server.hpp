@@ -49,7 +49,25 @@ class MultiHttpServer {
   //   // ... do work while servers run in background ...
   //   handle.stop();  // or let handle destructor auto-stop
   //   handle.rethrowIfError();  // check for exceptions from any event loop
-  struct HandleCompletion;
+
+  // ControlBlock: the two long-lived pieces of shared coordination state, folded into a single heap block so both the
+  // MultiHttpServer and its AsyncHandle reference them through one shared_ptr (instead of two) and one allocation:
+  //  - stopRequested: single-writer (controller thread), multi-reader (worker threads) latch requesting shutdown. It
+  //    avoids freezes when stop() races a server thread that has not yet entered its main loop after start().
+  //  - lifecycleTracker: running-instance counter + condition variable coordinating start/stop.
+  // Each underlying SingleHttpServer keeps a weak_ptr aliased onto lifecycleTracker (see lifecycleTrackerPtr()); the
+  // strong owners of BOTH sub-objects are exactly {MultiHttpServer, AsyncHandle}, which makes the merge
+  // behaviour-neutral.
+  struct ControlBlock {
+    std::atomic<bool> stopRequested{false};
+    ServerLifecycleTracker lifecycleTracker;
+  };
+
+  // HandleState: the per-start shared state referenced by the AsyncHandle, the worker-thread stop predicates and (when
+  // a stop_token is supplied) the stop-token binding. It merges the stop callback and the completion signal into one
+  // block so a single allocation and a single weak_ptr replace what were previously two of each. The stop-token binding
+  // is kept OUT of this block on purpose: its stop action captures the state, so nesting it here would form a cycle.
+  struct HandleState;
 
   class AsyncHandle {
    public:
@@ -76,17 +94,14 @@ class MultiHttpServer {
    private:
     friend class MultiHttpServer;
 
-    AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles, std::shared_ptr<std::atomic<bool>> stopRequested,
-                std::shared_ptr<std::function<void()>> onStop, std::shared_ptr<HandleCompletion> completion,
-                std::shared_ptr<ServerLifecycleTracker> lifecycleTracker, std::shared_ptr<void> stopTokenBinding);
+    AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles, std::shared_ptr<ControlBlock> control,
+                std::shared_ptr<HandleState> state, std::shared_ptr<void> stopTokenBinding);
 
     void notifyCompletion() noexcept;
 
     vector<SingleHttpServer::AsyncHandle> _serverHandles;
-    std::shared_ptr<std::atomic<bool>> _stopRequested;  // shared with server logic
-    std::shared_ptr<std::function<void()>> _onStop;
-    std::shared_ptr<HandleCompletion> _completion;
-    std::shared_ptr<ServerLifecycleTracker> _lifecycleTracker;
+    std::shared_ptr<ControlBlock> _control;  // stopRequested + lifecycleTracker, shared with the MultiHttpServer
+    std::shared_ptr<HandleState> _state;     // stop callback + completion signal
     std::shared_ptr<void> _stopTokenBinding;
     std::exception_ptr _storedError;
     std::atomic<bool> _stopCalled{false};
@@ -245,7 +260,7 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_lastHandleStopFn.expired(); }
+  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_lastHandleState.expired(); }
 
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
@@ -318,11 +333,17 @@ class MultiHttpServer {
   [[nodiscard]] AsyncHandle startDetachedInternal(std::function<bool()> extraStopCondition,
                                                   const std::stop_token& externalStopToken);
 
-  // single-writer (controller thread), multi-reader (worker threads)
-  // It is useful to avoid freezes when stop() before the server thread has entered the main loop after start.
-  // Shared ownership allows both MultiHttpServer and AsyncHandle to control stopping.
-  std::shared_ptr<std::atomic<bool>> _stopRequested{std::make_shared<std::atomic<bool>>(false)};
-  std::shared_ptr<ServerLifecycleTracker> _lifecycleTracker{std::make_shared<ServerLifecycleTracker>()};
+  // Aliasing shared_ptr onto _control->lifecycleTracker: shares the ControlBlock's refcount while pointing at the
+  // tracker sub-object, so each SingleHttpServer's weak_ptr<ServerLifecycleTracker> stays valid for as long as the
+  // ControlBlock lives (i.e. for as long as this MultiHttpServer or any of its handles does).
+  [[nodiscard]] std::shared_ptr<ServerLifecycleTracker> lifecycleTrackerPtr() const {
+    return {_control, &_control->lifecycleTracker};
+  }
+
+  // Shared coordination state (stop latch + lifecycle tracker). Shared ownership lets both MultiHttpServer and its
+  // AsyncHandle control stopping; see ControlBlock. Lives for the whole MultiHttpServer lifetime, reused across
+  // restarts.
+  std::shared_ptr<ControlBlock> _control{std::make_shared<ControlBlock>()};
 
   // IMPORTANT LIFETIME NOTE:
   // Each server thread captures a raw pointer to its corresponding SingleHttpServer element stored in _servers.
@@ -344,8 +365,9 @@ class MultiHttpServer {
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
   std::optional<AsyncHandle> _internalHandle;
-  std::weak_ptr<std::function<void()>> _lastHandleStopFn;
-  std::weak_ptr<HandleCompletion> _lastHandleCompletion;
+  // Weak view of the most recent handle's per-start state. Used to detect a still-running detached handle (isRunning),
+  // to neuter its stop callback when this server is destroyed first, and to wait for it to finish in stop().
+  std::weak_ptr<HandleState> _lastHandleState;
   std::shared_ptr<std::atomic<bool>> _serversAlive{std::make_shared<std::atomic<bool>>(true)};
 };
 
