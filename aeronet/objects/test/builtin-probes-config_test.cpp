@@ -2,8 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <stdexcept>
 #include <string>
+
+using namespace std::chrono_literals;
 
 namespace aeronet {
 
@@ -53,6 +56,27 @@ TEST(BuiltinProbesConfigTest, DisableValidation) {
   config.withReadinessPath("noleadingslash");
   config.withStartupPath("/validpath/with space");
 
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(BuiltinProbesConfigTest, DedicatedPortRequiresPositiveLivenessThreshold) {
+  BuiltinProbesConfig config;
+  config.enabled = true;
+  config.withDedicatedPort(9091).withLivenessStaleThreshold(0ms);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.withLivenessStaleThreshold(-5ms);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.withLivenessStaleThreshold(2s);
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(BuiltinProbesConfigTest, ZeroDedicatedPortIgnoresLivenessThreshold) {
+  // With no dedicated port the threshold is unused, so a non-positive value must not be rejected.
+  BuiltinProbesConfig config;
+  config.enabled = true;
+  config.withDedicatedPort(0).withLivenessStaleThreshold(0ms);
   EXPECT_NO_THROW(config.validate());
 }
 
