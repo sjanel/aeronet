@@ -6,6 +6,7 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include <memory>
+#include <type_traits>
 #endif
 
 #include "aeronet/http-client-error.hpp"
@@ -68,6 +69,7 @@ class ClientConnection {
   ClientConnection& operator=(const ClientConnection&) = delete;
   ClientConnection(ClientConnection&&) noexcept;
   ClientConnection& operator=(ClientConnection&&) noexcept;
+
   ~ClientConnection();
 #else
   explicit ClientConnection(Type type = Type::Empty) noexcept : _type(type) {}
@@ -105,6 +107,8 @@ class ClientConnection {
   [[nodiscard]] bool canTakeAnotherStream() const noexcept;
 
   void reset() noexcept;
+
+  using trivially_relocatable = std::true_type;
 #else
   // NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- non-static to match the HTTP/2 build
   [[nodiscard]] bool canTakeAnotherStream() const noexcept { return true; }

@@ -51,7 +51,6 @@ AeronetAddUnitTest(
     aeronet_client
 )
 
-
 AeronetAddUnitTest(
     client-request_test
     test/client-request_test.cpp
@@ -59,12 +58,13 @@ AeronetAddUnitTest(
     aeronet_client
 )
 
-# Pure-config / pure-builder unit tests (no sockets).
 AeronetAddUnitTest(
-    http-client-config_test
-    test/http-client-config_test.cpp
+    http-client-core_test
+    test/http-client-core_test.cpp
     LIBRARIES
     aeronet_client
+    aeronet
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(
@@ -72,22 +72,6 @@ AeronetAddUnitTest(
     test/http-client-exception_test.cpp
     LIBRARIES
     aeronet_client
-)
-
-AeronetAddUnitTest(
-    http-client-error_test
-    test/http-client-error_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-
-# End-to-end tests drive the client against a live aeronet server.
-AeronetAddUnitTest(
-    http-client-e2e_test
-    test/http-client-e2e_test.cpp
-    LIBRARIES
-    aeronet_client
-    aeronet
 )
 
 # Native HTTP/2 client engine: h2c prior knowledge over plain http, Auto/Http1_1/Http2 version modes,
@@ -103,34 +87,6 @@ if(AERONET_ENABLE_HTTP2)
     )
 endif()
 
-# Error / retry paths driven by a hand-rolled raw TCP server (abrupt close, dead pool, timeout, DNS).
-AeronetAddUnitTest(
-    http-client-error-e2e_test
-    test/http-client-error-e2e_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-
-# Forward-proxy support (absolute-form http, CONNECT tunnel for https) driven by a tiny hand-rolled proxy.
-AeronetAddUnitTest(
-    http-client-proxy-e2e_test
-    test/http-client-proxy-e2e_test.cpp
-    LIBRARIES
-    aeronet_client
-    aeronet
-    aeronet_basic_test_support
-)
-
-# End-to-end automatic compression / decompression against a live aeronet server.
-AeronetAddUnitTest(
-    http-client-compression-e2e_test
-    test/http-client-compression-e2e_test.cpp
-    LIBRARIES
-    aeronet_client
-    aeronet
-    aeronet_test_support
-)
-
 if(AERONET_ENABLE_OPENSSL)
     AeronetAddUnitTest(
         http-client-tls-e2e_test
@@ -145,14 +101,6 @@ endif()
 AeronetAddUnitTest(
     response-parser_test
     test/response-parser_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-
-# Parser-level automatic decompression coverage (needs the compression test helpers).
-AeronetAddUnitTest(
-    response-parser-decompress_test
-    test/response-parser-decompress_test.cpp
     LIBRARIES
     aeronet_client
     aeronet_test_support

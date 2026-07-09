@@ -1049,6 +1049,9 @@ class HttpMessage {
   friend class http2::Http2ProtocolHandler;
   friend class http2::Http2WriterTransport;
 #endif
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+  friend class HttpClient;
+#endif
 
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.
@@ -1057,6 +1060,17 @@ class HttpMessage {
   // Private constructor bypassing checks for internal use only.
   HttpMessage(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
               std::string_view body, std::string_view contentType, Check check);
+
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+  // Deep-copy this message into an independent, fully-owning HttpMessage. HttpMessage is otherwise move-only
+  // (it may own a move-only captured payload), so this is the explicit way to duplicate one: it copies the
+  // head buffer, the normalization state and the (in-memory) body -- a captured body is re-materialized into
+  // an owning buffer, behaviourally identical since a payload is only ever consumed as a byte view. Intended
+  // for callers that must retain a copy of a message they do not own (e.g. HttpClient's response cache).
+  // File payloads and HEAD size-only payloads are not supported (asserted): a parsed client response, the
+  // only current caller, always inlines its body, so it never carries either.
+  [[nodiscard]] HttpMessage cloneFinalized() const;
+#endif
 
   [[nodiscard]] constexpr bool isHead() const noexcept { return _opts.isHeadMethod(); }
 

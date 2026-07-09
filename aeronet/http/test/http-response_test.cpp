@@ -165,6 +165,10 @@ class HttpResponseTest : public ::testing::Test {
     return count;
   }
 
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+  static auto cloneFinalized(const HttpResponse& resp) { return resp.cloneFinalized(); }
+#endif
+
 #ifdef AERONET_ENABLE_HTTP2
   static void FinalizeForHttp2(HttpResponse& resp) { resp.finalizeForHttp2(); }
 #endif
@@ -4788,5 +4792,82 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
     EXPECT_TRUE(result.contains("\r\n0\r\n")) << "Missing last-chunk for size " << sz;
   }
 }
+
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+
+TEST_F(HttpResponseTest, CloneEmptyMessage) {
+  HttpResponse resp(http::StatusCodeNotFound);
+  HttpResponse copy = cloneFinalized(resp);
+  EXPECT_EQ(copy.status(), http::StatusCodeNotFound);
+  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
+  EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
+  // Two independent clones serialize to identical bytes.
+  EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(copy)));
+}
+
+TEST_F(HttpResponseTest, CloneWithHeadersAndInlineBody) {
+  HttpResponse resp(http::StatusCodeOK, "hello world", "text/plain");
+  resp.reason("OK");
+  resp.header("X-Custom", "abc");
+  resp.headerAddLine("X-Multi", "1");
+  resp.headerAddLine("X-Multi", "2");
+
+  HttpResponse copy = cloneFinalized(resp);
+  EXPECT_EQ(copy.status(), resp.status());
+  EXPECT_EQ(copy.reason(), resp.reason());
+  EXPECT_EQ(copy.bodyInMemory(), "hello world");
+  EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
+  EXPECT_EQ(copy.headerValueOrEmpty("X-Custom"), "abc");
+
+  // The clone is a deep, independent copy: mutating it never touches the original.
+  copy.body("changed");
+  copy.header("X-Custom", "z");
+  EXPECT_EQ(resp.bodyInMemory(), "hello world");
+  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "abc");
+
+  // Serialized bytes of two clones of the untouched original match exactly.
+  EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(resp)));
+}
+
+TEST_F(HttpResponseTest, CloneCapturedBody) {
+  // A captured (moved-in) body lives in the payload variant, not inlined; clone re-materializes it.
+  HttpResponse resp(http::StatusCodeOK);
+  std::string big(10000, 'x');
+  resp.body(std::move(big), "application/octet-stream");
+  ASSERT_EQ(resp.bodyInMemory().size(), 10000U);
+
+  HttpResponse copy = cloneFinalized(resp);
+  EXPECT_EQ(copy.status(), resp.status());
+  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
+  EXPECT_EQ(copy.bodyInMemory().size(), 10000U);
+  // The copy owns its own buffer (distinct address from the original's).
+  EXPECT_NE(copy.bodyInMemory().data(), resp.bodyInMemory().data());
+  EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(copy)));
+}
+
+TEST_F(HttpResponseTest, CloneWithFilePayload) {
+  static constexpr std::string_view kPayload = "12345";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(std::move(file), "text/plain");
+
+  HttpResponse copy = cloneFinalized(resp);
+  EXPECT_EQ(copy.status(), resp.status());
+  ASSERT_TRUE(copy.hasBodyFile());
+
+  auto prepared = finalizePrepared(std::move(copy), false /*head*/);
+  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+  EXPECT_EQ(prepared.fileLength(), kPayload.size());
+  EXPECT_EQ(prepared.file().size(), kPayload.size());
+
+  std::string headers(prepared.firstBuffer());
+  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
+  EXPECT_FALSE(headers.contains(http::TransferEncoding));
+}
+#endif
 
 }  // namespace aeronet

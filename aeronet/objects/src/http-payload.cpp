@@ -18,6 +18,38 @@
 
 namespace aeronet {
 
+HttpPayload::HttpPayload(const HttpPayload& rhs) {
+  std::visit(
+      [this](const auto& val) {
+        using T = std::decay_t<decltype(val)>;
+        if constexpr (std::is_same_v<T, std::monostate> || std::is_same_v<T, FilePayload> ||
+                      std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view> ||
+                      std::is_same_v<T, std::vector<char>> || std::is_same_v<T, std::vector<std::byte>> ||
+                      std::is_same_v<T, RawChars>) {
+          _data = val;
+        } else if constexpr (std::is_same_v<T, CharBuffer>) {
+          CharBuffer copy{std::make_unique<char[]>(val.second), val.second};
+          std::memcpy(copy.first.get(), val.first.get(), val.second);
+          _data = std::move(copy);
+        } else if constexpr (std::is_same_v<T, BytesBuffer>) {
+          BytesBuffer copy{std::make_unique<std::byte[]>(val.second), val.second};
+          std::memcpy(copy.first.get(), val.first.get(), val.second);
+          _data = std::move(copy);
+        } else {
+          static_assert(false, "Unhandled type in HttpPayload variant");
+        }
+      },
+      rhs._data);
+}
+
+HttpPayload& HttpPayload::operator=(const HttpPayload& rhs) {
+  if (this != &rhs) {
+    HttpPayload tmp(rhs);
+    _data = std::move(tmp._data);
+  }
+  return *this;
+}
+
 // Notes on the NOLINT below: clang-tidy raises "bugprone-exception-escape" here because
 // std::visit can potentially throw if one of the visitor operations throws. However,
 // in practise it's not possible because no constructor nor move operations of HttpPayload can leave variant in a
