@@ -1,6 +1,8 @@
 #pragma once
 
+#include <charconv>
 #include <cstddef>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -20,7 +22,6 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
@@ -58,9 +59,13 @@ class Http1WriterTransport final : public IWriterTransport {
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
       _chunked = true;
     } else if (!response.hasBodyFile()) {
-      const std::size_t needed = HttpResponse::HeaderSize(http::ContentLength.size(), nchars(declaredLength));
+      const auto declaredLengthIntegralLen = nchars(declaredLength);
+      const std::size_t needed = HttpResponse::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
       response._data.ensureAvailableCapacity(needed);
-      response.headerAddLineUnchecked(http::ContentLength, std::string_view(IntegralToCharVector(declaredLength)));
+      char declaredLenBuf[std::numeric_limits<decltype(declaredLength)>::digits10 + 1];
+      std::string_view declaredLenStr(
+          declaredLenBuf, std::to_chars(declaredLenBuf, declaredLenBuf + sizeof(declaredLenBuf), declaredLength).ptr);
+      response.headerAddLineUnchecked(http::ContentLength, declaredLenStr);
       _chunked = false;
     }
 
