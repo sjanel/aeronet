@@ -24,6 +24,16 @@ void HttpClientConfig::validate() const {
       throw std::invalid_argument("HTTP/2 client cannot enable server push");
     }
   }
+  if (cache.enabled()) {
+    if (cache.maxEntries == 0) {
+      throw std::invalid_argument("cache.maxEntries must be at least 1 when the response cache is enabled");
+    }
+    // Only safe methods may be cached: caching an unsafe / non-idempotent method's response is nonsensical.
+    static constexpr http::MethodBmp kCacheableMethods = http::Method::GET | http::Method::HEAD | http::Method::OPTIONS;
+    if ((cache.methods & ~kCacheableMethods) != 0 || cache.methods == 0) {
+      throw std::invalid_argument("cache.methods must be a non-empty subset of GET / HEAD / OPTIONS");
+    }
+  }
 }
 
 }  // namespace aeronet

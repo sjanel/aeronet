@@ -748,6 +748,17 @@ HttpMessage& HttpMessage::headerAddLine(std::string_view key, std::string_view v
   return *this;
 }
 
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+HttpMessage HttpMessage::cloneFinalized() const {
+  HttpMessage copy(http::StatusCodeOK);
+  copy._data = _data;                      // deep copy of the head (and inlined body, if any)
+  copy._posBitmap = _posBitmap;            // header / body boundaries
+  copy._payloadVariant = _payloadVariant;  // copy the payload variant (may be empty, in-memory or file)
+  copy._opts = _opts;                      // normalization + framing flags (scalars)
+  return copy;
+}
+#endif
+
 void HttpMessage::headerAddLineUnchecked(std::string_view key, std::string_view value) {
   const std::size_t headerLineSize = HeaderSize(key.size(), value.size());
 
