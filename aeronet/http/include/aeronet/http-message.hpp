@@ -1289,11 +1289,9 @@ class HttpMessage {
   // header pos is stored in lower 16 bits, body pos in upper 48 bits
   static constexpr std::uint32_t kHeaderPosNbBits = 16U;
 
-  // The RFC does not specify a maximum length for the reason phrase,
-  // but in practice it should be reasonable. It's not really used by clients,
-  // as they mostly rely on the status code instead.
-  // Internally we store the header status line on 16 bits, so the reason must have a maximum length of 2^16 - 1 -
-  // kReasonBeg.
+  // The RFC does not specify a maximum length for the reason phrase, but in practice it should be reasonable.
+  // It's not really used by clients, as they mostly rely on the status code instead.
+  // We store the header status line on 16 bits, so the reason must have a maximum length of 2^16 - 1 - kReasonBeg.
   static constexpr std::uint32_t kMaxReasonLength = (1U << kHeaderPosNbBits) - 1U - kReasonBeg;
 
   static constexpr std::uint32_t kBodyPosNbBits = 64U - kHeaderPosNbBits;
