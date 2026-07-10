@@ -7,6 +7,8 @@
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
 - Create doc pages using **Material for MkDocs** tool (for instance). To create first class documentation for aeronet, we need to have a proper documentation site with a good theme and navigation. This will help users understand how to use the library and its features.
+- Make a real `ClientRequest` object. `HttpRequest` and `HttpResponse` share a lot of semantics, except for the status-line. We could extract common bricks in a base `HttpMessage` class and have HttpResponse and ClientRequest derive from it (unfortunately, HttpRequest is the name of the class coming from a view on a request arriving in a server, so we cannot rename it). This will allow us to have a proper ClientRequest object that can be used to send requests to other servers.
+- Rename `HttpRequest` to `HttpRequestView` and keep `HttpRequest` as a builder object for the HTTP client (this will help to have a clearer naming especially for above requirement).
 
 ## Medium priority
 
@@ -28,6 +30,7 @@
 - **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
 - **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
 - Enforce backpressure correctness to avoid overload and wasted work.
+- **Scatter-write HTTP/2 DATA frames** - build the 9-byte frame header and the body slice as a `writev` gather instead of copying the payload behind the header, mirroring the HTTP/1.1 head+body scatter write. Removes a copy on the HTTP/2 hot send path.
 - `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
 
 #### Benchmark gaps
@@ -44,11 +47,39 @@ The following micro-benchmarks are missing and should be added to validate the a
 
 ## Long-term / Nice-to-have
 
-- **HTTP/3 / QUIC Support** - Likely separate transport layer implementation (future major feature)
+- **HTTP/3 / QUIC** - a separate transport layer (future major feature); scoped as a research spike below before any commitment.
 - **Fuzz Harness Integration** - libFuzzer targets for HTTP/1.1 and HTTP/2 parsing
 - **OCSP Stapling & Advanced TLS** - Passive stapling with cached responses, CRL hooks, key logging (debug only)
 - **Per-SNI mTLS Policies** - Different client cert requirements per SNI hostname
 - **Advanced Metrics** - ~~Histogram/percentile latency buckets~~ ✔ (implemented via `TelemetryContext::histogram()` + `TelemetryConfig::addHistogramBuckets()`); per-route stats not yet implemented
+
+### HTTP/3 / QUIC - research spike
+
+**Not started, and not recommended for the near term.** HTTP/3 is not an increment on the existing stack: it
+replaces the transport. QUIC is UDP + user-space loss recovery / congestion control + connection migration +
+TLS 1.3 fused into the transport, and it uses **QPACK, not HPACK** - so the current HPACK / frame codecs and
+the readiness-based epoll/kqueue `TlsTransport` seam mostly do not carry over (QUIC is more naturally
+timer/completion-driven and wants GSO/GRO for throughput). Writing QUIC from scratch is a multi-year,
+security-critical effort; the realistic path is wrapping an existing stack behind a new gated transport
+module, which trades against aeronet's minimal-heavy-dependency ethos and therefore needs a deliberate
+decision rather than a default.
+
+**Higher-leverage work comes first** and reuses the existing architecture: the coroutine client + true HTTP/2
+multiplexing, and `io_uring`.
+
+If it becomes strategic, the first step is a time-boxed **design spike** (not a full plan) answering three
+questions:
+
+1. **Dependency choice** - `ngtcp2` + `nghttp3` (the curl/nginx pairing), `quiche`, or `lsquic`: build system,
+   license, binary-size and API-ergonomics trade-offs.
+2. **Event-loop integration** - how a UDP + timer-driven QUIC transport slots into the current readiness-based
+   loop (UDP socket handling, per-connection timers, GSO/GRO, pacing).
+3. **Handler API reuse** - whether the existing `HttpRequest` / `Router` / handler surface can sit unchanged on
+   top of an HTTP/3 mapping (QPACK encode/decode, request/response streams), so HTTP/3 is a transport swap
+   rather than a second application API.
+
+Deliverable of the spike: a go/no-go recommendation with a dependency choice and a rough transport-layer
+design, **before** committing to implementation.
 
 ### Optional feature modules (compile-time gated)
 
@@ -56,18 +87,13 @@ The following features are inspired by capabilities that make frameworks like **
 
 #### HTTP Client (`AERONET_ENABLE_HTTP_CLIENT`)
 
-Status: **Initial HTTP/1.1 client delivered** (`aeronet/client`, enabled by default via `AERONET_ENABLE_HTTP_CLIENT`).
-
-Delivered in the first iteration (`aeronet::HttpClient`):
-
-- Synchronous request API over aeronet's **non-blocking** transport + event-loop bricks (`ConnectTCP`, `EventLoop`, `PlainTransport`, `TlsTransport`), so no extra I/O stack is introduced.
-- Plain HTTP and HTTPS (the latter reusing the shared OpenSSL `TlsTransport`, with SNI + optional peer/hostname verification, gated on `AERONET_ENABLE_OPENSSL`).
-- Per-origin **keep-alive connection pooling** with bounded idle reuse, plus a configurable **retry + exponential-backoff** policy (`RetryConfig`): an always-on, budget-free transparent retry on a stale pooled connection (pre-send only), and opt-in backoff retries for connect failures, retryable statuses (`429`/`503`, honoring `Retry-After`) and idempotent post-send failures.
-- Response parsing for `Content-Length`, **chunked** transfer-encoding (extensions + trailers tolerated), and connection-close framing; 1xx interim responses discarded.
-- Automatic **redirect following** (301/302/303/307/308) with method/body rewriting per RFC 7231 and a configurable hop limit.
-- Convenience verbs (`get`/`head`/`post`/`put`/`del`) plus a fluent `ClientRequest` builder, returning an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) over the existing aeronet response type (reused as the message container).
-- **Value-based error model**: per-request runtime failures (invalid URL, connect failure, timeout, TLS error, malformed/oversized response, ...) are reported as an `HttpClientErrc` in the result's error state — never thrown. Exceptions stay reserved for hard setup errors (client / TLS-context misconfiguration). A non-2xx status is a normal `HttpResponse` in the success state.
-- **Automatic response decompression** (`gzip`/`deflate`/`br`/`zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads, reusing the server's codec bricks and decoding without an extra copy of the compressed bytes. Driven by `HttpClientConfig::decompression` / `requestCompression` (auto-advertises a default `Accept-Encoding` when decompression is enabled).
+Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks
+**HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the
+shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff
+policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT`
+tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an
+`HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the
+request path. See the README HTTP client section and `docs/FEATURES.md` for the full surface.
 
 Example:
 
@@ -79,18 +105,24 @@ if (result && result->status() == 200) {
 }
 ```
 
-Next steps (not yet implemented):
+Still planned:
 
-- **Unify the request buffer with the wire bytes**: `HttpMessage` is a flat, HTTP/1.1-optimised
-  buffer that, for responses, already IS the exact bytes written to the socket. Teaching it a
-  request-line first-line mode ("METHOD target HTTP/1.1") would let the client build the request
-  directly in that buffer and write it with zero reassembly (today the request fields live in an
-  `HttpMessage` and are copied once into the send buffer).
-- **Coroutine-friendly API** (`co_await client.get(...)`) and integration with a *running* server event loop so handlers can issue upstream calls without blocking. The current client owns its own loop and drives it synchronously. This is also what would unlock **true HTTP/2 multiplexing** in the client: the native HTTP/2 engine has landed (see below), but the synchronous request model runs one stream at a time per connection.
-- ~~**Native HTTP/2 client**~~ *Done:* the client speaks HTTP/2 natively (reusing the existing HPACK + frame codecs through a client-mode `Http2Connection`), selected via `HttpClientConfig::httpVersion` — `Auto` negotiates `h2` via ALPN over https, `Http2` requires it (ALPN-only over https, prior-knowledge h2c over plain http per RFC 9113 §3.4), `Http1_1` opts out. The engine lives behind `internal::ClientConnection` beside the HTTP/1.1 one; pooled HTTP/2 connections keep their settings/HPACK state and are vetted with `ClientConnection::canTakeAnotherStream`. Covered by `aeronet/client/test/http-client-http2-e2e_test.cpp`.
-- **Zero-copy body delivery** for identity responses (currently the body is copied once into the result), and pluggable timeouts/cancellation.
+- **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so
+  handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing**
+  in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per
+  connection.
+- **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the
+  client builds the request directly in the buffer it writes, with zero reassembly (today request fields are
+  copied once into the send buffer).
+- **Zero-copy body delivery** for identity responses (the body is currently copied once into the result), plus
+  pluggable timeouts / cancellation.
+- **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and
+  decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client
+  currently emits none).
+- **Connection latency caching**: a small TTL DNS-resolution cache and client-side TLS session-ticket reuse
+  across pooled connections, to cut connect/handshake latency on repeat origins (pairs with the response
+  cache; the server already issues session tickets).
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
-- ~~**Built-in response cache for idempotent requests**~~ *Done:* an opt-in, in-process TTL cache (`HttpClientConfig::cache`, inspired by coincenter's `CachedResult`) serves repeated safe (`GET`/`HEAD`, restrictable) requests from memory with no network round trip. Keyed by method + URL + request headers + body, storing only `2xx` responses, bounded by `maxEntries` (prune-expired then evict-least-recently-refreshed), cleared on demand via `clearResponseCache()`. Pure time-based (does not interpret `Cache-Control`/`ETag`/`Vary`). Built on the new `HttpMessage::clone()` deep-copy. Covered by `aeronet/client/test/http-client-cache-e2e_test.cpp`.
 
 #### Server-Sent Events (SSE) convenience layer
 
@@ -110,7 +142,7 @@ Growing in popularity as a lighter alternative to WebSocket for server → clien
 
 Built-in token bucket or sliding window rate limiter. Per-IP and/or per-route. Returns `429 Too Many Requests` with `Retry-After` header. Configurable burst / sustained rates. Pluggable backend interface (in-memory default, extensible to Redis or shared stores). Currently only TLS handshake rate limiting exists (`TLSConfig::handshakeRateLimitPerSecond`); this would extend to HTTP request level.
 
-Status: Initial middleware-first implementation is now available with in-memory token bucket support and a Redis-gated sliding-window store stub for distributed synchronization adapters.
+Status: **Delivered** (in the next release): middleware-first `RateLimitRequestMiddlewareBuilder` with an in-memory token-bucket backend (`429` + `Retry-After`), a configurable client-key strategy, global or per-route / per-group installation, plus an optional Redis sliding-window contract (`RedisSlidingWindowRateLimitStore`) for distributed synchronization.
 
 #### Cookie helpers & Session store (`AERONET_ENABLE_SESSIONS`)
 
@@ -123,14 +155,9 @@ In-memory LRU cache keyed by method + path + `Vary` headers. Respects `Cache-Con
 
 #### Regex route constraints
 
-Optional regex validation on path parameters, extending the existing radix tree router:
-
-```cpp
-router.setPath(http::Method::GET, "/users/{id:[0-9]+}", handler);       // digits only
-router.setPath(http::Method::GET, "/files/{path:[a-zA-Z0-9/._-]+}", handler); // safe path chars
-```
-
-Returns 404 on constraint mismatch. Consider [CTRE](https://github.com/hanickadot/compile-time-regular-expressions) for compile-time regex performance, with `std::regex` fallback. Drogon supports regex routing natively.
+Status: **Delivered in `1.3.0`** as route parameter constraints - inline `{name:pattern}` syntax
+(e.g. `/users/{id:[0-9]+}`), compiled at registration, with a fast custom matcher for common character
+classes and a `std::regex` fallback. A non-matching parameter yields `404`.
 
 #### Route groups & prefix mounting
 
@@ -150,14 +177,9 @@ Every major framework provides this (Express, Gin, Axum, Actix-web, FastAPI, Spr
 
 #### Per-route request timeout
 
-Enforce a deadline on handler execution so slow handlers do not hold connections indefinitely. Returns `504 Gateway Timeout` (or configurable status) when the deadline expires. Integrates naturally with coroutines (`co_await` cancellation). Currently only TLS handshake and header-read timeouts exist; this covers the application handler layer.
-
-```cpp
-router.setPath(http::Method::GET, "/slow", handler)
-      .timeout(std::chrono::seconds{5});
-```
-
-Go (`context.WithTimeout`), Axum (`tower::timeout`), Actix-web (`web::Timeout`) and Spring (`@Transactional(timeout=)`) all provide this. Critical for production resilience.
+Status: **Delivered in `1.3.0`** - `PathHandlerEntry::timeout()` (also settable per group and via JSON/YAML
+config) enforces a per-route handler deadline during periodic sweeps (per-connection for HTTP/1.1, per-stream
+for HTTP/2), returning `408 Request Timeout` when it expires.
 
 #### Content negotiation (Accept header)
 
@@ -186,23 +208,20 @@ router.setPath(http::Method::GET, "/admin", adminHandler).accessPolicy(std::move
 
 #### Authentication helpers (Basic / Bearer / JWT)
 
-**JWT (JWS profile) delivered** (`aeronet/jwt`, `AERONET_ENABLE_JWT`): standalone module for signing and
-verifying JSON Web Tokens (RFC 7519). It covers the full JWS algorithm suite (HMAC `HS*`, RSA `RS*`/`PS*`,
-ECDSA `ES*`, `EdDSA`), claim validation (`exp`/`nbf`/`iat`/`iss`/`aud`/`sub` with leeway + injectable clock),
-JWK/JWKS parsing with `kid` selection, and the mandatory security posture (reject `alg:none`, family-based
-anti-confusion, constant-time HMAC, signature-before-claims). Design decisions: **no dedicated opt-in flag** —
-it is a `cmake_dependent_option` defaulting ON whenever `AERONET_ENABLE_OPENSSL` + `AERONET_ENABLE_GLAZE` are
-present (it reuses their crypto + JSON, adding no new dependency); **JWE (encryption) is out of scope**. See
+**JWT (JWS profile) delivered** (`aeronet/jwt`, `AERONET_ENABLE_JWT`): the full JWS algorithm suite
+(HMAC `HS*`, RSA `RS*`/`PS*`, ECDSA `ES*`, `EdDSA`), claim validation (`exp`/`nbf`/`iat`/`iss`/`aud`/`sub`
+with leeway + injectable clock), JWK/JWKS parsing with `kid` selection, and the mandatory security posture
+(reject `alg:none`, family-based anti-confusion, constant-time HMAC, signature-before-claims). No dedicated
+opt-in flag (`cmake_dependent_option`, ON whenever OpenSSL + Glaze are present); JWE out of scope. See
 `docs/FEATURES.md` (JWT section) and `aeronet/jwt/test/`.
 
-Still planned: a server-side **middleware** that parses the `Authorization` header, extracts Basic credentials
-or Bearer tokens, and wires the JWT verifier into a pluggable validator interface; plus a client-side
-**JWKS-fetch + cache** helper building on the HTTP client. Every web framework provides at least Basic/Bearer
-auth middleware (Express `passport`, Axum `axum-extra`, Gin `gin-jwt`, Spring Security, ASP.NET Identity).
+Still planned: a server-side **middleware** that parses the `Authorization` header (Basic credentials or
+Bearer tokens) and wires the JWT verifier into a pluggable validator interface; plus a client-side
+**JWKS-fetch + cache** helper building on the HTTP client.
 
 #### Reverse proxy / HTTP forwarding mode
 
-Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `Via`). Pairs naturally with the planned HTTP Client module. Load balancing strategies (round-robin, least-connections). This turns aeronet from a pure application server into an edge/gateway server - a common deployment pattern (Nginx, Caddy, Envoy, Traefik, HAProxy).
+Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-For`, `X-Forwarded-Proto`, `Via`). Builds naturally on the delivered HTTP client module. Load balancing strategies (round-robin, least-connections). This turns aeronet from a pure application server into an edge/gateway server - a common deployment pattern (Nginx, Caddy, Envoy, Traefik, HAProxy).
 
 #### Inbound request body streaming to handler
 
@@ -214,7 +233,8 @@ Process multipart/form-data uploads part-by-part as data arrives, rather than bu
 
 #### Per-route body size limits
 
-Different `maxBodyBytes` on different endpoints (e.g. `/upload` allows 100 MB, `/api` allows 1 MB). Currently only a global limit exists. Nginx (`client_max_body_size` per `location`), Express (`express.json({limit})`), Spring (`@RequestMapping` with size),  and Gin all support per-route limits.
+Status: **Delivered in `1.3.0`** - per-route `maxBodyBytes` / `maxHeaderBytes` overrides on `PathHandlerEntry`
+and `RouteGroup`, enforced across HTTP/1.1 (sync + async) and HTTP/2 with `413` / `431`.
 
 #### Graceful config reload via signal (SIGHUP)
 
@@ -292,7 +312,7 @@ Milestones
 
 Known Limitations
 
-- **Read-EAGAIN incompatible with EPOLLET in integration tests**: When `FaultInjectingTransport` returns `{0, ReadReady}` (simulated EAGAIN), the server breaks to wait for a new EPOLLIN edge. But with EPOLLET, the socket already has data so no edge fires — causing a hang. Workaround: EAGAIN on reads is tested only at unit level; integration tests use partial reads (which work because `EPOLL_CTL_ADD` with existing data triggers an initial event).
+- **Read-EAGAIN incompatible with EPOLLET in integration tests**: When `FaultInjectingTransport` returns `{0, ReadReady}` (simulated EAGAIN), the server breaks to wait for a new EPOLLIN edge. But with EPOLLET, the socket already has data so no edge fires - causing a hang. Workaround: EAGAIN on reads is tested only at unit level; integration tests use partial reads (which work because `EPOLL_CTL_ADD` with existing data triggers an initial event).
 
 Acceptance Criteria
 
@@ -302,5 +322,5 @@ Acceptance Criteria
 
 Notes
 
-- The transport test hook is compile-time gated (`#ifdef AERONET_ENABLE_TEST_HOOKS`) — zero cost in production builds.
+- The transport test hook is compile-time gated (`#ifdef AERONET_ENABLE_TEST_HOOKS`) - zero cost in production builds.
 - Proxy-based tests are useful when privileged operations are not available in CI.
