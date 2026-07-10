@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -25,7 +26,7 @@ class ClientRequest {
   ClientRequest() = default;
 
   ClientRequest(http::Method method, std::string_view url) : _fields(url.size(), http::StatusCodeOK), _method(method) {
-    _fields.reason(url);
+    this->url(url);
   }
 
   ClientRequest& method(http::Method method) & {
@@ -35,6 +36,9 @@ class ClientRequest {
   ClientRequest&& method(http::Method method) && { return std::move(this->method(method)); }
 
   ClientRequest& url(std::string_view url) & {
+    if (url.size() > HttpMessage::kMaxReasonLength) {
+      throw std::invalid_argument("URL is too long for an HTTP request");
+    }
     _fields.reason(url);
     return *this;
   }
