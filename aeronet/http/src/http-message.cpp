@@ -51,38 +51,18 @@
 namespace aeronet {
 
 namespace {
-// The RFC does not specify a maximum length for the reason phrase,
-// but in practice it should be reasonable. It's not really used by clients,
-// as they mostly rely on the status code instead.
-constexpr std::string_view::size_type kMaxReasonLength = 1024;
-
-// Number of digits in the status code (3 digits).
-constexpr std::size_t kStatusCodeLen = 3U;
 
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = HttpMessage::HeaderSize(http::Date.size(), RFC7231DateStrLen);
 
-// "HTTP/1.1" + SP + 3-digit code + SP. The trailing SP is the mandatory separator before the
-// (possibly empty) reason-phrase: per RFC 9112 §4 the status-line is
-//   HTTP-version SP status-code SP [ reason-phrase ]
-constexpr std::size_t kStatusLineMinLenWithoutCRLF = http::HTTP10Sv.size() + 1U + kStatusCodeLen + 1U;
-
 // Initial size of the HttpMessage internal buffer, including the status line, Date header and DoubleCRLF.
-constexpr std::size_t kHttpResponseInitialSize =
-    kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
+constexpr std::size_t kHttpMessageInitialSize =
+    HttpMessage::kReasonBeg + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
 
-static_assert(kHttpResponseInitialSize <= HttpMessage::kHttpResponseMinInitialCapacity,
+static_assert(kHttpMessageInitialSize <= HttpMessage::kHttpResponseMinInitialCapacity,
               "Initial size should be less than or equal to min initial capacity");
 
-constexpr std::string_view AdjustReasonLen(std::string_view reason) {
-  if (reason.size() > kMaxReasonLength) [[unlikely]] {
-    log::warn("Provided reason is too long ({} bytes), truncating it to {} bytes", reason.length(), kMaxReasonLength);
-    reason.remove_suffix(reason.size() - kMaxReasonLength);
-  }
-  return reason;
-}
-
-constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
+constexpr auto kInitialBodyStart = kHttpMessageInitialSize;
 
 inline void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';         // SP after the HTTP version
@@ -91,9 +71,9 @@ inline void InitData(char* data) {
   // In debug, this allows for easier inspection of the response data before finalization.
   // In release, it's not needed because the final HTTP version and date will be written at finalization step.
   http::HTTP_1_1.writeFull(data);
-  WriteCRLFDateHeader(SysClock::now(), data + kStatusLineMinLenWithoutCRLF);
+  WriteCRLFDateHeader(SysClock::now(), data + HttpMessage::kReasonBeg);
 #endif
-  // Set last: kStatusLineMinLenWithoutCRLF == kReasonBeg, so the debug pre-write above lands on this byte;
+  // Set last, so the debug pre-write above lands on this byte;
   // the marker must win so hasReason() stays correct before finalization (it is overwritten by the
   // status-line CRLF at finalization anyway).
   data[HttpMessage::kReasonBeg] = '\n';  // marker for no reason
@@ -223,17 +203,17 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
 
 HttpMessage::HttpMessage(http::StatusCode code, std::string_view body, std::string_view contentType) : _posBitmap() {
   contentType = CheckContentType(body.empty(), contentType);
-  _data.reserve(kHttpResponseInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size());
+  _data.reserve(kHttpMessageInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size());
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
   if (body.empty()) {
     setBodyStartPos(kInitialBodyStart);
     Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
-    char* insertPtr = WriteCRLFHeader(http::ContentType, contentType,
-                                      _data.data() + kStatusLineMinLenWithoutCRLF + kDateHeaderLenWithCRLF);
+    char* insertPtr =
+        WriteCRLFHeader(http::ContentType, contentType, _data.data() + kReasonBeg + kDateHeaderLenWithCRLF);
     insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
     insertPtr = Append(http::DoubleCRLF, insertPtr);
     const auto bodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
@@ -244,10 +224,10 @@ HttpMessage::HttpMessage(http::StatusCode code, std::string_view body, std::stri
 }
 
 HttpMessage::HttpMessage(std::size_t additionalCapacity, http::StatusCode code)
-    : _data(kHttpResponseInitialSize + additionalCapacity), _posBitmap() {
+    : _data(kHttpMessageInitialSize + additionalCapacity), _posBitmap() {
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
   setBodyStartPos(kInitialBodyStart);
   Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
   _data.setSize(kInitialBodyStart);
@@ -260,14 +240,14 @@ HttpMessage::HttpMessage(std::size_t additionalCapacity, http::StatusCode code, 
   if (check == Check::Yes) {
     CheckConcatenatedHeaders(concatenatedHeaders);
   }
-  _data.reserve(kHttpResponseInitialSize + concatenatedHeaders.size() +
+  _data.reserve(kHttpMessageInitialSize + concatenatedHeaders.size() +
                 NeededBodyHeadersSize(body.size(), contentType.size()) + body.size() + additionalCapacity);
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kStatusLineMinLenWithoutCRLF));
+  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
   std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
   if (!concatenatedHeaders.empty()) {
-    char* insertPtr = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
+    char* insertPtr = _data.data() + kHttpMessageInitialSize - http::DoubleCRLF.size();
     insertPtr = Append(http::CRLF, insertPtr);
     Copy(concatenatedHeaders, insertPtr);
     bodyStartPos += concatenatedHeaders.size();
@@ -301,16 +281,21 @@ HttpMessage& HttpMessage::status(http::StatusCode statusCode) & {
 }
 
 HttpMessage& HttpMessage::reason(std::string_view newReason) & {
-  newReason = AdjustReasonLen(newReason);
+  if (newReason.size() > kMaxReasonLength) {
+    log::warn("Provided reason is too long ({} bytes), truncating it to {} bytes", newReason.length(),
+              kMaxReasonLength);
+    newReason.remove_suffix(newReason.size() - kMaxReasonLength);
+  }
   const auto oldReasonSz = reasonLength();
-  const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
-  if (diff == 0) {
+
+  if (newReason.size() == oldReasonSz) {
     Copy(newReason, _data.data() + kReasonBeg);
     return *this;
   }
-  if (diff > 0) {
-    _data.ensureAvailableCapacityExponential(static_cast<uint64_t>(diff));
-  }
+
+  const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
+
+  _data.ensureAvailableCapacityExponential(diff);
   // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
   // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
   // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
