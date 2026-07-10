@@ -14,7 +14,6 @@
 #include <random>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <type_traits>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -207,24 +206,30 @@ TEST_F(UnixSocketTest, SendStreamSucceeds) {
   ASSERT_EQ(0, ::bind(server.fd(), reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)));
   ASSERT_EQ(0, ::listen(server.fd(), 1));
 
-  // Background thread to accept connection
-  std::thread acceptThread([&server]() {
-    struct sockaddr_un clientAddr{};
-    socklen_t len = sizeof(clientAddr);
-    int clientFd = ::accept(server.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &len);
-    if (clientFd >= 0) {
-      CloseNativeHandle(clientFd);
-    }
-  });
-
-  // Client connects and sends
+  // No background accept thread: the server socket is non-blocking, so a
+  // concurrent accept() would race the connect() below and return EAGAIN (or,
+  // if it won the race and closed the peer first, make send() fail with EPIPE).
+  // For AF_UNIX stream, connect() synchronously queues the connection and
+  // send() buffers into the peer socket regardless of accept(), so we can drive
+  // the whole exchange deterministically from this single thread.
   UnixSocket client(UnixSocket::Type::Stream);
-  client.connect(socketPath);
+  ASSERT_EQ(0, client.connect(socketPath));
   const char* data = "stream";
   const auto sent = client.send(data, 6);
   EXPECT_EQ(6, sent);
 
-  acceptThread.join();
+  // The connection is now pending in the listen backlog, so this non-blocking
+  // accept() succeeds immediately; the payload is already buffered on the
+  // accepted socket, so a non-blocking recv() returns it.
+  struct sockaddr_un clientAddr{};
+  socklen_t len = sizeof(clientAddr);
+  int acceptedFd = ::accept(server.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &len);
+  ASSERT_GE(acceptedFd, 0);
+  char buf[16] = {};
+  const auto received = ::recv(acceptedFd, buf, sizeof(buf), MSG_DONTWAIT);
+  EXPECT_EQ(6, received);
+  EXPECT_EQ(0, std::memcmp(buf, data, 6));
+  CloseNativeHandle(acceptedFd);
   CleanupSocket(socketPath);
 }
 
