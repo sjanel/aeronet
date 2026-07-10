@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "../src/client-request-builder.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/url.hpp"
@@ -74,6 +76,22 @@ TEST(ClientRequestTest, BodyWithContentType) {
   ClientRequest req(http::Method::POST, "http://h/p");
   req.body("data", "application/json");
   EXPECT_EQ(req.body(), "data");
+}
+
+TEST(ClientRequestTest, VeryLongUrlIsNotTruncated) {
+  // The URL lives in HttpMessage's reason slot, whose public setter truncates reason phrases longer
+  // than 1024 bytes. A request target (e.g. a large query string) must be stored intact.
+  std::string longUrl("http://example.com/v1/orderbook?markets=");
+  while (longUrl.size() <= 8000) {
+    longUrl.append("KRW-BTC,");
+  }
+
+  ClientRequest req(http::Method::GET, longUrl);
+  EXPECT_EQ(req.url(), longUrl);
+
+  ClientRequest req2;
+  req2.url(longUrl);
+  EXPECT_EQ(req2.url(), longUrl);
 }
 
 TEST(ClientRequestTest, RvalueOverloadsCompose) {

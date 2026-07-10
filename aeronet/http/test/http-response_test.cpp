@@ -211,12 +211,30 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
 TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
   HttpResponse resp(http::StatusCodeOK);
-  std::string longReason(70000, 'A');
-  resp.reason(longReason);
-  EXPECT_LT(resp.reason().size(), longReason.size());
+  std::string longReason(std::numeric_limits<uint16_t>::max(), 'A');
 
-  resp = HttpResponse(http::StatusCodeOK).reason(longReason);
-  EXPECT_LT(resp.reason().size(), longReason.size());
+  std::size_t truncatedReasonSize = 0;
+
+  for (std::string_view reason = longReason; !reason.empty(); reason.remove_suffix(1U)) {
+    resp.reason(reason);
+    if (truncatedReasonSize == 0) {
+      truncatedReasonSize = resp.reason().size();
+      EXPECT_EQ(resp.reasonLength(), truncatedReasonSize);
+      EXPECT_EQ(resp.reason(), reason.substr(0, truncatedReasonSize));
+      EXPECT_LT(resp.reason().size(), reason.size());
+    } else {
+      if (reason.size() <= truncatedReasonSize) {
+        EXPECT_EQ(resp.reasonLength(), reason.size());
+        EXPECT_EQ(resp.reason(), reason);
+        if (reason.size() < truncatedReasonSize - 1) {
+          break;
+        }
+      } else {
+        EXPECT_EQ(resp.reason().size(), truncatedReasonSize);
+        EXPECT_EQ(resp.reasonLength(), truncatedReasonSize);
+      }
+    }
+  }
 }
 
 TEST_F(HttpResponseTest, ConstructorWithBody) {

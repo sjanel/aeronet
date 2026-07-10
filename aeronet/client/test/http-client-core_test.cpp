@@ -1506,7 +1506,7 @@ TEST(HttpClientErrorE2ETest, RetryExhaustionDropsDeadPoolThenReturnsError) {
 }
 
 // A request whose bytes were fully written must NOT be retried when the response then fails (here: a
-// truncated body), even with the default retry budget — otherwise a non-idempotent POST would be silently
+// truncated body), even with the default retry budget - otherwise a non-idempotent POST would be silently
 // re-submitted. The server must therefore observe exactly one connection.
 TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
   std::atomic<int> connections{0};
