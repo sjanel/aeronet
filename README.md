@@ -25,7 +25,7 @@
 - **Ergonomic**: easy API, automatic features (encoding, telemetry), RAII listener setup with sync / async server lifetime control, developer friendly with no hidden global state, no macros
 - **Configurable**: extensive dynamic configuration with reasonable defaults, per path options and middleware helpers, run-time router / config updates
 - **Standards compliant**: HTTP/1.1, HTTP/2, WebSocket, Compression, Streaming, Trailers, TLS, CORS, Range & Conditional Requests, Static files, URL Decoding, multipart/form-data, etc.
-- **Batteries included**: beyond the server, a matching HTTP **client** and a **JWT** (JWS) module for signing/verifying tokens — same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
+- **Batteries included**: beyond the server, a matching HTTP **client** and a **JWT** (JWS) module for signing/verifying tokens - same opt‑in, zero‑extra‑dependency design (both reuse the server's own transport / TLS / crypto bricks).
 - **Cloud native**: Built-in Kubernetes-style health probes, opentelemetry support (metrics, tracing) with built-in spans and metrics, dogstatsd support, perfect for micro-services
 - **Cross‑platform**: primary platform is **Linux** (epoll); macOS (kqueue) and Windows (WSAPoll) are supported with a portable abstraction layer. Some Linux‑specific optimizations (kTLS, `MSG_ZEROCOPY`, `sendfile`) are automatically disabled on other platforms.
 
@@ -208,7 +208,7 @@ For the exhaustive, continually-updated matrix (parsing, transport, bodies, stat
 ### Detailed Documentation
 
 The landing page above plus the minimal examples are usually enough to evaluate the library. Everything below is
-expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) — dive in only when you need the specifics.
+expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) - dive in only when you need the specifics.
 
 #### Core HTTP semantics
 
@@ -834,11 +834,11 @@ if (created) {
 Highlights:
 
 - Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
-- **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default — https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
+- **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default - https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
 - Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
-- **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy — an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).
+- **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy - an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).
 - `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
-- **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads — both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
+- **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads - both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
 - Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
 - Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).
 
@@ -872,22 +872,22 @@ aeronet::HttpClient client(cfg);
 auto result = client.get("https://example.com/health");  // reached through a CONNECT tunnel
 ```
 
-The returned response is an `HttpResponse` — a `using` alias of the generic single-buffer `HttpMessage`
+The returned response is an `HttpResponse` - a `using` alias of the generic single-buffer `HttpMessage`
 type. Received headers are surfaced losslessly (reserved headers such as `Connection` / `Date` are
 stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-Length` /
 `Transfer-Encoding` are normalized through the body and de-framing).
 
-Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` — none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
+Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` - none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
 
 > The current client is synchronous (it owns and drives its own event loop), so an HTTP/2 connection
 > carries one stream at a time. A coroutine-friendly API (`co_await client.get(...)`) integrated with a
-> running server loop — which would unlock true HTTP/2 multiplexing — is tracked in
+> running server loop - which would unlock true HTTP/2 multiplexing - is tracked in
 > [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### JWT (JSON Web Tokens)
 
 An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of
-the OpenSSL crypto already linked for TLS — so it adds no new dependency. Enable it with
+the OpenSSL crypto already linked for TLS - so it adds no new dependency. Enable it with
 `-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out
 of scope.
 
@@ -900,7 +900,7 @@ aeronet::JwtKey key = aeronet::JwtKey::Hmac("super-secret-signing-key");
 std::string token = aeronet::Jwt::encode(R"({"sub":"alice","exp":4102444800})", key,
                                          aeronet::JwtAlgorithm::HS256);
 
-// Verify: signature + claim checks. The module is exception-free — failures surface as an
+// Verify: signature + claim checks. The module is exception-free - failures surface as an
 // invalid key, an empty token, or a JwtError (never thrown).
 aeronet::JwtVerifyOptions opts;
 opts.allowedAlgorithms = aeronet::JwtAlgorithmSet{aeronet::JwtAlgorithm::HS256};
@@ -912,9 +912,9 @@ if (aeronet::DecodedJwt decoded = aeronet::Jwt::tryDecode(token, key, opts, err)
 
 Highlights:
 
-- Full JWS algorithm suite — HMAC `HS256/384/512`, RSA `RS*` / `PS*`, ECDSA `ES256/384/512`, `EdDSA` (Ed25519).
+- Full JWS algorithm suite - HMAC `HS256/384/512`, RSA `RS*` / `PS*`, ECDSA `ES256/384/512`, `EdDSA` (Ed25519).
 - Claim validation: `exp` / `nbf` (with `leeway` and an injectable `clock`), `iss` / `aud` / `sub`; `aud` as a string or an array.
-- Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` — pairs naturally with the HTTP client to fetch an issuer's keys.
+- Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` - pairs naturally with the HTTP client to fetch an issuer's keys.
 - **Security by construction**: the unsecured `alg:none` is always rejected, a key whose family doesn't match the token `alg` is refused (the RS256↔HS256 confusion is structurally impossible), the signature is verified before any claim is parsed, and HMAC comparison is constant-time.
 - Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see [docs/FEATURES.md](docs/FEATURES.md) for the full reference.
 
@@ -922,7 +922,7 @@ Highlights:
 
 Optional distributed tracing & metrics integration. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON`
 (pulls in `protobuf` as an additional dependency). Each `SingleHttpServer` owns its own `TelemetryContext`
-instance — no global singletons or static state, so multiple servers can run independent telemetry
+instance - no global singletons or static state, so multiple servers can run independent telemetry
 configurations without interference, and every telemetry failure is logged via `log::error()` rather than
 silently swallowed. You may also create your own `TelemetryContext` for custom metrics/traces.
 
