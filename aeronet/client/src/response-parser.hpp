@@ -25,8 +25,7 @@ struct DecompressionState;
 // Only Content-Type, Content-Length and Transfer-Encoding are consumed locally rather than stored
 // verbatim: HttpResponse reconstructs Content-Type and the decoded Content-Length via body(), and
 // chunked framing is de-framed away. Connection is additionally inspected for keep-alive decisions but
-// is still stored. Every other header - including Date / TE / Trailer / Upgrade - is preserved
-// losslessly via HttpResponse::rawHeader().
+// is still stored.
 class ResponseParser {
  public:
   enum class Status : uint8_t {

@@ -25,6 +25,7 @@
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -984,12 +985,11 @@ const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const {
-  HttpResponse resp(HttpResponse::Check::No);
+  HttpResponse resp(HttpMessage::Check::No);
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
     static constexpr std::string_view kAllowedMethods = "GET, HEAD";
-    resp = HttpResponse(HttpResponse::HeaderSize(http::Allow.size(), kAllowedMethods.size()),
-                        http::StatusCodeMethodNotAllowed);
+    resp = HttpResponse(http::HeaderSize(http::Allow.size(), kAllowedMethods.size()), http::StatusCodeMethodNotAllowed);
     resp.headerAddLineUnchecked(http::Allow, kAllowedMethods);
     return resp;
   }
@@ -1017,9 +1017,9 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
       const std::size_t appendSlash = requestedTrailingSlash ? 0UL : 1UL;
       const std::size_t additionalSize =
-          HttpResponse::HeaderSize(http::Location.size(), requestPath.size() + appendSlash) +
-          HttpResponse::HeaderSize(http::CacheControl.size(), kNoCache.size()) +               // "no-cache"
-          HttpResponse::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
+          http::HeaderSize(http::Location.size(), requestPath.size() + appendSlash) +
+          http::HeaderSize(http::CacheControl.size(), kNoCache.size()) +               // "no-cache"
+          http::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
 
       resp = HttpResponse(additionalSize, http::StatusCodeMovedPermanently);
       resp.headerAddLineUnchecked(http::Location, requestPath);
@@ -1038,9 +1038,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
       return resp;
     }
 
-    static constexpr std::size_t kHeadersAdditionalSize =
-        HttpResponse::HeaderSize(http::CacheControl.size(), kNoCache.size()) +
-        HttpResponse::HeaderSize(http::XDirectoryListingTruncated.size(), 1U);
+    static constexpr std::size_t kHeadersAdditionalSize = http::HeaderSize(http::CacheControl.size(), kNoCache.size()) +
+                                                          http::HeaderSize(http::XDirectoryListingTruncated.size(), 1U);
 
     resp = HttpResponse(kHeadersAdditionalSize + (128UL * listing.entries.size()), http::StatusCodeOK);
     resp.headerAddLine(http::CacheControl, kNoCache);

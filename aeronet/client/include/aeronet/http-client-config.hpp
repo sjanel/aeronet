@@ -8,13 +8,16 @@
 
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/telemetry-config.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"  // reuse the server's TLSConfig::Version type for API symmetry
 #endif
@@ -46,8 +49,6 @@ class HttpClientConfig {
  public:
   using Duration = std::chrono::milliseconds;
 
-  HttpClientConfig() { _strings.set(kUserAgent, "aeronet-client"); }
-
   // Maximum time to establish a TCP connection (and, for https, complete the TLS handshake).
   Duration connectTimeout{std::chrono::seconds{10}};
   // Maximum time for a single request/response exchange once connected (excludes connect time).
@@ -62,8 +63,15 @@ class HttpClientConfig {
   std::size_t maxResponseBytes{64UL * 1024UL * 1024UL};
 
   uint32_t maxRedirects{5};
+
   // Maximum idle connections retained per origin in the pool.
   uint32_t maxIdleConnectionsPerHost{8};
+
+  // Will add all the headers defined here in all client requests, if not explicitly set by the user for a given
+  // response. Defaults to a list of one entry "user-agent: aeronet".
+  // Each added header MUST have their key and value separated by (exactly one) aeronet::http::HeaderSep.
+  // The maximum number of global headers is kMaxGlobalHeaders.
+  ConcatenatedHeaders globalHeaders{{"user-agent: aeronet"}};
 
   // Transparent retry + exponential-backoff policy (subsumes the previous `maxRetries` knob). The default
   // (`retry.maxAttempts == 1`) keeps the historical behaviour: the always-safe pre-send stale-pool retry
@@ -106,6 +114,9 @@ class HttpClientConfig {
 
   bool followRedirects{true};
   bool keepAlive{true};
+
+  // Whether to add a `Trailer` header to every request containing trailers.
+  bool addTrailerHeader{true};
 
   // Which HTTP version(s) the client may speak (see HttpVersionMode). Auto (the default) negotiates
   // HTTP/2 via ALPN over https when the build has HTTP/2 support and falls back to HTTP/1.1 everywhere
@@ -164,14 +175,17 @@ class HttpClientConfig {
   // streamed zero-copy alongside the head. Applies to the final (possibly compressed) body. Default: 8 KiB.
   std::size_t maxCapturedRequestBodyBytes{8UL * 1024UL};
 
+  // Telemetry configuration (OpenTelemetry tracing + DogStatsD metrics)
+  TelemetryConfig telemetry;
+
   void validate() const;
 
-  // Value sent in the User-Agent header when the request does not set one explicitly.
-  [[nodiscard]] std::string_view userAgent() const { return _strings[kUserAgent]; }
-  HttpClientConfig& withUserAgent(std::string_view userAgent) {
-    _strings.set(kUserAgent, userAgent);
+  HttpClientConfig& addGlobalHeader(const http::Header& header) {
+    globalHeaders.append(header.http1Raw());
     return *this;
   }
+
+  HttpClientConfig& withGlobalHeaders(std::span<const http::Header> headers);
 
   // Default Accept-Encoding advertised when the request does not set one. When left empty and response
   // decompression is enabled, the client auto-advertises the codecs it can actually decode; set this to
@@ -349,7 +363,6 @@ class HttpClientConfig {
 
  private:
   enum : uint8_t {
-    kUserAgent,
     kAcceptEncoding,
     kCaFile,
     kCaPath,
@@ -363,7 +376,7 @@ class HttpClientConfig {
     kNbStrings,
   };
 
-  // [userAgent, acceptEncoding, caFile, caPath, cipherList, clientCertFile, clientKeyFile, clientCertPem,
+  // [acceptEncoding, caFile, caPath, cipherList, clientCertFile, clientKeyFile, clientCertPem,
   //  clientKeyPem, proxyUrl, proxyCaFile]
   StaticConcatenatedStrings<kNbStrings, uint32_t> _strings;
 };

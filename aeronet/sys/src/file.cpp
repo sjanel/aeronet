@@ -1,17 +1,13 @@
 #include "aeronet/file.hpp"
 
-#include "aeronet/system-error.hpp"
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef AERONET_POSIX
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
-#include <fcntl.h>
 #include <io.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #endif
 
 #include <cerrno>
@@ -29,6 +25,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/system-error-message.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {

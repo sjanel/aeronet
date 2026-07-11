@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <string_view>
 #include <system_error>
-#include <utility>
 
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -177,7 +176,10 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
       return Status::NeedMore;
     }
 
-    case Framing::Chunked: {
+    default: {
+      // parse() resolves bodyless / zero-length framings (None) to Complete before any body parsing, so
+      // parseBody() is only ever entered for Length / UntilClose / Chunked. None / default is unreachable.
+      assert(_framing == Framing::Chunked);
       for (;;) {
         if (_state == State::BodyChunkSize) {
           const auto nl = buffer.find('\n', _pos);
@@ -253,12 +255,6 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         }
       }
     }
-
-    case Framing::None:
-    default:
-      // parse() resolves bodyless / zero-length framings (None) to Complete before any body parsing, so
-      // parseBody() is only ever entered for Length / UntilClose / Chunked. None / default is unreachable.
-      std::unreachable();
   }
 }
 
@@ -349,7 +345,7 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
     // Content-Type / Content-Length / Transfer-Encoding are normalized by HttpResponse::body()
     // (Content-Type + decoded Content-Length) and by de-framing (chunked), so they are consumed
     // locally rather than stored. Every other header - including otherwise-reserved ones such as
-    // Connection, Date, Trailer, Upgrade - is stored verbatim via rawHeader() so the received
+    // Connection, Date, Trailer, Upgrade - is stored verbatim via headerAddLineUnchecked() so the received
     // message is represented losslessly.
     if (CaseInsensitiveEqual(name, http::ContentType)) {
       // Remember where the value sits in the buffer instead of copying it; it is resolved at install time.
@@ -371,7 +367,7 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
       if (CaseInsensitiveEqual(name, http::Connection)) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
       }
-      resp.rawHeader(name, value);
+      resp.headerAddLineUnchecked(name, value);
     }
   }
 

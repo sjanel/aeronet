@@ -823,9 +823,9 @@ if (result) {
 }
 
 // POST with a JSON body and a custom header, via the fluent request builder
-aeronet::ClientRequest req(aeronet::http::Method::POST, "https://example.com/api");
+auto req = client.makeRequest(aeronet::http::Method::POST, "https://example.com/api");
 req.headerAddLine("X-Trace-Id", "abc123").body(R"({"key":"value"})", "application/json");
-auto created = client.request(req);
+auto created = client.request(std::move(req));
 if (created) {
   auto status = created->status();
 }
@@ -839,7 +839,7 @@ Highlights:
 - **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy - an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).
 - `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
 - **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads - both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
-- Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `ClientRequest` builder.
+- Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `HttpRequest` builder.
 - Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).
 
 ```cpp
@@ -872,10 +872,7 @@ aeronet::HttpClient client(cfg);
 auto result = client.get("https://example.com/health");  // reached through a CONNECT tunnel
 ```
 
-The returned response is an `HttpResponse` - a `using` alias of the generic single-buffer `HttpMessage`
-type. Received headers are surfaced losslessly (reserved headers such as `Connection` / `Date` are
-stored verbatim via `HttpMessage::rawHeader()`; only `Content-Type` / `Content-Length` /
-`Transfer-Encoding` are normalized through the body and de-framing).
+The returned response is an `HttpResponse`.
 
 Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` - none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
 

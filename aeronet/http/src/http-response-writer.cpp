@@ -15,6 +15,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -36,9 +37,13 @@ HttpResponseWriter::HttpResponseWriter(internal::IWriterTransport& transport, co
       _fixedResponse(64UL, http::StatusCodeOK, globalHeadersStr),
       _pCompressionConfig(&compressionConfig),
       _pCompressionState(&compressionState) {
-  HttpResponse::Options opts;
-  opts.addTrailerHeader(addTrailerHeader);
-  opts.headMethod(_head);
+  HttpMessage::Options opts;
+  if (addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (_head) {
+    opts.setHeadMethod();
+  }
   opts.setPrepared();
   _fixedResponse._opts = opts;
   _fixedResponse.headerAddLineUnchecked(http::ContentType, http::ContentTypeApplicationOctetStream);
@@ -115,10 +120,10 @@ void HttpResponseWriter::ensureHeadersSent() {
   const bool addVary = _compressionActivated && _pCompressionConfig->addVaryAcceptEncodingHeader;
 
   if (addContentEncoding) {
-    neededSize += HttpResponse::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_compressionFormat).size());
+    neededSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_compressionFormat).size());
   }
   if (addVary) {
-    neededSize += HttpResponse::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+    neededSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
   }
 
   _fixedResponse._data.ensureAvailableCapacity(neededSize);
@@ -126,7 +131,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (addContentEncoding) {
     _fixedResponse.headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_compressionFormat));
-    _fixedResponse._opts.setHasContentEncoding(true);
+    _fixedResponse._opts.setHasContentEncoding();
   }
   if (addVary) {
     _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
@@ -220,7 +225,7 @@ void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view 
     return;
   }
 
-  const std::size_t lineSize = HttpResponse::HeaderSize(name.size(), value.size());
+  const std::size_t lineSize = http::HeaderSize(name.size(), value.size());
 
   _trailers.ensureAvailableCapacityExponential(lineSize + http::CRLF.size());
 

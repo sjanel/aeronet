@@ -7,20 +7,10 @@
 
 namespace aeronet::http {
 
-// Centralized rule for HTTP response headers the user may not set directly (normal or streaming path).
-// These are either automatically emitted (Date, Content-Type, Content-Length, Connection, Transfer-Encoding) or
-// would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
-// (Trailer, Upgrade, TE). Keeping this here allows future optimization of storage layout without
-// scattering the logic.
-// You can use 'static_assert' to make sure at compilation time that the header you are about to insert is not
-// reserved. The list of reserved headers is unlikely to change in the future, but they are mostly technical /
-// framework headers that aeronet manages internally and probably not very interesting for the client.
-// Example:
-//     static_assert(!aeronet::http::IsReservedResponseHeader("X-My-Header")); // OK
-//     static_assert(!aeronet::http::IsReservedResponseHeader("Content-Length")); // Not OK
-constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kReservedOrderedLowerCaseHeaders[] = {
-      "connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade"};
+namespace detail {
+
+template <auto& kReservedOrderedLowerCaseHeaders>
+constexpr bool IsReservedHeaderImpl(std::string_view name) noexcept {
   static_assert(std::ranges::is_sorted(kReservedOrderedLowerCaseHeaders));
 
   static constexpr auto kMaxLenReserved =
@@ -34,6 +24,33 @@ constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
   char lowerCaseName[kMaxLenReserved];
   tolower_n(name.data(), name.size(), lowerCaseName);
   return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, name.size()});
+}
+
+}  // namespace detail
+
+// Centralized rule for HTTP response headers the user may not set directly (normal or streaming path).
+// These are either automatically emitted (Date, Content-Type, Content-Length, Connection, Transfer-Encoding) or
+// would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
+// (Trailer, Upgrade, TE). Keeping this here allows future optimization of storage layout without
+// scattering the logic.
+// You can use 'static_assert' to make sure at compilation time that the header you are about to insert is not
+// reserved. The list of reserved headers is unlikely to change in the future, but they are mostly technical /
+// framework headers that aeronet manages internally and probably not very interesting for the client.
+// Example:
+//     static_assert(!aeronet::http::IsReservedResponseHeader("X-My-Header")); // OK
+//     static_assert(!aeronet::http::IsReservedResponseHeader("Content-Length")); // Not OK
+constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
+  static constexpr std::string_view kHeaders[] = {"connection", "content-length", "content-type",      "date",
+                                                  "te",         "trailer",        "transfer-encoding", "upgrade"};
+  return detail::IsReservedHeaderImpl<kHeaders>(name);
+}
+
+// Same as IsReservedResponseHeader but for request headers.
+constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcept {
+  static constexpr std::string_view kHeaders[] = {"connection",        "content-length", "content-type", "host",
+                                                  "location",          "server",         "te",           "trailer",
+                                                  "transfer-encoding", "upgrade"};
+  return detail::IsReservedHeaderImpl<kHeaders>(name);
 }
 
 // RFC 7230 §4.1.2: Certain headers MUST NOT appear in trailers (chunked transfer encoding).

@@ -534,7 +534,7 @@ class HttpRequestView {
 
  private:
   friend class SingleHttpServer;
-  friend class HttpRequestTest;
+  friend class HttpRequestViewTest;
   friend class StaticFileHandlerTest;
   friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;

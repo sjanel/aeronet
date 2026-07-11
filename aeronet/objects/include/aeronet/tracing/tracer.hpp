@@ -49,7 +49,7 @@ struct SpanRAII {
 // Forward declaration for implementation details
 class TelemetryContextImpl;
 
-// Telemetry context - one per SingleHttpServer instance.
+// Telemetry context - one per thread (client / SingleHttpServer) instance.
 // Encapsulates OpenTelemetry TracerProvider and MeterProvider.
 // No global singletons - each instance is independent.
 class TelemetryContext {
