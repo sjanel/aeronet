@@ -5,7 +5,7 @@
 #include <string>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -28,7 +28,7 @@ TEST(HttpsRedirectIntegration, BasicGetRedirectStandardPort) {
   test::TestServer ts(RedirectConfig());
   // A handler that must NOT be reached (redirect bypasses routing).
   ts.router().setPath(http::Method::GET, "/path",
-                      [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "handler"); });
+                      [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "handler"); });
 
   test::RequestOptions opt;
   opt.target = "/path";

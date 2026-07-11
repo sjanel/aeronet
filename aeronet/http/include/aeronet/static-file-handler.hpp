@@ -9,7 +9,7 @@
 #include "aeronet/city-hash.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/flat-hash-map.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
@@ -25,7 +25,7 @@ class StaticFileHandler {
   explicit StaticFileHandler(std::filesystem::path rootDirectory, StaticFileConfig config = {});
 
   /// Build a response for the given request. Only GET and HEAD are served.
-  [[nodiscard]] HttpResponse operator()(const HttpRequest& request) const;
+  [[nodiscard]] HttpResponse operator()(const HttpRequestView& request) const;
 
  private:
   enum class ResolveResult : uint8_t { NotFound, RegularFile, Directory };
@@ -50,7 +50,7 @@ class StaticFileHandler {
     std::uint8_t etagLen{0};                  // 0 means no ETag
   };
 
-  [[nodiscard]] ResolveResult resolveTarget(const HttpRequest& request, std::filesystem::path& resolvedPath) const;
+  [[nodiscard]] ResolveResult resolveTarget(const HttpRequestView& request, std::filesystem::path& resolvedPath) const;
 
   // Format the per-file header fragments (ETag, Last-Modified, Content-Type) for 'file' into 'out'.
   void buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const;

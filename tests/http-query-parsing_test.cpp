@@ -5,7 +5,7 @@
 #include <string>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -18,7 +18,7 @@ test::TestServer ts;
 }
 
 TEST(HttpQueryParsing, NoQuery) {
-  ts.router().setPath(http::Method::GET, "/plain", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/plain", [](const HttpRequestView& req) {
     EXPECT_EQ(req.path(), "/plain");
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
     HttpResponse resp;
@@ -30,7 +30,7 @@ TEST(HttpQueryParsing, NoQuery) {
 }
 
 TEST(HttpQueryParsing, SimpleQuery) {
-  ts.router().setPath(http::Method::GET, "/p", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/p", [](const HttpRequestView& req) {
     EXPECT_EQ(req.path(), "/p");
 
     std::string body;
@@ -50,7 +50,7 @@ TEST(HttpQueryParsing, SimpleQuery) {
 }
 
 TEST(HttpQueryParsing, PercentDecodedQuery) {
-  ts.router().setPath(http::Method::GET, "/d", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/d", [](const HttpRequestView& req) -> HttpResponse {
     // Query is now fully percent-decoded by parser.
     EXPECT_EQ(req.path(), "/d");
     auto range = req.queryParamsRange();
@@ -84,7 +84,7 @@ TEST(HttpQueryParsing, PercentDecodedQuery) {
 }
 
 TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
-  ts.router().setPath(http::Method::GET, "/t", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/t", [](const HttpRequestView& req) {
     EXPECT_EQ(req.path(), "/t");
     // "?" with nothing after -> empty query view
     EXPECT_EQ(req.queryParams().begin(), req.queryParams().end());
@@ -97,7 +97,7 @@ TEST(HttpQueryParsing, EmptyQueryAndTrailingQMark) {
 }
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
-  ts.router().setPath(http::Method::GET, "/e", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/e", [](const HttpRequestView& req) -> HttpResponse {
     EXPECT_EQ(req.path(), "/e");
     // "%" at end remains literal
     // Malformed escape -> fallback leaves query raw
@@ -116,7 +116,7 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeAtEndShouldBeAccepted) {
 }
 
 TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
-  ts.router().setPath(http::Method::GET, "/e2", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/e2", [](const HttpRequestView& req) -> HttpResponse {
     auto it = req.queryParamsRange().begin();
     EXPECT_NE(it, req.queryParamsRange().end());
     EXPECT_EQ((*it).key, "a");
@@ -131,9 +131,9 @@ TEST(HttpQueryParsingEdge, IncompleteEscapeOneHexShouldBeAccepted) {
 }
 
 TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
-  ts.router().setPath(http::Method::GET, "/m", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/m", [](const HttpRequestView& req) -> HttpResponse {
     auto range = req.queryParamsRange();
-    // Check that HttpRequest::queryParamsRange works with std::ranges
+    // Check that HttpRequestView::queryParamsRange works with std::ranges
     for (const auto& [index, keyValue] : range | std::views::enumerate) {
       if (index == 0) {
         EXPECT_EQ(keyValue.key, "k");
@@ -169,7 +169,7 @@ TEST(HttpQueryParsingEdge, MultiplePairsAndEmptyValue) {
 }
 
 TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
-  ts.router().setPath(http::Method::GET, "/pd", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/pd", [](const HttpRequestView& req) -> HttpResponse {
     // encoded: %66 -> 'f'
     // Fully decodable -> parser decodes now
     auto it = req.queryParamsRange().begin();
@@ -186,7 +186,7 @@ TEST(HttpQueryParsingEdge, PercentDecodingKeyAndValue) {
 }
 
 TEST(HttpQueryStructuredBindings, IterateKeyValues) {
-  ts.router().setPath(http::Method::GET, "/sb", [](const HttpRequest& req) -> HttpResponse {
+  ts.router().setPath(http::Method::GET, "/sb", [](const HttpRequestView& req) -> HttpResponse {
     EXPECT_EQ(req.path(), "/sb");
     int count = 0;
     bool sawA = false;

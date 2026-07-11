@@ -7,7 +7,7 @@
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
@@ -31,11 +31,11 @@ class HttpResponseWriter;
 namespace {
 
 RequestHandler MakeHandler() {
-  return [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); };
+  return [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); };
 }
 
 StreamingHandler MakeStreamingHandler() {
-  return [](const HttpRequest&, HttpResponseWriter&) {};
+  return [](const HttpRequestView&, HttpResponseWriter&) {};
 }
 
 class RouteGroupTest : public ::testing::Test {
@@ -67,11 +67,11 @@ TEST_F(RouteGroupTest, GroupAppliesSharedMiddleware) {
   auto api = router.group("/mw");
   int preCalled = 0;
   int postCalled = 0;
-  api.addRequestMiddleware([&preCalled](HttpRequest&) {
+  api.addRequestMiddleware([&preCalled](HttpRequestView&) {
     ++preCalled;
     return MiddlewareResult::Continue();
   });
-  api.addResponseMiddleware([&postCalled](const HttpRequest&, HttpResponse&) { ++postCalled; });
+  api.addResponseMiddleware([&postCalled](const HttpRequestView&, HttpResponse&) { ++postCalled; });
   api.setPath(http::Method::GET, "/a", MakeHandler());
   api.setPath(http::Method::GET, "/b", MakeHandler());
 
@@ -155,9 +155,9 @@ TEST_F(RouteGroupTest, NestedGroupInheritsConfig) {
 
 TEST_F(RouteGroupTest, NestedGroupInheritsMiddleware) {
   auto api = router.group("/api");
-  api.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  api.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
   auto v2 = api.group("/v2");
-  v2.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
+  v2.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
   v2.setPath(http::Method::GET, "/info", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/api/v2/info");
@@ -227,7 +227,7 @@ TEST_F(RouteGroupTest, AsyncHandlerViaBmpGroup) {
   auto api = router.group("/async");
   api.withMaxBodyBytes(2048);
   api.setPath(http::Method::GET | http::Method::POST, "/task",
-              [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); });
+              [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); });
 
   auto rGet = router.match(http::Method::GET, "/async/task");
   EXPECT_NE(rGet.asyncRequestHandler(), nullptr);
@@ -241,7 +241,7 @@ TEST_F(RouteGroupTest, AsyncHandlerViaBmpGroup) {
 TEST_F(RouteGroupTest, AsyncHandlerSingleMethod) {
   auto api = router.group("/async2");
   api.setPath(http::Method::PUT, "/item",
-              [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); });
+              [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); });
 
   auto result = router.match(http::Method::PUT, "/async2/item");
   EXPECT_NE(result.asyncRequestHandler(), nullptr);

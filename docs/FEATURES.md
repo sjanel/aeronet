@@ -143,7 +143,7 @@ TRACE semantics and safety:
   - `EnabledPlainAndTLS` - TRACE allowed on both plaintext and TLS connections.
   - `EnabledPlainOnly` - TRACE allowed on plaintext connections only; rejected on TLS.
 
-Server enforcement uses the per-request TLS indicator (e.g. `HttpRequest::tlsVersion()` being non-empty for TLS) to make the decision when `TraceMethodPolicy` is one of the TLS-bound options. Use `withTracePolicy(TraceMethodPolicy)` to configure the policy programmatically.
+Server enforcement uses the per-request TLS indicator (e.g. `HttpRequestView::tlsVersion()` being non-empty for TLS) to make the decision when `TraceMethodPolicy` is one of the TLS-bound options. Use `withTracePolicy(TraceMethodPolicy)` to configure the policy programmatically.
 
 Use cases:
 
@@ -279,14 +279,14 @@ Behavior summary
 
 - Each connection maintains its own read buffer (`inBuffer`) for incoming data read from the socket
 - All request data (headers, path, query parameters, body) is stored in this per-connection buffer
-- The `HttpRequest` object is populated with `std::string_view` instances that point directly into this buffer
+- The `HttpRequestView` object is populated with `std::string_view` instances that point directly into this buffer
 - URL decoding (for query parameters) is performed in-place on the buffer, which is safe because URL decoding can only shrink the data
 
 #### Lifetime Guarantees
 
 **Critical safety guarantee**: The connection buffer remains valid and unchanged for the entire duration of the request handler execution. This means:
 
-- All `std::string_view` members of `HttpRequest` (path, query params, headers, body) are safe to use throughout your handler
+- All `std::string_view` members of `HttpRequestView` (path, query params, headers, body) are safe to use throughout your handler
 - The buffer is only deallocated after the handler completes and the connection processing finishes
 - For keep-alive connections, the buffer is reused for subsequent requests, but only after the previous handler has fully completed
 
@@ -309,11 +309,11 @@ Using `std::string_view` extensively would typically be an anti-pattern due to d
 
 #### Best Practices for Handlers
 
-✅ **Safe**: Use `std::string_view` from `HttpRequest` directly in synchronous handlers:
+✅ **Safe**: Use `std::string_view` from `HttpRequestView` directly in synchronous handlers:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/api/user/{id}", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/api/user/{id}", [](const HttpRequestView& req) {
   auto idIt = req.pathParams().find("id");
   std::string_view userId = idIt->second; // Safe - points into connection buffer
   // Use userId throughout handler
@@ -326,7 +326,7 @@ router.setPath(http::Method::GET, "/api/user/{id}", [](const HttpRequest& req) {
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/api/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+router.setPath(http::Method::GET, "/api/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
   std::string_view body = co_await req.bodyAwaitable(); // safe to use request data after await
   co_return HttpResponse(200).body(std::string(body));
 });
@@ -338,7 +338,7 @@ router.setPath(http::Method::GET, "/api/async", [](HttpRequest& req) -> RequestT
 // Example: storing data for later use outside the handler
 std::string storedUserId;  // external storage
 Router router;
-router.setPath(http::Method::GET, "/api/store", [&](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/api/store", [&](const HttpRequestView& req) {
   for (const auto& [k, v] : req.queryParams()) {
     // process query params...
     if (k == "id") {
@@ -495,7 +495,7 @@ Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
 
 #### Direct Compression (Inline Body Streaming Compression)
 
-Responses created via `HttpRequest::makeResponse()` gain an earlier compression layer called **direct
+Responses created via `HttpRequestView::makeResponse()` gain an earlier compression layer called **direct
 compression**: the body is compressed inline as `body()` / `bodyAppend()` calls are made, *before* finalization.
 This eliminates the need for a compression pass at finalization time (`TryCompressResponse`) for eligible
 inline bodies, reducing latency and memory copies.
@@ -509,7 +509,7 @@ inline bodies, reducing latency and memory copies.
 
 Direct compression only activates when **all** conditions are met:
 
-1. Response was created via `HttpRequest::makeResponse()` (provides `Accept-Encoding` negotiation context)
+1. Response was created via `HttpRequestView::makeResponse()` (provides `Accept-Encoding` negotiation context)
 2. `DirectCompressionMode` is not `Off`
 3. No user-supplied `Content-Encoding` header is present
 4. Body is set as inline data (not captured by value, not a file)
@@ -532,7 +532,7 @@ CompressionConfig cfg;
 cfg.defaultDirectCompressionMode = DirectCompressionMode::Auto; // default
 
 Router router;
-router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequestView& req) {
   auto resp = req.makeResponse();
   // Override per-response
   resp.directCompressionMode(DirectCompressionMode::On);  // force direct compression
@@ -598,7 +598,7 @@ Minimal example (manual gzip):
 ```cpp
 std::string preCompressedHelloGzipBytes /* = gzip-compressed "Hello, World!" */;
 Router router;
-router.setDefault([&](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([&](const HttpRequestView&, HttpResponseWriter& w){
   w.status(http::StatusCodeOK);
   w.contentType(http::ContentTypeTextPlain);
   w.contentEncoding("gzip");            // suppress auto compression
@@ -612,7 +612,7 @@ To “force identity” even if thresholds would normally trigger compression:
 ```cpp
 std::string largePlainBuffer(10 * 1024 * 1024, 'A'); // 10 MiB of 'A's
 Router router;
-router.setDefault([&](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([&](const HttpRequestView&, HttpResponseWriter& w){
   w.contentEncoding("identity"); // blocks auto compression
   w.writeBody(largePlainBuffer);
   w.end();
@@ -684,7 +684,7 @@ c.preferredFormats = {Encoding::gzip, Encoding::deflate};
 HttpServerConfig cfg; cfg.withCompression(c);
 
 Router router;
-router.setDefault([](const HttpRequest&) {
+router.setDefault([](const HttpRequestView&) {
   return HttpResponse(200).body(std::string(1024,'A'));
 });
 
@@ -703,7 +703,7 @@ payloads with zero-copy `std::string_view` slices referencing the original reque
 #include <aeronet/log.hpp>
 
 Router router;
-router.setPath(http::Method::POST, "/upload", [](const HttpRequest& req) {
+router.setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
   const auto body = req.body();
   const auto contentType = req.headerValueOrEmpty(http::ContentType);
 
@@ -833,7 +833,7 @@ Typical handler setup:
 ```cpp
 HttpServerConfig serverCfg; serverCfg.withRequestDecompression(DecompressionConfig{});
 Router router;
-router.setDefault([](const HttpRequest& req){
+router.setDefault([](const HttpRequestView& req){
   return HttpResponse(200).body(std::string(req.body()));
 });
 SingleHttpServer server(std::move(serverCfg), std::move(router));
@@ -903,7 +903,7 @@ Trailers are HTTP headers that appear after the final zero-size chunk. They allo
 **aeronet behavior**: Trailer headers are **fully supported**. Trailers are:
 
 - Parsed from the chunk stream after the `0\r\n` terminator
-- Exposed via `HttpRequest::trailers()` (case-insensitive map)
+- Exposed via `HttpRequestView::trailers()` (case-insensitive map)
 - Subject to the same size limit as regular headers (`maxHeaderBytes`)
 - Validated for forbidden headers (security-sensitive headers cannot appear as trailers)
 
@@ -920,7 +920,7 @@ Attempting to send forbidden headers as trailers results in **400 Bad Request**.
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/upload", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/upload", [](const HttpRequestView& req) {
   // Access request body
   std::string_view body = req.body();
   
@@ -960,8 +960,8 @@ aeronet's chunked decoder implements the full decoding algorithm specified in §
 **Integration with other features**:
 
 - Chunked decoding happens **before** Content-Encoding decompression
-- The complete, decoded body is available via `HttpRequest::body()`
-- Trailers are available via `HttpRequest::trailers()` after the request is fully parsed
+- The complete, decoded body is available via `HttpRequestView::body()`
+- Trailers are available via `HttpRequestView::trailers()` after the request is fully parsed
 - `CONNECT` tunneling bypasses chunked decoding (raw TCP proxy mode)
 
 ### Implementation Notes
@@ -1004,7 +1004,7 @@ For fixed/buffered responses, use `HttpResponse::trailerAddLine()`:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
   HttpResponse resp("response data");
   
   // Add trailers after body (required)
@@ -1077,7 +1077,7 @@ For chunked/streaming responses, use `HttpResponseWriter::trailerAddLine()`:
 ```cpp
 Router router;
 router.setPath(http::Method::GET, "/stream",
-    [](const HttpRequest& req, HttpResponseWriter& w) {
+    [](const HttpRequestView& req, HttpResponseWriter& w) {
   w.status(200);
   w.writeBody("chunk1");
   w.writeBody("chunk2");
@@ -1269,7 +1269,7 @@ User attempts to override are ignored (release) / asserted (debug) except via sa
 
 ### Request Header Duplicate Handling (Detailed)
 
-Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on `HttpRequest`. aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
+Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on `HttpRequestView`. aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
 
 | Policy Code | Meaning | Examples |
 |-------------|---------|----------|
@@ -1343,7 +1343,7 @@ Example:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView& req) {
   for (auto [k, v] : req.queryParams()) { /* use k,v */ }
   return HttpResponse(200);
 });
@@ -1401,7 +1401,7 @@ int main() {
   Router router;
 
   // Register an async handler
-  router.setPath(http::Method::GET, "/users/{id}", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     // 1. Parse parameters (synchronous)
     int userId = std::stoi(std::string(req.pathParams().at("id")));
 
@@ -1414,7 +1414,7 @@ int main() {
   });
 
   // Async body reading
-  router.setPath(http::Method::POST, "/upload", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::POST, "/upload", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     // Wait for the full body to be received
     std::string_view body = co_await req.bodyAwaitable();
     
@@ -1449,7 +1449,7 @@ struct User {
 };
 
 Router router;
-router.setPath(http::Method::GET, "/users/{id}", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
   int userId = std::stoi(std::string(req.pathParams().at("id")));
 
   // Run blocking database query on background thread
@@ -1476,7 +1476,7 @@ Runnable demo: [examples/async-handlers.cpp](examples/async-handlers.cpp) (binar
 
 ```cpp
 Router router;
-router.setPath(http::Method::POST, "/process", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+router.setPath(http::Method::POST, "/process", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
   // First, wait for body
   std::string_view body = co_await req.bodyAwaitable();
   std::string bodyCopy(body);
@@ -1514,10 +1514,10 @@ router.setPath(http::Method::POST, "/process", [](HttpRequest& req) -> RequestTa
 ### Middleware Example
 
 ```cpp
-auto isAuthenticated = [](const HttpRequest &req) { return true; };  // user-defined
+auto isAuthenticated = [](const HttpRequestView &req) { return true; };  // user-defined
 
 Router router;
-router.addRequestMiddleware([isAuthenticated](HttpRequest& req) {
+router.addRequestMiddleware([isAuthenticated](HttpRequestView& req) {
   if (!isAuthenticated(req)) {  // user-defined helper
     HttpResponse resp(http::StatusCodeUnauthorized);
     resp.body("auth required");
@@ -1526,24 +1526,24 @@ router.addRequestMiddleware([isAuthenticated](HttpRequest& req) {
   return MiddlewareResult::Continue();
 });
 
-router.addResponseMiddleware([](const HttpRequest&, HttpResponse& resp) {
+router.addResponseMiddleware([](const HttpRequestView&, HttpResponse& resp) {
   resp.header("X-Powered-By", "aeronet");
 });
 
 auto renderMetrics = []() { return std::string{}; };  // user-defined
 
-auto& entry = router.setPath(http::Method::GET, "/metrics", [renderMetrics](const HttpRequest&) {
+auto& entry = router.setPath(http::Method::GET, "/metrics", [renderMetrics](const HttpRequestView&) {
   HttpResponse resp;
   resp.body(renderMetrics());  // user-defined helper
   return resp;
 });
 
-entry.before([](HttpRequest& req) {
+entry.before([](HttpRequestView& req) {
   // tagRequest(req, "metrics");  // user-defined helper
   return MiddlewareResult::Continue();
 });
 
-entry.after([](const HttpRequest&, HttpResponse& resp) {
+entry.after([](const HttpRequestView&, HttpResponse& resp) {
   resp.header("Cache-Control", "no-store");
 });
 
@@ -1572,7 +1572,7 @@ In-memory token bucket example:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/limited", [](const HttpRequest&) {
+router.setPath(http::Method::GET, "/limited", [](const HttpRequestView&) {
   return HttpResponse(200).body("ok");
 });
 
@@ -1736,13 +1736,13 @@ Examples:
 
 #### How to retrieve path params from handlers
 
-- When `SingleHttpServer` dispatches to a handler, it copies routing captures into the `HttpRequest` object. Within
+- When `SingleHttpServer` dispatches to a handler, it copies routing captures into the `HttpRequestView` object. Within
     your handler you can access them via `req.pathParams()` which returns a `flat_hash_map<std::string_view, std::string_view>`.
 - Example:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequestView& req) {
   auto params = req.pathParams();
   auto it = params.find("id");
   if (it != params.end()) {
@@ -1757,7 +1757,7 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpReque
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequest&) {
+router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequestView&) {
   return HttpResponse(200);
 });
 // In handler: req.pathParams().at("0"), req.pathParams().at("1")
@@ -1810,7 +1810,7 @@ Manages N reactors via `SO_REUSEPORT`.
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("hi\n"); });
+router.setDefault([](const HttpRequestView&){ return HttpResponse(200,"OK").body("hi\n"); });
 HttpServerConfig cfg;
 cfg.nbThreads = 4;
 HttpServer multi(cfg, std::move(router));
@@ -1954,8 +1954,8 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid). Implies *request*: enabling *require* always asks for a client certificate, regardless of the *request* flag. |
 | ALPN negotiation | ✅ | Ordered list via `withTlsAlpnProtocols()` |
 | Strict ALPN enforcement | ✅ | `withTlsAlpnMustMatch(true)` -> fatal if no overlap |
-| Negotiated ALPN in request | ✅ | `HttpRequest::alpnProtocol` |
-| Negotiated cipher & version | ✅ | `HttpRequest::{tlsCipher,tlsVersion}` |
+| Negotiated ALPN in request | ✅ | `HttpRequestView::alpnProtocol` |
+| Negotiated cipher & version | ✅ | `HttpRequestView::{tlsCipher,tlsVersion}` |
 | Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
 | Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
 | Kernel TLS (kTLS) sendfile | ✅ | *(Linux-only)* zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
@@ -2184,7 +2184,7 @@ Client certificate modes:
 
 ALPN behavior:
 
-- First overlapping protocol (server order) selected; exposed via `HttpRequest::alpnProtocol`.
+- First overlapping protocol (server order) selected; exposed via `HttpRequestView::alpnProtocol`.
 - Strict mode aborts if no overlap (increments mismatch counter).
 
 Security & metrics integration:
@@ -2347,7 +2347,7 @@ Example:
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest&, HttpResponseWriter& w){
+router.setDefault([](const HttpRequestView&, HttpResponseWriter& w){
   w.status(200);
   w.header("Content-Type", "text/plain");
   for (int i=0;i<5;++i) {
@@ -2371,7 +2371,7 @@ Testing: see `tests/http_streaming.cpp`.
 ## Static File Handler (RFC 7233 / RFC 7232)
 
 `StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range semantics.
-The handler is designed to plug into the existing routing API: it is an invocable object that accepts an `HttpRequest` and returns an `HttpResponse`, so it works with `SingleHttpServer` and `MultiHttpServer` exactly like any other handler.
+The handler is designed to plug into the existing routing API: it is an invocable object that accepts an `HttpRequestView` and returns an `HttpResponse`, so it works with `SingleHttpServer` and `MultiHttpServer` exactly like any other handler.
 
 - **Zero-copy transfers**: regular GET requests use `HttpResponse::file()` so plaintext sockets reuse the kernel
   `sendfile(2)` path. TLS endpoints automatically fall back to the buffered write path that aeronet already uses for
@@ -2446,7 +2446,7 @@ int main() {
 
   Router router;
   StaticFileHandler assets("/var/www/html", std::move(staticFileConfig));
-  router.setPath(http::Method::GET, "/", [assets](const HttpRequest& req) mutable {
+  router.setPath(http::Method::GET, "/", [assets](const HttpRequestView& req) mutable {
     return assets(req);
   });
 
@@ -2503,20 +2503,20 @@ Example precedence illustration:
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest&){ return HttpResponse(200,"OK").body("GLOBAL"); });
-router.setDefault([](const HttpRequest&, HttpResponseWriter& w){ 
+router.setDefault([](const HttpRequestView&){ return HttpResponse(200,"OK").body("GLOBAL"); });
+router.setDefault([](const HttpRequestView&, HttpResponseWriter& w){ 
   w.status(200);
   w.contentType("text/plain");
   w.writeBody("STREAMFALLBACK"); 
   w.end(); 
 });
-router.setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& w){ 
+router.setPath(http::Method::GET, "/stream", [](const HttpRequestView&, HttpResponseWriter& w){ 
   w.status(200); 
   w.contentType("text/plain"); 
   w.writeBody("PS"); 
   w.end(); 
 });
-router.setPath(http::Method::POST, "/stream", [](const HttpRequest&){ return HttpResponse{201, "Created"}.body("NORMAL"); });
+router.setPath(http::Method::POST, "/stream", [](const HttpRequestView&){ return HttpResponse{201, "Created"}.body("NORMAL"); });
 ```
 
 Behavior:
@@ -2790,7 +2790,7 @@ All configuration methods return `CorsPolicy&` for fluent chaining.
 CorsPolicy policy;
 Router router;
 router.setPath(http::Method::GET | http::Method::POST, "/api/data", 
-               [](const HttpRequest& req) { return HttpResponse(200); })
+               [](const HttpRequestView& req) { return HttpResponse(200); })
       .cors(std::move(policy));
 ```
 
@@ -2876,7 +2876,7 @@ apiCors.allowOrigin("https://app.example.com")
 
 Router router;
 router.setPath(http::Method::GET | http::Method::POST, "/api/*", 
-               [](const HttpRequest& req) { return req.makeResponse(200); })
+               [](const HttpRequestView& req) { return req.makeResponse(200); })
       .cors(std::move(apiCors));
 ```
 
@@ -2919,7 +2919,7 @@ int main() {
   Router router;
 
   // Register WebSocket endpoint with factory for echo functionality
-  router.setWebSocket("/ws", WebSocketEndpoint::WithFactory([](const HttpRequest& /*req*/) {
+  router.setWebSocket("/ws", WebSocketEndpoint::WithFactory([](const HttpRequestView& /*req*/) {
     auto handler = std::make_unique<WebSocketHandler>();
 
     // Capture raw pointer before moving handler
@@ -3135,7 +3135,7 @@ int main() {
   
   // Unified handler for both HTTP/1.1 and HTTP/2
   // Use req.isHttp2() and req.streamId() to detect HTTP/2 if needed
-  router.setDefault([](const HttpRequest& req) {
+  router.setDefault([](const HttpRequestView& req) {
     if (req.isHttp2()) {
       return req.makeResponse("Hello from HTTP/2! Stream " + std::to_string(req.streamId()) + "\n");
     }
@@ -3162,13 +3162,13 @@ int main() {
 
 ### Unified Handler API
 
-HTTP/2 requests use the same `HttpRequest` type and handlers as HTTP/1.1. The framework automatically routes requests to your handlers regardless of protocol version. To detect HTTP/2 in your handler:
+HTTP/2 requests use the same `HttpRequestView` type and handlers as HTTP/1.1. The framework automatically routes requests to your handlers regardless of protocol version. To detect HTTP/2 in your handler:
 
 ```cpp
 Router router;
 
 // Single handler works for both HTTP/1.1 and HTTP/2
-router.setDefault([](const HttpRequest& req) {
+router.setDefault([](const HttpRequestView& req) {
   if (req.isHttp2()) {
     // HTTP/2-specific logic using req.streamId(), req.scheme(), etc.
     return req.makeResponse(200, "HTTP/2 stream " + std::to_string(req.streamId()) + "\n");
@@ -3177,7 +3177,7 @@ router.setDefault([](const HttpRequest& req) {
 });
 
 // Per-path handlers work identically for both protocols
-router.setPath(http::Method::GET, "/api/{resource}", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/api/{resource}", [](const HttpRequestView& req) {
   return req.makeResponse(200, "Resource: " + std::string(req.pathParams().at("resource")) + "\n");
 });
 
@@ -3394,7 +3394,7 @@ Construct a server directly from a JSON or YAML configuration file:
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/multi-http-server.hpp"
 
-auto handler = [](const HttpRequest&) { return HttpResponse(200); };
+auto handler = [](const HttpRequestView&) { return HttpResponse(200); };
 
 // Single-threaded server from config file (format auto-detected from extension)
 SingleHttpServer server("/etc/aeronet/config.yaml");
@@ -3458,7 +3458,7 @@ Serialize any Glaze-compatible object directly into the response body, avoiding 
 #include <unordered_map>
 #include <string>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-json.hpp"
 
@@ -3486,7 +3486,7 @@ Parse incoming request bodies into typed C++ objects (also via the opt-in `<aero
 
 using MyPayload = std::unordered_map<std::string, std::string>;
 
-auto handler = [](const HttpRequest& req) {
+auto handler = [](const HttpRequestView& req) {
   auto jsonResult = req.bodyAs<MyPayload>();       // parse JSON body
 
   // YAML variant:

@@ -6,7 +6,7 @@
 #include <utility>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 
 namespace aeronet {
@@ -59,9 +59,9 @@ using MiddlewareMetricsCallback = std::function<void(const MiddlewareMetrics&)>;
 
 // Middleware invoked before the route handler executes. It may mutate the request and
 // return a short-circuit response to skip subsequent middleware and the handler.
-using RequestMiddleware = std::function<MiddlewareResult(HttpRequest&)>;
+using RequestMiddleware = std::function<MiddlewareResult(HttpRequestView&)>;
 
 // Middleware invoked after the handler produces a response. It can amend headers/body.
-using ResponseMiddleware = std::function<void(const HttpRequest&, HttpResponse&)>;
+using ResponseMiddleware = std::function<void(const HttpRequestView&, HttpResponse&)>;
 
 }  // namespace aeronet

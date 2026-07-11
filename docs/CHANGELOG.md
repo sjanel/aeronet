@@ -6,8 +6,9 @@ All notable changes to aeronet are documented in this file.
 
 ### Breaking changes
 
-- **HTTP/2-specific `HttpRequest` APIs** (`isHttp2()`, `streamId()`, `scheme()`, `authority()`) are now compiled only when `AERONET_ENABLE_HTTP2` is on. Without HTTP/2, use the HTTP/1.x equivalents (e.g. `headerValueOrEmpty("Host")` for `authority()`).
-- **JSON/YAML body helpers now require `<aeronet/http-json.hpp>`**: `HttpResponse::bodyJson`/`bodyYaml` and `HttpRequest::bodyAs`/`bodyAsYaml` keep their declarations in the core headers, but their definitions (and the Glaze include) moved to the new opt-in `<aeronet/http-json.hpp>` to keep Glaze's compile cost out of the core. Code using the `<aeronet/aeronet.hpp>` umbrella is unaffected.
+- **`HttpRequest` has been renamed into `HttpRequestView`** to better reflect its non-owning semantics.
+- **HTTP/2-specific `HttpRequestView` APIs** (`isHttp2()`, `streamId()`, `scheme()`, `authority()`) are now compiled only when `AERONET_ENABLE_HTTP2` is on. Without HTTP/2, use the HTTP/1.x equivalents (e.g. `headerValueOrEmpty("Host")` for `authority()`).
+- **JSON/YAML body helpers now require `<aeronet/http-json.hpp>`**: `HttpResponse::bodyJson`/`bodyYaml` and `HttpRequestView::bodyAs`/`bodyAsYaml` keep their declarations in the core headers, but their definitions (and the Glaze include) moved to the new opt-in `<aeronet/http-json.hpp>` to keep Glaze's compile cost out of the core. Code using the `<aeronet/aeronet.hpp>` umbrella is unaffected.
 - **The `aeronet::log` API now requires `<aeronet/log.hpp>`**: the core headers no longer pull in spdlog transitively, so callers of `aeronet::log::*` must include it directly.
 
 ### New features
@@ -17,7 +18,7 @@ All notable changes to aeronet are documented in this file.
 - **Automatic HTTP → HTTPS redirect**: a plaintext listener can answer every request with a 3xx redirect to the equivalent `https://` URL via `HttpServerConfig::withHttpsRedirect(targetHttpsPort = 443, statusCode = 301)`. The redirect host derives from the request `Host` header; the path and query are re-encoded so `Location` is always a valid, injection-safe URL; a request with no `Host` gets `400`. Cannot be combined with `tls.enabled` on the same listener.
 - **HTTP request rate-limiting middleware**: `RateLimitRequestMiddlewareBuilder` with a configurable client-key strategy (peer address, `X-Forwarded-For`, custom header, or custom extractor). The default in-memory token-bucket backend returns `429 Too Many Requests` with `Retry-After`, and installs globally (`Router::addRequestMiddleware`) or per-route / per-`RouteGroup`. Ships an optional Redis sliding-window contract (`RedisSlidingWindowRateLimitStore`, exposing the Lua script payload and a deterministic key schema) for distributed multi-instance synchronization.
 - **Dedicated probe listener for `MultiHttpServer`**: `BuiltinProbesConfig::withDedicatedPort(port)` serves `/livez` / `/readyz` / `/startupz` from a separate single-threaded event loop, isolating probe availability from worker load. Liveness is heartbeat-based — each worker publishes a heartbeat at the top of every loop iteration, and the pod is reported unhealthy only when **every** worker's heartbeat has been stale beyond `livenessStaleThreshold` (default `10s`), so a busy-but-progressing worker stays live while a full deadlock trips it. Opt-in (`dedicatedPort == 0`, the default, keeps probes inline). See the [Kubernetes deployment guide](kubernetes-examples.md#isolating-probes-on-a-dedicated-port).
-- **Client address on the request**: `HttpRequest::clientAddress()`, populated from the peer socket address for both HTTP/1.1 and HTTP/2.
+- **Client address on the request**: `HttpRequestView::clientAddress()`, populated from the peer socket address for both HTTP/1.1 and HTTP/2.
 
 ### Bug fixes
 
@@ -28,7 +29,7 @@ All notable changes to aeronet are documented in this file.
 - **mTLS: `requireClientCert` could be silently ignored** when `requestClientCert=false` (reachable via config), so certificate-less clients were accepted; the invariant `requireClientCert ⇒ requestClientCert` is now enforced on every configuration path.
 - **Empty-body HTTP/1.1 responses omitted `Content-Length`**, defeating keep-alive reuse; `Content-Length: 0` is now synthesized (excluding statuses that must not carry it, HEAD, and file / streaming / direct-compression responses).
 - **Response status-line omitted the mandatory SP before an empty reason-phrase** (`HTTP/1.1 200\r\n`), which strict RFC 9112 parsers may reject; aeronet now always emits the separator (`HTTP/1.1 200 \r\n`).
-- **glaze JSON/YAML reads could over-read a non-null-terminated body buffer** — `HttpRequest::bodyAs<T>()` / `bodyAsYaml<T>()` now parse with `null_terminated = false`.
+- **glaze JSON/YAML reads could over-read a non-null-terminated body buffer** — `HttpRequestView::bodyAs<T>()` / `bodyAsYaml<T>()` now parse with `null_terminated = false`.
 - **Out-of-bounds read on a stale poll event (rare macOS-only crash)** — `ConnectionStorage::iterator(fd)` now maps any out-of-range fd to `end()` instead of dereferencing past the (shrunk) connection vector.
 - Fixed a Debug-only compilation error in `aeronet::fullVersionStringView()` (`<aeronet/version.hpp>`).
 
@@ -88,7 +89,7 @@ All notable changes to aeronet are documented in this file.
 - HTTP/2 stream cleanup: consolidate per-stream maps for better cache locality
 - Decrease memory usage in connections by offloading async handler states to a separate object that is not allocated for connections that do not use async handlers.
 - Backpressure queueing now rejects additional response chunks immediately once `maxOutboundBufferBytes` marks a connection for drain, avoiding repeated buffer growth/work when streaming handlers ignore a failed `writeBody()` result.
-- **WebSocket output zero-copy: write directly into caller-provided buffer** - Instead of accumulating frames in `_outputBuffer` and then draining it, let the protocol handler accept a caller-provided `HttpResponseData&` and write frames directly into it, bypassing `_outputBuffer` entirely. Eliminates both the intermediate allocation and the drain copy for single-frame responses. Requires a larger interface change (pass the destination buffer into `processInput` or a separate `buildOutput` step). Build on the above move-ownership idea first.
+- **WebSocket output zero-copy: write directly into caller-provided buffer** - Instead of accumulating frames in `_outputBuffer` and then draining it, let the protocol handler accept a caller-provided `HttpMessageData&` and write frames directly into it, bypassing `_outputBuffer` entirely. Eliminates both the intermediate allocation and the drain copy for single-frame responses. Requires a larger interface change (pass the destination buffer into `processInput` or a separate `buildOutput` step). Build on the above move-ownership idea first.
 
 ### 1.3.0 Other
 
@@ -128,7 +129,7 @@ All notable changes to aeronet are documented in this file.
 ### 1.2.0 Improvements
 
 - Replaced connections map with a simple vector, where the index of a connection object is simply indexed by its fd value.
-- Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequest::makeResponse()`).
+- Removed memmove overhead in **HTTP/2** body handling for non-prepared `HttpResponse`. (a prepared `HttpResponse` is when constructed with `HttpRequestView::makeResponse()`).
 - Improved `StaticFileHandler` performance
   - **Small file optimization**: files smaller than a configurable threshold (default 128 KiB) are now read into memory and served as inline bodies instead of using the zero-copy transport path (e.g. `sendfile` on Linux). This can significantly reduce latency for small files by avoiding the overhead of setting up zero-copy transfers, while still benefiting from zero-copy for larger files.
   - Other optimizations in directory listing, file metadata retrieval, `sendfile` chunk size optimization.
@@ -172,19 +173,19 @@ All notable changes to aeronet are documented in this file.
 - Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified (see why in [improvements](#improvements) section).
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
-- `HttpRequest` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range - it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
+- `HttpRequestView` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range - it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
 - Previously indicated as **undefined behavior**, setting `Content-Type` and `Content-Length` is now prohibited using the `header` and `headerAddLine` methods.
   You should use the dedicated (already existing) `contentType()` and `contentLength()` methods instead for streaming handlers, and set `content-type` along with the body for normal handlers, otherwise `std::invalid_argument` is thrown.
 
 ### 1.1.0 New Features
 
-- **Direct compression**: Inline response bodies created via `HttpRequest::makeResponse()` can now be compressed at `body()` / `bodyAppend()` call time, before finalization. This is controlled by `DirectCompressionMode` (`Auto`, `Off`, `On`) and configured via `CompressionConfig::defaultDirectCompressionMode`. See [Direct Compression](FEATURES.md#direct-compression-inline-body-streaming-compression) for details.
-- `HttpRequest::makeResponse()` factory methods for simplified response creation with body and content-type.
-- `HttpRequest::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
+- **Direct compression**: Inline response bodies created via `HttpRequestView::makeResponse()` can now be compressed at `body()` / `bodyAppend()` call time, before finalization. This is controlled by `DirectCompressionMode` (`Auto`, `Off`, `On`) and configured via `CompressionConfig::defaultDirectCompressionMode`. See [Direct Compression](FEATURES.md#direct-compression-inline-body-streaming-compression) for details.
+- `HttpRequestView::makeResponse()` factory methods for simplified response creation with body and content-type.
+- `HttpRequestView::deferWork()` method to let the main thread come back to the event loop and launch an asynchronous task (in a dedicated thread) to process the request.
 - `size` / `length` method helpers in `HttpResponse`, with `reserve` and capacity getters.
 - Option `HttpServerConfig::addTrailerHeader` to automatically emit `trailer` header when trailers are added to responses in `HTTP/1.1` only.
-- `HttpRequest` now exposes a new map-like for query parameters: `queryParams()` which collapses duplicate keys (last-value wins)
-- `HttpRequest` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`, `headerRemoveLine(key)`, `headerRemoveValue(key, value)`.
+- `HttpRequestView` now exposes a new map-like for query parameters: `queryParams()` which collapses duplicate keys (last-value wins)
+- `HttpRequestView` gains the following methods: `hasHeader(key)`, `hasTrailer(key)`, `hasPathParam(key)`, `hasQueryParam(key)`, `pathParamValue(key)`, `pathParamValueOrEmpty(key)`, `queryParamValue(key)`, `queryParamValueOrEmpty(key)`, `queryParamInt(key)`, `headerRemoveLine(key)`, `headerRemoveValue(key, value)`.
 - Router paths now accepts asterisk as non terminal segments which are matched as a literal (e.g. `/files/*/metadata`).
 
 ### 1.1.0 Improvements
@@ -194,7 +195,7 @@ All notable changes to aeronet are documented in this file.
 - `WebSocketConfig.maxMessageSize` is now **strictly respected** when decompressing a `WebSocket` message
 - Optimized *prepared* (built from `makeResponse()`) `HttpResponse` to avoid allocating body and trailers memory for **HEAD** requests.
 - **Faster case insensitive hash using FNV-1a algorithm for header name lookups**, and optimized version of `tolower` - Use [City hash](https://github.com/google/cityhash/tree/master) elsewhere (for standard strings)
-- `HttpRequest::queryParamsRange()` satisfies the **C++20 range** concept.
+- `HttpRequestView::queryParamsRange()` satisfies the **C++20 range** concept.
 - Reuse encoders contexts instead of recreating them on each request for better performance.
 - Faster `HttpResponse::file()` by optimizing body headers update.
 - Smaller memory reallocations when using captured body in `HttpResponse`.
@@ -261,7 +262,7 @@ All notable changes to aeronet are documented in this file.
 - [x] ALPN "h2" negotiation over TLS
 - [x] h2c (cleartext prior knowledge) mode
 - [x] HTTP/1.1 → HTTP/2 upgrade via Upgrade header
-- [x] Unified handler API (same HttpRequest type for both protocols)
+- [x] Unified handler API (same HttpRequestView type for both protocols)
 - [x] Static file responses with zero-copy sendfile awareness
 - [x] CORS and middleware support
 - [x] PRIORITY frames (optional, configurable)

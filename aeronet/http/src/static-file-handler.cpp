@@ -26,7 +26,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
@@ -605,7 +605,8 @@ struct ConditionalOutcome {
   http::StatusCode status{http::StatusCodeOK};
 };
 
-ConditionalOutcome EvaluateConditionals(const HttpRequest& request, std::string_view etag, SysTimePoint lastModified) {
+ConditionalOutcome EvaluateConditionals(const HttpRequestView& request, std::string_view etag,
+                                        SysTimePoint lastModified) {
   ConditionalOutcome outcome;
 
   if (etag.empty()) {
@@ -863,7 +864,7 @@ StaticFileHandler::StaticFileHandler(std::filesystem::path rootDirectory, Static
   }
 }
 
-StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequest& request,
+StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequestView& request,
                                                                   std::filesystem::path& resolvedPath) const {
   std::string_view rawPath = request.path();
   const bool requestedTrailingSlash = rawPath.back() == '/';
@@ -982,7 +983,7 @@ const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta
   return _headerCache.find(filePath)->second;
 }
 
-HttpResponse StaticFileHandler::operator()(const HttpRequest& request) const {
+HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const {
   HttpResponse resp(HttpResponse::Check::No);
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {

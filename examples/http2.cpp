@@ -77,8 +77,8 @@ int main(int argc, char** argv) {
 
   try {
     // Unified handler for both HTTP/1.1 and HTTP/2
-    // The handler receives an HttpRequest which has isHttp2() method to detect protocol
-    router.setDefault([](const HttpRequest& req) {
+    // The handler receives an HttpRequestView which has isHttp2() method to detect protocol
+    router.setDefault([](const HttpRequestView& req) {
       HttpResponse resp(200);
       if (req.isHttp2()) {
         resp.bodyAppend("Hello from aeronet HTTP/2!\n");

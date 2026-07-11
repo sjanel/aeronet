@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
   Router router;
 
   // Add a simple HTTP endpoint for testing
-  router.setPath(http::Method::GET, "/", [](const HttpRequest& /*req*/) {
+  router.setPath(http::Method::GET, "/", [](const HttpRequestView& /*req*/) {
     return HttpResponse(R"html(
 <!DOCTYPE html>
 <html>
@@ -93,7 +93,7 @@ function log(s) { document.getElementById('log').textContent += s + '\n'; }
   // Register WebSocket endpoint with factory for echo functionality
   // Using factory pattern allows access to the handler for sending responses
   router.setWebSocket(
-      "/ws", WebSocketEndpoint::WithFactory([](const HttpRequest& req) {
+      "/ws", WebSocketEndpoint::WithFactory([](const HttpRequestView& req) {
         std::cout << "[WS] New connection from path: " << req.path() << "\n";
 
         auto handler = std::make_unique<websocket::WebSocketHandler>();

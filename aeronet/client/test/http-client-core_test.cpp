@@ -61,7 +61,7 @@ namespace {
 
 // Reflects a handful of request headers back so a test can observe exactly what the request builder put
 // on the wire (which framing headers it injected, and which user-supplied ones suppressed the injection).
-HttpResponse ReflectRequestHeaders(const HttpRequest& req) {
+HttpResponse ReflectRequestHeaders(const HttpRequestView& req) {
   auto resp = req.makeResponse(http::StatusCodeOK, "reflect", "text/plain");
   resp.header("echo-host", req.headerValueOrEmpty("host"));
   resp.header("echo-ua-present", req.hasHeader("user-agent") ? "yes" : "no");
@@ -80,65 +80,65 @@ test::TestServer CreateTestServer() {
 
   auto routerProxy = testServer.router();
   routerProxy.setPath(http::Method::GET | http::Method::POST, "/reflect", ReflectRequestHeaders);
-  routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
   });
-  routerProxy.setPath(http::Method::POST, "/echo", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
   });
-  routerProxy.setPath(http::Method::GET, "/redirect", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/redirect", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeFound);
     resp.location("/hello");
     return resp;
   });
-  routerProxy.setPath(http::Method::GET, "/loop", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/loop", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeFound);
     resp.location("/loop");
     return resp;
   });
   // 303 See Other forces a redirect rewrite to GET with the request body dropped.
-  routerProxy.setPath(http::Method::POST, "/see-other", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::POST, "/see-other", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeSeeOther);
     resp.location("/hello");
     return resp;
   });
   // 302 Found from a POST -> rewrite to GET (method rewriting for 301/302 non-GET/HEAD).
-  routerProxy.setPath(http::Method::POST, "/found", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::POST, "/found", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeFound);
     resp.location("/hello");
     return resp;
   });
   // A 3xx with no Location header: the client gives up redirecting and returns the 3xx as-is.
   routerProxy.setPath(http::Method::GET, "/redirect-no-location",
-                      [](const HttpRequest& req) { return req.makeResponse(http::StatusCodeFound); });
+                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeFound); });
   // A 3xx whose Location cannot be resolved (unsupported scheme): returned as-is.
-  routerProxy.setPath(http::Method::GET, "/redirect-bad-location", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/redirect-bad-location", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeFound);
     resp.location("ftp://unsupported/x");
     return resp;
   });
-  routerProxy.setPath(http::Method::PUT, "/put", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::PUT, "/put", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "text/plain");
   });
-  routerProxy.setPath(http::Method::PATCH, "/patch", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::PATCH, "/patch", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "text/plain");
   });
-  routerProxy.setPath(http::Method::DELETE, "/resource", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::DELETE, "/resource", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, "deleted", "text/plain");
   });
   // The remaining redirect status codes a GET follows to /hello. 301 keeps the method (the method
   // rewrite only fires for non-GET/HEAD); 307/308 always preserve the method + body.
-  routerProxy.setPath(http::Method::GET, "/moved-permanently", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/moved-permanently", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeMovedPermanently);
     resp.location("/hello");
     return resp;
   });
-  routerProxy.setPath(http::Method::GET, "/temporary-redirect", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/temporary-redirect", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeTemporaryRedirect);
     resp.location("/hello");
     return resp;
   });
-  routerProxy.setPath(http::Method::GET, "/permanent-redirect", [](const HttpRequest& req) {
+  routerProxy.setPath(http::Method::GET, "/permanent-redirect", [](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodePermanentRedirect);
     resp.location("/hello");
     return resp;
@@ -403,7 +403,7 @@ TEST_F(HttpClientE2ETest, FollowsPermanentRedirect) {
 TEST_F(HttpClientE2ETest, AlternatingOriginsSwapLoopRegistration) {
   Router router2;
   router2.setPath(http::Method::GET, "/hello",
-                  [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "planet", "text/plain"); });
+                  [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "planet", "text/plain"); });
   SingleHttpServer server2(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
                            std::move(router2));
   const uint16_t port2 = server2.port();
@@ -510,23 +510,23 @@ class HttpClientCacheE2ETest : public ::testing::Test {
   void SetUp() override {
     auto router = ts.resetRouterAndGet();
     // GET/HEAD counter: body is the running hit count so a cached response is identifiable by its value.
-    router.setPath(http::Method::GET | http::Method::HEAD, "/counter", [this](const HttpRequest&) {
+    router.setPath(http::Method::GET | http::Method::HEAD, "/counter", [this](const HttpRequestView&) {
       const int nth = _counterHits.fetch_add(1, std::memory_order_relaxed) + 1;
       return HttpResponse(http::StatusCodeOK, std::to_string(nth), "text/plain");
     });
-    router.setPath(http::Method::GET, "/error", [this](const HttpRequest&) {
+    router.setPath(http::Method::GET, "/error", [this](const HttpRequestView&) {
       _errorHits.fetch_add(1, std::memory_order_relaxed);
       return HttpResponse(http::StatusCodeInternalServerError, "err", "text/plain");
     });
-    router.setPath(http::Method::GET, "/a", [this](const HttpRequest&) {
+    router.setPath(http::Method::GET, "/a", [this](const HttpRequestView&) {
       _aHits.fetch_add(1, std::memory_order_relaxed);
       return HttpResponse(http::StatusCodeOK, "a", "text/plain");
     });
-    router.setPath(http::Method::GET, "/b", [this](const HttpRequest&) {
+    router.setPath(http::Method::GET, "/b", [this](const HttpRequestView&) {
       _bHits.fetch_add(1, std::memory_order_relaxed);
       return HttpResponse(http::StatusCodeOK, "b", "text/plain");
     });
-    router.setPath(http::Method::POST, "/echo", [this](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/echo", [this](const HttpRequestView& req) {
       _echoHits.fetch_add(1, std::memory_order_relaxed);
       return HttpResponse(http::StatusCodeOK, req.body(), "application/test");
     });
@@ -681,19 +681,20 @@ class HttpClientCompressionE2E : public ::testing::Test {
   void SetUp() override {
     auto router = ts.resetRouterAndGet();
     // Echoes the (already server-decompressed) request body verbatim.
-    router.setPath(http::Method::POST, "/echo",
-                   [](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK, req.body(), "text/plain"); });
+    router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
+      return HttpResponse(http::StatusCodeOK, req.body(), "text/plain");
+    });
     // Returns the size of the (server-decompressed) request body, as a tiny uncompressed response.
-    router.setPath(http::Method::POST, "/size", [](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/size", [](const HttpRequestView& req) {
       return HttpResponse(http::StatusCodeOK, std::to_string(req.body().size()), "text/plain");
     });
     // Returns the Accept-Encoding header the server received (to observe what the client advertised).
-    router.setPath(http::Method::GET, "/accept-encoding", [](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/accept-encoding", [](const HttpRequestView& req) {
       return HttpResponse(http::StatusCodeOK, std::string(req.headerValueOrEmpty("accept-encoding")), "text/plain");
     });
     // A large, highly compressible blob so the server compresses the response.
     router.setPath(http::Method::GET, "/blob",
-                   [this](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, _blob, "text/plain"); });
+                   [this](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, _blob, "text/plain"); });
 
     ts.postConfigUpdate([](HttpServerConfig& cfg) {
       cfg.compression.minBytes = 16;  // compress even small response bodies
@@ -1184,7 +1185,7 @@ class HttpClientProxyTlsE2ETest : public ::testing::Test {
 
     Router router;
     router.setPath(http::Method::GET, "/secure",
-                   [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
+                   [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
 
     HttpServerConfig scfg;
     scfg.withPort(0).withKeepAliveTimeout(std::chrono::seconds{5}).withPollInterval(std::chrono::milliseconds{20});

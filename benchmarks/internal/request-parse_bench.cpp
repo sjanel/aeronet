@@ -14,7 +14,7 @@
 using namespace std::chrono_literals;  // NOLINT(misc-unused-using-decls)
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -31,7 +31,7 @@ class MinimalServerFixture : public benchmark::Fixture {
   void SetUp(const benchmark::State& state [[maybe_unused]]) override {
     stopFlag.store(false, std::memory_order_relaxed);
     server = std::make_unique<aeronet::SingleHttpServer>(aeronet::HttpServerConfig{}.withPort(0));
-    server->router().setDefault([](const aeronet::HttpRequest&) {
+    server->router().setDefault([](const aeronet::HttpRequestView&) {
       aeronet::HttpResponse resp;
       resp.body("OK");
       return resp;

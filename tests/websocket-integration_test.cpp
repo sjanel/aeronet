@@ -257,7 +257,7 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
 
 TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   ts.postRouterUpdate([this](Router& router) {
-    router.setWebSocket("/echo", WebSocketEndpoint::WithFactory([this](const HttpRequest& /*req*/) {
+    router.setWebSocket("/echo", WebSocketEndpoint::WithFactory([this](const HttpRequestView& /*req*/) {
                           auto handler = std::make_unique<WebSocketHandler>();
                           handler->setCallbacks(WebSocketCallbacks{
                               .onMessage =

@@ -48,35 +48,35 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
     Router router;
-    router.setPath(http::Method::GET, "/hello", [this](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/hello", [this](const HttpRequestView& req) {
       observe(req);
       return HttpResponse(http::StatusCodeOK, "world", "text/plain");
     });
-    router.setPath(http::Method::HEAD, "/hello", [this](const HttpRequest& req) {
+    router.setPath(http::Method::HEAD, "/hello", [this](const HttpRequestView& req) {
       observe(req);
       return HttpResponse(http::StatusCodeOK, "world", "text/plain");
     });
-    router.setPath(http::Method::POST, "/echo", [this](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/echo", [this](const HttpRequestView& req) {
       observe(req);
       return HttpResponse(http::StatusCodeOK, req.body(), "application/test");
     });
-    router.setPath(http::Method::GET, "/big", [this](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/big", [this](const HttpRequestView& req) {
       observe(req);
       return HttpResponse(http::StatusCodeOK, MakeLargeBody(), "application/octet-stream");
     });
-    router.setPath(http::Method::GET, "/redirect", [this](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/redirect", [this](const HttpRequestView& req) {
       observe(req);
       HttpResponse resp(http::StatusCodeFound);
       resp.location("/hello");
       return resp;
     });
-    router.setPath(http::Method::POST, "/see-other", [this](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/see-other", [this](const HttpRequestView& req) {
       observe(req);
       HttpResponse resp(http::StatusCodeSeeOther);
       resp.location("/hello");
       return resp;
     });
-    router.setPath(http::Method::GET, "/headers", [this](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/headers", [this](const HttpRequestView& req) {
       observe(req);
       HttpResponse resp(http::StatusCodeOK, "hdr", "text/plain");
       resp.header("x-echoed", req.headerValueOrEmpty("x-custom-token"));
@@ -85,7 +85,7 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
     });
     // 303 See Other -> rewrite to GET /headers with the request body dropped. A user header set on the
     // original POST must survive the drop-body rewrite and reach /headers (where it is reflected back).
-    router.setPath(http::Method::POST, "/see-other-headers", [this](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/see-other-headers", [this](const HttpRequestView& req) {
       observe(req);
       HttpResponse resp(http::StatusCodeSeeOther);
       resp.location("/headers");
@@ -100,9 +100,9 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
 
   void TearDown() override { _server.reset(); }
 
-  // NOTE: HttpRequest::clientAddress() is not usable here: requests dispatched through the HTTP/2
+  // NOTE: HttpRequestView::clientAddress() is not usable here: requests dispatched through the HTTP/2
   // handler carry no owner state (pre-existing server-side gap), so only the version is recorded.
-  void observe(const HttpRequest& req) {
+  void observe(const HttpRequestView& req) {
     _lastSeenHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
   }
 
@@ -328,7 +328,7 @@ TEST_F(HttpClientHttp2E2ETest, ServerGoAwayAfterStreamBudgetReconnects) {
   _server.reset();
   Router router;
   router.setPath(http::Method::GET, "/hello",
-                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "world", "text/plain"); });
+                 [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "world", "text/plain"); });
   HttpServerConfig serverCfg;
   serverCfg.withPort(0).withPollInterval(std::chrono::milliseconds{20});
   serverCfg.http2.maxStreamsPerConnection = 1;
@@ -404,7 +404,7 @@ std::unique_ptr<SingleHttpServer> MakeTlsServer(std::string_view cert, std::stri
   std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
   Router router;
-  router.setPath(http::Method::GET, "/hello", [&sawHttp2](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/hello", [&sawHttp2](const HttpRequestView& req) {
     sawHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
     return HttpResponse(http::StatusCodeOK, "tls-world", "text/plain");
   });

@@ -9,12 +9,12 @@
 
 namespace aeronet {
 
-class HttpRequest;
+class HttpRequestView;
 
 /// Factory function that creates a WebSocketHandler for a new connection.
 /// Receives the upgrade request to allow per-connection customization.
 /// The factory should configure callbacks before returning the handler.
-using WebSocketHandlerFactory = std::function<std::unique_ptr<websocket::WebSocketHandler>(const HttpRequest&)>;
+using WebSocketHandlerFactory = std::function<std::unique_ptr<websocket::WebSocketHandler>(const HttpRequestView&)>;
 
 /// Simplified WebSocket endpoint that uses default configuration.
 /// Receives callbacks that will be invoked for all connections on this endpoint.
@@ -42,7 +42,7 @@ struct WebSocketEndpoint {
   /// This is the simplest way to create a WebSocket endpoint.
   static WebSocketEndpoint WithCallbacks(websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
-    ep.factory = [cb = std::move(callbacks)](const HttpRequest& /*request*/) mutable {
+    ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
       return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{}, std::move(cb));
     };
     return ep;
@@ -53,7 +53,7 @@ struct WebSocketEndpoint {
                                                   websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
     ep.config = config;
-    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequest& /*request*/) mutable {
+    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
       return std::make_unique<websocket::WebSocketHandler>(cfg, std::move(cb));
     };
     return ep;
@@ -68,7 +68,7 @@ struct WebSocketEndpoint {
     for (const auto& proto : protocols) {
       ep.supportedProtocols.append(proto);
     }
-    ep.factory = [cb = std::move(callbacks)](const HttpRequest& /*request*/) mutable {
+    ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
       return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{}, std::move(cb));
     };
     return ep;
@@ -85,7 +85,7 @@ struct WebSocketEndpoint {
     for (const auto& proto : protocols) {
       ep.supportedProtocols.append(proto);
     }
-    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequest& /*request*/) mutable {
+    ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
       return std::make_unique<websocket::WebSocketHandler>(cfg, std::move(cb));
     };
     return ep;

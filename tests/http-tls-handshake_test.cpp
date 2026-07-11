@@ -11,7 +11,7 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -61,7 +61,7 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   });
   auto port = ts.port();
   ts.setDefault(
-      [](const HttpRequest& req) { return HttpResponse(std::string("ALPN:") + std::string(req.alpnProtocol())); });
+      [](const HttpRequestView& req) { return HttpResponse(std::string("ALPN:") + std::string(req.alpnProtocol())); });
   // Offer only a mismatching ALPN; since TlsClient uses options, construct with protoX.
   test::TlsClient::Options opts;
   opts.alpn = {"protoX"};
@@ -79,7 +79,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     // Server prefers h2, but does NOT enforce match.
     test::TlsTestServer ts({"h2"});
     auto port = ts.port();
-    ts.setDefault([&](const HttpRequest& req) {
+    ts.setDefault([&](const HttpRequestView& req) {
       if (!req.alpnProtocol().empty()) {
         capturedAlpn = std::string(req.alpnProtocol());
       } else {
@@ -114,7 +114,7 @@ TEST(HttpTlsAlpnMismatch, StrictMismatchMetricSurvivesServerMove) {
   cfg.withTlsAlpnMustMatch(true);
 
   SingleHttpServer server(cfg, RouterConfig{});
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("MOVE"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("MOVE"); });
 
   // Move while idle: TLS context and its ALPN callback data are reused.
   SingleHttpServer moved(std::move(server));
@@ -147,7 +147,7 @@ TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
     throw std::runtime_error("Simulated exception in handshake callback");
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::TlsClient::Options opt;
   opt.alpn = {"http/1.1"};
@@ -165,7 +165,7 @@ TEST(HttpTlsHandshakeCallback, UnknownExceptionRaisedInCallbackIsLoggedAndIgnore
 
   ts.server.server.setTlsHandshakeCallback([&]([[maybe_unused]] const TlsHandshakeEvent& ev) { throw 42; });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::TlsClient::Options opt;
   opt.alpn = {"http/1.1"};
@@ -193,7 +193,7 @@ TEST(HttpTlsHandshakeCallback, EmitsSuccessEventWithNegotiatedAlpn) {
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::TlsClient::Options opt;
   opt.alpn = {"http/1.1"};
@@ -222,7 +222,7 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   {
     test::TlsClient::Options opt;
@@ -267,7 +267,7 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLi
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Hold one handshake slot open by connecting and not sending a TLS ClientHello.
   test::ClientConnection hold(ts.port());
@@ -316,7 +316,7 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnRateLimit) {
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // First connection consumes the single token.
   test::ClientConnection first(ts.port());
@@ -358,7 +358,7 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnHandshakeTimeo
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection stalled(ts.port());
   EXPECT_TRUE(test::WaitForPeerClose(stalled.fd(), 1500ms));
@@ -397,7 +397,7 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslNewFails) {
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   g_aeronetTestFailNextSslNew.store(1, std::memory_order_relaxed);
   {
@@ -434,7 +434,7 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
     cfg.tls.handshakeTimeout = 500ms;
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Consume the single token
   test::ClientConnection first(ts.port());
@@ -476,7 +476,7 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetFdFails) {
     }
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   g_aeronetTestFailNextSslSetFd.store(1, std::memory_order_relaxed);
   {
@@ -557,7 +557,7 @@ TEST(HttpTlsHandshakeTest, TrustStoreUpdateEnablesMutualTlsForNewConnections) {
 
   test::TestServer ts(std::move(cfg));
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Client presents a cert but server doesn't trust it yet -> handshake fails.
   {
@@ -593,7 +593,7 @@ TEST(HttpTlsHandshakeTest, SessionResumptionIncrementsResumedCounter) {
     cfg.tls.withTlsSessionTicketMaxKeys(2);
   });
 
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::TlsClient c1(ts.port());
   ASSERT_TRUE(c1.handshakeOk());
@@ -645,7 +645,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   cfg.withTlsRequireClientCert(false);           // no client cert for this test
 
   SingleHttpServer original(cfg);
-  original.router().setDefault([](const HttpRequest& req) {
+  original.router().setDefault([](const HttpRequestView& req) {
     return HttpResponse(http::StatusCodeOK)
         .body(std::string("MOVEALPN:") + (req.alpnProtocol().empty() ? "-" : std::string(req.alpnProtocol())));
   });
@@ -686,7 +686,8 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertHandshakeFailsWithout) {
       cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(serverCert.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const HttpRequest& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
+    ts.setDefault(
+        [](const HttpRequestView& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
     test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     // No client cert provided, so handshake should fail due to required client cert.
@@ -717,7 +718,8 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertDirectFieldHandshakeFailsWithout) {
       ASSERT_FALSE(cfg.tls.requestClientCert);
     });
     auto port = ts.port();
-    ts.setDefault([](const HttpRequest& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
+    ts.setDefault(
+        [](const HttpRequestView& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
     test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     // No client cert provided, so the handshake must fail.
@@ -741,7 +743,8 @@ TEST(HttpTlsMtlsAlpn, RequireClientCertSuccessWithAlpn) {
       cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(clientCert.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const HttpRequest& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
+    ts.setDefault(
+        [](const HttpRequestView& req) { return HttpResponse(std::string("SECURE") + std::string(req.path())); });
     test::TlsClient::Options opts;
     opts.alpn = {"http/1.1"};
     opts.clientCertPem = clientCert.first;
@@ -767,7 +770,7 @@ TEST(HttpTlsCipherVersion, CipherAndVersionExposedAndMetricsIncrement) {
   {
     test::TlsTestServer ts({"http/1.1"});
     auto port = ts.port();
-    ts.setDefault([&](const HttpRequest& req) {
+    ts.setDefault([&](const HttpRequestView& req) {
       capturedCipher = std::string(req.tlsCipher());
       capturedVersion = std::string(req.tlsVersion());
       capturedAlpn = std::string(req.alpnProtocol());
@@ -835,7 +838,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
   test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
-  server.router().setDefault([](const HttpRequest& req) {
+  server.router().setDefault([](const HttpRequestView& req) {
     return HttpResponse(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));
   });
   uint16_t port = server.port();
@@ -857,7 +860,7 @@ TEST(HttpTlsMtlsMetrics, ClientCertPresenceIncrementsMetric) {
     cfg.withTlsRequireClientCert(true).withTlsTrustedClientCert(certKey.first);
   });
   auto port = ts.port();
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("m"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("m"); });
   auto before = ts.stats();
   test::TlsClient::Options opts;
   opts.alpn = {"http/1.1"};
@@ -882,7 +885,7 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
   cfg.tls.withTlsSniCertificateMemory("api.example.test", sniPair.first, sniPair.second);
 
   test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("SNI-EXACT"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("SNI-EXACT"); });
 
   test::TlsClient::Options sniOpts;
   sniOpts.verifyPeer = true;
@@ -927,7 +930,7 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   cfg.tls.withTlsSniCertificateMemory("*.svc.test", wildcardPair.first, wildcardPair.second);
 
   test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("SNI-WILDCARD"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("SNI-WILDCARD"); });
 
   test::TlsClient::Options wildcardOpts;
   wildcardOpts.verifyPeer = true;
@@ -987,7 +990,7 @@ TEST(HttpTlsRequestClientCert, OptionalNoClientCertAccepted) {
   {
     test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsRequestClientCert(true); });
     auto port = ts.port();
-    ts.setDefault([&](const HttpRequest& req) {
+    ts.setDefault([&](const HttpRequestView& req) {
       HttpResponse resp(200);
       if (!req.tlsCipher().empty()) {
         resp.body(std::string("REQ-") + std::string(req.tlsCipher()));
@@ -1017,7 +1020,7 @@ TEST(HttpTlsRequestClientCert, OptionalWithClientCertIncrementsMetric) {
       cfg.withTlsRequestClientCert(true).withTlsTrustedClientCert(clientPair.first);
     });
     auto port = ts.port();
-    ts.setDefault([](const HttpRequest&) { return HttpResponse("C"); });
+    ts.setDefault([](const HttpRequestView&) { return HttpResponse("C"); });
     test::TlsClient::Options opts;
     opts.clientCertPem = clientPair.first;
     opts.clientKeyPem = clientPair.second;
@@ -1049,7 +1052,7 @@ TEST(HttpTlsHandshakeTimeout, SilentClientClosed) {
 TEST(HttpTlsHandshakeTimeout, SuccessfulHandshakeUnaffected) {
   test::TlsTestServer ts({},
                          [&](HttpServerConfig& cfg) { cfg.withTlsHandshakeTimeout(std::chrono::milliseconds{200}); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("handshake-ok"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("handshake-ok"); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -1066,7 +1069,7 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
     test::TlsTestServer ts({"http/1.1"},
                            [](HttpServerConfig& cfg) { cfg.withTlsMinVersion("TLS1.2").withTlsMaxVersion("TLS1.2"); });
     auto port = ts.port();
-    ts.setDefault([&](const HttpRequest& req) {
+    ts.setDefault([&](const HttpRequestView& req) {
       if (!req.tlsVersion().empty()) {
         capturedVersion = std::string(req.tlsVersion());
       }

@@ -40,8 +40,9 @@ class ZerocopyServerFixture : public benchmark::Fixture {
     // Create the response payload once
     responsePayload = std::string(payloadSize, 'X');
 
-    server.router().setDefault(
-        [sv = std::string_view(responsePayload)](const aeronet::HttpRequest&) { return aeronet::HttpResponse(sv); });
+    server.router().setDefault([sv = std::string_view(responsePayload)](const aeronet::HttpRequestView&) {
+      return aeronet::HttpResponse(sv);
+    });
     std::this_thread::sleep_for(2 * kPollInterval);  // allow config to propagate
     client = bench_util::ClientConnection(server.port());
   }

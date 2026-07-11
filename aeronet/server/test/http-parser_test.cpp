@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -26,7 +26,7 @@ const auto port = ts.port();
 
 // Echo the request body back in the response.
 void InstallEchoHandler() {
-  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.body()); });
 }
 
 // Sends an HTTP request with a fixed-length body split into two TCP writes.
@@ -110,7 +110,7 @@ TEST(HttpParserFixedLength, InvalidContentLength_TrailingGarbage) {
 // Content-Length value exceeds configured maxBodyBytes → 413 Payload Too Large.
 TEST(HttpParserFixedLength, ContentLengthExceedsMaxBodyBytes) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(16); });
-  ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.body()); });
 
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 32\r\nConnection: close\r\n\r\n" + std::string(32, 'X');
@@ -240,7 +240,7 @@ TEST(HttpParserChunked, InvalidChunkSize_NonHex) {
 // Chunk size alone (without data bytes) exceeds maxBodyBytes → 413 Payload Too Large.
 TEST(HttpParserChunked, ChunkSizeExceedsMaxBodyBytes) {
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(8U); });
-  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.body()); });
   // Declare a chunk of 32 bytes which exceeds the 8-byte limit.
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -287,7 +287,7 @@ TEST(HttpParserChunked, Expect100Continue) {
 
 // A valid custom trailer header must be accessible via req.trailers().
 TEST(HttpParserChunkedTrailers, ValidTrailer) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto val = req.trailerValueOrEmpty("X-Checksum");
     return req.makeResponse(std::string(val));
   });
@@ -304,7 +304,7 @@ TEST(HttpParserChunkedTrailers, ValidTrailer) {
 
 // NeedMore in trailer parsing: the trailer line arrives without its CRLF.
 TEST(HttpParserChunkedTrailers, NeedMore_PartialTrailerLine) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto val = req.trailerValueOrEmpty("X-Tag");
     return req.makeResponse(std::string(val));
   });
@@ -346,7 +346,7 @@ TEST(HttpParserChunkedTrailers, MalformedTrailer_NoColon) {
 TEST(HttpParserChunkedTrailers, TrailerTooLarge) {
   // 128 is the minimum accepted value for maxHeaderBytes.
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(128); });
-  ts.router().setDefault([](const HttpRequest& req) { return req.makeResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.body()); });
   // Build a trailer value long enough to exceed the 128-byte limit.
   std::string longValue(256, 'V');
   std::string req =
