@@ -99,8 +99,8 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http-request_test
-    test/http-request_test.cpp
+    http-request-view_test
+    test/http-request-view_test.cpp
     LIBRARIES
     aeronet_http
     aeronet_test_support
@@ -108,7 +108,7 @@ AeronetAddUnitTest(
 
 AeronetAddUnitTest(
     http-response_test
-    test/http-response_test.cpp
+    test/http-response_test.cpp 
     LIBRARIES
     aeronet_http
     aeronet_test_support

@@ -35,7 +35,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -54,7 +54,7 @@ class StaticFileHandlerTest : public ::testing::Test {
   RawChars tmpBuffer;
 
  protected:
-  HttpRequest req;
+  HttpRequestView req;
   ConcatenatedHeaders globalHeaders;
   CompressionConfig compressionConfig;
   internal::ResponseCompressionState compressionState;
@@ -140,7 +140,7 @@ TEST_F(StaticFileHandlerTest, Basic) {
   // Construct handler rooted at the temp directory created by tmpFile
   StaticFileHandler handler(tmpFile.dirPath());
 
-  // Build a raw HTTP GET head buffer and populate HttpRequest via setHead (friend access)
+  // Build a raw HTTP GET head buffer and populate HttpRequestView via setHead (friend access)
 
   buildReq(tmpFile.filename());
 

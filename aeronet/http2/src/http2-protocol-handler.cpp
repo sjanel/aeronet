@@ -28,7 +28,7 @@
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -197,7 +197,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const Hea
   StreamState& state = it->second;
   StreamRequest& streamReq = state.request;
 
-  HttpRequest& req = streamReq.request;
+  HttpRequestView& req = streamReq.request;
   req.init(*_pServerConfig, *_pCompressionState);
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
@@ -318,7 +318,7 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
 
   if (endStream) {
-    // Set body on HttpRequest
+    // Set body on HttpRequestView
     streamReq.request._body = streamReq.bodyBuffer;
 
     if (!streamReq.request._body.empty()) {
@@ -537,7 +537,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
                                                   std::span<const ResponseMiddleware> responseMiddleware) {
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
-  HttpRequest& request = state.request.request;
+  HttpRequestView& request = state.request.request;
   const bool isHead = (request.method() == http::Method::HEAD);
 
   // CORS preflight rejection
@@ -613,8 +613,8 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   state.request = {};
 }
 
-bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t streamId, bool isHead, bool streaming,
-                                                  const Router::RoutingResult& routingResult) {
+bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, uint32_t streamId, bool isHead,
+                                                  bool streaming, const Router::RoutingResult& routingResult) {
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
                                            routingResult.preMiddlewareRange(), *_pTelemetryContext, streaming, {});
   if (globalResult.has_value()) {
@@ -650,7 +650,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequest& request, uint32_t
 
 void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   const uint32_t streamId = it->first;
-  HttpRequest& request = it->second.request.request;
+  HttpRequestView& request = it->second.request.request;
 
   // CONNECT requests establish a per-stream TCP tunnel (RFC 7540 §8.3).
   // Handle separately from normal request/response dispatch.
@@ -778,7 +778,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 }
 
-HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::RoutingResult& routingResult) {
+HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult) {
   // Determine active CORS policy for this route (if any)
   const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
 
@@ -840,7 +840,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequest& request, const Router::Rou
 // CONNECT tunnel methods
 // ============================
 
-void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequest& request) {
+void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestView& request) {
   if (_tunnelBridge == nullptr) {
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeMethodNotAllowed, "CONNECT not supported"),
                        /*isHeadMethod=*/false);
@@ -1055,7 +1055,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   const bool isHead = (state.request.request.method() == http::Method::HEAD);
 
   // Prepare the pending task entry. We move the StreamRequest out of the request slot immediately
-  // so the HttpRequest gets a stable memory address BEFORE we pass it by reference to the coroutine.
+  // so the HttpRequestView gets a stable memory address BEFORE we pass it by reference to the coroutine.
   auto pendingPtr = _pendingWorkPool.allocateAndConstructPoolPtr(PendingAsyncTask{});
   auto& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
   pendingRef.streamRequest = std::move(state.request);
@@ -1137,7 +1137,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   auto* pAsync = it->second.asyncTask();
   assert(pAsync != nullptr);
 
-  HttpRequest& asyncRequest = pAsync->streamRequest.request;
+  HttpRequestView& asyncRequest = pAsync->streamRequest.request;
   const bool isHead = pAsync->isHead;
   ErrorCode err = ErrorCode::NoError;
   http::StatusCode respStatusCode{};
@@ -1214,7 +1214,7 @@ bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handl
 
 #endif  // AERONET_ENABLE_ASYNC_HANDLERS
 
-void Http2ProtocolHandler::onRequestCompleted(HttpRequest& request, http::StatusCode status) {
+void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::StatusCode status) {
   request.end(status);
   if (_requestCompletionCallback) {
     _requestCompletionCallback(request, status);

@@ -5,13 +5,13 @@
 #include <string_view>
 
 #include "aeronet/encoding.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-class HttpRequest;
+class HttpRequestView;
 
 namespace internal {
 
@@ -38,7 +38,7 @@ class IWriterTransport {
   /// @param declaredLength  The declared Content-Length (0 = chunked/unknown).
   /// @param isHead    Whether the request is a HEAD request.
   /// @return true on success, false if the connection/stream is dead.
-  virtual bool emitHeaders(HttpResponse& response, const HttpRequest& request, bool compressionActivated,
+  virtual bool emitHeaders(HttpResponse& response, const HttpRequestView& request, bool compressionActivated,
                            Encoding compressionFormat, std::size_t declaredLength, bool isHead) = 0;
 
   /// Emit a body data chunk.

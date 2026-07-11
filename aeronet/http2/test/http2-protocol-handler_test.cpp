@@ -25,7 +25,7 @@
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -277,7 +277,7 @@ TEST(Http2ProtocolHandler, Creation) {
   internal::ResponseCompressionState compressionState(serverConfig.compression);
   internal::RequestDecompressionState decompressionState;
 
-  router.setDefault([&handlerCalled](const HttpRequest& /*req*/) {
+  router.setDefault([&handlerCalled](const HttpRequestView& /*req*/) {
     handlerCalled = true;
     return HttpResponse(200);
   });
@@ -345,7 +345,7 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   internal::ResponseCompressionState compressionState(serverConfig.compression);
 
   Router router;
-  router.setDefault([](const HttpRequest& req) { return HttpResponse("Hello from " + std::string(req.path())); });
+  router.setDefault([](const HttpRequestView& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
   internal::RequestDecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
@@ -358,7 +358,7 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
 TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediately) {
   Http2Config config;
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   HttpServerConfig serverConfig;
   internal::ResponseCompressionState compressionState(serverConfig.compression);
@@ -419,7 +419,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
 
 TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse(200, "abc"); });
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequestView&) { return HttpResponse(200, "abc"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -446,7 +446,7 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
 
 TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -477,7 +477,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
 
 TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -502,7 +502,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
 
 TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -527,7 +527,7 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
 
 TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -558,7 +558,7 @@ TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
 
 TEST(Http2ProtocolHandler, ConnectOutOfRangePortReturns400) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -588,7 +588,7 @@ TEST(Http2ProtocolHandler, ConnectOutOfRangePortReturns400) {
 
 TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   std::array<std::string_view, 1> allowedHosts = {"allowed.example.com"};
@@ -620,7 +620,7 @@ TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
 
 TEST(Http2ProtocolHandler, ConnectSetupFailureReturns502) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -645,7 +645,7 @@ TEST(Http2ProtocolHandler, ConnectSetupFailureReturns502) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -691,7 +691,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelForwardsDataClientToUpstream) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -732,7 +732,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelForwardsDataClientToUpstream) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelInjectsDataUpstreamToClient) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -771,7 +771,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelInjectsDataUpstreamToClient) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -812,7 +812,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -847,7 +847,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -882,7 +882,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -917,7 +917,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -970,7 +970,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1011,7 +1011,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1060,7 +1060,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1105,7 +1105,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse(200, "world"); });
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequestView&) { return HttpResponse(200, "world"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1162,7 +1162,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
 
 TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     std::string body = "Handler called\n";
     body += "isHttp2: " + std::string(req.isHttp2() ? "true" : "false") + "\n";
     body += "streamId: " + std::to_string(req.streamId()) + "\n";
@@ -1198,7 +1198,7 @@ TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
 TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   Router router;
   router.setPath(http::Method::GET, "/trailers",
-                 [](const HttpRequest&) { return HttpResponse(200, "abc").trailerAddLine("x-check", "ok"); });
+                 [](const HttpRequestView&) { return HttpResponse(200, "abc").trailerAddLine("x-check", "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1230,7 +1230,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
 TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWithoutData) {
   Router router;
   router.setPath(http::Method::GET, "/trailers-nobody",
-                 [](const HttpRequest&) { return HttpResponse(200).trailerAddLine("x-check", "ok"); });
+                 [](const HttpRequestView&) { return HttpResponse(200).trailerAddLine("x-check", "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1259,7 +1259,7 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
   Router router;
   vector<http::Method> seen;
 
-  router.setDefault([&seen](const HttpRequest& req) {
+  router.setDefault([&seen](const HttpRequestView& req) {
     seen.push_back(req.method());
     return HttpResponse(200);
   });
@@ -1317,7 +1317,7 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
 
 TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
   Router router;
-  router.setPath(http::Method::GET, "/items/{id}/view", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/items/{id}/view", [](const HttpRequestView& req) {
     const auto& pp = req.pathParams();
     EXPECT_TRUE(pp.contains("id"));
     EXPECT_EQ(pp.at("id"), "42");
@@ -1344,7 +1344,7 @@ TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
 
 TEST(Http2ProtocolHandler, PerRouteHttp2DisableReturns404) {
   Router router;
-  router.setPath(http::Method::GET, "/h1only", [](const HttpRequest&) { return HttpResponse(200); })
+  router.setPath(http::Method::GET, "/h1only", [](const HttpRequestView&) { return HttpResponse(200); })
       .http2Enable(::aeronet::PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
@@ -1387,7 +1387,7 @@ TEST(Http2ProtocolHandler, UnknownPathReturns404) {
 
 TEST(Http2ProtocolHandler, TransportClosingClearsPendingStreamRequests) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1412,7 +1412,7 @@ TEST(Http2ProtocolHandler, TransportClosingClearsPendingStreamRequests) {
 
 TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1435,7 +1435,7 @@ TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
 TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
   Router router;
   router.setPath(http::Method::GET, "/async",
-                 [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse("async-ok"); });
+                 [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse("async-ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1459,7 +1459,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
   Router router;
-  router.setPath(http::Method::GET, "/async-invalid", [](HttpRequest&) -> RequestTask<HttpResponse> { return {}; });
+  router.setPath(http::Method::GET, "/async-invalid", [](HttpRequestView&) -> RequestTask<HttpResponse> { return {}; });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1485,7 +1485,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
 TEST(Http2ProtocolHandler, StreamingHandlerSendsDataOverHttp2) {
   Router router;
   router.setPath(http::Method::GET, "/stream",
-                 ::aeronet::StreamingHandler{[](const HttpRequest& /*req*/, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView& /*req*/, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("hello from streaming");
                    writer.end();
@@ -1513,7 +1513,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerSendsDataOverHttp2) {
 
 TEST(Http2ProtocolHandler, MethodNotAllowedReturns405) {
   Router router;
-  router.setPath(http::Method::GET, "/onlyget", [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::GET, "/onlyget", [](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1536,7 +1536,7 @@ TEST(Http2ProtocolHandler, MethodNotAllowedReturns405) {
 TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
   Router router;
   router.setPath(http::Method::GET, "/boom",
-                 [](const HttpRequest&) -> HttpResponse { throw std::runtime_error("boom"); });
+                 [](const HttpRequestView&) -> HttpResponse { throw std::runtime_error("boom"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1560,7 +1560,7 @@ TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
 
 TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
   Router router;
-  router.setPath(http::Method::GET, "/boom2", [](const HttpRequest&) -> HttpResponse { throw 42; });
+  router.setPath(http::Method::GET, "/boom2", [](const HttpRequestView&) -> HttpResponse { throw 42; });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1585,7 +1585,7 @@ TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
 TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
   Router router;
   // Default handler should not be called because request is invalid
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1616,9 +1616,9 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
 TEST(Http2ProtocolHandler, OptionsStarReturnsAllowedMethods) {
   Router router;
   // Need a default handler for OPTIONS * to return all methods
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
-  router.setPath(http::Method::GET, "/a", [](const HttpRequest&) { return HttpResponse(200); });
-  router.setPath(http::Method::POST, "/b", [](const HttpRequest&) { return HttpResponse(201); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  router.setPath(http::Method::GET, "/a", [](const HttpRequestView&) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/b", [](const HttpRequestView&) { return HttpResponse(201); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1645,8 +1645,8 @@ TEST(Http2ProtocolHandler, OptionsStarReturnsAllowedMethods) {
 TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {
   Router router;
   // Register GET and POST for /users but NOT OPTIONS
-  router.setPath(http::Method::GET, "/users", [](const HttpRequest&) { return HttpResponse(200); });
-  router.setPath(http::Method::POST, "/users", [](const HttpRequest&) { return HttpResponse(201); });
+  router.setPath(http::Method::GET, "/users", [](const HttpRequestView&) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/users", [](const HttpRequestView&) { return HttpResponse(201); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1671,7 +1671,7 @@ TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {
 
 TEST(Http2ProtocolHandler, TraceReturns405InHttp2) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1699,7 +1699,7 @@ TEST(Http2ProtocolHandler, CorsPreflightReturnsAllowOrigin) {
   CorsPolicy cors(CorsPolicy::Active::On);
   cors.allowOrigin("https://allowed.example.com").allowMethods(http::Method::POST);
 
-  router.setPath(http::Method::POST, "/api/data", [](const HttpRequest&) { return HttpResponse(201); })
+  router.setPath(http::Method::POST, "/api/data", [](const HttpRequestView&) { return HttpResponse(201); })
       .cors(std::move(cors));
 
   Http2ProtocolLoopback loop(router);
@@ -1731,7 +1731,7 @@ TEST(Http2ProtocolHandler, CorsPreflightDeniesUnallowedOrigin) {
   CorsPolicy cors(CorsPolicy::Active::On);
   cors.allowOrigin("https://allowed.example.com");
 
-  router.setPath(http::Method::POST, "/api/data", [](const HttpRequest&) { return HttpResponse(201); })
+  router.setPath(http::Method::POST, "/api/data", [](const HttpRequestView&) { return HttpResponse(201); })
       .cors(std::move(cors));
 
   Http2ProtocolLoopback loop(router);
@@ -1761,12 +1761,12 @@ TEST(Http2ProtocolHandler, RequestMiddlewareExecutes) {
   bool middlewareCalled = false;
   bool handlerCalled = false;
 
-  router.addRequestMiddleware([&middlewareCalled](HttpRequest&) {
+  router.addRequestMiddleware([&middlewareCalled](HttpRequestView&) {
     middlewareCalled = true;
     return MiddlewareResult::Continue();
   });
 
-  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequestView&) {
     handlerCalled = true;
     return HttpResponse(200);
   });
@@ -1795,12 +1795,12 @@ TEST(Http2ProtocolHandler, RequestMiddlewareCanShortCircuit) {
   Router router;
   bool handlerCalled = false;
 
-  router.addRequestMiddleware([](HttpRequest&) {
+  router.addRequestMiddleware([](HttpRequestView&) {
     // Short-circuit with 403
     return MiddlewareResult::ShortCircuit(HttpResponse(403));
   });
 
-  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequestView&) {
     handlerCalled = true;
     return HttpResponse(200);
   });
@@ -1828,9 +1828,9 @@ TEST(Http2ProtocolHandler, ResponseMiddlewareExecutes) {
   Router router;
 
   router.addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.header("X-Middleware-Added", "test-value"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Middleware-Added", "test-value"); });
 
-  router.setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::GET, "/test", [](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1854,7 +1854,7 @@ TEST(Http2ProtocolHandler, ResponseMiddlewareExecutes) {
 
 TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEncoding) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2Config serverCfg;
   Http2Config clientCfg;
@@ -2013,7 +2013,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
 
 TEST(Http2ProtocolHandler, GoAwayFromClientReturnsCloseAction) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2037,7 +2037,7 @@ TEST(Http2ProtocolHandler, GoAwayFromClientReturnsCloseAction) {
 
 TEST(Http2ProtocolHandler, InvalidPercentEncodingInPathReturns400) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2059,7 +2059,7 @@ TEST(Http2ProtocolHandler, InvalidPercentEncodingInPathReturns400) {
 
 TEST(Http2ProtocolHandler, TruncatedPercentEncodingInPathReturns400) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2085,7 +2085,7 @@ TEST(Http2ProtocolHandler, PostWithBodyDispatchesAfterEndStream) {
   Router router;
   std::string capturedBody;
 
-  router.setPath(http::Method::POST, "/submit", [&capturedBody](const HttpRequest& req) {
+  router.setPath(http::Method::POST, "/submit", [&capturedBody](const HttpRequestView& req) {
     capturedBody = req.body();
     return HttpResponse(201, "created");
   });
@@ -2115,7 +2115,7 @@ TEST(Http2ProtocolHandler, PostWithBodyDispatchesAfterEndStream) {
 
 TEST(Http2ProtocolHandler, PostWithInvalidGzipBodyReturnsError) {
   Router router;
-  router.setPath(http::Method::POST, "/submit", [](const HttpRequest&) { return HttpResponse(200); });
+  router.setPath(http::Method::POST, "/submit", [](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.serverConfig.decompression.enable = true;
@@ -2154,7 +2154,7 @@ TEST(Http2ProtocolHandler, FilePayloadResponseSendsFileData) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::GET, "/download", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/download", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
@@ -2188,7 +2188,7 @@ TEST(Http2ProtocolHandler, FilePayloadResponseSendsFileData) {
 TEST(Http2ProtocolHandler, ResponseWithBodyAndTrailersSendsTrailersAtEnd) {
   Router router;
 
-  router.setPath(http::Method::GET, "/body-trailer", [](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/body-trailer", [](const HttpRequestView&) {
     return HttpResponse(200, "body-content").trailerAddLine("x-checksum", "abc123");
   });
 
@@ -2231,11 +2231,11 @@ TEST(Http2ProtocolHandler, HeadRequestWithFilePayloadSendsNoBody) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::HEAD, "/download", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::HEAD, "/download", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
-  router.setPath(http::Method::GET, "/download", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/download", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
@@ -2271,7 +2271,7 @@ TEST(Http2ProtocolHandler, HeadRequestWithFilePayloadSendsNoBody) {
 TEST(Http2ProtocolHandler, StreamingHandlerExceptionStillSendsResponse) {
   Router router;
   router.setPath(http::Method::GET, "/stream-boom",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    throw std::runtime_error("streaming crash");
                  }});
@@ -2296,7 +2296,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerExceptionStillSendsResponse) {
 TEST(Http2ProtocolHandler, StreamingHandlerUnknownExceptionStillEnds) {
   Router router;
   router.setPath(http::Method::GET, "/stream-boom2",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    throw 42;  // NOLINT
                  }});
@@ -2325,7 +2325,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCorsRejectionReturns403) {
 
   router
       .setPath(http::Method::POST, "/stream-cors",
-               ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("should not reach here");
                  writer.end();
@@ -2355,10 +2355,10 @@ TEST(Http2ProtocolHandler, StreamingHandlerRequestMiddlewareShortCircuit) {
   Router router;
   bool handlerCalled = false;
 
-  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(401)); });
+  router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(401)); });
 
   router.setPath(http::Method::GET, "/stream-mw",
-                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    writer.writeBody("ok");
@@ -2388,7 +2388,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerHttp2DisableReturns404) {
 
   router
       .setPath(http::Method::GET, "/h1only-stream",
-               ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("data");
                  writer.end();
@@ -2419,13 +2419,14 @@ TEST(Http2ProtocolHandler, StreamingHandlerFilePayloadDeferred) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::GET, "/stream-file",
-                 ::aeronet::StreamingHandler{[&filePath](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
-                   File fd(filePath);
-                   writer.status(http::StatusCode{200});
-                   writer.file(std::move(fd));
-                   writer.end();
-                 }});
+  router.setPath(
+      http::Method::GET, "/stream-file",
+      ::aeronet::StreamingHandler{[&filePath](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+        File fd(filePath);
+        writer.status(http::StatusCode{200});
+        writer.file(std::move(fd));
+        writer.end();
+      }});
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2459,7 +2460,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerFilePayloadDeferred) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelWindowUpdateConnectionLevel) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2504,8 +2505,8 @@ TEST(Http2ProtocolHandler, ConnectTunnelWindowUpdateConnectionLevel) {
 
 TEST(Http2ProtocolHandler, MultipleConcurrentRequestsOnDifferentStreams) {
   Router router;
-  router.setPath(http::Method::GET, "/a", [](const HttpRequest&) { return HttpResponse(200, "resp-a"); });
-  router.setPath(http::Method::GET, "/b", [](const HttpRequest&) { return HttpResponse(200, "resp-b"); });
+  router.setPath(http::Method::GET, "/a", [](const HttpRequestView&) { return HttpResponse(200, "resp-a"); });
+  router.setPath(http::Method::GET, "/b", [](const HttpRequestView&) { return HttpResponse(200, "resp-b"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2547,8 +2548,10 @@ TEST(Http2ProtocolHandler, MultipleConcurrentRequestsOnDifferentStreams) {
 
 TEST(Http2ProtocolHandler, HeadRequestSendsNoBodyData) {
   Router router;
-  router.setPath(http::Method::HEAD, "/head-test", [](const HttpRequest&) { return HttpResponse(200, "body-data"); });
-  router.setPath(http::Method::GET, "/head-test", [](const HttpRequest&) { return HttpResponse(200, "body-data"); });
+  router.setPath(http::Method::HEAD, "/head-test",
+                 [](const HttpRequestView&) { return HttpResponse(200, "body-data"); });
+  router.setPath(http::Method::GET, "/head-test",
+                 [](const HttpRequestView&) { return HttpResponse(200, "body-data"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2582,7 +2585,7 @@ TEST(Http2ProtocolHandler, CorsAppliedOnNormalRequestResponse) {
   CorsPolicy cors(CorsPolicy::Active::On);
   cors.allowOrigin("https://allowed.example.com").allowMethods(http::Method::GET);
 
-  router.setPath(http::Method::GET, "/cors-get", [](const HttpRequest&) { return HttpResponse(200, "hello"); })
+  router.setPath(http::Method::GET, "/cors-get", [](const HttpRequestView&) { return HttpResponse(200, "hello"); })
       .cors(std::move(cors));
 
   Http2ProtocolLoopback loop(router);
@@ -2609,7 +2612,7 @@ TEST(Http2ProtocolHandler, CorsAppliedOnNormalRequestResponse) {
 
 TEST(Http2ProtocolHandler, GlobalHeadersIncludedInResponse) {
   Router router;
-  router.setPath(http::Method::GET, "/gh", [](const HttpRequest&) { return HttpResponse(200, "ok"); });
+  router.setPath(http::Method::GET, "/gh", [](const HttpRequestView&) { return HttpResponse(200, "ok"); });
 
   Http2ProtocolLoopback loop(router);
   loop.serverConfig.globalHeaders.append("x-global-test: present");
@@ -2636,7 +2639,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRejectsIdentityForbiddenWithNoAlterna
   Router router;
 
   router.setPath(http::Method::GET, "/stream-enc",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -2667,7 +2670,7 @@ TEST(Http2ProtocolHandler, OutputWrittenFlushesRemainingPendingStreamingSends) {
   Router router;
   // Streaming handler that produces enough data to require deferred flushing
   router.setPath(http::Method::GET, "/stream-large",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    // Write a substantial amount of data likely to hit flow control
                    const std::string chunk(8192, 'E');
@@ -2709,7 +2712,7 @@ TEST(Http2ProtocolHandler, OutputWrittenFlushesRemainingPendingStreamingSends) {
 
 TEST(Http2ProtocolHandler, TunnelConnectFailedOnExistingStreamSendsRst) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2742,7 +2745,7 @@ TEST(Http2ProtocolHandler, TunnelConnectFailedOnExistingStreamSendsRst) {
 
 TEST(Http2ProtocolHandler, CloseTunnelByUpstreamFdWithUnknownFdIsNoOp) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2763,7 +2766,7 @@ TEST(Http2ProtocolHandler, CloseTunnelByUpstreamFdWithUnknownFdIsNoOp) {
 TEST(Http2ProtocolHandler, AsyncHandlerExceptionReturns500) {
   Router router;
   router.setPath(http::Method::GET, "/async-boom",
-                 [](HttpRequest&) -> RequestTask<HttpResponse> { throw std::runtime_error("async boom"); });
+                 [](HttpRequestView&) -> RequestTask<HttpResponse> { throw std::runtime_error("async boom"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2784,7 +2787,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerExceptionReturns500) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerUnknownExceptionReturns500) {
   Router router;
-  router.setPath(http::Method::GET, "/async-boom2", [](HttpRequest&) -> RequestTask<HttpResponse> { throw 42; });
+  router.setPath(http::Method::GET, "/async-boom2", [](HttpRequestView&) -> RequestTask<HttpResponse> { throw 42; });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2810,7 +2813,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerCorsApplied) {
 
   router
       .setPath(http::Method::GET, "/async-cors",
-               [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "async-cors-ok"); })
+               [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "async-cors-ok"); })
       .cors(std::move(cors));
 
   Http2ProtocolLoopback loop(router);
@@ -2836,9 +2839,9 @@ TEST(Http2ProtocolHandler, AsyncHandlerRequestMiddlewareShortCircuit) {
   Router router;
   bool handlerCalled = false;
 
-  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(403)); });
+  router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(403)); });
 
-  router.setPath(http::Method::GET, "/async-mw", [&handlerCalled](HttpRequest&) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-mw", [&handlerCalled](HttpRequestView&) -> RequestTask<HttpResponse> {
     handlerCalled = true;
     co_return HttpResponse(200, "should not reach");
   });
@@ -2864,10 +2867,11 @@ TEST(Http2ProtocolHandler, AsyncHandlerRequestMiddlewareShortCircuit) {
 TEST(Http2ProtocolHandler, AsyncHandlerResponseMiddlewareApplied) {
   Router router;
 
-  router.addResponseMiddleware([](const HttpRequest&, HttpResponse& resp) { resp.header("X-Async-MW", "applied"); });
+  router.addResponseMiddleware(
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Async-MW", "applied"); });
 
   router.setPath(http::Method::GET, "/async-resp-mw",
-                 [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "resp-mw-test"); });
+                 [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "resp-mw-test"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2891,7 +2895,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerHttp2DisableReturns404) {
   Router router;
   router
       .setPath(http::Method::GET, "/async-h1",
-               [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(200); })
+               [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200); })
       .http2Enable(::aeronet::PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
@@ -2913,7 +2917,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerHttp2DisableReturns404) {
 
 TEST(Http2ProtocolHandler, ResumeAsyncTaskByInvalidHandleReturnsFalse) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2935,7 +2939,7 @@ TEST(Http2ProtocolHandler, LargeFilePayloadFlowControlledSending) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::GET, "/large-file", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/large-file", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
@@ -2975,7 +2979,7 @@ TEST(Http2ProtocolHandler, LargeFilePayloadFlowControlledSending) {
 
 TEST(Http2ProtocolHandler, EmptyBodyResponseSetsEndStreamOnHeaders) {
   Router router;
-  router.setPath(http::Method::GET, "/empty", [](const HttpRequest&) { return HttpResponse(204); });
+  router.setPath(http::Method::GET, "/empty", [](const HttpRequestView&) { return HttpResponse(204); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3004,7 +3008,7 @@ TEST(Http2ProtocolHandler, PostWithMultipleDataFramesAccumulatesBody) {
   Router router;
   std::string capturedBody;
 
-  router.setPath(http::Method::POST, "/collect", [&capturedBody](const HttpRequest& req) {
+  router.setPath(http::Method::POST, "/collect", [&capturedBody](const HttpRequestView& req) {
     capturedBody = req.body();
     return HttpResponse(200);
   });
@@ -3048,9 +3052,9 @@ TEST(Http2ProtocolHandler, AsyncHandlerMiddlewareShortCircuitWithCors) {
   // Register async handler with CORS + per-route middleware that short-circuits
   router
       .setPath(http::Method::GET, "/async-cors-mw",
-               [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "should not reach"); })
+               [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "should not reach"); })
       .cors(std::move(cors))
-      .before([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(401, "auth-required")); });
+      .before([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(401, "auth-required")); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3082,13 +3086,13 @@ TEST(Http2ProtocolHandler, StreamingHandlerMiddlewareShortCircuitWithCors) {
   // Register streaming handler with CORS + per-route middleware that short-circuits
   router
       .setPath(http::Method::POST, "/stream-cors-mw",
-               ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("should not reach");
                  writer.end();
                }})
       .cors(std::move(cors))
-      .before([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(403, "denied")); });
+      .before([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(403, "denied")); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3116,9 +3120,9 @@ TEST(Http2ProtocolHandler, NormalHandlerMiddlewareShortCircuitWithCors) {
   cors.allowOrigin("https://allowed.example.com");
 
   // Register a normal handler with CORS + per-route middleware that short-circuits
-  router.setPath(http::Method::GET, "/normal-cors-mw", [](const HttpRequest&) { return HttpResponse(200); })
+  router.setPath(http::Method::GET, "/normal-cors-mw", [](const HttpRequestView&) { return HttpResponse(200); })
       .cors(std::move(cors))
-      .before([](HttpRequest&) { return MiddlewareResult::ShortCircuit(HttpResponse(429, "rate-limited")); });
+      .before([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(429, "rate-limited")); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3145,7 +3149,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithTrailersViaWriter) {
   Router router;
 
   router.setPath(http::Method::GET, "/stream-trailers",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("streamed-data");
                    writer.trailerAddLine("x-trailer-hash", "deadbeef");
@@ -3191,7 +3195,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerLargeDataWithTrailersDeferred) {
 
   // Streaming handler that produces data and trailers, potentially requiring deferred flushing
   router.setPath(http::Method::GET, "/stream-large-trailers",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    const std::string chunk(8192, 'G');
                    for (int idx = 0; idx < 10; ++idx) {
@@ -3242,7 +3246,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerLargeDataWithTrailersDeferred) {
 TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestEmitsEndStream) {
   Router router;
   router.setPath(http::Method::GET, "/stream-head",
-                 ::aeronet::StreamingHandler{[](const HttpRequest& req, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView& req, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // writeBody is a no-op for HEAD (writer skips emitData for _head=true)
@@ -3282,7 +3286,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestEmitsEndStream) {
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write >1024 bytes (default minBytes) to trigger compression activation
@@ -3335,7 +3339,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedBelowThresholdFallsBackToIdentity) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress-small",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write < 1024 bytes (default minBytes) — compression stays inactive,
@@ -3378,7 +3382,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedBelowThresholdFallsBackToId
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedMultiChunkAboveThreshold) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress-multi",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write multiple chunks — first two accumulate in pre-compress buffer (total 1024),
@@ -3421,7 +3425,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedMultiChunkAboveThreshold) {
 TEST(Http2ProtocolHandler, StreamingHandlerContentLengthAfterHeadersSentIgnored) {
   Router router;
   router.setPath(http::Method::GET, "/stream-late-cl",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("first");
                    // These should be ignored (headers already sent)
@@ -3458,7 +3462,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerContentLengthAfterHeadersSentIgnored)
 TEST(Http2ProtocolHandler, StreamingHandlerDoubleEndIsNoOp) {
   Router router;
   router.setPath(http::Method::GET, "/stream-double-end",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -3499,7 +3503,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerDoubleEndIsNoOp) {
 TEST(Http2ProtocolHandler, StreamingHandlerEmptyWriteIsNoOp) {
   Router router;
   router.setPath(http::Method::GET, "/stream-empty-write",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("");
                    writer.writeBody("real data");
@@ -3531,12 +3535,12 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithResponseMiddleware) {
 
   router
       .setPath(http::Method::GET, "/stream-resp-mw",
-               ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("stream-resp-data");
                  writer.end();
                }})
-      .after([](const HttpRequest&, HttpResponse& resp) { resp.header("X-Stream-MW", "applied"); });
+      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Stream-MW", "applied"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3565,7 +3569,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithCorsApplied) {
 
   router
       .setPath(http::Method::GET, "/stream-cors-ok",
-               ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("cors-data");
                  writer.end();
@@ -3603,7 +3607,7 @@ TEST(Http2ProtocolHandler, FilePayloadExactlyFillsInitialWindow) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::GET, "/exact-window", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/exact-window", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
@@ -3641,14 +3645,14 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestSendsNoBody) {
   bool handlerCalled = false;
 
   router.setPath(http::Method::HEAD, "/stream-head",
-                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    writer.writeBody("should be suppressed for HEAD");
                    writer.end();
                  }});
   router.setPath(http::Method::GET, "/stream-head",
-                 StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -3680,7 +3684,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   std::coroutine_handle<> capturedHandle;
   std::atomic<bool> callbackFired{false};
 
-  router.setPath(http::Method::GET, "/async-defer", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const int result = co_await req.deferWork([]() { return 42; });
     co_return HttpResponse(200, std::to_string(result));
   });
@@ -3738,12 +3742,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
 
   router
       .setPath(http::Method::GET, "/async-defer-cors",
-               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                  const int result = co_await req.deferWork([]() { return 99; });
                  co_return HttpResponse(200, std::to_string(result));
                })
       .cors(std::move(cors))
-      .after([](const HttpRequest&, HttpResponse& resp) { resp.header("X-After-MW", "done"); });
+      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("X-After-MW", "done"); });
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(
@@ -3791,7 +3795,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   std::coroutine_handle<> capturedHandle;
   std::atomic<bool> callbackFired{false};
 
-  router.setPath(http::Method::GET, "/async-defer-throw", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([]() { return 1; });
     throw std::runtime_error("post-defer explosion");
     co_return HttpResponse(200);
@@ -3834,7 +3838,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   std::coroutine_handle<> capturedHandle;
   std::atomic<bool> callbackFired{false};
 
-  router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([]() { return 1; });
     throw 42;
     co_return HttpResponse(200);
@@ -3881,7 +3885,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
   std::coroutine_handle<> capturedHandle;
   std::atomic<int> callbackCount{0};
 
-  router.setPath(http::Method::GET, "/async-double-defer", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-double-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const int r1 = co_await req.deferWork([]() { return 10; });
     const int r2 = co_await req.deferWork([]() { return 20; });
     co_return HttpResponse(200, std::to_string(r1 + r2));
@@ -3944,7 +3948,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
 TEST(Http2ProtocolHandler, ConnectWithoutTunnelBridgeReturns405) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3966,7 +3970,7 @@ TEST(Http2ProtocolHandler, ConnectWithoutTunnelBridgeReturns405) {
 
 TEST(Http2ProtocolHandler, DataForUnknownStreamIsIgnored) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -4000,7 +4004,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRstDuringDeferredSendCleansUp) {
 
   // Streaming handler that writes data exceeding flow control window to force deferred sends.
   router.setPath(http::Method::GET, "/stream-deferred-rst",
-                 ::aeronet::StreamingHandler{[](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    // Write much more than 65535 bytes to force deferred sending.
                    const std::string chunk(16384, 'R');
@@ -4044,7 +4048,7 @@ TEST(Http2ProtocolHandler, FilePayloadRstDuringDeferredSendCleansUp) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(http::Method::GET, "/file-deferred-rst", [&filePath](const HttpRequest&) {
+  router.setPath(http::Method::GET, "/file-deferred-rst", [&filePath](const HttpRequestView&) {
     File fd(filePath);
     return HttpResponse(200).file(std::move(fd), "application/octet-stream");
   });
@@ -4075,7 +4079,7 @@ TEST(Http2ProtocolHandler, FilePayloadRstDuringDeferredSendCleansUp) {
 
 TEST(Http2ProtocolHandler, Http2DisabledRouteReturns404) {
   Router router;
-  router.setPath(http::Method::GET, "/h2-disabled", [](const HttpRequest&) { return HttpResponse(200, "ok"); })
+  router.setPath(http::Method::GET, "/h2-disabled", [](const HttpRequestView&) { return HttpResponse(200, "ok"); })
       .http2Enable(PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
@@ -4099,14 +4103,14 @@ TEST(Http2ProtocolHandler, Http2DisabledRouteReturns404) {
 
 TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
 
   // Register a completion callback and track invocations.
   int callbackCount = 0;
   http::StatusCode lastStatus{};
-  loop.handler.setRequestCompletionCallback([&](const HttpRequest& /*req*/, http::StatusCode status) {
+  loop.handler.setRequestCompletionCallback([&](const HttpRequestView& /*req*/, http::StatusCode status) {
     ++callbackCount;
     lastStatus = status;
   });
@@ -4143,7 +4147,7 @@ TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
   telemetry = tracing::TelemetryContext(cfg);
 
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -4180,7 +4184,7 @@ TEST(Http2ProtocolHandler, ResumeAsyncTaskByHandleWithNonAsyncStreamSkips) {
   // while the stream is still active (has pending streaming data).
   bool handlerCalled = false;
   router.setPath(http::Method::GET, "/sync",
-                 StreamingHandler{[&handlerCalled](const HttpRequest&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    // Write enough data to trigger flow-control buffering so the stream stays alive
@@ -4270,7 +4274,7 @@ TEST(Http2WriterTransport, IsAliveReturnsFalseForNonexistentStream) {
 TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesRejects431) {
   Router router;
   // Set a small header limit on this route
-  router.setPath(http::Method::GET, "/small-hdr", [](const HttpRequest&) { return HttpResponse(200); })
+  router.setPath(http::Method::GET, "/small-hdr", [](const HttpRequestView&) { return HttpResponse(200); })
       .maxHeaderBytes(10);
 
   Http2ProtocolLoopback loop(router);
@@ -4295,7 +4299,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesRejects431) {
 
 TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesAllowsSmaller) {
   Router router;
-  router.setPath(http::Method::GET, "/ok-hdr", [](const HttpRequest&) { return HttpResponse(200); })
+  router.setPath(http::Method::GET, "/ok-hdr", [](const HttpRequestView&) { return HttpResponse(200); })
       .maxHeaderBytes(4096);
 
   Http2ProtocolLoopback loop(router);
@@ -4321,7 +4325,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxHeaderBytesAllowsSmaller) {
 
 TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesRejects413) {
   Router router;
-  router.setPath(http::Method::POST, "/small-body", [](const HttpRequest&) { return HttpResponse(200); })
+  router.setPath(http::Method::POST, "/small-body", [](const HttpRequestView&) { return HttpResponse(200); })
       .maxBodyBytes(5);
 
   Http2ProtocolLoopback loop(router);
@@ -4351,7 +4355,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
   std::string capturedBody;
   router
       .setPath(http::Method::POST, "/ok-body",
-               [&capturedBody](const HttpRequest& req) {
+               [&capturedBody](const HttpRequestView& req) {
                  capturedBody = req.body();
                  return HttpResponse(201);
                })
@@ -4383,7 +4387,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
 
 TEST(Http2ProtocolHandler, SweepStreamsOnEmptyStreamsIsNoOp) {
   Router router;
-  router.setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -4403,7 +4407,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   router
       .setPath(http::Method::GET, "/async-slow",
-               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                  const int result = co_await req.deferWork([]() { return 1; });
                  co_return HttpResponse(200, std::to_string(result));
                })
@@ -4456,7 +4460,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   router
       .setPath(http::Method::GET, "/async-ok",
-               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                  const int result = co_await req.deferWork([]() { return 1; });
                  co_return HttpResponse(200, std::to_string(result));
                })
@@ -4505,7 +4509,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
 TEST(Http2ProtocolHandler, CustomSchemeAccepted) {
   Router router;
-  router.setPath(http::Method::GET, "/test", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/test", [](const HttpRequestView& req) {
     return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
   });
 
@@ -4534,10 +4538,10 @@ TEST(Http2ProtocolHandler, CustomSchemeAccepted) {
 
 TEST(Http2ProtocolHandler, ValidSchemesAccepted) {
   Router router;
-  router.setPath(http::Method::GET, "/test", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/test", [](const HttpRequestView& req) {
     return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
   });
-  router.setPath(http::Method::GET, "/test2", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/test2", [](const HttpRequestView& req) {
     return HttpResponse(200, std::string("scheme: ") + std::string(req.scheme()));
   });
 

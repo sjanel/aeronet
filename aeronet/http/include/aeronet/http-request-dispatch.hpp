@@ -5,7 +5,7 @@
 #include <string_view>
 
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/middleware.hpp"
@@ -35,7 +35,7 @@ struct SpecialMethodConfig {
 /// @param pCorsPolicy Optional CORS policy (can be nullptr)
 /// @param requestData Raw request data for TRACE echo (only needed for HTTP/1.1 TRACE)
 /// @return Result indicating action taken
-[[nodiscard]] std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
+[[nodiscard]] std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request, Router& router,
                                                                 SpecialMethodConfig config,
                                                                 const CorsPolicy* pCorsPolicy,
                                                                 std::string_view requestData = {});
@@ -46,7 +46,7 @@ struct SpecialMethodConfig {
 /// @param request Request being processed (may be modified by middleware)
 /// @param chain Middleware chain to execute
 /// @return Result indicating if processing was short-circuited
-[[nodiscard]] std::optional<HttpResponse> RunRequestMiddleware(HttpRequest& request,
+[[nodiscard]] std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request,
                                                                std::span<const RequestMiddleware> global,
                                                                std::span<const RequestMiddleware> chain,
                                                                const tracing::TelemetryContext& telemetryContext,
@@ -57,7 +57,7 @@ struct SpecialMethodConfig {
 /// @param request Original request (read-only for middleware)
 /// @param response Response to modify
 /// @param chain Response middleware chain to execute
-void ApplyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
+void ApplyResponseMiddleware(const HttpRequestView& request, HttpResponse& response,
                              std::span<const ResponseMiddleware> chain,
                              std::span<const ResponseMiddleware> globalMiddleware,
                              const tracing::TelemetryContext& telemetryContext, bool streaming,

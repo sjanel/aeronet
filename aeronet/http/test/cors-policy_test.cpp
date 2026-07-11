@@ -26,7 +26,7 @@ class CorsPolicyTest : public ::testing::Test {
     return request.initTrySetHead(connState.inBuffer, tmp, 4096U, true, nullptr);
   }
 
-  HttpRequest request;
+  HttpRequestView request;
   ConnectionState connState;
   CorsPolicy policy;
   HttpResponse response;

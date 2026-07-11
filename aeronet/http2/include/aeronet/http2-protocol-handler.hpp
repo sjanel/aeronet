@@ -13,7 +13,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
@@ -64,7 +64,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
  public:
   /// Create an HTTP/2 protocol handler with a request dispatcher.
   /// @param config HTTP/2 configuration
-  /// @param dispatcher Callback that dispatches an HttpRequest to handlers and returns a response
+  /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                        internal::ResponseCompressionState& compressionState,
                        internal::RequestDecompressionState& decompressionState,
@@ -130,7 +130,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   /// Callback invoked after each HTTP/2 request is completed (response sent).
   /// Parameters: request reference, response status code.
-  using RequestCompletionCallback = std::function<void(const HttpRequest&, http::StatusCode)>;
+  using RequestCompletionCallback = std::function<void(const HttpRequestView&, http::StatusCode)>;
 
   /// Install a completion callback for per-request metrics and tracing.
   void setRequestCompletionCallback(RequestCompletionCallback cb) noexcept {
@@ -184,7 +184,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
  private:
   /// Per-stream request state during aggregation.
   struct StreamRequest {
-    HttpRequest request;
+    HttpRequestView request;
     RawChars bodyBuffer;
     std::unique_ptr<char[]> headerStorage;  // Storage for header name/value strings. nullptr = inactive.
   };
@@ -206,7 +206,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Per-stream async handler state for coroutines that suspend (e.g., co_await deferWork).
   struct PendingAsyncTask {
     RequestTask<HttpResponse> task;
-    StreamRequest streamRequest;  // Owns the HttpRequest and header storage
+    StreamRequest streamRequest;  // Owns the HttpRequestView and header storage
     const CorsPolicy* pCorsPolicy{};
     const ResponseMiddleware* pResponseMiddleware{};
     uint32_t responseMiddlewareCount{0};
@@ -268,18 +268,18 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void dispatchRequest(StreamsMap::iterator it);
 
   /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
-  void handleConnectRequest(uint32_t streamId, HttpRequest& request);
+  void handleConnectRequest(uint32_t streamId, HttpRequestView& request);
 
   /// Clean up tunnel state for a given stream (using the consolidated StreamState).
   void cleanupTunnel(StreamsMap::iterator it);
 
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
-  // The dispatcher receives an HttpRequest (already populated with HTTP/2 fields) and dispatches
+  // The dispatcher receives an HttpRequestView (already populated with HTTP/2 fields) and dispatches
   // to the appropriate handler (sync, async, or streaming).
-  HttpResponse reply(HttpRequest& request, const Router::RoutingResult& routingResult);
+  HttpResponse reply(HttpRequestView& request, const Router::RoutingResult& routingResult);
 
   /// Emit metrics and end trace span for a completed request.
-  void onRequestCompleted(HttpRequest& request, http::StatusCode status);
+  void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
   /// Send an HTTP response on a stream.
   ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
@@ -298,7 +298,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onAsyncTaskCompleted(uint32_t streamId);
 #endif
 
-  bool applyRequestMiddleware(HttpRequest& request, uint32_t streamId, bool isHead, bool streaming,
+  bool applyRequestMiddleware(HttpRequestView& request, uint32_t streamId, bool isHead, bool streaming,
                               const Router::RoutingResult& routingResult);
 
   Http2Connection _connection;
@@ -335,7 +335,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
 /// Factory function for creating HTTP/2 protocol handlers.
 /// @param config HTTP/2 configuration
-/// @param dispatcher Callback that dispatches HttpRequest to handlers
+/// @param dispatcher Callback that dispatches HttpRequestView to handlers
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
 /// @return Unique pointer to the created handler

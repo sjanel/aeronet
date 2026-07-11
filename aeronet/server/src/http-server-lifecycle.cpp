@@ -14,7 +14,7 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -504,11 +504,11 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Liveness: Always returns 200 OK if the server is responding.
   // Indicates the application is alive (not deadlocked/crashed).
   _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequest&) { return HttpResponse("OK"); });
+                  [](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
   // Used by load balancers to determine if instance should receive traffic.
-  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequest&) {
+  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequestView&) {
     const bool isReady = _lifecycle.ready();
     return HttpResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                         isReady ? "OK" : "Not Ready");
@@ -518,7 +518,7 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Note: Since aeronet has no separate initialization phase, this is essentially
   // equivalent to liveness. Provided for Kubernetes compatibility where startup
   // probes can have different timeout/period settings for slow-starting applications.
-  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequest&) {
+  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequestView&) {
     const bool isStarted = _lifecycle.started();
     return HttpResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                         isStarted ? "OK" : "Starting");

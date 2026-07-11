@@ -11,7 +11,7 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -24,8 +24,8 @@ namespace aeronet {
 
 namespace {
 
-inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequest& request, MiddlewareMetrics::Phase phase, uint32_t index,
-                                             bool isGlobal, bool streaming, tracing::SpanPtr span) {
+inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequestView& request, MiddlewareMetrics::Phase phase,
+                                             uint32_t index, bool isGlobal, bool streaming, tracing::SpanPtr span) {
   tracing::SpanRAII spanScope(std::move(span));
 
   if (spanScope.span) {
@@ -43,7 +43,7 @@ inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequest& request, Middlew
   return spanScope;
 }
 
-inline void CallMiddlewareMetricsCallback(const HttpRequest& request, MiddlewareMetrics::Phase phase, bool isGlobal,
+inline void CallMiddlewareMetricsCallback(const HttpRequestView& request, MiddlewareMetrics::Phase phase, bool isGlobal,
                                           uint32_t index, bool shortCircuited, bool threw, bool streaming,
                                           const MiddlewareMetricsCallback& metricsCallback) {
   if (metricsCallback) {
@@ -71,7 +71,7 @@ void BuildAllowHeader(http::MethodBmp methodBitmap, HttpResponse& response) {
 
 }  // namespace
 
-std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Router& router,
+std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request, Router& router,
                                                   SpecialMethodConfig config, const CorsPolicy* pCorsPolicy,
                                                   std::string_view requestData) {
   std::optional<HttpResponse> result;
@@ -145,7 +145,7 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequest& request, Ro
   return result;
 }
 
-std::optional<HttpResponse> RunRequestMiddleware(HttpRequest& request, std::span<const RequestMiddleware> global,
+std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request, std::span<const RequestMiddleware> global,
                                                  std::span<const RequestMiddleware> chain,
                                                  const tracing::TelemetryContext& telemetryContext, bool streaming,
                                                  const MiddlewareMetricsCallback& metricsCallback) {
@@ -196,7 +196,7 @@ std::optional<HttpResponse> RunRequestMiddleware(HttpRequest& request, std::span
   return result;
 }
 
-void ApplyResponseMiddleware(const HttpRequest& request, HttpResponse& response,
+void ApplyResponseMiddleware(const HttpRequestView& request, HttpResponse& response,
                              std::span<const ResponseMiddleware> chain,
                              std::span<const ResponseMiddleware> globalMiddleware,
                              const tracing::TelemetryContext& telemetryContext, bool streaming,

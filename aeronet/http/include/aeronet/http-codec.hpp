@@ -12,7 +12,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec-result.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -92,8 +92,8 @@ class HttpCodec {
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
                                                                const DecompressionConfig& decompressionConfig,
-                                                               HttpRequest& request, RawChars& bodyAndTrailersBuffer,
-                                                               RawChars& tmpBuffer);
+                                                               HttpRequestView& request,
+                                                               RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer);
 
   /// Check if decompression will be applied for the given request based on config and headers.
   /// This can be called before body decoding to determine the optimal path.
@@ -109,7 +109,7 @@ class HttpCodec {
   /// Returns error result on failure, or empty result on success.
   static RequestDecompressionResult DecompressChunkedBody(RequestDecompressionState& decompressionState,
                                                           const DecompressionConfig& decompressionConfig,
-                                                          HttpRequest& request,
+                                                          HttpRequestView& request,
                                                           std::span<const std::string_view> compressedChunks,
                                                           std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
                                                           RawChars& tmpBuffer);

@@ -79,7 +79,7 @@ class Router {
   [[nodiscard]] const RouterConfig& config() const noexcept { return _config; }
 
   // Register a global (fallback) request handler invoked when no path-specific handler
-  // matches. The handler receives a const HttpRequest& and returns an HttpResponse by value.
+  // matches. The handler receives a const HttpRequestView& and returns an HttpResponse by value.
   //
   // Behavior and precedence:
   //   - Per-path handlers win over global handlers. If a path has a streaming or normal
@@ -117,7 +117,7 @@ class Router {
   // - "/files/{{config}}/data" matches the literal path "/files/{config}/data"
   // - "/items/{}/details-{}" matches paths like "/items/123/details-foo" with "0"=123, "1"=foo
   //
-  // You can then retrieve matched pattern values from HttpRequest::pathParams().
+  // You can then retrieve matched pattern values from HttpRequestView::pathParams().
   // Path patterns support literal fragments and parameter fragments inside the same
   // segment (for example: `/api/v{}/foo{}bar`).
   //
@@ -148,7 +148,7 @@ class Router {
 
   // Register an async-friendly handler (produces a RequestTask) for the provided method bitmap.
   // The handler runs inside the event loop and may `co_await` I/O-friendly awaitables (e.g.
-  // HttpRequest::bodyAwaitable()).
+  // HttpRequestView::bodyAwaitable()).
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view path, AsyncRequestHandler handler);
 

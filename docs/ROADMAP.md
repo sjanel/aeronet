@@ -7,8 +7,8 @@
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
 - Create doc pages using **Material for MkDocs** tool (for instance). To create first class documentation for aeronet, we need to have a proper documentation site with a good theme and navigation. This will help users understand how to use the library and its features.
-- Make a real `ClientRequest` object. `HttpRequest` and `HttpResponse` share a lot of semantics, except for the status-line. We could extract common bricks in a base `HttpMessage` class and have HttpResponse and ClientRequest derive from it (unfortunately, HttpRequest is the name of the class coming from a view on a request arriving in a server, so we cannot rename it). This will allow us to have a proper ClientRequest object that can be used to send requests to other servers.
-- Rename `HttpRequest` to `HttpRequestView` and keep `HttpRequest` as a builder object for the HTTP client (this will help to have a clearer naming especially for above requirement).
+- Make a real `ClientRequest` object. `HttpRequestView` and `HttpResponse` share a lot of semantics, except for the status-line. We could extract common bricks in a base `HttpMessage` class and have HttpResponse and ClientRequest derive from it (unfortunately, HttpRequestView is the name of the class coming from a view on a request arriving in a server, so we cannot rename it). This will allow us to have a proper ClientRequest object that can be used to send requests to other servers.
+- Rename `HttpRequestView` to `HttpRequestView` and keep `HttpRequestView` as a builder object for the HTTP client (this will help to have a clearer naming especially for above requirement).
 
 ## Medium priority
 
@@ -74,7 +74,7 @@ questions:
    license, binary-size and API-ergonomics trade-offs.
 2. **Event-loop integration** - how a UDP + timer-driven QUIC transport slots into the current readiness-based
    loop (UDP socket handling, per-connection timers, GSO/GRO, pacing).
-3. **Handler API reuse** - whether the existing `HttpRequest` / `Router` / handler surface can sit unchanged on
+3. **Handler API reuse** - whether the existing `HttpRequestView` / `Router` / handler surface can sit unchanged on
    top of an HTTP/3 mapping (QPACK encode/decode, request/response streams), so HTTP/3 is a transport swap
    rather than a second application API.
 
@@ -129,7 +129,7 @@ Still planned:
 Thin abstraction over existing chunked streaming - no new compile flag needed. Auto-formats `text/event-stream` content type with `id:`, `event:`, `data:` field framing and `retry:` reconnect hints. API sugar on `HttpResponseWriter`:
 
 ```cpp
-router.setPath(http::Method::GET, "/events", [](const HttpRequest&, HttpResponseWriter& w) {
+router.setPath(http::Method::GET, "/events", [](const HttpRequestView&, HttpResponseWriter& w) {
   SseWriter sse(w);
   sse.event("update", R"({"temp": 22.5})");
   sse.event("update", R"({"temp": 23.1})", "evt-002"); // with id
@@ -186,7 +186,7 @@ for HTTP/2), returning `408 Request Timeout` when it expires.
 Parse `Accept` header q-values to select response content type (JSON, YAML, XML, plain text). Return `406 Not Acceptable` when no format matches. Currently only `Accept-Encoding` is negotiated; `Accept` (media type) is left to user code. Frameworks like Spring, Rails, Phoenix, and ASP.NET handle this transparently.
 
 ```cpp
-router.setPath(http::Method::GET, "/data", [](const HttpRequest& req) {
+router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
   auto negotiated = req.negotiate({"application/json", "text/yaml", "text/plain"});
   // returns best match, or std::nullopt → 406
 });

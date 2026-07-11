@@ -122,7 +122,7 @@ class Http2WriterTransport;
 //   - Appends HttpMessage data in order of the HTTP layout (reason, headers, body) to minimize data movement.
 //   - Prefer headerAddLine() when duplicates are acceptable or order-only semantics matter.
 //   - Minimize header mutations after body() to reduce data movement.
-//   - Use HttpRequest::makeResponse() to construct a response from a request, which will pre-populate headers and
+//   - Use HttpRequestView::makeResponse() to construct a response from a request, which will pre-populate headers and
 //     provide additional context to allow optimizations (HEAD, connection close, compression, etc)
 //
 // Trailers (outbound / response-side):
@@ -543,7 +543,7 @@ class HttpMessage {
 
   // Override the direct compression mode for this HttpMessage.
   // Note that this will not have any effect if the HttpMessage has not been constructed with
-  // HttpRequest::makeResponse().
+  // HttpRequestView::makeResponse().
   // HEAD responses never activate direct compression to avoid extra CPU work; headers reflect
   // the uncompressed body size and no Content-Encoding is added.
   HttpMessage& directCompressionMode(DirectCompressionMode mode) & {
@@ -1039,7 +1039,7 @@ class HttpMessage {
 
  private:
   friend class SingleHttpServer;
-  friend class HttpRequest;
+  friend class HttpRequestView;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class internal::HttpCodec;

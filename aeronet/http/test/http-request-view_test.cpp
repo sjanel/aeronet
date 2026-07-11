@@ -1,4 +1,4 @@
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 
 #include <gtest/gtest.h>
 
@@ -49,7 +49,7 @@
 namespace aeronet {
 
 namespace {
-// Helper to build a raw HTTP request buffer we can feed into HttpRequest::setHead
+// Helper to build a raw HTTP request buffer we can feed into HttpRequestView::setHead
 RawChars BuildRaw(std::string_view method, std::string_view target, std::string_view version = "HTTP/1.1",
                   std::string_view extraHeaders = "", bool includeFinalCRLF = true) {
   RawChars str(64 + extraHeaders.size());
@@ -115,13 +115,13 @@ class HttpRequestTest : public ::testing::Test {
 
   void shrinkAndMaybeClear() { req.shrinkAndMaybeClear(); }
 
-  // Helpers that exercise private internals via friendship with HttpRequest.
-  void setBodyAccessAggregated() { req._bodyAccessMode = HttpRequest::BodyAccessMode::Aggregated; }
+  // Helpers that exercise private internals via friendship with HttpRequestView.
+  void setBodyAccessAggregated() { req._bodyAccessMode = HttpRequestView::BodyAccessMode::Aggregated; }
   void setBodyAccessStreamingWithBridgeNoHasMore() {
-    req._bodyAccessMode = HttpRequest::BodyAccessMode::Streaming;
-    static HttpRequest::BodyAccessBridge bridge;
-    bridge.readChunk = [](HttpRequest&, void*, std::size_t) -> std::string_view { return {}; };
-    bridge.hasMore = [](const HttpRequest&, void*) -> bool { return false; };
+    req._bodyAccessMode = HttpRequestView::BodyAccessMode::Streaming;
+    static HttpRequestView::BodyAccessBridge bridge;
+    bridge.readChunk = [](HttpRequestView&, void*, std::size_t) -> std::string_view { return {}; };
+    bridge.hasMore = [](const HttpRequestView&, void*) -> bool { return false; };
     req._pBodyAccessBridge = &bridge;
   }
 
@@ -133,7 +133,7 @@ class HttpRequestTest : public ::testing::Test {
     req.prefinalizeHttpResponse(resp, telemetryContext);
   }
 
-  // Test helpers that require friend access to HttpRequest private members
+  // Test helpers that require friend access to HttpRequestView private members
   struct FakeSpan : public tracing::Span {
     static inline int64_t lastStatusCode = -1;
     static inline int64_t lastDurationUs = -1;
@@ -157,24 +157,24 @@ class HttpRequestTest : public ::testing::Test {
     void end() noexcept override { ended = true; }
   };
 
-  static std::string_view bridgeReadChunk(HttpRequest& /*req*/, void* /*ctx*/, std::size_t /*maxBytes*/) {
+  static std::string_view bridgeReadChunk(HttpRequestView& /*req*/, void* /*ctx*/, std::size_t /*maxBytes*/) {
     return "chunk-data";
   }
 
-  static bool bridgeHasMore(const HttpRequest& /*req*/, void* /*ctx*/) { return true; }
+  static bool bridgeHasMore(const HttpRequestView& /*req*/, void* /*ctx*/) { return true; }
 
-  static std::string_view bridgeAggregate(HttpRequest& /*req*/, void* /*ctx*/) { return {"full-body"}; }
+  static std::string_view bridgeAggregate(HttpRequestView& /*req*/, void* /*ctx*/) { return {"full-body"}; }
 
   // Helpers that perform operations requiring friendship (call private members on req)
   void installStreamingBridge() {
-    static HttpRequest::BodyAccessBridge bridge;
+    static HttpRequestView::BodyAccessBridge bridge;
     bridge.readChunk = bridgeReadChunk;
     bridge.hasMore = bridgeHasMore;
     req._pBodyAccessBridge = &bridge;
   }
 
   void installAggregateBridge() {
-    static HttpRequest::BodyAccessBridge bridge;
+    static HttpRequestView::BodyAccessBridge bridge;
     bridge.aggregate = bridgeAggregate;
     req._pBodyAccessBridge = &bridge;
   }
@@ -184,17 +184,17 @@ class HttpRequestTest : public ::testing::Test {
   static inline std::string sAggregatedBody;
   void setAggregatedBody(std::string_view body) {
     sAggregatedBody.assign(body);
-    static HttpRequest::BodyAccessBridge bridge;
-    bridge.aggregate = [](HttpRequest&, void*) -> std::string_view { return sAggregatedBody; };
+    static HttpRequestView::BodyAccessBridge bridge;
+    bridge.aggregate = [](HttpRequestView&, void*) -> std::string_view { return sAggregatedBody; };
     req._pBodyAccessBridge = &bridge;
   }
 #endif
 
   // Helper to set a custom BodyAccessBridge and explicitly clear the context.
-  void setCustomBridgeWithNullContext(HttpRequest::BodyAccessBridge::AggregateFn aggregate,
-                                      HttpRequest::BodyAccessBridge::ReadChunkFn readChunk,
-                                      HttpRequest::BodyAccessBridge::HasMoreFn hasMore) {
-    static HttpRequest::BodyAccessBridge sbridge;
+  void setCustomBridgeWithNullContext(HttpRequestView::BodyAccessBridge::AggregateFn aggregate,
+                                      HttpRequestView::BodyAccessBridge::ReadChunkFn readChunk,
+                                      HttpRequestView::BodyAccessBridge::HasMoreFn hasMore) {
+    static HttpRequestView::BodyAccessBridge sbridge;
     sbridge.aggregate = aggregate;
     sbridge.readChunk = readChunk;
     sbridge.hasMore = hasMore;
@@ -212,7 +212,7 @@ class HttpRequestTest : public ::testing::Test {
   void callPostCallback(std::coroutine_handle<> handle, std::function<void()> work) {
     req.postCallback(handle, std::move(work));
   }
-  void setH2PostCallback(HttpRequest::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
+  void setH2PostCallback(HttpRequestView::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
   void setH2SuspendedFlag(bool* flag) { req._pH2SuspendedFlag = flag; }
 #endif
 
@@ -234,7 +234,7 @@ class HttpRequestTest : public ::testing::Test {
 
   void callEnd(http::StatusCode sc) { req.end(sc); }
 
-  // Feed raw bytes to HttpRequest parser and ensure no crash/UB
+  // Feed raw bytes to HttpRequestView parser and ensure no crash/UB
   void fuzzHttpRequestParsing(const RawChars& input, bool mergeUnknownHeaders = true) {
     cs.inBuffer = input;  // reset
     [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders);
@@ -248,7 +248,7 @@ class HttpRequestTest : public ::testing::Test {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncHandlerStatePool asyncStatePoolStorage;
 #endif
-  HttpRequest req;
+  HttpRequestView req;
   ConnectionState cs;
 };
 
@@ -286,8 +286,8 @@ TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
 
 TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
   // Aggregate accessor: null context -> empty body
-  using AggFnRaw = std::string_view (*)(HttpRequest&, void*);
-  AggFnRaw agg = +[](HttpRequest& /*r*/, void* ctx) -> std::string_view {
+  using AggFnRaw = std::string_view (*)(HttpRequestView&, void*);
+  AggFnRaw agg = +[](HttpRequestView& /*r*/, void* ctx) -> std::string_view {
     if (ctx == nullptr) {
       return {};
     }
@@ -305,16 +305,16 @@ TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
 
 TEST_F(HttpRequestTest, BridgeWithNullContextStreamingHandledGracefully) {
   // Streaming accessor: null context -> empty chunks and hasMore false
-  using ReadFnRaw = std::string_view (*)(HttpRequest&, void*, std::size_t);
-  using HasMoreFnRaw = bool (*)(const HttpRequest&, void*);
+  using ReadFnRaw = std::string_view (*)(HttpRequestView&, void*, std::size_t);
+  using HasMoreFnRaw = bool (*)(const HttpRequestView&, void*);
 
-  ReadFnRaw rd = +[](HttpRequest& /*r*/, void* ctx, std::size_t /*maxBytes*/) -> std::string_view {
+  ReadFnRaw rd = +[](HttpRequestView& /*r*/, void* ctx, std::size_t /*maxBytes*/) -> std::string_view {
     if (ctx == nullptr) {
       return {};
     }
     return "c";
   };
-  HasMoreFnRaw hm = +[](const HttpRequest& /*r*/, void* ctx) -> bool { return ctx != nullptr; };
+  HasMoreFnRaw hm = +[](const HttpRequestView& /*r*/, void* ctx) -> bool { return ctx != nullptr; };
 
   setCustomBridgeWithNullContext(nullptr, rd, hm);
 
@@ -1594,7 +1594,7 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
 }
 
 // ============================
-// HttpRequest::makeResponse tests
+// HttpRequestView::makeResponse tests
 // ============================
 
 TEST_F(HttpRequestTest, MakeResponseStatusCodeOnly) {

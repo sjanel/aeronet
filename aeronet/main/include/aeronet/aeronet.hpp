@@ -3,7 +3,7 @@
 // Include this single header to pull in the core public HTTP server API:
 //   - Server types (SingleHttpServer / MultiHttpServer)
 //   - Configuration types (HttpServerConfig, CompressionConfig, Encoding, etc)
-//   - Request / Response primitives (HttpRequest, HttpResponse, HttpResponseWriter)
+//   - Request / Response primitives (HttpRequestView, HttpResponse, HttpResponseWriter)
 //   - HTTP enums & helpers (methods, method sets, status codes, version)
 //   - Server statistics structure
 //

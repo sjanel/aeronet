@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     cfg.withPort(port).withTlsCertKey(certPath, keyPath).withTlsKtlsMode(aeronet::TLSConfig::KtlsMode::Enabled);
 
     aeronet::Router router;
-    router.setDefault([](const aeronet::HttpRequest& req) {
+    router.setDefault([](const aeronet::HttpRequestView& req) {
       aeronet::HttpResponse resp(aeronet::http::StatusCodeOK);
       resp.bodyAppend("Hello from aeronet with kernel TLS!\n");
       resp.bodyAppend("Path: ");

@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
     }
 
     Router router;
-    router.setDefault([](const HttpRequest& req) {
+    router.setDefault([](const HttpRequestView& req) {
       HttpResponse resp(128U, http::StatusCodeOK);
       resp.bodyAppend("Hello from aeronet with TLS session tickets!\n");
       resp.bodyAppend("Path: ");

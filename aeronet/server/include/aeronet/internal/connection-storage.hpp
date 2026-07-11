@@ -26,8 +26,8 @@ class ConnectionStorage {
  public:
   //  - The server and request layer rely on a stable ConnectionState address:
   // TODO: change that, we can store vector + idx instead of raw pointer.
-  //      * HttpRequest stores `ConnectionState* _ownerState` and uses it for async/body coordination
-  //        (e.g. HttpRequest::markAwaitingBody()) and body access bridges.
+  //      * HttpRequestView stores `ConnectionState* _ownerState` and uses it for async/body coordination
+  //        (e.g. HttpRequestView::markAwaitingBody()) and body access bridges.
   //      * The event loop code often keeps `ConnectionState&` / `ConnectionState*` across helper calls
   //        that may emplace new connections (see processSpecialMethods comment in the .cpp).
   //    If ConnectionState were stored by value in the hash table, these pointers/references could dangle.

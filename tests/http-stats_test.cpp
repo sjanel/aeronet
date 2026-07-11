@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/server-stats.hpp"
@@ -16,7 +16,7 @@ TEST(HttpStats, BasicCountersIncrement) {
   HttpServerConfig cfg;
   cfg.withMaxRequestsPerConnection(5);
   test::TestServer ts(cfg);
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(200).body("hello"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse(200).body("hello"); });
   // Single request via throwing helper
   auto resp = test::requestOrThrow(ts.port());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));

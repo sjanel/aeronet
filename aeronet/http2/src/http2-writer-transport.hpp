@@ -36,7 +36,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders)
       : _pConnection(&connection), _pGlobalHeaders(pGlobalHeaders), _streamId(streamId) {}
 
-  bool emitHeaders(HttpResponse& response, const HttpRequest& /*request*/, bool /*compressionActivated*/,
+  bool emitHeaders(HttpResponse& response, const HttpRequestView& /*request*/, bool /*compressionActivated*/,
                    Encoding /*compressionFormat*/, std::size_t /*declaredLength*/, bool isHead) override {
     _isHead = isHead;
 

@@ -6,7 +6,7 @@ namespace aeronet {
 
 // Controls inline (direct) compression behavior for HttpResponse.
 //
-// Direct compression applies to inline bodies created via HttpRequest::makeResponse(), and compresses data as it is
+// Direct compression applies to inline bodies created via HttpRequestView::makeResponse(), and compresses data as it is
 // written via body() / bodyAppend(), before finalization.
 //
 // This avoids a second compression pass and temporary buffers for eligible responses.

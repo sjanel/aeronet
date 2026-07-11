@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
@@ -98,7 +98,7 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   serverCfg.enableKeepAlive = false;
 
   test::TestServer server(serverCfg);
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("otel-ok"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("otel-ok"); });
 
   const auto response = test::simpleGet(server.port(), "/otel");
   ASSERT_FALSE(response.empty());

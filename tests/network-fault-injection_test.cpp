@@ -9,7 +9,7 @@
 #include "aeronet/fault-injecting-transport.hpp"
 #include "aeronet/fault-policy.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -39,11 +39,12 @@ class NetworkFaultTest : public ::testing::Test {
     g_faultPolicy = {};
 
     // Register test routes
-    ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse("Hello, World!"); });
+    ts.router().setPath(http::Method::GET, "/hello",
+                        [](const HttpRequestView&) { return HttpResponse("Hello, World!"); });
     ts.router().setPath(http::Method::POST, "/echo",
-                        [](const HttpRequest& req) { return HttpResponse(std::string{req.body()}); });
+                        [](const HttpRequestView& req) { return HttpResponse(std::string{req.body()}); });
     ts.router().setPath(http::Method::GET, "/large",
-                        [](const HttpRequest&) { return HttpResponse(std::string(8192, 'X')); });
+                        [](const HttpRequestView&) { return HttpResponse(std::string(8192, 'X')); });
   }
 
   void TearDown() override { _decorator.reset(); }

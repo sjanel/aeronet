@@ -239,8 +239,8 @@ struct HttpServerConfig {
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 
-  // Maximum time spent waiting for additional body bytes once a handler blocks on HttpRequest::body() or
-  // HttpRequest::readBody(). Applies after headers are parsed and guards against slowloris-style uploads.
+  // Maximum time spent waiting for additional body bytes once a handler blocks on HttpRequestView::body() or
+  // HttpRequestView::readBody(). Applies after headers are parsed and guards against slowloris-style uploads.
   // The timer resets whenever progress is made (bytes consumed). A value of 0 disables the timeout.
   std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds{0}};
 

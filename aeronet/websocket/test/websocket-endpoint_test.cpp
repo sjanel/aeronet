@@ -11,7 +11,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/websocket-handler.hpp"
 
 namespace aeronet {
@@ -33,7 +33,7 @@ TEST(WebSocketEndpointTest, DefaultConstruction) {
 // ============================================================================
 
 TEST(WebSocketEndpointTest, WithFactory_CreatesEndpointWithFactory) {
-  auto endpoint = WebSocketEndpoint::WithFactory([](const HttpRequest& /*request*/) {
+  auto endpoint = WebSocketEndpoint::WithFactory([](const HttpRequestView& /*request*/) {
     return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{});
   });
 

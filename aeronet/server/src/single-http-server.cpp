@@ -27,7 +27,7 @@
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -389,7 +389,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     return state.isAnyCloseRequested();
   }
 #endif
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   do {
     // Do not parse the next pipelined request while a file send is still in progress.
     // attachFilePayload would silently overwrite the in-flight file payload, corrupting
@@ -406,7 +406,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     const auto statusCode =
         request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
                                _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
-    if (statusCode == HttpRequest::kStatusNeedMoreData) {
+    if (statusCode == HttpRequestView::kStatusNeedMoreData) {
       break;
     }
 
@@ -735,7 +735,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
 bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
 
   usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerLen != 0;
 
@@ -766,7 +766,7 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
                                             std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                                             std::span<const ResponseMiddleware> postMiddleware) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   bool wantClose = request.wantClose();
   bool isHead = request.method() == http::Method::HEAD;
   Encoding compressionFormat = Encoding::none;
@@ -836,7 +836,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
                                             std::span<const ResponseMiddleware> responseMiddleware,
                                             std::size_t perRouteMaxBodyBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   RequestTask<HttpResponse> task = handler(request);
 
   if (!task.valid()) {
@@ -1061,7 +1061,7 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
 }
 #endif
 
-void SingleHttpServer::emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, std::size_t bytesIn,
                                           bool reusedConnection) {
   std::string_view clientIp = "-";
 
@@ -1390,7 +1390,7 @@ void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode stat
 
 void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
 
   // Build the absolute https:// target into a scratch buffer, re-encoding the (decoded) path and query so the
   // result is always a valid URL / header value. HttpResponse::location() copies it out, so the scratch buffer
@@ -1438,7 +1438,7 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consume
 
 bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
                                           const CorsPolicy* pCorsPolicy, bool& found100Continue) {
-  HttpRequest& request = _connections.connectionState(cnxIt).request;
+  HttpRequestView& request = _connections.connectionState(cnxIt).request;
   const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim OWS). Case-insensitive comparison for 100-continue.
   // headerEnd = offset from connection buffer start to end of headers
@@ -1736,15 +1736,16 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
   h2Handler->setTunnelBridge(state.tunnelBridge.get());
 
   // Install per-request completion callback for metrics, counters and tracing.
-  h2Handler->setRequestCompletionCallback([this, fd = clientFd](const HttpRequest& request, http::StatusCode status) {
-    auto* pState = _connections.pConnectionState(fd);
-    assert(pState != nullptr);
-    ++pState->requestsServed;
-    ++_stats.totalRequestsServed;
-    if (_callbacks.metrics || _accessLog) {
-      emitRequestMetrics(request, status, request.body().size(), pState->requestsServed > 1);
-    }
-  });
+  h2Handler->setRequestCompletionCallback(
+      [this, fd = clientFd](const HttpRequestView& request, http::StatusCode status) {
+        auto* pState = _connections.pConnectionState(fd);
+        assert(pState != nullptr);
+        ++pState->requestsServed;
+        ++_stats.totalRequestsServed;
+        if (_callbacks.metrics || _accessLog) {
+          emitRequestMetrics(request, status, request.body().size(), pState->requestsServed > 1);
+        }
+      });
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
