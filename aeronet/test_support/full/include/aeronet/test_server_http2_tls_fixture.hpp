@@ -6,7 +6,7 @@
 #include <functional>
 #include <utility>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
@@ -25,13 +25,13 @@ namespace aeronet::test {
 ///
 /// Usage:
 ///   TlsHttp2TestServer ts;
-///   ts.setDefault([](const HttpRequest& req) {
+///   ts.setDefault([](const HttpRequestView& req) {
 ///     return HttpResponse("Hello HTTP/2!");
 ///   });
 struct TlsHttp2TestServer {
   using Mutator = std::function<void(HttpServerConfig&)>;
   using Http2Mutator = std::function<void(Http2Config&)>;
-  using RequestHandler = std::function<HttpResponse(const HttpRequest&)>;
+  using RequestHandler = std::function<HttpResponse(const HttpRequestView&)>;
 
   TlsHttp2TestServer() noexcept {
     server.postConfigUpdate([](HttpServerConfig& cfg) {

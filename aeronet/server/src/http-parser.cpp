@@ -15,7 +15,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-payload.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -41,7 +41,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
                                                                            std::size_t maxBodyBytes,
                                                                            std::size_t& consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   auto optContentLength = request.headerValue(http::ContentLength);
   const std::size_t headerEnd = request.headSpanSize();
   if (!optContentLength) {
@@ -78,7 +78,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
                                                                        std::size_t maxBodyBytes,
                                                                        std::size_t& consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   if (expectContinue) {
     queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }

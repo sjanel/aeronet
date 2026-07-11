@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
   Router router;
 
   try {
-    router.setDefault([](const HttpRequest& req) {
+    router.setDefault([](const HttpRequestView& req) {
       HttpResponse resp = req.makeResponse(200);
       resp.bodyAppend("Hello from aeronet minimal server! You requested ");
       resp.bodyAppend(req.path());

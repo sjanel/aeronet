@@ -10,7 +10,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -45,7 +45,7 @@ class UpgradeHandlerHarness : public ::testing::Test {
     return request.initTrySetHead(connState.inBuffer, tmp, 4096U, true, nullptr);
   }
 
-  HttpRequest request;
+  HttpRequestView request;
   ConnectionState connState;
 };
 
@@ -89,7 +89,7 @@ TEST(UpgradeHandlerTest, ConnectionContainsUpgrade_TrailingComma) {
 }
 
 // ============================================================================
-// ValidateWebSocketUpgrade tests using real HttpRequest parsing
+// ValidateWebSocketUpgrade tests using real HttpRequestView parsing
 // ============================================================================
 #ifdef AERONET_ENABLE_WEBSOCKET
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ValidRequest) {

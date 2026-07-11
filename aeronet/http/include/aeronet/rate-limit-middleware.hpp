@@ -21,7 +21,7 @@ struct RateLimitRequestMiddlewareBuilder {
   RateLimitStorePtr store;
   RateLimitClientKeyStrategy keyStrategy{RateLimitClientKeyStrategy::PeerAddress};
   std::string_view headerName{"x-forwarded-for"};
-  std::function<std::string_view(const HttpRequest&)> customKeyExtractor;
+  std::function<std::string_view(const HttpRequestView&)> customKeyExtractor;
   std::string_view rejectionBody{"rate limited"};
 };
 

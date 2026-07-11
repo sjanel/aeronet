@@ -1,6 +1,6 @@
 #include <benchmark/benchmark.h>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -11,7 +11,7 @@
 namespace {
 void BenchThroughputSkeleton(benchmark::State& state) {
   aeronet::SingleHttpServer server(aeronet::HttpServerConfig{}.withPort(0));
-  server.router().setDefault([](const aeronet::HttpRequest&) {
+  server.router().setDefault([](const aeronet::HttpRequestView&) {
     aeronet::HttpResponse resp;
     resp.body("OK");
     return resp;

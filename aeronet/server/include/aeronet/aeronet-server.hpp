@@ -3,7 +3,7 @@
 // Include this single header to pull in the core public HTTP server API:
 //   - Server types (SingleHttpServer / MultiHttpServer)
 //   - Configuration types (HttpServerConfig, CompressionConfig, Encoding, etc)
-//   - Request / Response primitives (HttpRequest, HttpResponse, HttpResponseWriter)
+//   - Request / Response primitives (HttpRequestView, HttpResponse, HttpResponseWriter)
 //   - HTTP enums & helpers (methods, method sets, status codes, version)
 //   - Server statistics structure
 //
@@ -46,7 +46,7 @@
 
 // HTTP primitives
 #include "aeronet/http-json.hpp"             // IWYU pragma: export (opt-in JSON/YAML body helpers; no-op without Glaze)
-#include "aeronet/http-request.hpp"          // IWYU pragma: export
+#include "aeronet/http-request-view.hpp"     // IWYU pragma: export
 #include "aeronet/http-response-writer.hpp"  // IWYU pragma: export
 #include "aeronet/http-response.hpp"         // IWYU pragma: export
 #include "aeronet/request-task.hpp"          // IWYU pragma: export

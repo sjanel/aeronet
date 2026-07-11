@@ -23,7 +23,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -68,7 +68,7 @@ auto port = ts.port();
 TEST(HttpParserErrors, InvalidVersion505) {
   Capture cap;
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -91,7 +91,7 @@ TEST(HttpParserErrors, InvalidVersion505) {
 TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
   Capture cap;
   ts.server.setParserErrorCallback([&]([[maybe_unused]] http::StatusCode err) { throw std::runtime_error("boom"); });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   std::string bad =
       "GET / HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\nConnection: close\r\n\r\n";  // invalid content-length
@@ -117,7 +117,7 @@ TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
 }
 
 TEST(HttpParserErrors, Expect100OnlyWithBody) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -141,7 +141,7 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
 TEST(HttpParserErrors, ChunkIncrementalFuzz) {
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937 rng(12345);
@@ -190,7 +190,7 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   // so we need to let those succeed first. We'll use an approach where we start the server first,
   // then inject failures for subsequent setsockopt calls.
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // Now inject setsockopt failures for the next connection's TCP_NODELAY call
   // We push multiple failures to ensure one catches the TCP_NODELAY call
@@ -208,7 +208,7 @@ TEST(ConnectionManagerErrors, EventLoopAddFailure) {
   test::EventLoopHookGuard guard;
   test::QueueResetGuard<decltype(test::g_epoll_ctl_add_actions)> epollAddGuard(test::g_epoll_ctl_add_actions);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // First request should work normally
   auto resp1 = test::simpleGet(ts.port(), "/first");
@@ -236,7 +236,7 @@ TEST(ConnectionManagerErrors, SweepIdleConnectionsImmediateClose) {
   });
 
   // Handler that causes an immediate close request (error path)
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("immediate-close"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("immediate-close"); });
 
   // Normal request should work
   auto resp = test::simpleGet(ts.port(), "/sweep-test");
@@ -251,7 +251,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairness) {
     cfg.maxPerEventReadBytes = 8192;  // Reasonable limit
   });
 
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   // Send a simple request - verify basic operation with fairness cap enabled
   auto resp = test::simpleGet(ts.port(), "/fairness");
@@ -264,7 +264,7 @@ TEST(HttpResponseDispatchErrors, QueueDataTransportError) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
   test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("test-body"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("test-body"); });
 
   // Inject a server-side write failure on the accepted fd (PlainTransport uses writev for head+body).
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
@@ -294,7 +294,7 @@ TEST(HttpResponseDispatchErrors, QueueDataSkipsWhenCloseAlreadyRequested) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
   test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
 
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "proc") {
       res.kind = SingleHttpServer::ExpectationResultKind::Interim;
@@ -305,7 +305,7 @@ TEST(HttpResponseDispatchErrors, QueueDataSkipsWhenCloseAlreadyRequested) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
 
   // Inject a write error so the 102 Processing interim response write fails with a transport error.
   // This causes requestDrainAndClose() to be set inside queueData() (Error branch).
@@ -340,7 +340,8 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
 
   // Generate a large response to ensure buffering
   std::string largeBody(64UL * 1024, 'L');
-  ts.router().setDefault([&largeBody](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body(largeBody); });
+  ts.router().setDefault(
+      [&largeBody](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).body(largeBody); });
 
   const auto prevAcceptCount = test::g_accept_count.load(std::memory_order_acquire);
   test::ClientConnection client(ts.port());
@@ -383,7 +384,7 @@ TEST(HttpResponseDispatchErrors, SendfileError) {
   test::ScopedTempFile tmp(tmpDir, kPayload);
   std::string path = tmp.filePath().string();
 
-  ts.router().setDefault([&path](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([&path](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(path));
     writer.end();
@@ -419,7 +420,7 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string path = tmp.filePath().string();
 
-  ts.router().setDefault([&path](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([&path](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(path));
     writer.end();
@@ -461,7 +462,7 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
 
-  ts.setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -491,7 +492,7 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
 // path when tls->established() is false.
 TEST(ConnectionManagerErrors, TlsEofDuringHandshake) {
   test::TlsTestServer ts;
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   {
     // Create a raw TCP connection that we'll close without TLS handshake
@@ -522,7 +523,7 @@ TEST(ConnectionManagerErrors, HeaderReadTimeoutInReadLoop) {
     cfg.headerReadTimeout = 50ms;  // Very short timeout
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::ClientConnection client(ts.port());
 
@@ -546,7 +547,7 @@ TEST(ConnectionManagerErrors, MaxBufferOverflow) {
     cfg.maxBodyBytes = 256;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   {
     test::ClientConnection client(ts.port());
@@ -589,7 +590,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairnessBudgetExhausted) {
     cfg.withMinReadChunkBytes(64);     // Match budget to trigger exhaustion
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK).body("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).body("OK"); });
 
   test::ClientConnection client(ts.port());
 
@@ -611,7 +612,7 @@ TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
     cfg.withBodyReadTimeout(5s);  // Enable body timeout which activates waitingForBody
   });
 
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(http::StatusCodeOK).body(req.body()); });
 
   test::ClientConnection client(ts.port());
 
@@ -636,7 +637,7 @@ TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
 // This exercises the code path where a client closes connection during TLS handshake.
 TEST(ConnectionManagerTlsErrors, TlsHandshakeFailureOnEof) {
   test::TlsTestServer tlsServer;
-  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   std::atomic_bool failureDetected{false};
   std::string_view capturedReason;
@@ -671,7 +672,7 @@ TEST(ConnectionManagerTlsErrors, TlsHandshakeFailureOnEof) {
 // This exercises the detailed TLS error logging when transport returns Error.
 TEST(ConnectionManagerTlsErrors, TlsTransportErrorDiagnostics) {
   test::TlsTestServer tlsServer({}, [](HttpServerConfig& cfg) { cfg.withTlsHandshakeLogging(true); });
-  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   std::atomic_bool failureDetected{false};
 
@@ -708,7 +709,7 @@ TEST(ConnectionManagerTlsErrors, TlsTransportErrorDiagnostics) {
 // socket write-readiness to proceed (e.g., to send ClientHello response).
 TEST(ConnectionManagerTlsErrors, TlsHandshakeWriteReadyEpollMod) {
   test::TlsTestServer tlsServer;
-  tlsServer.setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // A proper TLS client triggers the WriteReady path naturally during
   // the handshake when the server needs to send its response.
@@ -739,7 +740,7 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
   test::TlsTestServer tlsTs({"http/1.1"},
                             [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
 
-  tlsTs.setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+  tlsTs.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -779,7 +780,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   test::TestServer localTs(std::move(cfg));
 
   std::string largeBody(64UL * 1024, 'S');
-  localTs.router().setDefault([&largeBody](const HttpRequest&) { return HttpResponse(largeBody); });
+  localTs.router().setDefault([&largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
 
   // Inject EAGAIN on first writev to leave data buffered, then let subsequent writes succeed
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
@@ -814,7 +815,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  localTs.router().setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+  localTs.router().setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -852,7 +853,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  ts.router().setDefault([&filePath](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -886,7 +887,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
   test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("needs-write"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("needs-write"); });
 
   // First writev returns EAGAIN (WriteReady), then second succeeds
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
@@ -916,7 +917,7 @@ TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
   cfg.withPollInterval(std::chrono::milliseconds{5});
   test::TestServer localTs(std::move(cfg));
 
-  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Inject epoll_ctl ADD failure for the next accepted connection
   test::PushEpollCtlAddAction(test::EpollCtlAction{-1, ENOMEM});

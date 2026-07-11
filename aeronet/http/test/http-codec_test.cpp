@@ -21,7 +21,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -659,7 +659,7 @@ TEST(HttpCodecDecompression, WillDecompress_DisabledReturnsNotModified) {
   cfg.enable = false;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -671,7 +671,7 @@ TEST(HttpCodecDecompression, WillDecompress_NoHeaderReturnsNotModified) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -682,7 +682,7 @@ TEST(HttpCodecDecompression, WillDecompress_EmptyHeaderReturnsBadRequest) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -694,7 +694,7 @@ TEST(HttpCodecDecompression, WillDecompress_OnlyIdentityReturnsNotModified) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -706,7 +706,7 @@ TEST(HttpCodecDecompression, WillDecompress_NonIdentityReturnsOK) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -718,7 +718,7 @@ TEST(HttpCodecDecompression, WillDecompress_MalformedDoubleCommaReturnsBadReques
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // double comma (possibly with spaces) between tokens should be treated as malformed
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
@@ -731,7 +731,7 @@ TEST(HttpCodecDecompression, WillDecompress_IdentityCaseInsensitive) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "IDENTITY");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -743,7 +743,7 @@ TEST(HttpCodecDecompression, WillDecompress_SeveralIdentityValuesReturnsNotModif
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,IDENTITY");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -755,7 +755,7 @@ TEST(HttpCodecDecompression, WillDecompress_OWSAndSpacesAreHandled) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // leading/trailing spaces and OWS around commas should be tolerated and parsed
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip ,  deflate");
 
@@ -768,7 +768,7 @@ TEST(HttpCodecDecompression, WillDecompress_IdentityMixedWithOtherEncodings) {
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // identity present but not alone; should result in OK because a non-identity is present
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, br");
 
@@ -781,7 +781,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // malformed double-comma should be treated as malformed by the decoder iterator
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
@@ -809,7 +809,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   cfg.maxExpansionRatio = 0.001;  // 0.1%
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity,gzip,identity");
 
   // Prepare a large uncompressed payload that compresses well
@@ -854,7 +854,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
   cfg.enable = true;
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // identity and unknown encoding should return unsupported media type
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, unknown");
 
@@ -1087,7 +1087,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   cfg.streamingDecompressionThresholdBytes = 1;  // non-zero threshold
 
   ConnectionState cs;
-  HttpRequest& req = cs.request;
+  HttpRequestView& req = cs.request;
   // set a supported encoding header so decompression codepath is attempted
   const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 

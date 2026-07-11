@@ -8,7 +8,7 @@
 #include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -117,7 +117,7 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
   return *this;
 }
 
-[[nodiscard]] CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequest& request) const noexcept {
+[[nodiscard]] CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequestView& request) const noexcept {
   if (!_active || isPreflightRequest(request)) {
     return ApplyStatus::NotCors;
   }
@@ -131,7 +131,7 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
   return ApplyStatus::Applied;
 }
 
-CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, HttpResponse& response) const {
+CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& request, HttpResponse& response) const {
   const auto applyStatus = wouldApply(request);
 
   if (applyStatus == ApplyStatus::Applied) {
@@ -144,7 +144,7 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequest& request, 
   return applyStatus;
 }
 
-CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& request,
+CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& request,
                                                         http::MethodBmp routeMethods) const {
   PreflightResult result;
   if (!_active || !isPreflightRequest(request)) {
@@ -219,7 +219,7 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequest& reque
   return result;
 }
 
-bool CorsPolicy::isPreflightRequest(const HttpRequest& request) noexcept {
+bool CorsPolicy::isPreflightRequest(const HttpRequestView& request) noexcept {
   if (request.method() != http::Method::OPTIONS) {
     return false;
   }

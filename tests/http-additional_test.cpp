@@ -25,7 +25,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -224,14 +224,14 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
 }  // namespace
 
 TEST(Http10, BasicVersionEcho) {
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("A"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("A"); });
   std::string req = "GET /x HTTP/1.0\r\nHost: h\r\n\r\n";
   std::string resp = test::sendAndCollect(ts.port(), req);
   ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("B"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("B"); });
   // Expect ignored in HTTP/1.0
   std::string req =
       "POST /p HTTP/1.0\r\nHost: h\r\nContent-Length: 0\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
@@ -241,7 +241,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
 }
 
 TEST(Http10, RejectTransferEncoding) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("C"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("C"); });
   std::string req = "GET /te HTTP/1.0\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n";
   std::string resp = test::sendAndCollect(ts.port(), req);
   // Should return 400 per implementation decision
@@ -249,7 +249,7 @@ TEST(Http10, RejectTransferEncoding) {
 }
 
 TEST(Http10, KeepAliveOptInStillWorks) {
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("D"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("D"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -266,7 +266,7 @@ TEST(Http10, KeepAliveOptInStillWorks) {
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   ts.router().setDefault(
-      [](const HttpRequest& req) { return HttpResponse(std::string("E:") + std::string(req.path())); });
+      [](const HttpRequestView& req) { return HttpResponse(std::string("E:") + std::string(req.path())); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -280,7 +280,7 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("Z"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("Z"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string headers =
@@ -294,7 +294,7 @@ TEST(HttpExpect, ZeroLengthNo100) {
 // Test empty tokens in Expect header (comma-separated with leading/trailing commas)
 // Exercises the token.empty() continue path in handleExpectHeader
 TEST(HttpExpect, EmptyTokensInExpectHeader) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ET"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ET"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   // Leading comma, trailing comma, double comma -> empty tokens that should be skipped
@@ -310,7 +310,7 @@ TEST(HttpExpect, EmptyTokensInExpectHeader) {
 // Test unknown Expect token without expectation handler -> 417 Expectation Failed
 TEST(HttpExpect, UnknownExpectTokenReturns417) {
   ts.server.setExpectationHandler({});
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("never"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("never"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string headers =
@@ -332,7 +332,7 @@ TEST(HttpServer, PostConfigUpdateExceptionDoesNotCrash) {
 TEST(HttpMaxRequests, CloseAfterLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("Q"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("Q"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string reqs =
@@ -345,7 +345,7 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string piped = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n";
@@ -357,7 +357,7 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 
 TEST(HttpContentLength, ExplicitTooLarge413) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10); });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("R"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("R"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n";
@@ -370,9 +370,9 @@ TEST(HttpContentLength, PerRouteMaxBodyBytesRejects) {
   // Global limit is generous, per-route limit is tight
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
   ts.router()
-      .setPath(http::Method::POST, "/limited", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::POST, "/limited", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxBodyBytes(10);
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   // Send 20 bytes body to /limited → should get 413
   test::ClientConnection cc1(ts.port());
   std::string req1 =
@@ -386,7 +386,7 @@ TEST(HttpContentLength, PerRouteMaxBodyBytesAllowsSmallerBody) {
   // Per-route limit allows this body size
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
   ts.router()
-      .setPath(http::Method::POST, "/limited2", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::POST, "/limited2", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxBodyBytes(30);
   test::ClientConnection cc(ts.port());
   std::string req =
@@ -400,9 +400,9 @@ TEST(HttpContentLength, PerRouteMaxBodyBytesDoesNotAffectOtherRoutes) {
   // Only /limited3 has a tight limit; /other should use the global limit
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
   ts.router()
-      .setPath(http::Method::POST, "/limited3", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::POST, "/limited3", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxBodyBytes(5);
-  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView&) { return HttpResponse("OK"); });
   // /limited3 should reject 20-byte body
   test::ClientConnection cc1(ts.port());
   std::string req1 =
@@ -422,9 +422,9 @@ TEST(HttpContentLength, PerRouteMaxBodyBytesDoesNotAffectOtherRoutes) {
 TEST(HttpContentLength, PerRouteMaxHeaderBytesRejects) {
   // Global header limit is generous, per-route limit is tight (50 bytes)
   ts.router()
-      .setPath(http::Method::GET, "/hdr-limited", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::GET, "/hdr-limited", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxHeaderBytes(50);
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   // Headers: "Host: x\r\nX-Big: <60 chars>\r\nConnection: close\r\n" → well over 50 bytes
   test::ClientConnection cc(ts.port());
   std::string bigHeader(60, 'A');
@@ -437,7 +437,7 @@ TEST(HttpContentLength, PerRouteMaxHeaderBytesRejects) {
 TEST(HttpContentLength, PerRouteMaxHeaderBytesAllowsSmaller) {
   // Headers fit within the per-route limit
   ts.router()
-      .setPath(http::Method::GET, "/hdr-ok", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::GET, "/hdr-ok", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxHeaderBytes(500);
   test::ClientConnection cc(ts.port());
   std::string req = "GET /hdr-ok HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -448,9 +448,9 @@ TEST(HttpContentLength, PerRouteMaxHeaderBytesAllowsSmaller) {
 
 TEST(HttpContentLength, PerRouteMaxHeaderBytesDoesNotAffectOthers) {
   ts.router()
-      .setPath(http::Method::GET, "/hdr-strict", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::GET, "/hdr-strict", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .maxHeaderBytes(10);
-  ts.router().setPath(http::Method::GET, "/hdr-free", [](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setPath(http::Method::GET, "/hdr-free", [](const HttpRequestView&) { return HttpResponse("OK"); });
   // /hdr-strict should reject (headers > 10 bytes)
   test::ClientConnection cc1(ts.port());
   std::string req1 = "GET /hdr-strict HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -468,7 +468,7 @@ TEST(HttpContentLength, PerRouteMaxHeaderBytesDoesNotAffectOthers) {
 TEST(HttpContentLength, PerRouteTimeoutClosesStaleRequest) {
   // Set a very short per-route timeout (30ms) on one route
   ts.router()
-      .setPath(http::Method::POST, "/slow-route", [](const HttpRequest&) { return HttpResponse("OK"); })
+      .setPath(http::Method::POST, "/slow-route", [](const HttpRequestView&) { return HttpResponse("OK"); })
       .timeout(std::chrono::milliseconds{30});
   // Send a request with Content-Length but hold back the body → server waits for body
   test::ClientConnection cc(ts.port());
@@ -482,7 +482,7 @@ TEST(HttpContentLength, PerRouteTimeoutClosesStaleRequest) {
 TEST(HttpContentLength, PerRouteTimeoutDoesNotAffectFastRequests) {
   // Short per-route timeout, but the request completes quickly
   ts.router()
-      .setPath(http::Method::GET, "/fast-route", [](const HttpRequest&) { return HttpResponse("Fast OK"); })
+      .setPath(http::Method::GET, "/fast-route", [](const HttpRequestView&) { return HttpResponse("Fast OK"); })
       .timeout(std::chrono::milliseconds{5000});
   test::ClientConnection cc(ts.port());
   std::string req = "GET /fast-route HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -498,7 +498,7 @@ TEST(HttpContentLength, GlobalHeaders) {
     cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
     cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
   });
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse respObj;
     // This header should not be overwritten by the global one
     respObj.header("X-Custom", "original");
@@ -530,7 +530,7 @@ TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
     cfg.addGlobalHeader(http::Header{"X-Custom", "from-global"});
   });
 
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeAccepted, "body-from-make", "text/custom");
     // Local header should override the global one when names collide
     resp.header("X-Custom", "local");
@@ -562,7 +562,7 @@ TEST(HttpBasic, LargePayload) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
   });
-  ts.router().setDefault([&largeBody](const HttpRequest&) { return HttpResponse(largeBody); });
+  ts.router().setDefault([&largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string req = "GET /good HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -576,7 +576,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
   // Test handling a request with thousands of headers
   static constexpr uint32_t kMaxHeaderBytes = 128U * 1024U;
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     int headerCount = 0;
     for (const auto& [key, value] : req.headers()) {
       if (key.starts_with("X-Custom-")) {
@@ -614,7 +614,7 @@ TEST(HttpBasic, ManyHeadersRequest) {
 }
 
 TEST(HttpBasic, InvalidContentLength) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("X"); });
 
   test::ClientConnection clientConnection(ts.port());
   std::string req = "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: invalid-length\r\nConnection: close\r\n\r\nHELLO";
@@ -655,7 +655,7 @@ TEST(HttpBasic, InvalidContentLength) {
 
 TEST(HttpBasic, ManyHeadersResponse) {
   // Test generating a response with thousands of headers
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse respObj;
     // Add 3000 custom headers to response
     for (int i = 0; i < 3000; ++i) {
@@ -683,7 +683,7 @@ TEST(HttpBasic, ManyHeadersResponse) {
 }
 
 TEST(HttpExpectation, UnknownExpectationReturns417) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("X"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -696,7 +696,7 @@ TEST(HttpExpectation, UnknownExpectationReturns417) {
 }
 
 TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("X"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("X"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -712,7 +712,7 @@ TEST(HttpExpectation, MultipleTokensWithUnknownShouldReturn417) {
 
 TEST(HttpExpectation, HandlerCanEmit100Continue) {
   // Register handler that emits 100 Continue for token "100-continue-custom"
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "100-continue-custom") {
       res.kind = SingleHttpServer::ExpectationResultKind::Interim;
@@ -723,7 +723,7 @@ TEST(HttpExpectation, HandlerCanEmit100Continue) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -739,7 +739,7 @@ TEST(HttpExpectation, HandlerCanEmit100Continue) {
 
 TEST(HttpExpectation, HandlerCanEmit102Interim) {
   // Register handler that emits 102 Processing for token "102-processing"
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "102-processing") {
       res.kind = SingleHttpServer::ExpectationResultKind::Interim;
@@ -750,7 +750,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -765,7 +765,7 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
 
 TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
   // Register handler that emits 103 Early Hints (default case handling)
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "103-early-hints") {
       res.kind = SingleHttpServer::ExpectationResultKind::Interim;
@@ -776,7 +776,7 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -791,7 +791,7 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
 
 TEST(HttpExpectation, ExpectationHandlerErrors) {
   // Handler throws an exception
-  ts.server.setExpectationHandler([](const HttpRequest&, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView&, std::string_view token) {
     if (token == "throwsStdException") {
       throw std::runtime_error("boom");
     }
@@ -817,7 +817,7 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("SHOULD NOT SEE"); });
 
   for (std::string_view token :
        {"throwsStdException", "throwsCustomException", "bad-interim1", "bad-interim2", "expectation-failure"}) {
@@ -845,7 +845,7 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
 
 TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
   // Handler returns a final response immediately
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "auth-check") {
       res.kind = SingleHttpServer::ExpectationResultKind::FinalResponse;
@@ -858,7 +858,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("SHOULD NOT SEE"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("SHOULD NOT SEE"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -874,7 +874,7 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
 
 TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
   // Handler accepts custom token and returns Continue
-  ts.server.setExpectationHandler([](const HttpRequest& /*req*/, std::string_view token) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
     SingleHttpServer::ExpectationResult res;
     if (token == "custom-ok") {
       res.kind = SingleHttpServer::ExpectationResultKind::Continue;
@@ -884,7 +884,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
     return res;
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("DONE"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("DONE"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -902,7 +902,7 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
 
 TEST(HttpChunked, DecodeBasic) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
-  ts.resetRouterAndGet().setDefault([](const HttpRequest& req) {
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) {
     return HttpResponse(http::StatusCodeOK)
         .body(std::string("LEN=") + std::to_string(req.body().size()) + ":" + std::string(req.body()));
   });
@@ -920,7 +920,7 @@ TEST(HttpChunked, DecodeBasic) {
 
 TEST(HttpHead, NoBodyReturned) {
   ts.resetRouterAndGet().setDefault(
-      [](const HttpRequest& req) { return HttpResponse(std::string("DATA-") + std::string(req.path())); });
+      [](const HttpRequestView& req) { return HttpResponse(std::string("DATA-") + std::string(req.path())); });
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();
   std::string req = "HEAD /head HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -940,7 +940,7 @@ TEST(HttpExpect, ContinueFlow) {
     cfg = TestServerConfig();
     cfg.withMaxBodyBytes(5);
   });
-  ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection cnx(ts.port());
   auto fd = cnx.fd();
   std::string headers =
@@ -964,7 +964,7 @@ TEST(HttpChunked, RejectTooLarge) {
     cfg = TestServerConfig();
     cfg.withMaxBodyBytes(4);  // very small limit
   });
-  ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();
   // Single 5-byte chunk exceeds limit 4
@@ -980,7 +980,7 @@ TEST(HttpAsync, FlushPendingResponseAfterBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   // Handler completes immediately but body wasn't ready when started.
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-flush",
-                                 []([[maybe_unused]] HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 []([[maybe_unused]] HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    // Return a response immediately; if the request body
                                    // wasn't ready the server will hold it as pending.
                                    co_return HttpResponse("async-ok");
@@ -1007,7 +1007,7 @@ TEST(HttpAsync, FlushPendingResponseAfterBody) {
 TEST(HttpHead, MaxRequestsApplied) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(3); });
   auto port = ts.port();
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("IGNORED"); });
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("IGNORED"); });
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   // 4 HEAD requests pipelined; only 3 responses expected then close
@@ -1056,12 +1056,12 @@ TEST(SingleHttpServer, ImmutableConfigChangeReusePortIgnored) {
 // Test synchronous router update exception handling with completion
 TEST(SingleHttpServer, SynchronousRouterUpdateExceptionRethrown) {
   // The synchronous update path is tested through setDefault which throws if the handler is empty
-  EXPECT_NO_THROW(ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); }));
+  EXPECT_NO_THROW(ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); }));
 }
 
 // Test request handler exception in normal handler
 TEST(SingleHttpServer, RequestHandlerStdException) {
-  ts.router().setDefault([](const HttpRequest&) -> HttpResponse { throw std::runtime_error("Handler error"); });
+  ts.router().setDefault([](const HttpRequestView&) -> HttpResponse { throw std::runtime_error("Handler error"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string req = "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -1073,7 +1073,7 @@ TEST(SingleHttpServer, RequestHandlerStdException) {
 
 // Test request handler non-std exception
 TEST(SingleHttpServer, RequestHandlerNonStdException) {
-  ts.router().setDefault([](const HttpRequest&) -> HttpResponse { throw 42; });
+  ts.router().setDefault([](const HttpRequestView&) -> HttpResponse { throw 42; });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string req = "GET /test HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
@@ -1088,7 +1088,7 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s);  // NOLINT(misc-include-cleaner)
   });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   // Send headers indicating body but don't send body yet
@@ -1104,7 +1104,7 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
 // Test body read timeout cleared when body is ready
 TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s); });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   // Send complete request with body
@@ -1134,7 +1134,7 @@ TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
 
 // Test request decompression when Content-Encoding is identity (no decompression needed)
 TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   std::string req =
@@ -1152,7 +1152,7 @@ TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
     cfg.withMaxBodyBytes(256 << 20);
     cfg.decompression.enable = false;
   });
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     // Body will still be compressed since decompression is disabled
     return HttpResponse(req.headerValueOrEmpty(http::ContentEncoding));
   });
@@ -1175,7 +1175,7 @@ TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   });
 
   // Server should still be functional
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
@@ -1191,7 +1191,7 @@ TEST(SingleHttpServer, TLSConfigModificationIgnored) {
   });
 
   // Server should still work
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
@@ -1207,7 +1207,7 @@ TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {
   });
 
   // Server should still work
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
@@ -1223,7 +1223,7 @@ TEST(SingleHttpServer, DecompressionConfigurable) {
     cfg.decompression.maxDecompressedBytes = 1024;
   });
 
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     std::string body(req.body().begin(), req.body().end());
     return HttpResponse("size:" + std::to_string(body.size()));
   });
@@ -1237,7 +1237,7 @@ TEST(SingleHttpServer, DecompressionConfigurable) {
 
 // Test HEAD method doesn't send body
 TEST(SingleHttpServer, HeadMethodNoBody) {
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp("This is the body content");
     resp.headerAddLine("X-Custom", "value");
     return resp;
@@ -1255,7 +1255,7 @@ TEST(SingleHttpServer, HeadMethodNoBody) {
 
 // Test OPTIONS method
 TEST(SingleHttpServer, OptionsMethod) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1267,19 +1267,19 @@ TEST(SingleHttpServer, OptionsMethod) {
 
 // Test exception in request middleware
 TEST(SingleHttpServer, MiddlewareExceptionHandling) {
-  ts.router().addRequestMiddleware([](HttpRequest&) {
+  ts.router().addRequestMiddleware([](HttpRequestView&) {
     // Test just that adding a middleware that throws doesn't crash
     throw std::runtime_error("middleware failure");
     return MiddlewareResult::Continue();
   });
 
-  ts.router().addRequestMiddleware([](HttpRequest&) {
+  ts.router().addRequestMiddleware([](HttpRequestView&) {
     // Test just that adding a middleware that throws doesn't crash
     throw 42;
     return MiddlewareResult::Continue();
   });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("should not reach"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("should not reach"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1294,9 +1294,9 @@ TEST(SingleHttpServer, MiddlewareExceptionHandling) {
 
 TEST(SingleHttpServer, RequestMiddlewareStdExceptionInGlobalMiddleware) {
   ts.resetRouterAndGet().addRequestMiddleware(
-      [](const HttpRequest&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
+      [](const HttpRequestView&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1307,9 +1307,9 @@ TEST(SingleHttpServer, RequestMiddlewareStdExceptionInGlobalMiddleware) {
 }
 
 TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInGlobalMiddleware) {
-  ts.resetRouterAndGet().addRequestMiddleware([](const HttpRequest&) -> MiddlewareResult { throw 42; });
+  ts.resetRouterAndGet().addRequestMiddleware([](const HttpRequestView&) -> MiddlewareResult { throw 42; });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1321,12 +1321,12 @@ TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInGlobalMiddleware) {
 
 TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInGlobalMiddleware) {
   ts.resetRouterAndGet().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
+      [](const HttpRequestView&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   ts.router().setPath(http::Method::GET, "/test",
-                      [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+                      [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1336,12 +1336,12 @@ TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInGlobalMiddleware) {
 }
 
 TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInGlobalMiddleware) {
-  ts.resetRouterAndGet().addResponseMiddleware([](const HttpRequest&, HttpResponse&) { throw 42; });
+  ts.resetRouterAndGet().addResponseMiddleware([](const HttpRequestView&, HttpResponse&) { throw 42; });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   ts.router().setPath(http::Method::GET, "/test",
-                      [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+                      [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1352,8 +1352,9 @@ TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInGlobalMiddleware) {
 
 TEST(SingleHttpServer, RequestMiddlewareStdExceptionInPathMiddleware) {
   auto entry = ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
-  entry.before([](const HttpRequest&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
+      http::Method::GET, "/test", [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+  entry.before(
+      [](const HttpRequestView&) -> MiddlewareResult { throw std::runtime_error("request middleware error"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1365,8 +1366,8 @@ TEST(SingleHttpServer, RequestMiddlewareStdExceptionInPathMiddleware) {
 
 TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInPathMiddleware) {
   auto entry = ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
-  entry.before([](const HttpRequest&) -> MiddlewareResult { throw 42; });
+      http::Method::GET, "/test", [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+  entry.before([](const HttpRequestView&) -> MiddlewareResult { throw 42; });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1378,9 +1379,9 @@ TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInPathMiddleware) {
 
 TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInPathMiddleware) {
   auto entry = ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/test", [](const HttpRequest&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+      http::Method::GET, "/test", [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
 
-  entry.after([](const HttpRequest&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
+  entry.after([](const HttpRequestView&, HttpResponse&) { throw std::runtime_error("response middleware error"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1390,9 +1391,9 @@ TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInPathMiddleware) {
 }
 
 TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInPathMiddleware) {
-  auto entry =
-      ts.resetRouterAndGet().setPath(http::Method::GET, "/test", [](const HttpRequest&) { return HttpResponse("OK"); });
-  entry.after([](const HttpRequest&, HttpResponse&) { throw 42; });
+  auto entry = ts.resetRouterAndGet().setPath(http::Method::GET, "/test",
+                                              [](const HttpRequestView&) { return HttpResponse("OK"); });
+  entry.after([](const HttpRequestView&, HttpResponse&) { throw 42; });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1404,12 +1405,12 @@ TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInPathMiddleware) {
 // Test multiple response middleware
 TEST(SingleHttpServer, MultipleResponseMiddleware) {
   ts.resetRouterAndGet().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-1", "first"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-1", "first"); });
 
   ts.router().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-2", "second"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.headerAddLine("X-Middleware-2", "second"); });
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1432,7 +1433,7 @@ TEST(SingleHttpServer, EpollCtlModBenignFailure) {
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EBADF);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1451,7 +1452,7 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1468,7 +1469,7 @@ TEST(SingleHttpServer, EpollPollFailure) {
   test::SetEpollWaitActions({test::WaitError(error::kInterrupted), test::WaitError(EACCES), test::WaitError(EACCES),
                              test::WaitError(error::kInterrupted), test::WaitError(EBADF), test::WaitError(EBADF)});
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
 
   // The server may have already stopped due to injected epoll_wait errors before
   // the client can connect or send. Both outcomes are valid: the test verifies
@@ -1492,7 +1493,7 @@ TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
 
   // Keep router simple; no request is sent.
   test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
-  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());
   const int clientFd = clientConnection.fd();
@@ -1512,7 +1513,7 @@ TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
 TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
   test::EventLoopHookGuard hookGuard;
   test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
-  localTs.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());
   const int clientFd = clientConnection.fd();
@@ -1531,7 +1532,7 @@ TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
 TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
   test::EventLoopHookGuard hookGuard;
   test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
-  localTs.resetRouterAndGet().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  localTs.resetRouterAndGet().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());
   const int clientFd = clientConnection.fd();
@@ -1555,7 +1556,7 @@ TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
 // The empty data case should be a no-op and return true
 TEST(Http1WriterTransport, EmitDataEmptyIsNoOp) {
   test::TestServer localTs(TestServerConfig());
-  localTs.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  localTs.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     // Write empty data - should be silently ignored
     writer.writeBody("");
@@ -1582,7 +1583,7 @@ TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
   bool secondWriteOk = true;
 
   test::TestServer localTs(TestServerConfig());
-  localTs.router().setDefault([&firstWriteOk, &secondWriteOk](const HttpRequest&, HttpResponseWriter& writer) {
+  localTs.router().setDefault([&firstWriteOk, &secondWriteOk](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     firstWriteOk = writer.writeBody("first-chunk");
     // After the first write triggers a transport error, writeBody should return false

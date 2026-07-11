@@ -21,7 +21,7 @@
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -300,8 +300,9 @@ TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
   cfg.http2.withEnableH2c(true).withEnableH2cUpgrade(true);
   test::TestServer h2ts(std::move(cfg));
 
-  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade",
-                                   [](const HttpRequest&) { return HttpResponse("should-not-be-used-after-upgrade"); });
+  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade", [](const HttpRequestView&) {
+    return HttpResponse("should-not-be-used-after-upgrade");
+  });
 
   for (bool enableHttp2 : {false, true}) {
     h2ts.postConfigUpdate([enableHttp2](HttpServerConfig& config) { config.http2.enable = enableHttp2; });
@@ -1424,7 +1425,7 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
 TEST(Http2Async, DeferWorkBasicReturnValue) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-basic", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-basic", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Run blocking work on background thread
         int result = co_await req.deferWork([]() {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1445,7 +1446,7 @@ TEST(Http2Async, DeferWorkBasicReturnValue) {
 TEST(Http2Async, DeferWorkReturnsString) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
-                                        [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                        [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                           std::string result = co_await req.deferWork([]() -> std::string {
                                             std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                             return "computed-value";
@@ -1465,7 +1466,7 @@ TEST(Http2Async, DeferWorkReturnsString) {
 TEST(Http2Async, DeferWorkReturnsOptional) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-optional", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-optional", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 123;
@@ -1488,7 +1489,7 @@ TEST(Http2Async, DeferWorkReturnsOptional) {
 TEST(Http2Async, DeferWorkMultipleSequential) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-multi", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-multi", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         int first = co_await req.deferWork([]() {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 10;
@@ -1514,7 +1515,7 @@ TEST(Http2Async, DeferWorkMultipleSequential) {
 TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-concurrent", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-concurrent", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Sleep to ensure requests stack up before completing
         int result = co_await req.deferWork([]() {
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1557,7 +1558,7 @@ TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
 TEST(Http2Async, DeferWorkThrowsStdException) {
   test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-throw", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         try {
           (void)co_await req.deferWork([]() -> int { throw std::runtime_error("test exception"); });
           co_return HttpResponse(http::StatusCodeOK).body("should not be reached");
@@ -1584,12 +1585,12 @@ TEST(Http2Async, MiddlewareInterruptsAsyncHandlerWithCors) {
   auto router = ts.server.resetRouterAndGet();
   router
       .setPath(http::Method::GET, "/protected",
-               [](HttpRequest& req) -> RequestTask<HttpResponse> {
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                  (void)req;
                  // Should not be reached because middleware returns early.
                  co_return HttpResponse(http::StatusCodeOK).body("async-handler-reached");
                })
-      .before([](HttpRequest& req) -> MiddlewareResult {
+      .before([](HttpRequestView& req) -> MiddlewareResult {
         (void)req;
         return MiddlewareResult(HttpResponse(http::StatusCodeUnauthorized).body("interrupted-by-middleware"));
       })

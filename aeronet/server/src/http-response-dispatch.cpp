@@ -14,7 +14,7 @@
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -35,7 +35,7 @@ namespace aeronet {
 SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
@@ -68,7 +68,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
 SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                     const CorsPolicy* pCorsPolicy) {
-  HttpRequest& request = _connections.connectionState(cnxIt).request;
+  HttpRequestView& request = _connections.connectionState(cnxIt).request;
 
   // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
   // proxy bytes bidirectionally between client and upstream.
@@ -133,7 +133,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
                                                        std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequest& request = state.request;
+  HttpRequestView& request = state.request;
   if (pCorsPolicy != nullptr) {
     (void)pCorsPolicy->applyToResponse(request, resp);
   }

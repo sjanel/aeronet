@@ -22,19 +22,19 @@ class HttpClientIntegration : public ::testing::Test {
  protected:
   void SetUp() override {
     Router router;
-    router.setPath(http::Method::GET, "/echo-query", [](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/echo-query", [](const HttpRequestView& req) {
       return req.makeResponse(http::StatusCodeOK, req.queryParamValueOrEmpty("msg"), "text/plain");
     });
-    router.setPath(http::Method::POST, "/upload", [](const HttpRequest& req) {
+    router.setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
       return req.makeResponse(http::StatusCodeOK, std::to_string(req.body().size()), "text/plain");
     });
-    router.setPath(http::Method::GET, "/headers", [](const HttpRequest& req) {
+    router.setPath(http::Method::GET, "/headers", [](const HttpRequestView& req) {
       auto resp = req.makeResponse(http::StatusCodeOK, "ok", "text/plain");
       resp.headerAddLine("X-Custom", "custom-value");
       return resp;
     });
     // Streaming handler -> Transfer-Encoding: chunked on the wire.
-    router.setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
+    router.setPath(http::Method::GET, "/stream", [](const HttpRequestView&, HttpResponseWriter& writer) {
       writer.status(http::StatusCodeOK);
       writer.contentType("text/plain");
       writer.writeBody("alpha-");

@@ -7,7 +7,7 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
@@ -18,7 +18,7 @@
 namespace aeronet {
 namespace {
 
-std::string_view ResolveKey(const HttpRequest& request, const RateLimitRequestMiddlewareBuilder& options) {
+std::string_view ResolveKey(const HttpRequestView& request, const RateLimitRequestMiddlewareBuilder& options) {
   switch (options.keyStrategy) {
     case RateLimitClientKeyStrategy::PeerAddress:
       return request.clientAddress();
@@ -53,7 +53,7 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
     throw std::invalid_argument("RateLimitRequestMiddlewareBuilder.headerName must be set for HeaderValue strategy");
   }
 
-  return [opts = std::move(options)](HttpRequest& request) mutable {
+  return [opts = std::move(options)](HttpRequestView& request) mutable {
     const std::string_view key = ResolveKey(request, opts);
     if (key.empty()) {
       return MiddlewareResult::Continue();

@@ -44,7 +44,7 @@ class HttpClientTlsE2ETest : public ::testing::Test {
 
     Router router;
     router.setPath(http::Method::GET, "/secure",
-                   [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
+                   [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
 
     HttpServerConfig cfg;
     // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner.
@@ -216,7 +216,7 @@ std::unique_ptr<SingleHttpServer> MakeMtlsServer(std::string_view serverCert, st
                                                  std::string_view trustedClientCert, uint16_t& port) {
   Router router;
   router.setPath(http::Method::GET, "/secure",
-                 [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
+                 [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
 
   // Configure everything through the cfg builders: withTlsCertKeyMemory / withTlsRequireClientCert all
   // operate on cfg.tls in place. Assigning cfg.tls afterwards would wipe the mTLS settings.

@@ -8,7 +8,7 @@
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/object-pool.hpp"
@@ -133,7 +133,7 @@ struct ConnectionState {
   // exclusive).
   RawChars tunnelOrFileBuffer;
   // per-connection request object reused across dispatches
-  HttpRequest request;
+  HttpRequestView request;
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
   HttpResponseData outBuffer;

@@ -20,7 +20,7 @@
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
@@ -577,16 +577,16 @@ void MultiHttpServer::buildProbeServerIfEnabled() {
   const auto liveness = probesCfg.livenessPath();
   const auto readiness = probesCfg.readinessPath();
   const auto startup = probesCfg.startupPath();
-  probeServer._router.setPath(http::Method::GET, liveness, [probeState](const HttpRequest& req) {
+  probeServer._router.setPath(http::Method::GET, liveness, [probeState](const HttpRequestView& req) {
     const bool live = probeState->live();
     return req.makeResponse(live ? http::StatusCodeOK : http::StatusCodeServiceUnavailable, live ? "OK" : "Unhealthy");
   });
-  probeServer._router.setPath(http::Method::GET, readiness, [probeState](const HttpRequest& req) {
+  probeServer._router.setPath(http::Method::GET, readiness, [probeState](const HttpRequestView& req) {
     const bool ready = probeState->ready();
     return req.makeResponse(ready ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             ready ? "OK" : "Not Ready");
   });
-  probeServer._router.setPath(http::Method::GET, startup, [probeState](const HttpRequest& req) {
+  probeServer._router.setPath(http::Method::GET, startup, [probeState](const HttpRequestView& req) {
     const bool started = probeState->started();
     return req.makeResponse(started ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             started ? "OK" : "Starting");

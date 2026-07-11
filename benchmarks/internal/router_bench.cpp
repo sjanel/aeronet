@@ -12,7 +12,7 @@
 #include <string_view>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/vector.hpp"
@@ -26,7 +26,7 @@ using http::Method;
 std::mt19937_64 gen;
 
 // Trivial handler returning a fixed response
-HttpResponse OkHandler([[maybe_unused]] const HttpRequest& req) { return HttpResponse("OK"); }
+HttpResponse OkHandler([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("OK"); }
 
 struct MethodAndPath {
   Method method;

@@ -68,7 +68,7 @@ using namespace aeronet;
 
 int main() {
   Router router;
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
   });
   HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
@@ -84,7 +84,7 @@ When the response body size is not known upfront, or when you want to transmit t
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest& req, HttpResponseWriter& writer){
+router.setDefault([](const HttpRequestView& req, HttpResponseWriter& writer){
   writer.status(200);
   writer.header("X-Req-Path", req.path());
   writer.contentType("text/plain");
@@ -111,7 +111,7 @@ SomeAsyncAwaitable someAsyncOperation() { return {}; }
 
 int main() {
   Router router;
-  router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     // Suspend execution without blocking the thread
     auto result = co_await someAsyncOperation();
     co_return HttpResponse(200).body(result);
@@ -250,7 +250,7 @@ Consuming `aeronet` will result in the client code interacting with [handler reg
 Two approaches:
 
 1. Per method and path handlers: `router.setPath(http::Method::GET | http::Method::POST, "/hello", handler)` – exact path match.
-1. Global handler: `router.setDefault([](const HttpRequest&){ ... })` catchs all requests not matched by path handlers.
+1. Global handler: `router.setDefault([](const HttpRequestView&){ ... })` catchs all requests not matched by path handlers.
 
 Rules:
 
@@ -263,14 +263,14 @@ Example:
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequest&){
+router.setPath(http::Method::GET | http::Method::PUT, "/hello", [](const HttpRequestView&){
   return HttpResponse(200).body("world");
 });
-router.setPath(http::Method::POST, "/echo", [](const HttpRequest& req){
+router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req){
   return HttpResponse(200).body(req.body());
 });
 // Add another method later (merges method mask, replaces handler)
-router.setPath(http::Method::GET, "/echo", [](const HttpRequest& req){
+router.setPath(http::Method::GET, "/echo", [](const HttpRequestView& req){
   return HttpResponse(200).body("Echo via GET");
 });
 ```
@@ -284,7 +284,7 @@ You can also constrain a parameter inline with `{name:pattern}` (for example `/u
 ```cpp
 Router router;
 // Matches: /users/42/posts/hello
-router.setPath(http::Method::GET, "/users/{id}/posts/{name}", [](const HttpRequest& req) { 
+router.setPath(http::Method::GET, "/users/{id}/posts/{name}", [](const HttpRequestView& req) { 
   std::string_view id = req.pathParamValueOrEmpty("id"); // "42"
   std::string_view name = req.pathParamValueOrEmpty("name"); // "hello"
   return HttpResponse(200); 
@@ -294,7 +294,7 @@ router.setPath(http::Method::GET, "/users/{id}/posts/{name}", [](const HttpReque
 ```cpp
 Router router;
 // Matches: /api/v3/search-something
-router.setPath(http::Method::GET, "/api/v{}/search-{}", [](const HttpRequest& req) { 
+router.setPath(http::Method::GET, "/api/v{}/search-{}", [](const HttpRequestView& req) { 
   std::string_view version = req.pathParamValueOrEmpty("0"); // "3"
   std::string_view type = req.pathParamValueOrEmpty("1"); // "something"
   return HttpResponse(200); 
@@ -305,7 +305,7 @@ router.setPath(http::Method::GET, "/api/v{}/search-{}", [](const HttpRequest& re
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/files/*", [](const HttpRequest& req) { return HttpResponse(200); });
+router.setPath(http::Method::GET, "/files/*", [](const HttpRequestView& req) { return HttpResponse(200); });
 // Matches: /files/a.txt
 // Matches: /files/a/b.txt
 ```
@@ -314,7 +314,7 @@ At any other position in the path, `*` is the literal asterisk character. Exampl
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/glob/*/file.txt", [](const HttpRequest& req) { return HttpResponse(200); });  
+router.setPath(http::Method::GET, "/glob/*/file.txt", [](const HttpRequestView& req) { return HttpResponse(200); });  
 // Matches: /glob/*/file.txt but not /glob/a/file.txt
 ```
 
@@ -325,7 +325,7 @@ router.setPath(http::Method::GET, "/glob/*/file.txt", [](const HttpRequest& req)
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/api/{{version}}/data", [](const HttpRequest& req) { return HttpResponse(200); });
+router.setPath(http::Method::GET, "/api/{{version}}/data", [](const HttpRequestView& req) { return HttpResponse(200); });
 // Matches: /api/{version}/data (literal braces)
 ```
 
@@ -355,7 +355,7 @@ Key characteristics:
 
 ##### Memory Management & std::string_view Safety
 
-**aeronet**'s API extensively uses `std::string_view` for zero-copy performance. This is safe because each connection maintains its own buffer, and all `HttpRequest` data (path, query params, headers, body) consists of `std::string_view` instances pointing into this per-connection buffer. The buffer remains valid for the entire duration of the handler execution, making all request data safe to access without copies.
+**aeronet**'s API extensively uses `std::string_view` for zero-copy performance. This is safe because each connection maintains its own buffer, and all `HttpRequestView` data (path, query params, headers, body) consists of `std::string_view` instances pointing into this per-connection buffer. The buffer remains valid for the entire duration of the handler execution, making all request data safe to access without copies.
 
 For detailed information about buffer lifetime guarantees and best practices (especially for coroutines), see [Memory Management & std::string_view Safety](docs/FEATURES.md#memory-management--stdstring_view-safety).
 
@@ -448,7 +448,7 @@ using namespace aeronet;
 
 int main() {
   Router router;
-  router.setDefault([](const HttpRequest&){ return HttpResponse(200).body("hi"); });
+  router.setDefault([](const HttpRequestView&){ return HttpResponse(200).body("hi"); });
   SingleHttpServer srv(HttpServerConfig{}, std::move(router));
   // Launch in background thread and capture lifetime handle
   auto handle = srv.startDetached();
@@ -507,7 +507,7 @@ using namespace aeronet;
 
 int main() {
   Router router;
-  router.setDefault([](const HttpRequest& req){
+  router.setDefault([](const HttpRequestView& req){
     return HttpResponse(200).body("hello\n");
   });
   HttpServer multi(HttpServerConfig{}.withNbThreads(4), std::move(router)); // 4 underlying event loops
@@ -607,7 +607,7 @@ Example (recommended):
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/hello", [](const HttpRequest&){ return HttpResponse(200).body("hello"); });
+router.setPath(http::Method::GET, "/hello", [](const HttpRequestView&){ return HttpResponse(200).body("hello"); });
 SingleHttpServer server(HttpServerConfig{}, std::move(router));
 server.run();
 ```
@@ -622,7 +622,7 @@ Example (runtime-safe):
 SingleHttpServer server(HttpServerConfig{});
 auto handle = server.startDetached();
 // later, from another thread:
-server.router().setPath(http::Method::POST, "/upload", [](const HttpRequest&){ return HttpResponse(201); });
+server.router().setPath(http::Method::POST, "/upload", [](const HttpRequestView&){ return HttpResponse(201); });
 ```
 
 Notes:
@@ -638,7 +638,7 @@ The router expects callback functions returning a `HttpResponse`.
 You have two ways to construct a `HttpResponse`:
 
 - Direct construction thanks to its numerous constructors taking status **code**, **body** & `content-type`, **headers**, additional capacity for headers/body/trailers
-- [Optimized](#optimize-httpresponse-construction) construction from `HttpRequest::makeResponse()` that pre-applies server-global headers and other optimizations
+- [Optimized](#optimize-httpresponse-construction) construction from `HttpRequestView::makeResponse()` that pre-applies server-global headers and other optimizations
 
 You can build it thanks to the numerous provided methods to store the main components of a HTTP response (status code, reason, headers, body and trailers):
 
@@ -669,14 +669,14 @@ Usage guidelines:
 
 #### Optimize HttpResponse construction
 
-You can use `HttpRequest::makeResponse()` methods to optimize some job usually made at finalization time, directly at construction time.
+You can use `HttpRequestView::makeResponse()` methods to optimize some job usually made at finalization time, directly at construction time.
 This is especially useful when you have configured `globalHeaders` in the server config that you want to apply to all responses, as it avoids copying them again before the body (that would also shift the whole body, if inlined) at response finalization time.
 
 Example:
 
 ```cpp
 Router router;
-router.setDefault([](const HttpRequest& req) {
+router.setDefault([](const HttpRequestView& req) {
   // Pre-applies global headers from server config
   return req.makeResponse("hello\n"); // response already contains global headers (for instance: 'server: aeronet')
 });
@@ -729,7 +729,7 @@ is available for a distributed limit shared across multiple aeronet instances.
 
 ```cpp
 Router router;
-router.setPath(http::Method::GET, "/v1/data", [](const HttpRequest&) {
+router.setPath(http::Method::GET, "/v1/data", [](const HttpRequestView&) {
   return HttpResponse(200).body("ok");
 });
 
@@ -749,7 +749,7 @@ adapter contract (eval callback, key schema, script shape).
 
 Two compression layers for outbound responses:
 
-- **Direct compression** compresses inline bodies at `body()` / `bodyAppend()` call time when using `HttpRequest::makeResponse()`. Controlled per-response via `DirectCompressionMode` (`Auto` / `Off` / `On`).
+- **Direct compression** compresses inline bodies at `body()` / `bodyAppend()` call time when using `HttpRequestView::makeResponse()`. Controlled per-response via `DirectCompressionMode` (`Auto` / `Off` / `On`).
 - **Finalization compression** applies at response finalization for bodies not already compressed.
 
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
@@ -766,7 +766,7 @@ response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.m
 
 When `AERONET_ENABLE_HTTP2` is OFF, the HTTP/2 module is not built and the HTTP/2-specific API surface (e.g. `Http2Config`, `HttpServerConfig::withHttp2()`) is not available.
 
-HTTP/2 uses the same unified `HttpRequest` type as HTTP/1.1:
+HTTP/2 uses the same unified `HttpRequestView` type as HTTP/1.1:
 
 ```cpp
 #include <aeronet/aeronet.hpp>
@@ -777,7 +777,7 @@ int main() {
   Router router;
   
   // Single handler works for both HTTP/1.1 and HTTP/2
-  router.setDefault([](const HttpRequest& req) {
+  router.setDefault([](const HttpRequestView& req) {
     if (req.isHttp2()) {
       return HttpResponse{"Hello from HTTP/2! Stream: " + std::to_string(req.streamId()) + "\n"};
     }
@@ -946,7 +946,7 @@ int main() {
 
   Router router;
   // Register application handlers as usual (optional)
-  router.setPath(http::Method::GET, "/hello", [](const HttpRequest&){
+  router.setPath(http::Method::GET, "/hello", [](const HttpRequestView&){
     return HttpResponse(200).body("hello\n");
   });
 
@@ -1053,7 +1053,7 @@ cmake --build build
 
 import aeronet;
 
-using aeronet::HttpRequest;
+using aeronet::HttpRequestView;
 using aeronet::HttpResponse;
 using aeronet::HttpServer;
 using aeronet::HttpServerConfig;
@@ -1062,7 +1062,7 @@ using aeronet::http::Method;
 
 int main() {
     Router router;
-    router.setPath(Method::GET, "/hello", [](const HttpRequest& req) {
+    router.setPath(Method::GET, "/hello", [](const HttpRequestView& req) {
         return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
     });
     HttpServer server(HttpServerConfig{}, std::move(router));

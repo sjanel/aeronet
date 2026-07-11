@@ -55,14 +55,15 @@ class Http2ProtocolHandler;
 void LogAsyncCallbackPostFailure(const char* what) noexcept;
 #endif
 
-class HttpRequest {
+class HttpRequestView {
  public:
   static constexpr std::size_t kDefaultReadBodyChunk = 4096;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   class BodyChunkAwaitable {
    public:
-    BodyChunkAwaitable(HttpRequest& request, std::size_t maxBytes) noexcept : _request(request), _maxBytes(maxBytes) {}
+    BodyChunkAwaitable(HttpRequestView& request, std::size_t maxBytes) noexcept
+        : _request(request), _maxBytes(maxBytes) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return _request.isBodyReady(); }
     void await_suspend([[maybe_unused]] std::coroutine_handle<> coroutine) const noexcept {
@@ -72,13 +73,13 @@ class HttpRequest {
     [[nodiscard]] std::string_view await_resume() { return _request.readBody(_maxBytes); }
 
    private:
-    HttpRequest& _request;
+    HttpRequestView& _request;
     std::size_t _maxBytes;
   };
 
   class BodyAggregateAwaitable {
    public:
-    explicit BodyAggregateAwaitable(HttpRequest& request) noexcept : _request(request) {}
+    explicit BodyAggregateAwaitable(HttpRequestView& request) noexcept : _request(request) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return _request.isBodyReady(); }
     void await_suspend([[maybe_unused]] std::coroutine_handle<> coroutine) const noexcept {
@@ -88,7 +89,7 @@ class HttpRequest {
     [[nodiscard]] std::string_view await_resume() { return _request.body(); }
 
    private:
-    HttpRequest& _request;
+    HttpRequestView& _request;
   };
 
   // DeferredWork: awaitable for running work on a background thread and resuming in the server's event loop.
@@ -110,7 +111,7 @@ class HttpRequest {
    public:
     using WorkFn = std::function<Result()>;
 
-    DeferredWorkAwaitable(HttpRequest& request, WorkFn work) noexcept : _request(request), _work(std::move(work)) {}
+    DeferredWorkAwaitable(HttpRequestView& request, WorkFn work) noexcept : _request(request), _work(std::move(work)) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return false; }
 
@@ -151,7 +152,7 @@ class HttpRequest {
     }
 
    private:
-    HttpRequest& _request;
+    HttpRequestView& _request;
     WorkFn _work;
     Result _result{};
     std::exception_ptr _exception;
@@ -310,7 +311,7 @@ class HttpRequest {
     [[nodiscard]] iterator end() const noexcept { return {_first + _length, _first + _length}; }
 
    private:
-    friend class HttpRequest;
+    friend class HttpRequestView;
 
     QueryParamRange(const char* first, uint32_t length) noexcept : _first(first), _length(length) {}
 
@@ -546,7 +547,7 @@ class HttpRequest {
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
-  HttpRequest() noexcept = default;
+  HttpRequestView() noexcept = default;
 
   [[nodiscard]] bool wantClose() const;
 
@@ -555,7 +556,7 @@ class HttpRequest {
 
   void init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState);
 
-  // Attempts to set this HttpRequest (except body) from given ConnectionState.
+  // Attempts to set this HttpRequestView (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
   http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
@@ -614,9 +615,9 @@ class HttpRequest {
 
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
   struct BodyAccessBridge {
-    using AggregateFn = std::string_view (*)(HttpRequest&, void* context);
-    using ReadChunkFn = std::string_view (*)(HttpRequest&, void* context, std::size_t maxBytes);
-    using HasMoreFn = bool (*)(const HttpRequest&, void* context);
+    using AggregateFn = std::string_view (*)(HttpRequestView&, void* context);
+    using ReadChunkFn = std::string_view (*)(HttpRequestView&, void* context, std::size_t maxBytes);
+    using HasMoreFn = bool (*)(const HttpRequestView&, void* context);
 
     AggregateFn aggregate{nullptr};
     ReadChunkFn readChunk{nullptr};

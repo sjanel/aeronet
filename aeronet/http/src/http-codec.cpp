@@ -22,7 +22,7 @@
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -646,8 +646,8 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
 
 RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
                                                                  const DecompressionConfig& decompressionConfig,
-                                                                 HttpRequest& request, RawChars& bodyAndTrailersBuffer,
-                                                                 RawChars& tmpBuffer) {
+                                                                 HttpRequestView& request,
+                                                                 RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
   if (!decompressionConfig.enable) {
     return {};
   }
@@ -734,7 +734,7 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
 
 RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompressionState& decompressionState,
                                                             const DecompressionConfig& decompressionConfig,
-                                                            HttpRequest& request,
+                                                            HttpRequestView& request,
                                                             std::span<const std::string_view> compressedChunks,
                                                             std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
                                                             RawChars& tmpBuffer) {

@@ -41,7 +41,7 @@ class Http1WriterTransport final : public IWriterTransport {
         _pCorsPolicy(pCorsPolicy),
         _routeResponseMiddleware(routeResponseMiddleware) {}
 
-  bool emitHeaders(HttpResponse& response, const HttpRequest& request, [[maybe_unused]] bool compressionActivated,
+  bool emitHeaders(HttpResponse& response, const HttpRequestView& request, [[maybe_unused]] bool compressionActivated,
                    [[maybe_unused]] Encoding compressionFormat, std::size_t declaredLength, bool isHead) override {
     const bool chunked = !isHead && (declaredLength == 0) && !response.hasBodyFile();
 
