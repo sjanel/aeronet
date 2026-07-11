@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -14,9 +13,9 @@
 #include <string_view>
 
 #include "aeronet/client-connection.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/headers-view-map.hpp"
+#include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
@@ -24,6 +23,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
@@ -33,16 +33,12 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/url.hpp"
-#include "client-request-builder.hpp"
-#include "http-client-codec.hpp"
 
 namespace aeronet::internal {
 
@@ -288,7 +284,7 @@ class Http2ClientEngine {
       if (CaseInsensitiveEqual(name, http::ContentLength)) {
         continue;
       }
-      _resp->rawHeader(name, value);
+      _resp->headerAddLineUnchecked(name, value);
     }
     if (endStream) {
       _responseComplete = true;  // response (or its trailers block) carried END_STREAM
@@ -345,50 +341,27 @@ void ClientConnection::reset() noexcept {
 
 bool ClientConnection::canTakeAnotherStream() const noexcept { return _type != Type::Http2 || _h2->reusable(); }
 
-std::string_view ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, const Url& url,
-                                                            const ClientRequest& req, http::Method method,
-                                                            bool dropBody) {
-  const HttpClientConfig& config = client.config();
+void ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, const HttpRequest& req) {
   RawChars& out = client.requestBuffer();
   out.clear();
 
-  const std::string_view methodStr = http::MethodToStr(method);
-  const std::string_view scheme = url.scheme();
-  const std::string_view target = url.target();
-  const std::string_view hostStr = url.host();
-  // The host is stored unbracketed even for IPv6 literals; :authority needs the brackets back.
-  const bool hostIsIpv6 = hostStr.contains(':');
-  const std::string_view userAgent = config.userAgent();
+  const std::string_view methodStr = http::MethodToStr(req.method());
+  const std::string_view scheme = req.scheme();
+  const std::string_view target = req.target();
 
   // Single scan of the user headers, then derive the injection decisions -- shared with (and identical to)
   // the HTTP/1.1 builder. An explicit Host becomes the :authority value.
-  const RequestHeaderScan scan = ScanRequestHeaders(req.headers());
-  const std::string_view authorityOverride = scan.host;
-  const bool addUserAgent = !userAgent.empty() && !scan.hasUserAgent;
-  const std::string_view acceptEncoding = ResolveAcceptEncoding(config, scan.hasAcceptEncoding);
-  const bool addAcceptEncoding = !acceptEncoding.empty();
-
-  // Optional outbound compression of a large request body (opt-in), identical policy to HTTP/1.1. On
-  // success `contentEncoding` becomes non-empty and `body` points at the codec's reusable buffer.
-  std::string_view contentEncoding;
-  std::string_view body = maybeCompressRequestBody(client, dropBody ? std::string_view{} : req.body(),
-                                                   scan.hasContentEncoding, scan.hasTransferEncoding, contentEncoding);
+  const std::string_view authorityOverride = req.hostHeaderValue();
 
   // Headers a request must not carry in HTTP/2 (connection-specific, RFC 9113 §8.2.2) are dropped, as is
   // Host (carried as :authority). TE survives only as "TE: trailers". Content-Type / Content-Length are
   // dropped on a redirect rewrite to GET, and Content-Length is rewritten when the body was compressed.
-  const bool compressed = !contentEncoding.empty();
-  const auto skipHeader = [dropBody, compressed](std::string_view name, std::string_view value) {
+  const auto skipHeader = [](std::string_view name, std::string_view value) {
     return CaseInsensitiveEqual(name, http::Host) || CaseInsensitiveEqual(name, http::Connection) ||
            CaseInsensitiveEqual(name, "keep-alive") || CaseInsensitiveEqual(name, "proxy-connection") ||
            CaseInsensitiveEqual(name, http::TransferEncoding) || CaseInsensitiveEqual(name, http::Upgrade) ||
-           (CaseInsensitiveEqual(name, http::TE) && !CaseInsensitiveEqual(value, "trailers")) ||
-           ((dropBody || compressed) && CaseInsensitiveEqual(name, http::ContentLength)) ||
-           (dropBody && CaseInsensitiveEqual(name, http::ContentType));
+           (CaseInsensitiveEqual(name, http::TE) && !CaseInsensitiveEqual(value, "trailers"));
   };
-
-  const auto bodySz = body.size();
-  const auto ndigitsBodySz = ndigits(bodySz);
 
   // First pass: exact byte count of the flat "name: value\r\n" block -- ONE allocation.
   constexpr std::size_t kLineOverhead = http::HeaderSep.size() + http::CRLF.size();
@@ -396,21 +369,11 @@ std::string_view ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, 
                            http::PseudoHeaderScheme.size() + scheme.size() + kLineOverhead +
                            http::PseudoHeaderAuthority.size() + kLineOverhead + http::PseudoHeaderPath.size() +
                            target.size() + kLineOverhead;
-  neededSize += authorityOverride.empty() ? AuthorityLen(url, hostIsIpv6) : authorityOverride.size();
+  neededSize += authorityOverride.size();
   for (const auto& [name, value] : req.headers()) {
     if (!skipHeader(name, value)) {
       neededSize += name.size() + value.size() + kLineOverhead;
     }
-  }
-  if (addUserAgent) {
-    neededSize += http::UserAgent.size() + userAgent.size() + kLineOverhead;
-  }
-  if (addAcceptEncoding) {
-    neededSize += http::AcceptEncoding.size() + acceptEncoding.size() + kLineOverhead;
-  }
-  if (compressed) {
-    neededSize += http::ContentEncoding.size() + contentEncoding.size() + kLineOverhead;
-    neededSize += http::ContentLength.size() + ndigitsBodySz + kLineOverhead;
   }
 
   out.ensureAvailableCapacity(neededSize);
@@ -432,7 +395,7 @@ std::string_view ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, 
   pEnd = Append(http::CRLF, pEnd);
 
   appendName(http::PseudoHeaderAuthority);
-  pEnd = authorityOverride.empty() ? AppendAuthority(pEnd, url, hostIsIpv6) : Append(authorityOverride, pEnd);
+  pEnd = Append(authorityOverride, pEnd);
   pEnd = Append(http::CRLF, pEnd);
 
   appendName(http::PseudoHeaderPath);
@@ -451,31 +414,11 @@ std::string_view ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, 
     pEnd = Append(value, pEnd);
     pEnd = Append(http::CRLF, pEnd);
   }
-  if (addUserAgent) {
-    appendName(http::UserAgent);
-    pEnd = Append(userAgent, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-  }
-  if (addAcceptEncoding) {
-    appendName(http::AcceptEncoding);
-    pEnd = Append(acceptEncoding, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-  }
-  if (compressed) {
-    appendName(http::ContentEncoding);
-    pEnd = Append(contentEncoding, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-    appendName(http::ContentLength);
-    pEnd = std::to_chars(pEnd, pEnd + ndigitsBodySz, bodySz).ptr;
-    pEnd = Append(http::CRLF, pEnd);
-  }
   out.setSize(static_cast<std::size_t>(pEnd - out.data()));
-  return body;
 }
 
 HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                                    const Url& url, const ClientRequest& req, http::Method method,
-                                                    bool dropBody, SteadyClock::time_point ioDeadline,
+                                                    const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
   assert(_h2 != nullptr);
   Http2ClientEngine& engine = *_h2;
@@ -493,11 +436,15 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   bodyBuf.clear();  // reuse the buffer's allocation across requests
   const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes);
 
-  const std::string_view body = buildHeaderBlockForHttp2(client, url, req, method, dropBody);
+  buildHeaderBlockForHttp2(client, req);
+
+  // TODO: what about file bodies ?
+  std::string_view body = req.bodyInMemory();
+
   const http2::ErrorCode headersErr =
       conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), body.empty());
   if (headersErr != http2::ErrorCode::NoError) {
-    log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, url.originKey(),
+    log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(),
                http2::ErrorCodeName(headersErr));
     engine.endExchange();
     return std::unexpected(HttpClientErrc::connectionClosed);
@@ -582,9 +529,9 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
       const std::string_view respEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
       if (!respEncoding.empty()) {
         std::string_view decoded;
-        const auto decodeRes = HttpCodec::DecompressFullBody(client.codec().decompressionState, config.decompression,
-                                                             respEncoding, bodyView, client.codec().decompressOut,
-                                                             client.codec().decompressTmp, decoded);
+        const auto decodeRes =
+            HttpCodec::DecompressFullBody(client._codec.decompressionState, config.decompression, respEncoding,
+                                          bodyView, client._codec.decompressOut, client._codec.decompressTmp, decoded);
         if (decodeRes.status != http::StatusCodeOK) {
           return std::unexpected(HttpClientErrc::malformedResponse);
         }

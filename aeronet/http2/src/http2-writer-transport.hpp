@@ -43,7 +43,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     response.finalizeForHttp2();
 
     // Finalize Date header (same as sendResponse path)
-    WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
+    WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.dateHeaderStartPos());
 
     // Determine END_STREAM: headers-only response if HEAD request, or no body expected and no trailers.
     // For streaming, we generally do NOT set END_STREAM on HEADERS because body follows.

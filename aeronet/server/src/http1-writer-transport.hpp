@@ -48,19 +48,19 @@ class Http1WriterTransport final : public IWriterTransport {
     // Add Connection: close if requested
     if (_requestConnClose && !_connCloseEmitted) {
       response.headerAddLineUnchecked(http::Connection, http::close);
-      response._opts.close(false);
+      response._opts.resetClose();
       _connCloseEmitted = true;
     }
 
     // Transfer-Encoding or Content-Length header
     if (chunked) {
-      const std::size_t needed = HttpResponse::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
+      const std::size_t needed = http::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
       response._data.ensureAvailableCapacity(needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
       _chunked = true;
     } else if (!response.hasBodyFile()) {
       const auto declaredLengthIntegralLen = nchars(declaredLength);
-      const std::size_t needed = HttpResponse::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
+      const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
       response._data.ensureAvailableCapacity(needed);
       char declaredLenBuf[std::numeric_limits<decltype(declaredLength)>::digits10 + 1];
       std::string_view declaredLenStr(

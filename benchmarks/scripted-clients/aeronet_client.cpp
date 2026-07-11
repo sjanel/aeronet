@@ -8,10 +8,10 @@
 #include <string>
 
 #include "aeronet/client-protocol.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "bench-client-harness.hpp"
 
 namespace {
@@ -41,8 +41,8 @@ class AeronetSession {
   AeronetSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
       : _client(MakeConfig(cfg, spec)),
         _spec(spec),
-        _request(spec.method == "POST" ? aeronet::http::Method::POST : aeronet::http::Method::GET,
-                 cfg.baseUrl + spec.path) {
+        _request(_client.makeRequest(spec.method == "POST" ? aeronet::http::Method::POST : aeronet::http::Method::GET,
+                                     cfg.baseUrl + spec.path)) {
     for (const auto& [name, value] : spec.requestHeaders) {
       _request.headerAddLine(name, value);
     }
@@ -65,7 +65,7 @@ class AeronetSession {
  private:
   aeronet::HttpClient _client;
   const ScenarioSpec& _spec;
-  aeronet::ClientRequest _request;  // built once, reused across requests
+  aeronet::HttpRequest _request;  // built once, reused across requests
 };
 
 }  // namespace

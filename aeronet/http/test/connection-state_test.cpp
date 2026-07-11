@@ -68,7 +68,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
 TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
   ConnectionState state;
   state.closeMode = ConnectionState::CloseMode::DrainThenClose;
-  state.outBuffer.append(std::string_view{"test"});
+  state.outBuffer.append(HttpMessageData{"test"});
   EXPECT_FALSE(state.canCloseConnectionForDrain());
   state.outBuffer.clear();
   state.tunnelOrFileBuffer.append("data");

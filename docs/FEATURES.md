@@ -497,7 +497,7 @@ Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
 
 Responses created via `HttpRequestView::makeResponse()` gain an earlier compression layer called **direct
 compression**: the body is compressed inline as `body()` / `bodyAppend()` calls are made, *before* finalization.
-This eliminates the need for a compression pass at finalization time (`TryCompressResponse`) for eligible
+This eliminates the need for a compression pass at finalization time (`TryCompressBody`) for eligible
 inline bodies, reducing latency and memory copies.
 
 **Two-layer compression model:**
@@ -505,7 +505,7 @@ inline bodies, reducing latency and memory copies.
 | Layer | When | Scope |
 |-------|------|-------|
 | Direct compression | At `body()` / `bodyAppend()` call time | Inline (non-captured) bodies only |
-| Finalization compression | At response finalization (TryCompressResponse) | Captured and inline bodies not already compressed |
+| Finalization compression | At response finalization (TryCompressBody) | Captured and inline bodies not already compressed |
 
 Direct compression only activates when **all** conditions are met:
 
@@ -552,7 +552,7 @@ router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequestVie
   headers reflect the uncompressed body size and no `Content-Encoding` is added. A future
   configuration option may allow matching GET headers if needed.
 - Appending via `bodyAppend()` feeds additional chunks to the active encoder.
-- If direct compression is active, the finalization layer (`TryCompressResponse`) sees the existing
+- If direct compression is active, the finalization layer (`TryCompressBody`) sees the existing
   `Content-Encoding` header and skips, preventing double compression.
 - The `bodyInlineAppend()` template works with direct compression: it writes through the active encoder
   via `appendEncodedInlineOrThrow()`.

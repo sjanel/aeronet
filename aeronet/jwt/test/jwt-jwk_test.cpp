@@ -3,6 +3,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/base64url.hpp"
 #include "aeronet/jwks.hpp"

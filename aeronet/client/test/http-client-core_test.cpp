@@ -18,7 +18,6 @@
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/client-protocol.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
@@ -26,7 +25,9 @@
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/native-handle.hpp"
@@ -35,7 +36,6 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/test_server_fixture.hpp"
-#include "aeronet/tls-config.hpp"
 
 #ifdef AERONET_POSIX
 #include <netinet/in.h>
@@ -180,10 +180,9 @@ TEST_F(HttpClientE2ETest, SurfacesReservedResponseHeadersLosslessly) {
   HttpClient client;
   auto resp = client.get(Url("/hello")).value();
   EXPECT_EQ(resp.status(), 200);
-  // aeronet always emits Date / Server. Date is reserved on the response-building side, yet the
-  // client must surface it verbatim on a received response (lossless via rawHeader()).
-  EXPECT_FALSE(resp.headerValueOrEmpty("date").empty());
-  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  // aeronet always emits Date / Server.
+  EXPECT_FALSE(resp.headerValueOrEmpty(http::Date).empty());
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Server), "aeronet");
 }
 
 TEST_F(HttpClientE2ETest, PostEchoesBody) {
@@ -196,10 +195,19 @@ TEST_F(HttpClientE2ETest, PostEchoesBody) {
 
 TEST_F(HttpClientE2ETest, HeadHasNoBody) {
   HttpClient client;
-  ClientRequest req(http::Method::HEAD, Url("/hello"));
+  auto req = client.makeRequest(http::Method::HEAD, Url("/hello"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+TEST_F(HttpClientE2ETest, MakeRequestWithConcatenatedGlobalHeaders) {
+  HttpClient client;
+  auto req = client.makeRequest(512, http::Method::GET, Url("/hello"), "");
+  EXPECT_GT(req.capacityInlined(), 512);
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
 }
 
 TEST_F(HttpClientE2ETest, FollowsRedirect) {
@@ -207,6 +215,34 @@ TEST_F(HttpClientE2ETest, FollowsRedirect) {
   auto resp = client.get(Url("/redirect")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, CrossOriginRedirectRetargetsRequestAndHost) {
+  Router destinationRouter;
+  destinationRouter.setPath(http::Method::GET, "/landed", [](const HttpRequestView& req) {
+    return req.makeResponse(http::StatusCodeOK, req.headerValueOrEmpty(http::Host), "text/plain");
+  });
+  SingleHttpServer destinationServer(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
+                                     std::move(destinationRouter));
+  const uint16_t destinationPort = destinationServer.port();
+  destinationServer.start();
+
+  const std::string destinationUrl = "http://127.0.0.1:" + std::to_string(destinationPort) + "/landed";
+  Router redirectRouter;
+  redirectRouter.setPath(http::Method::GET, "/start", [destinationUrl](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeFound);
+    resp.location(destinationUrl);
+    return resp;
+  });
+  SingleHttpServer redirectServer(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
+                                  std::move(redirectRouter));
+  const uint16_t redirectPort = redirectServer.port();
+  redirectServer.start();
+
+  HttpClient client;
+  auto resp = client.get("http://127.0.0.1:" + std::to_string(redirectPort) + "/start").value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "127.0.0.1:" + std::to_string(destinationPort));
 }
 
 TEST_F(HttpClientE2ETest, RedirectDisabledReturns3xx) {
@@ -247,9 +283,8 @@ TEST_F(HttpClientE2ETest, ConnectionCloseStillWorks) {
 
 TEST_F(HttpClientE2ETest, InvalidUrlReturnsError) {
   HttpClient client;
-  auto result = client.get("not-a-url");
-  ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
+  EXPECT_THROW(client.get("not-a-url"), std::invalid_argument);
 }
 
 TEST_F(HttpClientE2ETest, ConnectionRefusedReturnsError) {
@@ -273,7 +308,7 @@ TEST_F(HttpClientE2ETest, CustomRequestHeaderIsSent) {
   HttpClient client;
   // The /echo route echoes the body; here we just assert a custom header does not break the round-trip
   // and that an explicit Host override is honoured by the builder.
-  ClientRequest req(http::Method::GET, Url("/hello"));
+  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
   req.headerAddLine("X-Test", "1").header("User-Agent", "custom-agent/1.0");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -284,7 +319,7 @@ TEST_F(HttpClientE2ETest, SeeOtherRewritesPostToGetAndDropsBody) {
   HttpClient client;
   // POST with a body + a custom header -> 303 -> GET /hello with the body (and its CT/CL) dropped but the
   // user header preserved (exercises the redirect "dropBody" header-rewrite path).
-  ClientRequest req(http::Method::POST, Url("/see-other"));
+  auto req = client.makeRequest(http::Method::POST, Url("/see-other"));
   req.body("discarded-payload", "text/plain").headerAddLine("X-Keep", "kept");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -294,7 +329,7 @@ TEST_F(HttpClientE2ETest, SeeOtherRewritesPostToGetAndDropsBody) {
 TEST_F(HttpClientE2ETest, BodylessPostSendsContentLengthZero) {
   HttpClient client;
   // A POST without any body still frames correctly: the builder injects "Content-Length: 0".
-  ClientRequest req(http::Method::POST, Url("/echo"));
+  auto req = client.makeRequest(http::Method::POST, Url("/echo"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());
@@ -358,7 +393,7 @@ TEST_F(HttpClientE2ETest, ZeroIdlePoolDropsConnection) {
 TEST_F(HttpClientE2ETest, BodylessPutSendsContentLengthZero) {
   HttpClient client;
   // A PUT without a body still frames correctly: the builder injects "Content-Length: 0".
-  ClientRequest req(http::Method::PUT, Url("/put"));
+  auto req = client.makeRequest(http::Method::PUT, Url("/put"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());
@@ -367,7 +402,7 @@ TEST_F(HttpClientE2ETest, BodylessPutSendsContentLengthZero) {
 TEST_F(HttpClientE2ETest, BodylessPatchSendsContentLengthZero) {
   HttpClient client;
   // PATCH is also a body-bearing method, so an empty PATCH is framed with "Content-Length: 0".
-  ClientRequest req(http::Method::PATCH, Url("/patch"));
+  auto req = client.makeRequest(http::Method::PATCH, Url("/patch"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());
@@ -450,23 +485,15 @@ TEST_F(HttpClientE2ETest, ClearIdleConnectionsDropsRegisteredPooledFd) {
 
 // --- Request-builder header injection decisions -----------------------------
 
-// A user-supplied Host header suppresses the auto-injected one and is sent verbatim (the builder emits the
+// A user-supplied Host header replaces the auto-injected one and is sent verbatim (the builder emits the
 // user's Host rather than deriving it from the URL authority).
 TEST_F(HttpClientE2ETest, ExplicitHostHeaderSuppressesInjected) {
   HttpClient client;
-  ClientRequest req(http::Method::GET, Url("/reflect"));
+  auto req = client.makeRequest(http::Method::GET, Url("/reflect"));
   req.header("Host", "custom-authority.example:1234");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.headerValueOrEmpty("echo-host"), "custom-authority.example:1234");
-}
-
-// An empty configured User-Agent suppresses the User-Agent header entirely (no empty line emitted).
-TEST_F(HttpClientE2ETest, EmptyUserAgentConfigOmitsHeader) {
-  HttpClient client(HttpClientConfig{}.withUserAgent(""));
-  auto resp = client.get(Url("/reflect")).value();
-  EXPECT_EQ(resp.status(), 200);
-  EXPECT_EQ(resp.headerValueOrEmpty("echo-ua-present"), "no");
 }
 
 // With keep-alive off the builder would inject "Connection: close"; a user-supplied Connection header
@@ -475,7 +502,7 @@ TEST_F(HttpClientE2ETest, ExplicitConnectionHeaderWithKeepAliveOff) {
   HttpClientConfig cfg;
   cfg.keepAlive = false;
   HttpClient client(cfg);
-  ClientRequest req(http::Method::GET, Url("/reflect"));
+  auto req = client.makeRequest(http::Method::GET, Url("/reflect"));
   req.header("Connection", "close");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -486,7 +513,7 @@ TEST_F(HttpClientE2ETest, ExplicitConnectionHeaderWithKeepAliveOff) {
 // are neither GET nor HEAD, so a HEAD request is redirected as HEAD (body stays absent).
 TEST_F(HttpClientE2ETest, HeadFollowsRedirectWithoutMethodRewrite) {
   HttpClient client;
-  ClientRequest req(http::Method::HEAD, Url("/redirect"));  // 302 -> /hello
+  auto req = client.makeRequest(http::Method::HEAD, Url("/redirect"));  // 302 -> /hello
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());  // HEAD: no body on the final response either
@@ -613,9 +640,9 @@ TEST_F(HttpClientCacheE2ETest, HeadCachedSeparatelyFromGet) {
 
 TEST_F(HttpClientCacheE2ETest, DistinctRequestHeadersAreDistinctEntries) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
-  ClientRequest reqA(http::Method::GET, Url("/counter"));
+  auto reqA = client.makeRequest(http::Method::GET, Url("/counter"));
   reqA.header("X-Tenant", "a");
-  ClientRequest reqB(http::Method::GET, Url("/counter"));
+  auto reqB = client.makeRequest(http::Method::GET, Url("/counter"));
   reqB.header("X-Tenant", "b");
 
   EXPECT_EQ(client.request(reqA).value().bodyInMemory(), "1");
@@ -887,6 +914,95 @@ TEST(HttpClientErrcTest, UnknownCodeFallsBack) {
   EXPECT_EQ(ErrcToStr(static_cast<HttpClientErrc>(0xFF)), "unknown error");
 }
 
+// --- Request trailers -------------------------------------------------------
+// Trailers on an HTTP request are rare but valid (RFC 7230 section 4.1.2): they ride after a chunked body.
+// The client transforms the request to Transfer-Encoding: chunked when a trailer is attached (after the
+// body). The server parses them and the /trailer-echo route reflects them back so we can observe them.
+
+namespace {
+
+class HttpClientTrailerE2ETest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto router = ts.resetRouterAndGet();
+    // Reflect the received body and trailers: the response body is the decoded request body; the observed
+    // trailer values and count are echoed as response headers.
+    router.setPath(http::Method::POST | http::Method::PUT, "/trailer-echo", [](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK, req.body(), "text/plain");
+      resp.header("echo-checksum", req.trailerValueOrEmpty("x-checksum"));
+      resp.header("echo-signature", req.trailerValueOrEmpty("x-signature"));
+      resp.header("echo-trailer-count", req.trailers().size());
+      return resp;
+    });
+  }
+
+  [[nodiscard]] static std::string Url(std::string_view path) {
+    return "http://127.0.0.1:" + std::to_string(port) + std::string(path);
+  }
+};
+
+}  // namespace
+
+// A single request trailer rides after the (chunked) body and is surfaced to the server handler.
+TEST_F(HttpClientTrailerE2ETest, SendsSingleRequestTrailer) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
+  req.body("payload-data", "text/plain").trailerAddLine("x-checksum", "abc123");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "payload-data");  // body round-trips through chunked framing
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "abc123");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+}
+
+// Multiple trailers are all delivered after the chunked body.
+TEST_F(HttpClientTrailerE2ETest, SendsMultipleRequestTrailers) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::PUT, Url("/trailer-echo"));
+  req.body("second-payload", "text/plain")
+      .trailerAddLine("x-checksum", "deadbeef")
+      .trailerAddLine("x-signature", "sig-42");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "second-payload");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "deadbeef");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-signature"), "sig-42");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "2");
+}
+
+// The chunked+trailer request must be fully framed so the connection stays reusable: a plain request right
+// after a trailered one (on the same client) must frame and parse cleanly, whether or not the connection is
+// pooled. Also guards against request trailers leaking into the next request's server-side view.
+TEST_F(HttpClientTrailerE2ETest, ReusableAfterTraileredRequest) {
+  for (const bool keepAlive : {true, false}) {
+    HttpClientConfig cfg;
+    cfg.keepAlive = keepAlive;
+    HttpClient client(cfg);
+    auto first = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
+    first.body("with-trailer", "text/plain").trailerAddLine("x-checksum", "c1");
+    auto r1 = client.request(first).value();
+    EXPECT_EQ(r1.status(), 200);
+    EXPECT_EQ(r1.headerValueOrEmpty("echo-checksum"), "c1") << "keepAlive=" << keepAlive;
+
+    // A second, trailerless request frames as a normal Content-Length body and carries no trailers.
+    auto r2 = client.post(Url("/trailer-echo"), "no-trailer", "text/plain").value();
+    EXPECT_EQ(r2.status(), 200);
+    EXPECT_EQ(r2.bodyInMemory(), "no-trailer") << "keepAlive=" << keepAlive;
+    EXPECT_EQ(r2.headerValueOrEmpty("echo-trailer-count"), "0") << "keepAlive=" << keepAlive;
+  }
+}
+
+// A trailer with an empty value is still transmitted (present with an empty value, distinct from absent).
+TEST_F(HttpClientTrailerE2ETest, TrailerWithEmptyValue) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
+  req.body("body", "text/plain").trailerAddLine("x-checksum", "");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "");
+}
+
 namespace {
 
 // Wait until `fd` is readable (or timeoutMs elapses); poll on POSIX, select on Windows.
@@ -1145,7 +1261,7 @@ TEST(HttpClientProxyE2ETest, HttpOriginUsesAbsoluteFormRequestTarget) {
 
   const std::string head = proxy.capturedHead();
   EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234/path?x=1 HTTP/1.1\r\n")) << head;
-  EXPECT_NE(head.find("Host: origin.invalid:1234\r\n"), std::string::npos) << head;
+  EXPECT_NE(head.find("host: origin.invalid:1234\r\n"), std::string::npos) << head;
   EXPECT_EQ(proxy.connectCount(), 0);  // plain http never issues CONNECT
 }
 
@@ -1756,7 +1872,8 @@ TEST(HttpClientErrorE2ETest, ZeroMaxAttemptsTreatedAsSingleAttempt) {
   EXPECT_EQ(result->status(), 200);
 }
 
-// An IPv6 literal authority must be bracketed in the Host header: "Host: [::1]:<port>", never "::1:<port>".
+// An IPv6 literal authority must be bracketed in the Host header: "host: [::1]:<port>", never "::1:<port>".
+// (aeronet emits header names in their lowercase form, valid per RFC 7230 as field names are case-insensitive.)
 TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   std::mutex mtx;
   std::string capturedHead;
@@ -1778,7 +1895,7 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   EXPECT_EQ(client.get(url).value().status(), 200);
 
   const std::scoped_lock lock(mtx);
-  const std::string expected = "Host: [::1]:" + std::to_string(server.port()) + "\r\n";
+  const std::string expected = "host: [::1]:" + std::to_string(server.port()) + "\r\n";
   EXPECT_NE(capturedHead.find(expected), std::string::npos) << "request head was:\n" << capturedHead;
 }
 
@@ -1836,7 +1953,6 @@ TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
 
 TEST(HttpClientConfigTest, DefaultsAreSane) {
   HttpClientConfig cfg;
-  EXPECT_EQ(cfg.userAgent(), "aeronet-client");
   EXPECT_TRUE(cfg.defaultAcceptEncoding().empty());
   EXPECT_TRUE(cfg.followRedirects);
   EXPECT_TRUE(cfg.keepAlive);
@@ -1863,12 +1979,10 @@ TEST(HttpClientConfigTest, WithRetryBuilder) {
 
 TEST(HttpClientConfigTest, FluentSettersAreChainable) {
   HttpClientConfig cfg;
-  cfg.withUserAgent("my-agent/2.0")
-      .withDefaultAcceptEncoding("gzip")
+  cfg.withDefaultAcceptEncoding("gzip")
       .withTcpNoDelayMode(TcpNoDelayMode::Disabled)
       .withKeepAliveTimeout(std::chrono::seconds{5})
       .withMaxCapturedRequestBodyBytes(2048);
-  EXPECT_EQ(cfg.userAgent(), "my-agent/2.0");
   EXPECT_EQ(cfg.defaultAcceptEncoding(), "gzip");
   EXPECT_EQ(cfg.tcpNoDelay, TcpNoDelayMode::Disabled);
   EXPECT_EQ(cfg.keepAliveTimeout, std::chrono::seconds{5});
@@ -1925,7 +2039,6 @@ TEST(HttpClientConfigTest, DefaultRequestEncodingMatchesBuild) {
 TEST(HttpClientConfigTest, ConstructionValidatesCodecConfig) {
   // Valid default config constructs fine and exposes its config back.
   HttpClient ok;
-  EXPECT_EQ(ok.config().userAgent(), "aeronet-client");
   ok.clearIdleConnections();  // no-op on a fresh client, but exercises the accessor
 
   // Encoding::none simply means "request compression disabled": it constructs fine (no longer an error).

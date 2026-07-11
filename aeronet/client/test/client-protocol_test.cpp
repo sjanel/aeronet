@@ -24,9 +24,4 @@ TEST(ClientProtocolTest, FromAlpnIdUnknownOrEmptyFallsBackToHttp11) {
   EXPECT_EQ(ClientProtocolFromAlpnId(ToAlpnId(ClientProtocol::Http2)), ClientProtocol::Http2);
 }
 
-TEST(ClientProtocolTest, Multiplexing) {
-  EXPECT_FALSE(ProtocolSupportsMultiplexing(ClientProtocol::Http1_1));
-  EXPECT_TRUE(ProtocolSupportsMultiplexing(ClientProtocol::Http2));
-}
-
 }  // namespace aeronet

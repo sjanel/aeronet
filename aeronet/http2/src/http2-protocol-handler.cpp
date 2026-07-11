@@ -960,7 +960,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
   FilePayload* pFilePayload = response.filePayloadPtr();
 
   // finalize Date header
-  WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.headersStartPos());
+  WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.dateHeaderStartPos());
 
   const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pServerConfig->globalHeaders;
 

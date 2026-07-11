@@ -12,8 +12,8 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec-result.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -86,8 +86,8 @@ class HttpCodec {
   // (either because the encoding is not supported, or because compression failed or did not meet config thresholds). On
   // true return, the response is modified in-place with the compressed body and appropriate headers. On false return,
   // the response is left unmodified.
-  static CompressResponseResult TryCompressResponse(CompressionState& compressionState, Encoding encoding,
-                                                    HttpResponse& resp);
+  static CompressResponseResult TryCompressBody(CompressionState& compressionState, Encoding encoding,
+                                                HttpMessage& msg);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(DecompressionState& decompressionState,
@@ -126,13 +126,6 @@ class HttpCodec {
                                                        std::string_view contentEncoding,
                                                        std::string_view compressedBody, RawChars& outBuffer,
                                                        RawChars& tmpBuffer, std::string_view& outDecompressed);
-
-  /// Compress a fully-contiguous body with the given (compiled-in) encoding into outBuffer. Returns a view
-  /// of the compressed bytes when compression succeeded and fit within `maxCompressedBytes` (the ratio
-  /// guard), or an empty view otherwise (encoder error, or compression was not beneficial enough) in which
-  /// case the caller should send the body uncompressed. Reuses the server's response encoders.
-  static std::string_view CompressFullBody(CompressionState& compressionState, Encoding encoding, std::string_view data,
-                                           std::size_t maxCompressedBytes, RawChars& outBuffer);
 };
 
 }  // namespace aeronet::internal
