@@ -314,7 +314,3 @@ add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benc
 if(AERONET_ENABLE_HTTP_CLIENT)
   add_subdirectory(${AERONET_BENCH_ROOT}/scripted-clients ${CMAKE_BINARY_DIR}/benchmarks/scripted-clients)
 endif()
-
-# TechEmpower Framework Benchmarks
-# Separate builds for official TechEmpower submission
-add_subdirectory(${AERONET_BENCH_ROOT}/techempower/aeronet ${CMAKE_BINARY_DIR}/benchmarks/techempower/aeronet)
