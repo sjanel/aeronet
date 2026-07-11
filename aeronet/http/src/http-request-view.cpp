@@ -1,4 +1,4 @@
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -56,14 +56,14 @@ void LogAsyncCallbackPostFailure(const char* what) noexcept {
 }
 #endif
 
-void HttpRequest::QueryParamRange::iterator::advance() {
+void HttpRequestView::QueryParamRange::iterator::advance() {
   _begKey = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
   if (_begKey != _endFullQuery) {
     ++_begKey;
   }
 }
 
-HttpRequest::QueryParam HttpRequest::QueryParamRange::iterator::operator*() const {
+HttpRequestView::QueryParam HttpRequestView::QueryParamRange::iterator::operator*() const {
   const char* commaPtr = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
   const char* equalPtr = std::find(_begKey, commaPtr, url::kNewKeyValueSep);
   const char* keyEnd = (equalPtr == commaPtr) ? commaPtr : equalPtr;
@@ -75,12 +75,12 @@ HttpRequest::QueryParam HttpRequest::QueryParamRange::iterator::operator*() cons
   return ret;
 }
 
-std::string_view HttpRequest::body() const {
+std::string_view HttpRequestView::body() const {
   if (_bodyAccessMode == BodyAccessMode::Streaming) {
     throw std::logic_error("Cannot call body() after readBody() on the same request");
   }
   // Not the cleanest, but it should appear as const from the caller.
-  auto& self = *const_cast<HttpRequest*>(this);
+  auto& self = *const_cast<HttpRequestView*>(this);
   self._bodyAccessMode = BodyAccessMode::Aggregated;
   if (self._pBodyAccessBridge != nullptr && self._pBodyAccessBridge->aggregate != nullptr) {
     self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
@@ -88,7 +88,7 @@ std::string_view HttpRequest::body() const {
   return _body;
 }
 
-bool HttpRequest::hasMoreBody() const {
+bool HttpRequestView::hasMoreBody() const {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     return false;
   }
@@ -109,7 +109,7 @@ bool HttpRequest::hasMoreBody() const {
   return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
 }
 
-std::string_view HttpRequest::readBody(std::size_t maxBytes) {
+std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     throw std::logic_error("Cannot call readBody() after body() on the same request");
   }
@@ -118,51 +118,53 @@ std::string_view HttpRequest::readBody(std::size_t maxBytes) {
   return _activeStreamingChunk;
 }
 
-[[nodiscard]] std::string_view HttpRequest::alpnProtocol() const noexcept {
+[[nodiscard]] std::string_view HttpRequestView::alpnProtocol() const noexcept {
   assert(_pOwnerState != nullptr);
   return _pOwnerState->tlsInfo.selectedAlpn();
 }
 
-[[nodiscard]] std::string_view HttpRequest::tlsCipher() const noexcept {
+[[nodiscard]] std::string_view HttpRequestView::tlsCipher() const noexcept {
   assert(_pOwnerState != nullptr);
   return _pOwnerState->tlsInfo.negotiatedCipher();
 }
 
-[[nodiscard]] std::string_view HttpRequest::tlsVersion() const noexcept {
+[[nodiscard]] std::string_view HttpRequestView::tlsVersion() const noexcept {
   assert(_pOwnerState != nullptr);
   return _pOwnerState->tlsInfo.negotiatedVersion();
 }
 
-[[nodiscard]] std::string_view HttpRequest::clientAddress() const noexcept {
+[[nodiscard]] std::string_view HttpRequestView::clientAddress() const noexcept {
   assert(_pOwnerState != nullptr);
   return _pOwnerState->clientAddress();
 }
 
-bool HttpRequest::wantClose() const { return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close); }
+bool HttpRequestView::wantClose() const {
+  return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close);
+}
 
-HttpResponse HttpRequest::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
+HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
   HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {},
                     HttpResponse::Check::No);
   resp._opts = makeResponseOptions();
   return resp;
 }
 
-HttpResponse HttpRequest::makeResponse(std::string_view body, std::string_view contentType) const {
+HttpResponse HttpRequestView::makeResponse(std::string_view body, std::string_view contentType) const {
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
   resp._opts = makeResponseOptions();
   return resp;
 }
 
-HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::string_view body,
-                                       std::string_view contentType) const {
+HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::string_view body,
+                                           std::string_view contentType) const {
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
                     HttpResponse::Check::No);
   resp._opts = makeResponseOptions();
   return resp;
 }
 
-HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
+HttpResponse HttpRequestView::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
@@ -170,8 +172,8 @@ HttpResponse HttpRequest::makeResponse(std::span<const std::byte> body, std::str
   return resp;
 }
 
-HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
-                                       std::string_view contentType) const {
+HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
+                                           std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
                     HttpResponse::Check::No);
@@ -179,12 +181,12 @@ HttpResponse HttpRequest::makeResponse(http::StatusCode statusCode, std::span<co
   return resp;
 }
 
-bool HttpRequest::hasExpectContinue() const noexcept {
+bool HttpRequestView::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
 }
 
-bool HttpRequest::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
-                                      bool isServerRunning) const {
+bool HttpRequestView::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
+                                          bool isServerRunning) const {
   if (!enableKeepAlive || _pOwnerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
     return false;
   }
@@ -196,15 +198,16 @@ bool HttpRequest::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequests
   return !CaseInsensitiveEqual(connVal, http::close);
 }
 
-void HttpRequest::init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState) {
+void HttpRequestView::init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState) {
   _pGlobalHeaders = &config.globalHeaders;
   _addTrailerHeader = config.addTrailerHeader;
   _addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;
   _pCompressionState = &compressionState;
 }
 
-http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
-                                             bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan) {
+http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer,
+                                                 uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
+                                                 tracing::SpanPtr traceSpan) {
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
 
@@ -319,7 +322,7 @@ http::StatusCode HttpRequest::initTrySetHead(std::span<char> inBuffer, RawChars&
   return http::StatusCodeOK;
 }
 
-void HttpRequest::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
+void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
   if (method() == http::Method::HEAD) {
     return;
   }
@@ -350,7 +353,7 @@ void HttpRequest::prefinalizeHttpResponse(HttpResponse& response, tracing::Telem
   }
 }
 
-void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams) {
+void HttpRequestView::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams) {
   // Populate path params map view from router captures
   _pathParams.clear();
   for (const auto& capture : pathParams) {
@@ -363,7 +366,7 @@ void HttpRequest::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pa
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void HttpRequest::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool) {
+void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool) {
   if (_headPinned || _headSpanSize == 0) {
     return;
   }
@@ -397,7 +400,7 @@ void HttpRequest::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& 
 }
 #endif
 
-void HttpRequest::shrinkAndMaybeClear() {
+void HttpRequestView::shrinkAndMaybeClear() {
   // we cannot simply rehash(0) for std::string_view maps because if the maps are not empty,
   // rehashing would call the hash function on the string_views, which may point to
   // deallocated memory if the connection buffer was shrunk. So we check the load factor and if it's low,
@@ -415,7 +418,7 @@ void HttpRequest::shrinkAndMaybeClear() {
   shrinkMap(_pathParams);
 }
 
-void HttpRequest::end(http::StatusCode respStatusCode) {
+void HttpRequestView::end(http::StatusCode respStatusCode) {
   // End the span after response is finalized
   if (_traceSpan) {
     const auto reqEnd = std::chrono::steady_clock::now();
@@ -430,14 +433,14 @@ void HttpRequest::end(http::StatusCode respStatusCode) {
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void HttpRequest::markAwaitingBody() const noexcept {
+void HttpRequestView::markAwaitingBody() const noexcept {
   auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
 }
 
-void HttpRequest::markAwaitingCallback() const noexcept {
+void HttpRequestView::markAwaitingCallback() const noexcept {
   if (_pH2SuspendedFlag != nullptr) {
     *_pH2SuspendedFlag = true;
     return;
@@ -448,7 +451,7 @@ void HttpRequest::markAwaitingCallback() const noexcept {
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
-void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
   if (_h2PostCallback) {
     _h2PostCallback(handle, std::move(work));
     return;
@@ -461,7 +464,7 @@ void HttpRequest::postCallback(std::coroutine_handle<> handle, std::function<voi
 }
 #endif
 
-HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
+HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   assert(_pCompressionState != nullptr);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
@@ -476,7 +479,7 @@ HttpResponse::Options HttpRequest::makeResponseOptions() const noexcept {
   return opts;
 }
 
-bool HttpRequest::decodePath(char* pathStart, char* pathEnd) {
+bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
   char* questionMark = std::find(pathStart, pathEnd, '?');
   if (questionMark != pathEnd) {
     const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, pathEnd);

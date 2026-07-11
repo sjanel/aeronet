@@ -21,7 +21,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-json.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/multi-http-server.hpp"
@@ -1333,7 +1333,7 @@ TEST(ServerConfigDumpTest, MultiHttpServerConfigPathAndRouterConstructor) {
   }
 
   Router router;
-  router.setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse{}.body("from-router"); });
+  router.setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse{}.body("from-router"); });
 
   MultiHttpServer server(filePath, std::move(router));
   std::filesystem::remove(filePath);

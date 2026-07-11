@@ -21,7 +21,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
@@ -56,7 +56,8 @@ TEST(SingleHttpServer, ConfigPathAndRouterConstructorKeepsProvidedRoutes) {
   }
 
   Router router;
-  router.setPath(http::Method::GET, "/from-router", [](const HttpRequest&) { return HttpResponse(200).body("ok"); });
+  router.setPath(http::Method::GET, "/from-router",
+                 [](const HttpRequestView&) { return HttpResponse(200).body("ok"); });
 
   SingleHttpServer server(filePath, std::move(router));
   std::filesystem::remove(filePath);
@@ -82,7 +83,8 @@ TEST(SingleHttpServer, ShouldHaveOnlyOneThread) {
 TEST(HttpServerMove, MoveConstructAndServe) {
   std::atomic_bool stop{false};
   SingleHttpServer original;
-  original.router().setDefault([](const HttpRequest& req) { return HttpResponse("ORIG:" + std::string(req.path())); });
+  original.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse("ORIG:" + std::string(req.path())); });
 
   // Move construct server before running
   SingleHttpServer moved(std::move(original));
@@ -106,8 +108,8 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
 
   EXPECT_NE(port1, port2);
 
-  s1.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("S1"); });
-  s2.router().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("S2"); });
+  s1.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("S1"); });
+  s2.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("S2"); });
 
   // Move assign s1 <- s2 (both stopped)
   s1 = std::move(s2);
@@ -154,13 +156,13 @@ TEST(HttpServerMove, SingleHttpServerMove) {
   auto port = original.port();
 
   // initial handler registered on original
-  original.router().setDefault([](const HttpRequest&) { return HttpResponse("ORIG"); });
+  original.router().setDefault([](const HttpRequestView&) { return HttpResponse("ORIG"); });
 
   // Move server (handlers are moved too)
   SingleHttpServer moved(std::move(original));
 
   // Re-register handlers on the moved instance to new behavior
-  moved.router().setDefault([](const HttpRequest&) { return HttpResponse("MOVED"); });
+  moved.router().setDefault([](const HttpRequestView&) { return HttpResponse("MOVED"); });
 
   std::jthread th([&] { moved.runUntil([&] { return stop.load(); }); });
   test::WaitForServer(moved);
@@ -182,7 +184,7 @@ TEST(HttpServerMove, DISABLED_CapturedThisAfterMoveHazard) {
   auto port = original.port();
 
   // handler captures raw this pointer and returns it as string
-  original.router().setDefault([&original](const HttpRequest& req) {
+  original.router().setDefault([&original](const HttpRequestView& req) {
     // print the pointer value (implementation detail) to observe which 'this' is used
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%p", static_cast<void*>(&original));
@@ -212,8 +214,8 @@ TEST(SingleHttpServer, MoveAssignOrDoubleRunWhileRunningThrows) {
   HttpServerConfig cfg;
   SingleHttpServer serverA(cfg);
   SingleHttpServer serverB(cfg);
-  serverA.router().setDefault([](const HttpRequest&) { return HttpResponse("a"); });
-  serverB.router().setDefault([](const HttpRequest&) { return HttpResponse("b"); });
+  serverA.router().setDefault([](const HttpRequestView&) { return HttpResponse("a"); });
+  serverB.router().setDefault([](const HttpRequestView&) { return HttpResponse("b"); });
   std::jthread thr([&] { serverA.run(); });
   test::WaitForServer(serverA);
   ASSERT_TRUE(serverA.isRunning());
@@ -227,7 +229,7 @@ TEST(HttpServerRestart, RestartPossible) {
   SingleHttpServer server(HttpServerConfig{});
   auto port = server.port();
   server.router().setDefault(
-      [](const HttpRequest& req) { return HttpResponse(std::string("ORIG:") + std::string(req.path())); });
+      [](const HttpRequestView& req) { return HttpResponse(std::string("ORIG:") + std::string(req.path())); });
 
   std::jthread th([&] {
     server.runUntil([&] { return stop1.load(); });
@@ -255,7 +257,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
   std::string payload(128, 'x');
 
   SingleHttpServer destination(config);
-  destination.router().setDefault([&payload]([[maybe_unused]] const HttpRequest&) {
+  destination.router().setDefault([&payload]([[maybe_unused]] const HttpRequestView&) {
     HttpResponse resp(payload);
     resp.header("X-Who", "destination");
     return resp;
@@ -299,7 +301,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 
   {
     SingleHttpServer source(config);
-    source.router().setDefault([&]([[maybe_unused]] const HttpRequest&) {
+    source.router().setDefault([&]([[maybe_unused]] const HttpRequestView&) {
       HttpResponse resp(payload);
       resp.header("X-Who", "source");
       return resp;
@@ -317,7 +319,7 @@ TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
   HttpServerConfig cfg;
   cfg.withReusePort();
   SingleHttpServer running(cfg);
-  running.router().setDefault([]([[maybe_unused]] const HttpRequest&) { return HttpResponse("OK"); });
+  running.router().setDefault([]([[maybe_unused]] const HttpRequestView&) { return HttpResponse("OK"); });
 
   SingleHttpServer target(cfg);
 
@@ -335,7 +337,7 @@ TEST(HttpDrain, StopsNewConnections) {
   cfg.enableKeepAlive = true;
   test::TestServer ts(std::move(cfg));
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   const auto port = ts.port();
 
@@ -361,7 +363,7 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
   cfg.enableKeepAlive = true;
   test::TestServer ts(std::move(cfg));
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   const auto port = ts.port();
   test::ClientConnection cnx(port);
@@ -387,7 +389,7 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   cfg.keepAliveTimeout = 5s;  // ensure default timeout does not interfere with the test window
   test::TestServer ts(std::move(cfg));
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   const auto port = ts.port();
   test::ClientConnection idle(port);
@@ -425,7 +427,7 @@ TEST(HttpConfigUpdate, CoalesceWhileRunning) {
   auto& server = ts.server;
 
   // register a handler that returns current config value
-  server.router().setPath(aeronet::http::Method::GET, std::string("/cfg"), [&server](const HttpRequest&) {
+  server.router().setPath(aeronet::http::Method::GET, std::string("/cfg"), [&server](const HttpRequestView&) {
     return HttpResponse(std::to_string(server.config().maxRequestsPerConnection));
   });
 
@@ -448,7 +450,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
 
   // initial handler returns v1
   ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"),
-                      [](const HttpRequest&) { return HttpResponse("v1"); });
+                      [](const HttpRequestView&) { return HttpResponse("v1"); });
 
   // verify baseline response
   auto raw1 = test::simpleGet(ts.port(), "/dyn");
@@ -458,7 +460,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   std::jthread updater([&ts] {
     std::this_thread::sleep_for(25ms);
     ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"),
-                        [](const HttpRequest&) { return HttpResponse("v2"); });
+                        [](const HttpRequestView&) { return HttpResponse("v2"); });
   });
 
   // Poll for the updated behavior for a short while
@@ -483,7 +485,8 @@ TEST(HttpProbes, ReadinessProbleShouldReturn503WhenDrainingIfSomeConnectionsAliv
 
   test::TestServer ts(std::move(cfg));
 
-  ts.postRouterUpdate([](Router& router) { router.setDefault([](const HttpRequest&) { return HttpResponse("OK"); }); });
+  ts.postRouterUpdate(
+      [](Router& router) { router.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); }); });
 
   auto readyResp = test::simpleGet(ts.port(), "/readyz");
   EXPECT_TRUE(readyResp.starts_with("HTTP/1.1 200"));
@@ -537,7 +540,7 @@ TEST(HttpConfigUpdate, ImmutableFieldsProtected) {
   const auto originalReusePort = ts.server.config().reusePort;
 
   // Handler that echoes current config values
-  ts.router().setDefault([&ts](const HttpRequest& req) {
+  ts.router().setDefault([&ts](const HttpRequestView& req) {
     HttpResponse resp;
     if (req.path() == "/port") {
       resp.body(std::to_string(ts.server.config().port));
@@ -585,7 +588,7 @@ TEST_F(SignalHandlerGlobalTest, AutoDrainOnStopRequest) {
 
   test::TestServer ts;
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("alive"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("alive"); });
 
   // Verify server is running and responsive
   auto resp1 = test::simpleGet(ts.port(), "/");
@@ -613,8 +616,8 @@ TEST_F(SignalHandlerGlobalTest, MultiServerCoordination) {
   test::TestServer ts1(HttpServerConfig{});
   test::TestServer ts2(HttpServerConfig{});
 
-  ts1.router().setDefault([](const HttpRequest&) { return HttpResponse("server1"); });
-  ts2.router().setDefault([](const HttpRequest&) { return HttpResponse("server2"); });
+  ts1.router().setDefault([](const HttpRequestView&) { return HttpResponse("server1"); });
+  ts2.router().setDefault([](const HttpRequestView&) { return HttpResponse("server2"); });
 
   // Both servers running
   EXPECT_FALSE(ts1.server.isDraining());
@@ -636,7 +639,8 @@ TEST(HttpServerAsyncHandle, BasicStartAndStop) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest& req) { return HttpResponse("async:" + std::string(req.path())); });
+  server.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse("async:" + std::string(req.path())); });
 
   auto handle = server.startDetached();
   EXPECT_TRUE(handle.started());
@@ -661,7 +665,7 @@ TEST(HttpServerAsyncHandle, RAIIAutoStop) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("raii-test"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("raii-test"); });
 
   {
     auto handle = server.startDetached();
@@ -683,7 +687,7 @@ TEST(HttpServerAsyncHandle, StartAndStopWhen) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.path()); });
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   auto handle = server.startDetachedAndStopWhen([&] { return done.load(); });
   EXPECT_TRUE(test::WaitForServer(server, true));
@@ -706,7 +710,7 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("token-test"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("token-test"); });
 
   auto handle = server.startDetachedWithStopToken(source.get_token());
   EXPECT_TRUE(test::WaitForServer(server, true));
@@ -728,7 +732,7 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse(200).body("move-test"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse(200).body("move-test"); });
 
   auto handle1 = server.startDetached();
   EXPECT_TRUE(test::WaitForServer(server, true));
@@ -751,7 +755,7 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
   SingleHttpServer server(cfg);
   auto port = server.port();
 
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("restart"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("restart"); });
 
   // First run
   {
@@ -786,7 +790,7 @@ TEST(SingleHttpServer, DoubleStopIsNoOp) {
   cfg.withPollInterval(1ms);
   SingleHttpServer server(cfg);
 
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("double-stop"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("double-stop"); });
 
   auto handle = server.startDetached();
   EXPECT_TRUE(test::WaitForServer(server, true));
@@ -811,7 +815,7 @@ TEST(HttpServerAsyncHandle, RethrowIfErrorPropagatesException) {
   cfg.withPollInterval(1ms);
 
   SingleHttpServer server(cfg);
-  server.router().setDefault([](const HttpRequest&) { return HttpResponse("OK"); });
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   // Start the server normally
   auto handle = server.startDetached();

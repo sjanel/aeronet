@@ -98,13 +98,13 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 1: /ping - Minimal latency test
   // ============================================================
-  router.setPath(http::Method::GET, "/ping", [](const HttpRequest& req) { return req.makeResponse("pong"); });
+  router.setPath(http::Method::GET, "/ping", [](const HttpRequestView& req) { return req.makeResponse("pong"); });
 
   // ============================================================
   // Endpoint 2: /headers - Header stress test
   // Returns N headers based on ?count=N query param
   // ============================================================
-  router.setPath(http::Method::GET, "/headers", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/headers", [](const HttpRequestView& req) {
     const auto optCount = req.queryParamInt<std::size_t>("count");
     if (!optCount) {
       return req.makeResponse(http::StatusCodeBadRequest);
@@ -130,7 +130,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 3: /uppercase - Body uppercase test
   // Echoes POST body back in response (force allocate uppercase copy)
   // ============================================================
-  router.setPath(http::Method::POST, "/uppercase", [](const HttpRequest& req) {
+  router.setPath(http::Method::POST, "/uppercase", [](const HttpRequestView& req) {
     std::string_view body = req.body();
     auto resp = req.makeResponse(HttpResponse::BodySize(body.size()), http::StatusCodeOK);
     resp.bodyInlineSet(body.size(), [body](char* buf) {
@@ -144,7 +144,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 4: /compute - CPU-bound test
   // Performs expensive computation based on ?complexity=N
   // ============================================================
-  router.setPath(http::Method::GET, "/compute", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/compute", [](const HttpRequestView& req) {
     const auto optComplexity = req.queryParamInt<int>("complexity");
     if (!optComplexity) {
       return req.makeResponse(http::StatusCodeBadRequest);
@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint 5: /json - JSON response test
   // ============================================================
-  router.setPath(http::Method::GET, "/json", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/json", [](const HttpRequestView& req) {
     const std::size_t items = req.queryParamInt<std::size_t>("items").value();
 
     auto resp = req.makeResponse(items * 40UL, 200);
@@ -195,7 +195,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 6: /delay - Artificial delay test
   // Sleeps for ?ms=N milliseconds
   // ============================================================
-  router.setPath(http::Method::GET, "/delay", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/delay", [](const HttpRequestView& req) {
     const int delayMs = req.queryParamInt<int>("ms").value();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
@@ -207,7 +207,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 7: /body - Variable size body test
   // Returns body of size ?size=N bytes
   // ============================================================
-  router.setPath(http::Method::GET, "/body", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/body", [](const HttpRequestView& req) {
     return req.makeResponse(bench::GenerateRandomString(req.queryParamInt<std::size_t>("size").value()));
   });
 
@@ -216,7 +216,7 @@ int main(int argc, char* argv[]) {
   // aeronet automatically decompresses request body, then we add +1 to each byte
   // returns response that will be automatically compressed
   // ============================================================
-  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequest& req) {
+  router.setPath(http::Method::POST, "/body-codec", [](const HttpRequestView& req) {
     std::string_view body = req.body();
     auto resp = req.makeResponse(http::ContentTypeApplicationOctetStream.size(), http::StatusCodeOK);
 
@@ -232,7 +232,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   router.setPath(http::Method::GET, "/status",
                  [numThreads = benchCfg.numThreads, tlsEnabled = benchCfg.tlsEnabled,
-                  h2Enabled = benchCfg.h2Enabled](const HttpRequest& req) {
+                  h2Enabled = benchCfg.h2Enabled](const HttpRequestView& req) {
                    return req.makeResponse(
                        std::format(R"({{"server":"aeronet","threads":{},"tls":{},"h2":{},"status":"ok"}})", numThreads,
                                    tlsEnabled, h2Enabled),
@@ -268,8 +268,9 @@ int main(int argc, char* argv[]) {
   // Endpoint 10+: /r{N} - Routing stress test (N literal routes)
   // ============================================================
   for (int routeIdx = 0; routeIdx < benchCfg.routeCount; ++routeIdx) {
-    router.setPath(http::Method::GET, std::format("/r{}", routeIdx),
-                   [routeIdx](const HttpRequest& req) { return req.makeResponse(std::format("route-{}", routeIdx)); });
+    router.setPath(http::Method::GET, std::format("/r{}", routeIdx), [routeIdx](const HttpRequestView& req) {
+      return req.makeResponse(std::format("route-{}", routeIdx));
+    });
   }
   std::cout << "Registered " << benchCfg.routeCount << " literal routes (/r0 to /r" << (benchCfg.routeCount - 1)
             << ")\n";
@@ -277,7 +278,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // Endpoint: /users/{id}/posts/{post} - Pattern matching stress test
   // ============================================================
-  router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequest& req) {
+  router.setPath(http::Method::GET, "/users/{id}/posts/{post}", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
     std::string_view userId = params.find("id")->second;
     std::string_view postId = params.find("post")->second;
@@ -288,7 +289,7 @@ int main(int argc, char* argv[]) {
   // Endpoint: /api/v1/resources/{resource}/items/{item}/actions/{action} - Another pattern route
   // ============================================================
   router.setPath(http::Method::GET, "/api/v1/resources/{resource}/items/{item}/actions/{action}",
-                 [](const HttpRequest& req) {
+                 [](const HttpRequestView& req) {
                    const auto& params = req.pathParams();
                    std::string_view resource = params.find("resource")->second;
                    std::string_view item = params.find("item")->second;
@@ -301,7 +302,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
 #ifdef AERONET_ENABLE_WEBSOCKET
   auto makeEchoFactory = [](websocket::WebSocketConfig cfg) -> WebSocketHandlerFactory {
-    return [cfg = std::move(cfg)](const HttpRequest& /*req*/) {
+    return [cfg = std::move(cfg)](const HttpRequestView& /*req*/) {
       auto handler = std::make_unique<websocket::WebSocketHandler>(cfg);
       websocket::WebSocketHandler* hp = handler.get();
       handler->setCallbacks(websocket::WebSocketCallbacks{

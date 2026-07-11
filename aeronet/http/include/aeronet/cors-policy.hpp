@@ -7,7 +7,7 @@
 #include "aeronet/concatenated-header-values.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 
 namespace aeronet {
@@ -77,20 +77,20 @@ class CorsPolicy {
   [[nodiscard]] bool active() const noexcept { return _active; }
 
   // Determine if CORS headers would be applied to a normal (non-preflight) response.
-  [[nodiscard]] ApplyStatus wouldApply(const HttpRequest& request) const noexcept;
+  [[nodiscard]] ApplyStatus wouldApply(const HttpRequestView& request) const noexcept;
 
   // Apply CORS headers to a normal (non-preflight) response if the request is a CORS request.
-  [[nodiscard]] ApplyStatus applyToResponse(const HttpRequest& request, HttpResponse& response) const;
+  [[nodiscard]] ApplyStatus applyToResponse(const HttpRequestView& request, HttpResponse& response) const;
 
   // Handle a preflight CORS request and produce the appropriate response.
   [[nodiscard]] PreflightResult handlePreflight(
-      const HttpRequest& request,
+      const HttpRequestView& request,
       http::MethodBmp routeMethods = static_cast<http::MethodBmp>((1U << http::kNbMethods) - 1U)) const;
 
  private:
   enum class OriginMode : std::uint8_t { Any, Enumerated };
 
-  [[nodiscard]] static bool isPreflightRequest(const HttpRequest& request) noexcept;
+  [[nodiscard]] static bool isPreflightRequest(const HttpRequestView& request) noexcept;
 
   [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept {
     return _originMode == OriginMode::Any || _allowedOrigins.containsCI(origin);

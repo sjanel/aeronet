@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
 
   Router router;
   try {
-    router.setDefault([](const HttpRequest& req) {
+    router.setDefault([](const HttpRequestView& req) {
       auto resp = req.makeResponse(200);
       resp.bodyAppend("multi reactor response ");
       resp.bodyAppend(req.path());

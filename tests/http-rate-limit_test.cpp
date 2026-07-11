@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/rate-limit-middleware.hpp"
@@ -32,7 +32,7 @@ class ThrowingRateLimitStore final : public IRateLimitStore {
 };
 
 auto okHandler() {
-  return [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK, "ok"); };
+  return [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); };
 }
 
 }  // namespace
@@ -171,7 +171,7 @@ TEST(HttpRateLimit, CustomStrategyUsesExtractorKey) {
   options.config.requestsPerSecond = 1;
   options.config.burst = 1;
   options.keyStrategy = RateLimitClientKeyStrategy::Custom;
-  options.customKeyExtractor = [](const HttpRequest& request) { return request.headerValueOrEmpty("x-client-id"); };
+  options.customKeyExtractor = [](const HttpRequestView& request) { return request.headerValueOrEmpty("x-client-id"); };
   router.addRequestMiddleware(std::move(options).build());
 
   aeronet::test::RequestOptions req;

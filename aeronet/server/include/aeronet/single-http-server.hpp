@@ -22,7 +22,7 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -108,7 +108,7 @@ class SingleHttpServer {
     HttpResponse finalResponse;
   };
 
-  using ExpectationHandler = std::function<ExpectationResult(const HttpRequest&, std::string_view)>;
+  using ExpectationHandler = std::function<ExpectationResult(const HttpRequestView&, std::string_view)>;
 
   using MetricsCallback = std::function<void(const RequestMetrics&)>;
 
@@ -485,7 +485,7 @@ class SingleHttpServer {
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequest& request, http::StatusCode status, std::size_t bytesIn,
+  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, std::size_t bytesIn,
                           bool reusedConnection);
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
@@ -518,7 +518,7 @@ class SingleHttpServer {
   [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
 
   // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
-  // the request (either because the client requested it or keep-alive limits reached). The HttpRequest is
+  // the request (either because the client requested it or keep-alive limits reached). The HttpRequestView is
   // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
   // to mutate transient fields (target normalization already complete at this point).
   bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionIt cnxIt, std::size_t consumedBytes,

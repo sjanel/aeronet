@@ -67,10 +67,10 @@ int main(int argc, char** argv) {
   Router router;
 
   try {
-    router.setDefault([](const HttpRequest&) { return HttpResponse(404, "Not found\n"); });
+    router.setDefault([](const HttpRequestView&) { return HttpResponse(404, "Not found\n"); });
 
     // GET /async — minimal deferWork demonstration for CI smoke test
-    router.setPath(http::Method::GET, "/async", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    router.setPath(http::Method::GET, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       std::string pathCopy{req.path()};
       std::string body = co_await req.deferWork([path = std::move(pathCopy)]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     // GET /users/{id} — async handler fetching user with deferWork()
     // Demonstrates how to run blocking work on a background thread without blocking the event loop.
     // The coroutine suspends, the work runs on a separate thread, then the coroutine resumes.
-    router.setPath(http::Method::GET, "/users/{id}", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       auto idStr = req.pathParams().find("id")->second;
       int id = std::stoi(std::string(idStr));
 
@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
     // POST /users/{id}/email — async handler updating user email
     // Demonstrates combining co_await bodyAwaitable() and co_await deferWork().
     // First, we asynchronously read the request body, then we defer the blocking DB update.
-    router.setPath(http::Method::POST, "/users/{id}/email", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+    router.setPath(http::Method::POST, "/users/{id}/email", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       auto idStr = req.pathParams().find("id")->second;
       int id = std::stoi(std::string(idStr));
 
@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     });
 
     // GET /health — sync handler for comparison
-    router.setPath(http::Method::GET, "/health", [](const HttpRequest&) { return HttpResponse("OK\n"); });
+    router.setPath(http::Method::GET, "/health", [](const HttpRequestView&) { return HttpResponse("OK\n"); });
 
     SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));
 

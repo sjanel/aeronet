@@ -40,10 +40,10 @@ int main(int argc, char** argv) {
 
     // Fixed response (HttpResponse::file) on /static
     router.setPath(http::Method::GET, "/static",
-                   [&path](const HttpRequest& /*req*/) { return HttpResponse().file(File(path)); });
+                   [&path](const HttpRequestView& /*req*/) { return HttpResponse().file(File(path)); });
 
     // Streaming response using HttpResponseWriter::file on /stream
-    router.setPath(http::Method::GET, "/stream", [&path](const HttpRequest& /*req*/, HttpResponseWriter& writer) {
+    router.setPath(http::Method::GET, "/stream", [&path](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
       writer.status(http::StatusCodeOK);
       writer.file(File(path), "text/plain");
       writer.end();

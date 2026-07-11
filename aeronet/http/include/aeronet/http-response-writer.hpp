@@ -15,7 +15,7 @@
 
 namespace aeronet {
 
-class HttpRequest;
+class HttpRequestView;
 class CorsPolicy;
 struct CompressionConfig;
 
@@ -131,7 +131,7 @@ class HttpResponseWriter {
   //   - Typical use: metadata computed during response generation (checksums, signatures, timings).
   //
   // Usage example:
-  //   void handler(const HttpRequest&, HttpResponseWriter& w) {
+  //   void handler(const HttpRequestView&, HttpResponseWriter& w) {
   //     w.status(200);
   //     w.writeBody("chunk 1");
   //     w.writeBody("chunk 2");
@@ -199,7 +199,7 @@ class HttpResponseWriter {
   /// @param compressionState   Shared compression state (encoder pool).
   /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
   /// @param addTrailerHeader   Whether to auto-add the Trailer header.
-  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequest& request, Encoding compressionFormat,
+  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request, Encoding compressionFormat,
                      const CompressionConfig& compressionConfig, internal::ResponseCompressionState& compressionState,
                      std::string_view globalHeadersStr, bool addTrailerHeader);
 
@@ -211,7 +211,7 @@ class HttpResponseWriter {
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
 
   internal::IWriterTransport* _transport;
-  const HttpRequest* _request;
+  const HttpRequestView* _request;
   bool _head;
   State _state{State::Opened};
   Encoding _compressionFormat;

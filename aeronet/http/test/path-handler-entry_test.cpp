@@ -11,7 +11,7 @@
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
@@ -41,16 +41,16 @@ class HttpResponseWriter;
 namespace {
 
 RequestHandler MakeNormalHandler() {
-  return [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); };
+  return [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); };
 }
 
 StreamingHandler MakeStreamingHandler() {
-  return [](const HttpRequest&, HttpResponseWriter&) {};
+  return [](const HttpRequestView&, HttpResponseWriter&) {};
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 AsyncRequestHandler MakeAsyncHandler() {
-  return [](HttpRequest&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); };
+  return [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); };
 }
 #endif
 
@@ -131,8 +131,8 @@ TEST_F(PathHandlerEntryTest, SetPathEmpty) {
 TEST_F(PathHandlerEntryTest, SpecialOperationsWithoutWebSocket) {
   entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
   addPaths();
-  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); })
-      .after([](const HttpRequest&, HttpResponse&) {})
+  entry.before([](HttpRequestView&) { return MiddlewareResult::Continue(); })
+      .after([](const HttpRequestView&, HttpResponse&) {})
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
   PathHandlerEntry copied(entry);
@@ -162,8 +162,8 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithoutWebSocket) {
 TEST_F(PathHandlerEntryTest, SpecialOperationsWithWebSocket) {
   entry = router.setPath(http::Method::GET, "/ctor", MakeNormalHandler());
   addPaths();
-  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); })
-      .after([](const HttpRequest&, HttpResponse&) {})
+  entry.before([](HttpRequestView&) { return MiddlewareResult::Continue(); })
+      .after([](const HttpRequestView&, HttpResponse&) {})
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
   assignWebSocketEndpoint(entry);
@@ -188,8 +188,8 @@ TEST_F(PathHandlerEntryTest, SpecialOperationsWithWebSocket) {
 TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
   addPaths();
   router.setPath(http::Method::GET, "/ctor", MakeNormalHandler())
-      .before([](HttpRequest&) { return MiddlewareResult::Continue(); })
-      .after([](const HttpRequest&, HttpResponse&) {})
+      .before([](HttpRequestView&) { return MiddlewareResult::Continue(); })
+      .after([](const HttpRequestView&, HttpResponse&) {})
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
   auto result = router.match(http::Method::GET, "/ctor");
@@ -295,8 +295,8 @@ TEST_F(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
 TEST_F(PathHandlerEntryTest, CorsAndMiddlewarePopulatedOnMatch) {
   router.setPath(http::Method::GET, "/middleware", MakeNormalHandler())
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin())
-      .before([](HttpRequest&) { return MiddlewareResult::Continue(); })
-      .after([](const HttpRequest&, HttpResponse&) {});
+      .before([](HttpRequestView&) { return MiddlewareResult::Continue(); })
+      .after([](const HttpRequestView&, HttpResponse&) {});
 
   auto result = router.match(http::Method::GET, "/middleware");
   ASSERT_NE(result.pCorsPolicy, nullptr);

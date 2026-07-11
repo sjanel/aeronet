@@ -15,7 +15,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -76,7 +76,7 @@ std::string httpGet(std::string_view target) {
 }  // namespace
 
 TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp;
     resp.status(201).reason("Created");
     resp.header("X-One", "1");
@@ -97,7 +97,7 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
 }
 
 TEST(HttpHeadersCustom, LocationHeaderAllowed) {
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp(302);
     resp.reason("Found");
     resp.location("/new").body("");
@@ -115,7 +115,7 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
 TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
   // Verify that calling customHeader with different casing replaces existing value without duplicating the line and
   // preserves the original header name casing from the first insertion.
-  ts.router().setDefault([](const HttpRequest&) {
+  ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp;
     resp.header("x-cAsE", "one");
     resp.header("X-Case", "two");    // should replace value only
@@ -140,7 +140,7 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 
   const std::size_t payloadSize = cap * 3;
   std::string payload(payloadSize, 'x');
-  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+  ts.router().setDefault([payloadSize](const HttpRequestView& req) {
     HttpResponse resp;
     if (req.body().size() != payloadSize) {
       resp.status(http::StatusCodeBadRequest).body("payload mismatch");
@@ -178,7 +178,7 @@ TEST(HttpServerConfigLimits, DeferredReadDrainsBufferAfterFairnessCap) {
 
   const std::size_t payloadSize = cap * 4;
   std::string payload(payloadSize, 'y');
-  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+  ts.router().setDefault([payloadSize](const HttpRequestView& req) {
     HttpResponse resp;
     if (req.body().size() != payloadSize) {
       resp.status(http::StatusCodeBadRequest).body("size mismatch");
@@ -204,7 +204,7 @@ TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
 
   const std::size_t payloadSize = cap * 4;
   std::string payload(payloadSize, 'z');
-  ts.router().setDefault([payloadSize](const HttpRequest& req) {
+  ts.router().setDefault([payloadSize](const HttpRequestView& req) {
     HttpResponse resp;
     resp.body(req.body().size() == payloadSize ? "ok" : "bad");
     return resp;
@@ -220,7 +220,7 @@ TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {
   auto scope = makeTcpNoDelayScope(TcpNoDelayMode::Enabled);
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("tcp ok"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("tcp ok"); });
   std::string resp = httpGet("/tcp");
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -231,7 +231,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   auto headerTimeout = makeHeaderReadTimeoutScope(readTimeout);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("hi"); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();
@@ -257,7 +257,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
   auto headerTimeout = makeHeaderReadTimeoutScope(readTimeout);
 
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("hi"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("hi"); });
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();
   ASSERT_GE(fd, 0) << "connect failed";
@@ -272,7 +272,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
 }
 
 TEST(HttpBasic, SimpleGet) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
     auto testHeaderIt = req.headers().find("X-Test");
     std::string body("You requested: ");
@@ -292,7 +292,7 @@ TEST(HttpBasic, SimpleGet) {
 }
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
     resp.body(std::string("ECHO") + std::string(req.path()));
     return resp;
@@ -317,7 +317,7 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
 TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection) {
   // An empty-body response must declare Content-Length: 0 so a keep-alive client can frame the (zero-length)
   // body immediately and reuse the connection, instead of waiting for the idle timeout / connection close.
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });  // empty body
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });  // empty body
 
   test::ClientConnection cnx(port);
   NativeHandle fd = cnx.fd();
@@ -364,7 +364,7 @@ std::string headerValue(std::string_view resp, std::string_view name) {
 }  // namespace
 
 TEST(HttpDate, PresentAndFormat) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   auto resp = rawGet();
   ASSERT_FALSE(resp.empty());
   auto date = headerValue(resp, http::Date);
@@ -374,7 +374,7 @@ TEST(HttpDate, PresentAndFormat) {
 }
 
 TEST(HttpDate, StableWithinSameSecond) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // To avoid flakiness near a second rollover on slower / contended CI hosts:
   // Probe until the current second is "stable" for at least ~20ms before sampling sequence.
@@ -424,7 +424,7 @@ TEST(HttpDate, StableWithinSameSecond) {
 }
 
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   auto first = rawGet();
   auto d1 = headerValue(first, http::Date);
@@ -454,7 +454,7 @@ class HttpErrorParamTest : public ::testing::TestWithParam<ErrorCase> {};
 }  // namespace
 
 TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   const auto& param = GetParam();
   std::string resp = test::sendAndCollect(port, param.request);
   ASSERT_TRUE(resp.contains(param.expectedStatus)) << "Case=" << param.name << "\nResp=" << resp;
@@ -473,7 +473,7 @@ INSTANTIATE_TEST_SUITE_P(
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
   // HTTP/1.0 without Connection: keep-alive should close
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
@@ -493,7 +493,7 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("ok"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -519,14 +519,14 @@ std::string sendRaw(std::string_view raw) {
 }  // anonymous namespace
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   std::string resp = sendRaw("GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
   ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
 TEST(HttpMalformed, OversizedHeaders) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(128); });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   std::string big(200, 'A');
   std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
@@ -535,7 +535,7 @@ TEST(HttpMalformed, OversizedHeaders) {
 }
 
 TEST(HttpMalformed, BadChunkExtensionHex) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // Transfer-Encoding with invalid hex char 'Z'
   std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
@@ -545,7 +545,7 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
 
 TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   // Ensure the server accepts method tokens in mixed case (robustness per RFC 9110 §2.5).
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
     // Echo the canonical method name (parser maps mixed-case to enum).
     resp.body(std::string("method=") + std::string(http::MethodToStr(req.method())));
@@ -575,7 +575,7 @@ TEST(HttpServerCopy, CopyConstruct) {
   cfg.withReusePort();
 
   Router router;
-  router.setDefault([](const HttpRequest& req) {
+  router.setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
     resp.body(std::string("ORIG:") + std::string(req.path()));
     return resp;
@@ -653,7 +653,7 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
 #endif
 
 TEST(HttpUrlDecoding, SpaceDecoding) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/hello world", [](const HttpRequest& req) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/hello world", [](const HttpRequestView& req) {
     return HttpResponse(http::StatusCodeOK).reason("OK").body(std::string(req.path()));
   });
   test::RequestOptions optHello;
@@ -669,7 +669,7 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
   // Path contains snowman + space + 'x'
   std::string decodedPath = "/\xE2\x98\x83 x";  // /☃ x
   ts.resetRouterAndGet().setPath(http::Method::GET, decodedPath,
-                                 [](const HttpRequest&) { return HttpResponse("utf8"); });
+                                 [](const HttpRequestView&) { return HttpResponse("utf8"); });
   // Percent-encoded UTF-8 for snowman (E2 98 83) plus %20 and 'x'
   test::RequestOptions optUtf8;
   optUtf8.method = "GET";
@@ -681,7 +681,8 @@ TEST(HttpUrlDecoding, Utf8Decoded) {
 }
 
 TEST(HttpUrlDecoding, PlusIsNotSpace) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/a+b", [](const HttpRequest&) { return HttpResponse("plus"); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/a+b",
+                                 [](const HttpRequestView&) { return HttpResponse("plus"); });
   test::RequestOptions optPlus;
   optPlus.method = "GET";
   optPlus.target = "/a+b";
@@ -710,7 +711,7 @@ TEST(HttpUrlDecoding, IncompletePercentSequence400) {
 
 TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/seg one/part%/two",
-                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+                                 [](const HttpRequestView& req) { return HttpResponse(req.path()); });
   // encodes space in first segment only
   test::RequestOptions opt2;
   opt2.method = "GET";
@@ -731,8 +732,9 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'Z');
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/large",
-                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large", [&largePayload](const HttpRequestView& req) {
+    return req.makeResponse(largePayload);
+  });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -749,8 +751,9 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'D');
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-disabled",
-                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-disabled", [&largePayload](const HttpRequestView& req) {
+    return req.makeResponse(largePayload);
+  });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -767,8 +770,9 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'E');
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-enabled",
-                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/large-enabled", [&largePayload](const HttpRequestView& req) {
+    return req.makeResponse(largePayload);
+  });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -785,8 +789,9 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 
   const std::string smallPayload = "Small response body";
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/small",
-                                 [&smallPayload](const HttpRequest& req) { return req.makeResponse(smallPayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/small", [&smallPayload](const HttpRequestView& req) {
+    return req.makeResponse(smallPayload);
+  });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -810,7 +815,7 @@ TEST(ZerocopyMode, ForcedModeSmallPayload) {
   const std::string payload = "ForcedZerocopySmall";
 
   ts.resetRouterAndGet().setPath(http::Method::GET, "/forced-small",
-                                 [&payload](const HttpRequest& req) { return req.makeResponse(payload); });
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -837,8 +842,9 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
     largePayload.push_back(static_cast<char>('A' + (idx % 26)));
   }
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/stress",
-                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stress", [&largePayload](const HttpRequestView& req) {
+    return req.makeResponse(largePayload);
+  });
 
   test::RequestOptions opt;
   opt.method = "GET";
@@ -871,8 +877,9 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
     largePayload.push_back(static_cast<char>('0' + (idx % 10)));
   }
 
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/concurrent-stress",
-                                 [&largePayload](const HttpRequest& req) { return req.makeResponse(largePayload); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/concurrent-stress", [&largePayload](const HttpRequestView& req) {
+    return req.makeResponse(largePayload);
+  });
 
   constexpr int kThreads = 8;
   constexpr int kRequestsPerThread = 20;
@@ -924,7 +931,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
     const std::string path = "/vary-" + std::to_string(sz);
 
     ts.resetRouterAndGet().setPath(http::Method::GET, path,
-                                   [payload](const HttpRequest& req) { return req.makeResponse(payload); });
+                                   [payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
     test::RequestOptions opt;
     opt.method = "GET";
@@ -958,7 +965,7 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
   }
 
   ts.resetRouterAndGet().setPath(http::Method::GET, "/ka-stress",
-                                 [&payload](const HttpRequest& req) { return req.makeResponse(payload); });
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
   // Send many requests over a single connection using keep-alive
   test::ClientConnection cnx(ts.port());

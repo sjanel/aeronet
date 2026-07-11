@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -39,7 +39,7 @@ std::string DumpResponseHeaders(const TlsHttp2Client::Response& response) {
 TEST(TlsHttp2Client, BasicGetRequest) {
   // Create TLS server with HTTP/2 support
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& req) {
+  ts.setDefault([](const HttpRequestView& req) {
     return HttpResponse("Hello from HTTP/2 server! Path: " + std::string(req.path()));
   });
 
@@ -57,7 +57,7 @@ TEST(TlsHttp2Client, BasicGetRequest) {
 
 TEST(TlsHttp2Client, RequestWithQueryParams) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& req) {
+  ts.setDefault([](const HttpRequestView& req) {
     if (req.path() != "/hello") {
       return HttpResponse(http::StatusCodeNotFound);
     }
@@ -87,7 +87,7 @@ TEST(TlsHttp2Client, RequestWithQueryParams) {
 TEST(TlsHttp2Client, MultipleSequentialRequests) {
   TlsHttp2TestServer ts;
   int requestCount = 0;
-  ts.setDefault([&requestCount](const HttpRequest& req) {
+  ts.setDefault([&requestCount](const HttpRequestView& req) {
     ++requestCount;
     return HttpResponse("Request #" + std::to_string(requestCount) + ": " + std::string(req.path()));
   });
@@ -113,7 +113,7 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   TlsHttp2TestServer ts;
   std::string receivedBody;
   std::string receivedContentType;
-  ts.setDefault([&](const HttpRequest& req) {
+  ts.setDefault([&](const HttpRequestView& req) {
     receivedBody = std::string(req.body());
     receivedContentType = std::string(req.headerValueOrEmpty("content-type"));
     return HttpResponse("Received: " + receivedBody);
@@ -138,7 +138,7 @@ TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
   });
 
   const std::string plainBody(16UL * 1024UL, 'A');
-  ts.setDefault([&](const HttpRequest& /*req*/) { return HttpResponse(200, plainBody); });
+  ts.setDefault([&](const HttpRequestView& /*req*/) { return HttpResponse(200, plainBody); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
@@ -163,7 +163,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   std::string receivedOriginalEncodedLen;
   std::string receivedContentLen;
 
-  ts.setDefault([&](const HttpRequest& req) {
+  ts.setDefault([&](const HttpRequestView& req) {
     receivedBody = std::string(req.body());
     receivedContentEncoding = std::string(req.headerValueOrEmpty("content-encoding"));
     receivedOriginalEncoding = std::string(req.headerValueOrEmpty(http::OriginalEncodingHeaderName));
@@ -202,7 +202,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
 TEST(TlsHttp2Client, CustomHeaders) {
   TlsHttp2TestServer ts;
   std::string receivedCustomHeader;
-  ts.setDefault([&](const HttpRequest& req) {
+  ts.setDefault([&](const HttpRequestView& req) {
     receivedCustomHeader = std::string(req.headerValueOrEmpty("x-custom-header"));
     return HttpResponse().headerAddLine("x-response-header", "response-value").body("Headers received");
   });
@@ -225,7 +225,7 @@ TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
     cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
   });
 
-  ts.setDefault([](const HttpRequest& /*req*/) {
+  ts.setDefault([](const HttpRequestView& /*req*/) {
     HttpResponse resp;
     resp.headerAddLine("x-custom", "original");
     resp.body("R");
@@ -257,7 +257,7 @@ TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
     cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
   });
 
-  ts.setDefault([](const HttpRequest& req) {
+  ts.setDefault([](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeAccepted, "h2-body", "text/custom");
     resp.header("X-Local", "local-value");
     return resp;
@@ -276,7 +276,7 @@ TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
 
 TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse("abc"); });
+  ts.setDefault([](const HttpRequestView& /*req*/) { return HttpResponse("abc"); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
@@ -293,7 +293,7 @@ TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
 
 TEST(TlsHttp2Client, StatusCodes) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& req) {
+  ts.setDefault([](const HttpRequestView& req) {
     if (req.path() == "/not-found") {
       return HttpResponse(404, "Resource not found");
     }
@@ -319,7 +319,7 @@ TEST(TlsHttp2Client, StatusCodes) {
 TEST(TlsHttp2Client, TrailersAreSentAfterBody) {
   // Test that HTTP/2 trailers are correctly sent as a HEADERS frame with END_STREAM after DATA frames
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) {
+  ts.setDefault([](const HttpRequestView& /*req*/) {
     return HttpResponse("Body content")
         .trailerAddLine("x-checksum", "abc123")
         .trailerAddLine("x-processing-time-ms", "42");
@@ -339,7 +339,7 @@ TEST(TlsHttp2Client, TrailersAreSentAfterBody) {
 
 TEST(TlsHttp2Client, ResponseWithoutBodyNoTrailers) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse().status(204); });
+  ts.setDefault([](const HttpRequestView& /*req*/) { return HttpResponse().status(204); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
@@ -351,7 +351,7 @@ TEST(TlsHttp2Client, ResponseWithoutBodyNoTrailers) {
 
 TEST(TlsHttp2Client, ResponseWithBodyNoTrailers) {
   TlsHttp2TestServer ts;
-  ts.setDefault([](const HttpRequest& /*req*/) { return HttpResponse("Simple body"); });
+  ts.setDefault([](const HttpRequestView& /*req*/) { return HttpResponse("Simple body"); });
 
   TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());

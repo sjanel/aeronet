@@ -19,7 +19,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -110,7 +110,7 @@ TEST(HttpRequestDecompression, SingleSmallPayload) {
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.postRouterUpdate([](Router& router) {
-    router.setDefault([](const HttpRequest& req) {
+    router.setDefault([](const HttpRequestView& req) {
       EXPECT_TRUE(req.headerValue(http::ContentEncoding) == http::identity ||
                   !req.headerValue(http::ContentEncoding).has_value());
       return HttpResponse(req.body());
@@ -130,7 +130,7 @@ TEST(HttpRequestDecompression, SingleNoContentEncoding) {
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.postRouterUpdate(
-      [](Router& router) { router.setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); }); });
+      [](Router& router) { router.setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); }); });
 
   for (Encoding encoding : test::SupportedEncodingWithIdentity()) {
     auto comp = test::Compress(encoding, plain);
@@ -148,7 +148,7 @@ TEST(HttpRequestDecompression, SingleLargePayloadWithHeadersCheck) {
     const auto comp = test::Compress(enc, plain);
     const std::size_t compressedSize = comp.size();
 
-    ts.resetRouterAndGet().setDefault([plain, compressedSize, enc](const HttpRequest& req) {
+    ts.resetRouterAndGet().setDefault([plain, compressedSize, enc](const HttpRequestView& req) {
       EXPECT_EQ(req.body(), plain);
       EXPECT_FALSE(req.headerValue(http::ContentEncoding));
       EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), GetEncodingStr(enc));
@@ -179,7 +179,7 @@ TEST(HttpRequestDecompression, DualCompressionWithSpaces) {
       std::string contentEncodingValue = ContentEncodingConcat(vector<Encoding>{firstEnc, secondEnc});
 
       ts.resetRouterAndGet().setDefault(
-          [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
+          [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequestView& req) {
             if (testHeaders) {
               EXPECT_FALSE(req.headerValue(http::ContentEncoding).has_value());
               EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), contentEncodingTrimmed);
@@ -212,7 +212,7 @@ TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
         std::string contentEncodingValue = ContentEncodingConcat(vector<Encoding>{firstEnc, secondEnc, thirdEnc});
 
         ts.resetRouterAndGet().setDefault(
-            [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequest& req) {
+            [testHeaders, contentEncodingTrimmed = TrimOws(contentEncodingValue)](const HttpRequestView& req) {
               if (testHeaders) {
                 EXPECT_FALSE(req.headerValue(http::ContentEncoding).has_value());
                 EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), contentEncodingTrimmed);
@@ -229,7 +229,7 @@ TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
 
 TEST(HttpRequestDecompression, SingleUnknownCodingRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("U"); });
   std::string body = "abc";  // not used
   auto resp = RawPost(ts.port(), "/u", {{"Content-Encoding", "snappy"}}, body);
 #if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
@@ -241,7 +241,7 @@ TEST(HttpRequestDecompression, SingleUnknownCodingRejected) {
 
 TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequest& req) { return HttpResponse("U"); });
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("U"); });
   std::string body = "abc";
   for (const Encoding enc : test::SupportedEncodings()) {
     auto compressed = test::Compress(enc, body);
@@ -283,7 +283,7 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const auto comp = test::Compress(enc, plain);
 
-    ts.resetRouterAndGet().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+    ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
     auto resp = RawPost(ts.port(), "/d", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
 
@@ -293,7 +293,7 @@ TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
 
 TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   // Any non-empty Content-Encoding header will cause the decompression path to be considered.
   // We send a body larger than `maxCompressedBytes` to hit the early PayloadTooLarge return.
@@ -317,7 +317,7 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulativ
     cfg.decompression = {};
     cfg.decompression.maxCompressedBytes = 0;
   });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   const auto defaultMaxBodyBytes = ts.server.config().maxBodyBytes;
   std::string plain(4096, 'Q');
@@ -369,7 +369,7 @@ TEST(HttpRequestDecompression, ExpansionRatioGuard) {
     cfg.decompression.maxExpansionRatio = 2.0;
     cfg.decompression.maxDecompressedBytes = 100000;
   });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   // Highly compressible large input -> gzip then send; expect rejection if ratio >2
   std::string large(100000, 'A');
 
@@ -398,7 +398,7 @@ TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
     cfg.decompression = {};
     cfg.decompression.decoderChunkSize = 16;
   });
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   std::string plain(4096, 'S');
 
@@ -429,7 +429,7 @@ void ExpectTrailers(vector<Encoding> encodings, bool insertBadTrailer = false, b
   std::string plain(10000, 'L');
   std::ranges::iota(plain, 'A');
 
-  ts.router().setDefault([&plain](const HttpRequest& req) {
+  ts.router().setDefault([&plain](const HttpRequestView& req) {
     EXPECT_EQ(req.body(), plain);
     // Expect two trailers preserved
     EXPECT_EQ(req.trailers().size(), 2U);
@@ -550,7 +550,7 @@ TEST(HttpRequestDecompression, TripleCompressLargeBodyWithTrailers) {
 TEST(HttpRequestDecompression, MixedCaseTokens) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   std::uniform_int_distribution<int> toUpper(0, 1);
 
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -578,7 +578,7 @@ constexpr std::size_t kStreamingThresholds[]{0, 1};
 TEST(HttpRequestDecompression, CorruptedCompressedData) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = std::string(200, 'G');
-  ts.router().setDefault([](const HttpRequest& req) { return HttpResponse(req.body()); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   for (std::size_t threshold : kStreamingThresholds) {
     ts.postConfigUpdate(

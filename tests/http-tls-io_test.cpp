@@ -21,7 +21,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -63,7 +63,7 @@ TEST(HttpTlsCompressionStreaming, CompressionActivatedOverThresholdTls) {
   std::string part1(20000, 'a');
   std::string part2(64000, 'b');
 
-  ts.setDefault([&](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.setDefault([&](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
 
@@ -114,7 +114,7 @@ std::string tlsGetLarge(auto port) {
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
   test::TlsTestServer ts;  // basic TLS
   auto port = ts.port();
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(200).body(std::string(300000, 'A')); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(200).body(std::string(300000, 'A')); });
   std::string resp = tlsGetLarge(port);
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
@@ -129,7 +129,7 @@ TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
       {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly); });
 
   // Default handler (not needed but keep server alive)
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // Use a TLS client to send a TRACE request; it should be rejected (405)
   TlsClient client(ts.port());
@@ -144,7 +144,7 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
   // EnabledPlainAndTLS should allow TRACE over TLS
   TlsTestServer ts(
       {}, [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -155,7 +155,7 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
 
 TEST(HttpTlsStreaming, ChunkedSimpleTls) {
   test::TlsTestServer ts({"http/1.1"});
-  ts.setDefault([]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
     writer.writeBody("hello ");
@@ -177,7 +177,7 @@ TEST(HttpTlsStreaming, SendFileFallbackBuffers) {
   std::string path = tmp.filePath().string();
 
   test::TlsTestServer ts({"http/1.1"});
-  ts.setDefault([path](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.setDefault([path](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(path));
     writer.end();
@@ -204,7 +204,7 @@ TEST(HttpTlsStreamingBackpressure, LargeChunksTls) {
   static constexpr int kNbChunks = 32;
 
   std::string chunk(kChunkSize, 'X');
-  ts.setDefault([&]([[maybe_unused]] const HttpRequest& req, HttpResponseWriter& writer) {
+  ts.setDefault([&]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
     // write several large chunks
@@ -303,7 +303,7 @@ TEST(HttpTlsBasic, LargePayload) {
     cfg.withMaxOutboundBufferBytes(largeBody.size() + 64);  // +64 for headers
     cfg.withKeepAliveTimeout(std::chrono::hours(1));
   });
-  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequest& req) { return HttpResponse(largeBody); });
+  ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse(largeBody); });
   test::TlsClient client(ts.port());
   auto raw = client.get("/hello", {http::Header{"X-Test", "tls"}});
   ASSERT_FALSE(raw.empty());
@@ -434,7 +434,7 @@ TEST(HttpRangeStatic_H2Tls, LargeFileStreaming_H2Tls) {
 TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse("ktls"); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("ktls"); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -452,7 +452,7 @@ TEST(HttpTlsKtlsMode, EnabledModeTracksStats) {
 // Disabled: should not attempt kTLS (no counters incremented).
 TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -469,7 +469,7 @@ TEST(HttpTlsKtlsMode, DisabledModeDoesNotAttemptKtls) {
 // Opportunistic — expect either enabled or fallback, but never forced shutdowns.
 TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -487,7 +487,7 @@ TEST(HttpTlsKtlsMode, OpportunisticModeEnabledOrFallbackNoForcedClose) {
 // Enabled: similar to Opportunistic for warnings on fallback — ensure no forced shutdowns.
 TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -505,7 +505,7 @@ TEST(HttpTlsKtlsMode, EnabledModeEnabledOrFallbackNoForcedClose) {
 // Forced: treat failure as fatal — expect either enabled OR forced shutdown recorded.
 TEST(HttpTlsKtlsMode, ForcedModeEnabledOrForcedShutdown) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Required); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -536,7 +536,7 @@ TEST(HttpTlsKtlsMode, DisabledModeFileServing) {
   test::TlsTestServer ts({"http/1.1"},
                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
 
-  ts.setDefault([filePath](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.setDefault([filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -572,7 +572,7 @@ TEST(HttpTlsKtlsMode, DisabledModeFileServing) {
 #ifndef BIO_CTRL_SET_KTLS_SEND
 TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled); });
-  ts.setDefault([](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());
@@ -593,7 +593,7 @@ TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
 
   // Response slightly above zerocopy threshold
   std::string body(ts.server.server.config().zerocopyMinBytes + 1024, 'Z');
-  ts.setDefault([&body](const HttpRequest&) { return HttpResponse(body); });
+  ts.setDefault([&body](const HttpRequestView&) { return HttpResponse(body); });
 
   test::TlsClient client(ts.port());
   ASSERT_TRUE(client.handshakeOk());

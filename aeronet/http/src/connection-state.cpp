@@ -13,7 +13,7 @@
 #include <utility>
 
 #include "aeronet/file-payload.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
@@ -226,7 +226,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
 }
 
 namespace {
-std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequest& request, void* context) {
+std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequestView& request, void* context) {
   if (context == nullptr) {
     return {};
   }
@@ -234,7 +234,7 @@ std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequest& request, vo
   return ctx->body;
 }
 
-std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* context, std::size_t maxBytes) {
+std::string_view ReadBufferedBody([[maybe_unused]] HttpRequestView& request, void* context, std::size_t maxBytes) {
   if (maxBytes == 0 || context == nullptr) {
     return {};
   }
@@ -249,7 +249,7 @@ std::string_view ReadBufferedBody([[maybe_unused]] HttpRequest& request, void* c
   return chunk;
 }
 
-bool HasMoreBufferedBody([[maybe_unused]] const HttpRequest& request, void* context) {
+bool HasMoreBufferedBody([[maybe_unused]] const HttpRequestView& request, void* context) {
   if (context == nullptr) {
     return false;
   }
@@ -262,8 +262,8 @@ void ConnectionState::installAggregatedBodyBridge() {
   if (request._pBodyAccessBridge != nullptr) {
     return;
   }
-  static constexpr HttpRequest::BodyAccessBridge kAggregatedBodyBridge{&AggregateBufferedBody, &ReadBufferedBody,
-                                                                       &HasMoreBufferedBody};
+  static constexpr HttpRequestView::BodyAccessBridge kAggregatedBodyBridge{&AggregateBufferedBody, &ReadBufferedBody,
+                                                                           &HasMoreBufferedBody};
   bodyStreamContext.body = request._body;
   bodyStreamContext.offset = 0;
   request._pBodyAccessBridge = &kAggregatedBodyBridge;

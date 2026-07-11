@@ -14,7 +14,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -51,8 +51,8 @@ test::TestServer ts;
 }  // namespace
 
 TEST(HttpRouting, BasicPathDispatch) {
-  ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequest&) { return HttpResponse("world"); });
-  ts.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/hello", [](const HttpRequestView&) { return HttpResponse("world"); });
+  ts.router().setPath(http::Method::GET | http::Method::POST, "/multi", [](const HttpRequestView& req) {
     return HttpResponse(std::string(http::MethodToStr(req.method())) + "!");
   });
 
@@ -86,11 +86,12 @@ TEST(HttpRouting, BasicPathDispatch) {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(HttpRouting, AsyncHandlerDispatch) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    std::string payload("async:");
-    payload.append(req.path());
-    co_return HttpResponse(http::StatusCodeOK).body(std::move(payload));
-  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-route",
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   std::string payload("async:");
+                                   payload.append(req.path());
+                                   co_return HttpResponse(http::StatusCodeOK).body(std::move(payload));
+                                 });
 
   const std::string response = test::simpleGet(ts.port(), "/async-route");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -99,15 +100,16 @@ TEST(HttpRouting, AsyncHandlerDispatch) {
 #endif
 
 TEST(HttpRouting, GlobalFallbackWithPathHandlers) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse(200); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(200); });
   // Adding path handler after global handler is now allowed (Phase 2 mixing model)
-  EXPECT_NO_THROW(ts.router().setPath(http::Method::GET, "/x", [](const HttpRequest&) { return HttpResponse(200); }));
+  EXPECT_NO_THROW(
+      ts.router().setPath(http::Method::GET, "/x", [](const HttpRequestView&) { return HttpResponse(200); }));
 }
 
 TEST(HttpRouting, PathParametersInjectedIntoRequest) {
   std::string seenUser;
   std::string seenPost;
-  ts.router().setPath(http::Method::GET, "/users/{userId}/posts/{postId}", [&](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/users/{userId}/posts/{postId}", [&](const HttpRequestView& req) {
     EXPECT_TRUE(req.hasPathParam("userId"));
     EXPECT_TRUE(req.hasPathParam("postId"));
     EXPECT_FALSE(req.hasPathParam("missingParam"));
@@ -161,14 +163,14 @@ class HttpTrailingSlash : public ::testing::Test {
 
 TEST_F(HttpTrailingSlash, StrictPolicyDifferent) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/alpha", [](const HttpRequest&) { return HttpResponse("alpha"); });
+  ts.router().setPath(http::Method::GET, "/alpha", [](const HttpRequestView&) { return HttpResponse("alpha"); });
   auto resp = rawRequest(ts.port(), "/alpha/");
   ASSERT_TRUE(resp.contains("404"));
 }
 
 TEST_F(HttpTrailingSlash, NormalizeSingleSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse("beta"); });
+  ts.router().setPath(http::Method::GET, "/", [](const HttpRequestView&) { return HttpResponse("beta"); });
   auto resp = rawRequest(ts.port(), "/");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
@@ -180,7 +182,7 @@ TEST_F(HttpTrailingSlash, NormalizeSingleSlash) {
 
 TEST_F(HttpTrailingSlash, NormalizePolicyStrips) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequest&) { return HttpResponse("beta"); });
+  ts.router().setPath(http::Method::GET, "/beta", [](const HttpRequestView&) { return HttpResponse("beta"); });
   auto resp = rawRequest(ts.port(), "/beta/");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("beta"));
@@ -188,7 +190,7 @@ TEST_F(HttpTrailingSlash, NormalizePolicyStrips) {
 
 TEST_F(HttpTrailingSlash, NormalizePolicyAddSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/beta/", [](const HttpRequest&) { return HttpResponse("beta/"); });
+  ts.router().setPath(http::Method::GET, "/beta/", [](const HttpRequestView&) { return HttpResponse("beta/"); });
   auto resp = rawRequest(ts.port(), "/beta");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
@@ -197,7 +199,7 @@ TEST_F(HttpTrailingSlash, NormalizePolicyAddSlash) {
 
 TEST_F(HttpTrailingSlash, RedirectPolicy) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/gamma", [](const HttpRequest&) { return HttpResponse("gamma"); });
+  ts.router().setPath(http::Method::GET, "/gamma", [](const HttpRequestView&) { return HttpResponse("gamma"); });
   auto resp = rawRequest(ts.port(), "/gamma/");
   // Expect 301 and Location header
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 301"));
@@ -208,7 +210,7 @@ TEST_F(HttpTrailingSlash, RedirectPolicy) {
 
 TEST_F(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/sigma/", [](const HttpRequest&) { return HttpResponse("sigma"); });
+  ts.router().setPath(http::Method::GET, "/sigma/", [](const HttpRequestView&) { return HttpResponse("sigma"); });
   auto ok = rawRequest(ts.port(), "/sigma/");
   auto notFound = rawRequest(ts.port(), "/sigma");
   ASSERT_TRUE(ok.starts_with("HTTP/1.1 200"));
@@ -217,7 +219,7 @@ TEST_F(HttpTrailingSlash, StrictPolicyRegisteredWithSlashDoesNotMatchWithout) {
 
 TEST_F(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Normalize);
-  ts.router().setPath(http::Method::GET, "/norm/", [](const HttpRequest&) { return HttpResponse("norm"); });
+  ts.router().setPath(http::Method::GET, "/norm/", [](const HttpRequestView&) { return HttpResponse("norm"); });
   auto withSlash = rawRequest(ts.port(), "/norm/");
   auto withoutSlash = rawRequest(ts.port(), "/norm");
   ASSERT_TRUE(withSlash.starts_with("HTTP/1.1 200"));
@@ -227,7 +229,7 @@ TEST_F(HttpTrailingSlash, NormalizePolicyRegisteredWithSlashAcceptsWithout) {
 
 TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/redir", [](const HttpRequest&) { return HttpResponse("redir"); });
+  ts.router().setPath(http::Method::GET, "/redir", [](const HttpRequestView&) { return HttpResponse("redir"); });
   auto redirect = rawRequest(ts.port(), "/redir/");  // should 301 -> /redir
   auto canonical = rawRequest(ts.port(), "/redir");  // should 200
   ASSERT_TRUE(redirect.starts_with("HTTP/1.1 301"));
@@ -238,7 +240,7 @@ TEST_F(HttpTrailingSlash, RedirectPolicyRemoveSlash) {
 
 TEST_F(HttpTrailingSlash, RedirectPolicyAddSlash) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
-  ts.router().setPath(http::Method::GET, "/only/", [](const HttpRequest&) { return HttpResponse("only"); });
+  ts.router().setPath(http::Method::GET, "/only/", [](const HttpRequestView&) { return HttpResponse("only"); });
   auto withSlash = rawRequest(ts.port(), "/only/");
   auto withoutSlash = rawRequest(ts.port(), "/only");
 
@@ -255,8 +257,9 @@ TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
 
 TEST_F(HttpTrailingSlash, StrictPolicyBothVariants_Independent) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Strict);
-  ts.router().setPath(http::Method::GET, "/both", [](const HttpRequest&) { return HttpResponse("both-no-slash"); });
-  ts.router().setPath(http::Method::GET, "/both/", [](const HttpRequest&) { return HttpResponse("both-with-slash"); });
+  ts.router().setPath(http::Method::GET, "/both", [](const HttpRequestView&) { return HttpResponse("both-no-slash"); });
+  ts.router().setPath(http::Method::GET, "/both/",
+                      [](const HttpRequestView&) { return HttpResponse("both-with-slash"); });
   auto respNoSlash = rawRequest(ts.port(), "/both");
   auto respWithSlash = rawRequest(ts.port(), "/both/");
 
@@ -269,15 +272,15 @@ TEST_F(HttpTrailingSlash, StrictPolicyBothVariants_Independent) {
 TEST(HttpMiddleware, GlobalRequestShortCircuit) {
   std::atomic_bool handlerCalled{false};
 
-  ts.resetRouterAndGet().setDefault([&](const HttpRequest&) {
+  ts.resetRouterAndGet().setDefault([&](const HttpRequestView&) {
     handlerCalled.store(true, std::memory_order_relaxed);
     return HttpResponse("handler");
   });
 
   ts.router().addResponseMiddleware(
-      [](const HttpRequest&, HttpResponse& resp) { resp.header("X-Global-Middleware", "applied"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Global-Middleware", "applied"); });
 
-  ts.router().addRequestMiddleware([](HttpRequest& req) {
+  ts.router().addRequestMiddleware([](HttpRequestView& req) {
     if (req.path() == "/mw-short") {
       return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeServiceUnavailable, "short-circuited"));
     }
@@ -303,19 +306,19 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   std::mutex seqMutex;
   vector<std::string> sequence;
 
-  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequestView&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-pre");
     return MiddlewareResult::Continue();
   });
 
-  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+  ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
     resp.header("X-Global-Middleware", "post");
   });
 
-  auto entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequest&) {
+  auto entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequestView&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("handler");
     HttpResponse resp;
@@ -323,13 +326,13 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
     return resp;
   });
 
-  entry.before([&](HttpRequest&) {
+  entry.before([&](HttpRequestView&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-pre");
     return MiddlewareResult::Continue();
   });
 
-  entry.after([&](const HttpRequest&, HttpResponse& resp) {
+  entry.after([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
     resp.header("X-Route-Middleware", "post");
@@ -358,20 +361,20 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   std::mutex seqMutex;
   vector<std::string> sequence;
 
-  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequestView&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-pre");
     return MiddlewareResult::Continue();
   });
 
-  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+  ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
     resp.header("X-Global-Streaming", "post");
   });
 
   auto entry =
-      ts.router().setPath(http::Method::GET, "/mw-stream", [&](const HttpRequest&, HttpResponseWriter& writer) {
+      ts.router().setPath(http::Method::GET, "/mw-stream", [&](const HttpRequestView&, HttpResponseWriter& writer) {
         {
           std::scoped_lock lock(seqMutex);
           sequence.emplace_back("handler");
@@ -385,13 +388,13 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
         writer.end();
       });
 
-  entry.before([&](HttpRequest&) {
+  entry.before([&](HttpRequestView&) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-pre");
     return MiddlewareResult::Continue();
   });
 
-  entry.after([&](const HttpRequest&, HttpResponse& resp) {
+  entry.after([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
     resp.status(http::StatusCodeAccepted);
@@ -427,17 +430,17 @@ TEST(HttpMiddlewareMetrics, RecordsPreAndPostMetrics) {
   });
 
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
-  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+  router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequestView&, HttpResponse&) {});
 
-  auto entry = router.setPath(http::Method::GET, "/mw-metrics", [](const HttpRequest&) {
+  auto entry = router.setPath(http::Method::GET, "/mw-metrics", [](const HttpRequestView&) {
     HttpResponse resp;
     resp.body("from-handler");
     return resp;
   });
 
-  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); });
-  entry.after([](const HttpRequest&, HttpResponse&) {});
+  entry.before([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  entry.after([](const HttpRequestView&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-metrics");
   ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -493,19 +496,19 @@ TEST(HttpMiddlewareMetrics, MarksShortCircuit) {
   });
 
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
-  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+  router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequestView&, HttpResponse&) {});
 
   std::atomic_bool handlerInvoked{false};
-  auto entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequest&) {
+  auto entry = router.setPath(http::Method::GET, "/mw-short-metrics", [&](const HttpRequestView&) {
     handlerInvoked.store(true, std::memory_order_relaxed);
     return HttpResponse("should-not-run");
   });
 
-  entry.before([](HttpRequest&) {
+  entry.before([](HttpRequestView&) {
     return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeServiceUnavailable, "shorted"));
   });
-  entry.after([](const HttpRequest&, HttpResponse&) {});
+  entry.after([](const HttpRequestView&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-short-metrics");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 503")) << response;
@@ -549,11 +552,11 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
   });
 
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.addRequestMiddleware([](HttpRequest&) { return MiddlewareResult::Continue(); });
-  router.addResponseMiddleware([](const HttpRequest&, HttpResponse&) {});
+  router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  router.addResponseMiddleware([](const HttpRequestView&, HttpResponse&) {});
 
   auto entry =
-      router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequest&, HttpResponseWriter& writer) {
+      router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequestView&, HttpResponseWriter& writer) {
         writer.status(http::StatusCodeOK);
         writer.reason("OK");
         writer.header("X", "1");
@@ -561,8 +564,8 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
         writer.end();
       });
 
-  entry.before([](HttpRequest&) { return MiddlewareResult::Continue(); });
-  entry.after([](const HttpRequest&, HttpResponse&) {});
+  entry.before([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  entry.after([](const HttpRequestView&, HttpResponse&) {});
 
   const std::string response = test::simpleGet(ts.port(), "/mw-stream-metrics");
   ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -597,17 +600,18 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
   std::atomic_bool preSeen{false};
   std::atomic_bool postSeen{false};
 
-  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequest&) {
+  ts.resetRouterAndGet().addRequestMiddleware([&](HttpRequestView&) {
     preSeen.store(true, std::memory_order_relaxed);
     return MiddlewareResult::Continue();
   });
 
-  ts.router().addResponseMiddleware([&](const HttpRequest&, HttpResponse& resp) {
+  ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     postSeen.store(true, std::memory_order_relaxed);
     resp.header("X-Router-Post", "ok");
   });
 
-  ts.router().setPath(http::Method::GET, "/router-owned", [](const HttpRequest&) { return HttpResponse("payload"); });
+  ts.router().setPath(http::Method::GET, "/router-owned",
+                      [](const HttpRequestView&) { return HttpResponse("payload"); });
 
   const std::string response = test::simpleGet(ts.port(), "/router-owned");
   EXPECT_TRUE(response.contains("payload")) << response;
@@ -638,7 +642,7 @@ auto makePollIntervalScope(std::chrono::milliseconds interval) {
 TEST(HttpRouting, AsyncBodyReadTimeout) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   std::atomic_bool handlerInvoked{false};
-  router.setPath(http::Method::POST, "/async-timeout", [&](HttpRequest&) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::POST, "/async-timeout", [&](HttpRequestView&) -> RequestTask<HttpResponse> {
     handlerInvoked.store(true, std::memory_order_relaxed);
     co_return HttpResponse(http::StatusCodeOK).body("should-not-run");
   });
@@ -670,7 +674,7 @@ constexpr std::size_t kAsyncLargePayload = 16 << 20;
 
 TEST(HttpRouting, AsyncLargeResponseChunks) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.setPath(http::Method::GET, "/async-large", [](HttpRequest&) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::GET, "/async-large", [](HttpRequestView&) -> RequestTask<HttpResponse> {
     std::string body(kAsyncLargePayload, 'x');
     co_return HttpResponse(http::StatusCodeOK).body(std::move(body));
   });
@@ -693,7 +697,7 @@ TEST(HttpRouting, AsyncLargeResponseChunks) {
 TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   std::atomic_bool sawException{false};
-  router.setPath(http::Method::POST, "/async-read-before-body", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::POST, "/async-read-before-body", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
     [[maybe_unused]] auto chunk = req.readBody();
     try {
       [[maybe_unused]] auto aggregated = req.body();
@@ -718,7 +722,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
 TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   std::atomic_bool sawException{false};
-  router.setPath(http::Method::POST, "/async-body-before-read", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setPath(http::Method::POST, "/async-body-before-read", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
     [[maybe_unused]] auto aggregated = req.body();
     try {
       [[maybe_unused]] auto chunk = req.readBody();
@@ -742,7 +746,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
 
 TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/identity-stream-cl",
-                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    std::string collected;
                                    while (req.hasMoreBody()) {
                                      auto chunk = req.readBody(3);
@@ -767,7 +771,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
 
 TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-readbody-async",
-                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    std::string collected;
                                    while (req.hasMoreBody()) {
                                      std::string_view chunk = co_await req.readBodyAsync();
@@ -790,7 +794,7 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
 
 TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/identity-stream-chunked",
-                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    std::string collected;
                                    while (req.hasMoreBody()) {
                                      auto chunk = req.readBody(4);
@@ -819,7 +823,7 @@ TEST(HttpRouting, AsyncIdentityChunkedReadBodyStreams) {
 TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
   std::atomic_bool handlerStarted{false};
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-early",
-                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    handlerStarted.store(true, std::memory_order_release);
                                    std::string_view body = co_await req.bodyAwaitable();
                                    co_return HttpResponse(http::StatusCodeOK).body(body);
@@ -846,7 +850,7 @@ TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete) {
 TEST(HttpRouting, AsyncHandlerStartsBeforeBodyComplete_ReadBodyAsync) {
   std::atomic_bool handlerStarted{false};
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-early-readbody",
-                                 [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    handlerStarted.store(true, std::memory_order_release);
                                    std::string collected;
                                    while (req.hasMoreBody()) {
@@ -884,7 +888,7 @@ TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
   std::atomic_bool callbackStarted{false};
 
   ts.resetRouterAndGet().setPath(
-      http::Method::POST, "/async-delayed-compressed", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::POST, "/async-delayed-compressed", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
         (void)co_await req.deferWork([&]() {
           callbackStarted.store(true, std::memory_order_release);
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
@@ -898,7 +902,7 @@ TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
       });
 
   ts.router().setPath(http::Method::POST, "/overwrite-shared-decompressed",
-                      [](const HttpRequest& req) { return req.makeResponse(std::string(req.body())); });
+                      [](const HttpRequestView& req) { return req.makeResponse(std::string(req.body())); });
 
   const std::string payloadA(256UL * 1024, 'A');
   const std::string payloadB(256UL * 1024, 'B');
@@ -951,7 +955,7 @@ TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
 TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/will-be-cleared",
-                 [](const HttpRequest&) { return HttpResponse("should not see this"); });
+                 [](const HttpRequestView&) { return HttpResponse("should not see this"); });
 
   router.clear();
 
@@ -962,7 +966,7 @@ TEST(RouterUpdateProxy, ClearRemovesAllHandlers) {
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET | http::Method::POST, "/stream-multi",
-                 [](const HttpRequest& req, HttpResponseWriter& writer) {
+                 [](const HttpRequestView& req, HttpResponseWriter& writer) {
                    writer.status(http::StatusCodeOK);
                    writer.writeBody(std::string(http::MethodToStr(req.method())));
                    writer.end();
@@ -984,11 +988,11 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndAsyncHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.setDefault([](HttpRequest& req) -> RequestTask<HttpResponse> {
+  router.setDefault([](HttpRequestView& req) -> RequestTask<HttpResponse> {
     co_return HttpResponse().reason("async-default-" + std::string(http::MethodToStr(req.method())));
   });
   router.setPath(http::Method::GET | http::Method::PUT, "/async-multi",
-                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                    co_return HttpResponse().reason("async-" + std::string(http::MethodToStr(req.method())));
                  });
 
@@ -1015,7 +1019,7 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
   CorsPolicy policy(CorsPolicy::Active::On);
   policy.allowOrigin("https://example.com").allowMethods(http::Method::GET).allowRequestHeader("X-Custom");
 
-  router.setPath(http::Method::GET, "/with-cors", [](const HttpRequest&) { return HttpResponse("cors-enabled"); })
+  router.setPath(http::Method::GET, "/with-cors", [](const HttpRequestView&) { return HttpResponse("cors-enabled"); })
       .cors(std::move(policy));
 
   test::RequestOptions opts;
@@ -1034,7 +1038,7 @@ TEST(RouterUpdateProxy, PathEntryProxyCorsPolicy) {
 TEST(RouterUpdateProxy, PathEntryProxyHttp2Enable) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   // Register a route and disable HTTP/2 via the proxy
-  router.setPath(http::Method::GET, "/h1only-proxy", [](const HttpRequest&) { return HttpResponse("h1-only"); })
+  router.setPath(http::Method::GET, "/h1only-proxy", [](const HttpRequestView&) { return HttpResponse("h1-only"); })
       .http2Enable(PathEntryConfig::Http2Enable::Disable);
 
   // HTTP/1.1 should still work
@@ -1048,7 +1052,8 @@ TEST(RouterUpdateProxy, PathEntryProxyTimeout) {
   using namespace std::chrono_literals;
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router
-      .setPath(http::Method::GET, "/timeout-proxy", [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+      .setPath(http::Method::GET, "/timeout-proxy",
+               [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); })
       .timeout(5000ms);
 
   // Verify route still works through HTTP/1.1 (the timeout is enforced via sweep, not here)
@@ -1060,7 +1065,7 @@ TEST(RouterUpdateProxy, PathEntryProxyMaxBodyBytes) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router
       .setPath(http::Method::POST, "/small-body-proxy",
-               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+               [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); })
       .maxBodyBytes(5);
 
   test::RequestOptions opts;
@@ -1076,7 +1081,7 @@ TEST(RouterUpdateProxy, PathEntryProxyMaxHeaderBytes) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
   router
       .setPath(http::Method::GET, "/small-hdr-proxy",
-               [](const HttpRequest&) { return HttpResponse(http::StatusCodeOK); })
+               [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); })
       .maxHeaderBytes(10);
 
   test::RequestOptions opts;
@@ -1089,7 +1094,7 @@ TEST(RouterUpdateProxy, PathEntryProxyMaxHeaderBytes) {
 
 TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
   RouterUpdateProxy router = ts.resetRouterAndGet();
-  router.setDefault([](const HttpRequest& req, HttpResponseWriter& writer) {
+  router.setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentType("text/plain");
     writer.writeBody("default-streaming:");
@@ -1110,13 +1115,14 @@ TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {
 
 // Test async handler exception during task creation (before coroutine starts)
 TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-throw-std", [](HttpRequest&) -> RequestTask<HttpResponse> {
-    // Throw BEFORE entering coroutine body - this is caught by dispatchAsyncHandler
-    throw std::runtime_error("Task creation failed");
-    // Note: co_return would make this a coroutine, but throw happens first,
-    // before coroutine frame is created, so exception is caught in dispatchAsyncHandler
-    co_return HttpResponse(http::StatusCodeOK);
-  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-throw-std",
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
+                                   // Throw BEFORE entering coroutine body - this is caught by dispatchAsyncHandler
+                                   throw std::runtime_error("Task creation failed");
+                                   // Note: co_return would make this a coroutine, but throw happens first,
+                                   // before coroutine frame is created, so exception is caught in dispatchAsyncHandler
+                                   co_return HttpResponse(http::StatusCodeOK);
+                                 });
 
   const std::string response = test::simpleGet(ts.port(), "/async-throw-std");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
@@ -1126,7 +1132,7 @@ TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
 // Test async handler exception (non-std) during task creation (before coroutine starts)
 TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-throw-nonstd",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE entering coroutine body - caught by dispatchAsyncHandler
                                    throw 42;  // Non-std exception
                                    co_return HttpResponse(http::StatusCodeOK);
@@ -1144,7 +1150,7 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
 // Test async handler returning invalid task
 TEST(HttpRouting, AsyncHandlerReturnsInvalidTask) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-invalid-task",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    RequestTask<HttpResponse> task;  // Default constructed, invalid task
                                    return task;
                                  });
@@ -1157,7 +1163,7 @@ TEST(HttpRouting, AsyncHandlerReturnsInvalidTask) {
 // Test async handler returning task with null coroutine handle
 TEST(HttpRouting, AsyncHandlerReturnsNullHandle) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-null-handle",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    RequestTask<HttpResponse> task = []() -> RequestTask<HttpResponse> {
                                      co_return HttpResponse(http::StatusCodeOK);
                                    }();
@@ -1174,7 +1180,7 @@ TEST(HttpRouting, AsyncHandlerReturnsNullHandle) {
 // Test async handler exception during creation with body not ready (before coroutine starts)
 TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-throw-no-body",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    // Keep coroutine form without creating a compile-time unreachable co_return.
                                    if (std::chrono::steady_clock::now().time_since_epoch().count() < 0) {
                                      co_return HttpResponse(http::StatusCodeOK);
@@ -1204,7 +1210,7 @@ TEST(HttpRouting, AsyncHandlerThrowsWithBodyNotReady) {
 // Test async handler returning invalid task with body not ready
 TEST(HttpRouting, AsyncHandlerInvalidTaskWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-invalid-no-body",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    RequestTask<HttpResponse> task;  // Invalid task
                                    return task;
                                  });
@@ -1226,7 +1232,7 @@ TEST(HttpRouting, AsyncHandlerInvalidTaskWithBodyNotReady) {
 // Test async handler returning null handle with body not ready
 TEST(HttpRouting, AsyncHandlerNullHandleWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-null-no-body",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    RequestTask<HttpResponse> task = []() -> RequestTask<HttpResponse> {
                                      co_return HttpResponse(http::StatusCodeOK);
                                    }();
@@ -1252,7 +1258,7 @@ TEST(HttpRouting, AsyncHandlerNullHandleWithBodyNotReady) {
 // Test async handler non-std exception with body not ready (before coroutine starts)
 TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-nonstd-no-body",
-                                 [](HttpRequest&) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    // Keep coroutine form without creating a compile-time unreachable co_return.
                                    if (std::chrono::steady_clock::now().time_since_epoch().count() < 0) {
                                      co_return HttpResponse(http::StatusCodeOK);
@@ -1284,14 +1290,15 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
 
 // Test deferWork(): basic async work execution returning a value
 TEST(HttpRouting, DeferWorkBasicReturnValue) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-basic", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    // Run blocking work on background thread
-    int result = co_await req.deferWork([]() {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      return 42;
-    });
-    co_return HttpResponse(http::StatusCodeOK).body("result=" + std::to_string(result));
-  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-basic",
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   // Run blocking work on background thread
+                                   int result = co_await req.deferWork([]() {
+                                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                     return 42;
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK).body("result=" + std::to_string(result));
+                                 });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-basic");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -1300,13 +1307,14 @@ TEST(HttpRouting, DeferWorkBasicReturnValue) {
 
 // Test deferWork(): work returning a string
 TEST(HttpRouting, DeferWorkReturnsString) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-string", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    std::string result = co_await req.deferWork([]() -> std::string {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      return "computed-value";
-    });
-    co_return HttpResponse(http::StatusCodeOK).body(result);
-  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   std::string result = co_await req.deferWork([]() -> std::string {
+                                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                     return "computed-value";
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK).body(result);
+                                 });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-string");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -1316,7 +1324,7 @@ TEST(HttpRouting, DeferWorkReturnsString) {
 // Test deferWork(): work returning an optional
 TEST(HttpRouting, DeferWorkReturnsOptional) {
   ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-optional", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-optional", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 123;
@@ -1335,7 +1343,7 @@ TEST(HttpRouting, DeferWorkReturnsOptional) {
 // Test deferWork(): multiple sequential defers in same handler
 TEST(HttpRouting, DeferWorkMultipleSequential) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-sequential",
-                                 [](HttpRequest& req) -> RequestTask<HttpResponse> {
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    int first = co_await req.deferWork([]() {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return 10;
@@ -1356,7 +1364,7 @@ TEST(HttpRouting, DeferWorkMultipleSequential) {
 // Test deferWork(): combined with bodyAwaitable
 TEST(HttpRouting, DeferWorkCombinedWithBody) {
   ts.resetRouterAndGet().setPath(
-      http::Method::POST, "/defer-with-body", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::POST, "/defer-with-body", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // First, wait for body
         std::string_view body = co_await req.bodyAwaitable();
         std::string bodyCopy(body);
@@ -1391,7 +1399,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
   std::atomic<int> maxConcurrent{0};
 
   ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-concurrent", [&](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-concurrent", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
         int current = ++concurrentRequests;
         // Update max concurrent
         int expected = maxConcurrent.load();
@@ -1436,13 +1444,14 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
 
 // Test deferWork(): work returning bool
 TEST(HttpRouting, DeferWorkReturnsBool) {
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-bool", [](HttpRequest& req) -> RequestTask<HttpResponse> {
-    bool result = co_await req.deferWork([]() {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      return true;
-    });
-    co_return HttpResponse(http::StatusCodeOK).body(result ? "success" : "failure");
-  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-bool",
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   bool result = co_await req.deferWork([]() {
+                                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                                     return true;
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK).body(result ? "success" : "failure");
+                                 });
 
   const std::string response = test::simpleGet(ts.port(), "/defer-bool");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
@@ -1452,7 +1461,7 @@ TEST(HttpRouting, DeferWorkReturnsBool) {
 // Test deferWork(): exception (std::exception) thrown in work function
 TEST(HttpRouting, DeferWorkThrowsStdException) {
   ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-throw-std", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-throw-std", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // The work function throws - exception is captured and rethrown in await_resume
         try {
           (void)co_await req.deferWork([]() -> int { throw std::runtime_error("work failed"); });
@@ -1470,7 +1479,7 @@ TEST(HttpRouting, DeferWorkThrowsStdException) {
 // Test deferWork(): non-std exception thrown in work function
 TEST(HttpRouting, DeferWorkThrowsNonStdException) {
   ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-throw-nonstd", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-throw-nonstd", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // The work function throws a non-std exception
         try {
           (void)co_await req.deferWork([]() -> int {
@@ -1490,7 +1499,7 @@ TEST(HttpRouting, DeferWorkThrowsNonStdException) {
 // Test deferWork(): unhandled exception propagates to coroutine promise
 TEST(HttpRouting, DeferWorkUnhandledException) {
   ts.resetRouterAndGet().setPath(
-      http::Method::GET, "/defer-unhandled", [](HttpRequest& req) -> RequestTask<HttpResponse> {
+      http::Method::GET, "/defer-unhandled", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Exception not caught in coroutine - propagates to promise
         (void)co_await req.deferWork([]() -> int { throw std::runtime_error("unhandled in work"); });
         co_return HttpResponse(http::StatusCodeOK).body("should not reach");
@@ -1508,8 +1517,8 @@ TEST(HttpRoutingCoverageImprovements, FallthroughMismatchPath) {
   // Sets up routes to verify that a mismatched path sharing a prefix in the radix tree doesn't assert.
   // Parametrized routes are used to force insertion into the Radix tree instead of the literal map.
   ts.resetRouterAndGet().setPath(http::Method::GET, "/api/{group}",
-                                 [](const HttpRequest&) { return HttpResponse(200); });
-  ts.router().setPath(http::Method::GET, "/app/{id}", [](const HttpRequest&) { return HttpResponse(200); });
+                                 [](const HttpRequestView&) { return HttpResponse(200); });
+  ts.router().setPath(http::Method::GET, "/app/{id}", [](const HttpRequestView&) { return HttpResponse(200); });
 
   // The radix tree now has a root prefix of "/ap".
   // Requesting "/apX" will match the prefix, but will fail to find an 'X' child index,
@@ -1526,7 +1535,7 @@ TEST(HttpRoutingCoverageImprovements, FallthroughMismatchPath) {
 TEST(HttpRoutingCoverageImprovements, CatchAllRoute) {
   // Tests the /* catch-all path handling and IsWildcardStart with '*'
   ts.resetRouterAndGet().setPath(http::Method::GET, "/api/*",
-                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+                                 [](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   auto resp1 = test::simpleGet(ts.port(), "/api/anything");
   EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
@@ -1539,7 +1548,7 @@ TEST(HttpRoutingCoverageImprovements, CatchAllRoute) {
 
 TEST(HttpRoutingCoverageImprovements, SimpleParameter) {
   // Tests basic parameter parsing
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}", [](const HttpRequest& req) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
     if (params.empty()) {
       return HttpResponse("empty");
@@ -1554,7 +1563,7 @@ TEST(HttpRoutingCoverageImprovements, SimpleParameter) {
 
 TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralPrefix) {
   // Tests parameter with literal prefix like "id-{value}"
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/data/id-{identifier}", [](const HttpRequest& req) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/data/id-{identifier}", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
     return HttpResponse(std::string(params.begin()->second));
   });
@@ -1566,7 +1575,7 @@ TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralPrefix) {
 
 TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralSuffix) {
   // Tests parameter with literal suffix like "{value}.html"
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/pages/{name}.html", [](const HttpRequest& req) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/pages/{name}.html", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
     return HttpResponse(std::string(params.begin()->second));
   });
@@ -1578,7 +1587,7 @@ TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralSuffix) {
 
 TEST(HttpRoutingCoverageImprovements, MultipleParametersWithSeparators) {
   // Tests parameter parsing with literal separators between params
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}/posts/{postId}", [](const HttpRequest& req) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/users/{id}/posts/{postId}", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
     std::string result;
     for (const auto& [key, value] : params) {
@@ -1599,7 +1608,7 @@ TEST(HttpRoutingCoverageImprovements, MultipleParametersWithSeparators) {
 TEST(HttpRoutingCoverageImprovements, CatchAllAfterParameters) {
   // Tests catch-all after parameter segment
   ts.resetRouterAndGet().setPath(http::Method::GET, "/api/{version}/files/*",
-                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+                                 [](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   auto resp = test::simpleGet(ts.port(), "/api/v1/files/some/deep/path");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -1608,7 +1617,7 @@ TEST(HttpRoutingCoverageImprovements, CatchAllAfterParameters) {
 
 TEST(HttpRoutingCoverageImprovements, RootPathOnly) {
   // Tests root path "/"
-  ts.resetRouterAndGet().setPath(http::Method::GET, "/", [](const HttpRequest&) { return HttpResponse("root"); });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/", [](const HttpRequestView&) { return HttpResponse("root"); });
 
   auto resp = test::simpleGet(ts.port(), "/");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -1618,7 +1627,7 @@ TEST(HttpRoutingCoverageImprovements, RootPathOnly) {
 TEST(HttpRoutingCoverageImprovements, DeepNestedParameters) {
   // Tests multiple levels of nested parameters
   ts.resetRouterAndGet().setPath(http::Method::GET, "/org/{org}/team/{team}/project/{project}/issue/{issue}",
-                                 [](const HttpRequest& req) {
+                                 [](const HttpRequestView& req) {
                                    const auto& params = req.pathParams();
                                    std::string result;
                                    for (const auto& [key, value] : params) {
@@ -1641,7 +1650,7 @@ TEST(HttpRoutingCoverageImprovements, DeepNestedParameters) {
 TEST(HttpRoutingCoverageImprovements, PathWithTrailingWildcard) {
   // Tests a path that ends with /*
   ts.resetRouterAndGet().setPath(http::Method::GET, "/assets/*",
-                                 [](const HttpRequest& req) { return HttpResponse(req.path()); });
+                                 [](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   auto resp = test::simpleGet(ts.port(), "/assets/css/style.css");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -1655,9 +1664,9 @@ TEST(HttpRoutingCoverageImprovements, WildcardChildWithStaticSiblings) {
   // where metadata is static and * is wildcard, requiring insertion before wildcard
   ts.resetRouterAndGet();
   ts.router().setPath(http::Method::GET, "/api/{id}/files/*",
-                      [](const HttpRequest& req) { return HttpResponse("files-" + std::string(req.path())); });
+                      [](const HttpRequestView& req) { return HttpResponse("files-" + std::string(req.path())); });
   ts.router().setPath(http::Method::GET, "/api/{id}/metadata",
-                      [](const HttpRequest&) { return HttpResponse("metadata"); });
+                      [](const HttpRequestView&) { return HttpResponse("metadata"); });
 
   // Test the catch-all route
   auto resp1 = test::simpleGet(ts.port(), "/api/123/files/document.txt");
@@ -1674,10 +1683,10 @@ TEST(HttpRoutingCoverageImprovements, CatchAllAfterMultipleStaticPaths) {
   // Tests insertion of static children followed by catch-all on same node
   // This exercises the insertion logic when hasWildChild is true
   ts.resetRouterAndGet();
-  ts.router().setPath(http::Method::GET, "/v1/api/users", [](const HttpRequest&) { return HttpResponse("users"); });
-  ts.router().setPath(http::Method::GET, "/v1/api/posts", [](const HttpRequest&) { return HttpResponse("posts"); });
+  ts.router().setPath(http::Method::GET, "/v1/api/users", [](const HttpRequestView&) { return HttpResponse("users"); });
+  ts.router().setPath(http::Method::GET, "/v1/api/posts", [](const HttpRequestView&) { return HttpResponse("posts"); });
   ts.router().setPath(http::Method::GET, "/v1/api/*",
-                      [](const HttpRequest& req) { return HttpResponse("catch-" + std::string(req.path())); });
+                      [](const HttpRequestView& req) { return HttpResponse("catch-" + std::string(req.path())); });
 
   auto resp1 = test::simpleGet(ts.port(), "/v1/api/users");
   EXPECT_TRUE(resp1.contains("users")) << resp1;

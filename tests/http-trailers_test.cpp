@@ -7,7 +7,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -26,7 +26,7 @@ auto port = ts.port();
 
 // Basic trailer parsing test
 TEST(HttpTrailers, BasicTrailer) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     EXPECT_EQ(req.body(), "Wikipedia");
     // Check trailer headers
     EXPECT_EQ(req.trailers().size(), 1U);
@@ -70,7 +70,7 @@ TEST(HttpTrailers, BasicTrailer) {
 
 // Multiple trailer headers
 TEST(HttpTrailers, MultipleTrailers) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_EQ(req.trailers().size(), 3U);
 
@@ -117,7 +117,7 @@ TEST(HttpTrailers, MultipleTrailers) {
 
 // Empty trailers (just zero chunk and terminating CRLF)
 TEST(HttpTrailers, NoTrailers) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     EXPECT_EQ(req.body(), "data");
     EXPECT_TRUE(req.trailers().empty());
     return HttpResponse("OK");
@@ -142,7 +142,7 @@ TEST(HttpTrailers, NoTrailers) {
 
 // Trailer with whitespace trimming
 TEST(HttpTrailers, TrailerWhitespaceTrim) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto trailer = req.trailers().find("X-Data");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
@@ -171,7 +171,7 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
 
 // Forbidden trailer: Transfer-Encoding
 TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -192,7 +192,7 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
 
 // Forbidden trailer: Content-Length
 TEST(HttpTrailers, ForbiddenTrailerContentLength) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -213,7 +213,7 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
 
 // Forbidden trailer: Host
 TEST(HttpTrailers, ForbiddenTrailerHost) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -234,7 +234,7 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
 
 // Forbidden trailer: Authorization
 TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -258,7 +258,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxHeaderBytes(200);  // match header limit
   });
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -283,7 +283,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
 
 // Trailer with empty value
 TEST(HttpTrailers, TrailerEmptyValue) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto trailer = req.trailers().find("X-Empty");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
@@ -312,7 +312,7 @@ TEST(HttpTrailers, TrailerEmptyValue) {
 
 // Case-insensitive trailer lookup
 TEST(HttpTrailers, TrailerCaseInsensitive) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     // Should be able to find with different case
     auto lower = req.trailers().find("x-checksum");
     auto upper = req.trailers().find("X-CHECKSUM");
@@ -348,7 +348,7 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
 
 // Duplicate trailers that should be merged using list semantics (comma)
 TEST(HttpTrailers, DuplicateMergeTrailers) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     // Accept header should be merged with a comma separator
     auto it = req.trailers().find("Accept");
     EXPECT_NE(it, req.trailers().end());
@@ -379,7 +379,7 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
 
 // Duplicate trailers with override semantics (keep last)
 TEST(HttpTrailers, DuplicateOverrideTrailers) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     auto it = req.trailers().find("From");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
@@ -413,7 +413,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMergeUnknownRequestHeaders(false); });
 
   // "Handler should not be called when unknown-header duplicates are forbidden"
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -435,7 +435,7 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
 
 // Malformed trailer (no colon)
 TEST(HttpTrailers, MalformedTrailerNoColon) {
-  ts.router().setDefault([](const HttpRequest&) { return HttpResponse("FAIL"); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
@@ -456,7 +456,7 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
 
 // Non-chunked request should have empty trailers
 TEST(HttpTrailers, NonChunkedNoTrailers) {
-  ts.router().setDefault([](const HttpRequest& req) {
+  ts.router().setDefault([](const HttpRequestView& req) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_TRUE(req.trailers().empty());
     return HttpResponse("OK");
@@ -479,7 +479,7 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
 
 // Test streaming response with trailers
 TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
-  ts.router().setPath(http::Method::GET, "/stream", [](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/stream", [](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentType("text/custom");
     writer.writeBody("chunk1");
@@ -488,7 +488,7 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
     writer.end();
   });
 
-  ts.router().setPath(http::Method::GET, "/normal", [](const HttpRequest& req) {
+  ts.router().setPath(http::Method::GET, "/normal", [](const HttpRequestView& req) {
     auto resp = req.makeResponse("chunk1chunk2", "text/custom");
     resp.trailerAddLine("x-checksum", "abc123");
     return resp;
@@ -538,7 +538,7 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
 
 // Test multiple trailers
 TEST(HttpResponseWriterTrailers, MultipleTrailers) {
-  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.writeBody("data");
     writer.trailerAddLine("X-Checksum", "xyz789");
@@ -565,7 +565,7 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
 
 // Test trailer with empty value
 TEST(HttpResponseWriterTrailers, EmptyValue) {
-  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
     writer.trailerAddLine("X-Empty", "");
@@ -589,7 +589,7 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
 
 // Test trailer added after end() is ignored
 TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
-  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
     writer.end();
@@ -613,7 +613,7 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
 
 // Test trailers ignored for fixed-length responses
 TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
-  ts.router().setDefault([](const HttpRequest&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length
     writer.writeBody("test");

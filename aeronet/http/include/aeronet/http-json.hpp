@@ -1,9 +1,9 @@
 #pragma once
 
-// Opt-in JSON / YAML body helpers for HttpRequest and HttpResponse.
+// Opt-in JSON / YAML body helpers for HttpRequestView and HttpResponse.
 //
 // These pull in the (heavy, compile-time expensive) Glaze dependency. To keep that cost out of the
-// widely-included core headers (<aeronet/http-request.hpp> / <aeronet/http-response.hpp>), the
+// widely-included core headers (<aeronet/http-request-view.hpp> / <aeronet/http-response.hpp>), the
 // member function templates declared there are *defined* here instead. Translation units that
 // actually serialize/parse JSON or YAML include this header explicitly; everything else stays cheap.
 //
@@ -21,7 +21,7 @@
 #include <utility>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-request.hpp"  // IWYU pragma: keep (also brings http-response.hpp)
+#include "aeronet/http-request-view.hpp"  // IWYU pragma: keep (also brings http-response.hpp)
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 
@@ -46,7 +46,7 @@ HttpResponse& HttpResponse::bodyYaml(const T& obj) & {
 }
 
 template <class T>
-std::expected<T, HttpResponse> HttpRequest::bodyAs() const {
+std::expected<T, HttpResponse> HttpRequestView::bodyAs() const {
   T obj{};
   // body() views the receive buffer and is NOT null-terminated, so glaze must honour the end
   // pointer strictly (its default assumes a '\0' sentinel and would read past the body).
@@ -58,7 +58,7 @@ std::expected<T, HttpResponse> HttpRequest::bodyAs() const {
 }
 
 template <class T>
-std::expected<T, HttpResponse> HttpRequest::bodyAsYaml() const {
+std::expected<T, HttpResponse> HttpRequestView::bodyAsYaml() const {
   T obj{};
   if (const auto ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(obj, body())) [[unlikely]] {
     return std::unexpected(

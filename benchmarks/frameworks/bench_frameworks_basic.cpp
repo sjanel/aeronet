@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
@@ -72,13 +72,13 @@ struct AeronetServerRunner {
           return cfg;
         }()) {
     log::set_level(log::level::err);
-    server.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequest&) {
+    server.router().setPath(http::Method::GET, benchutil::kBodyPath, [](const HttpRequestView&) {
       HttpResponse resp(200);
       resp.body(g_stringPool.next());
       return resp;
     });
 
-    server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequest& req) {
+    server.router().setPath(http::Method::GET, benchutil::kHeaderPath, [](const HttpRequestView& req) {
       HttpResponse resp = req.makeResponse(http::StatusCodeOK);
       // Read requested header count from query param 'size'
       const std::size_t headerCount = req.queryParamInt<std::size_t>("size").value();
