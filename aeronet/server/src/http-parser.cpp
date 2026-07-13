@@ -42,6 +42,10 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
                                                                            std::size_t& consumedBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
+  // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2). Clear any trailerLen
+  // left over from a previous chunked request on this (keep-alive) connection so the request-finalization
+  // path does not spuriously re-parse stale trailer bytes into this request's trailers.
+  state.trailerLen = 0;
   auto optContentLength = request.headerValue(http::ContentLength);
   const std::size_t headerEnd = request.headSpanSize();
   if (!optContentLength) {
