@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -113,6 +114,48 @@ TEST(HttpTrailers, MultipleTrailers) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+}
+
+// Regression: a chunked request carrying trailers followed by a fixed-length request on the SAME keep-alive
+// connection must not leak the first request's trailers into the second. The per-connection trailerLen is
+// reset for non-chunked bodies (see SingleHttpServer::decodeFixedLengthBody); without that reset the second
+// request would spuriously re-parse the previous request's trailer bytes.
+TEST(HttpTrailers, TrailersDoNotLeakAcrossKeepAliveRequests) {
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse("trailers=" + std::to_string(req.trailers().size())); });
+
+  test::ClientConnection sock(port);
+  NativeHandle fd = sock.fd();
+
+  using namespace std::chrono_literals;
+
+  // First request: chunked body + one trailer; keep the connection open (no Connection: close).
+  const std::string chunkedWithTrailer =
+      "POST /first HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Transfer-Encoding: chunked\r\n"
+      "\r\n"
+      "4\r\ndata\r\n"
+      "0\r\n"
+      "X-Checksum: abc123\r\n"
+      "\r\n";
+  test::sendAll(fd, chunkedWithTrailer);
+  const std::string first = test::recvWithTimeout(fd, 500ms);  // NOLINT(misc-include-cleaner)
+  ASSERT_TRUE(first.starts_with("HTTP/1.1 200")) << first;
+  EXPECT_TRUE(first.contains("trailers=1")) << first;
+
+  // Second request on the same connection: fixed-length, no trailers.
+  const std::string fixedLength =
+      "POST /second HTTP/1.1\r\n"
+      "Host: example.com\r\n"
+      "Content-Length: 5\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+      "hello";
+  test::sendAll(fd, fixedLength);
+  const std::string second = test::recvUntilClosed(fd);
+  ASSERT_TRUE(second.starts_with("HTTP/1.1 200")) << second;
+  EXPECT_TRUE(second.contains("trailers=0")) << second;  // must NOT inherit the first request's trailer
 }
 
 // Empty trailers (just zero chunk and terminating CRLF)
