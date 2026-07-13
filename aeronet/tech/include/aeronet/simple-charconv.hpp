@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <cstdint>
 
 namespace aeronet {
 
@@ -33,9 +34,11 @@ constexpr auto copy3(auto des, auto src) {
   return ++des;
 }
 
-constexpr auto read2(const char* ptr) { return ((ptr[0] - '0') * 10) + (ptr[1] - '0'); }
+constexpr uint8_t read2(const char* ptr) { return static_cast<uint8_t>(((ptr[0] - '0') * 10) + (ptr[1] - '0')); }
 
-constexpr auto read3(const char* ptr) { return ((ptr[0] - '0') * 100) + ((ptr[1] - '0') * 10) + (ptr[2] - '0'); }
+constexpr uint16_t read3(const char* ptr) {
+  return static_cast<uint16_t>(((ptr[0] - '0') * 100) + ((ptr[1] - '0') * 10) + (ptr[2] - '0'));
+}
 
 constexpr auto read4(const char* ptr) {
   return ((ptr[0] - '0') * 1000) + ((ptr[1] - '0') * 100) + ((ptr[2] - '0') * 10) + (ptr[3] - '0');

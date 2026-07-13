@@ -34,7 +34,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
-#include "aeronet/http-response-data.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -59,7 +59,7 @@ class HttpResponseTest : public ::testing::Test {
   const RawChars kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
   CompressionConfig cfg;
-  internal::ResponseCompressionState compressionState{cfg};
+  internal::CompressionState compressionState{cfg};
 
   struct PreparedOptions {
     bool head = false;
@@ -109,13 +109,13 @@ class HttpResponseTest : public ::testing::Test {
 #endif
   }
 
-  static HttpResponseData finalizePrepared(HttpResponse&& resp, bool head = kIsHeadMethod,
-                                           bool keepAliveFlag = kKeepAlive) {
+  static HttpMessageData finalizePrepared(HttpResponse&& resp, bool head = kIsHeadMethod,
+                                          bool keepAliveFlag = kKeepAlive) {
     return finalizePrepared(std::move(resp), {}, head, kAddTrailerHeader, keepAliveFlag, kMinCapturedBodySize);
   }
 
-  static HttpResponseData finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                           bool addTrailerHeader, bool keepAliveFlag, std::size_t minCapturedBodySize) {
+  static HttpMessageData finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
+                                          bool addTrailerHeader, bool keepAliveFlag, std::size_t minCapturedBodySize) {
     HttpResponse::Options opts;
 
     opts.close(!keepAliveFlag);
@@ -125,8 +125,8 @@ class HttpResponseTest : public ::testing::Test {
     return resp.finalizeForHttp1(kTp, http::HTTP_1_1, opts, &globalHeaders, minCapturedBodySize);
   }
 
-  static HttpResponseData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                   bool keepAliveFlag, bool addTrailerHeader, std::size_t minCapturedBodySize) {
+  static HttpMessageData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
+                                  bool keepAliveFlag, bool addTrailerHeader, std::size_t minCapturedBodySize) {
     std::size_t expectedFileLen = 0;
     if (resp.hasBodyFile()) {
       expectedFileLen = resp.file()->size();
@@ -143,7 +143,7 @@ class HttpResponseTest : public ::testing::Test {
                                   bool head = kIsHeadMethod, bool keepAliveFlag = kKeepAlive,
                                   std::size_t minCapturedBodySize = kMinCapturedBodySize,
                                   bool addTrailerHeader = kAddTrailerHeader) {
-    HttpResponseData httpResponseData =
+    HttpMessageData httpResponseData =
         finalize(std::move(resp), globalHeaders, head, keepAliveFlag, addTrailerHeader, minCapturedBodySize);
     auto firstBuf = httpResponseData.firstBuffer();
     auto secondBuf = httpResponseData.secondBuffer();

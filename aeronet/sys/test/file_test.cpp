@@ -218,3 +218,29 @@ TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
   test::SetLseekErrors(path, {EIO});
   EXPECT_EQ(LoadAllContent(fileObj), "abc");
 }
+
+TEST(FileTest, CopyConstructor) {
+  ScopedTempDir dir("aeronet-file-copy");
+  ScopedTempFile tmp(dir, "copy-content");
+  File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+  File copyObj(fileObj);
+
+  EXPECT_EQ(LoadAllContent(fileObj), "copy-content");
+  EXPECT_EQ(LoadAllContent(copyObj), "copy-content");
+}
+
+TEST(FileTest, CopyAssignment) {
+  ScopedTempDir dir("aeronet-file-copyassign");
+  ScopedTempFile tmp(dir, "copyassign-content");
+  File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  File copyAssignObj;
+  copyAssignObj = fileObj;
+
+  EXPECT_EQ(LoadAllContent(fileObj), "copyassign-content");
+  EXPECT_EQ(LoadAllContent(copyAssignObj), "copyassign-content");
+}

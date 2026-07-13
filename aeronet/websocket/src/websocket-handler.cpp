@@ -18,7 +18,7 @@
 #include <arm_neon.h>
 #endif
 
-#include "aeronet/http-response-data.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -510,14 +510,14 @@ void WebSocketHandler::onTransportClosing() {
   _inputBufferOffset = 0;
 }
 
-bool WebSocketHandler::drainOutputBuffer(HttpResponseData& dest) {
+bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
   if (_outputOffset >= _outputBuffer.size()) {
     return false;
   }
   // Fast path: move the buffer allocation directly into dest to avoid memcpy.
   // Conditions: no partial drain (_outputOffset == 0) and dest is empty.
   if (_outputOffset == 0 && dest.empty()) {
-    dest = HttpResponseData(RawChars(std::move(_outputBuffer)));
+    dest = HttpMessageData(RawChars(std::move(_outputBuffer)));
     _outputBuffer = {};
     return true;
   }

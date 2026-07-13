@@ -116,7 +116,7 @@ class WebSocketHandler final : public IProtocolHandler {
 
   void onTransportClosing() override;
 
-  bool drainOutputBuffer(HttpResponseData& dest) override;
+  bool drainOutputBuffer(HttpMessageData& dest) override;
 
   // WebSocket-specific API
 

@@ -6,7 +6,7 @@
 #include <memory>
 #include <span>
 
-#include "aeronet/http-response-data.hpp"
+#include "aeronet/http-message-data.hpp"
 
 namespace aeronet {
 
@@ -89,7 +89,7 @@ class IProtocolHandler {
   ///
   /// The default implementation copies pending output via getPendingOutput() + onOutputWritten().
   /// Protocol handlers may override this to perform a zero-copy move of their internal buffer.
-  virtual bool drainOutputBuffer(HttpResponseData& dest) {
+  virtual bool drainOutputBuffer(HttpMessageData& dest) {
     auto pending = getPendingOutput();
     if (pending.empty()) {
       return false;

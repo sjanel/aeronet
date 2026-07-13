@@ -303,15 +303,15 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http-payload_test
-    test/http-payload_test.cpp
+    http-message-data_test
+    test/http-message-data_test.cpp
     LIBRARIES
     aeronet_objects
 )
 
 AeronetAddUnitTest(
-    http-response-data_test
-    test/http-response-data_test.cpp
+    http-payload_test
+    test/http-payload_test.cpp
     LIBRARIES
     aeronet_objects
 )
