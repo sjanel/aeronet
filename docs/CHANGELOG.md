@@ -22,6 +22,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Bug fixes
 
+- **Request trailers could leak across keep-alive requests**: after a chunked request carrying trailers, the per-connection trailer length was not reset for a subsequent fixed-length request on the same connection, so the server spuriously re-parsed the previous request's trailer bytes into `HttpRequestView::trailers()`. The trailer length is now cleared for non-chunked bodies.
 - **HTTP/2 responses larger than the peer's flow-control window could never be delivered** — a buffered response body exceeding the stream/connection send window (e.g. > ~64 KiB against the RFC 9113 default window) failed with `FLOW_CONTROL_ERROR` and hung; the window-exhausted remainder is now deferred and flushed as `WINDOW_UPDATE`s arrive, trailers included.
 - **HTTP/2 server leaked active-stream accounting** for responses completed outside frame processing (flow-control-deferred bodies, file payloads flushed from `onOutputWritten`, async completions), so a long-lived connection eventually died with `Max concurrent streams exceeded`.
 - **HTTP/2 responses could carry field values with trailing whitespace**, which strict peers (nghttp2, hence curl) reject per RFC 9113 §8.2.1 — so every compressed response over HTTP/2 failed for such clients. Header values are now OWS-trimmed before HPACK encoding.
