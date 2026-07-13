@@ -13,8 +13,8 @@
 #include <utility>
 
 #include "aeronet/file-payload.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
@@ -41,7 +41,7 @@
 namespace aeronet {
 
 void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
-                                                   internal::ResponseCompressionState& compressionState) {
+                                                   internal::CompressionState& compressionState) {
   request.init(config, compressionState);
   const bool isIpAddress = peerAddress.ss_family == AF_INET || peerAddress.ss_family == AF_INET6;
   if (isIpAddress) {
@@ -95,7 +95,7 @@ ITransport::TransportResult ConnectionState::transportWrite(std::string_view dat
   return res;
 }
 
-ITransport::TransportResult ConnectionState::transportWrite(const HttpResponseData& httpResponseData) {
+ITransport::TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
   const auto res = transport->write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   if (!tlsEstablished && transport->handshakeDone()) {
     tlsEstablished = true;
@@ -423,7 +423,7 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   zerocopyPendingBuffers.shrink_to_fit();
 }
 
-void ConnectionState::holdBufferIfZerocopyPending(HttpResponseData buf) {
+void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf) {
   assert(transport != nullptr);
   if (transport->hasZerocopyPending()) {
     zerocopyPendingBuffers.push_back(std::move(buf));

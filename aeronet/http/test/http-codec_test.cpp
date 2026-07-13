@@ -133,7 +133,7 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   cfg.contentTypeAllowList.clear();
   cfg.contentTypeAllowList.append("text/plain");
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string body(4096, 'A');
 
@@ -178,7 +178,7 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   for (Encoding enc : test::SupportedEncodings()) {
     cfg.preferredFormats.assign(1U, enc);
 
-    ResponseCompressionState state(cfg);
+    CompressionState state(cfg);
 
     std::string_view acceptEncoding = GetEncodingStr(enc);
 
@@ -247,7 +247,7 @@ TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
 #ifdef AERONET_ENABLE_ZLIB
   cfg.preferredFormats.push_back(Encoding::gzip);
 #endif
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string body(4096, 'A');
 
@@ -275,7 +275,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   cfg.contentTypeAllowList.clear();
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string body(16UL * 1024UL, 'A');
   HttpResponse resp(http::StatusCodeOK);
@@ -317,7 +317,7 @@ TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   cfg.contentTypeAllowList.clear();
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string expectedBody(32UL * 1024UL, 'A');
   std::string captured = expectedBody;
@@ -358,7 +358,7 @@ TEST(HttpCodecCompression, GzipNearOverlapTrailerMove_AllCombinationsRoundTrip) 
   cfg.contentTypeAllowList.clear();
   cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   auto makeSlightlyCompressiblePayload = [](std::size_t len, uint32_t seed) {
     std::string out(len, '\0');
@@ -476,7 +476,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   cfg.preferredFormats.push_back(Encoding::gzip);
   cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   auto body = test::MakePatternedPayload(cfg.minBytes);
 
@@ -492,7 +492,7 @@ TEST(HttpCodecCompression, MaxCompressRatioCanDisableCompression) {
   const float tightRatio = static_cast<float>(compressedSize - 1) / static_cast<float>(body.size());
   cfg2.maxCompressRatio = std::nextafter(tightRatio, 0.0F);
 
-  ResponseCompressionState state2(cfg2);
+  CompressionState state2(cfg2);
 
   HttpResponse resp2(body);
   HttpCodec::TryCompressResponse(state2, Encoding::gzip, resp2);
@@ -512,7 +512,7 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
   cfg.preferredFormats.push_back(Encoding::zstd);
   cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // just below 1.0 to allow any compression
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   auto body = test::MakeRandomPayload(cfg.minBytes);
 
@@ -538,7 +538,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
   for (Encoding enc : test::SupportedEncodings()) {
     cfg.preferredFormats.assign(1U, enc);
 
-    ResponseCompressionState state(cfg);
+    CompressionState state(cfg);
 
     std::string_view acceptEncoding = GetEncodingStr(enc);
 
@@ -583,7 +583,7 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
         for (Encoding enc : test::SupportedEncodings()) {
           cfg.preferredFormats.assign(1U, enc);
 
-          ResponseCompressionState state(cfg);
+          CompressionState state(cfg);
 
           std::string_view acceptEncoding = GetEncodingStr(enc);
 
@@ -790,7 +790,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
 
   RawChars bodyBuf;
   RawChars tmpBuf;
-  RequestDecompressionState decompressionState;
+  DecompressionState decompressionState;
 
   const auto res =
       HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
@@ -835,7 +835,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   RawChars bodyBuf;
   RawChars tmpBuf;
 
-  RequestDecompressionState decompressionState;
+  DecompressionState decompressionState;
 
   const auto res = HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks,
                                                     /*compressedSize=*/compressedView.size(), bodyBuf, tmpBuf);
@@ -863,7 +863,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
 
   RawChars bodyBuf;
   RawChars tmpBuf;
-  RequestDecompressionState decompressionState;
+  DecompressionState decompressionState;
   const auto res =
       HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
   EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
@@ -875,7 +875,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder
   cfg.contentTypeAllowList.clear();
   // request negotiation doesn't matter for these direct encodeFull tests
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string plain(4096, 'A');
 
@@ -937,7 +937,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   cfg.minBytes = 16U;
   cfg.contentTypeAllowList.clear();
 
-  ResponseCompressionState state(cfg);
+  CompressionState state(cfg);
 
   const std::string plain(4096, 'A');
 
@@ -1110,7 +1110,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   cs.bodyStreamContext.offset = 0;
 
   RawChars tmpBuf;
-  RequestDecompressionState decompressionState;
+  DecompressionState decompressionState;
 
   // Call MaybeDecompressRequestBody - UseStreamingDecompression should see no Content-Length and return false,
   // so decoder should be invoked in aggregated mode. We accept several possible outcomes depending on
@@ -1131,7 +1131,7 @@ TEST(HttpCodecFullBody, DecompressEachSupportedEncodingRoundTrips) {
   const std::string payload = test::MakePatternedPayload(8192);
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, payload);
-    RequestDecompressionState state;
+    DecompressionState state;
     DecompressionConfig cfg;
     RawChars out;
     RawChars tmp;
@@ -1147,7 +1147,7 @@ TEST(HttpCodecFullBody, DecompressStreamingThresholdPath) {
   const std::string payload = test::MakePatternedPayload(64UL * 1024UL);
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, payload);
-    RequestDecompressionState state;
+    DecompressionState state;
     DecompressionConfig cfg;
     cfg.streamingDecompressionThresholdBytes = 1;  // force the streaming-context decode path
     cfg.decoderChunkSize = 4096;
@@ -1162,7 +1162,7 @@ TEST(HttpCodecFullBody, DecompressStreamingThresholdPath) {
 }
 
 TEST(HttpCodecFullBody, DecompressIdentityAndEmptyAndUnknown) {
-  RequestDecompressionState state;
+  DecompressionState state;
   DecompressionConfig cfg;
   RawChars out;
   RawChars tmp;
@@ -1183,7 +1183,7 @@ TEST(HttpCodecFullBody, DecompressIdentityAndEmptyAndUnknown) {
 }
 
 TEST(HttpCodecFullBody, DecompressRejectsOversizedCompressedInput) {
-  RequestDecompressionState state;
+  DecompressionState state;
   DecompressionConfig cfg;
   cfg.maxCompressedBytes = 4;  // tiny cap
   RawChars out;
@@ -1196,7 +1196,7 @@ TEST(HttpCodecFullBody, DecompressRejectsOversizedCompressedInput) {
 #if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD) || defined(AERONET_ENABLE_BROTLI)
 TEST(HttpCodecFullBody, DecompressGarbageBodyFails) {
   const Encoding enc = test::SupportedEncodings().front();
-  RequestDecompressionState state;
+  DecompressionState state;
   DecompressionConfig cfg;
   RawChars out;
   RawChars tmp;
@@ -1210,7 +1210,7 @@ TEST(HttpCodecFullBody, DecompressExpansionRatioGuard) {
   const Encoding enc = test::SupportedEncodings().front();
   const std::string payload = test::MakePatternedPayload(16384);  // highly compressible => huge expansion ratio
   const RawChars compressed = test::Compress(enc, payload);
-  RequestDecompressionState state;
+  DecompressionState state;
   DecompressionConfig cfg;
   cfg.maxExpansionRatio = 1.5;  // refuse anything that expands more than 1.5x
   RawChars out;
@@ -1225,7 +1225,7 @@ TEST(HttpCodecFullBody, CompressRoundTripsEachEncoding) {
   const std::string payload = test::MakePatternedPayload(16384);
   for (const Encoding enc : test::SupportedEncodings()) {
     CompressionConfig cfg;
-    ResponseCompressionState compressionState(cfg);
+    CompressionState compressionState(cfg);
     RawChars out;
     const std::string_view compressed =
         HttpCodec::CompressFullBody(compressionState, enc, payload, cfg.maxCompressedBytes(payload.size()), out);
@@ -1240,7 +1240,7 @@ TEST(HttpCodecFullBody, CompressIncompressibleReturnsEmpty) {
   const Encoding enc = test::SupportedEncodings().front();
   const RawChars payload = test::MakeRandomPayload(4096);  // ~incompressible
   CompressionConfig cfg;
-  ResponseCompressionState compressionState(cfg);
+  CompressionState compressionState(cfg);
   RawChars out;
   // ratio guard (0.6 by default) cannot be met on random data => empty (caller sends uncompressed).
   const std::string_view compressed = HttpCodec::CompressFullBody(compressionState, enc, std::string_view(payload),
@@ -1251,7 +1251,7 @@ TEST(HttpCodecFullBody, CompressIncompressibleReturnsEmpty) {
 
 TEST(HttpCodecFullBody, CompressZeroBudgetReturnsEmpty) {
   CompressionConfig cfg;
-  ResponseCompressionState compressionState(cfg);
+  CompressionState compressionState(cfg);
   RawChars out;
   const std::string_view compressed = HttpCodec::CompressFullBody(compressionState, Encoding::gzip, "payload", 0, out);
   EXPECT_TRUE(compressed.empty());

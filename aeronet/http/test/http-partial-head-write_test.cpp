@@ -5,8 +5,8 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {
@@ -48,8 +48,8 @@ class PartialWriteTransport final : public ITransport {
 
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   PartialWriteTransport plainWriteTransport;
-  HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
-                                    HttpPayload(std::string("hello world")));
+  HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
+                                   HttpPayload(std::string("hello world")));
 
   // First write will write partial head only
   const auto [w1, want1] = plainWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
@@ -71,8 +71,8 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
 // Reuse the same fake transport semantics to simulate TLS partial write behavior.
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   PartialWriteTransport partialWriteTransport;
-  HttpResponseData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
-                                    HttpPayload(std::string("hello world")));
+  HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
+                                   HttpPayload(std::string("hello world")));
 
   const auto [w1, want1] = partialWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w1, 0U);

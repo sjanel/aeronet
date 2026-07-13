@@ -124,7 +124,7 @@ inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, Hea
   return body;
 }
 
-inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] RequestDecompressionState& decompressionState,
+inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] DecompressionState& decompressionState,
                                                        [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
                                                        std::string_view& src, std::string_view contentEncoding,
                                                        std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
@@ -242,7 +242,7 @@ constexpr CompressResponseResult ConvertEncoderResultErrorToCompressResponseResu
 
 }  // namespace
 
-ResponseCompressionState::ResponseCompressionState(const CompressionConfig& cfg)
+CompressionState::CompressionState(const CompressionConfig& cfg)
     : selector(cfg),
       pCompressionConfig(&cfg)
 #ifdef AERONET_ENABLE_BROTLI
@@ -260,10 +260,8 @@ ResponseCompressionState::ResponseCompressionState(const CompressionConfig& cfg)
 {
 }
 
-EncoderResult ResponseCompressionState::encodeFull([[maybe_unused]] Encoding encoding,
-                                                   [[maybe_unused]] std::string_view data,
-                                                   [[maybe_unused]] std::size_t availableCapacity,
-                                                   [[maybe_unused]] char* buf) {
+EncoderResult CompressionState::encodeFull([[maybe_unused]] Encoding encoding, [[maybe_unused]] std::string_view data,
+                                           [[maybe_unused]] std::size_t availableCapacity, [[maybe_unused]] char* buf) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.encodeFull(data, availableCapacity, buf);
@@ -285,7 +283,7 @@ EncoderResult ResponseCompressionState::encodeFull([[maybe_unused]] Encoding enc
   return EncoderResult(EncoderResult::Error::CompressionError);
 }
 
-EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding encoding) {
+EncoderContext* CompressionState::makeContext([[maybe_unused]] Encoding encoding) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.makeContext();
@@ -308,7 +306,7 @@ EncoderContext* ResponseCompressionState::makeContext([[maybe_unused]] Encoding 
   return nullptr;
 }
 
-EncoderContext* ResponseCompressionState::context([[maybe_unused]] Encoding encoding) {
+EncoderContext* CompressionState::context([[maybe_unused]] Encoding encoding) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return brotliEncoder.context();
@@ -369,7 +367,7 @@ std::size_t MinEncodeChunkAllocSize(Encoding encoding) {
 
 }  // namespace
 
-CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding,
+CompressResponseResult HttpCodec::TryCompressResponse(CompressionState& compressionState, Encoding encoding,
                                                       HttpResponse& resp) {
   if (resp.hasContentEncoding()) {
     return CompressResponseResult::Uncompressed;
@@ -644,7 +642,7 @@ CompressResponseResult HttpCodec::TryCompressResponse(ResponseCompressionState& 
   return CompressResponseResult::Compressed;
 }
 
-RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
+RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionState& decompressionState,
                                                                  const DecompressionConfig& decompressionConfig,
                                                                  HttpRequestView& request,
                                                                  RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
@@ -732,7 +730,7 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
   return http::StatusCodeNotModified;
 }
 
-RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompressionState& decompressionState,
+RequestDecompressionResult HttpCodec::DecompressChunkedBody(DecompressionState& decompressionState,
                                                             const DecompressionConfig& decompressionConfig,
                                                             HttpRequestView& request,
                                                             std::span<const std::string_view> compressedChunks,
@@ -779,7 +777,7 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(RequestDecompression
   return {};
 }
 
-RequestDecompressionResult HttpCodec::DecompressFullBody(RequestDecompressionState& decompressionState,
+RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& decompressionState,
                                                          const DecompressionConfig& decompressionConfig,
                                                          std::string_view contentEncoding,
                                                          std::string_view compressedBody, RawChars& outBuffer,
@@ -815,7 +813,7 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(RequestDecompressionSta
   return res;
 }
 
-std::string_view HttpCodec::CompressFullBody(ResponseCompressionState& compressionState, Encoding encoding,
+std::string_view HttpCodec::CompressFullBody(CompressionState& compressionState, Encoding encoding,
                                              std::string_view data, std::size_t maxCompressedBytes,
                                              RawChars& outBuffer) {
   outBuffer.clear();

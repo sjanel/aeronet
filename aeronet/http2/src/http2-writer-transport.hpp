@@ -16,7 +16,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"
@@ -138,11 +137,6 @@ class Http2WriterTransport final : public internal::IWriterTransport {
       return false;
     }
     return true;
-  }
-
-  [[nodiscard]] bool isAlive() const override {
-    const Http2Stream* pStream = _pConnection->getStream(_streamId);
-    return pStream != nullptr && pStream->canSend();
   }
 
   [[nodiscard]] uint32_t logId() const override { return _streamId; }

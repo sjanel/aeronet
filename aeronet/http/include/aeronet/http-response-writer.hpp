@@ -21,7 +21,7 @@ struct CompressionConfig;
 
 namespace internal {
 class IWriterTransport;
-struct ResponseCompressionState;
+struct CompressionState;
 }  // namespace internal
 
 // HttpResponseWriter
@@ -200,7 +200,7 @@ class HttpResponseWriter {
   /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
   /// @param addTrailerHeader   Whether to auto-add the Trailer header.
   HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request, Encoding compressionFormat,
-                     const CompressionConfig& compressionConfig, internal::ResponseCompressionState& compressionState,
+                     const CompressionConfig& compressionConfig, internal::CompressionState& compressionState,
                      std::string_view globalHeadersStr, bool addTrailerHeader);
 
   void ensureHeadersSent();
@@ -229,7 +229,7 @@ class HttpResponseWriter {
   RawChars _compressedBuffer;                    // reusable output buffer for compression (never freed between chunks)
   RawChars _trailers;                            // Trailer headers buffered until end()
   const CompressionConfig* _pCompressionConfig;  // compression thresholds, etc.
-  internal::ResponseCompressionState* _pCompressionState;  // encoder pool
+  internal::CompressionState* _pCompressionState;  // encoder pool
 };
 
 }  // namespace aeronet

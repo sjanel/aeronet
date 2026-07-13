@@ -525,7 +525,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
   // ensure tlsEstablished is initially false
   state.tlsEstablished = false;
 
-  HttpResponseData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
   const auto res = state.transportWrite(resp);
 
   // write should succeed and set tlsEstablished when handshakeDone() is true
@@ -627,7 +627,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseWaitsUntilHandshake
   state.transport = std::move(fake);
   state.tlsEstablished = false;
 
-  HttpResponseData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
 
   // First write: handshake not done yet, tlsEstablished should remain false
   const auto res1 = state.transportWrite(resp);
@@ -664,7 +664,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, 0U);
   state.tlsEstablished = true;  // simulate prior completion
 
-  HttpResponseData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
   const auto res = state.transportWrite(resp);
   EXPECT_GE(res.bytesProcessed, 0U);
   EXPECT_TRUE(state.tlsEstablished);  // remains true; handshake not re-checked
@@ -696,7 +696,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
 TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {
   ConnectionState state;
 
-  state.outBuffer = HttpResponseData{"response data"};
+  state.outBuffer = HttpMessageData{"response data"};
 
   // With file attached, attachFilePayload should return false for non-empty output buffer
   EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 2, 4}));

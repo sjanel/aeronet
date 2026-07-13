@@ -40,8 +40,8 @@ struct ConnectionState;
 struct HttpServerConfig;
 
 namespace internal {
-struct ResponseCompressionState;
-struct RequestDecompressionState;
+struct CompressionState;
+struct DecompressionState;
 }  // namespace internal
 
 namespace http2 {
@@ -66,8 +66,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// @param config HTTP/2 configuration
   /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                       internal::ResponseCompressionState& compressionState,
-                       internal::RequestDecompressionState& decompressionState,
+                       internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
                        tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
                        std::string_view clientAddress = {});
 
@@ -315,8 +314,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   RawChars _fileSendBuffer;
 
   HttpServerConfig* _pServerConfig;
-  internal::ResponseCompressionState* _pCompressionState;
-  internal::RequestDecompressionState* _pDecompressionState;
+  internal::CompressionState* _pCompressionState;
+  internal::DecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
   std::string_view _clientAddress;
@@ -341,8 +340,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 /// @return Unique pointer to the created handler
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
-                                                             internal::ResponseCompressionState& compressionState,
-                                                             internal::RequestDecompressionState& decompressionState,
+                                                             internal::CompressionState& compressionState,
+                                                             internal::DecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
                                                              RawChars& tmpBuffer, bool sendServerPrefaceForTls = false,
                                                              std::string_view clientAddress = {});
