@@ -14,9 +14,9 @@
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -67,7 +67,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
     return BodyDecodeStatus::Error;
   }
   if (expectContinue && declaredContentLen > 0) {
-    queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
+    queueData(cnxIt, HttpMessageData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }
   std::size_t totalNeeded = headerEnd + declaredContentLen;
   if (state.inBuffer.size() < totalNeeded) {
@@ -84,7 +84,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   if (expectContinue) {
-    queueData(cnxIt, HttpResponseData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
+    queueData(cnxIt, HttpMessageData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }
   std::size_t pos = request.headSpanSize();
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;

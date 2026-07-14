@@ -198,7 +198,7 @@ bool HttpRequestView::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequ
   return !CaseInsensitiveEqual(connVal, http::close);
 }
 
-void HttpRequestView::init(const HttpServerConfig& config, internal::ResponseCompressionState& compressionState) {
+void HttpRequestView::init(const HttpServerConfig& config, internal::CompressionState& compressionState) {
   _pGlobalHeaders = &config.globalHeaders;
   _addTrailerHeader = config.addTrailerHeader;
   _addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;

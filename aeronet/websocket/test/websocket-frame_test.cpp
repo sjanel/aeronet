@@ -638,7 +638,7 @@ TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.payload.size(), mediumPayload.size());
-  // HeaderSize should be 4 (2 + 2 extended length)
+  // Header size should be 4 (2 + 2 extended length)
   EXPECT_EQ(result.header.headerSize(), 4);
 }
 

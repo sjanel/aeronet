@@ -25,10 +25,10 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -1369,7 +1369,7 @@ ServerStats SingleHttpServer::stats() const {
 }
 
 void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body) {
-  queueData(cnxIt, HttpResponseData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
+  queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
 
   if (_callbacks.parserErr) {
     // Swallow exceptions from user callback to avoid destabilizing the server
@@ -1480,10 +1480,10 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
 
           switch (status) {
             case 100:
-              queueData(cnxIt, HttpResponseData(http::HTTP11_100_CONTINUE));
+              queueData(cnxIt, HttpMessageData(http::HTTP11_100_CONTINUE));
               break;
             case 102:
-              queueData(cnxIt, HttpResponseData(http::HTTP11_102_PROCESSING));
+              queueData(cnxIt, HttpMessageData(http::HTTP11_102_PROCESSING));
               break;
             default: {
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
@@ -1495,7 +1495,7 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
               insertPtr = write3(insertPtr, status);
               Copy(http::DoubleCRLF, insertPtr);
 
-              queueData(cnxIt, HttpResponseData(std::move(buf)));
+              queueData(cnxIt, HttpMessageData(std::move(buf)));
               break;
             }
           }

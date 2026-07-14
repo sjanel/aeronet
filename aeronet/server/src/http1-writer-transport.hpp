@@ -11,8 +11,8 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
@@ -108,9 +108,9 @@ class Http1WriterTransport final : public IWriterTransport {
       insertPtr = Append(http::CRLF, insertPtr);
       chunkBuffer.setSize(totalSize);
 
-      return enqueue(HttpResponseData(std::move(chunkBuffer)));
+      return enqueue(HttpMessageData(std::move(chunkBuffer)));
     }
-    return enqueue(HttpResponseData(RawChars(data)));
+    return enqueue(HttpMessageData(RawChars(data)));
   }
 
   bool emitEnd(RawChars trailers) override {
@@ -138,25 +138,13 @@ class Http1WriterTransport final : public IWriterTransport {
       trailers.setSize(static_cast<std::size_t>(insertPtr - trailers.data()));
     }
 
-    return enqueue(HttpResponseData(std::move(trailers)));
-  }
-
-  [[nodiscard]] bool isAlive() const override {
-    auto cnxIt = _server->_connections.iterator(_fd);
-#ifdef AERONET_WINDOWS
-    if (cnxIt == _server->_connections.end()) {
-#else
-    if (!*cnxIt) {
-#endif
-      return false;
-    }
-    return !_server->_connections.connectionState(cnxIt).isAnyCloseRequested();
+    return enqueue(HttpMessageData(std::move(trailers)));
   }
 
   [[nodiscard]] uint32_t logId() const override { return static_cast<uint32_t>(_fd); }
 
  private:
-  bool enqueue(HttpResponseData responseData) {
+  bool enqueue(HttpMessageData responseData) {
     auto cnxIt = _server->_connections.iterator(_fd);
 #ifdef AERONET_WINDOWS
     if (cnxIt == _server->_connections.end()) {

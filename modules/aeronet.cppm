@@ -30,10 +30,10 @@ using aeronet::ConcatenatedHeaders;
 using aeronet::ConcatenatedHeaderValues;
 using aeronet::FilePayload;
 using aeronet::HeadersViewMap;
+using aeronet::HttpMessageData;
 using aeronet::HttpPayload;
 using aeronet::HttpRequestView;
 using aeronet::HttpResponse;
-using aeronet::HttpResponseData;
 using aeronet::HttpResponseWriter;
 using aeronet::RequestTask;
 

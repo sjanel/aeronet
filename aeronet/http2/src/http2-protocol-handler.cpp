@@ -63,8 +63,8 @@ namespace aeronet::http2 {
 // ============================
 
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                                           internal::ResponseCompressionState& compressionState,
-                                           internal::RequestDecompressionState& decompressionState,
+                                           internal::CompressionState& compressionState,
+                                           internal::DecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
                                            std::string_view clientAddress)
     : _connection(config, true),
@@ -1242,8 +1242,8 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
                                                              HttpServerConfig& serverConfig,
-                                                             internal::ResponseCompressionState& compressionState,
-                                                             internal::RequestDecompressionState& decompressionState,
+                                                             internal::CompressionState& compressionState,
+                                                             internal::DecompressionState& decompressionState,
                                                              tracing::TelemetryContext& telemetryContext,
                                                              RawChars& tmpBuffer, bool sendServerPrefaceForTls,
                                                              std::string_view clientAddress) {
