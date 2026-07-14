@@ -26,8 +26,8 @@ namespace aeronet {
 
 HttpResponseWriter::HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request,
                                        Encoding compressionFormat, const CompressionConfig& compressionConfig,
-                                       internal::ResponseCompressionState& compressionState,
-                                       std::string_view globalHeadersStr, bool addTrailerHeader)
+                                       internal::CompressionState& compressionState, std::string_view globalHeadersStr,
+                                       bool addTrailerHeader)
     : _transport(&transport),
       _request(&request),
       _head(request.method() == http::Method::HEAD),

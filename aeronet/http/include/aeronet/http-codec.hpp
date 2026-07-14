@@ -36,7 +36,7 @@ namespace aeronet::internal {
 
 // All decoders / encoders use custom allocators (BufferCache or ObjectArrayPool) to reuse memory across sessions.
 
-struct RequestDecompressionState {
+struct DecompressionState {
 #ifdef AERONET_ENABLE_BROTLI
   BrotliDecoder brotliDecoder;
 #endif
@@ -50,10 +50,10 @@ struct RequestDecompressionState {
 #endif
 };
 
-struct ResponseCompressionState {
-  ResponseCompressionState() noexcept = default;
+struct CompressionState {
+  CompressionState() noexcept = default;
 
-  explicit ResponseCompressionState(const CompressionConfig& cfg);
+  explicit CompressionState(const CompressionConfig& cfg);
 
   EncoderResult encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 
@@ -86,11 +86,11 @@ class HttpCodec {
   // (either because the encoding is not supported, or because compression failed or did not meet config thresholds). On
   // true return, the response is modified in-place with the compressed body and appropriate headers. On false return,
   // the response is left unmodified.
-  static CompressResponseResult TryCompressResponse(ResponseCompressionState& compressionState, Encoding encoding,
+  static CompressResponseResult TryCompressResponse(CompressionState& compressionState, Encoding encoding,
                                                     HttpResponse& resp);
 
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
-  static RequestDecompressionResult MaybeDecompressRequestBody(RequestDecompressionState& decompressionState,
+  static RequestDecompressionResult MaybeDecompressRequestBody(DecompressionState& decompressionState,
                                                                const DecompressionConfig& decompressionConfig,
                                                                HttpRequestView& request,
                                                                RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer);
@@ -107,7 +107,7 @@ class HttpCodec {
   /// The chunks span points to non-contiguous compressed data (from chunked transfer).
   /// Decompressed output goes to bodyAndTrailersBuffer.
   /// Returns error result on failure, or empty result on success.
-  static RequestDecompressionResult DecompressChunkedBody(RequestDecompressionState& decompressionState,
+  static RequestDecompressionResult DecompressChunkedBody(DecompressionState& decompressionState,
                                                           const DecompressionConfig& decompressionConfig,
                                                           HttpRequestView& request,
                                                           std::span<const std::string_view> compressedChunks,
@@ -121,7 +121,7 @@ class HttpCodec {
   /// only identity codings were present so nothing was decoded). No header mutation is performed: callers
   /// own the message and adjust headers themselves. Reuses the exact same decoders/codepath as the
   /// server's inbound request decompression. Returns http::StatusCodeOK on success.
-  static RequestDecompressionResult DecompressFullBody(RequestDecompressionState& decompressionState,
+  static RequestDecompressionResult DecompressFullBody(DecompressionState& decompressionState,
                                                        const DecompressionConfig& decompressionConfig,
                                                        std::string_view contentEncoding,
                                                        std::string_view compressedBody, RawChars& outBuffer,
@@ -131,8 +131,8 @@ class HttpCodec {
   /// of the compressed bytes when compression succeeded and fit within `maxCompressedBytes` (the ratio
   /// guard), or an empty view otherwise (encoder error, or compression was not beneficial enough) in which
   /// case the caller should send the body uncompressed. Reuses the server's response encoders.
-  static std::string_view CompressFullBody(ResponseCompressionState& compressionState, Encoding encoding,
-                                           std::string_view data, std::size_t maxCompressedBytes, RawChars& outBuffer);
+  static std::string_view CompressFullBody(CompressionState& compressionState, Encoding encoding, std::string_view data,
+                                           std::size_t maxCompressedBytes, RawChars& outBuffer);
 };
 
 }  // namespace aeronet::internal

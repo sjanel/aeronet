@@ -43,13 +43,13 @@ SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
     if (sz >= 10) {
       day = std::chrono::day(static_cast<unsigned>(read2(begPtr + 8)));
       if (sz >= 13) {
-        hours = static_cast<uint8_t>(read2(begPtr + 11));
+        hours = read2(begPtr + 11);
         begSuffix = begPtr + 13;
         if (sz >= 16) {
-          minutes = static_cast<uint8_t>(read2(begPtr + 14));
+          minutes = read2(begPtr + 14);
           begSuffix = begPtr + 16;
           if (sz >= 19) {
-            seconds = static_cast<uint8_t>(read2(begPtr + 17));
+            seconds = read2(begPtr + 17);
             begSuffix = begPtr + 19;
           }
         }
@@ -152,20 +152,18 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return ret;
   }
 
-  static constexpr uint16_t kGMTRep = static_cast<uint16_t>(read3("GMT"));
+  static constexpr uint16_t kGMTRep = read3("GMT");
 
-  if (static_cast<uint16_t>(read3(ptr + 26)) != kGMTRep) {
+  if (read3(ptr + 26) != kGMTRep) {
     return ret;
   }
 
   static constexpr uint16_t kMonthsRep[]{
-      static_cast<uint16_t>(read3("Jan")), static_cast<uint16_t>(read3("Feb")), static_cast<uint16_t>(read3("Mar")),
-      static_cast<uint16_t>(read3("Apr")), static_cast<uint16_t>(read3("May")), static_cast<uint16_t>(read3("Jun")),
-      static_cast<uint16_t>(read3("Jul")), static_cast<uint16_t>(read3("Aug")), static_cast<uint16_t>(read3("Sep")),
-      static_cast<uint16_t>(read3("Oct")), static_cast<uint16_t>(read3("Nov")), static_cast<uint16_t>(read3("Dec")),
+      read3("Jan"), read3("Feb"), read3("Mar"), read3("Apr"), read3("May"), read3("Jun"),
+      read3("Jul"), read3("Aug"), read3("Sep"), read3("Oct"), read3("Nov"), read3("Dec"),
   };
 
-  const auto monthIt = std::ranges::find(kMonthsRep, static_cast<uint16_t>(read3(ptr + 8)));
+  const auto monthIt = std::ranges::find(kMonthsRep, read3(ptr + 8));
   if (monthIt == std::end(kMonthsRep)) {
     return ret;
   }
@@ -186,11 +184,9 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
   const std::chrono::year_month_day ymd{yearField, monthField, dayField};
   // Verify the weekday token (e.g. "Sun") matches the resolved date
-  static constexpr uint16_t kWeekdays[]{static_cast<uint16_t>(read3("Sun")), static_cast<uint16_t>(read3("Mon")),
-                                        static_cast<uint16_t>(read3("Tue")), static_cast<uint16_t>(read3("Wed")),
-                                        static_cast<uint16_t>(read3("Thu")), static_cast<uint16_t>(read3("Fri")),
-                                        static_cast<uint16_t>(read3("Sat"))};
-  const auto weekdayIt = std::ranges::find(kWeekdays, static_cast<uint16_t>(read3(ptr)));
+  static constexpr uint16_t kWeekdays[]{read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"),
+                                        read3("Thu"), read3("Fri"), read3("Sat")};
+  const auto weekdayIt = std::ranges::find(kWeekdays, read3(ptr));
   if (weekdayIt == std::end(kWeekdays)) {
     return ret;
   }

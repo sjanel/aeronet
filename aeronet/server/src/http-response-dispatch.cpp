@@ -12,10 +12,10 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
@@ -177,7 +177,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   request.end(respStatusCode);
 }
 
-void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData) {
+void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   if (state.isAnyCloseRequested()) {
     return;

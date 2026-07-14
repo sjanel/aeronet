@@ -25,8 +25,8 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -1053,7 +1053,7 @@ HttpMessage& HttpMessage::trailerAddLine(std::string_view name, std::string_view
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
-HttpMessage::Options::Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding)
+HttpMessage::Options::Options(internal::CompressionState& compressionState, Encoding expectedEncoding)
     : _pCompressionState(&compressionState),
       _pickedEncoding(expectedEncoding),
       _directCompressionMode(compressionState.pCompressionConfig->defaultDirectCompressionMode) {}
@@ -1079,9 +1079,9 @@ bool HttpMessage::Options::directCompressionPossible(std::size_t bodySize,
 
 #endif
 
-HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
-                                               const ConcatenatedHeaders* pGlobalHeaders,
-                                               std::size_t minCapturedBodySize) {
+HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
+                                              const ConcatenatedHeaders* pGlobalHeaders,
+                                              std::size_t minCapturedBodySize) {
   // Write the Http version (1.0 or 1.1)
   version.writeFull(_data.data());
 
@@ -1423,7 +1423,7 @@ HttpResponseData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ve
 
   assert(!_payloadVariant.isSizeOnly());
 
-  HttpResponseData prepared(std::move(_data), std::move(_payloadVariant));
+  HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
 
   if (isHeadMethod) {
     auto* pFilePayload = prepared.getIfFilePayload();

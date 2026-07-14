@@ -54,9 +54,6 @@ class IWriterTransport {
   /// @return true on success, false on error.
   virtual bool emitEnd(RawChars trailers) = 0;
 
-  /// Check whether the underlying connection / stream is still alive.
-  [[nodiscard]] virtual bool isAlive() const = 0;
-
   /// Return the identifier integer for log messages.
   [[nodiscard]] virtual uint32_t logId() const = 0;
 

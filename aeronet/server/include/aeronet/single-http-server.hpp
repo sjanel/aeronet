@@ -22,8 +22,8 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -497,7 +497,7 @@ class SingleHttpServer {
   // consumedBytes is the number of bytes of the current request to consume from the inbound buffer.
   void emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consumedBytes);
   // Outbound write helpers. On transport failure, the connection is closed immediately.
-  void queueData(ConnectionIt cnxIt, HttpResponseData httpResponseData);
+  void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
   void flushOutbound(ConnectionIt cnxIt);
   void flushFilePayload(ConnectionIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
@@ -644,8 +644,8 @@ class SingleHttpServer {
 
   HttpServerConfig _config;
 
-  internal::ResponseCompressionState _compressionState;
-  internal::RequestDecompressionState _decompressionState;
+  internal::CompressionState _compressionState;
+  internal::DecompressionState _decompressionState;
 
   Socket _listenSocket;
   TimerFd _maintenanceTimer;

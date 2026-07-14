@@ -9,17 +9,17 @@
 
 namespace aeronet {
 
-class HttpResponseData {
+class HttpMessageData {
  public:
-  HttpResponseData() noexcept = default;
+  HttpMessageData() noexcept = default;
 
-  explicit HttpResponseData(std::string_view data) : _buf(data) {}
+  explicit HttpMessageData(std::string_view data) : _buf(data) {}
 
-  explicit HttpResponseData(RawChars head) noexcept : _buf(std::move(head)) {}
+  explicit HttpMessageData(RawChars head) noexcept : _buf(std::move(head)) {}
 
-  HttpResponseData(RawChars head, HttpPayload body) noexcept : _buf(std::move(head)), _capturedBody(std::move(body)) {}
+  HttpMessageData(RawChars head, HttpPayload body) noexcept : _buf(std::move(head)), _capturedBody(std::move(body)) {}
 
-  HttpResponseData(std::string_view head, HttpPayload body) noexcept : _buf(head), _capturedBody(std::move(body)) {}
+  HttpMessageData(std::string_view head, HttpPayload body) noexcept : _buf(head), _capturedBody(std::move(body)) {}
 
   [[nodiscard]] std::string_view firstBuffer() const noexcept {
     return _offset < _buf.size() ? std::string_view(_buf.begin() + _offset, _buf.end()) : std::string_view();

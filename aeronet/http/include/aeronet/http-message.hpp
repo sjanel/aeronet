@@ -25,8 +25,8 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -44,7 +44,7 @@ class EncoderContext;
 namespace internal {
 class HttpCodec;
 class Http1WriterTransport;
-struct ResponseCompressionState;
+struct CompressionState;
 }  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -1163,7 +1163,7 @@ class HttpMessage {
     Options() noexcept = default;
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    Options(internal::ResponseCompressionState& compressionState, Encoding expectedEncoding);
+    Options(internal::CompressionState& compressionState, Encoding expectedEncoding);
 #endif
 
     [[nodiscard]] constexpr bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
@@ -1262,7 +1262,7 @@ class HttpMessage {
     friend class internal::HttpCodec;
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    internal::ResponseCompressionState* _pCompressionState{nullptr};
+    internal::CompressionState* _pCompressionState{nullptr};
 #endif
 
     std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
@@ -1274,8 +1274,8 @@ class HttpMessage {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpMessage instance.
   // So this instance must not be used anymore after this call.
-  HttpResponseData finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
-                                    const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize);
+  HttpMessageData finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
+                                   const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize);
 
   constexpr FilePayload* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }
 

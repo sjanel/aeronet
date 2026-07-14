@@ -8,8 +8,8 @@
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-data.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/protocol-handler.hpp"
@@ -42,7 +42,7 @@ class TlsContext;
 
 struct ConnectionState {
   void initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
-                                    internal::ResponseCompressionState& compressionState);
+                                    internal::CompressionState& compressionState);
 
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
@@ -65,7 +65,7 @@ struct ConnectionState {
   ITransport::TransportResult transportRead(std::size_t chunkSize);
 
   ITransport::TransportResult transportWrite(std::string_view data);
-  ITransport::TransportResult transportWrite(const HttpResponseData& httpResponseData);
+  ITransport::TransportResult transportWrite(const HttpMessageData& httpResponseData);
 
   // Return true if success, false if fatal error.
   bool tunnelTransportWrite(NativeHandle fd);
@@ -115,7 +115,7 @@ struct ConnectionState {
   /// MSG_ZEROCOPY pins user-space pages and the kernel DMA's from them asynchronously;
   /// freeing the buffer before the completion notification arrives causes data corruption.
   /// If no zerocopy sends are pending, the buffer is released immediately (goes out of scope).
-  void holdBufferIfZerocopyPending(HttpResponseData buf);
+  void holdBufferIfZerocopyPending(HttpMessageData buf);
 
   /// Poll the kernel error queue and release held zerocopy buffers whose sends have completed.
   void releaseCompletedZerocopyBuffers();
@@ -136,11 +136,11 @@ struct ConnectionState {
   HttpRequestView request;
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
-  HttpResponseData outBuffer;
+  HttpMessageData outBuffer;
   // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals
   // completion via the error queue. Without this, the allocator can reuse the freed
   // pages while the kernel is still DMA-ing from them, causing data corruption.
-  vector<HttpResponseData> zerocopyPendingBuffers;
+  vector<HttpMessageData> zerocopyPendingBuffers;
   std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
   // Timestamp of first byte of the current pending request headers.

@@ -57,7 +57,7 @@ class StaticFileHandlerTest : public ::testing::Test {
   HttpRequestView req;
   ConcatenatedHeaders globalHeaders;
   CompressionConfig compressionConfig;
-  internal::ResponseCompressionState compressionState;
+  internal::CompressionState compressionState;
 
   test::ScopedTempDir tmpDir;
 

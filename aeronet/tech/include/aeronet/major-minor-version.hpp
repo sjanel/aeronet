@@ -51,7 +51,7 @@ class MajorMinorVersion {
   [[nodiscard]] constexpr bool isValid() const noexcept { return _data != 0; }
 
   // Returns the full version string in a std::array<char> (e.g. "HTTP/1.1").
-  [[nodiscard]] auto str() const noexcept {
+  [[nodiscard]] constexpr auto str() const noexcept {
     std::array<char, kStrLen> buf;
     writeFull(buf.data());
     return buf;
@@ -59,7 +59,7 @@ class MajorMinorVersion {
 
   // Write the full version string (e.g. "HTTP/1.1") to out.
   // Returns pointer to one past the last written character.
-  char* writeFull(char* out) const { return writeMajorMinor(Append(kPrefix, out)); }
+  constexpr char* writeFull(char* out) const { return writeMajorMinor(Append(kPrefix, out)); }
 
   // Write just the "X.Y" part of the version to out.
   // Returns pointer to one past the last written character.
