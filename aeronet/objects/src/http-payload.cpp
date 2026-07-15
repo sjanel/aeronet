@@ -12,6 +12,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/file-payload.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"

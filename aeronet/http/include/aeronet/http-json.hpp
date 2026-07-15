@@ -28,21 +28,21 @@
 namespace aeronet {
 
 template <class T>
-HttpResponse& HttpResponse::bodyJson(const T& obj) & {
+void HttpMessage::bodyJson(const T& obj) {
   std::string buf;
   if (const auto ec = glz::write<glz::opts{}>(obj, buf)) [[unlikely]] {
     throw std::runtime_error("bodyJson serialization failed: " + glz::format_error(ec));
   }
-  return body(std::move(buf), http::ContentTypeApplicationJson);
+  body(std::move(buf), http::ContentTypeApplicationJson);
 }
 
 template <class T>
-HttpResponse& HttpResponse::bodyYaml(const T& obj) & {
+void HttpMessage::bodyYaml(const T& obj) {
   std::string buf;
   if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
     throw std::runtime_error("bodyYaml serialization failed: " + glz::format_error(ec));
   }
-  return body(std::move(buf), "text/yaml");
+  body(std::move(buf), "text/yaml");
 }
 
 template <class T>

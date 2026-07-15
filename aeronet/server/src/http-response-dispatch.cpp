@@ -155,9 +155,15 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
   HttpResponse::Options opts;
 
-  opts.close(!keepAlive);
-  opts.addTrailerHeader(_config.addTrailerHeader);
-  opts.headMethod(request.method() == http::Method::HEAD);
+  if (!keepAlive) {
+    opts.setClose();
+  }
+  if (_config.addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (request.method() == http::Method::HEAD) {
+    opts.setHeadMethod();
+  }
 
   queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));

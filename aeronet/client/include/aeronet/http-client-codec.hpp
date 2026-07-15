@@ -17,7 +17,6 @@ struct HttpClientCodec {
   CompressionState compressionState;      // outbound request encoders
   RawChars decompressOut;                 // decoded response body (ping-pong primary)
   RawChars decompressTmp;                 // scratch for stacked-encoding decode
-  RawChars compressOut;                   // compressed request body
 };
 
 }  // namespace aeronet::internal

@@ -334,7 +334,7 @@ void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::T
 
   if (response.hasBodyInMemory() && encoding != Encoding::none) {
     const internal::CompressResponseResult result =
-        internal::HttpCodec::TryCompressResponse(*_pCompressionState, encoding, response);
+        internal::HttpCodec::TryCompressBody(*_pCompressionState, encoding, response);
 
     switch (result) {
       case internal::CompressResponseResult::Uncompressed:
@@ -468,13 +468,21 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   assert(_pCompressionState != nullptr);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
-  opts.addVaryAcceptEncoding(_addVaryAcceptEncoding);
+  if (_addVaryAcceptEncoding) {
+    opts.addVaryAcceptEncoding();
+  }
 #else
   HttpResponse::Options opts;
 #endif
-  opts.close(wantClose());
-  opts.addTrailerHeader(_addTrailerHeader);
-  opts.headMethod(method() == http::Method::HEAD);
+  if (wantClose()) {
+    opts.setClose();
+  }
+  if (_addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (method() == http::Method::HEAD) {
+    opts.setHeadMethod();
+  }
   opts.setPrepared();
   return opts;
 }

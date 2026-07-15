@@ -10,7 +10,6 @@
 #endif
 
 #include "aeronet/http-client-error.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/timedef.hpp"
@@ -18,9 +17,8 @@
 namespace aeronet {
 
 class HttpClient;
-class ClientRequest;
+class HttpRequest;
 class ITransport;
-class Url;
 
 #ifdef AERONET_ENABLE_HTTP2
 struct Http2Config;
@@ -78,20 +76,20 @@ class ClientConnection {
   [[nodiscard]] bool empty() const noexcept { return _type == Type::Empty; }
 
   // Perform a single request/response exchange over `transport`, returning the HttpResponse or an
-  // HttpClientErrc on transport failure (never throws). `method` / `dropBody` carry redirect rewriting
-  // without copying the (move-only) request. The owning `client` is borrowed for its event loop / scratch
-  // buffers / codec, not stored. `requestSent` is set to true (even when the call later returns an error) as
-  // soon as any request byte reaches the transport, so the caller can tell a pre-send failure (safe to
-  // retry) from a post-send one (never retried, to avoid re-submitting a non-idempotent request).
-  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd, const Url& url,
-                                          const ClientRequest& req, http::Method method, bool dropBody,
-                                          SteadyClock::time_point ioDeadline, bool& requestSent) {
+  // HttpClientErrc on transport failure (never throws). Redirect rewrites are already applied to `req`.
+  // The owning `client` is borrowed for its event loop / scratch buffers / codec, not stored. `requestSent`
+  // is set to true (even when the call later returns an error) as soon as any request byte reaches the
+  // transport, so the caller can tell a pre-send failure (safe to retry) from a post-send one (never retried,
+  // to avoid re-submitting a non-idempotent request).
+  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd,
+                                          const HttpRequest& req, SteadyClock::time_point ioDeadline,
+                                          bool& requestSent) {
 #ifdef AERONET_ENABLE_HTTP2
     if (_type == Type::Http2) {
-      return exchangeForHttp2(client, transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
+      return exchangeForHttp2(client, transport, fd, req, ioDeadline, requestSent);
     }
 #endif
-    return exchangeForHttp11(client, transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
+    return exchangeForHttp11(client, transport, fd, req, ioDeadline, requestSent);
   }
 
   // Whether the connection may be returned to the idle pool for a later exchange (verdict of the most
@@ -118,26 +116,8 @@ class ClientConnection {
 
  private:
   [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                                   const Url& url, const ClientRequest& req, http::Method method,
-                                                   bool dropBody, SteadyClock::time_point ioDeadline,
+                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                    bool& requestSent);
-
-  // Build the request head into client.requestBuffer() and return the body to send separately (a view into
-  // `req` or the codec's compression buffer, never copied into the head buffer) -- unless the body is small
-  // enough to be folded into the head buffer for a single write, in which case an empty view is returned.
-  [[nodiscard]] static std::string_view buildRequestBytesForHttp11(HttpClient& client, const Url& url,
-                                                                   const ClientRequest& req, http::Method method,
-                                                                   bool dropBody);
-
-  // Apply the shared opt-in outbound request-body compression policy (identical for HTTP/1.1 and HTTP/2).
-  // Returns the body to send: on success the codec's reusable compression buffer, with `contentEncoding` set
-  // to the applied coding token (the builder then emits Content-Encoding and rewrites Content-Length to the
-  // compressed size); otherwise `body` is returned unchanged and `contentEncoding` is left empty. `body` must
-  // already be empty when the request body is dropped. The codec is materialized lazily (only when a body is
-  // actually compressed), so codec-free requests still pay nothing.
-  [[nodiscard]] static std::string_view maybeCompressRequestBody(HttpClient& client, std::string_view body,
-                                                                 bool hasContentEncoding, bool hasTransferEncoding,
-                                                                 std::string_view& contentEncoding);
 
   // Write the request head followed by the body, pumping the event loop on would-block. While both buffers
   // are still pending they are sent with a single scatter write (writev / ordered TLS write) so the body is
@@ -152,16 +132,13 @@ class ClientConnection {
 
 #ifdef AERONET_ENABLE_HTTP2
   [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                                  const Url& url, const ClientRequest& req, http::Method method,
-                                                  bool dropBody, SteadyClock::time_point ioDeadline, bool& requestSent);
+                                                  const HttpRequest& req, SteadyClock::time_point ioDeadline,
+                                                  bool& requestSent);
 
   // Build the request header block (pseudo-headers first, then regular headers, all names lowercased --
   // RFC 9113 §8.2/§8.3) as flat "name: value\r\n" lines into client.requestBuffer(), ready for
   // Http2Connection::sendHeaders. Connection-specific headers are dropped and Host becomes :authority.
-  // Returns the body to send in DATA frames (a view into `req` or the codec's compression buffer).
-  [[nodiscard]] static std::string_view buildHeaderBlockForHttp2(HttpClient& client, const Url& url,
-                                                                 const ClientRequest& req, http::Method method,
-                                                                 bool dropBody);
+  static void buildHeaderBlockForHttp2(HttpClient& client, const HttpRequest& req);
 
   std::unique_ptr<Http2ClientEngine> _h2;  // engaged iff _type == Type::Http2
 #endif

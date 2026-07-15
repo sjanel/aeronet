@@ -55,7 +55,8 @@ inline constexpr std::string_view Trailer = "trailer";
 inline constexpr std::string_view Upgrade = "upgrade";
 inline constexpr std::string_view Expect = "expect";
 inline constexpr std::string_view Host = "host";
-inline constexpr std::string_view Date = "date";  // only used for writing (server side)
+inline constexpr std::string_view Date = "date";
+inline constexpr std::string_view Server = "server";
 inline constexpr std::string_view Location = "location";
 inline constexpr std::string_view Vary = "vary";
 inline constexpr std::string_view Origin = "origin";
@@ -192,6 +193,11 @@ constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
     default:
       return {};
   }
+}
+
+// Returns the size needed to store a header / trailer with given name and value lengths.
+constexpr std::size_t HeaderSize(std::size_t nameLen, std::size_t valueLen) {
+  return http::CRLF.size() + nameLen + http::HeaderSep.size() + valueLen;
 }
 
 }  // namespace aeronet::http

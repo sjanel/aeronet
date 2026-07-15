@@ -26,6 +26,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-error-build.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -707,9 +708,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         // Emit 301 redirect to canonical form.
         static constexpr std::string_view kRedirecting = "Redirecting";
         const std::string_view reqPath = request.path();
-        HttpResponse resp(HttpResponse::BodySize(kRedirecting.size()) +
-                              HttpResponse::HeaderSize(http::Location.size(), reqPath.size() + 1U),
-                          http::StatusCodeMovedPermanently);
+        HttpResponse resp(
+            HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), reqPath.size() + 1U),
+            http::StatusCodeMovedPermanently);
         if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
           resp.headerAddLine(http::Location, reqPath);
           resp.headerAppendValue(http::Location, '/', "");
@@ -1015,7 +1016,7 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   auto rawHandle = async.handle.release();
   auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(rawHandle.address());
   bool fromException = false;
-  HttpResponse resp(HttpResponse::Check::No);  // do not allocate memory yet
+  HttpResponse resp(HttpMessage::Check::No);  // do not allocate memory yet
   try {
     resp = std::move(typedHandle.promise().consume_result());
   } catch (const std::exception& ex) {
@@ -1421,8 +1422,10 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consume
   // Force connection close: the redirected client reconnects over TLS, and closing avoids any
   // request-body framing concerns since the body is intentionally not consumed.
   HttpResponse::Options opts;
-  opts.close(true);
-  opts.headMethod(request.method() == http::Method::HEAD);
+  opts.setClose();
+  if (request.method() == http::Method::HEAD) {
+    opts.setHeadMethod();
+  }
 
   queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));

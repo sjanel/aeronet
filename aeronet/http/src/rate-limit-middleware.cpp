@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -76,7 +77,7 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
     static constexpr std::string_view kRetryAfterHeader = "Retry-After";
 
     auto response =
-        request.makeResponse(HttpResponse::HeaderSize(kRetryAfterHeader.size(), ndigits(decision.retryAfterSeconds)) +
+        request.makeResponse(http::HeaderSize(kRetryAfterHeader.size(), ndigits(decision.retryAfterSeconds)) +
                                  HttpResponse::BodySize(opts.rejectionBody.size()),
                              http::StatusCodeTooManyRequests);
 

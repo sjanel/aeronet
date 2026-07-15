@@ -70,7 +70,7 @@ RawChars BuildRaw(std::string_view method, std::string_view target, std::string_
 
 }  // namespace
 
-class HttpRequestTest : public ::testing::Test {
+class HttpRequestViewTest : public ::testing::Test {
  protected:
   void SetUp() override {
     globalHeaders.append("server: aeronet");
@@ -252,14 +252,14 @@ class HttpRequestTest : public ::testing::Test {
   ConnectionState cs;
 };
 
-TEST_F(HttpRequestTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
+TEST_F(HttpRequestViewTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
   setBodyAccessStreamingWithBridgeNoHasMore();
   auto chunk = req.readBody(0);
   EXPECT_TRUE(chunk.empty());
 }
 
 #ifdef AERONET_POSIX
-TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
+TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
   compressionConfig.minBytes = 1U;
   compressionConfig.maxCompressRatio = 0.01F;
   compressionState = internal::CompressionState(compressionConfig);
@@ -284,7 +284,7 @@ TEST_F(HttpRequestTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
 }
 #endif
 
-TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
+TEST_F(HttpRequestViewTest, BridgeWithNullContextAggregateHandledGracefully) {
   // Aggregate accessor: null context -> empty body
   using AggFnRaw = std::string_view (*)(HttpRequestView&, void*);
   AggFnRaw agg = +[](HttpRequestView& /*r*/, void* ctx) -> std::string_view {
@@ -303,7 +303,7 @@ TEST_F(HttpRequestTest, BridgeWithNullContextAggregateHandledGracefully) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, BridgeWithNullContextStreamingHandledGracefully) {
+TEST_F(HttpRequestViewTest, BridgeWithNullContextStreamingHandledGracefully) {
   // Streaming accessor: null context -> empty chunks and hasMore false
   using ReadFnRaw = std::string_view (*)(HttpRequestView&, void*, std::size_t);
   using HasMoreFnRaw = bool (*)(const HttpRequestView&, void*);
@@ -323,7 +323,7 @@ TEST_F(HttpRequestTest, BridgeWithNullContextStreamingHandledGracefully) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, AggregatedBridgeNullContextAndHasMoreHandled) {
+TEST_F(HttpRequestViewTest, AggregatedBridgeNullContextAndHasMoreHandled) {
   // Install the real aggregated bridge via ConnectionState so the bridge points
   // at ConnectionState::bodyStreamContext functions defined in connection-state.cpp.
   cs.installAggregatedBodyBridge();
@@ -339,13 +339,13 @@ TEST_F(HttpRequestTest, AggregatedBridgeNullContextAndHasMoreHandled) {
   EXPECT_FALSE(cs.request.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, BridgePresentButAggregateNull) {
+TEST_F(HttpRequestViewTest, BridgePresentButAggregateNull) {
   // Removed: test constructed a BodyAccessBridge directly which uses private
   // types; use BridgePointerPresentButAggregateNull which installs the bridge
   // via the provided helper instead.
 }
 
-TEST_F(HttpRequestTest, BridgePointerPresentButAggregateNull) {
+TEST_F(HttpRequestViewTest, BridgePointerPresentButAggregateNull) {
   // Install a bridge where the bridge pointer is non-null but aggregate is
   // explicitly null. Use the helper that sets the bridge and nulls the
   // context. This should exercise the `_bodyAccessBridge != nullptr` true
@@ -357,7 +357,7 @@ TEST_F(HttpRequestTest, BridgePointerPresentButAggregateNull) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, AggregatedBridgeReadOffsetPastEndHandled) {
+TEST_F(HttpRequestViewTest, AggregatedBridgeReadOffsetPastEndHandled) {
   // Install aggregated bridge and ensure the body context is present.
   cs.installAggregatedBodyBridge();
 
@@ -370,7 +370,7 @@ TEST_F(HttpRequestTest, AggregatedBridgeReadOffsetPastEndHandled) {
   EXPECT_TRUE(chunk.empty());
 }
 
-TEST_F(HttpRequestTest, AggregatedBridgeHasMoreNullContextHandled) {
+TEST_F(HttpRequestViewTest, AggregatedBridgeHasMoreNullContextHandled) {
   // Install aggregated bridge via ConnectionState
   cs.installAggregatedBodyBridge();
 
@@ -381,7 +381,7 @@ TEST_F(HttpRequestTest, AggregatedBridgeHasMoreNullContextHandled) {
   EXPECT_FALSE(cs.request.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, TraceSpanNotSetWhenNoHostHeader) {
+TEST_F(HttpRequestViewTest, TraceSpanNotSetWhenNoHostHeader) {
   // Build a raw request without a Host header and pass a FakeSpan into
   // initTrySetHead; the span should receive http.method, http.target, and
   // http.scheme but not http.host.
@@ -403,7 +403,7 @@ TEST_F(HttpRequestTest, TraceSpanNotSetWhenNoHostHeader) {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-TEST_F(HttpRequestTest, PinHead_NoHeadSpan_Noop) {
+TEST_F(HttpRequestViewTest, PinHead_NoHeadSpan_Noop) {
   // When no head span is present, pinHeadStorage should be a no-op.
   EXPECT_EQ(req.headSpanSize(), 0);
 
@@ -412,7 +412,7 @@ TEST_F(HttpRequestTest, PinHead_NoHeadSpan_Noop) {
   EXPECT_EQ(req.headSpanSize(), 0);
 }
 
-TEST_F(HttpRequestTest, PinHead_NormalCopiesAndRemaps) {
+TEST_F(HttpRequestViewTest, PinHead_NormalCopiesAndRemaps) {
   // Build a simple request and initialize head so _headSpanSize is set
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-Test: v\r\n");
   auto st = reqSet(std::move(raw));
@@ -430,7 +430,7 @@ TEST_F(HttpRequestTest, PinHead_NormalCopiesAndRemaps) {
   EXPECT_EQ(req.headerValueOrEmpty("X-Test"), "v");
 }
 
-TEST_F(HttpRequestTest, PinHead_SecondCallIsNoop) {
+TEST_F(HttpRequestViewTest, PinHead_SecondCallIsNoop) {
   // Build and pin once
   auto raw = BuildRaw("GET", "/p2", "HTTP/1.1", "X-A: b\r\n");
   auto st = reqSet(std::move(raw));
@@ -448,7 +448,7 @@ TEST_F(HttpRequestTest, PinHead_SecondCallIsNoop) {
   EXPECT_EQ(val1, val2);
 }
 
-TEST_F(HttpRequestTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
+TEST_F(HttpRequestViewTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
   // Ensure _ownerState is set so hasMoreBody() consults asyncState
   setOwnerState(&cs);
 
@@ -466,7 +466,7 @@ TEST_F(HttpRequestTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
 }
 
 // postCallback: HTTP/1.x path forwards the non-null work function to asyncState.postCallback.
-TEST_F(HttpRequestTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState) {
+TEST_F(HttpRequestViewTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState) {
   cs.asyncState->active = true;
   std::coroutine_handle<> capturedHandle{};
   std::function<void()> capturedWork;
@@ -485,7 +485,7 @@ TEST_F(HttpRequestTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState)
 }
 
 // postCallback: HTTP/2 path forwards the non-null work function to _h2PostCallback.
-TEST_F(HttpRequestTest, PostCallback_H2Path_NonNullWork_IsPassedToH2Callback) {
+TEST_F(HttpRequestViewTest, PostCallback_H2Path_NonNullWork_IsPassedToH2Callback) {
   std::coroutine_handle<> capturedHandle{};
   std::function<void()> capturedWork;
   setH2PostCallback([&](std::coroutine_handle<> handle, std::function<void()> work) {
@@ -505,7 +505,7 @@ TEST_F(HttpRequestTest, PostCallback_H2Path_NonNullWork_IsPassedToH2Callback) {
 // When postCallback throws (e.g. connection closed while background work was running),
 // DeferredWorkAwaitable::await_suspend swallows the exception and calls log::error.
 // Verified here by confirming no exception escapes and the code reaches the error path.
-TEST_F(HttpRequestTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
+TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
   // Use the H2 path: _h2SuspendedFlag satisfies markAwaitingCallback() without
   // requiring asyncState.active, keeping the test self-contained.
   bool suspendedFlag = false;
@@ -538,40 +538,40 @@ TEST_F(HttpRequestTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
 
 #endif
 
-TEST_F(HttpRequestTest, NotEnoughDataNoEndOfHeaders) {
+TEST_F(HttpRequestViewTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
 }
 
-TEST_F(HttpRequestTest, InvalidHttpVersion) {
+TEST_F(HttpRequestViewTest, InvalidHttpVersion) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /path HTTP1.1\r\n\r\n")), http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, InvalidHeaderKey) {
+TEST_F(HttpRequestViewTest, InvalidHeaderKey) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n:value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n  :value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeaderKey :value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n\tHeaderKey:value\r\n")), http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, InvalidHeaderKeyValueSeparator) {
+TEST_F(HttpRequestViewTest, InvalidHeaderKeyValueSeparator) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey;Value\r\n")), http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
+TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
 
-TEST_F(HttpRequestTest, InvalidMethod) {
+TEST_F(HttpRequestViewTest, InvalidMethod) {
   EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
 }
 
-TEST_F(HttpRequestTest, InvalidPath) {
+TEST_F(HttpRequestViewTest, InvalidPath) {
   EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
+TEST_F(HttpRequestViewTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
 
-TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
+TEST_F(HttpRequestViewTest, ParseBasicPathAndVersion) {
   auto st = reqSet(BuildRaw("GET", "/abc", "HTTP/1.1"));
   EXPECT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.method(), http::Method::GET);
@@ -580,7 +580,7 @@ TEST_F(HttpRequestTest, ParseBasicPathAndVersion) {
   EXPECT_TRUE(req.queryParams().begin() == req.queryParams().end());
 }
 
-TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
+TEST_F(HttpRequestViewTest, QueryParamsDecodingPlusAndPercent) {
   // a=1+2&b=hello%20world&c=%zz (malformed % sequence left verbatim for c's value)
   auto st = reqSet(BuildRaw("GET", "/p?a=1+2&b=hello%20world&c=%zz"));
   ASSERT_EQ(st, http::StatusCodeOK);
@@ -597,7 +597,7 @@ TEST_F(HttpRequestTest, QueryParamsDecodingPlusAndPercent) {
   EXPECT_EQ(seen[2].value, "%zz");  // invalid escape left as-is
 }
 
-TEST_F(HttpRequestTest, QueryParamInt) {
+TEST_F(HttpRequestViewTest, QueryParamInt) {
   auto st = reqSet(BuildRaw("GET", "/p?num=42&str=hello&almost=123abc"));
   ASSERT_EQ(st, http::StatusCodeOK);
   auto valOpt = req.queryParamInt("num");
@@ -613,7 +613,7 @@ TEST_F(HttpRequestTest, QueryParamInt) {
   EXPECT_FALSE(req.queryParamInt("missing").has_value());
 }
 
-TEST_F(HttpRequestTest, EmptyAndMissingValues) {
+TEST_F(HttpRequestViewTest, EmptyAndMissingValues) {
   auto st = reqSet(BuildRaw("GET", "/p?k1=&k2&=v"));
   ASSERT_EQ(st, http::StatusCodeOK);
   vector<http::HeaderView> seen;
@@ -634,7 +634,7 @@ TEST_F(HttpRequestTest, EmptyAndMissingValues) {
   EXPECT_EQ(req.queryParams().at(""), "v");  // last occurrence retained
 }
 
-TEST_F(HttpRequestTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
+TEST_F(HttpRequestViewTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
   auto st = reqSet(BuildRaw("GET", "/p?x=1&x=2&x=3"));
   ASSERT_EQ(st, http::StatusCodeOK);
   vector<std::string_view> values;
@@ -664,12 +664,12 @@ TEST_F(HttpRequestTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
   EXPECT_TRUE(defIt == decltype(req.queryParamsRange().begin()){});
 }
 
-TEST_F(HttpRequestTest, InvalidPathEscapeCauses400) {
+TEST_F(HttpRequestViewTest, InvalidPathEscapeCauses400) {
   auto st = reqSet(BuildRaw("GET", "/bad%zz"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
+TEST_F(HttpRequestViewTest, HeaderAccessorsBasicAndEmptyVsMissing) {
   // Provide headers including:
   //  - normal value (X-Test)
   //  - empty value (X-Empty)
@@ -707,7 +707,7 @@ TEST_F(HttpRequestTest, HeaderAccessorsBasicAndEmptyVsMissing) {
   EXPECT_FALSE(req.headerValue("No-Such").has_value());
 }
 
-TEST_F(HttpRequestTest, HeaderAccessorsAbsentHeaders) {
+TEST_F(HttpRequestViewTest, HeaderAccessorsAbsentHeaders) {
   auto st = reqSet(BuildRaw("GET", "/p"));
   ASSERT_EQ(st, http::StatusCodeOK);
   EXPECT_EQ(req.headerValueOrEmpty("Host"), "h");  // baseline sanity
@@ -715,7 +715,7 @@ TEST_F(HttpRequestTest, HeaderAccessorsAbsentHeaders) {
   EXPECT_FALSE(req.headerValue("X-Unknown").has_value());
 }
 
-TEST_F(HttpRequestTest, MergeConsecutiveHeaders) {
+TEST_F(HttpRequestViewTest, MergeConsecutiveHeaders) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H:v1\r\n"
@@ -727,7 +727,7 @@ TEST_F(HttpRequestTest, MergeConsecutiveHeaders) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, ShrinkToFit) {
+TEST_F(HttpRequestViewTest, ShrinkToFit) {
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
                       "X-Test: Value\r\n"
                       "Cookie:  cookie1 \r\n"
@@ -753,7 +753,7 @@ TEST_F(HttpRequestTest, ShrinkToFit) {
   EXPECT_TRUE(req.headers().empty());
 }
 
-TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {
+TEST_F(HttpRequestViewTest, MergeConsecutiveHeadersWithSpaces) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H: v1  \r\n"
@@ -765,7 +765,7 @@ TEST_F(HttpRequestTest, MergeConsecutiveHeadersWithSpaces) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeNonConsecutiveHeaders) {
+TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeaders) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H:v1\r\n"
@@ -777,7 +777,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeaders) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithSpaces) {
+TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithSpaces) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H: v1  \r\n"
@@ -789,7 +789,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithSpaces) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
+TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H:  \r\n"
@@ -801,7 +801,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
+TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H: v1  \r\n"
@@ -813,7 +813,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
   checkHeaders({{"X-Test", "Value"}, {"H", "v1"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
+TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersBothEmpty) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "H:   \r\n"
@@ -827,7 +827,7 @@ TEST_F(HttpRequestTest, MergeNonConsecutiveHeadersBothEmpty) {
   EXPECT_TRUE(req.headerValue("H").has_value());
 }
 
-TEST_F(HttpRequestTest, MergeMultipleCookies) {
+TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "Cookie:  cookie1 \r\n"
@@ -845,7 +845,7 @@ TEST_F(HttpRequestTest, MergeMultipleCookies) {
                 {http::ContentLength, "0"}});
 }
 
-TEST_F(HttpRequestTest, MergeMultipleHeaders) {
+TEST_F(HttpRequestViewTest, MergeMultipleHeaders) {
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
                       "X-Test: Value\r\n"
                       "Cookie:  cookie1 \r\n"
@@ -870,7 +870,7 @@ TEST_F(HttpRequestTest, MergeMultipleHeaders) {
   ASSERT_EQ(st, http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, AcceptHeaderCommaMerge) {
+TEST_F(HttpRequestViewTest, AcceptHeaderCommaMerge) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Accept: text/plain\r\n"
                             "Accept: text/html\r\n"));
@@ -878,7 +878,7 @@ TEST_F(HttpRequestTest, AcceptHeaderCommaMerge) {
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain,text/html");
 }
 
-TEST_F(HttpRequestTest, AcceptHeaderSkipEmptySecond) {
+TEST_F(HttpRequestViewTest, AcceptHeaderSkipEmptySecond) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Accept: text/plain\r\n"
                             "Accept:   \r\n"));
@@ -886,7 +886,7 @@ TEST_F(HttpRequestTest, AcceptHeaderSkipEmptySecond) {
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain");
 }
 
-TEST_F(HttpRequestTest, AcceptHeaderEmptyFirstTakesSecond) {
+TEST_F(HttpRequestViewTest, AcceptHeaderEmptyFirstTakesSecond) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Accept:    \r\n"
                             "Accept: text/html\r\n"));
@@ -894,7 +894,7 @@ TEST_F(HttpRequestTest, AcceptHeaderEmptyFirstTakesSecond) {
   EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/html");
 }
 
-TEST_F(HttpRequestTest, UserAgentSpaceMerge) {
+TEST_F(HttpRequestViewTest, UserAgentSpaceMerge) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "User-Agent: Foo  \r\n"
                             "User-Agent:   Bar   \r\n"));
@@ -902,7 +902,7 @@ TEST_F(HttpRequestTest, UserAgentSpaceMerge) {
   EXPECT_EQ(req.headerValueOrEmpty("User-Agent"), "Foo Bar");
 }
 
-TEST_F(HttpRequestTest, AuthorizationOverrideKeepsLast) {
+TEST_F(HttpRequestViewTest, AuthorizationOverrideKeepsLast) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Authorization: Bearer first\r\n"
                             "Authorization: Bearer second\r\n"));
@@ -910,7 +910,7 @@ TEST_F(HttpRequestTest, AuthorizationOverrideKeepsLast) {
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer second");
 }
 
-TEST_F(HttpRequestTest, AuthorizationEmptyFirstThenValue) {
+TEST_F(HttpRequestViewTest, AuthorizationEmptyFirstThenValue) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Authorization:   \r\n"
                             "Authorization: Bearer token\r\n"));
@@ -918,7 +918,7 @@ TEST_F(HttpRequestTest, AuthorizationEmptyFirstThenValue) {
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer token");
 }
 
-TEST_F(HttpRequestTest, AuthorizationOverrideCaseInsensitive) {
+TEST_F(HttpRequestViewTest, AuthorizationOverrideCaseInsensitive) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "aUtHoRiZaTiOn: Bearer First\r\n"
                             "AUTHORIZATION: Bearer Second\r\n"));
@@ -926,7 +926,7 @@ TEST_F(HttpRequestTest, AuthorizationOverrideCaseInsensitive) {
   EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer Second");
 }
 
-TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenAggregated) {
+TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenAggregated) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -934,7 +934,7 @@ TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenAggregated) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, ReadBufferedBodyNullContextReturnsEmpty) {
+TEST_F(HttpRequestViewTest, ReadBufferedBodyNullContextReturnsEmpty) {
   // Install aggregated bridge via ConnectionState helper
   cs.installAggregatedBodyBridge();
 
@@ -946,7 +946,7 @@ TEST_F(HttpRequestTest, ReadBufferedBodyNullContextReturnsEmpty) {
   EXPECT_TRUE(chunk.empty());
 }
 
-TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
+TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -954,7 +954,7 @@ TEST_F(HttpRequestTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, BodyAfterReadBodyThrows) {
+TEST_F(HttpRequestViewTest, BodyAfterReadBodyThrows) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -969,7 +969,7 @@ TEST_F(HttpRequestTest, BodyAfterReadBodyThrows) {
   EXPECT_THROW({ (void)req.body(); }, std::logic_error);
 }
 
-TEST_F(HttpRequestTest, ReadBodyAfterBodyThrows) {
+TEST_F(HttpRequestViewTest, ReadBodyAfterBodyThrows) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -984,14 +984,14 @@ TEST_F(HttpRequestTest, ReadBodyAfterBodyThrows) {
   EXPECT_THROW({ (void)req.readBody(); }, std::logic_error);
 }
 
-TEST_F(HttpRequestTest, HasMoreBodyShouldBeFalseByDefault) {
+TEST_F(HttpRequestViewTest, HasMoreBodyShouldBeFalseByDefault) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, Http2FieldsShouldBeFilledCorrectlyInHttp1) {
+TEST_F(HttpRequestViewTest, Http2FieldsShouldBeFilledCorrectlyInHttp1) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1003,7 +1003,7 @@ TEST_F(HttpRequestTest, Http2FieldsShouldBeFilledCorrectlyInHttp1) {
 #endif
 }
 
-TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
+TEST_F(HttpRequestViewTest, ReadBodyWithBridgeReturnsChunk) {
   const auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1015,7 +1015,7 @@ TEST_F(HttpRequestTest, ReadBodyWithBridgeReturnsChunk) {
   EXPECT_TRUE(req.isBodyReady());
 }
 
-TEST_F(HttpRequestTest, HasMoreBodyWithBridgeTrue) {
+TEST_F(HttpRequestViewTest, HasMoreBodyWithBridgeTrue) {
   const auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1024,7 +1024,7 @@ TEST_F(HttpRequestTest, HasMoreBodyWithBridgeTrue) {
   EXPECT_TRUE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestTest, BodyWithAggregateBridgeReturnsFullBody) {
+TEST_F(HttpRequestViewTest, BodyWithAggregateBridgeReturnsFullBody) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1036,7 +1036,7 @@ TEST_F(HttpRequestTest, BodyWithAggregateBridgeReturnsFullBody) {
   EXPECT_TRUE(req.isBodyReady());
 }
 
-TEST_F(HttpRequestTest, BodyShouldBeReadyIfBodyCalled) {
+TEST_F(HttpRequestViewTest, BodyShouldBeReadyIfBodyCalled) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1047,7 +1047,7 @@ TEST_F(HttpRequestTest, BodyShouldBeReadyIfBodyCalled) {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
+TEST_F(HttpRequestViewTest, PinHeadStorageRemapsViews) {
   // Build raw request with a header value we can inspect pointer for
   RawChars raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-Custom: original_value\r\n");
   auto st = reqSet(std::move(raw));
@@ -1071,7 +1071,7 @@ TEST_F(HttpRequestTest, PinHeadStorageRemapsViews) {
   EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
-TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
+TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   // Build a simple request to populate head span
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-A: a\r\n");
   auto st = reqSet(std::move(raw));
@@ -1108,7 +1108,7 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
-TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
+TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   // Build a simple request to populate head span
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-B: b\r\n");
   auto st = reqSet(std::move(raw));
@@ -1139,7 +1139,7 @@ TEST_F(HttpRequestTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
 }
 
-TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
+TEST_F(HttpRequestViewTest, PinHead_RemapsEntriesInsideOldSpan) {
   // Build request with headers so head span contains header values we can reference
   RawChars raw = BuildRaw("GET", "/p", "HTTP/1.1", "X-Remap: val\r\n");
   auto st = reqSet(std::move(raw));
@@ -1184,7 +1184,7 @@ TEST_F(HttpRequestTest, PinHead_RemapsEntriesInsideOldSpan) {
 
 #endif
 
-TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {
+TEST_F(HttpRequestViewTest, WantCloseAndHasExpectContinue) {
   {  // Connection: close
     auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Connection, "close")));
     ASSERT_EQ(st, http::StatusCodeOK);
@@ -1204,7 +1204,7 @@ TEST_F(HttpRequestTest, WantCloseAndHasExpectContinue) {
   }
 }
 
-TEST_F(HttpRequestTest, EndSetsSpanAttributesAndEnds) {
+TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   // Reset fake span static state
   FakeSpan::lastStatusCode = -1;
   FakeSpan::lastDurationUs = -1;
@@ -1226,7 +1226,7 @@ TEST_F(HttpRequestTest, EndSetsSpanAttributesAndEnds) {
   EXPECT_TRUE(FakeSpan::ended);
 }
 
-TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {
+TEST_F(HttpRequestViewTest, RangeOverrideKeepsLast) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "Range: bytes=0-99\r\n"
                             "Range: bytes=100-199\r\n"));
@@ -1234,14 +1234,14 @@ TEST_F(HttpRequestTest, RangeOverrideKeepsLast) {
   EXPECT_EQ(req.headerValueOrEmpty(http::Range), "bytes=100-199");
 }
 
-TEST_F(HttpRequestTest, DuplicateContentLengthProduces400) {
+TEST_F(HttpRequestViewTest, DuplicateContentLengthProduces400) {
   auto st = reqSet(BuildRaw("POST", "/p", "HTTP/1.1",
                             "Content-Length: 5\r\n"
                             "Content-Length: 5\r\n"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, DuplicateHostProduces400) {
+TEST_F(HttpRequestViewTest, DuplicateHostProduces400) {
   // BuildRaw already injects one Host header; we append another duplicate -> 400
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", "Host: other\r\n"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
@@ -1397,7 +1397,7 @@ RawChars SemiValidRequest(FuzzRng& rng) {
 }  // namespace
 
 // Fuzz test with purely random bytes
-TEST_F(HttpRequestTest, RandomBytes) {
+TEST_F(HttpRequestViewTest, RandomBytes) {
   constexpr std::size_t kIterations = 5000;
   constexpr std::size_t kMaxSize = 1024;
 
@@ -1410,7 +1410,7 @@ TEST_F(HttpRequestTest, RandomBytes) {
 }
 
 // Fuzz test with semi-valid HTTP request structure
-TEST_F(HttpRequestTest, SemiValidRequests) {
+TEST_F(HttpRequestViewTest, SemiValidRequests) {
   constexpr std::size_t kIterations = 5000;
 
   for (std::size_t seed = 0; seed < kIterations; ++seed) {
@@ -1421,7 +1421,7 @@ TEST_F(HttpRequestTest, SemiValidRequests) {
 }
 
 // Fuzz test with mutation of valid requests
-TEST_F(HttpRequestTest, MutatedValidRequests) {
+TEST_F(HttpRequestViewTest, MutatedValidRequests) {
   constexpr std::size_t kIterations = 5000;
 
   // Base valid requests to mutate
@@ -1483,7 +1483,7 @@ TEST_F(HttpRequestTest, MutatedValidRequests) {
 }
 
 // Fuzz test with edge case patterns
-TEST_F(HttpRequestTest, EdgeCasePatterns) {
+TEST_F(HttpRequestViewTest, EdgeCasePatterns) {
   // Collection of edge case inputs
   static const std::array<std::string_view, 16> kEdgeCases = {
       "",                                                                     // Empty
@@ -1519,7 +1519,7 @@ TEST_F(HttpRequestTest, EdgeCasePatterns) {
 }
 
 // Fuzz test with long headers/paths
-TEST_F(HttpRequestTest, LongInputs) {
+TEST_F(HttpRequestViewTest, LongInputs) {
   // Long header name
   {
     std::string longName(1000, 'A');
@@ -1549,7 +1549,7 @@ TEST_F(HttpRequestTest, LongInputs) {
 }
 
 // Fuzz test specifically targeting header parsing
-TEST_F(HttpRequestTest, HeaderParsingStress) {
+TEST_F(HttpRequestViewTest, HeaderParsingStress) {
   constexpr std::size_t kIterations = 100;
 
   RawChars input;
@@ -1597,7 +1597,7 @@ TEST_F(HttpRequestTest, HeaderParsingStress) {
 // HttpRequestView::makeResponse tests
 // ============================
 
-TEST_F(HttpRequestTest, MakeResponseStatusCodeOnly) {
+TEST_F(HttpRequestViewTest, MakeResponseStatusCodeOnly) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1611,7 +1611,7 @@ TEST_F(HttpRequestTest, MakeResponseStatusCodeOnly) {
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
 }
 
-TEST_F(HttpRequestTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
+TEST_F(HttpRequestViewTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1631,7 +1631,7 @@ TEST_F(HttpRequestTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
 }
 
-TEST_F(HttpRequestTest, MakeResponseStatusCodeDefault200) {
+TEST_F(HttpRequestViewTest, MakeResponseStatusCodeDefault200) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1642,7 +1642,7 @@ TEST_F(HttpRequestTest, MakeResponseStatusCodeDefault200) {
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
 }
 
-TEST_F(HttpRequestTest, MakeResponseBodyAndDefaultContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseBodyAndDefaultContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1654,7 +1654,7 @@ TEST_F(HttpRequestTest, MakeResponseBodyAndDefaultContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
 }
 
-TEST_F(HttpRequestTest, MakeResponseBodyAndCustomContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseBodyAndCustomContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1666,7 +1666,7 @@ TEST_F(HttpRequestTest, MakeResponseBodyAndCustomContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/json");
 }
 
-TEST_F(HttpRequestTest, MakeResponseStatusCodeBodyAndContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseStatusCodeBodyAndContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1678,7 +1678,7 @@ TEST_F(HttpRequestTest, MakeResponseStatusCodeBodyAndContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
 }
 
-TEST_F(HttpRequestTest, MakeResponseBytesBodyAndDefaultContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseBytesBodyAndDefaultContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1692,7 +1692,7 @@ TEST_F(HttpRequestTest, MakeResponseBytesBodyAndDefaultContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
 }
 
-TEST_F(HttpRequestTest, MakeResponseBytesBodyAndCustomContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseBytesBodyAndCustomContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1706,7 +1706,7 @@ TEST_F(HttpRequestTest, MakeResponseBytesBodyAndCustomContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "image/png");
 }
 
-TEST_F(HttpRequestTest, MakeResponseStatusCodeBytesBodyAndContentType) {
+TEST_F(HttpRequestViewTest, MakeResponseStatusCodeBytesBodyAndContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1719,7 +1719,7 @@ TEST_F(HttpRequestTest, MakeResponseStatusCodeBytesBodyAndContentType) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/binary");
 }
 
-TEST_F(HttpRequestTest, MakeResponseCanBeModifiedAfterCreation) {
+TEST_F(HttpRequestViewTest, MakeResponseCanBeModifiedAfterCreation) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1733,7 +1733,7 @@ TEST_F(HttpRequestTest, MakeResponseCanBeModifiedAfterCreation) {
   EXPECT_EQ(resp.bodyInMemory(), "initial");
 }
 
-TEST_F(HttpRequestTest, MakeResponseEmptyBodyStillPrefillesGlobalHeaders) {
+TEST_F(HttpRequestViewTest, MakeResponseEmptyBodyStillPrefillesGlobalHeaders) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
@@ -1744,7 +1744,7 @@ TEST_F(HttpRequestTest, MakeResponseEmptyBodyStillPrefillesGlobalHeaders) {
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
 }
 
-TEST_F(HttpRequestTest, MakeResponseWithMultipleGlobalHeaders) {
+TEST_F(HttpRequestViewTest, MakeResponseWithMultipleGlobalHeaders) {
   // Add multiple global headers
   globalHeaders.clear();
   globalHeaders.append("server: aeronet");
@@ -1770,7 +1770,7 @@ struct JsonPoint {
   int y{};
 };
 
-TEST_F(HttpRequestTest, BodyAsJsonParsesValidPayload) {
+TEST_F(HttpRequestViewTest, BodyAsJsonParsesValidPayload) {
   auto st = reqSet(BuildRaw("POST", "/json", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
   setAggregatedBody(R"({"x":3,"y":7})");
@@ -1781,7 +1781,7 @@ TEST_F(HttpRequestTest, BodyAsJsonParsesValidPayload) {
   EXPECT_EQ(result->y, 7);
 }
 
-TEST_F(HttpRequestTest, BodyAsJsonReturnsBadRequestOnParseError) {
+TEST_F(HttpRequestViewTest, BodyAsJsonReturnsBadRequestOnParseError) {
   auto st = reqSet(BuildRaw("POST", "/json", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
   setAggregatedBody("not json at all");
@@ -1791,7 +1791,7 @@ TEST_F(HttpRequestTest, BodyAsJsonReturnsBadRequestOnParseError) {
   EXPECT_EQ(result.error().status(), http::StatusCodeBadRequest);
 }
 
-TEST_F(HttpRequestTest, BodyAsYamlParsesValidPayload) {
+TEST_F(HttpRequestViewTest, BodyAsYamlParsesValidPayload) {
   auto st = reqSet(BuildRaw("POST", "/yaml", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
   setAggregatedBody("x: 5\ny: 9\n");
@@ -1802,7 +1802,7 @@ TEST_F(HttpRequestTest, BodyAsYamlParsesValidPayload) {
   EXPECT_EQ(result->y, 9);
 }
 
-TEST_F(HttpRequestTest, BodyAsYamlReturnsBadRequestOnParseError) {
+TEST_F(HttpRequestViewTest, BodyAsYamlReturnsBadRequestOnParseError) {
   auto st = reqSet(BuildRaw("POST", "/yaml", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
   setAggregatedBody("x: : : not yaml\n\t- broken");
