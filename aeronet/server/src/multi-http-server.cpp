@@ -667,6 +667,9 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   // Per-start shared state. Its stop callback stops every server of the group, guarded by serversAlive so a stale
   // callback outliving the _servers buffer becomes a no-op instead of dereferencing dangling pointers.
   auto state = std::make_shared<HandleState>();
+  // The warning refers to copying `serverPtrs` into the lambda's captures during
+  // closure construction. The callback itself is noexcept and does not throw.
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   state->onStop = [serverPtrs, serversAlive]() noexcept {
     if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
       std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
