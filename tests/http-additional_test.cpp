@@ -10,6 +10,7 @@
 #endif
 
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
