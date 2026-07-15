@@ -4,6 +4,10 @@ if(NOT AERONET_ENABLE_HTTP2)
     list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/http2-connection.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_OPENSSL)
+    list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/http-client-tls-context.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_client
     ${AERONET_CLIENT_SRC_LIST}
 )
@@ -52,9 +56,10 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    client-request_test
-    test/client-request_test.cpp
+    http-client-config_test
+    test/http-client-config_test.cpp
     LIBRARIES
+    aeronet_objects
     aeronet_client
 )
 
@@ -99,6 +104,14 @@ if(AERONET_ENABLE_OPENSSL)
 endif()
 
 AeronetAddUnitTest(
+    http-request_test
+    test/http-request_test.cpp
+    LIBRARIES
+    aeronet_client
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
     response-parser_test
     test/response-parser_test.cpp
     LIBRARIES
@@ -109,13 +122,6 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     retry-config_test
     test/retry-config_test.cpp
-    LIBRARIES
-    aeronet_client
-)
-
-AeronetAddUnitTest(
-    url_test
-    test/url_test.cpp
     LIBRARIES
     aeronet_client
 )

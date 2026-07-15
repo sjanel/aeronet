@@ -25,22 +25,16 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-headers-view.hpp"
-#include "aeronet/http-message-data.hpp"
+#include "aeronet/http-message-common.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/simple-charconv.hpp"
-#include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/time-constants.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
 
@@ -51,101 +45,6 @@
 namespace aeronet {
 
 namespace {
-
-// Date header will always be present at headersStartPos.
-constexpr std::size_t kDateHeaderLenWithCRLF = HttpMessage::HeaderSize(http::Date.size(), RFC7231DateStrLen);
-
-// Initial size of the HttpMessage internal buffer, including the status line, Date header and DoubleCRLF.
-constexpr std::size_t kHttpMessageInitialSize =
-    HttpMessage::kReasonBeg + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
-
-static_assert(kHttpMessageInitialSize <= HttpMessage::kHttpResponseMinInitialCapacity,
-              "Initial size should be less than or equal to min initial capacity");
-
-constexpr auto kInitialBodyStart = kHttpMessageInitialSize;
-
-inline void InitData(char* data) {
-  data[http::HTTP10Sv.size()] = ' ';         // SP after the HTTP version
-  data[HttpMessage::kReasonBeg - 1U] = ' ';  // mandatory SP before the reason-phrase (RFC 9112 §4)
-#ifndef NDEBUG
-  // In debug, this allows for easier inspection of the response data before finalization.
-  // In release, it's not needed because the final HTTP version and date will be written at finalization step.
-  http::HTTP_1_1.writeFull(data);
-  WriteCRLFDateHeader(SysClock::now(), data + HttpMessage::kReasonBeg);
-#endif
-  // Set last, so the debug pre-write above lands on this byte;
-  // the marker must win so hasReason() stays correct before finalization (it is overwritten by the
-  // status-line CRLF at finalization anyway).
-  data[HttpMessage::kReasonBeg] = '\n';  // marker for no reason
-}
-
-constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t contentTypeSize) {
-  if (bodySize == 0) {
-    return 0;
-  }
-  return HttpMessage::HeaderSize(http::ContentType.size(), contentTypeSize) +
-         HttpMessage::HeaderSize(http::ContentLength.size(), nchars(bodySize));
-}
-
-// Whether an empty-body response with the given status code may carry a synthesized `Content-Length: 0`.
-// Per RFC 7230 §3.3.2 / §3.3.3, 1xx, 204 and 304 responses are always terminated by the first empty line
-// after the header fields and either MUST NOT (1xx, 204) or cannot reliably (304, whose Content-Length must
-// equal the octet count a 200 response would have sent) carry one; every other empty-body response gets it,
-// so keep-alive clients can frame the zero-length body immediately instead of waiting for connection close.
-constexpr bool StatusAllowsSynthesizedContentLengthZero(http::StatusCode status) noexcept {
-  return status >= 200 && status != http::StatusCodeNoContent && status != http::StatusCodeNotModified;
-}
-
-constexpr std::string_view kTrailerValueSep = ", ";
-
-constexpr std::string_view kTransferEncodingChunkedCRLF =
-    JoinStringView_v<http::TransferEncoding, http::HeaderSep, http::chunked, http::CRLF>;
-constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
-
-// Returns the size difference between the new Transfer-Encoding: chunked header and Content-Length header.
-// For very large payloads, this can be negative, as Content-Length can be larger than
-// Transfer-Encoding: chunked.
-constexpr int64_t TransferEncodingHeaderSizeDiff(std::uint8_t nCharsBodyLen) {
-  const auto oldContentLengthHeaderSize = HttpMessage::HeaderSize(http::ContentLength.size(), nCharsBodyLen);
-
-  return static_cast<int64_t>(kTransferEncodingChunkedCRLF.size()) - static_cast<int64_t>(oldContentLengthHeaderSize);
-}
-
-inline char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
-                                                      bool addTrailerHeader) {
-  insertPtr = insertPtr + http::CRLF.size();
-
-  // If adding Trailer header, write it now
-  if (addTrailerHeader) {
-    insertPtr = Append(http::Trailer, insertPtr);
-    insertPtr = Append(http::HeaderSep, insertPtr);
-
-    bool isFirst = true;
-    for (const auto& [name, value] : HeadersView(newTrailersFlatView)) {
-      if (isFirst) {
-        isFirst = false;
-      } else {
-        insertPtr = Append(kTrailerValueSep, insertPtr);
-      }
-      insertPtr = Append(name, insertPtr);
-    }
-    insertPtr = Append(http::CRLF, insertPtr);
-  }
-
-  // Write Transfer-Encoding: chunked header
-  insertPtr = Append(kTransferEncodingChunkedCRLF, insertPtr);
-
-  return insertPtr - http::CRLF.size();
-}
-
-constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view contentType) {
-  contentType = TrimOws(contentType);
-  if (!isBodyEmpty && (contentType.size() < http::ContentTypeMinLen || !http::IsValidHeaderValue(contentType)))
-      [[unlikely]] {
-    throw std::invalid_argument("HTTP content-type header value is invalid");
-  }
-  return contentType;
-}
 
 constexpr void CheckContentTypeLengthEncoding(std::string_view headerName, bool hasBody) {
   // Fast path: most headers don't start with 'c' or 'C'
@@ -169,147 +68,13 @@ constexpr void CheckContentTypeLengthEncoding(std::string_view headerName, bool 
   }
 }
 
-constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
-  const char* first = concatenatedHeaders.data();
-  const char* last = first + concatenatedHeaders.size();
-
-  while (first < last) {
-    const char* headerNameEnd = std::search(first, last, http::HeaderSep.begin(), http::HeaderSep.end());
-    if (headerNameEnd == last) {
-      throw std::invalid_argument("header missing http::HeaderSep separator in concatenated headers");
-    }
-
-    std::string_view headerName(first, headerNameEnd);
-    if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument("Invalid header name in concatenated headers");
-    }
-    first += headerName.size() + http::HeaderSep.size();
-
-    const char* endLine = SearchCRLF(first, last);
-    if (endLine == last) {
-      throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
-    }
-
-    std::string_view headerValue(first, endLine);
-    if (!http::IsValidHeaderValue(headerValue)) {
-      throw std::invalid_argument("Invalid header value in concatenated headers");
-    }
-
-    first = endLine + http::CRLF.size();
-  }
-}
-
 }  // namespace
-
-HttpMessage::HttpMessage(http::StatusCode code, std::string_view body, std::string_view contentType) : _posBitmap() {
-  contentType = CheckContentType(body.empty(), contentType);
-  _data.reserve(kHttpMessageInitialSize + NeededBodyHeadersSize(body.size(), contentType.size()) + body.size());
-  InitData(_data.data());
-  status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
-  if (body.empty()) {
-    setBodyStartPos(kInitialBodyStart);
-    Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
-    _data.setSize(kInitialBodyStart);
-  } else {
-    char* insertPtr =
-        WriteCRLFHeader(http::ContentType, contentType, _data.data() + kReasonBeg + kDateHeaderLenWithCRLF);
-    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
-    insertPtr = Append(http::DoubleCRLF, insertPtr);
-    const auto bodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
-    setBodyStartPos(bodyStartPos);
-    Copy(body, insertPtr);
-    _data.setSize(bodyStartPos + body.size());
-  }
-}
-
-HttpMessage::HttpMessage(std::size_t additionalCapacity, http::StatusCode code)
-    : _data(kHttpMessageInitialSize + additionalCapacity), _posBitmap() {
-  InitData(_data.data());
-  status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
-  setBodyStartPos(kInitialBodyStart);
-  Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
-  _data.setSize(kInitialBodyStart);
-}
-
-HttpMessage::HttpMessage(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-                         std::string_view body, std::string_view contentType, Check check)
-    : _posBitmap() {
-  contentType = CheckContentType(body.empty(), contentType);
-  if (check == Check::Yes) {
-    CheckConcatenatedHeaders(concatenatedHeaders);
-  }
-  _data.reserve(kHttpMessageInitialSize + concatenatedHeaders.size() +
-                NeededBodyHeadersSize(body.size(), contentType.size()) + body.size() + additionalCapacity);
-  InitData(_data.data());
-  status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg));
-  std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
-  if (!concatenatedHeaders.empty()) {
-    char* insertPtr = _data.data() + kHttpMessageInitialSize - http::DoubleCRLF.size();
-    insertPtr = Append(http::CRLF, insertPtr);
-    Copy(concatenatedHeaders, insertPtr);
-    bodyStartPos += concatenatedHeaders.size();
-  }
-  if (body.empty()) {
-    bodyStartPos += http::CRLF.size();
-  } else {
-    char* insertPtr = WriteCRLFHeader(http::ContentType, contentType, _data.data() + bodyStartPos - http::CRLF.size());
-    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
-    bodyStartPos = static_cast<std::uint64_t>(insertPtr + http::DoubleCRLF.size() - _data.data());
-    Copy(body, insertPtr + http::DoubleCRLF.size());
-  }
-  Copy(http::DoubleCRLF, _data.data() + bodyStartPos - http::DoubleCRLF.size());
-  setBodyStartPos(bodyStartPos);
-  _data.setSize(bodyStartPos + body.size());
-}
 
 std::size_t HttpMessage::bodyLength() const noexcept {
   if (const auto* pFilePayload = filePayloadPtr(); pFilePayload != nullptr) {
     return static_cast<std::size_t>(pFilePayload->length);
   }
   return bodyInMemoryLength();
-}
-
-HttpMessage& HttpMessage::status(http::StatusCode statusCode) & {
-  if (statusCode < 100 || statusCode > 999) [[unlikely]] {
-    throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");
-  }
-  write3(_data.data() + kStatusCodeBeg, statusCode);
-  return *this;
-}
-
-HttpMessage& HttpMessage::reason(std::string_view newReason) & {
-  if (newReason.size() > kMaxReasonLength) {
-    log::warn("Provided reason is too long ({} bytes), truncating it to {} bytes", newReason.length(),
-              kMaxReasonLength);
-    newReason.remove_suffix(newReason.size() - kMaxReasonLength);
-  }
-  const auto oldReasonSz = reasonLength();
-
-  if (newReason.size() == oldReasonSz) {
-    Copy(newReason, _data.data() + kReasonBeg);
-    return *this;
-  }
-
-  const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
-
-  _data.ensureAvailableCapacityExponential(diff);
-  // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
-  // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
-  // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
-  char* reasonEnd = _data.data() + kReasonBeg + oldReasonSz;
-  std::memmove(reasonEnd + diff, reasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
-  adjustBodyStart(diff);
-  adjustHeadersStart(diff);
-  if (newReason.empty()) {
-    _data[kReasonBeg] = '\n';  // marker for empty reason (overwritten by the status-line CRLF at finalization)
-  } else {
-    Copy(newReason, _data.data() + kReasonBeg);
-  }
-  _data.adjustSize(diff);
-  return *this;
 }
 
 namespace {
@@ -407,17 +172,16 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
 
 }  // namespace
 
-HttpMessage& HttpMessage::header(std::string_view key, std::string_view value) & {
+void HttpMessage::header(std::string_view key, std::string_view value) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     headerAddLine(key, value);
-    return *this;
+    return;
   }
 
   CheckContentTypeLengthEncoding(key, hasBody());
 
   overrideHeaderUnchecked(first, last, value);
-  return *this;
 }
 
 void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context) {
@@ -431,8 +195,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       removeBodyAndItsHeaders();
     }
   } else {
-    const auto newContentTypeHeaderSize = HeaderSize(http::ContentType.size(), contentTypeValue.size());
-    const auto newContentLengthHeaderSize = HeaderSize(http::ContentLength.size(), nchars(newBodySize));
+    const auto newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
+    const auto newContentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), nchars(newBodySize));
     const bool setInlineBody = context == BodySetContext::Inline && !isHead();
 
     std::size_t neededNewSize = newContentTypeHeaderSize + newContentLengthHeaderSize;
@@ -456,12 +220,12 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     bool addVaryHeader = false;
     bool appendVaryValue = false;
     if (addEncodingHeaders) {
-      neededNewSize += HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_opts._pickedEncoding).size());
+      neededNewSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_opts._pickedEncoding).size());
       if (_opts.isAddVaryAcceptEncoding()) {
         const auto [varyFirst, varyLast] = HeadersLinearSearch(headersFlatView(), http::Vary);
         if (varyFirst == nullptr) {
           addVaryHeader = true;
-          neededNewSize += HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+          neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
         } else if (!VaryContainsAcceptEncodingToken(std::string_view(varyFirst, varyLast))) {
           appendVaryValue = true;
           neededNewSize += http::AcceptEncoding.size() + kVaryHeaderValueSep.size();
@@ -481,12 +245,12 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
           headerAppendValue(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
         }
         headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
-        _opts.setHasContentEncoding(true);
-        _opts.setAutomaticDirectCompression(true);
+        _opts.setHasContentEncoding();
+        _opts.setAutomaticDirectCompression();
       } else if (removeEncodingHeaders) {
         headerRemoveLine(http::ContentEncoding);
-        _opts.setHasContentEncoding(false);
-        _opts.setAutomaticDirectCompression(false);
+        _opts.resetHasContentEncoding();
+        _opts.resetAutomaticDirectCompression();
         if (_opts.isAddVaryAcceptEncoding()) {
           headerRemoveValue(http::Vary, http::AcceptEncoding);
         }
@@ -575,7 +339,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
   Copy(newBody, _data.data() + bodyStartPos());
 }
 
-HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view contentType) & {
+void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType) {
   if (!body.empty()) {
     if (hasBodyFile()) [[unlikely]] {
       throw std::logic_error("Cannot append to a captured file body");
@@ -587,7 +351,8 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
       }
-      return this->body(body, contentType);
+      this->body(body, contentType);
+      return;
     }
 
     bodyPrecheckContentType(contentType);
@@ -601,6 +366,7 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
     if (!capturedBody) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
+        assert(_opts._pCompressionState != nullptr);
         auto& compressionState = *_opts._pCompressionState;
         auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
         neededCapacity += static_cast<int64_t>(encoderCtx.minEncodeChunkCapacity(body.size()));
@@ -640,10 +406,9 @@ HttpMessage& HttpMessage::bodyAppend(std::string_view body, std::string_view con
       _data.unchecked_append(body);
     }
   }
-  return *this;
 }
 
-HttpMessage& HttpMessage::file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) & {
+void HttpMessage::file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) {
   if (!fileObj) {
     throw std::invalid_argument("file requires an opened file");
   }
@@ -670,7 +435,6 @@ HttpMessage& HttpMessage::file(File fileObj, std::size_t offset, std::size_t len
 
   setBodyInternal(std::string_view());
   _payloadVariant = HttpPayload(FilePayload(std::move(fileObj), offset, resolvedLength));
-  return *this;
 }
 
 const File* HttpMessage::file() const noexcept {
@@ -713,8 +477,9 @@ std::optional<std::string_view> HttpMessage::headerValue(std::string_view key) c
   return {first, last};
 }
 
-HttpMessage& HttpMessage::headerAddLine(std::string_view key, std::string_view value) & {
-  assert(!CaseInsensitiveEqual(key, http::Date));
+void HttpMessage::headerAddLine(std::string_view key, std::string_view value) {
+  assert(_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Date));
+  assert(!_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Server));
   if (!http::IsValidHeaderName(key)) [[unlikely]] {
     throw std::invalid_argument("HTTP header name is invalid");
   }
@@ -722,30 +487,20 @@ HttpMessage& HttpMessage::headerAddLine(std::string_view key, std::string_view v
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
     throw std::invalid_argument("HTTP header value is invalid");
   }
+  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
+    throw std::invalid_argument("Cannot add Host header to HTTP request, it's managed by aeronet");
+  }
   CheckContentTypeLengthEncoding(key, hasBody());
 
   headerAddLineUnchecked(key, value);
 
   if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
-    _opts.setHasContentEncoding(true);
+    _opts.setHasContentEncoding();
   }
-
-  return *this;
 }
-
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-HttpMessage HttpMessage::cloneFinalized() const {
-  HttpMessage copy(http::StatusCodeOK);
-  copy._data = _data;                      // deep copy of the head (and inlined body, if any)
-  copy._posBitmap = _posBitmap;            // header / body boundaries
-  copy._payloadVariant = _payloadVariant;  // copy the payload variant (may be empty, in-memory or file)
-  copy._opts = _opts;                      // normalization + framing flags (scalars)
-  return copy;
-}
-#endif
 
 void HttpMessage::headerAddLineUnchecked(std::string_view key, std::string_view value) {
-  const std::size_t headerLineSize = HeaderSize(key.size(), value.size());
+  const std::size_t headerLineSize = http::HeaderSize(key.size(), value.size());
 
   _data.ensureAvailableCapacityExponential(headerLineSize);
 
@@ -795,18 +550,18 @@ void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char*
   adjustBodyStart(diff);
 }
 
-HttpMessage& HttpMessage::headerAppendValue(std::string_view key, std::string_view value, std::string_view sep) & {
+void HttpMessage::headerAppendValue(std::string_view key, std::string_view value, std::string_view sep) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     headerAddLine(key, value);
-    return *this;
+    return;
   }
 
   value = TrimOws(value);
 
   const std::size_t extraLen = sep.size() + value.size();
   if (extraLen == 0) {
-    return *this;
+    return;
   }
 
   const auto insertOffset = static_cast<std::size_t>(last - _data.data());
@@ -824,50 +579,54 @@ HttpMessage& HttpMessage::headerAppendValue(std::string_view key, std::string_vi
 
   _data.addSize(extraLen);
   adjustBodyStart(static_cast<int64_t>(extraLen));
-
-  return *this;
 }
 
-HttpMessage& HttpMessage::headerRemoveLine(std::string_view key) & {
+void HttpMessage::headerRemoveLine(std::string_view key) {
   // We cannot remove Content-Type and Content-Length headers separately from the body,
   // so we don't include them in the search when response has body.
   const std::string_view flatHeaders = hasBody() ? headersFlatViewWithoutCTCL() : headersFlatView();
   const auto [first, last] = HeadersReverseLinearSearch(flatHeaders, key);
   if (first == nullptr) {
-    return *this;
+    return;
   }
 
   if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
     if (hasBody()) {
       throw std::logic_error("Cannot remove Content-Encoding header when response has body");
     }
-    _opts.setHasContentEncoding(false);
+    _opts.resetHasContentEncoding();
   }
 
-  const std::size_t lineSize = HeaderSize(key.size(), static_cast<std::size_t>(last - first));
+  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
+    throw std::invalid_argument("Cannot remove Host header from HTTP request");
+  }
+
+  const std::size_t lineSize = http::HeaderSize(key.size(), static_cast<std::size_t>(last - first));
   const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
   char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
 
   std::memmove(dest, last + http::CRLF.size(), sizeToMove);
   _data.setSize(_data.size() - lineSize);
   adjustBodyStart(-static_cast<int64_t>(lineSize));
-
-  return *this;
 }
 
-HttpMessage& HttpMessage::headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep) & {
+void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep) {
   if (sep.empty()) [[unlikely]] {
     throw std::invalid_argument("Separator cannot be empty when removing a header value");
   }
   const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
-    return *this;
+    return;
+  }
+
+  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
+    throw std::invalid_argument("Cannot remove Host header value from HTTP request");
   }
 
   const std::string_view headerValue(first, last);
   if (value == headerValue) {
     // value matches the whole header value, we remove the whole header line
-    const std::size_t lineSize = HeaderSize(key.size(), headerValue.size());
+    const std::size_t lineSize = http::HeaderSize(key.size(), headerValue.size());
     const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
     char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
 
@@ -875,7 +634,7 @@ HttpMessage& HttpMessage::headerRemoveValue(std::string_view key, std::string_vi
     _data.setSize(_data.size() - lineSize);
     adjustBodyStart(-static_cast<int64_t>(lineSize));
 
-    return *this;
+    return;
   }
 
   const std::string_view occ = value.empty() ? sep : value;
@@ -922,17 +681,16 @@ HttpMessage& HttpMessage::headerRemoveValue(std::string_view key, std::string_vi
 
     break;
   }
-
-  return *this;
 }
 
 #ifdef AERONET_ENABLE_HTTP2
-void HttpMessage::finalizeForHttp2() {
+
+void HttpMessage::makeAllHeaderNamesLowercaseForHttp2() {
   // HTTP/2 requires lowercase header names. Do this after all response mutations (incl. compression).
   // TODO: optimize by building lowercase names directly when adding headers if response is "prepared"?
   // We could even go further in HTTP/2 - store all header names in lowercase and optimize header search by doing a case
   // sensitive search.
-  char* first = _data.data() + headersStartPos() + kDateHeaderLenWithCRLF + http::CRLF.size();
+  char* first = _data.data() + headersStartPos() + http::CRLF.size();
   char* last = _data.data() + bodyStartPos() - http::CRLF.size();
 
   while (first < last) {
@@ -944,6 +702,10 @@ void HttpMessage::finalizeForHttp2() {
     // move headersBeg to next header
     first = SearchCRLF(first + http::HeaderSep.size(), last) + http::CRLF.size();
   }
+}
+
+void HttpMessage::finalizeForHttp2() {
+  makeAllHeaderNamesLowercaseForHttp2();
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // If the response has trailers, the finalization of the body was made at the first added trailer in trailerAddLine.
@@ -959,7 +721,7 @@ void HttpMessage::finalizeForHttp2() {
   return {first, last};
 }
 
-HttpMessage& HttpMessage::trailerAddLine(std::string_view name, std::string_view value) & {
+void HttpMessage::trailerAddLine(std::string_view name, std::string_view value) {
   assert(!http::IsForbiddenTrailerHeader(name));
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid trailer header name");
@@ -1007,10 +769,10 @@ HttpMessage& HttpMessage::trailerAddLine(std::string_view name, std::string_view
     if (_opts.isAddTrailerHeader()) {
       headerAppendValue(http::Trailer, name, kTrailerValueSep);
     }
-    return *this;
+    return;
   }
 
-  const std::size_t lineSize = HeaderSize(name.size(), value.size());
+  const std::size_t lineSize = http::HeaderSize(name.size(), value.size());
   const auto newTrailerLen = SafeCast<decltype(_opts._trailerLen)>(lineSize + trailersSize());
 
   // Optim - if we know that option is not set, no need to pre-reserve additional capacity for Trailer header
@@ -1020,7 +782,7 @@ HttpMessage& HttpMessage::trailerAddLine(std::string_view name, std::string_view
   int64_t neededCapacity = static_cast<int64_t>(lineSize + http::CRLF.size());
   if (trailersSize() == 0) {
     if (addTrailerHeader) {
-      neededCapacity += static_cast<int64_t>(HeaderSize(http::Trailer.size(), name.size()));
+      neededCapacity += static_cast<int64_t>(http::HeaderSize(http::Trailer.size(), name.size()));
     }
     neededCapacity += TransferEncodingHeaderSizeDiff(nchars(bodyInMemoryLength()));
 
@@ -1048,7 +810,6 @@ HttpMessage& HttpMessage::trailerAddLine(std::string_view name, std::string_view
   _opts._trailerLen = newTrailerLen;
 
   WriteHeaderCRLF(name, value, insertPtr);
-  return *this;
 }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -1079,12 +840,157 @@ bool HttpMessage::Options::directCompressionPossible(std::size_t bodySize,
 
 #endif
 
-HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
-                                              const ConcatenatedHeaders* pGlobalHeaders,
-                                              std::size_t minCapturedBodySize) {
-  // Write the Http version (1.0 or 1.1)
-  version.writeFull(_data.data());
+void HttpMessage::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
+                                          std::size_t totalBodyLen) {
+  assert(trailersSize() == 0);
+  if (bodyLength() == 0 && !_opts.isAutomaticDirectCompression()) {
+    if (givenContentType.empty()) {
+      givenContentType = defaultContentType;
+    }
+    addContentTypeAndContentLengthHeaders(givenContentType, totalBodyLen);
+  } else {
+    if (!givenContentType.empty()) {
+      replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
+    }
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), totalBodyLen);
+  }
+}
 
+char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
+  char* last = first;
+  while (*last != '\r') {
+    ++last;
+  }
+  const auto oldValueLen = static_cast<std::size_t>(last - first);
+  if (newValueLen != oldValueLen) {
+    const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
+    std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
+    _data.adjustSize(diff);
+    adjustBodyStart(diff);
+  }
+  return first;
+}
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+
+std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size_t sz) {
+  assert(_opts._pCompressionState != nullptr);
+  auto& compressionState = *_opts._pCompressionState;
+  auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
+  assert(encoderCtx.minEncodeChunkCapacity(sz) <= _data.availableCapacity());
+  const auto result =
+      encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.data() + _data.size());
+
+  if (result.hasError()) [[unlikely]] {
+    // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
+    // encoder error)
+    throw std::runtime_error("HttpMessage::appendEncodedInlineOrThrow compression failed");
+  }
+
+  return result.written();
+}
+
+void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
+  assert(_opts.isAutomaticDirectCompression() && !isHead() && !hasBodyCaptured() && !hasBodyFile());
+  std::size_t oldBodyLen = internalBodyAndTrailersLen();
+  auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
+  const std::size_t chunkSize = encoder.endChunkSize();
+  while (true) {
+    const auto nbCharsOldBodyLen = nchars(oldBodyLen);
+    const auto nbCharsNewBodyLen = nchars(oldBodyLen + chunkSize);
+
+    const int64_t neededCapacity =
+        additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
+    _data.ensureAvailableCapacityExponential(neededCapacity);
+
+    const auto result = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
+    if (result.hasError()) [[unlikely]] {
+      throw std::runtime_error("Failed to finalize compressed response body");
+    }
+
+    const auto written = result.written();
+    if (written == 0) {
+      break;
+    }
+
+    _data.addSize(written);
+    oldBodyLen += written;
+
+    // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
+    // bytes) by playing on 'spaces' after the content-length value.
+    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), oldBodyLen);
+  }
+}
+
+#endif
+
+void HttpMessage::removeBodyAndItsHeaders() {
+  // Remove all body, Content-Length and Content-Encoding headers at once.
+  char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
+  assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) == http::ContentType);
+  _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
+  Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
+  setBodyStartPos(_data.size());
+
+  // Also remove vary and content-encoding headers if present
+  if (hasContentEncoding()) {
+    headerRemoveLine(http::ContentEncoding);
+    assert(!hasContentEncoding());
+    _opts.resetAutomaticDirectCompression();
+    if (_opts.isAddVaryAcceptEncoding()) {
+      headerRemoveValue(http::Vary, http::AcceptEncoding);
+    }
+  }
+}
+
+namespace {
+
+// Whether an empty-body response with the given status code may carry a synthesized `Content-Length: 0`.
+// Per RFC 7230 §3.3.2 / §3.3.3, 1xx, 204 and 304 responses are always terminated by the first empty line
+// after the header fields and either MUST NOT (1xx, 204) or cannot reliably (304, whose Content-Length must
+// equal the octet count a 200 response would have sent) carry one; every other empty-body response gets it,
+// so keep-alive clients can frame the zero-length body immediately instead of waiting for connection close.
+constexpr bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const char* pData) noexcept {
+  if (isHttpRequest) {
+    return false;
+  }
+  pData += http::HTTP10Sv.size() + 1;  // skip "HTTP/1.1 "
+  return pData[0] >= '2' && std::memcmp(pData, "204", 3U) != 0 && std::memcmp(pData, "304", 3U) != 0;
+}
+
+inline char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
+                                                      bool addTrailerHeader) {
+  insertPtr = insertPtr + http::CRLF.size();
+
+  // If adding Trailer header, write it now
+  if (addTrailerHeader) {
+    insertPtr = Append(http::Trailer, insertPtr);
+    insertPtr = Append(http::HeaderSep, insertPtr);
+
+    bool isFirst = true;
+    for (const auto& [name, value] : HeadersView(newTrailersFlatView)) {
+      if (isFirst) {
+        isFirst = false;
+      } else {
+        insertPtr = Append(kTrailerValueSep, insertPtr);
+      }
+      insertPtr = Append(name, insertPtr);
+    }
+    insertPtr = Append(http::CRLF, insertPtr);
+  }
+
+  // Write Transfer-Encoding: chunked header
+  insertPtr = Append(kTransferEncodingChunkedCRLF, insertPtr);
+
+  return insertPtr - http::CRLF.size();
+}
+
+constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
+
+}  // namespace
+
+void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
+                                   std::size_t minCapturedBodySize) {
   std::size_t bodySz = bodyLength();
 
   const std::string_view connectionValue = opts.isClose() ? http::close : http::keepalive;
@@ -1108,11 +1014,11 @@ HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ver
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
                                     !_opts.isAutomaticDirectCompression() &&
 #endif
-                                    StatusAllowsSynthesizedContentLengthZero(status());
+                                    StatusAllowsSynthesizedContentLengthZero(opts.isHttpRequest(), _data.data());
 
   std::size_t totalNewHeadersSize =
-      (addConnectionHeader ? HeaderSize(http::Connection.size(), connectionValue.size()) : 0) +
-      (addContentLengthZero ? HeaderSize(http::ContentLength.size(), 1) : 0);
+      (addConnectionHeader ? http::HeaderSize(http::Connection.size(), connectionValue.size()) : 0) +
+      (addContentLengthZero ? http::HeaderSize(http::ContentLength.size(), 1) : 0);
 
   std::bitset<HttpServerConfig::kMaxGlobalHeaders> globalHeadersToSkipBmp;
 
@@ -1159,7 +1065,8 @@ HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ver
         assert(trailerHeaderValueSize != 0);
         trailerHeaderValueSize -= kTrailerValueSep.size();
 
-        const auto neededCapacity = totalNewHeadersSize + HeaderSize(http::Trailer.size(), trailerHeaderValueSize);
+        const auto neededCapacity =
+            totalNewHeadersSize + http::HeaderSize(http::Trailer.size(), trailerHeaderValueSize);
         _data.ensureAvailableCapacity(neededCapacity);
 
         if (hasBodyInlined()) {
@@ -1262,7 +1169,7 @@ HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ver
         assert(trailerHeaderValueSz != 0);
         trailerHeaderValueSz -= kTrailerValueSep.size();
 
-        headerSizeDiff += static_cast<int64_t>(HeaderSize(http::Trailer.size(), trailerHeaderValueSz));
+        headerSizeDiff += static_cast<int64_t>(http::HeaderSize(http::Trailer.size(), trailerHeaderValueSz));
       }
 
       // Calculate extra space needed for chunked framing:
@@ -1419,123 +1326,7 @@ HttpMessageData HttpMessage::finalizeForHttp1(SysTimePoint tp, http::Version ver
 
   _data.addSize(totalNewHeadersSize);
 
-  WriteCRLFDateHeader(tp, _data.data() + headersStartPos());
-
   assert(!_payloadVariant.isSizeOnly());
-
-  HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
-
-  if (isHeadMethod) {
-    auto* pFilePayload = prepared.getIfFilePayload();
-    if (pFilePayload != nullptr) {
-      pFilePayload->length = 0;
-    }
-  }
-
-  return prepared;
-}
-
-void HttpMessage::bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
-                                          std::size_t totalBodyLen) {
-  assert(trailersSize() == 0);
-  if (bodyLength() == 0 && !_opts.isAutomaticDirectCompression()) {
-    if (givenContentType.empty()) {
-      givenContentType = defaultContentType;
-    }
-    addContentTypeAndContentLengthHeaders(givenContentType, totalBodyLen);
-  } else {
-    if (!givenContentType.empty()) {
-      replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
-    }
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), totalBodyLen);
-  }
-}
-
-char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
-  char* last = first;
-  while (*last != '\r') {
-    ++last;
-  }
-  const auto oldValueLen = static_cast<std::size_t>(last - first);
-  if (newValueLen != oldValueLen) {
-    const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
-    std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
-    _data.adjustSize(diff);
-    adjustBodyStart(diff);
-  }
-  return first;
-}
-
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-
-std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size_t sz) {
-  assert(_opts._pCompressionState != nullptr);
-  auto& compressionState = *_opts._pCompressionState;
-  auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
-  assert(encoderCtx.minEncodeChunkCapacity(sz) <= _data.availableCapacity());
-  const auto result =
-      encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.data() + _data.size());
-
-  if (result.hasError()) [[unlikely]] {
-    // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
-    // encoder error)
-    throw std::runtime_error("HttpMessage::appendEncodedInlineOrThrow compression failed");
-  }
-
-  return result.written();
-}
-
-void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
-  assert(_opts.isAutomaticDirectCompression() && !isHead() && !hasBodyCaptured() && !hasBodyFile());
-  std::size_t oldBodyLen = internalBodyAndTrailersLen();
-  auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
-  const std::size_t chunkSize = encoder.endChunkSize();
-  while (true) {
-    const auto nbCharsOldBodyLen = nchars(oldBodyLen);
-    const auto nbCharsNewBodyLen = nchars(oldBodyLen + chunkSize);
-
-    const int64_t neededCapacity =
-        additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
-    _data.ensureAvailableCapacityExponential(neededCapacity);
-
-    const auto result = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
-    if (result.hasError()) [[unlikely]] {
-      throw std::runtime_error("Failed to finalize compressed response body");
-    }
-
-    const auto written = result.written();
-    if (written == 0) {
-      break;
-    }
-
-    _data.addSize(written);
-    oldBodyLen += written;
-
-    // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
-    // bytes) by playing on 'spaces' after the content-length value.
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), oldBodyLen);
-  }
-}
-
-#endif
-
-void HttpMessage::removeBodyAndItsHeaders() {
-  // Remove all body, Content-Length and Content-Encoding headers at once.
-  char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
-  assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) == http::ContentType);
-  _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
-  Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
-  setBodyStartPos(_data.size());
-
-  // Also remove vary and content-encoding headers if present
-  if (hasContentEncoding()) {
-    headerRemoveLine(http::ContentEncoding);
-    assert(!hasContentEncoding());
-    _opts.setAutomaticDirectCompression(false);
-    if (_opts.isAddVaryAcceptEncoding()) {
-      headerRemoveValue(http::Vary, http::AcceptEncoding);
-    }
-  }
 }
 
 }  // namespace aeronet

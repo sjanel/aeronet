@@ -7,6 +7,7 @@
 #include <openssl/types.h>
 #include <openssl/x509_vfy.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 
 #include <array>
 #include <cerrno>

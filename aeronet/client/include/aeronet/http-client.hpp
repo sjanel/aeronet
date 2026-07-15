@@ -11,23 +11,28 @@
 #include "aeronet/city-hash.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/url.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/http-client-tls-context.hpp"
+#endif
 
 namespace aeronet {
 
 namespace internal {
-struct HttpClientTlsContext;  // defined in http-client.cpp (OpenSSL-backed, optional)
-struct HttpClientCodec;       // defined in http-client.cpp (compression/decompression state + scratch buffers)
 #ifdef AERONET_ENABLE_HTTP2
 class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 client engine)
 #endif
@@ -44,7 +49,7 @@ class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 clie
 //   * Automatic redirect following and connection-level retry.
 //   * Reuses HttpResponse as the response/request field container (no bespoke header/body types).
 //
-// The returned response is an HttpResponse. Received headers are preserved losslessly via rawHeader(),
+// The returned response is an HttpResponse. Received headers are preserved losslessly
 // except Content-Type, Content-Length and Transfer-Encoding, which are normalized: Content-Type and the
 // decoded Content-Length are reconstructed via body(), and chunked framing is de-framed away. Every
 // other header (Connection, Date, Trailer, Upgrade, Location, ETag, Set-Cookie, custom ...) is
@@ -73,25 +78,56 @@ class HttpClient {
  public:
   explicit HttpClient(HttpClientConfig config = {});
 
-  HttpClient(const HttpClient&) = delete;
-  HttpClient& operator=(const HttpClient&) = delete;
+  // Build a request with the given method and url. The returned HttpRequest is mutable and
+  // can be further configured (headers, body, ...). The request is pre-configured based on the client config (e.g.
+  // Accept-Encoding, User-Agent, ...).
+  // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...).
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url) {
+    return {method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
+  }
 
-  HttpClient(HttpClient&&) noexcept = default;
-  HttpClient& operator=(HttpClient&&) noexcept = default;
+  // Build a request with the given method, url and body. The returned HttpRequest is mutable and
+  // can be further configured (headers, ...). The request is pre-configured based on the client config (e.g.
+  // Accept-Encoding, User-Agent, ...).
+  // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...).
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::string_view body,
+                                        std::string_view contentType = http::ContentTypeTextPlain) {
+    return {0, method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions(), body, contentType};
+  }
 
-  ~HttpClient();
+  // Build a request with the given method, url and body. The returned HttpRequest is mutable and
+  // can be further configured (headers, ...). The request is pre-configured based on the client config (e.g.
+  // Accept-Encoding, User-Agent, ...).
+  // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...).
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::string_view body,
+                                        std::string_view contentType = http::ContentTypeTextPlain) {
+    return {additionalCapacity,   method, url,        _config.globalHeaders.fullStringWithLastSep(),
+            makeRequestOptions(), body,   contentType};
+  }
 
   // Execute an arbitrary request (method + url + headers + body), following redirects per config.
-  HttpClientResult request(const ClientRequest& req);
+  HttpClientResult request(const HttpRequest& req);
+
+  // Rvalue overload: execute an arbitrary request (method + url + headers + body), following redirects per config.
+  HttpClientResult request(HttpRequest&& req);
 
   // Convenience verbs.
-  HttpClientResult get(std::string_view url);
-  HttpClientResult head(std::string_view url);
+  HttpClientResult get(std::string_view url) { return request(makeRequest(http::Method::GET, url)); }
+
+  HttpClientResult head(std::string_view url) { return request(makeRequest(http::Method::HEAD, url)); }
+
   HttpClientResult post(std::string_view url, std::string_view body,
-                        std::string_view contentType = "application/octet-stream");
+                        std::string_view contentType = http::ContentTypeTextPlain) {
+    return request(makeRequest(http::Method::POST, url, body, contentType));
+  }
+
   HttpClientResult put(std::string_view url, std::string_view body,
-                       std::string_view contentType = "application/octet-stream");
-  HttpClientResult del(std::string_view url);
+                       std::string_view contentType = http::ContentTypeTextPlain) {
+    return request(makeRequest(http::Method::PUT, url, body, contentType));
+  }
+
+  HttpClientResult del(std::string_view url) { return request(makeRequest(http::Method::DELETE, url)); }
 
   [[nodiscard]] const HttpClientConfig& config() const noexcept { return _config; }
 
@@ -105,8 +141,6 @@ class HttpClient {
  private:
   // A live transport (plain or TLS) plus the socket it owns.
   struct ActiveConnection {
-    [[nodiscard]] bool valid() const noexcept { return static_cast<bool>(cnx); }
-
     void reset() noexcept {
       transport.reset();
       idleSince = {};
@@ -132,19 +166,18 @@ class HttpClient {
 
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
   // this with the cache lookup/store when caching is enabled and the request is eligible.
-  HttpClientResult requestUncached(const ClientRequest& req);
+  HttpClientResult requestUncached(HttpRequest&& req);
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
-  // HttpClientErrc on transport failure. `method` / `dropBody` carry redirect rewriting without copying the
-  // (move-only) request.
-  HttpClientResult performExchange(const Url& url, const ClientRequest& req, http::Method method, bool dropBody);
+  // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
+  HttpClientResult performExchange(const HttpRequest& req);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
-  [[nodiscard]] bool cacheEligible(const ClientRequest& req) const noexcept;
+  [[nodiscard]] bool cacheEligible(const HttpRequest& req) const noexcept;
   // Build the cache key (method + url + headers + body) into the reusable _cacheKeyScratch buffer and return
   // a view of it. The view stays valid until the next buildCacheKey call (requestUncached never touches it).
-  std::string_view buildCacheKey(const ClientRequest& req);
+  std::string_view buildCacheKey(const HttpRequest& req);
   // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
   // Amortized periodic pruning of expired entries happens here.
   HttpResponse* cacheLookupFresh(std::string_view key);
@@ -155,9 +188,9 @@ class HttpClient {
   void pruneExpiredCache(SteadyClock::time_point now);
 
   // Acquire a connection for the origin: reuse an idle pooled one or establish a fresh one.
-  std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const Url& url);
+  std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const HttpRequest& req);
 
-  std::expected<ActiveConnection, HttpClientErrc> connectNew(const Url& url);
+  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req);
 
   // Whether a forward proxy is configured (see HttpClientConfig::withProxy). When true, connectNew connects
   // to the proxy and, for an https origin, opens a CONNECT tunnel before the TLS handshake.
@@ -166,20 +199,27 @@ class HttpClient {
   // Open an HTTP CONNECT tunnel to `url`'s origin through the configured proxy, on the already-connected raw
   // socket `fd` (wrapped by the throwaway plain `transport`). Drives the request/response on the event loop
   // up to `deadline`; returns an empty result once the proxy answers 2xx, or an HttpClientErrc otherwise.
-  std::expected<void, HttpClientErrc> establishProxyTunnel(ITransport& transport, NativeHandle fd, const Url& url,
-                                                           SteadyClock::time_point deadline);
+  std::expected<void, HttpClientErrc> establishProxyTunnel(ITransport& transport, NativeHandle fd,
+                                                           const HttpRequest& req, SteadyClock::time_point deadline);
 
-  void releaseConnection(const Url& url, ActiveConnection&& conn);
+  void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);
 
   // Drive the TLS handshake to completion (the TCP connect is already established by connectNew), then
   // resolve the negotiated application protocol (ALPN for https; HTTP/1.1 otherwise) into conn.protocol.
-  std::expected<void, HttpClientErrc> finishConnect(ActiveConnection& conn, const Url& url,
+  std::expected<void, HttpClientErrc> finishConnect(ActiveConnection& conn, bool isTls,
                                                     SteadyClock::time_point deadline);
 
   // Create conn.proto for conn.protocol if it is not already present (fresh connection). Returns
   // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine in this build
   // (ClientProtocol::Http2 without AERONET_ENABLE_HTTP2).
   std::expected<void, HttpClientErrc> ensureProtocolHandler(ActiveConnection& conn) const;
+
+#ifdef AERONET_ENABLE_OPENSSL
+  // Lazily build (once) and return the shared OpenSSL client context. Deferred to the first https request
+  // so a plain-http client never allocates an SSL_CTX and a bad TLS configuration surfaces as an
+  // HttpClientException here (at first-request time), not at client construction. Reused across connections.
+  internal::HttpClientTlsContext& tlsContext();
+#endif
 
   // --- Resources protocol engines borrow (see client-connection.hpp) ---
   // internal::ClientConnection (and the HTTP/2 engine it owns) read these (private) accessors during an
@@ -209,10 +249,6 @@ class HttpClient {
   // Unregister every still-registered fd in `bucket` from the loop, then clear the bucket.
   void dropIdleBucket(vector<ActiveConnection>& bucket) noexcept;
 
-  // Lazily-created compression/decompression state (decoders, encoders, scratch buffers). Only built on
-  // the first request that actually needs a codec, so codec-free usage pays nothing.
-  internal::HttpClientCodec& codec();
-
   // requestBuffer() and bodyBuffer() intentionally return the same buffer (_reqBodyScratch): a request is
   // always fully written before its response body is de-framed, so the two roles never overlap in time. The
   // distinct names keep call sites self-documenting; see the _reqBodyScratch declaration.
@@ -220,14 +256,14 @@ class HttpClient {
   [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
   [[nodiscard]] RawChars& bodyBuffer() noexcept { return _reqBodyScratch; }
 
-#ifdef AERONET_ENABLE_OPENSSL
-  internal::HttpClientTlsContext& tlsContext();
-#endif
-
   // Draw a uniform value in [0, 1) from the backoff jitter PRNG (a tiny xorshift; quality is irrelevant
   // here, only spread). Only consulted when RetryConfig::jitter > 0, so a jitter-free client is fully
   // deterministic. Defined in http-client.cpp.
   double nextJitterUnit() noexcept;
+
+  [[nodiscard]] HttpRequest::Options makeRequestOptions() noexcept;
+
+  void maybeCompressRequestBody(HttpRequest& req);
 
   HttpClientConfig _config;
   EventLoop _loop;
@@ -263,13 +299,13 @@ class HttpClient {
   RawChars _reqBodyScratch;
   RawChars _responseBuffer;  // reused across requests: raw bytes are read straight into its tail
   // Forward-proxy host, empty when no proxy is configured (parsed once from HttpClientConfig::proxyUrl at
-  // construction). Kept with one spare trailing byte so it can be handed to ConnectTCP (which transiently
-  // null-terminates its host span) exactly like a Url host.
-  RawChars _proxyHost;
-  std::unique_ptr<internal::HttpClientCodec> _codec;  // compression/decompression state (lazily created)
+  // construction). Valid as long as HttpClientConfig does not change (the client owns the config copy)
+  std::string_view _proxyHost;
+  internal::HttpClientCodec _codec;
 #ifdef AERONET_ENABLE_OPENSSL
-  std::unique_ptr<internal::HttpClientTlsContext> _tls;
+  internal::HttpClientTlsContext _tls;
 #endif
+  tracing::TelemetryContext _telemetry;
 };
 
 }  // namespace aeronet

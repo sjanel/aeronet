@@ -23,37 +23,34 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
+#include "aeronet/http-codec-result.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/url.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
-#include "http-client-codec.hpp"
+#include "client-accept-encoding.hpp"
+#include "url-parse.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/prov_ssl.h>
 #include <openssl/ssl.h>
-#include <openssl/tls1.h>
-#include <openssl/types.h>
-#include <openssl/x509.h>
-#include <openssl/x509v3.h>
 
-#include "aeronet/tls-config.hpp"
-#include "aeronet/tls-raii.hpp"
+#include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/tls-transport.hpp"
 #endif
 
@@ -96,20 +93,6 @@ RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Durat
   return std::chrono::duration_cast<RetryConfig::Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
 }
 
-// Parse a forward-proxy endpoint. Accepts a full URL ("http://host:port") or a bare "host[:port]" (assumed
-// http, default port 80). Reuses Url::Parse for host/port/IPv6 handling, so it returns the same
-// HttpClientErrc::invalidUrl on malformed input.
-std::expected<Url, HttpClientErrc> ParseProxyUrl(std::string_view proxy) {
-  if (proxy.contains("://")) {
-    return Url::Parse(proxy);
-  }
-  static constexpr std::string_view kHttpScheme = "http://";
-  RawChars withScheme(kHttpScheme.size() + proxy.size());
-  withScheme.unchecked_append(kHttpScheme);
-  withScheme.unchecked_append(proxy);
-  return Url::Parse(withScheme);
-}
-
 // Interpret the status line of a proxy CONNECT response ("HTTP/1.x <code> <reason>"). A 2xx code means the
 // tunnel is open; anything else (or a line we cannot parse a status code out of) is a proxy failure.
 std::expected<void, HttpClientErrc> CheckProxyTunnelStatus(std::string_view statusLine) {
@@ -128,207 +111,105 @@ std::expected<void, HttpClientErrc> CheckProxyTunnelStatus(std::string_view stat
 
 }  // namespace
 
-#ifdef AERONET_ENABLE_OPENSSL
-namespace internal {
-
-namespace {
-
-// Map an aeronet TLSConfig::Version onto the OpenSSL protocol constant (0 == unset / unsupported).
-int ToOpenSslTlsVersion(TLSConfig::Version ver) {
-  if (ver == TLSConfig::TLS_1_2) {
-    return TLS1_2_VERSION;
-  }
-#ifdef TLS1_3_VERSION
-  if (ver == TLSConfig::TLS_1_3) {
-    return TLS1_3_VERSION;
-  }
-#endif
-  return 0;
-}
-
-// Load a client certificate + private key (mutual TLS) into the context, from in-memory PEM if
-// provided, otherwise from file paths. No-op when neither is configured.
-void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
-  const std::string_view certPem = cfg.tlsClientCertPem();
-  const std::string_view keyPem = cfg.tlsClientKeyPem();
-  if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    // Wrap the parse results directly (rather than via MakeX509/MakePKey, which raise std::bad_alloc on
-    // null) so a malformed PEM surfaces as the documented HttpClientException, not a misleading bad_alloc.
-    X509Ptr certX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    PKeyPtr pkey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
-    if (!certX509 || !pkey) {
-      throw HttpClientException("Failed to parse in-memory client certificate or key");
-    }
-    if (::SSL_CTX_use_certificate(ctx, certX509.get()) != 1 || ::SSL_CTX_use_PrivateKey(ctx, pkey.get()) != 1) {
-      throw HttpClientException("Failed to install in-memory client certificate");
-    }
-  } else if (!cfg.tlsClientCertFile().empty() && !cfg.tlsClientKeyFile().empty()) {
-    if (::SSL_CTX_use_certificate_file(ctx, cfg.tlsClientCertFileCStr(), SSL_FILETYPE_PEM) != 1) {
-      throw HttpClientException("Failed to load client certificate file");
-    }
-    if (::SSL_CTX_use_PrivateKey_file(ctx, cfg.tlsClientKeyFileCStr(), SSL_FILETYPE_PEM) != 1) {
-      throw HttpClientException("Failed to load client private key file");
-    }
-  } else {
-    return;  // no client certificate configured
-  }
-  if (::SSL_CTX_check_private_key(ctx) != 1) {
-    throw HttpClientException("Client private key does not match the certificate");
-  }
-}
-
-}  // namespace
-
-// OpenSSL client context: one SSL_CTX shared by all connections of a single HttpClient.
-struct HttpClientTlsContext {
-  explicit HttpClientTlsContext(const HttpClientConfig& cfg)
-      : ctx(::SSL_CTX_new(::TLS_client_method()), &::SSL_CTX_free) {
-    cfg.validate();
-    if (!ctx) {
-      throw HttpClientException("SSL_CTX_new(TLS_client_method) failed");
-    }
-    const int minVersion = ToOpenSslTlsVersion(cfg.tlsMinVersion);
-    if (minVersion != 0 && ::SSL_CTX_set_min_proto_version(ctx.get(), minVersion) != 1) {
-      throw HttpClientException("Failed to set minimum TLS version");
-    }
-    if (cfg.tlsMaxVersion != TLSConfig::Version{}) {
-      const int maxVersion = ToOpenSslTlsVersion(cfg.tlsMaxVersion);
-      if (maxVersion == 0 || ::SSL_CTX_set_max_proto_version(ctx.get(), maxVersion) != 1) {
-        throw HttpClientException("Failed to set maximum TLS version");
-      }
-    }
-    if (!cfg.tlsCipherList().empty() && ::SSL_CTX_set_cipher_list(ctx.get(), cfg.tlsCipherListCStr()) != 1) {
-      throw HttpClientException("Failed to set TLS cipher list");
-    }
-    LoadClientCertificate(ctx.get(), cfg);
-    ::SSL_CTX_set_mode(ctx.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    // Advertise the application protocols we can actually speak via ALPN (OpenSSL's length-prefixed wire
-    // format), driven by cfg.httpVersion: "h2" is offered first (preferred) in Auto, alone in Http2, and
-    // not at all in Http1_1 or a build without HTTP/2 support. The negotiated protocol is read back from
-    // SSL_get0_alpn_selected() in finishConnect(). SSL_CTX_set_alpn_protos returns 0 on success.
-    static constexpr unsigned char kAlpnHttp11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
-#ifdef AERONET_ENABLE_HTTP2
-    static constexpr unsigned char kAlpnH2Http11[]{2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
-    static constexpr unsigned char kAlpnH2[]{2, 'h', '2'};
-    std::span<const unsigned char> alpnWire(kAlpnHttp11);
-    if (cfg.httpVersion == HttpVersionMode::Auto) {
-      alpnWire = kAlpnH2Http11;
-    } else if (cfg.httpVersion == HttpVersionMode::Http2) {
-      alpnWire = kAlpnH2;
-    }
-#else
-    const std::span<const unsigned char> alpnWire(kAlpnHttp11);
-#endif
-    if (::SSL_CTX_set_alpn_protos(ctx.get(), alpnWire.data(), static_cast<unsigned int>(alpnWire.size())) != 0) {
-      throw HttpClientException("Failed to set TLS ALPN protocols");
-    }
-    if (cfg.tlsVerifyPeer) {
-      ::SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
-      bool trustLoaded = false;
-      // A forward proxy that intercepts TLS re-signs origin certificates with its own CA: verify against
-      // that CA (proxyCaFile) in preference to the general tlsCaFile / default trust store.
-      const char* caFile = nullptr;
-      if (!cfg.proxyCaFile().empty()) {
-        caFile = cfg.proxyCaFileCStr();
-      } else if (!cfg.tlsCaFile().empty()) {
-        caFile = cfg.tlsCaFileCStr();
-      }
-      const char* caPath = cfg.tlsCaPath().empty() ? nullptr : cfg.tlsCaPathCStr();
-      if (caFile != nullptr || caPath != nullptr) {
-        trustLoaded = ::SSL_CTX_load_verify_locations(ctx.get(), caFile, caPath) == 1;
-        if (!trustLoaded) {
-          throw HttpClientException("Failed to load TLS CA trust store");
-        }
-      } else {
-        trustLoaded = ::SSL_CTX_set_default_verify_paths(ctx.get()) == 1;
-        if (!trustLoaded) {
-          throw HttpClientException("Failed to load default TLS trust store");
-        }
-      }
-    } else {
-      ::SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_NONE, nullptr);
-    }
-  }
-
-  // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification.
-  [[nodiscard]] std::unique_ptr<ITransport> makeTransport(NativeHandle fd, const char* pHost, bool verify) const {
-    TlsTransport::SslPtr ssl(::SSL_new(ctx.get()), &::SSL_free);
-    if (!ssl) {
-      throw HttpClientException("SSL_new failed");
-    }
-    if (::SSL_set_fd(ssl.get(), static_cast<int>(fd)) != 1) {
-      throw HttpClientException("SSL_set_fd failed");
-    }
-    // OpenSSL SNI / verification APIs need a null-terminated host string.
-    // SNI (host must be a registered name, not an IP literal; OpenSSL ignores IPs here which is fine).
-    ::SSL_set_tlsext_host_name(ssl.get(), pHost);
-    if (verify) {
-      ::SSL_set_hostflags(ssl.get(), X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-      if (::SSL_set1_host(ssl.get(), pHost) != 1) {
-        throw HttpClientException("SSL_set1_host failed");
-      }
-    }
-    ::SSL_set_connect_state(ssl.get());
-    auto transport = std::make_unique<TlsTransport>(std::move(ssl), ~0U);
-    transport->setUnderlyingFd(fd);
-    return transport;
-  }
-
-  std::unique_ptr<SSL_CTX, void (*)(SSL_CTX*)> ctx;
-};
-
-}  // namespace internal
-#endif
-
-HttpClient::HttpClient(HttpClientConfig config) : _config(std::move(config)), _loop(CreateEventLoop()) {
+HttpClient::HttpClient(HttpClientConfig config)
+    : _config(std::move(config)),
+      _loop(CreateEventLoop()),
+      _codec(_config.requestCompression.codec),
+      _telemetry(_config.telemetry) {
   // Fail fast on inconsistent configuration (mirrors the server's validate-on-construct policy): timeouts,
   // HTTP version selection (Http2 requires a build with AERONET_ENABLE_HTTP2) and HTTP/2 settings.
   _config.validate();
-  _config.decompression.validate();  // no-op when disabled
-  if (_config.requestCompression.enabled()) {
-    _config.requestCompression.codec.validate();
-#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
-    if (!IsEncodingEnabled(_config.requestCompression.encoding)) {
-      throw HttpClientException("requestCompression.encoding is not a supported / compiled-in content coding");
+
+  // Bake the resolved default Accept-Encoding into the per-request global headers so every request the
+  // client builds advertises it (a per-request Accept-Encoding header still overrides it, since header()
+  // replaces the first occurrence). An explicit defaultAcceptEncoding() wins; otherwise, when response
+  // decompression is enabled, advertise exactly what this build can decode so origins know they may compress
+  // (and the response is transparently decoded). Nothing is injected when neither applies.
+  {
+    std::string_view acceptEncoding = _config.defaultAcceptEncoding();
+    if (acceptEncoding.empty() && _config.decompression.enable) {
+      acceptEncoding = internal::kSupportedAcceptEncoding;
     }
-#endif
+    if (!acceptEncoding.empty() && std::ranges::none_of(_config.globalHeaders, [](std::string_view part) {
+          const auto colon = part.find(':');
+          return colon != std::string_view::npos && CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
+        })) {
+      RawChars line(http::AcceptEncoding.size() + http::HeaderSep.size() + acceptEncoding.size());
+      line.unchecked_append(http::AcceptEncoding);
+      line.unchecked_append(http::HeaderSep);
+      line.unchecked_append(acceptEncoding);
+      _config.globalHeaders.append(line);
+    }
   }
-  // Resolve the forward-proxy endpoint once (if configured): a bad proxy URL is a hard setup error, so it
   // throws here deterministically rather than failing every request. Only cleartext (http) proxies are
   // supported. _proxyHost keeps a spare trailing byte for ConnectTCP's transient null-termination.
   if (_config.hasProxy()) {
-    std::expected<Url, HttpClientErrc> proxy = ParseProxyUrl(_config.proxyUrl());
-    if (!proxy) {
-      throw HttpClientException("Invalid forward-proxy URL");
-    }
-    if (proxy->tls()) {
+    std::string_view proxyUrl = _config.proxyUrl();
+    const auto schemeEnd = proxyUrl.find("://");
+    std::string_view scheme = (schemeEnd == std::string_view::npos) ? "http" : proxyUrl.substr(0, schemeEnd);
+    if (!CaseInsensitiveEqual(scheme, "http")) {
       throw HttpClientException("Only cleartext (http) forward proxies are supported");
     }
-    _proxyHost = RawChars(proxy->host().size() + 1U);
-    _proxyHost.unchecked_append(proxy->host());
-    _proxyPort = proxy->port();
+    if (schemeEnd != std::string_view::npos) {
+      proxyUrl = proxyUrl.substr(schemeEnd + 3);
+    }
+
+    internal::UrlParseResult res;
+    internal::ParseAuthority(proxyUrl, res);
+
+    _proxyHost = res.host;
+    _proxyPort = res.port;
   }
 }
 
-HttpClient::~HttpClient() = default;
+HttpClientResult HttpClient::request(const HttpRequest& req) {
+  const bool isCacheEligible = cacheEligible(req);
+  HttpRequest finalizedReq = req.finalize(_codec, _config.decompression);
 
-internal::HttpClientCodec& HttpClient::codec() {
-  if (!_codec) {
-    _codec = std::make_unique<internal::HttpClientCodec>(_config.requestCompression.codec);
+  maybeCompressRequestBody(finalizedReq);
+
+  std::string_view cacheKey;
+  if (isCacheEligible) {
+    cacheKey = buildCacheKey(finalizedReq);
+    HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
+    if (pCachedHttpResponse != nullptr) {
+      return pCachedHttpResponse->cloneFinalized();
+    }
   }
-  return *_codec;
+  HttpClientResult result = requestUncached(std::move(finalizedReq));
+  // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
+  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
+    cacheStore(cacheKey, *result);
+  }
+
+  return result;
 }
 
-#ifdef AERONET_ENABLE_OPENSSL
-internal::HttpClientTlsContext& HttpClient::tlsContext() {
-  if (!_tls) {
-    _tls = std::make_unique<internal::HttpClientTlsContext>(_config);
+// TODO: factorize some code below with const HttpRequest & version
+HttpClientResult HttpClient::request(HttpRequest&& req) {
+  const bool isCacheEligible = cacheEligible(req);
+
+  req.finalize();
+
+  maybeCompressRequestBody(req);
+
+  std::string_view cacheKey;
+  if (isCacheEligible) {
+    cacheKey = buildCacheKey(req);
+    HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
+    if (pCachedHttpResponse != nullptr) {
+      return pCachedHttpResponse->cloneFinalized();
+    }
   }
-  return *_tls;
+
+  HttpClientResult result = requestUncached(std::move(req));
+  // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
+  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
+    cacheStore(cacheKey, *result);
+  }
+
+  return result;
 }
-#endif
 
 bool HttpClient::armLoop(NativeHandle fd, EventBmp interest) {
   if (_loopFd == fd) {
@@ -368,7 +249,7 @@ void HttpClient::unregisterIfCurrent(NativeHandle fd) noexcept {
 
 void HttpClient::dropConnection(ActiveConnection& conn) noexcept {
   // Only ever called on a live connection: freshly connected, or just popped from the idle pool.
-  assert(conn.valid());
+  assert(static_cast<bool>(conn.cnx));
   unregisterIfCurrent(conn.cnx.fd());
   conn.reset();
 }
@@ -376,7 +257,7 @@ void HttpClient::dropConnection(ActiveConnection& conn) noexcept {
 void HttpClient::dropIdleBucket(vector<ActiveConnection>& bucket) noexcept {
   for (ActiveConnection& conn : bucket) {
     // Pooled entries are always live: releaseConnection never stores an invalid connection.
-    assert(conn.valid());
+    assert(static_cast<bool>(conn.cnx));
     unregisterIfCurrent(conn.cnx.fd());
   }
   bucket.clear();
@@ -413,12 +294,14 @@ bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_po
   }
 }
 
-std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const Url& url) {
+std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req) {
   // For https, build (and thereby validate) the shared TLS context up front -- before spending a connect on
   // it. A misconfiguration (bad cipher list, unusable cert/key, ...) is a hard setup error: it throws an
   // HttpClientException deterministically here, independently of whether the origin is even reachable.
-  // The context is built once and reused; this is a no-op on every subsequent connect.
-  if (url.tls()) {
+  // The context is built once (lazily, on the first https request) and reused; this is a no-op on every
+  // subsequent connect.
+  const bool isTls = req.isTlsRequest();
+  if (isTls) {
 #ifdef AERONET_ENABLE_OPENSSL
     tlsContext();
 #else
@@ -430,10 +313,12 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // through it -- via CONNECT for https, absolute-form requests for http). Otherwise connect straight to the
   // origin. Both host spans keep a spare writable byte for ConnectTCP's transient null-termination.
   const bool proxied = usesProxy();
-  const std::span<char> connectHost = proxied
-                                          ? std::span<char>(_proxyHost.data(), _proxyHost.size())
-                                          : std::span<char>(const_cast<char*>(url.host().data()), url.host().size());
-  const uint16_t connectPort = proxied ? _proxyPort : url.port();
+  const auto hostWithoutPort = req.host();
+
+  const std::span<char> connectHost =
+      proxied ? std::span<char>(const_cast<char*>(_proxyHost.data()), _proxyHost.size())
+              : std::span<char>(const_cast<char*>(hostWithoutPort.data()), hostWithoutPort.size());
+  const uint16_t connectPort = proxied ? _proxyPort : req.port();
 
   // getaddrinfo (via ConnectTCP) needs a writable host buffer with one spare byte at the end (done at
   // construction). Opt into ConnectTCP's blocking multi-address fallback (bounded by the connect timeout): a host
@@ -457,18 +342,18 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // (origin) TLS handshake driven later by finishConnect. The tunnel exchange runs on the raw socket via a
   // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
-  if (proxied && url.tls()) {
+  if (proxied && isTls) {
     PlainTransport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
-    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, url, SteadyClock::now() + _config.connectTimeout);
+    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, req, SteadyClock::now() + _config.connectTimeout);
         !tunnel) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
       return std::unexpected(tunnel.error());
     }
   }
 #ifdef AERONET_ENABLE_OPENSSL
-  if (url.tls()) {
+  if (isTls) {
     // The context is already built above; makeTransport only wraps the freshly connected fd.
-    conn.transport = tlsContext().makeTransport(fd, url.hostCStr().c_str(), _config.tlsVerifyPeer);
+    conn.transport = tlsContext().makeTransport(fd, req.hostCStr().c_str(), _config.tlsVerifyPeer);
   } else
 #endif
   {
@@ -478,13 +363,14 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 }
 
 std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport& transport, NativeHandle fd,
-                                                                     const Url& url, SteadyClock::time_point deadline) {
+                                                                     const HttpRequest& req,
+                                                                     SteadyClock::time_point deadline) {
   static constexpr std::string_view kConnect = "CONNECT ";
   static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
   // CONNECT needs an explicit "host:port" authority (RFC 9110 section 9.3.6); IPv6 literals are bracketed.
-  const std::string_view host = url.host();
+  const std::string_view host = req.host();
   const bool ipv6 = host.contains(':');
-  const uint16_t port = url.port();
+  const uint16_t port = req.port();
   const auto portDigits = ndigits(port);
   const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portDigits;
 
@@ -566,9 +452,9 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   }
 }
 
-std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireConnection(const Url& url) {
+std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireConnection(const HttpRequest& req) {
   if (_config.keepAlive) {
-    if (auto it = _idle.find(url.originKey()); it != _idle.end() && !it->second.empty()) {
+    if (auto it = _idle.find(req.originKey()); it != _idle.end() && !it->second.empty()) {
       auto& bucket = it->second;
       // Bucket is LIFO: back() is the most-recently-released (freshest) connection. If even it has
       // exceeded the idle limit, every older entry has too, so drop the whole bucket and reconnect.
@@ -595,18 +481,18 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
       }
     }
   }
-  return connectNew(url);
+  return connectNew(req);
 }
 
-void HttpClient::releaseConnection(const Url& url, ActiveConnection&& conn) {
+void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& conn) {
   assert(_config.keepAlive);
   // Only released after a completed exchange, so the connection is always live at this point.
-  assert(conn.valid());
+  assert(static_cast<bool>(conn.cnx));
   // This is the only place the pool needs to own (and therefore allocate) an origin key: create the
   // bucket on first release for this origin so subsequent requests can actually reuse the connection.
   // The key is materialized once per distinct origin and never rebuilt; all other accesses are
   // transparent string_view lookups.
-  auto& bucket = _idle.try_emplace(url.originKey()).first->second;
+  auto& bucket = _idle.try_emplace(req.originKey()).first->second;
   if (bucket.size() >= _config.maxIdleConnectionsPerHost) {
     dropConnection(conn);  // pool full: unregister its fd from the loop before it closes
     return;
@@ -615,7 +501,7 @@ void HttpClient::releaseConnection(const Url& url, ActiveConnection&& conn) {
   bucket.emplace_back(std::move(conn));
 }
 
-std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& conn, const Url& url,
+std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& conn, bool isTls,
                                                               SteadyClock::time_point deadline) {
   const NativeHandle fd = conn.cnx.fd();
   // The TCP connect (including multi-address fallback) is already complete here: connectNew() resolves it
@@ -640,7 +526,7 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
   // Resolve the negotiated application protocol from ALPN. Only https negotiates ALPN; an empty / unknown
   // selection stays HTTP/1.1 -- unless HTTP/2 is required, in which case the connection is unusable
   // (over TLS, HTTP/2 requires an explicit ALPN "h2" selection, RFC 9113 §3.3).
-  if (url.tls() && conn.transport) {
+  if (isTls && conn.transport) {
     const unsigned char* alpn = nullptr;
     unsigned int alpnLen = 0;
     ::SSL_get0_alpn_selected(static_cast<TlsTransport*>(conn.transport.get())->rawSsl(), &alpn, &alpnLen);
@@ -655,7 +541,7 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
 #endif
   // Plain http with HTTP/2 required: speak h2c with prior knowledge (RFC 9113 §3.4) -- the client sends
   // its connection preface directly. Auto stays HTTP/1.1 on cleartext (the Upgrade dance is deprecated).
-  if (!url.tls() && _config.httpVersion == HttpVersionMode::Http2) {
+  if (!isTls && _config.httpVersion == HttpVersionMode::Http2) {
     conn.protocol = ClientProtocol::Http2;
   }
   return {};
@@ -682,6 +568,17 @@ std::expected<void, HttpClientErrc> HttpClient::ensureProtocolHandler(ActiveConn
   return {};
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
+internal::HttpClientTlsContext& HttpClient::tlsContext() {
+  if (_tls.empty()) {
+    // Build (and validate) the SSL_CTX once, on the first https request. A bad TLS configuration throws
+    // HttpClientException here rather than at construction, so a plain-http client never pays for it.
+    _tls = internal::HttpClientTlsContext(_config);
+  }
+  return _tls;
+}
+#endif
+
 double HttpClient::nextJitterUnit() noexcept {
   // xorshift64* step; map the top 53 bits to a double in [0, 1). Quality is irrelevant here -- this only
   // spreads backoff delays so a fleet of clients does not retry in lockstep.
@@ -691,8 +588,28 @@ double HttpClient::nextJitterUnit() noexcept {
   return static_cast<double>(_jitterState >> 11) * (1.0 / 9007199254740992.0);  // 1 / 2^53
 }
 
-HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest& req, http::Method method,
-                                             bool dropBody) {
+HttpRequest::Options HttpClient::makeRequestOptions() noexcept {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  HttpRequest::Options opts(_codec.compressionState, _config.requestCompression.encoding);
+  // Vary header does not make sense for a request, we don't add it.
+#else
+  HttpRequest::Options opts;
+#endif
+  if (!_config.keepAlive) {
+    opts.setClose();
+  }
+  if (_config.addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (_config.hasProxy()) {
+    opts.setHasProxy();
+  }
+  opts.setHttpRequest();
+  opts.setPrepared();
+  return opts;
+}
+
+HttpClientResult HttpClient::performExchange(const HttpRequest& req) {
   const RetryConfig& retry = _config.retry;
   const uint32_t maxAttempts = retry.maxAttempts < 1U ? 1U : retry.maxAttempts;
   uint32_t attempt = 0;  // backoff retries already consumed (0-based index of the next one)
@@ -704,13 +621,14 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     if (delay > RetryConfig::Duration::zero()) {
       std::this_thread::sleep_for(delay);
     }
+    _telemetry.counterAdd("aeronet.http_requests.retries", 1);
     ++attempt;
   };
   // Computed exponential-backoff delay for the upcoming retry (jitter consulted only when enabled).
   const auto computedBackoff = [&] { return retry.delayFor(attempt, retry.jitter > 0.0F ? nextJitterUnit() : 0.0); };
 
   for (;;) {
-    std::expected<ActiveConnection, HttpClientErrc> acquired = acquireConnection(url);
+    std::expected<ActiveConnection, HttpClientErrc> acquired = acquireConnection(req);
     if (!acquired) {
       // A fresh connect failed (acquireConnection already drained any stale pool entry and reconnected).
       // Nothing was sent, so a backoff retry is always safe.
@@ -736,9 +654,9 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     // it the connection. `requestSent` flips to true as soon as any request byte is written, even when the
     // exchange later returns an error. Any step short-circuits to its HttpClientErrc.
     HttpClientResult result =
-        finishConnect(conn, url, connectDeadline).and_then([&] { return ensureProtocolHandler(conn); }).and_then([&] {
-          return conn.proto.exchange(*this, *conn.transport, fd, url, req, method, dropBody, ioDeadline, requestSent);
-        });
+        finishConnect(conn, req.isTlsRequest(), connectDeadline)
+            .and_then([&] { return ensureProtocolHandler(conn); })
+            .and_then([&] { return conn.proto.exchange(*this, *conn.transport, fd, req, ioDeadline, requestSent); });
 
     if (result) {
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
@@ -754,7 +672,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
         }
         // The connection may still be reusable (keep-alive); hand it back so the retry can reuse it.
         if (_config.keepAlive && conn.proto.keepAlive()) {
-          releaseConnection(url, std::move(conn));
+          releaseConnection(req, std::move(conn));
         } else {
           dropConnection(conn);
         }
@@ -762,7 +680,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
         continue;
       }
       if (_config.keepAlive && conn.proto.keepAlive()) {
-        releaseConnection(url, std::move(conn));
+        releaseConnection(req, std::move(conn));
       } else {
         dropConnection(conn);  // not reusable: unregister its fd before the socket closes
       }
@@ -775,7 +693,7 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
     }
     // Genuine failure on a connection we cannot reuse. A pre-send failure is always safe to retry; a
     // post-send failure only for an idempotent method when the caller explicitly opted in (a re-submission).
-    const bool safeToRetry = !requestSent || (retry.retryIdempotentAfterSend && http::IsIdempotent(method));
+    const bool safeToRetry = !requestSent || (retry.retryIdempotentAfterSend && http::IsIdempotent(req.method()));
     if (canBackoff() && safeToRetry) {
       sleepBackoff(computedBackoff());
       continue;
@@ -784,27 +702,28 @@ HttpClientResult HttpClient::performExchange(const Url& url, const ClientRequest
   }
 }
 
-bool HttpClient::cacheEligible(const ClientRequest& req) const noexcept {
-  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method());
+bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {
+  // TODO: can we activate cache for file payloads?
+  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method()) && !req.hasBodyFile();
 }
 
-std::string_view HttpClient::buildCacheKey(const ClientRequest& req) {
-  const std::string_view url = req.url();
-  const std::string_view headers = req.headersFlatView();
-  const std::string_view body = req.body();
+std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
+  if (req.hasNoExternalPayload()) {
+    // Optim - all data of the request is in the first buffer, so we can use it directly as the cache key without
+    // copying.
+    return req._data;
+  }
+
+  assert(!req.hasBodyFile());
+
   // Layout: [1 method-idx byte][url]['\n'][headers]['\n'][body]. The two '\n' separators keep the key
   // unambiguous (a URL never contains a raw newline, and the flat header block ends each line with CRLF), so
   // distinct (url, headers, body) triples can never collide by concatenation.
   _cacheKeyScratch.clear();
-  _cacheKeyScratch.reserve(1U + url.size() + 1U + headers.size() + 1U + body.size());
-  char* ptr = _cacheKeyScratch.data();
-  *ptr++ = static_cast<char>(http::MethodToIdx(req.method()));
-  ptr = Append(url, ptr);
-  *ptr++ = '\n';
-  ptr = Append(headers, ptr);
-  *ptr++ = '\n';
-  ptr = Append(body, ptr);
-  _cacheKeyScratch.setSize(static_cast<std::size_t>(ptr - _cacheKeyScratch.data()));
+  _cacheKeyScratch.reserve(req._data.size() + req.bodySize());
+  _cacheKeyScratch.unchecked_append(req._data);
+  _cacheKeyScratch.unchecked_append(req.bodyInMemory());
+
   return _cacheKeyScratch;
 }
 
@@ -859,41 +778,13 @@ void HttpClient::cacheStore(std::string_view key, const HttpResponse& resp) {
   }
 }
 
-HttpClientResult HttpClient::request(const ClientRequest& req) {
-  const bool isCacheEligible = cacheEligible(req);
-
-  std::string_view cacheKey;
-  if (isCacheEligible) {
-    cacheKey = buildCacheKey(req);
-    if (HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey)) {
-      return pCachedHttpResponse->cloneFinalized();  // fresh cache hit: hand back an independent copy
-    }
-  }
-  HttpClientResult result = requestUncached(req);
-  // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
-  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
-    cacheStore(cacheKey, *result);
-  }
-
-  return result;
-}
-
-HttpClientResult HttpClient::requestUncached(const ClientRequest& req) {
-  std::expected<Url, HttpClientErrc> parsed = Url::Parse(req.url());
-  if (!parsed) {
-    return std::unexpected(parsed.error());  // malformed / unsupported URL
-  }
-  Url url = std::move(*parsed);
-
-  // Redirect rewriting is tracked out-of-band so the (move-only) request never needs copying.
-  http::Method method = req.method();
-  bool dropBody = false;
+HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
   uint32_t redirectsLeft = _config.maxRedirects;
 
-  for (;;) {
+  while (true) {
     // performExchange owns the (idempotent-safe) transparent retry of a stale pooled connection; any
     // failure it surfaces here is terminal.
-    HttpClientResult result = performExchange(url, req, method, dropBody);
+    HttpClientResult result = performExchange(req);
     if (!result) {
       return result;
     }
@@ -906,43 +797,51 @@ HttpClientResult HttpClient::requestUncached(const ClientRequest& req) {
     if (location.empty()) {
       return result;  // 3xx without a Location: hand the response back rather than following.
     }
-    // A malformed Location surfaces as HttpClientErrc::invalidUrl (propagated to the caller); it is not
-    // expected on a nominal redirect.
-    std::expected<Url, HttpClientErrc> next = url.resolveRedirect(location);
-    if (!next) {
-      return std::unexpected(next.error());
-    }
 
     // Method/body rewriting per RFC 7231.
     const http::StatusCode code = resp.status();
+    const http::Method method = req.method();
+
     if (code == http::StatusCodeSeeOther ||
         ((code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound) && method != http::Method::GET &&
          method != http::Method::HEAD)) {
-      method = http::Method::GET;
-      dropBody = true;
+      req.body(std::string_view{});
+      req.method(http::Method::GET);
     }
 
-    url = std::move(*next);
+    if (!req.resolveRedirect(location)) {
+      return std::unexpected(HttpClientErrc::invalidUrl);
+    }
+
     --redirectsLeft;
+    _telemetry.counterAdd("aeronet.http_requests.redirects", 1);
   }
 }
 
-HttpClientResult HttpClient::get(std::string_view url) { return request(ClientRequest(http::Method::GET, url)); }
+void HttpClient::maybeCompressRequestBody(HttpRequest& req) {
+  const HttpClientConfig::RequestCompression& rc = _config.requestCompression;
+  if (!rc.enabled()) {
+    return;
+  }
+  if (IsEncodingEnabled(rc.encoding)) {
+    const internal::CompressResponseResult result =
+        internal::HttpCodec::TryCompressBody(_codec.compressionState, rc.encoding, req);
 
-HttpClientResult HttpClient::head(std::string_view url) { return request(ClientRequest(http::Method::HEAD, url)); }
-
-HttpClientResult HttpClient::post(std::string_view url, std::string_view body, std::string_view contentType) {
-  ClientRequest req(http::Method::POST, url);
-  req.body(body, contentType);
-  return request(req);
+    switch (result) {
+      case internal::CompressResponseResult::Uncompressed:
+        break;
+      case internal::CompressResponseResult::Compressed:
+        _telemetry.counterAdd("aeronet.http_requests.compression.total", 1);
+        break;
+      case internal::CompressResponseResult::ExceedsMaxRatio:
+        _telemetry.counterAdd("aeronet.http_requests.compression.exceeds_max_ratio_total", 1);
+        break;
+      default:
+        assert(result == internal::CompressResponseResult::Error);
+        _telemetry.counterAdd("aeronet.http_requests.compression.errors_total", 1);
+        break;
+    }
+  }
 }
-
-HttpClientResult HttpClient::put(std::string_view url, std::string_view body, std::string_view contentType) {
-  ClientRequest req(http::Method::PUT, url);
-  req.body(body, contentType);
-  return request(req);
-}
-
-HttpClientResult HttpClient::del(std::string_view url) { return request(ClientRequest(http::Method::DELETE, url)); }
 
 }  // namespace aeronet

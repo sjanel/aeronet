@@ -46,11 +46,4 @@ enum class HttpVersionMode : uint8_t {
   return ClientProtocol::Http1_1;
 }
 
-// Whether a protocol can multiplex several concurrent exchanges (streams) over a single connection.
-// HTTP/1.1 cannot (strictly one exchange at a time); HTTP/2 can. The connection pool consults this so it
-// never bakes in a 1:1 connection<->request assumption.
-[[nodiscard]] constexpr bool ProtocolSupportsMultiplexing(ClientProtocol protocol) noexcept {
-  return protocol == ClientProtocol::Http2;
-}
-
 }  // namespace aeronet

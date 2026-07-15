@@ -117,8 +117,8 @@ int main(int argc, char* argv[]) {
     const std::size_t headerSize = *optHeaderSize;
 
     static constexpr std::string_view kHeaderNamePrefix = "X-Bench-Header-";
-    auto resp = req.makeResponse(
-        count * HttpResponse::HeaderSize(kHeaderNamePrefix.size() + ndigits(count), headerSize), http::StatusCodeOK);
+    auto resp = req.makeResponse(count * http::HeaderSize(kHeaderNamePrefix.size() + ndigits(count), headerSize),
+                                 http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
       resp.headerAddLine(std::format("{}{}", kHeaderNamePrefix, headerPos), bench::GenerateRandomString(headerSize));
     }

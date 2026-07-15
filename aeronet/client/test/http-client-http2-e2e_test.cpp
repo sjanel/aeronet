@@ -15,11 +15,11 @@
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/client-protocol.hpp"
-#include "aeronet/client-request.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-version.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -256,7 +256,7 @@ TEST_F(HttpClientHttp2E2ETest, UserFramingHeadersRespected) {
   // A user-supplied Host becomes the :authority value, explicit User-Agent / Accept-Encoding suppress
   // the injected ones, and connection-specific headers (forbidden in HTTP/2) are silently dropped.
   HttpClient client = MakeHttp2Client();
-  ClientRequest req(http::Method::POST, url("/echo"));
+  auto req = client.makeRequest(http::Method::POST, url("/echo"));
   req.header("Host", "override-authority.test")
       .header("User-Agent", "custom-agent/1.0")
       .header("Accept-Encoding", "identity")
@@ -275,7 +275,7 @@ TEST_F(HttpClientHttp2E2ETest, NonTrailersTeHeaderIsDropped) {
   // "TE: trailers" is the one TE value HTTP/2 permits; any other TE value is connection-specific and must
   // be dropped from the header block (unlike the kept "TE: trailers" case). The request still completes.
   HttpClient client = MakeHttp2Client();
-  ClientRequest req(http::Method::POST, url("/echo"));
+  auto req = client.makeRequest(http::Method::POST, url("/echo"));
   req.header("TE", "gzip").body("payload", "text/plain");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -286,7 +286,7 @@ TEST_F(HttpClientHttp2E2ETest, DropBodyRedirectKeepsUserHeader) {
   // A 303 rewrites POST -> GET and drops the body: the body's Content-Type is dropped from the rewritten
   // header block, but an unrelated user header survives and reaches the redirect target.
   HttpClient client = MakeHttp2Client();
-  ClientRequest req(http::Method::POST, url("/see-other-headers"));
+  auto req = client.makeRequest(http::Method::POST, url("/see-other-headers"));
   req.header("x-custom-token", "kept-across-redirect").body("discard-me", "text/plain");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -300,7 +300,7 @@ TEST_F(HttpClientHttp2E2ETest, TransferAndContentEncodingRequestHeadersDisableCo
   cfg.withHttpVersion(HttpVersionMode::Http2).withRequestCompression(true);
   cfg.requestCompression.codec.minBytes = 1;
   HttpClient client(cfg);
-  ClientRequest req(http::Method::POST, url("/echo"));
+  auto req = client.makeRequest(http::Method::POST, url("/echo"));
   req.header("Transfer-Encoding", "identity").header("Content-Encoding", "identity").body("raw-body", "text/plain");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -315,7 +315,7 @@ TEST_F(HttpClientHttp2E2ETest, TransferEncodingAloneDisablesCompression) {
   cfg.withHttpVersion(HttpVersionMode::Http2).withRequestCompression(true);
   cfg.requestCompression.codec.minBytes = 1;
   HttpClient client(cfg);
-  ClientRequest req(http::Method::POST, url("/echo"));
+  auto req = client.makeRequest(http::Method::POST, url("/echo"));
   req.header("Transfer-Encoding", "chunked").body("raw-te-body", "text/plain");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -361,7 +361,7 @@ TEST_F(HttpClientHttp2E2ETest, ClientStreamBudgetLimitsConnectionReuse) {
 TEST_F(HttpClientHttp2E2ETest, CustomHeadersRoundTrip) {
   HttpClient client = MakeHttp2Client();
   // Uppercase name on purpose: HTTP/2 requires lowercase field names on the wire, the engine lowers it.
-  ClientRequest req(http::Method::GET, url("/headers"));
+  auto req = client.makeRequest(http::Method::GET, url("/headers"));
   req.header("X-Custom-Token", "abc123");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);

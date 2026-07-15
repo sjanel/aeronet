@@ -4,6 +4,12 @@
 
 #include <cstring>
 
+#if defined(AERONET_ENABLE_BROTLI) && defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD)
+#include <string_view>
+
+#include "aeronet/http-constants.hpp"
+#endif
+
 namespace aeronet::internal::details {
 
 TEST(ClientAcceptEncodingTest, ComputeAcceptEncodingSize) { EXPECT_GE(ComputeAcceptEncodingSize(), 0); }
