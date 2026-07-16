@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <openssl/x509.h>
 
 #include <chrono>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
+#include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/test-tls-helper.hpp"
@@ -178,6 +180,15 @@ TEST(HttpClientTlsErrorTest, GarbageInMemoryClientCertThrows) {
   EXPECT_THROW({ [[maybe_unused]] auto res = client.get("https://localhost:9/"); }, HttpClientException);
 }
 
+TEST(HttpClientTlsErrorTest, ValidCertificateWithGarbageInMemoryKeyThrows) {
+  auto [cert, key] = test::MakeEphemeralCertKey("client");
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withTlsClientCertKeyMemory(cert, "not-a-pem-key");
+
+  EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
+}
+
 TEST(HttpClientTlsErrorTest, MismatchedClientCertKeyThrows) {
   // A valid certificate paired with a valid but unrelated private key: parse + install succeed, then
   // SSL_CTX_check_private_key rejects the pair.
@@ -208,6 +219,88 @@ TEST(HttpClientTlsErrorTest, ValidCertFileWithBadKeyFileThrows) {
   HttpClient client(cfg);
   EXPECT_THROW({ [[maybe_unused]] auto res = client.get("https://localhost:9/"); }, HttpClientException);
   std::filesystem::remove(certPath);
+}
+
+TEST(HttpClientTlsErrorTest, MismatchedClientCertKeyFilesThrow) {
+  auto [certA, keyA] = test::MakeEphemeralCertKey("localhost");
+  auto [certB, keyB] = test::MakeEphemeralCertKey("localhost");
+  const auto certPath = WriteTempPem(certA, "mismatched-cert");
+  const auto keyPath = WriteTempPem(keyB, "mismatched-key");
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withTlsClientCertKeyFile(certPath.string(), keyPath.string());
+
+  EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
+  std::filesystem::remove(certPath);
+  std::filesystem::remove(keyPath);
+}
+
+TEST(HttpClientTlsErrorTest, PartialClientCertificateFileConfigurationIsIgnored) {
+  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
+  const auto certPath = WriteTempPem(cert, "cert-only");
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withTlsClientCertKeyFile(certPath.string(), "");
+
+  internal::HttpClientTlsContext context(cfg);
+
+  EXPECT_FALSE(context.empty());
+  std::filesystem::remove(certPath);
+}
+
+TEST(HttpClientTlsErrorTest, DefaultCaDirectoryCanBeLoadedExplicitly) {
+  const char* defaultCaDir = X509_get_default_cert_dir();
+  ASSERT_NE(defaultCaDir, nullptr);
+
+  if (!std::filesystem::is_directory(defaultCaDir)) {
+    GTEST_SKIP() << "OpenSSL default CA directory does not exist on this platform.";
+  }
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;
+  cfg.withTlsCaPath(defaultCaDir);
+
+  internal::HttpClientTlsContext context(cfg);
+
+  EXPECT_FALSE(context.empty());
+}
+
+TEST(HttpClientTlsErrorTest, MissingCaDirectoryThrows) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;
+  cfg.withTlsCaPath("/nonexistent/aeronet-no-such-ca-directory");
+
+  EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
+}
+
+TEST(HttpClientTlsErrorTest, CaPathMustBeDirectory) {
+  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
+  const auto certPath = WriteTempPem(cert, "ca-path-file");
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;
+  cfg.withTlsCaPath(certPath.string());
+
+  EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
+  std::filesystem::remove(certPath);
+}
+
+TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwnership) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  internal::HttpClientTlsContext source(cfg);
+
+  internal::HttpClientTlsContext moved(std::move(source));
+  EXPECT_TRUE(source.empty());
+  EXPECT_FALSE(moved.empty());
+
+  internal::HttpClientTlsContext* pMoved = &moved;
+  moved = std::move(*pMoved);
+  EXPECT_FALSE(moved.empty());
+
+  internal::HttpClientTlsContext assigned;
+  assigned = std::move(moved);
+  EXPECT_TRUE(moved.empty());
+  EXPECT_FALSE(assigned.empty());
 }
 
 // Mutual TLS: the server requires (and trusts) a client certificate; the client presents one.
