@@ -4569,4 +4569,154 @@ TEST(Http2ProtocolHandler, ValidSchemesAccepted) {
   }
 }
 
+// --- Request trailers (RFC 9113 §8.1) --------------------------------------
+// A trailing HEADERS block that ends the stream carries request trailers. The server surfaces them through
+// HttpRequestView::trailers() / trailerValueOrEmpty(), and rejects malformed trailing blocks.
+
+TEST(Http2ProtocolHandler, RequestTrailersSurfacedToHandler) {
+  Router router;
+  std::string seenBody;
+  std::string seenChecksum;
+  std::string seenSignature;
+  int seenTrailerCount = -1;
+  router.setPath(http::Method::POST, "/echo", [&](const HttpRequestView& req) {
+    seenBody = std::string(req.body());
+    seenChecksum = std::string(req.trailerValueOrEmpty("x-checksum"));
+    seenSignature = std::string(req.trailerValueOrEmpty("x-signature"));
+    seenTrailerCount = static_cast<int>(req.trailers().size());
+    return HttpResponse(200, "ok");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+  // Initial HEADERS without END_STREAM: body + trailers still to come.
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  const std::string_view body = "payload";
+  // DATA without END_STREAM: the trailing HEADERS block ends the stream.
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(body.data(), body.size())), false),
+            ErrorCode::NoError);
+
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc123"));
+  trailers.append(MakeHttp1HeaderLine("x-signature", "sig-42"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(seenBody, "payload");
+  EXPECT_EQ(seenChecksum, "abc123");
+  EXPECT_EQ(seenSignature, "sig-42");
+  EXPECT_EQ(seenTrailerCount, 2);
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+TEST(Http2ProtocolHandler, RequestTrailersWithoutBodyDispatchesEmptyBody) {
+  Router router;
+  std::string seenBody = "unset";
+  std::string seenChecksum;
+  router.setPath(http::Method::POST, "/echo", [&](const HttpRequestView& req) {
+    seenBody = std::string(req.body());
+    seenChecksum = std::string(req.trailerValueOrEmpty("x-checksum"));
+    return HttpResponse(200, "ok");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+  // No body: HEADERS (no END_STREAM) directly followed by the trailing HEADERS block.
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "no-body"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(seenBody.empty());
+  EXPECT_EQ(seenChecksum, "no-body");
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+TEST(Http2ProtocolHandler, RequestTrailersWithoutEndStreamRejected) {
+  Router router;
+  bool handlerCalled = false;
+  router.setPath(http::Method::POST, "/echo", [&](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200, "ok");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  // A trailing HEADERS block that does NOT end the stream is a protocol error (RFC 9113 §8.1).
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc123"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(handlerCalled);
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ProtocolError);
+}
+
+TEST(Http2ProtocolHandler, RequestTrailersWithPseudoHeaderRejected) {
+  Router router;
+  bool handlerCalled = false;
+  router.setPath(http::Method::POST, "/echo", [&](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200, "ok");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  // Pseudo-header fields are forbidden in trailers (RFC 9113 §8.3): reject with RST_STREAM(PROTOCOL_ERROR).
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine(":method", "GET"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(handlerCalled);
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ProtocolError);
+}
+
 }  // namespace aeronet::http2

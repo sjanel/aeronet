@@ -72,7 +72,7 @@ Where to look: see the "CONNECT (HTTP tunneling)" subsection and the Connection 
 
 - [x] Content-Length bodies with size limit
 - [x] Chunked Transfer-Encoding decoding (request) with trailer header support (RFC 7230 §4.1.2)
-- [x] Trailer header exposure (incoming chunked trailers)
+- [x] Trailer header exposure for incoming request trailers over both HTTP/1.1 (chunked) and HTTP/2 (a trailing `HEADERS` block, RFC 9113 §8.1), surfaced uniformly via `HttpRequestView::trailers()`. Tests: `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RequestTrailers*`)
 - [x] Outbound trailer headers (response trailers for both buffered and streaming responses)
 - [x] Automatic chunked encoding for buffered responses with trailers (RFC 7230 §4.1.2)
 - [x] Content-Encoding request body decompression (gzip, deflate, zstd, multi-layer, identity skip, safety limits)
@@ -3105,9 +3105,12 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 | h2c upgrade (HTTP/1.1 → HTTP/2) | ✔ | Via `Upgrade: h2c` header |
 | Server push | ✗ | Disabled (rarely used by modern clients) |
 | PRIORITY frames | ✔ | Optional, configurable |
+| Request trailers | ✔ | Trailing `HEADERS` block (RFC 9113 §8.1) surfaced via `HttpRequestView::trailers()` |
+| Response trailers | ✔ | Buffered and streaming responses, sent as a trailing `HEADERS` block |
 
 Additional notes
 
+- Request trailers (a trailing `HEADERS` block after the request body, RFC 9113 §8.1) are decoded and exposed through `HttpRequestView::trailers()` / `trailerValueOrEmpty()`, identically to HTTP/1.1 chunked trailers. Pseudo-header fields in a trailer block, and a trailing block that does not end the stream, are rejected with `RST_STREAM(PROTOCOL_ERROR)`; trailer bytes count toward the request header-size budget. Tests: `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RequestTrailers*`).
 - Static file responses created via `HttpResponse::file(...)` (used by `StaticFileHandler`) are serialized as HTTP/2 DATA frames by reading the file in bounded chunks.
 - The implementation is flow-control aware: it sends up to the available connection/stream window and continues after receiving `WINDOW_UPDATE` frames (no full in-memory file load).
 - Tests: see `tests/http-tls-io_test.cpp` (`HttpRangeStatic_H2Tls.LargeFileStreaming_H2Tls`).
