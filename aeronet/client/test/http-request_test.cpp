@@ -17,8 +17,10 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/decompression-config.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -44,6 +46,10 @@ class HttpRequestTest : public ::testing::Test {
     return {0U, method, url, concatenatedHeaders, makeRequestOptions(), body, contentType};
   }
 
+  HttpRequest makeRequestWithoutTrailerHeader(http::Method method, std::string_view url) {
+    return {method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions(false)};
+  }
+
   static internal::CompressionState CreateResponseCompressionState(CompressionConfig* config) {
     internal::CompressionState ret{*config};
     ret.pCompressionConfig = config;
@@ -52,9 +58,16 @@ class HttpRequestTest : public ::testing::Test {
 
   static void finalize(HttpRequest& req) { req.finalize(); }
 
+  static HttpRequest finalize(const HttpRequest& req, internal::HttpClientCodec& clientCodec,
+                              const DecompressionConfig& decompressionConfig) {
+    return req.finalize(clientCodec, decompressionConfig);
+  }
+
+  static bool IsAutomaticDirectCompression(const HttpRequest& req) { return req._opts.isAutomaticDirectCompression(); }
+
   static bool resolveRedirect(HttpRequest& req, std::string_view location) { return req.resolveRedirect(location); }
 
-  HttpMessage::Options makeRequestOptions() {
+  HttpMessage::Options makeRequestOptions(bool addTrailerHeader = true) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     HttpMessage::Options opts(compressionState, test::SupportedEncodings().front());
     // Vary header does not make sense for a request, we don't add it.
@@ -67,7 +80,9 @@ class HttpRequestTest : public ::testing::Test {
     if (!config.keepAlive) {
       opts.setClose();
     }
-    opts.addTrailerHeader();
+    if (addTrailerHeader) {
+      opts.addTrailerHeader();
+    }
     opts.setHttpRequest();
     opts.setPrepared();
     return opts;
@@ -158,8 +173,18 @@ TEST_F(HttpRequestTest, ConstructorRejectsInvalidPercentEncoding) {
   EXPECT_THROW(makeRequest(http::Method::GET, "https://example.com/test%XZ"), std::invalid_argument);
 }
 
+TEST_F(HttpRequestTest, ConstructorRejectsDeleteControlCharacter) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/test");
+  std::string target = "/test";
+  target.push_back('\x7F');
+
+  EXPECT_THROW(req.target(""), std::invalid_argument);
+  EXPECT_THROW(req.target(target), std::invalid_argument);
+  EXPECT_THROW(req.target("/test%!!"), std::invalid_argument);
+}
+
 TEST_F(HttpRequestTest, ConstructorRejectsTooLongTarget) {
-  std::string target(HttpRequest::kMaxTargetLength + 1, 'a');
+  std::string target(100000, 'a');
 
   EXPECT_THROW(makeRequest(http::Method::GET, "https://example.com/" + target), std::invalid_argument);
 }
@@ -464,16 +489,140 @@ TEST_F(HttpRequestTest, TrailerAddLine) {
   EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-3"), "v3");
 }
 
-TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersShouldNotImpactFinalize) {
-  std::string largePayload(1024UL * 1024, 'x');  // 1 MB payload to trigger automatic compression.
-  auto req = makeRequest(http::Method::POST, "http://h/p").body(largePayload);
-  req.trailerAddLine("X-Trailer-1", "v1").trailerAddLine("X-Trailer-2", "v2");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-1"), "v1");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-2"), "v2");
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+
+TEST_F(HttpRequestTest, AutomaticDirectCompressionHonorsThresholdAndMode) {
+  const Encoding encoding = test::SupportedEncodings().front();
+  config.requestCompression.codec.minBytes = 2048;
+
+  auto smallReq = makeRequest(http::Method::POST, "http://h/small").body(std::string(1024, 'S'));
+  EXPECT_FALSE(IsAutomaticDirectCompression(smallReq));
+  EXPECT_EQ(smallReq.bodyInMemory(), std::string(1024, 'S'));
+  EXPECT_FALSE(smallReq.hasHeader(http::ContentEncoding));
+
+  const std::string largePayload(4096, 'L');
+  auto disabled = makeRequest(http::Method::POST, "http://h/disabled");
+  disabled.directCompressionMode(DirectCompressionMode::Off).body(largePayload);
+  EXPECT_FALSE(IsAutomaticDirectCompression(disabled));
+  EXPECT_EQ(disabled.bodyInMemory(), largePayload);
+  EXPECT_FALSE(disabled.hasHeader(http::ContentEncoding));
+
+  const std::string forcedPayload(256, 'F');
+  auto forced = makeRequest(http::Method::POST, "http://h/forced");
+  forced.directCompressionMode(DirectCompressionMode::On).body(forcedPayload);
+  EXPECT_TRUE(IsAutomaticDirectCompression(forced));
+  EXPECT_EQ(forced.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
+
+  finalize(forced);
+
+  const RawChars decoded = test::Decompress(encoding, forced.bodyInMemory());
+  EXPECT_EQ(std::string_view(decoded.data(), decoded.size()), forcedPayload);
+  EXPECT_EQ(forced.headerValueOrEmpty(http::ContentLength), std::to_string(forced.bodyInMemory().size()));
+}
+
+TEST_F(HttpRequestTest, InPlaceFinalizeCompletesAutomaticCompression) {
+  const Encoding encoding = test::SupportedEncodings().front();
+  config.requestCompression.codec.minBytes = 1;
+  const std::string firstChunk(4096, 'A');
+  const std::string secondChunk(2048, 'B');
+  const std::string expected = firstChunk + secondChunk;
+  auto req = makeRequest(http::Method::POST, "http://h/compressed");
+  req.body(firstChunk).bodyAppend(secondChunk);
+  ASSERT_TRUE(IsAutomaticDirectCompression(req));
 
   finalize(req);
 
-  EXPECT_LT(req.bodyInlinedSize(), largePayload.size());  // The body should have been compressed.
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(req.bodyInMemory().size()));
+  EXPECT_LT(req.bodyInMemory().size(), expected.size());
+  const RawChars decoded = test::Decompress(encoding, req.bodyInMemory());
+  EXPECT_EQ(std::string_view(decoded.data(), decoded.size()), expected);
+}
+
+TEST_F(HttpRequestTest, ConstFinalizePreservesCompressionStateForReuse) {
+  const Encoding encoding = test::SupportedEncodings().front();
+  config.requestCompression.codec.minBytes = 1;
+  const std::string firstChunk(4096, 'A');
+  const std::string secondChunk(2048, 'B');
+  auto req = makeRequest(http::Method::POST, "http://h/reusable").body(firstChunk);
+  ASSERT_TRUE(IsAutomaticDirectCompression(req));
+  const std::string originalCompressedPrefix(req.bodyInMemory());
+  internal::HttpClientCodec clientCodec(config.requestCompression.codec);
+
+  const auto firstFinalized = finalize(std::as_const(req), clientCodec, config.decompression);
+
+  EXPECT_EQ(req.bodyInMemory(), originalCompressedPrefix);
+  EXPECT_EQ(firstFinalized.headerValueOrEmpty(http::ContentLength),
+            std::to_string(firstFinalized.bodyInMemory().size()));
+  const RawChars firstDecoded = test::Decompress(encoding, firstFinalized.bodyInMemory());
+  EXPECT_EQ(std::string_view(firstDecoded.data(), firstDecoded.size()), firstChunk);
+
+  req.bodyAppend(secondChunk);
+  const auto secondFinalized = finalize(std::as_const(req), clientCodec, config.decompression);
+
+  const RawChars secondDecoded = test::Decompress(encoding, secondFinalized.bodyInMemory());
+  EXPECT_EQ(std::string_view(secondDecoded.data(), secondDecoded.size()), firstChunk + secondChunk);
+  EXPECT_EQ(secondFinalized.headerValueOrEmpty(http::ContentLength),
+            std::to_string(secondFinalized.bodyInMemory().size()));
+}
+
+TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {
+  const Encoding encoding = test::SupportedEncodings().front();
+  config.requestCompression.codec.minBytes = 1;
+  const std::string largePayload(1024UL * 1024, 'x');
+  auto req = makeRequest(http::Method::POST, "http://h/p").body(largePayload);
+  ASSERT_TRUE(IsAutomaticDirectCompression(req));
+
+  req.trailerAddLine("X-Trailer-1", "v1").trailerAddLine("X-Trailer-2", "v2");
+  const std::string compressedBody(req.bodyInMemory());
+  EXPECT_LT(compressedBody.size(), largePayload.size());
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(compressedBody.size()));
+  const RawChars decoded = test::Decompress(encoding, compressedBody);
+  EXPECT_EQ(std::string_view(decoded.data(), decoded.size()), largePayload);
+
+  internal::HttpClientCodec clientCodec(config.requestCompression.codec);
+  const auto finalizedCopy = finalize(std::as_const(req), clientCodec, config.decompression);
+  EXPECT_EQ(finalizedCopy.bodyInMemory(), compressedBody);
+  EXPECT_EQ(req.bodyInMemory(), compressedBody);
+
+  finalize(req);
+
+  EXPECT_EQ(req.bodyInMemory(), compressedBody);
+  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-1"), "v1");
+  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-2"), "v2");
+}
+
+#endif
+
+TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
+  auto req = makeRequest(http::Method::POST, "http://h/p").body("payload");
+  req.trailerAddLine("X-First", "one").trailerAddLine("X-Second", "two");
+  RawChars out;
+
+  req.writeChunkedRequestForHttp11(out);
+
+  const std::string_view wire(out.data(), out.size());
+  EXPECT_TRUE(wire.starts_with("POST /p HTTP/1.1\r\n"));
+  EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
+                            std::string(http::chunked) + std::string(http::CRLF)));
+  EXPECT_FALSE(wire.contains(std::string(http::ContentLength) + std::string(http::HeaderSep)));
+  EXPECT_TRUE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep) + "X-First, X-Second\r\n"));
+  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-First: one\r\nX-Second: two\r\n\r\n"));
+}
+
+TEST_F(HttpRequestTest, ChunkedRequestSerializationCanOmitTrailerHeader) {
+  auto req = makeRequestWithoutTrailerHeader(http::Method::POST, "http://h/p").body("payload");
+  req.trailerAddLine("X-Only", "value");
+  RawChars out;
+
+  req.writeChunkedRequestForHttp11(out);
+
+  const std::string_view wire(out.data(), out.size());
+  EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
+                            std::string(http::chunked) + std::string(http::CRLF)));
+  EXPECT_FALSE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep)));
+  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-Only: value\r\n\r\n"));
 }
 
 TEST_F(HttpRequestTest, VeryLongUrlIsNotTruncated) {
@@ -661,6 +810,22 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathTls) {
   EXPECT_EQ(req.host(), "example.com");
   EXPECT_EQ(req.port(), 443);
   EXPECT_EQ(req.target(), "/y");
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRelativePathReplacesExistingQuery) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/dir/old?q=1");
+  auto res = HttpRequestTest::resolveRedirect(req, "next");
+
+  EXPECT_TRUE(res);
+  EXPECT_EQ(req.target(), "/dir/next");
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRelativePathFromAsteriskTarget) {
+  auto req = makeRequest(http::Method::OPTIONS, "https://example.com/").target("*");
+  auto res = HttpRequestTest::resolveRedirect(req, "next");
+
+  EXPECT_TRUE(res);
+  EXPECT_EQ(req.target(), "*next");
 }
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkEmptyPath) {
