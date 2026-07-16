@@ -417,6 +417,32 @@ void ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, const HttpRe
   out.setSize(static_cast<std::size_t>(pEnd - out.data()));
 }
 
+void ClientConnection::buildTrailerBlockForHttp2(HttpClient& client, const HttpRequest& req) {
+  // The initial header block was already HPACK-encoded into the connection output buffer, so the request
+  // scratch buffer is free to be reused for the trailing header block. Trailers carry neither pseudo-headers
+  // nor connection-specific fields, so this is a straight lowercased "name: value\r\n" copy -- one allocation.
+  RawChars& out = client.requestBuffer();
+  out.clear();
+
+  constexpr std::size_t kLineOverhead = http::HeaderSep.size() + http::CRLF.size();
+  std::size_t neededSize = 0;
+  for (const auto& [name, value] : req.trailers()) {
+    neededSize += name.size() + value.size() + kLineOverhead;
+  }
+
+  out.ensureAvailableCapacity(neededSize);
+  char* pEnd = out.data();
+  for (const auto& [name, value] : req.trailers()) {
+    char* nameBeg = pEnd;
+    pEnd = Append(name, pEnd);
+    aeronet::tolower(nameBeg, name.size());  // HTTP/2 field names must be lowercase (RFC 9113 §8.2)
+    pEnd = Append(http::HeaderSep, pEnd);
+    pEnd = Append(value, pEnd);
+    pEnd = Append(http::CRLF, pEnd);
+  }
+  out.setSize(static_cast<std::size_t>(pEnd - out.data()));
+}
+
 HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
@@ -441,8 +467,15 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   // TODO: what about file bodies ?
   std::string_view body = req.bodyInMemory();
 
+  // Request trailers (RFC 9113 §8.1) ride in a trailing HEADERS block that carries END_STREAM. When they
+  // are present, END_STREAM must be withheld from the initial HEADERS and from the final DATA frame so the
+  // stream stays open until the trailers are shipped. endStreamSent tracks whether our send side was closed
+  // (through HEADERS, DATA, or trailers) so the post-exchange cleanup below chooses finalize vs RST_STREAM.
+  const bool hasTrailers = req.trailersSize() != 0;
+  bool endStreamSent = body.empty() && !hasTrailers;
+
   const http2::ErrorCode headersErr =
-      conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), body.empty());
+      conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), endStreamSent);
   if (headersErr != http2::ErrorCode::NoError) {
     log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(),
                http2::ErrorCodeName(headersErr));
@@ -464,7 +497,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
       continue;
     }
     const std::size_t chunkSize = std::min({body.size() - bodyOff, window, kMaxDataBytesPerFlush});
-    const bool endStream = bodyOff + chunkSize == body.size();
+    // Hold END_STREAM back for the trailing HEADERS block when trailers follow the body.
+    const bool endStream = (bodyOff + chunkSize == body.size()) && !hasTrailers;
     const http2::ErrorCode dataErr =
         conn.sendData(streamId, std::as_bytes(std::span{body.data() + bodyOff, chunkSize}), endStream);
     if (dataErr != http2::ErrorCode::NoError) {
@@ -472,7 +506,25 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
       engine.endExchange();
       return std::unexpected(HttpClientErrc::writeError);
     }
+    endStreamSent = endStreamSent || endStream;
     bodyOff += chunkSize;
+    ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
+  }
+
+  // Ship the request trailers once the whole body has gone out. Skipped when the exchange already failed
+  // or the server answered early (RFC 9113 §8.1) -- the half-open stream is then aborted with RST_STREAM.
+  if (hasTrailers && ioRes && bodyOff == body.size() && engine.failure() == Http2ClientEngine::Failure::None &&
+      !engine.responseComplete()) {
+    buildTrailerBlockForHttp2(client, req);
+    const http2::ErrorCode trailerErr =
+        conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), /*endStream=*/true);
+    if (trailerErr != http2::ErrorCode::NoError) {
+      log::error("HTTP/2 client: sending trailers on stream {} failed ({})", streamId,
+                 http2::ErrorCodeName(trailerErr));
+      engine.endExchange();
+      return std::unexpected(HttpClientErrc::writeError);
+    }
+    endStreamSent = true;
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
   }
 
@@ -497,16 +549,17 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
     return std::unexpected(ioRes.error());
   }
 
-  // A stream that did not close through the frame-receive path needs explicit closure: abort a
-  // partially-uploaded request with RST_STREAM(NO_ERROR) (early response, RFC 9113 §8.1), and finalize a
-  // stream whose final END_STREAM went out through the send path. Both keep the pooled connection's
-  // active-stream accounting exact. The per-exchange state is already detached, so the callbacks these
-  // fire have nothing to touch.
+  // A stream that did not close through the frame-receive path needs explicit closure: finalize a stream
+  // whose final END_STREAM went out through the send path (via HEADERS, the last DATA frame, or the
+  // trailing HEADERS block), otherwise abort the still-open half with RST_STREAM(NO_ERROR) -- an early
+  // response left the upload unfinished (RFC 9113 §8.1). Both keep the pooled connection's active-stream
+  // accounting exact. The per-exchange state is already detached, so the callbacks these fire have nothing
+  // to touch.
   if (!engine.streamClosed()) {
-    if (bodyOff < body.size()) {
-      conn.sendRstStream(streamId, http2::ErrorCode::NoError);
-    } else {
+    if (endStreamSent) {
       conn.finalizeSendClosedStream(streamId);
+    } else {
+      conn.sendRstStream(streamId, http2::ErrorCode::NoError);
     }
   }
 

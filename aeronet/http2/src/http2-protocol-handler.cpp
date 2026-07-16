@@ -193,7 +193,11 @@ http::Method ParseHttpMethod(std::string_view method) noexcept {
 
 void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
   auto [it, inserted] = _streams.try_emplace(streamId);
-  assert(inserted);  // logic below should be adapted if we can call this multiple times per stream
+  if (!inserted) {
+    // A second HEADERS block on a stream that already has one carries request trailers (RFC 9113 §8.1).
+    onTrailersReceived(it, headers, endStream);
+    return;
+  }
   StreamState& state = it->second;
   StreamRequest& streamReq = state.request;
 
@@ -317,22 +321,77 @@ void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std
   // Accumulate body data
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
 
+  // When the client attached request trailers, END_STREAM rides the trailing HEADERS block instead of the
+  // final DATA frame; the body is then finalized and dispatched from onTrailersReceived.
   if (endStream) {
-    // Set body on HttpRequestView
-    streamReq.request._body = streamReq.bodyBuffer;
-
-    if (!streamReq.request._body.empty()) {
-      const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
-          *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
-      if (res.message != nullptr) {
-        (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
-        _streams.erase(streamId);
-        return;
-      }
-    }
-
-    dispatchRequest(it);
+    finalizeRequestBodyAndDispatch(it);
   }
+}
+
+void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator it) {
+  const uint32_t streamId = it->first;
+  StreamRequest& streamReq = it->second.request;
+
+  // Set body on HttpRequestView, applying any request-body decompression.
+  streamReq.request._body = streamReq.bodyBuffer;
+
+  if (!streamReq.request._body.empty()) {
+    const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
+        *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
+    if (res.message != nullptr) {
+      (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
+      _streams.erase(streamId);
+      return;
+    }
+  }
+
+  dispatchRequest(it);
+}
+
+void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const HeadersViewMap& trailers, bool endStream) {
+  const uint32_t streamId = it->first;
+  StreamState& state = it->second;
+
+  // Trailers are only meaningful for a stream still aggregating a normal (non-CONNECT) request, and a
+  // trailing HEADERS block MUST carry END_STREAM (RFC 9113 §8.1). Anything else is a protocol error: a
+  // second HEADERS block on a tunnel stream, on a stream whose request was already dispatched, or one that
+  // fails to close the stream. sendRstStream fires onStreamReset, which erases the stream entry (and cleans
+  // up any tunnel); the follow-up erase-by-key is a harmless no-op that keeps the intent explicit.
+  if (!state.hasRequest() || state.tunnelUpstreamFd != kInvalidHandle || !endStream) {
+    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
+    _streams.erase(streamId);
+    return;
+  }
+
+  StreamRequest& streamReq = state.request;
+  HttpRequestView& req = streamReq.request;
+
+  // Pass 1: reject pseudo-header fields (forbidden in trailers, RFC 9113 §8.3) and size the stable copy of
+  // the decoded views, which are only valid for the duration of this callback.
+  std::size_t trailersTotalLen = 0U;
+  for (const auto& [name, value] : trailers) {
+    if (name.empty() || name.front() == ':') {
+      _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
+      _streams.erase(streamId);
+      return;
+    }
+    trailersTotalLen += name.size() + value.size();
+  }
+
+  // Pass 2: copy trailer bytes into per-stream storage and expose them through req.trailers().
+  streamReq.trailerStorage = std::make_unique_for_overwrite<char[]>(trailersTotalLen);
+  char* buf = streamReq.trailerStorage.get();
+  for (const auto& [name, value] : trailers) {
+    std::string_view storedName(buf, name.size());
+    buf = Append(name, buf);
+    std::string_view storedValue(buf, value.size());
+    buf = Append(value, buf);
+    // Trailers count toward the request head-size budget, combined with the initial headers.
+    req._headSpanSize += storedName.size() + storedValue.size();
+    req._trailers[storedName] = storedValue;
+  }
+
+  finalizeRequestBodyAndDispatch(it);
 }
 
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
