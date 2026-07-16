@@ -28,6 +28,11 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/temp-file.hpp"
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+#include "aeronet/encoding.hpp"
+#include "aeronet/raw-chars.hpp"
+#endif
+
 namespace aeronet {
 
 class HttpRequestTest : public ::testing::Test {
@@ -184,7 +189,7 @@ TEST_F(HttpRequestTest, ConstructorRejectsDeleteControlCharacter) {
 }
 
 TEST_F(HttpRequestTest, ConstructorRejectsTooLongTarget) {
-  std::string target(100000, 'a');
+  std::string target(1UL << 24, 'a');
 
   EXPECT_THROW(makeRequest(http::Method::GET, "https://example.com/" + target), std::invalid_argument);
 }

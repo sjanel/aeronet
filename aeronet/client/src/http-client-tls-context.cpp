@@ -13,6 +13,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/client-protocol.hpp"

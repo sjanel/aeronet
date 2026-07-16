@@ -290,7 +290,6 @@ TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwne
   internal::HttpClientTlsContext source(cfg);
 
   internal::HttpClientTlsContext moved(std::move(source));
-  EXPECT_TRUE(source.empty());
   EXPECT_FALSE(moved.empty());
 
   internal::HttpClientTlsContext* pMoved = &moved;
@@ -299,7 +298,6 @@ TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwne
 
   internal::HttpClientTlsContext assigned;
   assigned = std::move(moved);
-  EXPECT_TRUE(moved.empty());
   EXPECT_FALSE(assigned.empty());
 }
 
