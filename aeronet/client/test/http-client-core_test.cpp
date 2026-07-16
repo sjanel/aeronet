@@ -47,6 +47,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
+#include <process.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #endif
@@ -417,7 +418,7 @@ TEST_F(HttpClientE2ETest, ConnectionCloseStillWorks) {
 TEST_F(HttpClientE2ETest, InvalidUrlReturnsError) {
   HttpClient client;
   // NOLINTNEXTLINE(bugprone-unused-return-value)
-  EXPECT_THROW(client.get("not-a-url"), std::invalid_argument);
+  EXPECT_THROW((void)client.get("not-a-url"), std::invalid_argument);
 }
 
 TEST_F(HttpClientE2ETest, ConnectionRefusedReturnsError) {
@@ -1215,7 +1216,7 @@ void SendAll(NativeHandle fd, std::string_view data) {
 }
 
 // Blocking connect to 127.0.0.1:port (aeronet servers bind IPv4 loopback). Returns kInvalidHandle on error.
-NativeHandle ConnectLoopbackV4(uint16_t port) {
+NativeHandle ConnectLoopbackV4(uint16_t loopbackPort) {
   const NativeHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (fd == kInvalidHandle) {
     return kInvalidHandle;
@@ -1223,7 +1224,7 @@ NativeHandle ConnectLoopbackV4(uint16_t port) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(port);
+  addr.sin_port = htons(loopbackPort);
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
     CloseNativeHandle(fd);
     return kInvalidHandle;
@@ -1243,14 +1244,14 @@ uint16_t ParseConnectPort(std::string_view head) {
   if (colon == std::string_view::npos) {
     return 0;
   }
-  uint16_t port = 0;
+  uint16_t connectPort = 0;
   for (const char ch : authority.substr(colon + 1)) {
     if (ch < '0' || ch > '9') {
       break;
     }
-    port = static_cast<uint16_t>((port * 10) + (ch - '0'));
+    connectPort = static_cast<uint16_t>((connectPort * 10) + (ch - '0'));
   }
-  return port;
+  return connectPort;
 }
 
 // Forward bytes both ways between `a` and `b` until either side closes (or the proxy is stopping).
@@ -1406,7 +1407,7 @@ class TinyProxy {
   uint16_t _port{0};
 };
 
-std::string ProxyUrl(uint16_t port) { return "http://127.0.0.1:" + std::to_string(port); }
+std::string ProxyUrl(uint16_t proxyPort) { return "http://127.0.0.1:" + std::to_string(proxyPort); }
 
 }  // namespace
 
@@ -1501,11 +1502,23 @@ TEST_F(HttpClientProxyTlsE2ETest, HttpsOriginViaConnectTunnel) {
   EXPECT_GE(proxy.connectCount(), 1);  // the tunnel went through a CONNECT
 }
 
+namespace {
+
+int CurrentProcessId() {
+#ifdef AERONET_POSIX
+  return getpid();
+#else
+  return _getpid();
+#endif
+}
+
+}  // namespace
+
 // The proxy CA overrides the trust store for the (tunnelled) origin handshake: pointing it at the origin's
 // own self-signed cert makes full verification (chain + hostname "localhost") succeed through the tunnel.
 TEST_F(HttpClientProxyTlsE2ETest, HttpsOriginVerifiedAgainstProxyCa) {
   const std::filesystem::path caPath =
-      std::filesystem::temp_directory_path() / ("aeronet-proxy-ca-" + std::to_string(::getpid()) + ".pem");
+      std::filesystem::temp_directory_path() / ("aeronet-proxy-ca-" + std::to_string(CurrentProcessId()) + ".pem");
   std::ofstream(caPath) << _certPem;
 
   TinyProxy proxy;
@@ -1736,8 +1749,8 @@ class RawServer {
   uint16_t _port{0};
 };
 
-std::string MakeUrl(uint16_t port, std::string_view path = "/") {
-  return "http://127.0.0.1:" + std::to_string(port) + std::string(path);
+std::string MakeUrl(uint16_t urlPort, std::string_view path = "/") {
+  return "http://127.0.0.1:" + std::to_string(urlPort) + std::string(path);
 }
 
 }  // namespace
@@ -1814,20 +1827,20 @@ TEST(HttpClientErrorE2ETest, RetryExhaustionDropsDeadPoolThenReturnsError) {
     DrainRequest(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst");
   });
-  const uint16_t port = server->port();
+  const uint16_t serverPort = server->port();
 
   HttpClientConfig cfg;
   cfg.connectTimeout = std::chrono::milliseconds{300};
   cfg.requestTimeout = std::chrono::seconds{2};
   HttpClient client(cfg);
 
-  auto r1 = client.get(MakeUrl(port)).value();
+  auto r1 = client.get(MakeUrl(serverPort)).value();
   EXPECT_EQ(r1.bodyInMemory(), "first");
 
   server.reset();  // dead pooled connection AND refused fresh connects
   std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
-  auto result = client.get(MakeUrl(port));
+  auto result = client.get(MakeUrl(serverPort));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
 }
@@ -2049,7 +2062,7 @@ TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
 // surfacing. Jitter is enabled to drive the backoff PRNG. The origin is a torn-down server (refused connects).
 TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
   auto server = std::make_unique<RawServer>([](NativeHandle fd, int) { DrainRequest(fd); });
-  const uint16_t port = server->port();
+  const uint16_t serverPort = server->port();
   server.reset();  // nothing listens on `port` now: every connect is refused
   std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -2060,7 +2073,7 @@ TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
   cfg.withRetry(retry);
   HttpClient client(cfg);
 
-  const auto result = client.get(MakeUrl(port));
+  const auto result = client.get(MakeUrl(serverPort));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
 }

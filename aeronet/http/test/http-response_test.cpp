@@ -226,7 +226,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
 TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
   HttpResponse resp(http::StatusCodeOK);
-  std::string longReason(std::numeric_limits<uint16_t>::max(), 'A');
+  std::string longReason((1UL << 24) - 20, 'A');
 
   std::size_t truncatedReasonSize = 0;
 

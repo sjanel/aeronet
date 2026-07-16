@@ -57,9 +57,9 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
                   body.size()) {
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg + kDateHeaderLenWithCRLF));
+  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
   if (body.empty()) {
-    setBodyStartPos(kInitialBodyStart);
+    setBodyStartPosNoCheck(kInitialBodyStart);
     Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
@@ -78,8 +78,8 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
     : HttpMessage(kHttpResponseInitialSize + additionalCapacity) {
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg + kDateHeaderLenWithCRLF));
-  setBodyStartPos(kInitialBodyStart);
+  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
+  setBodyStartPosNoCheck(kInitialBodyStart);
   Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
   _data.setSize(kInitialBodyStart);
 }
@@ -94,7 +94,7 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   }
   InitData(_data.data());
   status(code);
-  setHeadersStartPos(static_cast<std::uint16_t>(kReasonBeg + kDateHeaderLenWithCRLF));
+  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
   std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
   if (!concatenatedHeaders.empty()) {
     char* insertPtr = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
@@ -132,6 +132,7 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   const auto oldReasonSz = reasonLength();
 
   if (newReason.size() == oldReasonSz) {
+    // optimization: same length, just overwrite the old reason
     Copy(newReason, _data.data() + kReasonBeg);
     return *this;
   }
@@ -143,9 +144,10 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
   // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
   char* reasonEnd = _data.data() + kReasonBeg + oldReasonSz;
+
   std::memmove(reasonEnd + diff, reasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
-  adjustBodyStart(diff);
-  adjustHeadersStart(diff);
+
+  adjustHeadersAndBodyStart(diff);
   if (newReason.empty()) {
     _data[kReasonBeg] = '\n';  // marker for empty reason (overwritten by the status-line CRLF at finalization)
   } else {

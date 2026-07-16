@@ -29,6 +29,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"

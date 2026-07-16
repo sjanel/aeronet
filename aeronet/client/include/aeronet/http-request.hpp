@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -37,9 +38,6 @@ struct UrlParseResult;
 // request URL, which is not part of the HTTP request itself, but is used for internal purposes.
 class HttpRequest final : public HttpMessage {
  public:
-  static constexpr std::uint32_t kMaxTargetLength =
-      (1U << kHeaderPosNbBits) - 1U - http::MethodToStr(http::Method::CONNECT).size() - 2U - http::HTTP10Sv.size();
-
   // --------/
   // GETTERS /
   // --------/
@@ -72,10 +70,14 @@ class HttpRequest final : public HttpMessage {
   }
 
   // Get the scheme of the request URL ("http" or "https").
-  [[nodiscard]] std::string_view scheme() const noexcept { return {_data.data(), _schemeLen}; }
+  [[nodiscard]] std::string_view scheme() const noexcept {
+    return {_data.data(), 4U + static_cast<uint8_t>(isTlsRequest())};
+  }
 
   // Get the host of the request URL, without port.
-  [[nodiscard]] std::string_view host() const noexcept { return {_data.data() + _schemeLen + 3U, _hostLen}; }
+  [[nodiscard]] std::string_view host() const noexcept {
+    return {_data.data() + 7U + static_cast<uint8_t>(isTlsRequest()), _hostLen};
+  }
 
   // Get the origin key of the request URL ("scheme://host:port").
   [[nodiscard]] std::string_view originKey() const noexcept { return {_data.data(), _originKeyLen}; }
@@ -129,7 +131,7 @@ class HttpRequest final : public HttpMessage {
   //   "https://example.com:443/path?query"
   //    \____/  \_________/ \_/ \__________/
   //    scheme     host    port    target
-  //    \______________________/
+  //    \_____________________/
   //           originKey
 
   // Replaces the request target. The target must be valid per HTTP specifications.
@@ -691,7 +693,7 @@ class HttpRequest final : public HttpMessage {
     return _data.data() + headersStartPos() - http::HTTP10Sv.size() - 1U;
   }
 
-  void setNewUrl(const internal::UrlParseResult& res);
+  const char* setNewUrl(const internal::UrlParseResult& res);
 
   bool resolveRedirect(std::string_view location);
 
@@ -746,11 +748,17 @@ class HttpRequest final : public HttpMessage {
   // Use the const version if you want to keep using the HttpRequest object after finalization.
   void finalize() { prepareForFinalization(); }
 
+  constexpr void setHeadersStartPos(std::uint64_t pos) {
+    if (pos > kHeadersStartMask) {
+      throw std::overflow_error("HttpRequest status line is too large");
+    }
+    setHeadersStartPosNoCheck(pos);
+  }
+
   // URL data - will be set at construction time and cannot be modified.
-  uint8_t _schemeLen;      // 4 ("http") or 5 ("https")
   uint16_t _hostLen;       // length of host
   uint16_t _port;          // parsed port
-  uint16_t _originKeyLen;  // length of "scheme://host:port" == offset of target
+  uint32_t _originKeyLen;  // length of "scheme://host:port" == offset of target
 };
 
 }  // namespace aeronet
