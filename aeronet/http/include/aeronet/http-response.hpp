@@ -737,8 +737,8 @@ class HttpResponse final : public HttpMessage {
   // The RFC does not specify a maximum length for the reason phrase, but in practice it should be reasonable.
   // It's not really used by clients, as they mostly rely on the status code instead.
   // We store the header status line on 16 bits, so the reason must have a maximum length of 2^16 - 1 - kReasonBeg.
-  static constexpr std::uint32_t kMaxReasonLength =
-      (1U << kHeaderPosNbBits) - 1U - kReasonBeg - http::HeaderSize(http::Date.size(), RFC7231DateStrLen);
+  static constexpr std::uint32_t kMaxReasonLength = static_cast<std::uint32_t>(
+      (1U << kHeaderPosNbBits) - 1U - kReasonBeg - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
 
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.

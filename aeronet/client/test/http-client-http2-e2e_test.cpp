@@ -3,24 +3,36 @@
 // HTTP/1.1, and -- with OpenSSL -- ALPN negotiation over https for every HttpVersionMode.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/aeronet.hpp"
+#include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-frame.hpp"
+#include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <csignal>
@@ -29,6 +41,12 @@
 #endif
 
 namespace aeronet {
+
+class HttpRequestTest {
+ public:
+  static void Finalize(HttpRequest& req) { req.finalize(); }
+};
+
 namespace {
 
 constexpr std::size_t kLargeBodySize = 1UL << 20;  // 1 MiB: many DATA frames, several flow-control windows
@@ -129,7 +147,320 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
   uint16_t _port{0};
 };
 
+class ScriptedHttp2Transport final : public ITransport {
+ public:
+  enum class Action : uint8_t {
+    RstStream,
+    GoAway,
+    CloseOnRead,
+    WriteError,
+    WriteReadReady,
+    WriteWriteReady,
+    ReadWriteReady
+  };
+
+  explicit ScriptedHttp2Transport(Action action) : _action(action) {
+    if (action != Action::RstStream && action != Action::GoAway) {
+      return;
+    }
+    RawBytes settings;
+    http2::WriteSettingsFrame(settings, std::span<const http2::SettingsEntry>{});
+    _reads.emplace_back(reinterpret_cast<const char*>(settings.data()), settings.size());
+
+    RawBytes fault;
+    if (action == Action::RstStream) {
+      http2::WriteRstStreamFrame(fault, 1, http2::ErrorCode::Cancel);
+    } else {
+      http2::WriteGoAwayFrame(fault, 0, http2::ErrorCode::NoError, "maintenance");
+    }
+    _reads.emplace_back(reinterpret_cast<const char*>(fault.data()), fault.size());
+  }
+
+  TransportResult read(char* buf, std::size_t len) override {
+    if (_action == Action::ReadWriteReady) {
+      return {0, TransportHint::WriteReady};
+    }
+    if (_nextRead == _reads.size()) {
+      return {0, TransportHint::None};
+    }
+    const std::string& data = _reads[_nextRead++];
+    if (data.size() > len) {
+      ADD_FAILURE() << "scripted HTTP/2 frame exceeds the client read buffer";
+      return {0, TransportHint::Error};
+    }
+    std::ranges::copy(data, buf);
+    return {data.size(), TransportHint::None};
+  }
+
+  TransportResult write(std::string_view data) override {
+    switch (_action) {
+      case Action::WriteError:
+        return {0, TransportHint::Error};
+      case Action::WriteReadReady:
+        return {0, TransportHint::ReadReady};
+      case Action::WriteWriteReady:
+        return {0, TransportHint::WriteReady};
+      default:
+        _bytesWritten += data.size();
+        return {data.size(), TransportHint::None};
+    }
+  }
+
+  [[nodiscard]] std::size_t bytesWritten() const noexcept { return _bytesWritten; }
+
+ private:
+  Action _action;
+  std::vector<std::string> _reads;
+  std::size_t _nextRead{0};
+  std::size_t _bytesWritten{0};
+};
+
+class LoopbackHttp2Transport final : public ITransport {
+ public:
+  enum class ResponseMode : uint8_t {
+    MissingStatus,
+    InvalidStatus,
+    InterimThenOk,
+    EmptyData,
+    NoContentType,
+    EarlyResponse
+  };
+
+  LoopbackHttp2Transport(const Http2Config& config, ResponseMode responseMode)
+      : _server(config, /*isServer=*/true), _responseMode(responseMode) {
+    _server.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap&, bool) {
+      if (!_responded) {
+        _responded = true;
+        respond(streamId);
+      }
+    });
+    _server.setOnStreamReset([this](uint32_t, http2::ErrorCode) { _sawReset = true; });
+  }
+
+  TransportResult read(char* buf, std::size_t len) override {
+    if (!_server.hasPendingOutput()) {
+      return {0, TransportHint::Error};
+    }
+    const std::span<const std::byte> output = _server.getPendingOutput();
+    const http2::FrameHeader header = http2::ParseFrameHeader(output);
+    const std::size_t frameSize = http2::FrameHeader::kSize + header.length;
+    if (frameSize > len) {
+      ADD_FAILURE() << "loopback HTTP/2 frame exceeds the client read buffer";
+      return {0, TransportHint::Error};
+    }
+    std::memcpy(buf, output.data(), frameSize);
+    _server.onOutputWritten(frameSize);
+    return {frameSize, TransportHint::None};
+  }
+
+  TransportResult write(std::string_view data) override {
+    _clientInput.append(data);
+    while (!_clientInput.empty()) {
+      const auto input = std::as_bytes(std::span<const char>(_clientInput.data(), _clientInput.size()));
+      const auto processed = _server.processInput(input);
+      EXPECT_NE(processed.action, http2::Http2Connection::ProcessResult::Action::Error) << processed.errorMessage;
+      if (processed.bytesConsumed == 0) {
+        break;
+      }
+      _clientInput.erase_front(processed.bytesConsumed);
+    }
+    _bytesWritten += data.size();
+    return {data.size(), TransportHint::None};
+  }
+
+  [[nodiscard]] bool sawReset() const noexcept { return _sawReset; }
+  [[nodiscard]] std::size_t bytesWritten() const noexcept { return _bytesWritten; }
+
+ private:
+  void respond(uint32_t streamId) {
+    switch (_responseMode) {
+      case ResponseMode::MissingStatus:
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView{}, true), http2::ErrorCode::NoError);
+        break;
+      case ResponseMode::InvalidStatus: {
+        RawChars headers;
+        headers.append(":status: 099\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true),
+                  http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::InterimThenOk:
+        EXPECT_EQ(_server.sendHeaders(streamId, 100, HeadersView{}, false), http2::ErrorCode::NoError);
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), http2::ErrorCode::NoError);
+        break;
+      case ResponseMode::EmptyData: {
+        RawChars headers;
+        headers.append("content-type: text/plain\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false),
+                  http2::ErrorCode::NoError);
+        EXPECT_EQ(_server.sendData(streamId, {}, true), http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::NoContentType: {
+        static constexpr std::byte kBody[]{std::byte{'r'}, std::byte{'a'}, std::byte{'w'}};
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), http2::ErrorCode::NoError);
+        EXPECT_EQ(_server.sendData(streamId, kBody, true), http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::EarlyResponse:
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), http2::ErrorCode::NoError);
+        break;
+    }
+  }
+
+  http2::Http2Connection _server;
+  ResponseMode _responseMode;
+  RawChars _clientInput;
+  std::size_t _bytesWritten{0};
+  bool _responded{false};
+  bool _sawReset{false};
+};
+
+HttpRequest MakeFinalizedHttp2Request(HttpClient& client) {
+  auto req = client.makeRequest(http::Method::GET, "http://example.test/resource");
+  HttpRequestTest::Finalize(req);
+  return req;
+}
+
 }  // namespace
+
+TEST(HttpClientHttp2TransportTest, PeerResetAndGoAwayAbortCurrentExchange) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  for (const auto action : {ScriptedHttp2Transport::Action::RstStream, ScriptedHttp2Transport::Action::GoAway}) {
+    ScriptedHttp2Transport transport(action);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+    EXPECT_TRUE(requestSent);
+    EXPECT_GT(transport.bytesWritten(), 0U);
+  }
+}
+
+TEST(HttpClientHttp2TransportTest, WriteFailureAndReadinessTimeoutBeforeSending) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  for (const auto action : {ScriptedHttp2Transport::Action::WriteError, ScriptedHttp2Transport::Action::WriteReadReady,
+                            ScriptedHttp2Transport::Action::WriteWriteReady}) {
+    ScriptedHttp2Transport transport(action);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), action == ScriptedHttp2Transport::Action::WriteError ? HttpClientErrc::writeError
+                                                                                   : HttpClientErrc::timeout);
+    EXPECT_FALSE(requestSent);
+  }
+}
+
+TEST(HttpClientHttp2TransportTest, ReadCloseAndWriteReadinessAreReported) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  for (const auto action :
+       {ScriptedHttp2Transport::Action::CloseOnRead, ScriptedHttp2Transport::Action::ReadWriteReady}) {
+    ScriptedHttp2Transport transport(action);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), action == ScriptedHttp2Transport::Action::CloseOnRead ? HttpClientErrc::connectionClosed
+                                                                                    : HttpClientErrc::timeout);
+    EXPECT_TRUE(requestSent);
+  }
+}
+
+TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  for (const auto mode :
+       {LoopbackHttp2Transport::ResponseMode::MissingStatus, LoopbackHttp2Transport::ResponseMode::InvalidStatus}) {
+    LoopbackHttp2Transport transport(config.http2, mode);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+    EXPECT_TRUE(requestSent);
+  }
+}
+
+TEST(HttpClientHttp2TransportTest, InterimHeadersAndEmptyDataCompleteSuccessfully) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  for (const auto mode :
+       {LoopbackHttp2Transport::ResponseMode::InterimThenOk, LoopbackHttp2Transport::ResponseMode::EmptyData}) {
+    LoopbackHttp2Transport transport(config.http2, mode);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), 200);
+    EXPECT_TRUE(result->bodyInMemory().empty());
+    EXPECT_TRUE(requestSent);
+  }
+}
+
+TEST(HttpClientHttp2TransportTest, MissingContentTypeDefaultsToOctetStream) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  const HttpRequest req = MakeFinalizedHttp2Request(client);
+  LoopbackHttp2Transport transport(config.http2, LoopbackHttp2Transport::ResponseMode::NoContentType);
+  internal::ClientConnection connection(config.http2);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->bodyInMemory(), "raw");
+  EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
+}
+
+TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  auto req = client.makeRequest(http::Method::POST, "http://example.test/upload");
+  req.body(std::string(1UL << 20, 'x'), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  LoopbackHttp2Transport transport(config.http2, LoopbackHttp2Transport::ResponseMode::EarlyResponse);
+  internal::ClientConnection connection(config.http2);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_TRUE(transport.sawReset());
+  EXPECT_GT(transport.bytesWritten(), 0U);
+}
 
 TEST_F(HttpClientHttp2E2ETest, PriorKnowledgeSimpleGet) {
   HttpClient client = MakeHttp2Client();

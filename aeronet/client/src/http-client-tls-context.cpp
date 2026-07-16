@@ -9,6 +9,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -132,6 +133,10 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) : pCtx(n
       caFile = cfg.tlsCaFileCStr();
     }
     const char* caPath = cfg.tlsCaPath().empty() ? nullptr : cfg.tlsCaPathCStr();
+    std::error_code caPathError;
+    if (caPath != nullptr && !std::filesystem::is_directory(caPath, caPathError)) {
+      throw HttpClientException("TLS CA path does not exist or is not a directory");
+    }
     if (caFile != nullptr || caPath != nullptr) {
       trustLoaded = ::SSL_CTX_load_verify_locations(pSsl, caFile, caPath) == 1;
       if (!trustLoaded) {

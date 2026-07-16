@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "aeronet/aeronet.hpp"
+#include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -26,6 +27,7 @@
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -36,6 +38,8 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
+#include "aeronet/transport.hpp"
 
 #ifdef AERONET_POSIX
 #include <netinet/in.h>
@@ -57,7 +61,67 @@
 
 namespace aeronet {
 
+class HttpRequestTest {
+ public:
+  static void Finalize(HttpRequest& req) { req.finalize(); }
+};
+
 namespace {
+
+class ScriptedHttp11Transport final : public ITransport {
+ public:
+  enum class WriteMode : uint8_t { SplitAfterHead, Error, ReadReady, WriteReady, ReadWriteReady };
+
+  explicit ScriptedHttp11Transport(WriteMode writeMode) : _writeMode(writeMode) {}
+
+  TransportResult read(char* buf, std::size_t len) override {
+    if (_writeMode == WriteMode::ReadWriteReady) {
+      return {0, TransportHint::WriteReady};
+    }
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    if (_responseOffset == kResponse.size()) {
+      return {0, TransportHint::None};
+    }
+    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
+    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
+    _responseOffset += size;
+    return {size, TransportHint::None};
+  }
+
+  TransportResult write(std::string_view data) override {
+    _written.append(data);
+    ++_singleWriteCalls;
+    return {data.size(), TransportHint::None};
+  }
+
+  TransportResult write(std::string_view head, [[maybe_unused]] std::string_view body) override {
+    switch (_writeMode) {
+      case WriteMode::SplitAfterHead:
+        _written.append(head);
+        return {head.size(), TransportHint::None};
+      case WriteMode::Error:
+        return {0, TransportHint::Error};
+      case WriteMode::ReadReady:
+        return {0, TransportHint::ReadReady};
+      case WriteMode::WriteReady:
+        return {0, TransportHint::WriteReady};
+      case WriteMode::ReadWriteReady:
+        _written.append(head);
+        _written.append(body);
+        return {head.size() + body.size(), TransportHint::None};
+    }
+    std::unreachable();
+  }
+
+  [[nodiscard]] std::string_view written() const noexcept { return _written; }
+  [[nodiscard]] std::size_t singleWriteCalls() const noexcept { return _singleWriteCalls; }
+
+ private:
+  WriteMode _writeMode;
+  std::string _written;
+  std::size_t _responseOffset{0};
+  std::size_t _singleWriteCalls{0};
+};
 
 // Reflects a handful of request headers back so a test can observe exactly what the request builder put
 // on the wire (which framing headers it injected, and which user-supplied ones suppressed the injection).
@@ -167,6 +231,75 @@ TEST_F(HttpClientE2ETest, SimpleGet) {
   EXPECT_GE(resp.status(), 200);
   EXPECT_LT(resp.status(), 300);
   EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, Http11PartialScatterWriteContinuesWithBodyOnly) {
+  HttpClient client(HttpClientConfig{}.withMaxCapturedRequestBodyBytes(64));
+  const std::string payload(128, 'p');
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).body(std::string(payload), "text/plain");
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::SplitAfterHead);
+  test::ClientConnection socket(ts.port());
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, socket.fd(), req, SteadyClock::now() + std::chrono::seconds{1},
+                                    requestSent);
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->bodyInMemory(), "ok");
+  EXPECT_TRUE(requestSent);
+  EXPECT_EQ(transport.singleWriteCalls(), 1U);
+  EXPECT_TRUE(transport.written().ends_with(payload));
+}
+
+TEST_F(HttpClientE2ETest, Http11WriteErrorBeforeAnyBytesLeavesRequestUnsent) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::Error);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+  EXPECT_FALSE(requestSent);
+}
+
+TEST_F(HttpClientE2ETest, Http11ReadAndWriteReadinessCanTimeoutBeforeSend) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  HttpRequestTest::Finalize(req);
+
+  for (const auto mode :
+       {ScriptedHttp11Transport::WriteMode::ReadReady, ScriptedHttp11Transport::WriteMode::WriteReady}) {
+    ScriptedHttp11Transport transport(mode);
+    internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+    EXPECT_FALSE(requestSent);
+  }
+}
+
+TEST_F(HttpClientE2ETest, Http11ReadWriteReadinessCanTimeoutAfterSend) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::ReadWriteReady);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+  EXPECT_TRUE(requestSent);
 }
 
 TEST_F(HttpClientE2ETest, NotFound) {
@@ -620,6 +753,17 @@ TEST_F(HttpClientCacheE2ETest, TransportErrorIsNotCached) {
   EXPECT_FALSE(client.get(kUnreachable).has_value());
 }
 
+TEST_F(HttpClientCacheE2ETest, LvalueTransportErrorAndNonSuccessAreNotCached) {
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
+  const auto unreachable = client.makeRequest(http::Method::GET, "http://127.0.0.1:1/counter");
+  EXPECT_FALSE(client.request(unreachable));
+
+  const auto error = client.makeRequest(http::Method::GET, Url("/error"));
+  EXPECT_EQ(client.request(error).value().status(), 500);
+  EXPECT_EQ(client.request(error).value().status(), 500);
+  EXPECT_EQ(_errorHits.load(), 2);
+}
+
 TEST_F(HttpClientCacheE2ETest, PostIsNotEligible) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
   EXPECT_EQ(client.post(Url("/echo"), "x", "text/plain").value().bodyInMemory(), "x");
@@ -650,6 +794,16 @@ TEST_F(HttpClientCacheE2ETest, DistinctRequestHeadersAreDistinctEntries) {
   EXPECT_EQ(client.request(reqA).value().bodyInMemory(), "1");  // reqA served from cache
   EXPECT_EQ(client.request(reqB).value().bodyInMemory(), "2");  // reqB served from cache
   EXPECT_EQ(_counterHits.load(), 2);
+}
+
+TEST_F(HttpClientCacheE2ETest, CapturedRequestBodyParticipatesInCacheKey) {
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
+  auto req = client.makeRequest(http::Method::GET, Url("/counter"));
+  req.body(std::string(128, 'b'), "application/octet-stream");
+
+  EXPECT_EQ(client.request(req).value().bodyInMemory(), "1");
+  EXPECT_EQ(client.request(req).value().bodyInMemory(), "1");
+  EXPECT_EQ(_counterHits.load(), 1);
 }
 
 TEST_F(HttpClientCacheE2ETest, ClearResponseCacheForcesRefetch) {
@@ -780,6 +934,17 @@ TEST_F(HttpClientCompressionE2E, ExplicitAcceptEncodingOverridesAutoAdvertise) {
   cfg.withDefaultAcceptEncoding("identity");
   HttpClient client(cfg);
   auto resp = client.get(Url("/accept-encoding")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "identity");
+}
+
+TEST_F(HttpClientCompressionE2E, GlobalAcceptEncodingSuppressesAutomaticHeader) {
+  HttpClientConfig cfg;
+  cfg.addGlobalHeader(http::Header("AcCePt-EnCoDiNg", "identity"));
+  HttpClient client(cfg);
+
+  auto resp = client.get(Url("/accept-encoding")).value();
+
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "identity");
 }
@@ -1184,6 +1349,7 @@ class TinyProxy {
       CloseNativeHandle(clientFd);
       return;
     }
+    capture(head);
     if (head.starts_with("CONNECT ")) {
       _connectCount.fetch_add(1, std::memory_order_relaxed);
       if (_dropOnConnect) {
@@ -1208,7 +1374,6 @@ class TinyProxy {
       return;
     }
     // Absolute-form http request: capture it and answer directly (looping to serve keep-alive requests).
-    capture(head);
     SendAll(clientFd, _httpResponse);
     while (!_stop.load(std::memory_order_relaxed)) {
       const std::string next = ReadRequestHead(clientFd);
@@ -1396,6 +1561,51 @@ TEST_F(HttpClientProxyTlsE2ETest, ProxyMalformedStatusLineReturnsProxyError) {
   const auto result = client.get(secureUrl());
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::proxyError);
+}
+
+TEST_F(HttpClientProxyTlsE2ETest, ProxyInvalidAndInformationalStatusCodesReturnProxyError) {
+  for (std::string response : {"HTTP/1.1 invalid status\r\n\r\n", "HTTP/1.1 199 Informational\r\n\r\n"}) {
+    TinyProxy proxy("", std::move(response));
+    HttpClientConfig cfg;
+    cfg.tlsVerifyPeer = false;
+    cfg.withProxy(ProxyUrl(proxy.port()));
+    HttpClient client(cfg);
+
+    const auto result = client.get(secureUrl());
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::proxyError);
+  }
+}
+
+TEST_F(HttpClientProxyTlsE2ETest, ProxyOversizedTunnelResponseReturnsProxyError) {
+  TinyProxy proxy("", std::string(9000, 'x'));
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withProxy(ProxyUrl(proxy.port()));
+  HttpClient client(cfg);
+
+  const auto result = client.get(secureUrl());
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::proxyError);
+}
+
+TEST_F(HttpClientProxyTlsE2ETest, Ipv6OriginIsBracketedInConnectAuthority) {
+  TinyProxy proxy;
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withProxy(ProxyUrl(proxy.port()));
+  HttpClient client(cfg);
+
+  const auto result = client.get("https://[::1]:" + std::to_string(_port) + "/secure");
+
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->status(), 200);
+  const std::string connectHead = proxy.capturedHead();
+  const std::string authority = "[::1]:" + std::to_string(_port);
+  EXPECT_TRUE(connectHead.starts_with("CONNECT " + authority + " HTTP/1.1\r\n")) << connectHead;
+  EXPECT_NE(connectHead.find("Host: " + authority + "\r\n"), std::string::npos) << connectHead;
 }
 
 #endif  // AERONET_ENABLE_OPENSSL
