@@ -91,6 +91,16 @@ class HttpClientHttp2E2ETest : public ::testing::Test {
       resp.location("/headers");
       return resp;
     });
+    // Reflect the received request trailers (RFC 9113 §8.1): the response body echoes the decoded request
+    // body, and the observed trailer values + count are surfaced as response headers.
+    router.setPath(http::Method::POST | http::Method::PUT, "/trailer-echo", [this](const HttpRequestView& req) {
+      observe(req);
+      auto resp = HttpResponse(http::StatusCodeOK, req.body(), "text/plain");
+      resp.header("echo-checksum", req.trailerValueOrEmpty("x-checksum"));
+      resp.header("echo-signature", req.trailerValueOrEmpty("x-signature"));
+      resp.header("echo-trailer-count", req.trailers().size());
+      return resp;
+    });
 
     _server = std::make_unique<SingleHttpServer>(
         HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}), std::move(router));
@@ -387,6 +397,79 @@ TEST_F(HttpClientHttp2E2ETest, InvalidHttp2ConfigRejectedAtConstruction) {
   cfg.withHttpVersion(HttpVersionMode::Http2);
   cfg.http2.maxFrameSize = 1;  // below the RFC 9113 minimum of 16384
   EXPECT_THROW(HttpClient{cfg}, std::invalid_argument);
+}
+
+// --- Request trailers (RFC 9113 §8.1) --------------------------------------
+// Over HTTP/2 trailers ride in a trailing HEADERS block that carries END_STREAM (no chunked reframing as
+// in HTTP/1.1). END_STREAM is withheld from the initial HEADERS / final DATA frame and delivered on the
+// trailing block; the server surfaces the decoded fields through req.trailers().
+
+TEST_F(HttpClientHttp2E2ETest, SendsSingleRequestTrailer) {
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, url("/trailer-echo"));
+  req.body("payload-data", "text/plain").trailerAddLine("x-checksum", "abc123");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "payload-data");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "abc123");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+  EXPECT_TRUE(_lastSeenHttp2.load(std::memory_order_relaxed));
+}
+
+TEST_F(HttpClientHttp2E2ETest, SendsMultipleRequestTrailers) {
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::PUT, url("/trailer-echo"));
+  req.body("second-payload", "text/plain")
+      .trailerAddLine("x-checksum", "deadbeef")
+      .trailerAddLine("x-signature", "sig-42");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "second-payload");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "deadbeef");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-signature"), "sig-42");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "2");
+}
+
+// A trailer with an empty value is still transmitted (present with an empty value, distinct from absent).
+TEST_F(HttpClientHttp2E2ETest, TrailerWithEmptyValue) {
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, url("/trailer-echo"));
+  req.body("body", "text/plain").trailerAddLine("x-checksum", "");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "");
+}
+
+// A 1 MiB body forces many DATA frames across several flow-control windows; END_STREAM must be withheld
+// from every DATA frame and delivered only on the trailing HEADERS block after the whole body is shipped.
+TEST_F(HttpClientHttp2E2ETest, LargeBodyThenTrailers) {
+  const std::string payload = MakeLargeBody();
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, url("/trailer-echo"));
+  req.body(payload, "application/octet-stream").trailerAddLine("x-checksum", "big-crc");
+  auto resp = client.request(req).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "big-crc");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+}
+
+// The trailered request must leave the pooled connection reusable: a plain, trailerless request right
+// after a trailered one (same client) must frame and parse cleanly, and must not inherit stale trailers.
+TEST_F(HttpClientHttp2E2ETest, ReusableAfterTraileredRequest) {
+  HttpClient client = MakeHttp2Client();
+  auto first = client.makeRequest(http::Method::POST, url("/trailer-echo"));
+  first.body("with-trailer", "text/plain").trailerAddLine("x-checksum", "c1");
+  auto r1 = client.request(first).value();
+  EXPECT_EQ(r1.status(), 200);
+  EXPECT_EQ(r1.headerValueOrEmpty("echo-checksum"), "c1");
+
+  // A second, trailerless request frames as a normal END_STREAM-on-DATA body and carries no trailers.
+  auto r2 = client.post(url("/trailer-echo"), "no-trailer", "text/plain").value();
+  EXPECT_EQ(r2.status(), 200);
+  EXPECT_EQ(r2.bodyInMemory(), "no-trailer");
+  EXPECT_EQ(r2.headerValueOrEmpty("echo-trailer-count"), "0");
 }
 
 #ifdef AERONET_ENABLE_OPENSSL

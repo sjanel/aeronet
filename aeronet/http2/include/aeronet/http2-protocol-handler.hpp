@@ -185,7 +185,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   struct StreamRequest {
     HttpRequestView request;
     RawChars bodyBuffer;
-    std::unique_ptr<char[]> headerStorage;  // Storage for header name/value strings. nullptr = inactive.
+    std::unique_ptr<char[]> headerStorage;   // Storage for header name/value strings. nullptr = inactive.
+    std::unique_ptr<char[]> trailerStorage;  // Storage for trailer name/value strings. nullptr = no trailers.
   };
 
   struct PendingFileSend {
@@ -253,6 +254,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
   void onStreamClosed(uint32_t streamId);
   void onStreamReset(uint32_t streamId, ErrorCode errorCode);
+
+  /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
+  void onTrailersReceived(StreamsMap::iterator it, const HeadersViewMap& trailers, bool endStream);
+
+  /// Install the aggregated request body (applying request-body decompression) and dispatch the request.
+  /// Shared by the DATA-END_STREAM path and the trailing-HEADERS (trailers) path.
+  void finalizeRequestBodyAndDispatch(StreamsMap::iterator it);
 
   void flushPendingFileSends();
   [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody);

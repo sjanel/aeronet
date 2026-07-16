@@ -170,7 +170,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 | Duplicate header policy | ✔ | Deterministic, security‑minded |
 | WebSocket | ✔ | RFC 6455 compliant, text/binary frames, ping/pong, close handshake |
 | HTTP/2 | ✔ (flag) | RFC 9113, HPACK, ALPN h2, h2c upgrade, stream multiplexing |
-| Trailers exposure | ✔ | RFC 7230 §4.1.2 chunked trailer headers |
+| Trailers exposure | ✔ | Incoming request trailers over HTTP/1.1 (RFC 7230 §4.1.2 chunked) and HTTP/2 (RFC 9113 §8.1 trailing HEADERS) |
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
 | sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |

@@ -140,6 +140,12 @@ class ClientConnection {
   // Http2Connection::sendHeaders. Connection-specific headers are dropped and Host becomes :authority.
   static void buildHeaderBlockForHttp2(HttpClient& client, const HttpRequest& req);
 
+  // Build the trailing header block (request trailers, RFC 9113 §8.1) as flat "name: value\r\n" lines
+  // into client.requestBuffer(), ready for the trailing Http2Connection::sendHeaders call. Names are
+  // lowercased in place; trailers carry no pseudo-headers. Only meaningful when req.trailersSize() != 0.
+  // Safe to reuse the request scratch buffer: the initial header block was already HPACK-encoded away.
+  static void buildTrailerBlockForHttp2(HttpClient& client, const HttpRequest& req);
+
   std::unique_ptr<Http2ClientEngine> _h2;  // engaged iff _type == Type::Http2
 #endif
   Type _type{Type::Empty};
