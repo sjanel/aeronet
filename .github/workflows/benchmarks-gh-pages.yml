@@ -172,7 +172,7 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
-          THREADS=2
+          THREADS=1
           REPEAT=1
           CPT=${{ matrix.connections_per_thread }}
           CONN=$((THREADS * CPT))
@@ -190,7 +190,6 @@ jobs:
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
-            THREADS=1
             CONN=$((THREADS * CPT))
           fi
 
@@ -288,7 +287,7 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
-          THREADS=2
+          THREADS=1
           REPEAT=1
           CPT=${{ matrix.connections_per_thread }}
           CONN=$((THREADS * CPT))
@@ -308,7 +307,6 @@ jobs:
           else
             DUR=5s
             WARMUP=2s
-            THREADS=1
             CONN=$((THREADS * CPT))
           fi
 
@@ -508,7 +506,7 @@ jobs:
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
-          THREADS=2
+          THREADS=1
 
           if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
             DUR=30s
@@ -522,7 +520,6 @@ jobs:
             # pull_request and non-main pushes
             DUR=5s
             WARMUP=2s
-            THREADS=1
           fi
 
           echo "Client bench: protocol=${{ matrix.protocol }} dur=$DUR threads=$THREADS warmup=$WARMUP"

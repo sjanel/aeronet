@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -1290,6 +1292,7 @@ class TinyProxy {
     _listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
     EXPECT_NE(_listenFd, kInvalidHandle);
     int one = 1;
+    // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET
     ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
