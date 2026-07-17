@@ -102,11 +102,11 @@ class BenchmarkRunner:
 
     SCENARIOS: Dict[str, Scenario] = {
         "headers": Scenario("headers", "lua/headers_stress.lua", "/headers"),
-        "body": Scenario("body", "lua/large_body.lua", "/uppercase"),
+        "body": Scenario("body", "lua/large_body.lua", "/uppercase", wrk_thread_multiplier=2),
         "body-codec": Scenario("body-codec", "lua/body_codec.lua", "/body-codec"),
-        "static": Scenario("static", "lua/static_routes.lua", "/ping"),
+        "static": Scenario("static", "lua/static_routes.lua", "/ping", wrk_thread_multiplier=2),
         "cpu": Scenario("cpu", "lua/cpu_bound.lua", "/compute"),
-        "mixed": Scenario("mixed", "lua/mixed_workload.lua", "/"),
+        "mixed": Scenario("mixed", "lua/mixed_workload.lua", "/", wrk_thread_multiplier=2),
         "files": Scenario(
             "files",
             "lua/static_files.lua",
@@ -125,6 +125,7 @@ class BenchmarkRunner:
             "lua/routing_stress.lua",
             "/rXXX",
             requires_restart=True,
+            wrk_thread_multiplier=2,
         ),
         "tls": Scenario(
             "tls",
@@ -2142,7 +2143,7 @@ from bench_utils import TablePrinter, format_rps  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     cpu_count = os.cpu_count() or 1
-    default_threads = int(os.environ.get("BENCH_THREADS", max(1, cpu_count // 4)))
+    default_threads = int(os.environ.get("BENCH_THREADS", max(1, cpu_count // 5)))
     default_connections = int(os.environ.get("BENCH_CONNECTIONS", 50*default_threads))
     default_duration = os.environ.get("BENCH_DURATION", "30s")
     default_warmup = os.environ.get("BENCH_WARMUP", "5s")
