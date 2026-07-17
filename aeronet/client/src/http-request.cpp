@@ -1,5 +1,6 @@
 #include "aeronet/http-request.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include <cstddef>
@@ -73,20 +74,33 @@ bool IsValidRequestTarget(std::string_view target) noexcept {
   return true;
 }
 
-constexpr void CheckTarget(std::string_view target) {
+constexpr const char* CheckTarget(std::string_view target, uint8_t headerPosNbBits, uint32_t originKeyLen) {
   if (!IsValidRequestTarget(target)) {
-    throw std::invalid_argument("Invalid HTTP request target");
+    return "Invalid HTTP request target";
   }
-  if (target.size() > HttpRequest::kMaxTargetLength) {
-    throw std::invalid_argument("Request target exceeds maximum length");
+
+  static constexpr std::uint32_t kMaxMethodStrLen = static_cast<uint32_t>(
+      std::ranges::max_element(http::kMethodStrings, {}, [](std::string_view str) { return str.size(); })->size());
+
+  const uint32_t maxTargetLen =
+      (1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U - http::HTTP10Sv.size() - originKeyLen;
+  if (target.size() > maxTargetLen) {
+    return "Request target exceeds maximum length";
+  }
+  return nullptr;
+}
+
+constexpr void CheckTargetOrThrow(std::string_view target, uint8_t headerPosNbBits, uint32_t originKeyLen) {
+  if (const char* err = CheckTarget(target, headerPosNbBits, originKeyLen)) {
+    throw std::invalid_argument(err);
   }
 }
 
 // Initial size of the HttpMessage internal buffer, including the status line and DoubleCRLF.
 // GET / HTTP/1.0\r\n\r\n
-constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, std::size_t originKeyLen,
-                                             std::string_view target) {
-  CheckTarget(target);
+constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, uint8_t headerPosNbBits,
+                                             uint32_t originKeyLen, std::string_view target) {
+  CheckTargetOrThrow(target, headerPosNbBits, originKeyLen);
   std::size_t sz = http::MethodToStr(method).size() + 1U;
   if (hasNonTlsProxy) {
     // Absolute-form request-target for a cleartext proxy: "scheme://host:port" (the origin key) + origin-form.
@@ -181,22 +195,25 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
 
   const auto portNbChars = nchars(res.port);
   const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
+  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
-  _schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
-  _hostLen = SafeCast<uint16_t>(res.host.size());
+  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<uint16_t>(_schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
 
   const bool hostIsIpv6 = res.host.contains(':');
   auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
 
-  const auto neededCapacity = HttpRequestInitialSize(method, hasNonTlsProxy, _originKeyLen, res.target) +
-                              hostHeaderSize + concatenatedHeaders.size() + _originKeyLen;
+  const auto neededCapacity =
+      HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
+      hostHeaderSize + concatenatedHeaders.size() + _originKeyLen;
+
+  setBodyStartPos(neededCapacity);
 
   _data.reserve(neededCapacity);
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPos(SafeCast<std::uint32_t>(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize));
+  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
     pInsert = Append(http::CRLF, pInsert);
     pInsert = Append(concatenatedHeaders, pInsert);
@@ -206,7 +223,6 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
   _data.setSize(static_cast<uint64_t>(pInsert - _data.data()));
 
   assert(_data.size() == _data.capacity());
-  setBodyStartPos(_data.size());
 }
 
 HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
@@ -221,24 +237,25 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
 
   const auto portNbChars = nchars(res.port);
   const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
+  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
-  _schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
-  _hostLen = SafeCast<uint16_t>(res.host.size());
+  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<uint16_t>(_schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
 
   const bool hostIsIpv6 = res.host.contains(':');
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
 
-  const auto neededCapacity = HttpRequestInitialSize(method, hasNonTlsProxy, _originKeyLen, res.target) +
-                              hostHeaderSize + concatenatedHeaders.size() +
-                              NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
-                              body.size() + additionalCapacity + _originKeyLen;
+  const auto neededCapacity =
+      HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
+      hostHeaderSize + concatenatedHeaders.size() +
+      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) + body.size() +
+      additionalCapacity + _originKeyLen;
 
   _data.reserve(neededCapacity);
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPos(SafeCast<std::uint32_t>(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize));
+  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
     pInsert = Append(http::CRLF, pInsert);
     pInsert = Append(concatenatedHeaders, pInsert);
@@ -253,6 +270,7 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
     pInsert = Append(http::DoubleCRLF, pInsert);
   }
   _data.setSize(static_cast<uint64_t>(pInsert - _data.data()));
+  assert(_data.size() + additionalCapacity == _data.capacity());
   setBodyStartPos(_data.size() - body.size());
 }
 
@@ -277,8 +295,7 @@ HttpRequest& HttpRequest::method(http::Method method) & {
   Copy(newMethodStr, _data.data() + _originKeyLen);
 
   // Adjust positions and size
-  adjustHeadersStart(diffLen);
-  adjustBodyStart(diffLen);
+  adjustHeadersAndBodyStart(diffLen);
 
   _data.adjustSize(diffLen);
 
@@ -286,7 +303,7 @@ HttpRequest& HttpRequest::method(http::Method method) & {
 }
 
 HttpRequest& HttpRequest::target(std::string_view target) & {
-  CheckTarget(target);
+  CheckTargetOrThrow(target, HttpMessage::kHeaderPosNbBits, _originKeyLen);
 
   const auto oldTarget = this->target();
 
@@ -306,30 +323,33 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 
   Copy(target, pData + offset);
 
-  adjustHeadersStart(diffLen);
-  adjustBodyStart(diffLen);
+  adjustHeadersAndBodyStart(diffLen);
 
   _data.adjustSize(diffLen);
 
   return *this;
 }
 
-void HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
-  auto oldHostHeaderEndPos = headersStartPos();
-  assert(oldHostHeaderEndPos != 0);
-  oldHostHeaderEndPos += http::CRLF.size() + http::Host.size() + http::HeaderSep.size();
-  const auto* pHostHeaderEnd = SearchCRLF(_data.data() + oldHostHeaderEndPos, _data.data() + _data.size());
-  oldHostHeaderEndPos = static_cast<uint64_t>(pHostHeaderEnd - _data.data());
+const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
+  const auto* pHostHeaderEnd =
+      SearchCRLF(_data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(),
+                 _data.data() + _data.size());
+  const auto oldHostHeaderEndPos = static_cast<uint64_t>(pHostHeaderEnd - _data.data());
 
   const auto portNbChars = nchars(res.port);
   const bool hasNonTlsProxy = _opts.hasProxy() && !res.isTls;
   const auto method = this->method();
   const auto methodLen = this->methodLen();
+  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
-  _schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
-  _hostLen = SafeCast<uint16_t>(res.host.size());
+  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<uint16_t>(_schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+
+  const char* pErrorMsg = CheckTarget(res.target, HttpMessage::kHeaderPosNbBits, _originKeyLen);
+  if (pErrorMsg != nullptr) {
+    return pErrorMsg;
+  }
 
   const bool hostIsIpv6 = res.host.contains(':');
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
@@ -346,21 +366,18 @@ void HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   std::memmove(pData + newHostHeaderEndPos, pData + oldHostHeaderEndPos, _data.size() - oldHostHeaderEndPos);
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPos(SafeCast<std::uint32_t>(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize));
 
+  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   adjustBodyStart(diffLen);
   _data.adjustSize(diffLen);
+  return pErrorMsg;
 }
 
 bool HttpRequest::resolveRedirect(std::string_view location) {
   if (location.contains("://")) {
     // absolute URL, parse it and set the new origin key
     const auto res = internal::ParseUrl(location);
-    if (res.host.empty()) {
-      return false;
-    }
-    setNewUrl(res);
-    return true;
+    return !res.host.empty() && setNewUrl(res) == nullptr;
   }
 
   // Network-path reference: //host[:port][/path] -> inherit scheme. Parse the authority directly and
@@ -369,11 +386,7 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
     internal::UrlParseResult res;
     res.isTls = isTlsRequest();
     internal::ParseAuthority(location.substr(2), res);
-    if (res.host.empty()) {
-      return false;
-    }
-    setNewUrl(res);
-    return true;
+    return !res.host.empty() && setNewUrl(res) == nullptr;
   }
 
   // Strip fragment from the relative reference.
@@ -416,10 +429,15 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
                _data.size() - oldTargetLen - static_cast<std::size_t>(pTarget - _data.data()));
 
   // Overwrite the suffix.
-  Copy(location, pTarget + prefixLen);
+  char* pEndTarget = Append(location, pTarget + prefixLen);
 
-  adjustHeadersStart(diffLen);
-  adjustBodyStart(diffLen);
+  const char* pErrorMsg =
+      CheckTarget(std::string_view(pTarget, pEndTarget), HttpMessage::kHeaderPosNbBits, _originKeyLen);
+  if (pErrorMsg != nullptr) {
+    return false;
+  }
+
+  adjustHeadersAndBodyStart(diffLen);
   _data.adjustSize(diffLen);
 
   return true;
@@ -437,7 +455,6 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   copy._payloadVariant = _payloadVariant;
   copy._opts = _opts;
 
-  copy._schemeLen = _schemeLen;
   copy._hostLen = _hostLen;
   copy._port = _port;
   copy._originKeyLen = _originKeyLen;

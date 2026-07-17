@@ -736,7 +736,8 @@ class HttpResponse final : public HttpMessage {
 
   // The RFC does not specify a maximum length for the reason phrase, but in practice it should be reasonable.
   // It's not really used by clients, as they mostly rely on the status code instead.
-  // We store the header status line on 16 bits, so the reason must have a maximum length of 2^16 - 1 - kReasonBeg.
+  // We store the header status line on kHeaderPosNbBits bits, so the reason must have a maximum length of
+  // 2^kHeaderPosNbBits - 1 - kReasonBeg.
   static constexpr std::uint32_t kMaxReasonLength = static_cast<std::uint32_t>(
       (1U << kHeaderPosNbBits) - 1U - kReasonBeg - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
 
@@ -752,8 +753,8 @@ class HttpResponse final : public HttpMessage {
     return {_data.data() + dateHeaderStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
   }
 
-  [[nodiscard]] std::size_t dateHeaderStartPos() const noexcept {
-    return headersStartPos() - http::HeaderSize(http::Date.size(), RFC7231DateStrLen);
+  [[nodiscard]] uint32_t dateHeaderStartPos() const noexcept {
+    return static_cast<uint32_t>(headersStartPos() - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
   }
 
 #ifdef AERONET_ENABLE_HTTP_CLIENT

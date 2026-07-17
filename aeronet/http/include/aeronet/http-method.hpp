@@ -28,6 +28,9 @@ enum class Method : MethodBmp {
   PATCH = 1 << 8
 };
 
+inline constexpr std::string_view kMethodStrings[] = {"GET",     "HEAD",    "POST",  "PUT",  "DELETE",
+                                                      "CONNECT", "OPTIONS", "TRACE", "PATCH"};
+
 using MethodIdx = uint8_t;
 
 inline constexpr MethodIdx kNbMethods = 9;
@@ -66,9 +69,6 @@ constexpr MethodIdx MethodToIdx(Method method) {
 
 constexpr Method MethodFromIdx(MethodIdx methodIdx) { return static_cast<http::Method>(1U << methodIdx); }
 constexpr MethodBmp MethodBmpFromIdx(MethodIdx methodIdx) { return static_cast<http::MethodBmp>(1U << methodIdx); }
-
-inline constexpr std::string_view kMethodStrings[] = {"GET",     "HEAD",    "POST",  "PUT",  "DELETE",
-                                                      "CONNECT", "OPTIONS", "TRACE", "PATCH"};
 
 constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) { return kMethodStrings[methodIdx]; }
 
