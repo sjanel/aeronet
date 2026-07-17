@@ -949,9 +949,8 @@ namespace {
 // Grab two currently-free, distinct TCP ports by binding two ephemeral listeners at once, then releasing them.
 // REUSEADDR (always set by SingleHttpServer) lets those ports be rebound immediately afterwards.
 std::pair<uint16_t, uint16_t> GrabTwoFreePorts() {
-  SingleHttpServer a(HttpServerConfig{}.withPort(0));
-  SingleHttpServer b(HttpServerConfig{}.withPort(0));
-  return {a.port(), b.port()};
+  return {SingleHttpServer(HttpServerConfig{}.withPort(0)).port(),
+          SingleHttpServer(HttpServerConfig{}.withPort(0)).port()};
 }
 
 MultiHttpServer MakeProbeServer(uint16_t appPort, uint16_t probePort, uint16_t nbThreads,
