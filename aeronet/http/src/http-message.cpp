@@ -292,7 +292,6 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       }
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       // tell adjustEncodingHeaders that body is empty to avoid moving memory around
-      setBodyStartPos(bodyStart);
       _data.setSize(bodyStart);
       adjustEncodingHeaders();
 #endif
@@ -607,7 +606,7 @@ void HttpMessage::headerRemoveLine(std::string_view key) {
 
   std::memmove(dest, last + http::CRLF.size(), sizeToMove);
   _data.setSize(_data.size() - lineSize);
-  adjustBodyStart(-static_cast<int64_t>(lineSize));
+  adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
 }
 
 void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep) {
@@ -632,7 +631,7 @@ void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value
 
     std::memmove(dest, last + http::CRLF.size(), sizeToMove);
     _data.setSize(_data.size() - lineSize);
-    adjustBodyStart(-static_cast<int64_t>(lineSize));
+    adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
 
     return;
   }
@@ -677,7 +676,7 @@ void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value
 
     std::memmove(toRemoveFirst, toRemoveLast, _data.size() - static_cast<std::size_t>(toRemoveLast - _data.data()));
     _data.setSize(_data.size() - static_cast<std::size_t>(toRemoveLast - toRemoveFirst));
-    adjustBodyStart(-static_cast<int64_t>(toRemoveLast - toRemoveFirst));
+    adjustBodyStartNoCheck(-static_cast<int64_t>(toRemoveLast - toRemoveFirst));
 
     break;
   }
@@ -930,7 +929,7 @@ void HttpMessage::removeBodyAndItsHeaders() {
   assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) == http::ContentType);
   _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
   Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
-  setBodyStartPos(_data.size());
+  setBodyStartPosNoCheck(_data.size());
 
   // Also remove vary and content-encoding headers if present
   if (hasContentEncoding()) {

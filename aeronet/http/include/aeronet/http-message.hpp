@@ -541,7 +541,8 @@ class HttpMessage {
         // erase both content-length and content-type headers
         _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize);
         Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
-        adjustBodyStart(-static_cast<int64_t>(contentLengthHeaderSize) - static_cast<int64_t>(contentTypeHeaderSize));
+        adjustBodyStartNoCheck(-static_cast<int64_t>(contentLengthHeaderSize) -
+                               static_cast<int64_t>(contentTypeHeaderSize));
       } else {
         // we need to restore the previous content-length value
         replaceHeaderValueNoRealloc(getContentLengthValuePtr(), maxBodyLen - (maxLen - written));
@@ -812,12 +813,10 @@ class HttpMessage {
   void bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                std::size_t totalBodyLen);
 
-  // header pos is stored in lower 16 bits, body pos in upper 48 bits.
-  // So this means that the status line can support up to 65535 bytes.
-  // It should be sufficient for all reasonable cases, but if we need more at some point, we can increase the number of
-  // bits for the header pos and decrease the number of bits for the body pos, because 48 bits for headers is really
-  // large.
-  static constexpr std::uint32_t kHeaderPosNbBits = 16U;
+  // The headers position is stored in lower 24 bits, body pos in upper 40 bits.
+  // So this means that the status line can support up to 16 MiB (which is insane and should cover all use cases), and
+  // the headers can support up to 1 TiB (which is also insane and should cover all use cases).
+  static constexpr std::uint32_t kHeaderPosNbBits = 24U;
 
   static constexpr std::uint32_t kBodyPosNbBits = (sizeof(uint64_t) * 8U) - kHeaderPosNbBits;
 
@@ -827,27 +826,44 @@ class HttpMessage {
   // Returns the position of the start of the headers in the internal buffer (after the status line).
   // The position starts exactly at the first CRLF after the status line (first char returned by this method is '\r').
   // In an HttpResponse, the position returned is AFTER the built-in Date header, managed by aeronet.
-  [[nodiscard]] constexpr std::uint64_t headersStartPos() const noexcept { return _posBitmap & kHeadersStartMask; }
+  [[nodiscard]] constexpr std::uint32_t headersStartPos() const noexcept {
+    return static_cast<uint32_t>(_posBitmap & kHeadersStartMask);
+  }
 
   [[nodiscard]] constexpr std::uint64_t bodyStartPos() const noexcept {
     return (_posBitmap >> kHeaderPosNbBits) & kBodyStartMask;
   }
 
-  constexpr void setHeadersStartPos(std::uint32_t pos) noexcept {
-    _posBitmap = (_posBitmap & (kBodyStartMask << kHeaderPosNbBits)) | static_cast<std::uint64_t>(pos);
+  constexpr void setHeadersStartPosNoCheck(std::uint64_t pos) noexcept {
+    _posBitmap = (_posBitmap & (kBodyStartMask << kHeaderPosNbBits)) | pos;
   }
 
-  constexpr void setBodyStartPos(std::uint64_t pos) {
+  // bodyStartPos covers only the message head, so overflowing 40 bits would require materializing about 1 TiB of
+  // status/request line and headers in one message. Protocol limits or resource exhaustion necessarily occur first in
+  // real server usage. Keep this as a Debug invariant instead of adding a Release check to every header mutation.
+  constexpr void setBodyStartPos(std::uint64_t pos) noexcept {
     assert(pos <= kBodyStartMask);
+    setBodyStartPosNoCheck(pos);
+  }
+
+  constexpr void setBodyStartPosNoCheck(std::uint64_t pos) noexcept {
     _posBitmap = (_posBitmap & kHeadersStartMask) | (pos << kHeaderPosNbBits);
   }
 
-  constexpr void adjustHeadersStart(int32_t diff) {
-    setHeadersStartPos(static_cast<std::uint32_t>(static_cast<int64_t>(headersStartPos()) + diff));
+  constexpr void adjustBodyStartNoCheck(int64_t diff) noexcept {
+    _posBitmap += static_cast<std::uint64_t>(diff) << kHeaderPosNbBits;
   }
 
   constexpr void adjustBodyStart(int64_t diff) {
-    setBodyStartPos(static_cast<std::uint64_t>(static_cast<int64_t>(bodyStartPos()) + diff));
+    assert(diff >= -static_cast<int64_t>(bodyStartPos()) &&
+           (diff < 0 || static_cast<std::uint64_t>(diff) <= kBodyStartMask - bodyStartPos()));
+    adjustBodyStartNoCheck(diff);
+  }
+
+  constexpr void adjustHeadersAndBodyStart(int64_t diff) {
+    // works even if diff is negative, because we cast to uint64_t first, then shift left, which is well-defined.
+    _posBitmap += static_cast<std::uint64_t>(diff);
+    _posBitmap += static_cast<std::uint64_t>(diff) << kHeaderPosNbBits;
   }
 
   char* getContentLengthValueEndPtr() { return _data.data() + bodyStartPos() - http::DoubleCRLF.size(); }
@@ -958,9 +974,9 @@ class HttpMessage {
                         std::size_t minCapturedBodySize);
 
   RawChars _data;
-  // headersStartPos: the status line length, excluding CRLF.
+  // headersStartPos: position where the headers start, exactly at the first CRLF after the status line.
   // bodyStartPos: position where the body starts (immediately after CRLFCRLF).
-  // Bitmap layout: [48 bits bodyStartPos][16 bits headersStartPos]
+  // Bitmap layout: [40 bits bodyStartPos][24 bits headersStartPos]
   std::uint64_t _posBitmap{};
   // Variant that can hold an external captured payload (HttpPayload).
   HttpPayload _payloadVariant;

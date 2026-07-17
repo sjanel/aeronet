@@ -37,6 +37,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
+- **Raised status line max size from 64KiB to 16MiB** - this is not so useful for `HttpResponse` because reason should not be used, but may be interesting for very long URLs in `HttpRequest`.
 - **Lower compile-time footprint of the core HTTP headers**: the two compile-time heaviest dependencies — Glaze and spdlog — no longer leak into the widely-included headers, so most translation units stop paying for them even when they never serialize JSON or log (see the header breaking changes above).
 - **Pre-computed static-file response headers (`StaticFileHandler`)**: the per-file `ETag` / `Last-Modified` / `Content-Type` fragments are formatted once and cached, validated on every request against file size + mtime (both read from the `fstat()` already performed on open, which also removes a redundant stat per request). Bounded LRU cache via `StaticFileConfig::headerCacheCapacity` (default `1024`, `0` disables).
 - **Faster `CaseInsensitiveEqual`** — header-name matching, one of the hottest server operations, now compares 16 bytes at a time (SSE2 on x86-64, NEON on ARM): ~35–57% faster than the previous 8-byte SWAR on strings ≥ 16 bytes.
