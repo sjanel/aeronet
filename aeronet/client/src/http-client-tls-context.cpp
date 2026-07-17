@@ -77,7 +77,7 @@ void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
 
 }  // namespace
 
-HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) : pCtx(nullptr) {
+HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   cfg.validate();
   // Own the SSL_CTX through an RAII guard for the whole setup: any step below may throw (bad cipher list,
   // unusable cert/key, ...) and the guard frees the context on the way out. Ownership is transferred to
