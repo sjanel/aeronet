@@ -57,16 +57,13 @@ struct ExtensionParam {
 }
 
 // Parse window bits value (8-15)
-[[nodiscard]] std::optional<uint8_t> ParseWindowBits(std::string_view value) {
-  int bits = 0;
+[[nodiscard]] uint8_t ParseWindowBits(std::string_view value) {
+  uint8_t bits = 0;
   auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), bits);
-  if (ec != std::errc{} || ptr != value.data() + value.size()) {
-    return std::nullopt;
+  if (ec != std::errc{} || ptr != value.data() + value.size() || bits < 8 || bits > 15) {
+    bits = 0;  // Invalid value
   }
-  if (bits < 8 || bits > 15) {
-    return std::nullopt;
-  }
-  return static_cast<uint8_t>(bits);
+  return bits;
 }
 #endif
 
@@ -127,8 +124,8 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
     const auto nextSemi = extensionOffer.find(';', pos);
     const auto paramEnd = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi;
 
-    auto paramStr = extensionOffer.substr(pos, paramEnd - pos);
-    auto [name, value] = ParseExtensionParam(paramStr);
+    const auto paramStr = extensionOffer.substr(pos, paramEnd - pos);
+    const auto [name, value] = ParseExtensionParam(paramStr);
 
     if (CaseInsensitiveEqual(name, kServerNoContextTakeover)) {
       params.serverNoContextTakeover = true;
@@ -137,19 +134,19 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
     } else if (CaseInsensitiveEqual(name, kServerMaxWindowBits)) {
       if (value.has_value()) {
         const auto bits = ParseWindowBits(*value);
-        if (!bits.has_value()) {
+        if (bits == 0) {
           return std::nullopt;  // Invalid parameter value
         }
         // Server can accept client's request if it's <= our configured value
-        params.serverMaxWindowBits = std::min(*bits, serverConfig.serverMaxWindowBits);
+        params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
       }
     } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits)) {
       if (value.has_value()) {
         const auto bits = ParseWindowBits(*value);
-        if (!bits.has_value()) {
+        if (bits == 0) {
           return std::nullopt;  // Invalid parameter value
         }
-        params.clientMaxWindowBits = std::min(*bits, serverConfig.clientMaxWindowBits);
+        params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
       }
       // If no value, client is advertising capability; server can set the value
     }
@@ -219,8 +216,8 @@ struct DeflateContext::Impl {
 #endif
   bool deflateNoContextTakeover{false};
   bool inflateNoContextTakeover{false};
-  int deflateWindowBits{15};
-  int inflateWindowBits{15};
+  uint8_t deflateWindowBits{15};
+  uint8_t inflateWindowBits{15};
 };
 
 DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide)

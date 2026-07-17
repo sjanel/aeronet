@@ -15,7 +15,7 @@ namespace aeronet::internal {
 class HttpClientTlsContext {
  public:
   // Empty context (no SSL_CTX). Build one with the cfg constructor when an https request is first made.
-  HttpClientTlsContext() noexcept : pCtx(nullptr) {}
+  HttpClientTlsContext() noexcept = default;
 
   explicit HttpClientTlsContext(const HttpClientConfig& cfg);
 
@@ -34,7 +34,7 @@ class HttpClientTlsContext {
   [[nodiscard]] std::unique_ptr<ITransport> makeTransport(NativeHandle fd, const char* pHost, bool verify) const;
 
  private:
-  void* pCtx;
+  void* pCtx{};
 };
 
 }  // namespace aeronet::internal
