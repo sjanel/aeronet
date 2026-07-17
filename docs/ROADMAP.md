@@ -22,6 +22,7 @@
   - Further hot-path cache locality optimization
 - Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
   - Support tags/labels for metrics
+- **Configurable read chunk size for the Http client**: currently the client reads in 16 KiB chunks; allow tuning this for large responses or low-memory environments.
 
 ### Performance improvement ideas
 

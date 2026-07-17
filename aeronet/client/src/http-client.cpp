@@ -162,34 +162,8 @@ HttpClient::HttpClient(HttpClientConfig config)
   }
 }
 
-HttpClientResult HttpClient::request(const HttpRequest& req) {
+HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   const bool isCacheEligible = cacheEligible(req);
-  HttpRequest finalizedReq = req.finalize(_codec, _config.decompression);
-
-  maybeCompressRequestBody(finalizedReq);
-
-  std::string_view cacheKey;
-  if (isCacheEligible) {
-    cacheKey = buildCacheKey(finalizedReq);
-    HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
-    if (pCachedHttpResponse != nullptr) {
-      return pCachedHttpResponse->cloneFinalized();
-    }
-  }
-  HttpClientResult result = requestUncached(std::move(finalizedReq));
-  // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
-  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
-    cacheStore(cacheKey, *result);
-  }
-
-  return result;
-}
-
-// TODO: factorize some code below with const HttpRequest & version
-HttpClientResult HttpClient::request(HttpRequest&& req) {
-  const bool isCacheEligible = cacheEligible(req);
-
-  req.finalize();
 
   maybeCompressRequestBody(req);
 
@@ -201,7 +175,6 @@ HttpClientResult HttpClient::request(HttpRequest&& req) {
       return pCachedHttpResponse->cloneFinalized();
     }
   }
-
   HttpClientResult result = requestUncached(std::move(req));
   // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
   if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
@@ -344,8 +317,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
   if (proxied && isTls) {
     PlainTransport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
-    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, req, SteadyClock::now() + _config.connectTimeout);
-        !tunnel) {
+    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, req); !tunnel) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
       return std::unexpected(tunnel.error());
     }
@@ -363,10 +335,12 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 }
 
 std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport& transport, NativeHandle fd,
-                                                                     const HttpRequest& req,
-                                                                     SteadyClock::time_point deadline) {
+                                                                     const HttpRequest& req) {
   static constexpr std::string_view kConnect = "CONNECT ";
   static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
+
+  const auto deadline = SteadyClock::now() + _config.connectTimeout;
+
   // CONNECT needs an explicit "host:port" authority (RFC 9110 section 9.3.6); IPv6 literals are bracketed.
   const std::string_view host = req.host();
   const bool ipv6 = host.contains(':');
@@ -375,7 +349,6 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portDigits;
 
   RawChars& reqBuffer = _reqBodyScratch;
-  reqBuffer.clear();
   reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
   const auto appendAuthority = [&](char* out) {
     if (ipv6) {
