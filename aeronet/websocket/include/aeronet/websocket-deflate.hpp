@@ -115,6 +115,7 @@ class DeflateContext {
 
  private:
   struct Impl;
+
   std::unique_ptr<Impl> _impl;
   uint32_t _minCompressSize{0};
 };

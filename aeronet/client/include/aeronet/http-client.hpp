@@ -107,10 +107,15 @@ class HttpClient {
   }
 
   // Execute an arbitrary request (method + url + headers + body), following redirects per config.
-  HttpClientResult request(const HttpRequest& req);
+  HttpClientResult request(const HttpRequest& req) {
+    return requestProcess(req.finalize(_codec, _config.decompression));
+  }
 
   // Rvalue overload: execute an arbitrary request (method + url + headers + body), following redirects per config.
-  HttpClientResult request(HttpRequest&& req);
+  HttpClientResult request(HttpRequest&& req) {
+    req.finalize();
+    return requestProcess(std::move(req));
+  }
 
   // Convenience verbs.
   HttpClientResult get(std::string_view url) { return request(makeRequest(http::Method::GET, url)); }
@@ -164,6 +169,8 @@ class HttpClient {
     bool reused{false};                                // taken from the idle pool
   };
 
+  HttpClientResult requestProcess(HttpRequest&& req);
+
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
   // this with the cache lookup/store when caching is enabled and the request is eligible.
   HttpClientResult requestUncached(HttpRequest&& req);
@@ -200,7 +207,7 @@ class HttpClient {
   // socket `fd` (wrapped by the throwaway plain `transport`). Drives the request/response on the event loop
   // up to `deadline`; returns an empty result once the proxy answers 2xx, or an HttpClientErrc otherwise.
   std::expected<void, HttpClientErrc> establishProxyTunnel(ITransport& transport, NativeHandle fd,
-                                                           const HttpRequest& req, SteadyClock::time_point deadline);
+                                                           const HttpRequest& req);
 
   void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);
 

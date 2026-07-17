@@ -24,6 +24,7 @@ namespace aeronet {
 // Backoff is a blocking sleep: acceptable because HttpClient is already synchronous and blocking.
 struct RetryConfig {
   using Duration = std::chrono::milliseconds;
+  using RetryStatuses = SmallVector<http::StatusCode, 4>;
 
   // Backoff delay before the retry numbered `retryIndex` (0-based: 0 == the delay before the 1st retry).
   // Exponential: baseDelay * multiplier^retryIndex, capped at maxDelay, then (when `jitter` > 0) scaled by
@@ -45,7 +46,7 @@ struct RetryConfig {
   // HTTP-date form is not parsed and falls back to the computed backoff.
   bool honorRetryAfter{true};
   // Response statuses that trigger a retry when `maxAttempts > 1`. Empty disables status-based retries.
-  SmallVector<http::StatusCode, 4> retryStatuses{http::StatusCodeTooManyRequests, http::StatusCodeServiceUnavailable};
+  RetryStatuses retryStatuses{http::StatusCodeTooManyRequests, http::StatusCodeServiceUnavailable};
 };
 
 }  // namespace aeronet
