@@ -18,6 +18,10 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+#include "aeronet/http-method.hpp"
+#endif
+
 namespace aeronet::http2 {
 
 /// HTTP/2 connection state.
@@ -157,8 +161,19 @@ class Http2Connection {
   // Frame sending
   // ============================
 
+  ErrorCode prepareSendHeaders(uint32_t streamId, bool endStream);
+
+  /// Encode and send headers for a request.
+  /// Use magic value empty target to indicate trailers.
+  [[nodiscard]] ErrorCode sendRequestHeaders(uint32_t streamId, http::Method method, bool isTlsRequest,
+                                             std::string_view target, std::string_view authority,
+                                             HeadersView headersView, bool endStream,
+                                             const ConcatenatedHeaders* pGlobalHeaders = nullptr);
+
   /// Send HEADERS frame to start a new request/response.
   /// @param streamId Stream ID (must be valid for new stream creation)
+  /// @param statusCode HTTP status code (for responses). Can be 0 to avoid sending a pseudo-header, 1 as magic value to
+  /// indicate a request.
   /// @param headers Headers to send
   /// @param endStream True to set END_STREAM flag
   /// @return ErrorCode if the operation failed, NoError otherwise
@@ -276,6 +291,7 @@ class Http2Connection {
   // ============================
   // Stream management
   // ============================
+
   void closeStream(StreamsMap::iterator it, ErrorCode errorCode = ErrorCode::NoError);
   void pruneClosedStreams();
 
@@ -284,7 +300,7 @@ class Http2Connection {
   // ============================
 
   void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
-                     const ConcatenatedHeaders* pGlobalHeaders = nullptr);
+                     std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` if decoding fails, `NoError` otherwise.

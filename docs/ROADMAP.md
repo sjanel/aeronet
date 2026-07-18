@@ -23,6 +23,7 @@
 - Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
   - Support tags/labels for metrics
 - **Configurable read chunk size for the Http client**: currently the client reads in 16 KiB chunks; allow tuning this for large responses or low-memory environments.
+- **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
 
 ### Performance improvement ideas
 

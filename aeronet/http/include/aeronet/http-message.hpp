@@ -42,6 +42,9 @@ namespace internal {
 class HttpCodec;
 class Http1WriterTransport;
 struct CompressionState;
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+class ClientConnection;
+#endif
 }  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -232,6 +235,18 @@ class HttpMessage {
   void reserve(std::size_t capacity) { _data.reserve(capacity); }
 
  protected:
+  template <std::integral T>
+  class IntegralCharBuffer {
+   public:
+    explicit IntegralCharBuffer(T value) : _end(std::to_chars(_buf, _buf + sizeof(_buf), value).ptr) {}
+
+    operator std::string_view() const { return {_buf, _end}; }
+
+   private:
+    char _buf[std::numeric_limits<T>::digits10 + 1U + static_cast<std::size_t>(std::is_signed_v<T>)];
+    char* _end;
+  };
+
   // ---------------/
   // HEADER SETTERS /
   // ---------------/
@@ -250,8 +265,7 @@ class HttpMessage {
 
   // Convenient overload adding a header whose value is numeric.
   void headerAddLine(std::string_view key, std::integral auto value) {
-    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
-    headerAddLine(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
+    headerAddLine(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
@@ -265,8 +279,7 @@ class HttpMessage {
 
   // Convenient overload appending a numeric value.
   void headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") {
-    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
-    headerAppendValue(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr), sep);
+    headerAppendValue(key, IntegralCharBuffer<decltype(value)>(value), sep);
   }
 
   // Add or replace first header 'key' with 'value'.
@@ -279,8 +292,7 @@ class HttpMessage {
 
   // Convenient overload setting a header to a numeric value.
   void header(std::string_view key, std::integral auto value) {
-    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
-    header(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
+    header(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
   // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
@@ -564,27 +576,13 @@ class HttpMessage {
     }
   }
 
-  // Stream the contents of an already-open file as the response body.
-  // This methods takes ownership of the 'file' object into the response and sends the entire file.
-  // Notes:
-  //   - file should be opened (`file` must be true)
-  //   - Trailers are NOT permitted when using file
-  //   - Errors: filesystem read/write errors are surfaced during transmission; callers should expect the connection
-  //     to be closed on fatal I/O failures.
-  //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
-  //     file object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
-  void file(File fileObj, std::string_view contentType = {}) { file(std::move(fileObj), 0, 0, contentType); }
-
-  // Same as above, but with specified offset and length for the file content to be sent. If length is 0, it means
-  // "until the end of the file". So to clear the file (or body) payload, use body("") instead.
   void file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {});
 
   void trailerAddLine(std::string_view name, std::string_view value);
 
   // Convenient overload adding a trailer whose value is numeric.
   void trailerAddLine(std::string_view key, std::integral auto value) {
-    char buf[std::numeric_limits<decltype(value)>::digits10 + 2];
-    trailerAddLine(key, std::string_view(buf, std::to_chars(buf, buf + sizeof(buf), value).ptr));
+    trailerAddLine(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
 #ifdef AERONET_ENABLE_GLAZE
@@ -615,6 +613,7 @@ class HttpMessage {
   friend class http2::Http2ProtocolHandler;
 #endif
 #ifdef AERONET_ENABLE_HTTP_CLIENT
+  friend class internal::ClientConnection;
   friend class HttpClient;
   friend class HttpRequest;
   friend class ResponseParser;
@@ -678,9 +677,7 @@ class HttpMessage {
 
   void setBodyInternal(std::string_view newBody);
 
-#ifdef AERONET_ENABLE_HTTP2
-  void finalizeForHttp2();
-#endif
+  void finalizeHeadersAndBody();
 
   // Same as headersFlatView but without Content-Type and Content-Length headers.
   [[nodiscard]] std::string_view headersFlatViewWithoutCTCL() const noexcept {
@@ -835,6 +832,7 @@ class HttpMessage {
   }
 
   constexpr void setHeadersStartPosNoCheck(std::uint64_t pos) noexcept {
+    assert(pos <= kHeadersStartMask);
     _posBitmap = (_posBitmap & (kBodyStartMask << kHeaderPosNbBits)) | pos;
   }
 
@@ -963,13 +961,8 @@ class HttpMessage {
     return insertPtr;
   }
 
-#ifdef AERONET_ENABLE_HTTP2
-  void makeAllHeaderNamesLowercaseForHttp2();
-#endif
+  [[nodiscard]] bool hasChunkedTransferEncoding() const noexcept;
 
-  // IMPORTANT: This method finalizes the request by appending reserved headers,
-  // and returns the internal buffers stolen from this HttpMessage instance.
-  // So this instance must not be used anymore after this call.
   void finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                         std::size_t minCapturedBodySize);
 

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <iterator>
+#include <string>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -58,6 +59,23 @@ TEST(HttpHeadersView, LoopOnHeaders) {
   EXPECT_EQ((*it).name, "Header-3");
   EXPECT_EQ((*it).value, "Value3");
   EXPECT_EQ(++it, headers.end());
+}
+
+TEST(HttpHeadersView, ContainsCaseSensitive) {
+  auto rawHeaders = MakeHttp1HeaderLine("Header-1", "Value1-Header-4");
+  rawHeaders.append(MakeHttp1HeaderLine("Header-2", "Value2"));
+  rawHeaders.append(MakeHttp1HeaderLine("Header-3", "Value3"));
+
+  HeadersView headers(rawHeaders);
+  EXPECT_TRUE(headers.containsCaseSensitive(std::string("Header-1") + std::string(http::HeaderSep)));
+  EXPECT_TRUE(headers.containsCaseSensitive(std::string("Header-2") + std::string(http::HeaderSep)));
+  EXPECT_TRUE(headers.containsCaseSensitive(std::string("Header-3") + std::string(http::HeaderSep)));
+
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("header-1") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("Header-4") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("Header-10") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("X-Custom") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("eader-1") + std::string(http::HeaderSep)));
 }
 
 }  // namespace aeronet

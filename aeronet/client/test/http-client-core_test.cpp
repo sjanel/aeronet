@@ -30,6 +30,7 @@
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -41,6 +42,7 @@
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_POSIX
@@ -66,7 +68,7 @@ namespace aeronet {
 
 class HttpRequestTest {
  public:
-  static void Finalize(HttpRequest& req) { req.finalize(); }
+  static void Finalize(HttpRequest& req) { req.HttpMessage::finalizeHeadersAndBody(); }
 };
 
 namespace {
@@ -112,8 +114,9 @@ class ScriptedHttp11Transport final : public ITransport {
         _written.append(head);
         _written.append(body);
         return {head.size() + body.size(), TransportHint::None};
+      default:
+        throw std::logic_error("Unexpected WriteMode");
     }
-    std::unreachable();
   }
 
   [[nodiscard]] std::string_view written() const noexcept { return _written; }
@@ -237,7 +240,7 @@ TEST_F(HttpClientE2ETest, SimpleGet) {
 }
 
 TEST_F(HttpClientE2ETest, Http11PartialScatterWriteContinuesWithBodyOnly) {
-  HttpClient client(HttpClientConfig{}.withMaxCapturedRequestBodyBytes(64));
+  HttpClient client(HttpClientConfig{}.withMinCapturedBodySize(64));
   const std::string payload(128, 'p');
   auto req = client.makeRequest(http::Method::POST, Url("/echo")).body(std::string(payload), "text/plain");
   HttpRequestTest::Finalize(req);
@@ -1025,7 +1028,7 @@ TEST_F(HttpClientCompressionE2E, RequestCompressionSkippedForBodylessGet) {
 
 TEST_F(HttpClientCompressionE2E, CapturedAndScatteredBodiesBothRoundTrip) {
   HttpClientConfig cfg;
-  cfg.withMaxCapturedRequestBodyBytes(1024);  // small bodies captured, large ones scattered
+  cfg.withMinCapturedBodySize(1024);  // small bodies captured, large ones scattered
   HttpClient client(cfg);
 
   auto smallResp = client.post(Url("/echo"), "captured-body", "text/plain").value();  // <= threshold => single write
@@ -2188,7 +2191,7 @@ TEST(HttpClientConfigTest, DefaultsAreSane) {
   // decompression auto-enables whenever at least one decoder is compiled in.
   EXPECT_EQ(cfg.decompression.enable,
             IsEncodingEnabled(Encoding::zstd) || IsEncodingEnabled(Encoding::br) || IsEncodingEnabled(Encoding::gzip));
-  EXPECT_EQ(cfg.maxCapturedRequestBodyBytes, 8UL * 1024UL);
+  EXPECT_EQ(cfg.minCapturedBodySize, 1024UL);
   // Default retry policy keeps the historical behaviour: only the free pre-send stale-pool retry.
   EXPECT_EQ(cfg.retry.maxAttempts, 1U);
 }
@@ -2208,11 +2211,11 @@ TEST(HttpClientConfigTest, FluentSettersAreChainable) {
   cfg.withDefaultAcceptEncoding("gzip")
       .withTcpNoDelayMode(TcpNoDelayMode::Disabled)
       .withKeepAliveTimeout(std::chrono::seconds{5})
-      .withMaxCapturedRequestBodyBytes(2048);
+      .withMinCapturedBodySize(2048);
   EXPECT_EQ(cfg.defaultAcceptEncoding(), "gzip");
   EXPECT_EQ(cfg.tcpNoDelay, TcpNoDelayMode::Disabled);
   EXPECT_EQ(cfg.keepAliveTimeout, std::chrono::seconds{5});
-  EXPECT_EQ(cfg.maxCapturedRequestBodyBytes, 2048U);
+  EXPECT_EQ(cfg.minCapturedBodySize, 2048U);
 }
 
 TEST(HttpClientConfigTest, TcpNoDelayBoolHelper) {

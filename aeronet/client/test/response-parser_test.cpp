@@ -56,6 +56,14 @@ TEST(ResponseParserTest, NoBodyOn204) {
   EXPECT_TRUE(resp.bodyInMemory().empty());
 }
 
+TEST(ResponseParserTest, NoBodyOn304) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 304 Not Modified\r\n\r\n", resp);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.status(), 304);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
 TEST(ResponseParserTest, HeadRequestHasNoBodyDespiteContentLength) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n", resp, /*head=*/true);

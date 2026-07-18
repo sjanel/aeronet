@@ -1,4 +1,3 @@
-// Unit coverage for HttpRequest: the fluent (lvalue & rvalue) builder API and the getters. No sockets.
 #include "aeronet/http-request.hpp"
 
 #include <gtest/gtest.h>
@@ -6,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -61,16 +61,24 @@ class HttpRequestTest : public ::testing::Test {
     return ret;
   }
 
-  static void finalize(HttpRequest& req) { req.finalize(); }
+  static void FinalizeHeadersAndBody(HttpRequest& req) { req.HttpMessage::finalizeHeadersAndBody(); }
 
-  static HttpRequest finalize(const HttpRequest& req, internal::HttpClientCodec& clientCodec,
-                              const DecompressionConfig& decompressionConfig) {
-    return req.finalize(clientCodec, decompressionConfig);
+  static HttpRequest FinalizeHeadersAndBody(const HttpRequest& req, internal::HttpClientCodec& clientCodec,
+                                            const DecompressionConfig& decompressionConfig) {
+    return req.finalizeHeadersAndBody(clientCodec, decompressionConfig);
+  }
+
+  static bool HasTransferEncodingChunked(const HttpRequest& req) { return req.hasChunkedTransferEncoding(); }
+
+  static std::string_view FinalizeTrailersForHttp11(
+      HttpRequest& req, std::size_t minCapturedBodySize = std::numeric_limits<std::size_t>::max()) {
+    req.finalizeTrailersForHttp11(minCapturedBodySize);
+    return req.completeRequestForHttp11();
   }
 
   static bool IsAutomaticDirectCompression(const HttpRequest& req) { return req._opts.isAutomaticDirectCompression(); }
 
-  static bool resolveRedirect(HttpRequest& req, std::string_view location) { return req.resolveRedirect(location); }
+  static bool ResolveRedirect(HttpRequest& req, std::string_view location) { return req.resolveRedirect(location); }
 
   HttpMessage::Options makeRequestOptions(bool addTrailerHeader = true) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -112,6 +120,15 @@ TEST_F(HttpRequestTest, InvalidUrl) {
 
   // invalid target
   EXPECT_THROW(makeRequest(http::Method::GET, "http://host/path with space", {}, "some body"), std::invalid_argument);
+}
+
+TEST_F(HttpRequestTest, TooBigTarget) {
+  std::string bigTarget(1UL << 24, 'a');
+  EXPECT_THROW(makeRequest(http::Method::GET, "http://host/" + bigTarget), std::invalid_argument);
+  auto req = makeRequest(http::Method::GET, "http://host/" + bigTarget.substr(0, 1UL << 22));
+  EXPECT_THROW(req.target(bigTarget), std::invalid_argument);
+  EXPECT_TRUE(ResolveRedirect(req, "http://host/" + bigTarget.substr(0, 1UL << 22)));
+  EXPECT_FALSE(ResolveRedirect(req, "http://host/" + bigTarget));
 }
 
 TEST_F(HttpRequestTest, ConstructorWithProxy) {
@@ -236,6 +253,30 @@ TEST_F(HttpRequestTest, EmptyConcatenatedHeaders) {
   req = makeRequest(http::Method::GET, "http://host/path", {});
   EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "");
   EXPECT_EQ(req.bodyInMemory(), "");
+}
+
+TEST_F(HttpRequestTest, Headers) {
+  auto req = makeRequest(http::Method::GET, "http://host/path", {}, "some body");
+  req.headerAddLine("X-A", "1").headerAddLine("X-B", "2");
+  EXPECT_EQ(req.headerValueOrEmpty("X-A"), "1");
+  EXPECT_EQ(req.headerValueOrEmpty("X-B"), "2");
+
+  static constexpr std::string_view kExpectedHeadersFlatView =
+      "host: host\r\n"
+      "X-A: 1\r\n"
+      "X-B: 2\r\n"
+      "content-type: application/octet-stream\r\n"
+      "content-length: 9\r\n";
+
+  EXPECT_EQ(req.headersFlatView(), kExpectedHeadersFlatView);
+  EXPECT_EQ(req.headersSize(), kExpectedHeadersFlatView.size());
+}
+
+TEST_F(HttpRequestTest, HostHeaderShouldBeReserved) {
+  auto req = makeRequest(http::Method::GET, "http://host/path", {}, "some body");
+  EXPECT_THROW(req.headerAddLine("host", "newhost"), std::invalid_argument);
+  EXPECT_THROW(req.headerRemoveLine("host"), std::invalid_argument);
+  EXPECT_THROW(req.headerRemoveValue("host", req.headerValueOrEmpty("host")), std::invalid_argument);
 }
 
 TEST_F(HttpRequestTest, LvalueFluentSetters) {
@@ -518,7 +559,7 @@ TEST_F(HttpRequestTest, AutomaticDirectCompressionHonorsThresholdAndMode) {
   EXPECT_TRUE(IsAutomaticDirectCompression(forced));
   EXPECT_EQ(forced.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
 
-  finalize(forced);
+  FinalizeHeadersAndBody(forced);
 
   const RawChars decoded = test::Decompress(encoding, forced.bodyInMemory());
   EXPECT_EQ(std::string_view(decoded.data(), decoded.size()), forcedPayload);
@@ -535,7 +576,7 @@ TEST_F(HttpRequestTest, InPlaceFinalizeCompletesAutomaticCompression) {
   req.body(firstChunk).bodyAppend(secondChunk);
   ASSERT_TRUE(IsAutomaticDirectCompression(req));
 
-  finalize(req);
+  FinalizeHeadersAndBody(req);
 
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(req.bodyInMemory().size()));
@@ -554,7 +595,7 @@ TEST_F(HttpRequestTest, ConstFinalizePreservesCompressionStateForReuse) {
   const std::string originalCompressedPrefix(req.bodyInMemory());
   internal::HttpClientCodec clientCodec(config.requestCompression.codec);
 
-  const auto firstFinalized = finalize(std::as_const(req), clientCodec, config.decompression);
+  const auto firstFinalized = FinalizeHeadersAndBody(std::as_const(req), clientCodec, config.decompression);
 
   EXPECT_EQ(req.bodyInMemory(), originalCompressedPrefix);
   EXPECT_EQ(firstFinalized.headerValueOrEmpty(http::ContentLength),
@@ -563,7 +604,7 @@ TEST_F(HttpRequestTest, ConstFinalizePreservesCompressionStateForReuse) {
   EXPECT_EQ(std::string_view(firstDecoded.data(), firstDecoded.size()), firstChunk);
 
   req.bodyAppend(secondChunk);
-  const auto secondFinalized = finalize(std::as_const(req), clientCodec, config.decompression);
+  const auto secondFinalized = FinalizeHeadersAndBody(std::as_const(req), clientCodec, config.decompression);
 
   const RawChars secondDecoded = test::Decompress(encoding, secondFinalized.bodyInMemory());
   EXPECT_EQ(std::string_view(secondDecoded.data(), secondDecoded.size()), firstChunk + secondChunk);
@@ -584,14 +625,14 @@ TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(compressedBody.size()));
   const RawChars decoded = test::Decompress(encoding, compressedBody);
-  EXPECT_EQ(std::string_view(decoded.data(), decoded.size()), largePayload);
+  EXPECT_EQ(std::string_view(decoded), largePayload);
 
   internal::HttpClientCodec clientCodec(config.requestCompression.codec);
-  const auto finalizedCopy = finalize(std::as_const(req), clientCodec, config.decompression);
-  EXPECT_EQ(finalizedCopy.bodyInMemory(), compressedBody);
+  const auto finalizedCopy = FinalizeHeadersAndBody(req, clientCodec, config.decompression);
+  ASSERT_EQ(finalizedCopy.bodyInMemory(), compressedBody);
   EXPECT_EQ(req.bodyInMemory(), compressedBody);
 
-  finalize(req);
+  FinalizeHeadersAndBody(req);
 
   EXPECT_EQ(req.bodyInMemory(), compressedBody);
   EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-1"), "v1");
@@ -603,11 +644,13 @@ TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {
 TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
   auto req = makeRequest(http::Method::POST, "http://h/p").body("payload");
   req.trailerAddLine("X-First", "one").trailerAddLine("X-Second", "two");
-  RawChars out;
 
-  req.writeChunkedRequestForHttp11(out);
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  std::string_view wire = FinalizeTrailersForHttp11(req);
+  EXPECT_TRUE(HasTransferEncodingChunked(req));
+  FinalizeTrailersForHttp11(req);  // should be no-op if called again
+  EXPECT_TRUE(HasTransferEncodingChunked(req));
 
-  const std::string_view wire(out.data(), out.size());
   EXPECT_TRUE(wire.starts_with("POST /p HTTP/1.1\r\n"));
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                             std::string(http::chunked) + std::string(http::CRLF)));
@@ -616,14 +659,23 @@ TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
   EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-First: one\r\nX-Second: two\r\n\r\n"));
 }
 
+TEST_F(HttpRequestTest, EmptyBodyRequestShouldNotHaveZeroContentLengthHeader) {
+  auto req = makeRequest(http::Method::POST, "http://h/p");
+  req.headerAddLine("X-Custom", "value");
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  std::string_view wire = FinalizeTrailersForHttp11(req);
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+
+  EXPECT_FALSE(wire.contains(std::string(http::ContentLength) + std::string(http::HeaderSep)));
+}
+
 TEST_F(HttpRequestTest, ChunkedRequestSerializationCanOmitTrailerHeader) {
   auto req = makeRequestWithoutTrailerHeader(http::Method::POST, "http://h/p").body("payload");
   req.trailerAddLine("X-Only", "value");
-  RawChars out;
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  std::string_view wire = FinalizeTrailersForHttp11(req);
+  EXPECT_TRUE(HasTransferEncodingChunked(req));
 
-  req.writeChunkedRequestForHttp11(out);
-
-  const std::string_view wire(out.data(), out.size());
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                             std::string(http::chunked) + std::string(http::CRLF)));
   EXPECT_FALSE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep)));
@@ -697,7 +749,7 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlNonTls) {
     }
 
     auto req = makeRequest(http::Method::GET, "http://example.com/x");
-    auto res = HttpRequestTest::resolveRedirect(req, "http://other.com/y");
+    auto res = HttpRequestTest::ResolveRedirect(req, "http://other.com/y");
 
     EXPECT_TRUE(res);
 
@@ -715,7 +767,7 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlTls) {
     }
 
     auto req = makeRequest(http::Method::GET, "https://example.com/x");
-    auto res = HttpRequestTest::resolveRedirect(req, "https://other.com/y");
+    auto res = HttpRequestTest::ResolveRedirect(req, "https://other.com/y");
 
     EXPECT_TRUE(res);
 
@@ -728,7 +780,7 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeNonTls) {
   auto req = makeRequest(http::Method::GET, "http://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "//other.com/y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "//other.com/y");
 
   EXPECT_TRUE(res);
 
@@ -740,14 +792,14 @@ TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeNonTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeInvalid) {
   auto req = makeRequest(http::Method::GET, "http://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "//");
+  auto res = HttpRequestTest::ResolveRedirect(req, "//");
 
   EXPECT_FALSE(res);
 }
 
 TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeTls) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "//other.com/y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "//other.com/y");
 
   EXPECT_TRUE(res);
 
@@ -759,7 +811,7 @@ TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectAbsolutePathNonTls) {
   auto req = makeRequest(http::Method::GET, "http://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "/y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "/y");
 
   EXPECT_TRUE(res);
 
@@ -771,7 +823,7 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsolutePathNonTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectAbsolutePathTls) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "/y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "/y");
 
   EXPECT_TRUE(res);
 
@@ -781,9 +833,56 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsolutePathTls) {
   EXPECT_EQ(req.target(), "/y");
 }
 
+TEST_F(HttpRequestTest, ResolveRedirectUnfinishedAuthorityBrackets) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://[::1/y"));
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectInvalidAuthorityBrackets) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://[]g/y"));
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://[]/y"));
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://[::1]:8080]/y"));
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectInvalidEmptyScheme) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "://other.com/y"));
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectInvalidPort) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://other.com:99999/y"));
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://other.com:23 /y"));
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://other.com: 23/y"));
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://other.com:0/y"));
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectInvalidAuthorityUserInfo) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+
+  EXPECT_FALSE(HttpRequestTest::ResolveRedirect(req, "https://user:pass@other.com/y"));
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectFragmentAbsoluteShouldBeStripped) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+  auto res = HttpRequestTest::ResolveRedirect(req, "https://other.com/y#fragment");
+
+  EXPECT_TRUE(res);
+
+  EXPECT_EQ(req.scheme(), "https");
+  EXPECT_EQ(req.host(), "other.com");
+  EXPECT_EQ(req.port(), 443);
+  EXPECT_EQ(req.target(), "/y");
+}
+
 TEST_F(HttpRequestTest, ResolveRedirectFragmentShouldBeStripped) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "/y#fragment");
+  auto res = HttpRequestTest::ResolveRedirect(req, "/y#fragment");
 
   EXPECT_TRUE(res);
 
@@ -795,7 +894,7 @@ TEST_F(HttpRequestTest, ResolveRedirectFragmentShouldBeStripped) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathNonTls) {
   auto req = makeRequest(http::Method::GET, "http://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "y");
 
   EXPECT_TRUE(res);
 
@@ -807,7 +906,7 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathNonTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathTls) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "y");
+  auto res = HttpRequestTest::ResolveRedirect(req, "y");
 
   EXPECT_TRUE(res);
 
@@ -819,7 +918,7 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathTls) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathReplacesExistingQuery) {
   auto req = makeRequest(http::Method::GET, "https://example.com/dir/old?q=1");
-  auto res = HttpRequestTest::resolveRedirect(req, "next");
+  auto res = HttpRequestTest::ResolveRedirect(req, "next");
 
   EXPECT_TRUE(res);
   EXPECT_EQ(req.target(), "/dir/next");
@@ -827,7 +926,7 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathReplacesExistingQuery) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathFromAsteriskTarget) {
   auto req = makeRequest(http::Method::OPTIONS, "https://example.com/").target("*");
-  auto res = HttpRequestTest::resolveRedirect(req, "next");
+  auto res = HttpRequestTest::ResolveRedirect(req, "next");
 
   EXPECT_TRUE(res);
   EXPECT_EQ(req.target(), "*next");
@@ -835,7 +934,7 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathFromAsteriskTarget) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkEmptyPath) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "?q=1");
+  auto res = HttpRequestTest::ResolveRedirect(req, "?q=1");
 
   EXPECT_TRUE(res);
 
@@ -847,7 +946,7 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkEmptyPath) {
 
 TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkNonEmptyPath) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
-  auto res = HttpRequestTest::resolveRedirect(req, "y?q=1");
+  auto res = HttpRequestTest::ResolveRedirect(req, "y?q=1");
 
   EXPECT_TRUE(res);
 
