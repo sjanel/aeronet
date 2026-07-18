@@ -3,7 +3,6 @@
 #include <cassert>
 #include <charconv>
 #include <cstddef>
-#include <cstdint>
 #include <string_view>
 #include <system_error>
 
@@ -295,19 +294,17 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
         return Status::Error;
       }
       // HTTP/1.1 (and newer) default to keep-alive; HTTP/1.0 defaults to close.
-      _http11 = version != http::HTTP_1_0;
+      _http11 = version == http::HTTP_1_1;
 
-      std::string_view afterVersion = line.substr(sp1 + 1);
+      const std::string_view afterVersion = line.substr(sp1 + 1);
       const auto sp2 = afterVersion.find(' ');
-      std::string_view codeTok = sp2 == std::string_view::npos ? afterVersion : afterVersion.substr(0, sp2);
-      uint32_t code = 0;
+      const std::string_view codeTok = sp2 == std::string_view::npos ? afterVersion : afterVersion.substr(0, sp2);
       const auto* begin = codeTok.data();
       const auto* end = begin + codeTok.size();
-      const auto [ptr, ec] = std::from_chars(begin, end, code);
-      if (ec != std::errc{} || ptr != end || code < 100 || code > 599) {
+      const auto [ptr, ec] = std::from_chars(begin, end, _statusCode);
+      if (ec != std::errc{} || ptr != end || _statusCode < 100 || _statusCode > 599) {
         return Status::Error;
       }
-      _statusCode = static_cast<http::StatusCode>(code);
       resp.status(_statusCode);
       if (sp2 != std::string_view::npos) {
         resp.reason(TrimOws(afterVersion.substr(sp2 + 1)));
@@ -319,7 +316,9 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
     // Headers state.
     if (line.empty()) {
       // End of header block. 1xx interim responses are discarded; restart for the final response.
-      if (_statusCode >= 100 && _statusCode < 200) {
+      // status code should have been parsed already.
+      assert(_statusCode >= 100 && _statusCode <= 599);
+      if (_statusCode < 200) {
         _connectionCloseSeen = false;
         _connectionKeepAliveSeen = false;
         _hasContentLength = false;

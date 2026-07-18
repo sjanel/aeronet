@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-client-codec.hpp"
@@ -27,7 +26,6 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "url-parse.hpp"
 
 namespace aeronet {
@@ -213,7 +211,7 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
   _data.reserve(neededCapacity);
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
+  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
     pInsert = Append(http::CRLF, pInsert);
     pInsert = Append(concatenatedHeaders, pInsert);
@@ -255,7 +253,7 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   _data.reserve(neededCapacity);
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
+  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
     pInsert = Append(http::CRLF, pInsert);
     pInsert = Append(concatenatedHeaders, pInsert);
@@ -367,7 +365,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
 
   char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
 
-  setHeadersStartPos(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
+  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
   adjustBodyStart(diffLen);
   _data.adjustSize(diffLen);
   return pErrorMsg;
@@ -446,8 +444,8 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
 // Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
 // After calling this function, the HttpRequest object is still valid and can be reused to build another request,
 // but the HttpMessageData has been created by copy. To avoid the copy, use the rvalue overload below.
-[[nodiscard]] HttpRequest HttpRequest::finalize(internal::HttpClientCodec& clientCodec,
-                                                const DecompressionConfig& decompressionConfig) const {
+[[nodiscard]] HttpRequest HttpRequest::finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
+                                                              const DecompressionConfig& decompressionConfig) const {
   HttpRequest copy(HttpMessage::Check::No);
 
   copy._data = _data;
@@ -459,7 +457,7 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   copy._port = _port;
   copy._originKeyLen = _originKeyLen;
 
-  copy.prepareForFinalization();
+  copy.HttpMessage::finalizeHeadersAndBody();
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   if (_opts.isAutomaticDirectCompression() && copy.trailersSize() == 0) {
@@ -494,74 +492,6 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
 #endif
 
   return copy;
-}
-
-void HttpRequest::writeChunkedRequestForHttp11(RawChars& out) const {
-  assert(trailersSize() != 0);
-  assert(!hasBodyFile());
-
-  const std::string_view completeRequest = completeRequestForHttp11();
-  const std::string_view requestLine = completeRequest.substr(0, statusLineSize());
-  const std::string_view body = bodyInMemory();
-  const std::string_view trailersView = trailersFlatView();
-  const std::size_t bodyLen = body.size();
-  const bool addTrailerHeader = _opts.isAddTrailerHeader();
-
-  // Generous single reservation: the original request bytes plus the chunk framing overhead (hex length,
-  // CRLFs, "0" terminator), the Transfer-Encoding header and (optionally) the Trailer header. No further
-  // (re)allocation happens after this, so the raw append pointer below stays valid.
-  out.reserve(completeRequest.size() + trailersView.size() + hex_digits(bodyLen) + kTransferEncodingChunkedCRLF.size() +
-              http::HeaderSize(http::Trailer.size(), 0) + 64U);
-
-  char* pEnd = out.data();
-  pEnd = Append(requestLine, pEnd);
-
-  // Keep every header except Content-Length (the chunked body has no fixed length). Content-Type, Host,
-  // User-Agent, Accept-Encoding and any user header are preserved verbatim.
-  for (const auto& [name, value] : headers()) {
-    if (CaseInsensitiveEqual(name, http::ContentLength)) {
-      continue;
-    }
-    pEnd = Append(name, pEnd);
-    pEnd = Append(http::HeaderSep, pEnd);
-    pEnd = Append(value, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-  }
-
-  pEnd = Append(http::TransferEncoding, pEnd);
-  pEnd = Append(http::HeaderSep, pEnd);
-  pEnd = Append(http::chunked, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-
-  // Optional Trailer header advertising the trailer field names (RFC 7230 section 4.4).
-  if (addTrailerHeader) {
-    pEnd = Append(http::Trailer, pEnd);
-    pEnd = Append(http::HeaderSep, pEnd);
-    bool first = true;
-    for (const auto& [name, value] : trailers()) {
-      if (!first) {
-        pEnd = Append(kTrailerValueSep, pEnd);
-      }
-      pEnd = Append(name, pEnd);
-      first = false;
-    }
-    pEnd = Append(http::CRLF, pEnd);
-  }
-
-  // End of headers.
-  pEnd = Append(http::CRLF, pEnd);
-
-  // Single chunk carrying the whole body, then the zero-length terminating chunk followed by the trailers.
-  pEnd = to_lower_hex(bodyLen, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-  pEnd = Append(body, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-  *pEnd++ = '0';
-  pEnd = Append(http::CRLF, pEnd);
-  pEnd = Append(trailersView, pEnd);  // each trailer line already ends with CRLF
-  pEnd = Append(http::CRLF, pEnd);    // blank line terminating the trailer section
-
-  out.setSize(static_cast<std::size_t>(pEnd - out.data()));
 }
 
 }  // namespace aeronet

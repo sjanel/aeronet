@@ -108,12 +108,12 @@ class HttpClient {
 
   // Execute an arbitrary request (method + url + headers + body), following redirects per config.
   HttpClientResult request(const HttpRequest& req) {
-    return requestProcess(req.finalize(_codec, _config.decompression));
+    return requestProcess(req.finalizeHeadersAndBody(_codec, _config.decompression));
   }
 
   // Rvalue overload: execute an arbitrary request (method + url + headers + body), following redirects per config.
   HttpClientResult request(HttpRequest&& req) {
-    req.finalize();
+    req.HttpMessage::finalizeHeadersAndBody();
     return requestProcess(std::move(req));
   }
 
@@ -177,7 +177,7 @@ class HttpClient {
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
-  HttpClientResult performExchange(const HttpRequest& req);
+  HttpClientResult performExchange(HttpRequest& req);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
@@ -256,10 +256,6 @@ class HttpClient {
   // Unregister every still-registered fd in `bucket` from the loop, then clear the bucket.
   void dropIdleBucket(vector<ActiveConnection>& bucket) noexcept;
 
-  // requestBuffer() and bodyBuffer() intentionally return the same buffer (_reqBodyScratch): a request is
-  // always fully written before its response body is de-framed, so the two roles never overlap in time. The
-  // distinct names keep call sites self-documenting; see the _reqBodyScratch declaration.
-  [[nodiscard]] RawChars& requestBuffer() noexcept { return _reqBodyScratch; }
   [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
   [[nodiscard]] RawChars& bodyBuffer() noexcept { return _reqBodyScratch; }
 
@@ -270,7 +266,7 @@ class HttpClient {
 
   [[nodiscard]] HttpRequest::Options makeRequestOptions() noexcept;
 
-  void maybeCompressRequestBody(HttpRequest& req);
+  void maybeCompressBody(HttpRequest& req);
 
   HttpClientConfig _config;
   EventLoop _loop;

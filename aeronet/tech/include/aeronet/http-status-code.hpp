@@ -73,4 +73,6 @@ inline constexpr StatusCode StatusCodeLoopDetected = 508;
 inline constexpr StatusCode StatusCodeNotExtended = 510;
 inline constexpr StatusCode StatusCodeNetworkAuthenticationRequired = 511;
 
+inline constexpr StatusCode MagicForHttpRequest = -1;
+
 }  // namespace aeronet::http
