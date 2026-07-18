@@ -82,8 +82,8 @@ constexpr const char* CheckTarget(std::string_view target, uint8_t headerPosNbBi
   static constexpr std::uint32_t kMaxMethodStrLen = static_cast<uint32_t>(
       std::ranges::max_element(http::kMethodStrings, {}, [](std::string_view str) { return str.size(); })->size());
 
-  const uint32_t maxTargetLen =
-      (1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U - http::HTTP10Sv.size() - originKeyLen;
+  const uint32_t maxTargetLen = static_cast<uint32_t>((1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U -
+                                                      http::HTTP10Sv.size() - originKeyLen);
   if (target.size() > maxTargetLen) {
     return "Request target exceeds maximum length";
   }

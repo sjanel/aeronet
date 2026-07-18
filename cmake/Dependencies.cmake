@@ -82,6 +82,8 @@ if(AERONET_BUILD_TESTS)
   # Use modern position independent etc.
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+
   aeronet_find_or_declare(
     NAME googletest
     CONFIG
@@ -96,6 +98,13 @@ if(AERONET_BUILD_TESTS)
 endif()
 
 if(AERONET_ENABLE_SPDLOG)
+
+  set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_EXAMPLE_HO OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+
   aeronet_find_or_declare(
     NAME spdlog
     CONFIG
@@ -110,8 +119,6 @@ endif()
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
 # compile definitions propagate correctly to aeronet library sources.
 if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG)
-  # Ensure zlib is built with -fPIC so it can be linked into shared libraries (e.g., drogon in benchmarks)
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
   set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
   set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
   set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
@@ -130,8 +137,6 @@ endif()
 # Compression libraries (optional, isolated like TLS). Detect BEFORE building core targets so
 # compile definitions propagate correctly to aeronet library sources.
 if(AERONET_ENABLE_ZLIB AND AERONET_ENABLE_ZLIBNG)
-  # Ensure zlib-ng is built with -fPIC so it can be linked into shared libraries (e.g., drogon in benchmarks)
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
   # Use zlib-ng native mode (not compat) for better performance and modern API
   set(ZLIB_COMPAT OFF CACHE BOOL "" FORCE)
   set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -158,6 +163,7 @@ if(AERONET_ENABLE_ZSTD)
   set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
   set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
 
   aeronet_find_or_declare(
     NAME zstd
@@ -174,6 +180,7 @@ endif()
 if(AERONET_ENABLE_BROTLI)
   # Brotli-specific configuration (applies only when fetched)
   set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable brotli tests" FORCE)
+  set(BROTLI_BUNDLED_MODE OFF CACHE BOOL "" FORCE)
 
   # Brotli does not reliably provide Debug libs on many systems,
   # so policy decides whether system packages are allowed.
@@ -374,11 +381,5 @@ if(AeronetFetchContentPackagesToMakeAvailable)
       add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
       target_link_libraries(ZLIB::ZLIB INTERFACE ZLIB::ZLIBSTATIC)
     endif()
-  endif()
-
-  # Restore BUILD_SHARED_LIBS if we overrode it for zstd.
-  if(DEFINED _AERONET_PREV_BUILD_SHARED_LIBS)
-    set(BUILD_SHARED_LIBS ${_AERONET_PREV_BUILD_SHARED_LIBS} CACHE BOOL "Restore previous value" FORCE)
-    unset(_AERONET_PREV_BUILD_SHARED_LIBS)
   endif()
 endif()
