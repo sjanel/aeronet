@@ -58,7 +58,6 @@ if(AERONET_BENCH_ENABLE_PISTACHE)
   set(PISTACHE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(PISTACHE_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   set(PISTACHE_USE_SSL OFF CACHE BOOL "" FORCE)
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   
   FetchContent_MakeAvailable(pistache)
   
@@ -99,7 +98,7 @@ if(AERONET_BENCH_ENABLE_CROW)
   FetchContent_Declare(
     Crow
     GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
-    GIT_TAG        v1.3.0
+    GIT_TAG        v1.3.3
     GIT_SHALLOW    TRUE
   )
   
