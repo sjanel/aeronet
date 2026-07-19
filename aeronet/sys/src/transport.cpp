@@ -118,10 +118,10 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
   // This avoids extra memcpy and allows optimal TCP segmentation.
 #ifdef AERONET_POSIX
   // NOLINTNEXTLINE(misc-include-cleaner)
-  iovec iov[]{// NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-              {const_cast<char*>(firstBuf.data()), firstBuf.size()},
-              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
+  iovec iov[]{
+      {const_cast<char*>(firstBuf.data()), firstBuf.size()},
+      {const_cast<char*>(secondBuf.data()), secondBuf.size()},
+  };
 #elifdef AERONET_WINDOWS
   WSABUF iov[]{{static_cast<ULONG>(firstBuf.size()), const_cast<char*>(firstBuf.data())},
                {static_cast<ULONG>(secondBuf.size()), const_cast<char*>(secondBuf.data())}};

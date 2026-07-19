@@ -448,6 +448,13 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
 
 #ifdef AERONET_ENABLE_OPENSSL
 
+namespace {
+// Use kTLS Disabled to force user-space TLS path
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+test::TlsTestServer tlsTs({"http/1.1"},
+                          [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
+}  // namespace
+
 // Test user-space TLS file serving error path (flushUserSpaceTlsBuffer error)
 TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
   test::QueueResetGuard<decltype(test::g_pread_path_actions)> guard(test::g_pread_path_actions);
@@ -458,11 +465,7 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  // Use kTLS Disabled to force user-space TLS path
-  test::TlsTestServer ts({"http/1.1"},
-                         [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
-
-  ts.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+  tlsTs.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -471,14 +474,13 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
   // Inject pread error to cause user-space TLS buffer flush to fail
   test::SetPreadPathActions(filePath, {{-1, EIO}});
 
-  test::TlsClient client(ts.port());
+  test::TlsClient client(tlsTs.port());
   ASSERT_TRUE(client.handshakeOk());
 
   client.writeAll("GET /tls-error HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
   (void)client.readAll();
 
   // Connection may be closed due to error
-  SUCCEED();  // Main goal is exercising the error path
 }
 
 // Test TLS handshake WriteReady epoll mod path
@@ -491,12 +493,11 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
 // the server should handle the EOF gracefully. This exercises the handleEofOrError
 // path when tls->established() is false.
 TEST(ConnectionManagerErrors, TlsEofDuringHandshake) {
-  test::TlsTestServer ts;
-  ts.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
+  tlsTs.setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
 
   {
     // Create a raw TCP connection that we'll close without TLS handshake
-    test::ClientConnection client(ts.port());
+    test::ClientConnection client(tlsTs.port());
     // The ClientConnection destructor will close the socket without handshake
     // This triggers the TLS EOF-during-handshake path
   }
@@ -505,7 +506,7 @@ TEST(ConnectionManagerErrors, TlsEofDuringHandshake) {
   std::this_thread::sleep_for(50ms);
 
   // Verify server still works after handling the aborted handshake
-  test::TlsClient tlsClient(ts.port());
+  test::TlsClient tlsClient(tlsTs.port());
   EXPECT_TRUE(tlsClient.handshakeOk());
   auto resp = tlsClient.get("/after-eof");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -637,7 +638,7 @@ TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
 // This exercises the code path where a client closes connection during TLS handshake.
 TEST(ConnectionManagerTlsErrors, TlsHandshakeFailureOnEof) {
   test::TlsTestServer tlsServer;
-  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+  tlsServer.setDefault([](const HttpRequestView& req) { return req.makeResponse("OK"); });
 
   std::atomic_bool failureDetected{false};
   std::string_view capturedReason;
@@ -672,7 +673,7 @@ TEST(ConnectionManagerTlsErrors, TlsHandshakeFailureOnEof) {
 // This exercises the detailed TLS error logging when transport returns Error.
 TEST(ConnectionManagerTlsErrors, TlsTransportErrorDiagnostics) {
   test::TlsTestServer tlsServer({}, [](HttpServerConfig& cfg) { cfg.withTlsHandshakeLogging(true); });
-  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+  tlsServer.setDefault([](const HttpRequestView& req) { return req.makeResponse("OK"); });
 
   std::atomic_bool failureDetected{false};
 
@@ -708,21 +709,18 @@ TEST(ConnectionManagerTlsErrors, TlsTransportErrorDiagnostics) {
 // This is triggered during TLS handshake when the transport signals it needs
 // socket write-readiness to proceed (e.g., to send ClientHello response).
 TEST(ConnectionManagerTlsErrors, TlsHandshakeWriteReadyEpollMod) {
-  test::TlsTestServer tlsServer;
-  tlsServer.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+  tlsTs.setDefault([](const HttpRequestView& req) { return req.makeResponse("OK"); });
 
   // A proper TLS client triggers the WriteReady path naturally during
   // the handshake when the server needs to send its response.
   test::TlsClient::Options opts;
-  test::TlsClient client(tlsServer.port(), opts);
+  test::TlsClient client(tlsTs.port(), opts);
 
   EXPECT_TRUE(client.handshakeOk());
 
   // Make a request to verify the connection works after handshake
   const auto resp = client.get("/test");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-
-  tlsServer.stop();
 }
 
 // Test pread error path in flushFilePayload (non-TLS, user-space TLS buffer path)
@@ -735,10 +733,6 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
-
-  // Use kTLS Disabled to force user-space TLS path (pread + SSL_write)
-  test::TlsTestServer tlsTs({"http/1.1"},
-                            [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
 
   tlsTs.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);

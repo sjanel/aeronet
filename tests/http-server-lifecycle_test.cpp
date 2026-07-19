@@ -223,6 +223,36 @@ TEST(SingleHttpServer, MoveAssignOrDoubleRunWhileRunningThrows) {
   EXPECT_THROW({ serverB = std::move(serverA); }, std::logic_error);
 }
 
+TEST(HttpServerCopy, CopyConstruct) {
+  // Copy-constructing from a stopped server should duplicate configuration/router but not runtime state.
+  HttpServerConfig cfg;
+  cfg.withReusePort();
+
+  Router router;
+  router.setDefault([](const HttpRequestView& req) {
+    HttpResponse resp;
+    resp.body(std::string("ORIG:") + std::string(req.path()));
+    return resp;
+  });
+
+  SingleHttpServer origin(cfg, std::move(router));
+
+  auto origPort = origin.port();
+
+  // Copy construct while stopped is fine.
+  SingleHttpServer copy(origin);
+
+  origin.stop();  // ensure we stop listener on the original server to avoid queries reaching this server
+
+  copy.start();
+
+  // Start the copy in background and exercise the handler on the original port.
+  std::string resp = test::simpleGet(origPort, "/copy");
+  ASSERT_TRUE(resp.contains("ORIG:/copy"));
+
+  EXPECT_THROW(SingleHttpServer{copy}, std::logic_error) << "Copy-constructing from a running server should throw";
+}
+
 TEST(HttpServerRestart, RestartPossible) {
   std::atomic_bool stop1{false};
   std::atomic_bool stop2{false};

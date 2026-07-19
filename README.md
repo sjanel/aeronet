@@ -1085,7 +1085,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Limits | Chunk total/body growth -> 413 | ✅ | exercised across `http-chunked-head_test.cpp` and parser fuzz paths |
 | Bodies | Content-Length body handling | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Bodies | Chunked decoding | ✅ | `http-chunked-head_test.cpp`, `http-parser-errors_test.cpp` |
-| Bodies | Trailers exposure | ✅ | Implemented (see tests/http-trailers_test.cpp) |
+| Bodies | Trailers exposure | ✅ | Implemented |
 | Expect | 100-continue w/ non-zero length | ✅ | `http-parser-errors_test.cpp` |
 | Expect | No 100 for zero-length | ✅ | `http-parser-errors_test.cpp`, `http-additional_test.cpp` |
 | Keep-Alive | Basic keep-alive persistence | ✅ | `http-core_test.cpp` |
@@ -1098,7 +1098,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Date | Same-second caching invariance | ✅ | `http-core_test.cpp` |
 | Date | Second-boundary refresh | ✅ | `http-core_test.cpp` |
 | Errors | 400 Bad Request (malformed line) | ✅ | `http-core_test.cpp` |
-| Parsing | Percent-decoding of path | ✅ | `http-url-decoding_test.cpp`, `http-query-parsing_test.cpp` |
+| Parsing | Percent-decoding of path | ✅ | `http-url-decoding_test.cpp`, `http-core_test.cpp` |
 | Errors | 431, 413, 505, 501 | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Errors | PayloadTooLarge in chunk decoding | ⚠ | Exercised indirectly; dedicated test planned |
 | Concurrency | `SO_REUSEPORT` distribution | ✅ | `multi-http-server_test.cpp` |
@@ -1109,13 +1109,13 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Performance | Date caching buffer size correctness | ✅ | covered by `http-core_test.cpp` assertions |
 | Performance | writev header+body path | ⚠ | Indirectly exercised; no direct assertion yet |
 | TLS | Handshake & rejection behavior | ✅ | `http-tls-handshake_test.cpp`, `http-tls-io_test.cpp` |
-| Streaming | Streaming response & incremental flush | ✅ | `http-streaming_test.cpp` |
+| Streaming | Streaming response & incremental flush | ✅ | `http-core_test.cpp` |
 | Routing | Path & method matching | ✅ | `http-routing_test.cpp`, `router_test.cpp` |
 | Compression | Negotiation & outbound insertion | ✅ | `http-compression_test.cpp`, `http-request-decompression_test.cpp` |
 | OpenTelemetry | Basic integration smoke | ✅ | `opentelemetry-integration_test.cpp` |
 | Async run | SingleHttpServer::start() behavior | ✅ | `http-server-lifecycle_test.cpp` |
-| Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-stats_test.cpp` |
-| Implemented | Trailers (outgoing chunked / trailing headers) | ✅ | See tests/http-trailers_test.cpp and http-response-writer.hpp |
+| Misc / Smoke | Probes, stats, misc invariants | ✅ | `http-server-lifecycle_test.cpp`, `http-core_test.cpp` |
+| Implemented | Trailers (outgoing chunked / trailing headers) | ✅ | See tests/http-core_test.cpp and http-response-writer.hpp |
 
 ## Acknowledgements
 
