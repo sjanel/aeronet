@@ -46,6 +46,7 @@ All notable changes to aeronet are documented in this file.
 - Increased the maximum length of **reason** in `HttpResponse` from 1024 to 65522.
 - **Split the library into two CMake targets**, `aeronet_server` and `aeronet_client`, plus a new `aeronet` umbrella interface library that pulls in both (existing `<aeronet/aeronet.hpp>` code is unaffected).
 - Added scripted **HTTP/2 client benchmarks** to CI (aeronet `HttpClient` vs libcurl over `h2c` and `h2`-TLS), published per protocol to GitHub Pages with matching badges.
+- Better memory reservation for HPACK headers in HTTP/2 instead of a fixed 512-byte reserve.
 
 ## [1.3.0] - 2026-06-01
 

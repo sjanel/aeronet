@@ -17,6 +17,13 @@ TEST(HttpHeadersView, DefaultConstructor) {
   EXPECT_EQ(HeadersView::iterator(), HeadersView::iterator());
 }
 
+TEST(HttpHeadersView, Size) {
+  const auto rawHeaders = MakeHttp1HeaderLine(http::ContentType, "text/plain");
+  HeadersView view(rawHeaders);
+
+  EXPECT_EQ(view.size(), rawHeaders.size());
+}
+
 TEST(HttpHeadersView, SingleHeader) {
   const auto rawHeaders = MakeHttp1HeaderLine(http::ContentType, "text/plain");
   HeadersView view(rawHeaders);

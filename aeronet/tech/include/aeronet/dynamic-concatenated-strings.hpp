@@ -1,5 +1,6 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cassert>
 #include <charconv>
 #include <concepts>
@@ -197,7 +198,7 @@ class DynamicConcatenatedStrings {
 
   bool operator==(const DynamicConcatenatedStrings& other) const noexcept = default;
 
-  using trivially_relocatable = std::true_type;
+  using trivially_relocatable = amc::is_trivially_relocatable<BufferType>::type;
 
  private:
   BufferType _buf;
