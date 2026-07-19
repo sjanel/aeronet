@@ -14,6 +14,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -23,6 +24,7 @@
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet::http2 {
 
@@ -185,8 +187,7 @@ void Http2Connection::pruneClosedStreams() {
 // Frame sending
 // ============================
 
-ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                       bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
+ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream) {
   auto [it, inserted] = _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize);
   if (inserted) {
     // Created new stream
@@ -197,18 +198,74 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
 
     ++_activeStreamCount;
   }
-  Http2Stream* stream = &it->second;
+  Http2Stream* pStream = &it->second;
 
   // Transition stream state
-  ErrorCode err = stream->onSendHeaders(endStream);
+  const ErrorCode err = pStream->onSendHeaders(endStream);
+  if (err != ErrorCode::NoError) {
+    return err;
+  }
+  return ErrorCode::NoError;
+}
+
+namespace {
+std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHeaders* pGlobalHeaders,
+                              uint8_t pseudoHeaderReserve) {
+  const std::size_t plainHeadersSize =
+      headersViewSize + (pGlobalHeaders != nullptr
+                             ? (pGlobalHeaders->fullSizeWithLastSep() - http::HeaderSep.size() - http::CRLF.size())
+                             : 0);
+  return FrameHeader::kSize + pseudoHeaderReserve + ((plainHeadersSize * 2) / 3);
+}
+}  // namespace
+
+ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method method, bool isTlsRequest,
+                                              std::string_view target, std::string_view authority,
+                                              HeadersView headersView, bool endStream,
+                                              const ConcatenatedHeaders* pGlobalHeaders) {
+  const ErrorCode err = prepareSendHeaders(streamId, endStream);
   if (err != ErrorCode::NoError) {
     return err;
   }
 
-  // Encode headers
-  encodeHeaders(streamId, statusCode, headersView, endStream, pGlobalHeaders);
+  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 24UL));
 
-  return ErrorCode::NoError;
+  // Make the header block be written after the frame header
+  _outputBuffer.addSize(FrameHeader::kSize);
+
+  const auto oldSize = _outputBuffer.size();
+  if (!target.empty()) {
+    // pseudo headers for requests.
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, http::MethodToStr(method));
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, isTlsRequest ? "https" : "http");
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderAuthority, authority);
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
+  }
+
+  // Encode headers
+  encodeHeaders(streamId, target.empty() ? http::StatusCode{} : http::MagicForHttpRequest, headersView, endStream,
+                oldSize, pGlobalHeaders);
+
+  return err;
+}
+
+ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
+                                       bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
+  const ErrorCode err = prepareSendHeaders(streamId, endStream);
+  if (err != ErrorCode::NoError) {
+    return err;
+  }
+
+  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4UL));
+
+  // Make the header block be written after the frame header
+  _outputBuffer.addSize(FrameHeader::kSize);
+  const auto oldSize = _outputBuffer.size();
+
+  // Encode headers
+  encodeHeaders(streamId, statusCode, headersView, endStream, oldSize, pGlobalHeaders);
+
+  return err;
 }
 
 ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
@@ -365,10 +422,12 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
     data = data.subspan(totalFrameSize);
   }
 
-  return ProcessResult{hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue,
-                       ErrorCode::NoError,
-                       totalConsumed,
-                       {}};
+  return ProcessResult{
+      hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue,
+      ErrorCode::NoError,
+      totalConsumed,
+      {},
+  };
 }
 
 Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header, std::span<const std::byte> payload) {
@@ -844,48 +903,51 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // HPACK
 // ============================
 
-namespace {
-std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHeaders* pGlobalHeaders,
-                              uint8_t pseudoHeaderReserve) {
-  const std::size_t plainHeadersSize =
-      headersViewSize + (pGlobalHeaders != nullptr
-                             ? (pGlobalHeaders->fullSizeWithLastSep() - http::HeaderSep.size() - http::CRLF.size())
-                             : 0);
-  return FrameHeader::kSize + pseudoHeaderReserve + ((plainHeadersSize * 2) / 3);
-}
-}  // namespace
-
 void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                    bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
-  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4U));
-
-  // Make the header block be written after the frame header
-  _outputBuffer.addSize(FrameHeader::kSize);
-  const auto oldSize = _outputBuffer.size();
+                                    bool endStream, std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders) {
+  assert(statusCode == 0 || statusCode == http::MagicForHttpRequest || (statusCode >= 100 && statusCode <= 999));
 
   // Encode :status pseudo-header first if present
-  if (statusCode != 0) {
-    assert(statusCode >= 100 && statusCode <= 999);
-    char statusStr[3];
-    write3(statusStr, statusCode);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, std::string_view(statusStr, sizeof(statusStr)));
+  if (statusCode >= 100) {
+    char statusBuf[3];
+    const std::string_view statusStr(statusBuf, write3(statusBuf, statusCode));
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
+
+  // For requests, skip the Host header (we use :authority instead)
+  bool skipHostHeader = statusCode == http::MagicForHttpRequest;
   for (const auto& [name, value] : headersView) {
+    if (skipHostHeader) {
+      assert(name == http::Host);
+      skipHostHeader = false;
+      continue;
+    }
+
     // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where
     // it is tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec
     // pads Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a
     // strict peer (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
+    // TODO: avoid const_cast by bringing a non-const headersView.
+    tolower(const_cast<char*>(name.data()), name.size());
     _hpackEncoder.encode(_outputBuffer, name, TrimOws(value));
   }
+
   if (pGlobalHeaders != nullptr) {
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
-      const auto colonPos = headerKeyVal.find(':');
+      const auto colonPos = headerKeyVal.find(http::HeaderSep);
       assert(colonPos != std::string_view::npos);
-      const std::string_view name = headerKeyVal.substr(0, colonPos);
-      // Skip if already present in request-specific headers
-      if (std::ranges::any_of(headersView, [name](const auto& header) { return header.name == name; })) {
+
+      // Skip if already present in request-specific headers. We can use case sensitive search because global headers
+      // are already lower-cased in the config, and request-specific headers are lower-cased above.
+      std::string_view headerNameWithColon = headerKeyVal.substr(0, colonPos + http::HeaderSep.size());
+      if (headersView.containsCaseSensitive(headerNameWithColon)) {
+        // Skip if already present in request-specific headers
         continue;
       }
+
+      const std::string_view name = headerKeyVal.substr(0, colonPos);
+      // Global header names should have been validated in the config.
+      assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
       _hpackEncoder.encode(_outputBuffer, name, TrimOws(headerKeyVal.substr(colonPos + http::HeaderSep.size())));
     }
   }
@@ -988,7 +1050,8 @@ void Http2Connection::sendSettings() {
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, _localSettings.maxConcurrentStreams},
       SettingsEntry{SettingsParameter::InitialWindowSize, _localSettings.initialWindowSize},
       SettingsEntry{SettingsParameter::MaxFrameSize, _localSettings.maxFrameSize},
-      SettingsEntry{SettingsParameter::MaxHeaderListSize, _localSettings.maxHeaderListSize}};
+      SettingsEntry{SettingsParameter::MaxHeaderListSize, _localSettings.maxHeaderListSize},
+  };
 
   WriteSettingsFrame(_outputBuffer, entries);
   _settingsSent = true;

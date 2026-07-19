@@ -163,9 +163,9 @@ HttpClient::HttpClient(HttpClientConfig config)
 }
 
 HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
-  const bool isCacheEligible = cacheEligible(req);
+  maybeCompressBody(req);
 
-  maybeCompressRequestBody(req);
+  const bool isCacheEligible = cacheEligible(req);
 
   std::string_view cacheKey;
   if (isCacheEligible) {
@@ -582,7 +582,7 @@ HttpRequest::Options HttpClient::makeRequestOptions() noexcept {
   return opts;
 }
 
-HttpClientResult HttpClient::performExchange(const HttpRequest& req) {
+HttpClientResult HttpClient::performExchange(HttpRequest& req) {
   const RetryConfig& retry = _config.retry;
   const uint32_t maxAttempts = retry.maxAttempts < 1U ? 1U : retry.maxAttempts;
   uint32_t attempt = 0;  // backoff retries already consumed (0-based index of the next one)
@@ -617,7 +617,6 @@ HttpClientResult HttpClient::performExchange(const HttpRequest& req) {
     // The fd is registered with the event loop lazily, on the first would-block wait (armLoop). A reused
     // keep-alive connection is already the loop's registered fd, so it costs no syscall; a request whose
     // I/O never blocks touches the loop not at all.
-
     const auto now = SteadyClock::now();
     const auto connectDeadline = now + _config.connectTimeout;
     const auto ioDeadline = now + _config.requestTimeout;
@@ -791,7 +790,7 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
   }
 }
 
-void HttpClient::maybeCompressRequestBody(HttpRequest& req) {
+void HttpClient::maybeCompressBody(HttpRequest& req) {
   const HttpClientConfig::RequestCompression& rc = _config.requestCompression;
   if (!rc.enabled()) {
     return;

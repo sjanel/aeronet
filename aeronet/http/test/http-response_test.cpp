@@ -184,9 +184,7 @@ class HttpResponseTest : public ::testing::Test {
   static auto cloneFinalized(const HttpResponse& resp) { return resp.cloneFinalized(); }
 #endif
 
-#ifdef AERONET_ENABLE_HTTP2
-  static void FinalizeForHttp2(HttpResponse& resp) { resp.finalizeForHttp2(); }
-#endif
+  static void FinalizeHeadersAndBody(HttpResponse& resp) { resp.finalizeHeadersAndBody(); }
 };
 
 TEST_F(HttpResponseTest, StatusFromRvalue) {
@@ -4228,45 +4226,14 @@ TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), expectedVary);
 }
 
-#ifdef AERONET_ENABLE_HTTP2
-
-TEST_F(HttpResponseTest, Http2_NoHeadersIsNoop) {
+TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoHeadersIsNoop) {
   HttpResponse resp(http::StatusCodeOK);
   // No headers added -> no-op
-  FinalizeForHttp2(resp);
+  FinalizeHeadersAndBody(resp);
   EXPECT_TRUE(resp.headersFlatView().empty());
 }
 
-TEST_F(HttpResponseTest, Http2_LowercasesNamesOnly) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-CaSe-Header", "VaLuE");
-  resp.headerAddLine("Another-Header", "Val:With:Colon");
-
-  FinalizeForHttp2(resp);
-
-  std::string headers(resp.headersFlatView());
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-case-header", "VaLuE")));
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("another-header", "Val:With:Colon")));
-  // Ensure values were not lowercased
-  EXPECT_TRUE(headers.contains("VaLuE"));
-  EXPECT_TRUE(headers.contains("Val:With:Colon"));
-}
-
-TEST_F(HttpResponseTest, Http2_MultipleHeadersAndValuesPreserved) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-One", "ONE");
-  resp.headerAddLine("X-Two", "Two:COLON:IN:VALUE");
-  resp.headerAddLine("Already-Lower", "MixedValue:ABC");
-
-  FinalizeForHttp2(resp);
-  std::string headers(resp.headersFlatView());
-
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-one", "ONE")));
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-two", "Two:COLON:IN:VALUE")));
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("already-lower", "MixedValue:ABC")));
-}
-
-TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionFinalization) {
+TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionFinalization) {
   // Set a body large enough to be compressed
   const std::string body(4096, 'C');
   for (bool addVary : {false, true}) {
@@ -4294,7 +4261,7 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionFinalization) {
         const auto compressedBodySize = resp.bodyInMemoryLength();
         EXPECT_LT(compressedBodySize, body.size());  // Should be compressed
 
-        FinalizeForHttp2(resp);
+        FinalizeHeadersAndBody(resp);
 
         // Verify header names are lowercased
         std::string headers(resp.headersFlatView());
@@ -4321,7 +4288,7 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionFinalization) {
   }
 }
 
-TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionWithCustomHeaders) {
+TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionWithCustomHeaders) {
   // Test that custom headers (when mixed case) are also lowercased during HTTP/2 finalization
   // while compression is being finalized
   const std::string body(2048, 'D');
@@ -4339,20 +4306,14 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionWithCustomHeaders) {
     EXPECT_TRUE(IsAutomaticDirectCompression(resp));
     EXPECT_EQ(resp.trailersSize(), 0U);
 
-    FinalizeForHttp2(resp);
+    FinalizeHeadersAndBody(resp);
 
     std::string headers(resp.headersFlatView());
 
-    // Verify all header names are lowercased
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-custom-header", "ValuePreserved")));
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("cache-control", "max-age=3600")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("X-Custom-Header", "ValuePreserved")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("Cache-Control", "max-age=3600")));
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-encoding", GetEncodingStr(enc))));
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-type", "application/json")));
-
-    // None should have mixed case
-    EXPECT_FALSE(headers.contains("Cache-Control:"));
-    EXPECT_FALSE(headers.contains("X-Custom-Header:"));
-    EXPECT_FALSE(headers.contains("Content-Type:"));
 
     // Verify compression still works
     auto decompressed = test::Decompress(enc, resp.bodyInMemory());
@@ -4360,7 +4321,7 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_DirectCompressionWithCustomHeaders) {
   }
 }
 
-TEST_F(HttpResponseTest, FinalizeForHttp2_NoDirectCompressionNoTrailers_Idempotent) {
+TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoDirectCompressionNoTrailers_Idempotent) {
   // Test that finalizeForHttp2 can be called multiple times without issues
   // when there's no direct compression and no trailers
   HttpResponse resp = makePrepared(PreparedOptions{});
@@ -4370,18 +4331,16 @@ TEST_F(HttpResponseTest, FinalizeForHttp2_NoDirectCompressionNoTrailers_Idempote
   resp.body("Hello World", "text/plain");
 
   // Call finalize multiple times
-  FinalizeForHttp2(resp);
+  FinalizeHeadersAndBody(resp);
   std::string firstHeaders(resp.headersFlatView());
 
-  FinalizeForHttp2(resp);
+  FinalizeHeadersAndBody(resp);
   std::string secondHeaders(resp.headersFlatView());
 
   // Should be identical
   EXPECT_EQ(firstHeaders, secondHeaders);
-  EXPECT_TRUE(firstHeaders.contains(MakeHttp1HeaderLine("x-test", "Value")));
+  EXPECT_TRUE(firstHeaders.contains(MakeHttp1HeaderLine("X-Test", "Value")));
 }
-
-#endif
 
 // =============================================================================
 // Tests for automatic chunked encoding conversion when trailers are present

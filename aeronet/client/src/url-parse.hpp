@@ -89,7 +89,9 @@ constexpr void ParseAuthority(std::string_view rest, UrlParseResult& res) {
 constexpr UrlParseResult ParseUrl(std::string_view url) {
   UrlParseResult res;
 
-  const auto schemeEnd = url.find("://");
+  static constexpr std::string_view kSchemeSep = "://";
+
+  const auto schemeEnd = url.find(kSchemeSep);
   if (schemeEnd == std::string_view::npos || schemeEnd == 0) {
     return res;
   }
@@ -98,8 +100,7 @@ constexpr UrlParseResult ParseUrl(std::string_view url) {
     return res;
   }
 
-  // Strip fragment (never transmitted).
-  std::string_view rest = url.substr(schemeEnd + 3);
+  std::string_view rest = url.substr(schemeEnd + kSchemeSep.size());
 
   ParseAuthority(rest, res);
 

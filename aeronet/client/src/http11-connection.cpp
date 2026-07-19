@@ -55,7 +55,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
 }
 
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
+                                                     HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
   const HttpClientConfig& config = client.config();
   // The request line, headers and any inline body all live contiguously in the HttpRequest's own buffer
@@ -63,18 +63,14 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
   // inlined) body is streamed separately so it is never copied into the head buffer. Note: we must NOT
   // reuse client.requestBuffer() here as the head -- for a tunnelled https proxy request it still holds the
   // CONNECT line written by establishProxyTunnel.
-  std::string_view head;
-  std::string_view body;
   if (req.trailersSize() != 0) {
     // Trailers require Transfer-Encoding: chunked on the wire (RFC 7230 section 4.1.2). Serialize the whole
-    // chunked request (with trailers) into the reusable scratch buffer; the request itself is left untouched
-    // so a retry / the HTTP/2 path still sees the original.
-    req.writeChunkedRequestForHttp11(client.requestBuffer());
-    head = client.requestBuffer();
-  } else {
-    head = req.completeRequestForHttp11();
-    body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
+    // chunked request (with trailers).
+    // TODO: is it possible for the same request to be later sent with HTTP/2?
+    req.finalizeTrailersForHttp11(config.minCapturedBodySize);
   }
+  std::string_view head = req.completeRequestForHttp11();
+  std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
   if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
     return std::unexpected(wr.error());
   }

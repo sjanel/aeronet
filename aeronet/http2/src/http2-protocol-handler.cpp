@@ -417,12 +417,12 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
   const uint32_t peerMaxFrame = _connection.peerSettings().maxFrameSize;
 
   while (pending.length != 0) {
-    Http2Stream* stream = _connection.getStream(streamId);
+    Http2Stream* pStream = _connection.getStream(streamId);
     // Stream cannot vanish during synchronous output buffer writes - only processInput
     // (which is not re-entered) can close/reset streams.
-    assert(stream != nullptr && "stream disappeared during synchronous file send loop");
+    assert(pStream != nullptr && "stream disappeared during synchronous file send loop");
 
-    const int32_t streamWin = stream->sendWindow();
+    const int32_t streamWin = pStream->sendWindow();
     const int32_t connWin = _connection.connectionSendWindow();
     if (streamWin <= 0 || connWin <= 0) {
       return ErrorCode::NoError;  // wait for WINDOW_UPDATE
@@ -610,7 +610,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
         (void)pCorsPolicy->applyToResponse(request, corsResp);
       }
       request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
-      corsResp.finalizeForHttp2();
+      corsResp.finalizeHeadersAndBody();
       [[maybe_unused]] const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHead);
       assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
       onRequestCompleted(request, http::StatusCodeForbidden);
@@ -682,7 +682,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, uint
       (void)pCorsPolicy->applyToResponse(request, *globalResult);
     }
     request.prefinalizeHttpResponse(*globalResult, *_pTelemetryContext);
-    globalResult->finalizeForHttp2();
+    globalResult->finalizeHeadersAndBody();
     const auto middlewareStatus = globalResult->status();
     ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
     onRequestCompleted(request, middlewareStatus);
@@ -806,7 +806,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
     request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
 
-    resp.finalizeForHttp2();
+    resp.finalizeHeadersAndBody();
 
     respStatusCode = resp.status();
     err = sendResponse(streamId, std::move(resp), isHead);
@@ -1213,7 +1213,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     }
 
     asyncRequest.prefinalizeHttpResponse(resp, *_pTelemetryContext);
-    resp.finalizeForHttp2();
+    resp.finalizeHeadersAndBody();
 
     respStatusCode = resp.status();
     // Move request back to stream slot and free the pending variant so sendResponse

@@ -32,14 +32,14 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
 
-#ifndef NDEBUG
-#include "aeronet/reserved-headers.hpp"
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+#include "aeronet/encoder-result.hpp"
 #endif
 
 namespace aeronet {
@@ -482,12 +482,12 @@ void HttpMessage::headerAddLine(std::string_view key, std::string_view value) {
   if (!http::IsValidHeaderName(key)) [[unlikely]] {
     throw std::invalid_argument("HTTP header name is invalid");
   }
+  if (_opts.isHttpRequest() && http::IsReservedOrForbiddenRequestHeader(key)) [[unlikely]] {
+    throw std::invalid_argument("Cannot add reserved or forbidden header to HTTP request");
+  }
   value = TrimOws(value);
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
     throw std::invalid_argument("HTTP header value is invalid");
-  }
-  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
-    throw std::invalid_argument("Cannot add Host header to HTTP request, it's managed by aeronet");
   }
   CheckContentTypeLengthEncoding(key, hasBody());
 
@@ -682,30 +682,7 @@ void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value
   }
 }
 
-#ifdef AERONET_ENABLE_HTTP2
-
-void HttpMessage::makeAllHeaderNamesLowercaseForHttp2() {
-  // HTTP/2 requires lowercase header names. Do this after all response mutations (incl. compression).
-  // TODO: optimize by building lowercase names directly when adding headers if response is "prepared"?
-  // We could even go further in HTTP/2 - store all header names in lowercase and optimize header search by doing a case
-  // sensitive search.
-  char* first = _data.data() + headersStartPos() + http::CRLF.size();
-  char* last = _data.data() + bodyStartPos() - http::CRLF.size();
-
-  while (first < last) {
-    char* pColon = static_cast<char*>(std::memchr(first, ':', static_cast<std::size_t>(last - first)));
-    assert(pColon != nullptr);  // should not happen in well-formed headers
-
-    tolower(first, static_cast<std::size_t>(pColon - first));
-
-    // move headersBeg to next header
-    first = SearchCRLF(first + http::HeaderSep.size(), last) + http::CRLF.size();
-  }
-}
-
-void HttpMessage::finalizeForHttp2() {
-  makeAllHeaderNamesLowercaseForHttp2();
-
+void HttpMessage::finalizeHeadersAndBody() {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   // If the response has trailers, the finalization of the body was made at the first added trailer in trailerAddLine.
   if (_opts.isAutomaticDirectCompression() && trailersSize() == 0) {
@@ -713,7 +690,6 @@ void HttpMessage::finalizeForHttp2() {
   }
 #endif
 }
-#endif
 
 [[nodiscard]] std::string_view HttpMessage::trailerValueOrEmpty(std::string_view key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
@@ -872,6 +848,19 @@ char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
+namespace {
+
+std::size_t GetWrittenOrThrow(const EncoderResult& result, const char* pMsg) {
+  if (result.hasError()) [[unlikely]] {
+    // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
+    // encoder error)
+    throw std::runtime_error(pMsg);
+  }
+  return result.written();
+}
+
+}  // namespace
+
 std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size_t sz) {
   assert(_opts._pCompressionState != nullptr);
   auto& compressionState = *_opts._pCompressionState;
@@ -880,13 +869,7 @@ std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size
   const auto result =
       encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.data() + _data.size());
 
-  if (result.hasError()) [[unlikely]] {
-    // this cannot happen for lack of space, so it would indicate a real underlying issue (lack of memory, or other
-    // encoder error)
-    throw std::runtime_error("HttpMessage::appendEncodedInlineOrThrow compression failed");
-  }
-
-  return result.written();
+  return GetWrittenOrThrow(result, "HttpMessage::appendEncodedInlineOrThrow compression failed");
 }
 
 void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
@@ -903,11 +886,7 @@ void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
     _data.ensureAvailableCapacityExponential(neededCapacity);
 
     const auto result = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
-    if (result.hasError()) [[unlikely]] {
-      throw std::runtime_error("Failed to finalize compressed response body");
-    }
-
-    const auto written = result.written();
+    const auto written = GetWrittenOrThrow(result, "HttpMessage::finalizeInlineBody compression failed");
     if (written == 0) {
       break;
     }
@@ -949,7 +928,7 @@ namespace {
 // after the header fields and either MUST NOT (1xx, 204) or cannot reliably (304, whose Content-Length must
 // equal the octet count a 200 response would have sent) carry one; every other empty-body response gets it,
 // so keep-alive clients can frame the zero-length body immediately instead of waiting for connection close.
-constexpr bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const char* pData) noexcept {
+inline bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const char* pData) noexcept {
   if (isHttpRequest) {
     return false;
   }
@@ -957,8 +936,8 @@ constexpr bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, cons
   return pData[0] >= '2' && std::memcmp(pData, "204", 3U) != 0 && std::memcmp(pData, "304", 3U) != 0;
 }
 
-inline char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
-                                                      bool addTrailerHeader) {
+constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
+                                                         bool addTrailerHeader) {
   insertPtr = insertPtr + http::CRLF.size();
 
   // If adding Trailer header, write it now
@@ -987,6 +966,11 @@ inline char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::stri
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
 }  // namespace
+
+bool HttpMessage::hasChunkedTransferEncoding() const noexcept {
+  return kEndChunkedBody.size() < _opts._trailerLen && std::memcmp(_data.data() + _data.size() - _opts._trailerLen,
+                                                                   kEndChunkedBody.data(), kEndChunkedBody.size()) == 0;
+}
 
 void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                                    std::size_t minCapturedBodySize) {
@@ -1292,6 +1276,8 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
         // Update buffer size and body start position
         _data.addSize(diffSz);
+        setBodyStartPosNoCheck(newBodyDataStart);
+        _opts._trailerLen += static_cast<decltype(_opts._trailerLen)>(kEndChunkedBody.size() + http::CRLF.size());
       }
     }
   }
