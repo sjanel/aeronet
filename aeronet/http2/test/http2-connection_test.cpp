@@ -1254,12 +1254,12 @@ TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
   // increment: INT32_MAX - initialWindow
   constexpr int32_t kMaxWindow = std::numeric_limits<int32_t>::max();
   const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
-  Http2Stream* stream = conn.getStream(1);
-  ASSERT_NE(stream, nullptr);
+  Http2Stream* pStream = conn.getStream(1);
+  ASSERT_NE(pStream, nullptr);
 
   const uint32_t increment =
       static_cast<uint32_t>(static_cast<int64_t>(kMaxWindow) - static_cast<int64_t>(initialWindow));
-  const ErrorCode incErr = stream->increaseSendWindow(increment);
+  const ErrorCode incErr = pStream->increaseSendWindow(increment);
   EXPECT_EQ(incErr, ErrorCode::NoError);
 
   // Now apply SETTINGS_INITIAL_WINDOW_SIZE = initialWindow + 1 which will
@@ -1343,12 +1343,12 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
   // increment: INT32_MAX - initialWindow
   constexpr int32_t kMaxWindow = std::numeric_limits<int32_t>::max();
   const uint32_t initialWindow = conn.peerSettings().initialWindowSize;
-  Http2Stream* stream = conn.getStream(1);
-  ASSERT_NE(stream, nullptr);
+  Http2Stream* pStream = conn.getStream(1);
+  ASSERT_NE(pStream, nullptr);
 
   const uint32_t increment =
       static_cast<uint32_t>(static_cast<int64_t>(kMaxWindow) - static_cast<int64_t>(initialWindow));
-  const ErrorCode incErr = stream->increaseSendWindow(increment);
+  const ErrorCode incErr = pStream->increaseSendWindow(increment);
   EXPECT_EQ(incErr, ErrorCode::NoError);
 
   // Now send a WINDOW_UPDATE for the stream with increment 1 which will overflow
@@ -2117,9 +2117,9 @@ TEST(Http2Connection, SendDataConnectionWindowRestoresStreamWindowOnOverflow) {
   EXPECT_EQ(conn.connectionSendWindow(), 0);
 
   // Increase stream window to allow more data on the stream side
-  Http2Stream* stream = conn.getStream(1);
-  ASSERT_NE(stream, nullptr);
-  (void)stream->increaseSendWindow(1000);
+  Http2Stream* pStream = conn.getStream(1);
+  ASSERT_NE(pStream, nullptr);
+  (void)pStream->increaseSendWindow(1000);
 
   // Now try to send more data — stream has window but connection doesn't.
   // This should restore the stream window and return FlowControlError.
@@ -2127,7 +2127,7 @@ TEST(Http2Connection, SendDataConnectionWindowRestoresStreamWindowOnOverflow) {
   EXPECT_EQ(conn.sendData(1, extra, false), ErrorCode::FlowControlError);
 
   // The stream window should have been restored
-  EXPECT_GT(stream->sendWindow(), 0);
+  EXPECT_GT(pStream->sendWindow(), 0);
 }
 
 // ============================

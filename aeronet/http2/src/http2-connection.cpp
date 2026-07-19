@@ -8,6 +8,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -211,31 +212,31 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
 }
 
 ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-  Http2Stream* stream = getStream(streamId);
-  if (stream == nullptr) [[unlikely]] {
+  Http2Stream* pStream = getStream(streamId);
+  if (pStream == nullptr) [[unlikely]] {
     return ErrorCode::ProtocolError;
   }
 
-  if (!stream->canSend()) {
+  if (!pStream->canSend()) {
     return ErrorCode::StreamClosed;
   }
 
   // Check flow control
   auto dataSize = static_cast<uint32_t>(data.size());
-  if (!stream->consumeSendWindow(dataSize)) {
+  if (!pStream->consumeSendWindow(dataSize)) {
     return ErrorCode::FlowControlError;
   }
 
   if (std::cmp_less(_connectionSendWindow, dataSize)) {
     // Restore stream window
-    (void)stream->increaseSendWindow(dataSize);
+    (void)pStream->increaseSendWindow(dataSize);
     return ErrorCode::FlowControlError;
   }
   _connectionSendWindow -= static_cast<int32_t>(dataSize);
 
   // canSend() above already ensures the stream is Open or HalfClosedRemote,
   // which are exactly the states onSendData() handles — so this cannot fail.
-  [[maybe_unused]] ErrorCode err = stream->onSendData(endStream);
+  [[maybe_unused]] ErrorCode err = pStream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
 
   // Write frame (may need to split if larger than max frame size)
@@ -290,11 +291,11 @@ void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
     _connectionRecvWindow =
         static_cast<int32_t>(std::min(newWindow, static_cast<int64_t>(std::numeric_limits<int32_t>::max())));
   } else {
-    Http2Stream* stream = getStream(streamId);
-    if (stream != nullptr) {
+    Http2Stream* pStream = getStream(streamId);
+    if (pStream != nullptr) {
       // increaseRecvWindow now returns ErrorCode; on the send side (our own
       // WINDOW_UPDATE) an overflow should not happen, but clamp defensively.
-      (void)stream->increaseRecvWindow(increment);
+      (void)pStream->increaseRecvWindow(increment);
     }
   }
 }
@@ -516,14 +517,14 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     ++_activeStreamCount;
     _lastPeerStreamId = header.streamId;
   }
-  Http2Stream* stream = &it->second;
+  Http2Stream* pStream = &it->second;
 
   // Handle priority if present
   if (frame.hasPriority) {
     if (frame.streamDependency == header.streamId) [[unlikely]] {
       return streamError(header.streamId, ErrorCode::ProtocolError, "Stream depends on itself");
     }
-    stream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
+    pStream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
   }
 
   // Accumulate header block
@@ -541,7 +542,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   }
 
   // Complete header block - decode and deliver
-  ErrorCode err = stream->onRecvHeaders(frame.endStream);
+  ErrorCode err = pStream->onRecvHeaders(frame.endStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
     return streamError(header.streamId, err, "Invalid stream state for HEADERS");
   }
@@ -555,7 +556,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     return connectionError(decodeErr, "HPACK decoding failed");
   }
 
-  if (frame.endStream && stream->isClosed()) {
+  if (frame.endStream && pStream->isClosed()) {
     closeStream(it);
   }
 
@@ -578,9 +579,9 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
     return streamError(header.streamId, ErrorCode::ProtocolError, "Stream depends on itself");
   }
 
-  Http2Stream* stream = getStream(header.streamId);
-  if (stream != nullptr) {
-    stream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
+  Http2Stream* pStream = getStream(header.streamId);
+  if (pStream != nullptr) {
+    pStream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
   } else {
     // Security hardening: rate-limit PRIORITY frames on non-existent streams to
     // prevent a flood of cheap PRIORITY frames from starving real request processing.
@@ -765,9 +766,9 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     _connectionSendWindow = static_cast<int32_t>(newWindow);
   } else {
     // Stream-level
-    Http2Stream* stream = getStream(header.streamId);
-    if (stream != nullptr) {
-      ErrorCode err = stream->increaseSendWindow(frame.windowSizeIncrement);
+    Http2Stream* pStream = getStream(header.streamId);
+    if (pStream != nullptr) {
+      ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
       if (err != ErrorCode::NoError) [[unlikely]] {
         return streamError(header.streamId, err, "Stream window overflow");
       }
@@ -843,9 +844,20 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // HPACK
 // ============================
 
+namespace {
+std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHeaders* pGlobalHeaders,
+                              uint8_t pseudoHeaderReserve) {
+  const std::size_t plainHeadersSize =
+      headersViewSize + (pGlobalHeaders != nullptr
+                             ? (pGlobalHeaders->fullSizeWithLastSep() - http::HeaderSep.size() - http::CRLF.size())
+                             : 0);
+  return FrameHeader::kSize + pseudoHeaderReserve + ((plainHeadersSize * 2) / 3);
+}
+}  // namespace
+
 void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
                                     bool endStream, const ConcatenatedHeaders* pGlobalHeaders) {
-  _outputBuffer.ensureAvailableCapacityExponential(FrameHeader::kSize + 512);  // Reserve some space
+  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4U));
 
   // Make the header block be written after the frame header
   _outputBuffer.addSize(FrameHeader::kSize);
@@ -933,7 +945,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
                                                   remainingHeaderBlockSize);
 
   // Write continuation frames
-  for (uint32_t offset = 0; offset < remainingHeaderBlockSize;) {
+  for (std::remove_const_t<decltype(remainingHeaderBlockSize)> offset = 0; offset < remainingHeaderBlockSize;) {
     const auto chunkSize = std::min(remainingHeaderBlockSize - offset, _peerSettings.maxFrameSize);
     const bool isLast = (offset + chunkSize >= remainingHeaderBlockSize);
     const auto chunkSpan = remainingHeaderBlock.subspan(offset, chunkSize);

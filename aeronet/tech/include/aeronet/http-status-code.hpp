@@ -6,12 +6,12 @@ namespace aeronet::http {
 
 using StatusCode = int16_t;
 
-inline constexpr StatusCode StatusCodeOK = 200;
 inline constexpr StatusCode StatusCodeContinue = 100;
 inline constexpr StatusCode StatusCodeSwitchingProtocols = 101;
 inline constexpr StatusCode StatusCodeProcessing = 102;
 inline constexpr StatusCode StatusCodeEarlyHints = 103;
 
+inline constexpr StatusCode StatusCodeOK = 200;
 inline constexpr StatusCode StatusCodeCreated = 201;
 inline constexpr StatusCode StatusCodeAccepted = 202;
 inline constexpr StatusCode StatusCodeNonAuthoritativeInformation = 203;
