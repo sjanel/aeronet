@@ -15,8 +15,11 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
+#include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -42,6 +45,17 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
+#include "aeronet/time-constants.hpp"
+#include "aeronet/timestring.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include <limits>
+
+#include "aeronet/http-constants.hpp"
+#include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-encoder.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 namespace aeronet::http2 {
@@ -288,6 +302,9 @@ class Http2Loopback {
   return std::ranges::any_of(ev.headers, [&](const auto& kv) { return kv.first == name && kv.second == value; });
 }
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+test::TestServer h2ts(HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true).withEnableH2cUpgrade(true)));
+
 }  // namespace
 
 // ============================
@@ -295,13 +312,8 @@ class Http2Loopback {
 // ============================
 
 TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
-  HttpServerConfig cfg;
-  cfg.http2.enable = true;
-  cfg.http2.withEnableH2c(true).withEnableH2cUpgrade(true);
-  test::TestServer h2ts(std::move(cfg));
-
-  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade", [](const HttpRequestView&) {
-    return HttpResponse("should-not-be-used-after-upgrade");
+  h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade", [](const HttpRequestView& req) {
+    return req.makeResponse("should-not-be-used-after-upgrade");
   });
 
   for (bool enableHttp2 : {false, true}) {
@@ -349,11 +361,10 @@ TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
 }
 
 TEST(Http2Core, H2cPriorKnowledgeInvalidPrefaceFallsBackToHttp1) {
-  HttpServerConfig cfg;
-  cfg.http2.enable = true;
-  cfg.http2.withEnableH2c(true);
-
-  test::TestServer h2ts(std::move(cfg));
+  h2ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.http2.enable = true;
+    cfg.http2.withEnableH2c(true);
+  });
   ASSERT_TRUE(h2ts.server.config().http2.enable);
   ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
 
@@ -375,11 +386,11 @@ TEST(Http2Core, H2cPriorKnowledgeInvalidPrefaceFallsBackToHttp1) {
 }
 
 TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
-  HttpServerConfig cfg;
-  cfg.http2.enable = true;
-  cfg.http2.withEnableH2c(true);
+  h2ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.http2.enable = true;
+    cfg.http2.withEnableH2c(true);
+  });
 
-  test::TestServer h2ts(std::move(cfg));
   ASSERT_TRUE(h2ts.server.config().http2.enable);
   ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
 
@@ -941,8 +952,10 @@ TEST(Http2Core, PingRequestProducesPingAck) {
 
   PingFrame pingFrame;
   pingFrame.isAck = false;
-  static constexpr std::byte opaqueData[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
-                                             std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+  static constexpr std::byte opaqueData[] = {
+      std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+      std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
+  };
 
   std::memcpy(pingFrame.opaqueData, opaqueData, sizeof(opaqueData));
   RawBytes ping;
@@ -1421,9 +1434,12 @@ TEST(Http2Core, ManyTinyFramesDontBreakStateMachine) {
 
 #if defined(AERONET_ENABLE_ASYNC_HANDLERS) && defined(AERONET_ENABLE_OPENSSL)
 
+namespace {
+test::TlsHttp2TestServer ts;
+}
+
 // Test deferWork(): basic async work execution returning a value in HTTP/2
 TEST(Http2Async, DeferWorkBasicReturnValue) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-basic", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Run blocking work on background thread
@@ -1444,7 +1460,6 @@ TEST(Http2Async, DeferWorkBasicReturnValue) {
 
 // Test deferWork(): work returning a string in HTTP/2
 TEST(Http2Async, DeferWorkReturnsString) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
                                         [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                           std::string result = co_await req.deferWork([]() -> std::string {
@@ -1464,7 +1479,6 @@ TEST(Http2Async, DeferWorkReturnsString) {
 
 // Test deferWork(): work returning an optional
 TEST(Http2Async, DeferWorkReturnsOptional) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-optional", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
@@ -1487,7 +1501,6 @@ TEST(Http2Async, DeferWorkReturnsOptional) {
 
 // Test deferWork(): multiple sequential defers in same handler over HTTP/2
 TEST(Http2Async, DeferWorkMultipleSequential) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-multi", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         int first = co_await req.deferWork([]() {
@@ -1513,7 +1526,6 @@ TEST(Http2Async, DeferWorkMultipleSequential) {
 
 // Test deferWork(): multiple concurrent requests on a single connection over HTTP/2
 TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-concurrent", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Sleep to ensure requests stack up before completing
@@ -1556,7 +1568,6 @@ TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
 
 // Test deferWork(): exception (std::exception) thrown in work function
 TEST(Http2Async, DeferWorkThrowsStdException) {
-  test::TlsHttp2TestServer ts;
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         try {
@@ -1577,8 +1588,6 @@ TEST(Http2Async, DeferWorkThrowsStdException) {
 
 // Test request middleware intercepting an async handler request, including CORS processing.
 TEST(Http2Async, MiddlewareInterruptsAsyncHandlerWithCors) {
-  test::TlsHttp2TestServer ts;
-
   CorsPolicy policy;
   policy.allowOrigin("https://example.com").allowMethods(http::Method::GET);
 
@@ -1603,6 +1612,994 @@ TEST(Http2Async, MiddlewareInterruptsAsyncHandlerWithCors) {
   EXPECT_EQ(response.statusCode, 401);
   EXPECT_TRUE(response.body.contains("interrupted-by-middleware")) << response.body;
   EXPECT_EQ(response.header("access-control-allow-origin"), "https://example.com");
+}
+
+// ============================================================================
+// Basic streaming
+// ============================================================================
+
+TEST(Http2Streaming, SimpleWriteBodyAndEnd) {
+  ts.http().router().setPath(http::Method::GET, "/stream",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.headerAddLine("X-Custom", "streaming-value");
+                               writer.writeBody("hello ");
+                               writer.writeBody("world");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/stream");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "hello world");
+  EXPECT_EQ(response.header("content-type"), "text/plain");
+  EXPECT_EQ(response.header("x-custom"), "streaming-value");
+}
+
+TEST(Http2Streaming, EmptyBodyEndOnly) {
+  ts.http().router().setPath(http::Method::GET, "/empty",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{204});
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/empty");
+  EXPECT_EQ(response.statusCode, 204);
+  EXPECT_TRUE(response.body.empty());
+}
+
+TEST(Http2Streaming, CustomStatusAndReason) {
+  ts.http().router().setPath(http::Method::GET, "/created",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{201});
+                               writer.reason("Created");
+                               writer.writeBody("resource-id");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/created");
+  EXPECT_EQ(response.statusCode, 201);
+  EXPECT_EQ(response.body, "resource-id");
+}
+
+TEST(Http2Streaming, MultipleWriteBodyCalls) {
+  ts.http().router().setPath(http::Method::GET, "/multi",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("application/octet-stream");
+                               for (int i = 0; i < 10; ++i) {
+                                 writer.writeBody("chunk" + std::to_string(i));
+                               }
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/multi");
+  EXPECT_EQ(response.statusCode, 200);
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(response.body.contains("chunk" + std::to_string(i))) << "missing chunk" << i;
+  }
+}
+
+TEST(Http2Streaming, LargeBody) {
+  const std::string kPayload(128UL * 1024, 'X');  // 128 KB
+
+  ts.http().router().setPath(http::Method::GET, "/large",
+                             [&kPayload](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("application/octet-stream");
+                               // Write in 16 KB chunks
+                               constexpr std::size_t kChunkSize = static_cast<std::size_t>(16 * 1024);
+                               for (std::size_t offset = 0; offset < kPayload.size(); offset += kChunkSize) {
+                                 auto len = std::min(kChunkSize, kPayload.size() - offset);
+                                 writer.writeBody(std::string_view(kPayload).substr(offset, len));
+                               }
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/large");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body.size(), kPayload.size());
+  EXPECT_EQ(response.body, kPayload);
+}
+
+// ============================================================================
+// Headers behavior
+// ============================================================================
+
+TEST(Http2Streaming, HeadersIgnoredAfterFirstWrite) {
+  ts.http().router().setPath(http::Method::GET, "/hdr-ignore",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.headerAddLine("X-Before", "visible");
+                               writer.writeBody("data");
+                               // These should be silently ignored after headers are sent
+                               writer.status(http::StatusCode{404});
+                               writer.headerAddLine("X-After", "invisible");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/hdr-ignore");
+  EXPECT_EQ(response.statusCode, 200);  // Not 404
+  EXPECT_EQ(response.header("x-before"), "visible");
+  EXPECT_TRUE(response.header("x-after").empty());
+}
+
+TEST(Http2Streaming, MultipleCustomHeaders) {
+  ts.http().router().setPath(http::Method::GET, "/multi-hdr",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("application/json");
+                               writer.headerAddLine("X-Request-Id", "abc-123");
+                               writer.headerAddLine("X-Trace-Id", "trace-456");
+                               writer.header("Cache-Control", "no-cache");
+                               writer.writeBody(R"({"ok":true})");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/multi-hdr");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.header("content-type"), "application/json");
+  EXPECT_EQ(response.header("x-request-id"), "abc-123");
+  EXPECT_EQ(response.header("x-trace-id"), "trace-456");
+  EXPECT_EQ(response.header("cache-control"), "no-cache");
+  EXPECT_EQ(response.body, R"({"ok":true})");
+}
+
+// ============================================================================
+// HEAD request on streaming endpoint
+// ============================================================================
+
+TEST(Http2Streaming, HeadSuppressesBody) {
+  ts.http().router().setPath(http::Method::GET, "/head-test",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.writeBody("THIS_SHOULD_NOT_APPEAR");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.request("HEAD", "/head-test");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.empty()) << "HEAD body should be empty, got: " << response.body;
+}
+
+// ============================================================================
+// Fixed Content-Length mode
+// ============================================================================
+
+TEST(Http2Streaming, ExplicitContentLength) {
+  constexpr std::string_view kBody = "fixed-length-body";
+
+  ts.http().router().setPath(http::Method::GET, "/fixed-cl",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.contentLength(17);  // "fixed-length-body" is 17 bytes
+                               writer.writeBody("fixed-length-body");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/fixed-cl");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, kBody);
+}
+
+// NOTE: writer.file() over HTTP/2 streaming relies on deferred PendingFileSend
+// flushing which requires event-loop output-drain callbacks. This is tested
+// at the unit-test level (http2-protocol-handler_test) rather than here.
+
+// ============================================================================
+// Mixed handler types on same server
+// ============================================================================
+
+TEST(Http2Streaming, MixedStreamingAndNormalHandlers) {
+  // Streaming GET
+  ts.http().router().setPath(http::Method::GET, "/mix", [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+    writer.status(http::StatusCode{200});
+    writer.contentType("text/plain");
+    writer.writeBody("STREAM");
+    writer.end();
+  });
+
+  // Normal POST
+  ts.http().router().setPath(http::Method::POST, "/mix", [](const HttpRequestView& /*req*/) {
+    return HttpResponse(http::StatusCode{201}, "NORMAL");
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto getResp = client.get("/mix");
+  EXPECT_EQ(getResp.statusCode, 200);
+  EXPECT_EQ(getResp.body, "STREAM");
+
+  auto postResp = client.post("/mix", "payload");
+  EXPECT_EQ(postResp.statusCode, 201);
+  EXPECT_TRUE(postResp.body.contains("NORMAL"));
+}
+
+TEST(Http2Streaming, StreamingDefaultFallback) {
+  // Global streaming default
+  ts.http().router().setDefault([](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+    writer.status(http::StatusCode{200});
+    writer.writeBody("default-stream");
+    writer.end();
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/any-path");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "default-stream");
+}
+
+// ============================================================================
+// Method Not Allowed
+// ============================================================================
+
+TEST(Http2Streaming, MethodNotAllowedOnStreamingPath) {
+  ts.http().router().setPath(http::Method::GET, "/get-only",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("ok");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.post("/get-only", "data");
+  EXPECT_EQ(response.statusCode, 405);
+}
+
+// ============================================================================
+// Multiple methods with streaming handlers
+// ============================================================================
+
+TEST(Http2Streaming, PostStreamingHandler) {
+  ts.http().router().setPath(http::Method::POST, "/upload", [](const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.status(http::StatusCode{200});
+    writer.contentType("text/plain");
+    writer.writeBody("received:" + std::string(req.body()));
+    writer.end();
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.post("/upload", "my-data", "text/plain");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "received:my-data");
+}
+
+TEST(Http2Streaming, PutStreamingHandler) {
+  ts.http().router().setPath(http::Method::PUT, "/resource",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("updated");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.request("PUT", "/resource", {}, "payload");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "updated");
+}
+
+TEST(Http2Streaming, DeleteStreamingHandler) {
+  ts.http().router().setPath(http::Method::DELETE, "/resource/42",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("deleted");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.request("DELETE", "/resource/42");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "deleted");
+}
+
+// ============================================================================
+// Concurrent streams (HTTP/2 multiplexing)
+// ============================================================================
+
+TEST(Http2Streaming, ConcurrentStreamingRequests) {
+  ts.http().router().setPath(http::Method::GET, "/slow",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.writeBody("part1");
+                               std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                               writer.writeBody("part2");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Send 3 concurrent requests on the same connection
+  uint32_t s1 = client.sendAsyncRequest("GET", "/slow");
+  uint32_t s2 = client.sendAsyncRequest("GET", "/slow");
+  uint32_t s3 = client.sendAsyncRequest("GET", "/slow");
+
+  auto r1 = client.waitAndGetResponse(s1, std::chrono::milliseconds{5000});
+  auto r2 = client.waitAndGetResponse(s2, std::chrono::milliseconds{5000});
+  auto r3 = client.waitAndGetResponse(s3, std::chrono::milliseconds{5000});
+
+  ASSERT_TRUE(r1.has_value());
+  ASSERT_TRUE(r2.has_value());
+  ASSERT_TRUE(r3.has_value());
+
+  EXPECT_EQ(r1.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_EQ(r1.value_or(test::TlsHttp2Client::Response{}).body, "part1part2");
+
+  EXPECT_EQ(r2.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_EQ(r2.value_or(test::TlsHttp2Client::Response{}).body, "part1part2");
+
+  EXPECT_EQ(r3.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_EQ(r3.value_or(test::TlsHttp2Client::Response{}).body, "part1part2");
+}
+
+TEST(Http2Streaming, ConcurrentMixedStreamingAndNormal) {
+  ts.http().router().setPath(http::Method::GET, "/stream-path",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("streamed");
+                               writer.end();
+                             });
+
+  ts.http().router().setPath(http::Method::GET, "/normal-path", [](const HttpRequestView& /*req*/) {
+    return HttpResponse(http::StatusCode{200}, "buffered");
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  uint32_t s1 = client.sendAsyncRequest("GET", "/stream-path");
+  uint32_t s2 = client.sendAsyncRequest("GET", "/normal-path");
+  uint32_t s3 = client.sendAsyncRequest("GET", "/stream-path");
+
+  auto r1 = client.waitAndGetResponse(s1, std::chrono::milliseconds{5000});
+  auto r2 = client.waitAndGetResponse(s2, std::chrono::milliseconds{5000});
+  auto r3 = client.waitAndGetResponse(s3, std::chrono::milliseconds{5000});
+
+  ASSERT_TRUE(r1.has_value());
+  EXPECT_EQ(r1.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_EQ(r1.value_or(test::TlsHttp2Client::Response{}).body, "streamed");
+
+  ASSERT_TRUE(r2.has_value());
+  EXPECT_EQ(r2.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_TRUE(r2.value_or(test::TlsHttp2Client::Response{}).body.contains("buffered"));
+
+  ASSERT_TRUE(r3.has_value());
+  EXPECT_EQ(r3.value_or(test::TlsHttp2Client::Response{}).statusCode, 200);
+  EXPECT_EQ(r3.value_or(test::TlsHttp2Client::Response{}).body, "streamed");
+}
+
+// ============================================================================
+// Sequential requests on same connection (keep-alive / reuse)
+// ============================================================================
+
+TEST(Http2Streaming, SequentialRequestsOnSameConnection) {
+  int invocationCount = 0;
+  ts.http().router().setPath(http::Method::GET, "/seq",
+                             [&invocationCount](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               ++invocationCount;
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("call-" + std::to_string(invocationCount));
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto r1 = client.get("/seq");
+  EXPECT_EQ(r1.statusCode, 200);
+  EXPECT_EQ(r1.body, "call-1");
+
+  auto r2 = client.get("/seq");
+  EXPECT_EQ(r2.statusCode, 200);
+  EXPECT_EQ(r2.body, "call-2");
+
+  auto r3 = client.get("/seq");
+  EXPECT_EQ(r3.statusCode, 200);
+  EXPECT_EQ(r3.body, "call-3");
+}
+
+// ============================================================================
+// Compression (gzip over HTTP/2 streaming)
+// ============================================================================
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(Http2StreamingCompression, GzipCompressedStreamingBody) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    CompressionConfig compression;
+    compression.minBytes = 8;
+    compression.preferredFormats.clear();
+    compression.preferredFormats.push_back(Encoding::gzip);
+    cfg.withCompression(compression);
+  });
+
+  ts.http().router().setPath(http::Method::GET, "/compress",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               // Write enough data to trigger compression (above minBytes threshold)
+                               writer.writeBody(std::string(128, 'A'));
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/compress", {{"accept-encoding", "gzip"}});
+  EXPECT_EQ(response.statusCode, 200);
+  // The HTTP/2 client should decompress transparently, or we see content-encoding header.
+  // Verify we got the content back (may be decompressed by client or raw gzip).
+  // At minimum the response should be successful and not empty.
+  EXPECT_FALSE(response.body.empty());
+}
+
+TEST(Http2StreamingCompression, IdentityEncodingPreventsCompression) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    CompressionConfig compression;
+    compression.minBytes = 8;
+    compression.preferredFormats = {Encoding::gzip};
+    cfg.withCompression(compression);
+  });
+
+  ts.http().router().setPath(http::Method::GET, "/no-compress",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.contentEncoding("identity");
+                               writer.writeBody(std::string(128, 'B'));
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/no-compress", {{"accept-encoding", "gzip"}});
+  EXPECT_EQ(response.statusCode, 200);
+  // With identity encoding, body should be uncompressed
+  EXPECT_EQ(response.body, std::string(128, 'B'));
+}
+#endif  // AERONET_ENABLE_ZLIB
+
+// ============================================================================
+// Trailers over HTTP/2
+// ============================================================================
+
+TEST(Http2Streaming, TrailersEmitted) {
+  ts.http().router().setPath(http::Method::GET, "/trailers",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               writer.writeBody("body-with-trailers");
+                               writer.trailerAddLine("x-checksum", "abc123");
+                               writer.trailerAddLine("x-duration-ms", "42");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/trailers");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "body-with-trailers");
+  // HTTP/2 trailers are delivered as a trailing HEADERS frame; the client
+  // may expose them as regular headers or trailing headers.
+  // At minimum the response must succeed.
+}
+
+// ============================================================================
+// Path parameters with streaming handler
+// ============================================================================
+
+TEST(Http2Streaming, PathParamsWithStreamingHandler) {
+  ts.http().router().setPath(http::Method::GET, "/items/{id}",
+                             [](const HttpRequestView& req, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               auto id = req.pathParams().contains("id") ? req.pathParams().at("id") : "none";
+                               writer.writeBody("item-id:" + std::string(id));
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/items/42");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "item-id:42");
+}
+
+// ============================================================================
+// Query string access in streaming handler
+// ============================================================================
+
+TEST(Http2Streaming, QueryParamAccess) {
+  ts.http().router().setPath(http::Method::GET, "/search", [](const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.status(http::StatusCode{200});
+    writer.contentType("text/plain");
+    auto queryParam = req.queryParamValue("q").value_or("");
+    auto page = req.queryParamValue("page").value_or("");
+    writer.writeBody("q=" + std::string(queryParam) + "&page=" + std::string(page));
+    writer.end();
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/search?q=hello&page=2");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "q=hello&page=2");
+}
+
+// ============================================================================
+// Error in handler (exception before any output)
+// ============================================================================
+
+TEST(Http2Streaming, HandlerExceptionBeforeHeadersSendsDefault200) {
+  ts.http().router().setPath(http::Method::GET, "/crash",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& /*writer*/) {
+                               throw std::runtime_error("handler-exploded");
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/crash");
+  // Exception before headers sent: the streaming handler catches the exception,
+  // then calls writer.end() which sends default 200 OK with empty body.
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.empty());
+}
+
+// ============================================================================
+// Double end() is a no-op
+// ============================================================================
+
+TEST(Http2Streaming, DoubleEndIsNoOp) {
+  ts.http().router().setPath(http::Method::GET, "/double-end",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("once");
+                               writer.end();
+                               writer.end();  // second end() should be silently ignored
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/double-end");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "once");
+}
+
+// ============================================================================
+// writeBody() after end() returns false
+// ============================================================================
+
+TEST(Http2Streaming, WriteAfterEndIgnored) {
+  ts.http().router().setPath(http::Method::GET, "/write-after-end",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.writeBody("visible");
+                               writer.end();
+                               writer.writeBody("invisible");  // should be ignored
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/write-after-end");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "visible");
+  EXPECT_FALSE(response.body.contains("invisible"));
+}
+
+// ============================================================================
+// Global streaming handler overrides global normal handler
+// ============================================================================
+
+TEST(Http2Streaming, GlobalStreamingPrecedenceOverNormal) {
+  // Register both global normal and global streaming defaults
+  ts.http().router().setDefault(
+      [](const HttpRequestView& /*req*/) { return HttpResponse(http::StatusCode{200}, "normal-global"); });
+  ts.http().router().setDefault([](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+    writer.status(http::StatusCode{200});
+    writer.writeBody("streaming-global");
+    writer.end();
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/unknown");
+  EXPECT_EQ(response.statusCode, 200);
+  // Streaming default should take precedence
+  EXPECT_EQ(response.body, "streaming-global");
+}
+
+// ============================================================================
+// Streaming handler reading request headers
+// ============================================================================
+
+TEST(Http2Streaming, AccessRequestHeaders) {
+  ts.http().router().setPath(http::Method::GET, "/echo-header",
+                             [](const HttpRequestView& req, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("text/plain");
+                               auto auth = req.headerValueOrEmpty("authorization");
+                               writer.writeBody("auth:" + std::string(auth));
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/echo-header", {{"authorization", "Bearer token123"}});
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "auth:Bearer token123");
+}
+
+namespace {
+
+std::string DumpResponseHeaders(const test::TlsHttp2Client::Response& response) {
+  std::string out;
+  for (const auto& [name, value] : response.headers) {
+    out.append(name);
+    out.append(": ");
+    out.append(value);
+    out.push_back('\n');
+  }
+  return out;
+}
+}  // namespace
+
+TEST(TlsHttp2Client, BasicGetRequest) {
+  // Create TLS server with HTTP/2 support
+  ts.setDefault([](const HttpRequestView& req) {
+    return req.makeResponse("Hello from HTTP/2 server! Path: " + std::string(req.path()));
+  });
+
+  // Create HTTP/2 client and verify connection
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected()) << "Failed to establish HTTP/2 connection";
+  EXPECT_EQ(client.negotiatedAlpn(), "h2");
+
+  // Send a GET request
+  auto response = client.get("/test-path");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.contains("Hello from HTTP/2 server!"));
+  EXPECT_TRUE(response.body.contains("/test-path"));
+}
+
+TEST(TlsHttp2Client, RequestWithQueryParams) {
+  ts.setDefault([](const HttpRequestView& req) {
+    if (req.path() != "/hello") {
+      return HttpResponse(http::StatusCodeNotFound);
+    }
+    if (req.queryParamValueOrEmpty("a") != "1") {
+      return HttpResponse(418).body("Bad a");
+    }
+    if (req.queryParamValueOrEmpty("b") != "spaces  and/slash") {
+      return HttpResponse(418).body("Bad b");
+    }
+    return HttpResponse(200);
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Note: TlsHttp2Client's `get(path)` takes a string, we can pass "/hello?a=1&b=spaces%20%20and%2Fslash"
+  // This verifies that HTTP/2 path and queries are percent-decoded correctly mirroring HTTP/1.1
+  auto response = client.get("/hello?a=1&b=spaces%20%20and%2Fslash");
+  EXPECT_EQ(response.statusCode, 200) << "Body: " << response.body;
+
+  // Also check that invalid percent-encoding is handled gracefully (e.g. not treated as literal % followed by chars,
+  // and doesn't cause server error)
+  auto badResponse = client.get("/hello%salut");
+  EXPECT_EQ(badResponse.statusCode, 400) << "Body: " << badResponse.body;
+}
+
+TEST(TlsHttp2Client, MultipleSequentialRequests) {
+  int requestCount = 0;
+  ts.setDefault([&requestCount](const HttpRequestView& req) {
+    ++requestCount;
+    return req.makeResponse("Request #" + std::to_string(requestCount) + ": " + std::string(req.path()));
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Send multiple requests on the same connection
+  auto resp1 = client.get("/first");
+  EXPECT_EQ(resp1.statusCode, 200);
+  EXPECT_TRUE(resp1.body.contains("Request #1"));
+
+  auto resp2 = client.get("/second");
+  EXPECT_EQ(resp2.statusCode, 200);
+  EXPECT_TRUE(resp2.body.contains("Request #2"));
+
+  auto resp3 = client.get("/third");
+  EXPECT_EQ(resp3.statusCode, 200);
+  EXPECT_TRUE(resp3.body.contains("Request #3"));
+}
+
+TEST(TlsHttp2Client, PostRequestWithBody) {
+  std::string receivedBody;
+  std::string receivedContentType;
+  ts.setDefault([&](const HttpRequestView& req) {
+    receivedBody = std::string(req.body());
+    receivedContentType = std::string(req.headerValueOrEmpty("content-type"));
+    return req.makeResponse("Received: " + receivedBody);
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.post("/submit", "Hello, HTTP/2 POST!", "text/plain");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(receivedBody, "Hello, HTTP/2 POST!");
+  EXPECT_EQ(receivedContentType, "text/plain");
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = 16UL;
+    cfg.compression.addVaryAcceptEncodingHeader = true;
+  });
+
+  const std::string plainBody(16UL * 1024UL, 'A');
+  ts.setDefault([&](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, plainBody); });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/gzip", {{"accept-encoding", "gzip"}});
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.header("content-encoding"), "gzip");
+  EXPECT_EQ(response.header("vary"), http::AcceptEncoding);
+
+  RawChars out;
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32UL * 1024UL, out));
+  EXPECT_EQ(std::string_view(out), plainBody);
+}
+
+TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
+  std::string receivedBody;
+  std::string receivedContentEncoding;
+  std::string receivedOriginalEncoding;
+  std::string receivedOriginalEncodedLen;
+  std::string receivedContentLen;
+
+  ts.setDefault([&](const HttpRequestView& req) {
+    receivedBody = std::string(req.body());
+    receivedContentEncoding = std::string(req.headerValueOrEmpty("content-encoding"));
+    receivedOriginalEncoding = std::string(req.headerValueOrEmpty(http::OriginalEncodingHeaderName));
+    receivedOriginalEncodedLen = std::string(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName));
+    receivedContentLen = std::string(req.headerValueOrEmpty("content-length"));
+    return req.makeResponse("ok");
+  });
+
+  const std::string plain = "Hello request decompression over h2";
+
+  CompressionConfig compressionCfg;
+  RawChars buf;
+  ZlibEncoder encoder(compressionCfg.zlib.level);
+  RawChars compressed(64UL + plain.size());
+  const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
+  ASSERT_FALSE(result.hasError());
+  compressed.setSize(result.written());
+  const std::string compressedBody(compressed.data(), compressed.size());
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response =
+      client.post("/submit", compressedBody, "application/octet-stream",
+                  {{"content-encoding", "gzip"}, {"content-length", std::to_string(compressedBody.size())}});
+  EXPECT_EQ(response.statusCode, 200);
+
+  EXPECT_EQ(receivedBody, plain);
+  EXPECT_TRUE(receivedContentEncoding.empty());
+  EXPECT_EQ(receivedOriginalEncoding, "gzip");
+  EXPECT_EQ(receivedOriginalEncodedLen, std::to_string(compressedBody.size()));
+  EXPECT_EQ(receivedContentLen, std::to_string(plain.size()));
+}
+#endif
+
+TEST(TlsHttp2Client, CustomHeaders) {
+  std::string receivedCustomHeader;
+  ts.setDefault([&](const HttpRequestView& req) {
+    receivedCustomHeader = std::string(req.headerValueOrEmpty("x-custom-header"));
+    return req.makeResponse().headerAddLine("x-response-header", "response-value").body("Headers received");
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/headers", {{"x-custom-header", "custom-value"}});
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(receivedCustomHeader, "custom-value");
+  EXPECT_EQ(response.header("x-response-header"), "response-value");
+}
+
+TEST(TlsHttp2Client, GlobalHeadersAndDateAreInjected) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withGlobalHeaders({});
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+    cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
+  });
+
+  ts.setDefault([]([[maybe_unused]] const HttpRequestView& req) {
+    HttpResponse resp;
+    resp.headerAddLine("x-custom", "original");
+    resp.body("R");
+    return resp;
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/global-headers");
+  EXPECT_EQ(response.statusCode, 200);
+
+  EXPECT_EQ(response.header("x-global"), "gvalue");
+  EXPECT_EQ(response.header("x-another"), "anothervalue");
+  EXPECT_EQ(response.header("x-custom"), "original");
+
+  const auto date = response.header("date");
+  ASSERT_FALSE(date.empty()) << "Received headers:\n" << DumpResponseHeaders(response);
+  EXPECT_EQ(date.size(), RFC7231DateStrLen);
+  EXPECT_TRUE(date.ends_with("GMT"));
+  EXPECT_NE(TryParseTimeRFC7231(date), kInvalidTimePoint);
+}
+
+TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withGlobalHeaders({});
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Another", "anothervalue"});
+  });
+
+  ts.setDefault([](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeAccepted, "h2-body", "text/custom");
+    resp.header("X-Local", "local-value");
+    return resp;
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/make-response");
+  EXPECT_EQ(response.statusCode, 202);
+  EXPECT_EQ(response.body, "h2-body");
+  EXPECT_EQ(response.header("x-global"), "gvalue");
+  EXPECT_EQ(response.header("x-another"), "anothervalue");
+  EXPECT_EQ(response.header("x-local"), "local-value");
+}
+
+TEST(TlsHttp2Client, HeadOmitsBodyButSetsContentLengthAndDate) {
+  auto routerProxy = ts.server.resetRouterAndGet();
+  routerProxy.setDefault([](const HttpRequestView& req) { return req.makeResponse("abc"); });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.request("HEAD", "/head-test");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_TRUE(response.body.empty());
+  EXPECT_EQ(response.header("content-length"), "3");
+
+  const auto date = response.header("date");
+  EXPECT_EQ(date.size(), RFC7231DateStrLen);
+  EXPECT_TRUE(date.ends_with("GMT"));
+}
+
+TEST(TlsHttp2Client, StatusCodes) {
+  ts.setDefault([](const HttpRequestView& req) {
+    if (req.path() == "/not-found") {
+      return req.makeResponse(404, "Resource not found");
+    }
+    if (req.path() == "/error") {
+      return req.makeResponse(500, "Server error");
+    }
+    return req.makeResponse("Success");
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto ok = client.get("/");
+  EXPECT_EQ(ok.statusCode, 200);
+
+  auto notFound = client.get("/not-found");
+  EXPECT_EQ(notFound.statusCode, 404);
+
+  auto error = client.get("/error");
+  EXPECT_EQ(error.statusCode, 500);
+}
+
+TEST(TlsHttp2Client, TrailersAreSentAfterBody) {
+  // Test that HTTP/2 trailers are correctly sent as a HEADERS frame with END_STREAM after DATA frames
+  ts.setDefault([](const HttpRequestView& req) {
+    return req.makeResponse("Body content")
+        .trailerAddLine("x-checksum", "abc123")
+        .trailerAddLine("x-processing-time-ms", "42");
+  });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/with-trailers");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "Body content");
+
+  // Trailers should appear in the headers list (HTTP/2 trailers are sent as a final HEADERS frame)
+  EXPECT_EQ(response.header("x-checksum"), "abc123");
+  EXPECT_EQ(response.header("x-processing-time-ms"), "42");
+}
+
+TEST(TlsHttp2Client, ResponseWithoutBodyNoTrailers) {
+  ts.setDefault([](const HttpRequestView& req) { return req.makeResponse().status(204); });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/no-content");
+  EXPECT_EQ(response.statusCode, 204);
+  EXPECT_TRUE(response.body.empty());
+}
+
+TEST(TlsHttp2Client, ResponseWithBodyNoTrailers) {
+  ts.setDefault([](const HttpRequestView& req) { return req.makeResponse("Simple body"); });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/simple");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.body, "Simple body");
 }
 
 #endif  // AERONET_ENABLE_OPENSSL

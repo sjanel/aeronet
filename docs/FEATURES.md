@@ -2473,7 +2473,7 @@ curl -i http://localhost:8080/somefile.txt
 curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
 ```
 
-Testing lives in `tests/http-range_test.cpp` which exercises full-body responses, single-range `206`, multi-range
+Testing lives in `tests/http-core_test.cpp` which exercises full-body responses, single-range `206`, multi-range
 `206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit
 behaviour. Unit tests in `aeronet/http/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing,
 coalescing, boundary generation, and multipart body assembly paths.
