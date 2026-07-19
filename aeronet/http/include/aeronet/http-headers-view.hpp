@@ -19,6 +19,8 @@ class HeadersView {
 
   explicit HeadersView(std::string_view sv) noexcept : _beg(sv.data()), _end(sv.data() + sv.size()) {}
 
+  [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(_end - _beg); }
+
   class iterator {
    public:
     using value_type = http::HeaderView;
