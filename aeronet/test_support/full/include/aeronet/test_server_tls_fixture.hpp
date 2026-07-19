@@ -65,7 +65,7 @@ struct TlsTestServer {
                          std::chrono::milliseconds poll = std::chrono::milliseconds{1})
       : server(MakeConfig(alpn, mut), RouterConfig{}, poll) {}
 
-  [[nodiscard]] uint16_t port() const { return server.port(); }
+  [[nodiscard]] uint16_t port() const noexcept { return server.port(); }
   void stop() { server.stop(); }
 
   // Forward selected SingleHttpServer APIs for convenience to reduce nested server.server noise.

@@ -132,7 +132,7 @@ struct Sup {
   Encoding enc;
 };
 
-constexpr auto kSupportedEncodings = []() {
+constexpr auto kSupportedEncodings = [] {
   std::array<Sup, kNbSupportedEncodings> arr;
   EncodingInt sz = 0;
   for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {

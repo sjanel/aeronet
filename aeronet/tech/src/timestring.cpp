@@ -184,8 +184,9 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
   const std::chrono::year_month_day ymd{yearField, monthField, dayField};
   // Verify the weekday token (e.g. "Sun") matches the resolved date
-  static constexpr uint16_t kWeekdays[]{read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"),
-                                        read3("Thu"), read3("Fri"), read3("Sat")};
+  static constexpr uint16_t kWeekdays[]{
+      read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"), read3("Thu"), read3("Fri"), read3("Sat"),
+  };
   const auto weekdayIt = std::ranges::find(kWeekdays, read3(ptr));
   if (weekdayIt == std::end(kWeekdays)) {
     return ret;

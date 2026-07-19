@@ -37,7 +37,7 @@ char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInval
           *out++ = c2;
           break;
         }
-        *out++ = static_cast<char>((static_cast<uint8_t>(v1) << 4) | static_cast<uint8_t>(v2));
+        *out++ = static_cast<char>((static_cast<uint8_t>(v1) << 4U) | static_cast<uint8_t>(v2));
         break;
       }
       default:
