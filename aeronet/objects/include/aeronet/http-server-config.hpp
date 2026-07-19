@@ -180,10 +180,10 @@ struct HttpServerConfig {
   // Default: 256 MiB.
   std::size_t maxBodyBytes{1 << 28};  // 256 MiB
 
-  // For requests with a captured body, HttpResponse will concatenate the captured body contents with the head in the
-  // same buffer if their size is below this threshold. This can be efficient for small bodies because it
-  // improves cache locality and will probably save one system socket call. Larger bodies will be kept separate.
-  // Default: 1 KiB.
+  // For responses with captured bodies smaller than this threshold, HttpResponse will concatenate the captured body
+  // contents with the head in the same buffer. This can be efficient for small
+  // bodies because it improves cache locality. Only used in HTTP/1.1.
+  // Larger bodies will be kept separate. Default: 1 KiB.
   std::size_t minCapturedBodySize{1024};  // 1 KiB
 
   // =============================================
