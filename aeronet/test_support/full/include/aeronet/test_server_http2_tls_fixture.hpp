@@ -1,8 +1,5 @@
 #pragma once
 
-#ifdef AERONET_ENABLE_HTTP2
-
-#include <chrono>
 #include <functional>
 #include <utility>
 
@@ -10,7 +7,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
-#include "aeronet/router-config.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_server_fixture.hpp"
 
@@ -56,5 +52,3 @@ struct TlsHttp2TestServer {
 };
 
 }  // namespace aeronet::test
-
-#endif

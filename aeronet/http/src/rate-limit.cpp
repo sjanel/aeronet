@@ -163,11 +163,13 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
                                                                        const RateLimitConfig& config) {
   _charStorage.clear();
 
-  RedisEvalRequest req{.script = kRedisSlidingWindowScript,
-                       .scriptSha = kRedisSlidingWindowScriptSha1,
-                       .key = buildRedisKey(key),
-                       .args = {},
-                       .preferEvalSha = _redisConfig.preferEvalSha};
+  RedisEvalRequest req{
+      .script = kRedisSlidingWindowScript,
+      .scriptSha = kRedisSlidingWindowScriptSha1,
+      .key = buildRedisKey(key),
+      .args = {},
+      .preferEvalSha = _redisConfig.preferEvalSha,
+  };
 
   const auto nowMs =
       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
