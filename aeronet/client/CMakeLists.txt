@@ -88,7 +88,7 @@ if(AERONET_ENABLE_HTTP2)
         LIBRARIES
         aeronet_client
         aeronet
-        aeronet_basic_test_support
+        aeronet_test_support
     )
 endif()
 

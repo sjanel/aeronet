@@ -81,9 +81,8 @@ class ClientConnection {
   // is set to true (even when the call later returns an error) as soon as any request byte reaches the
   // transport, so the caller can tell a pre-send failure (safe to retry) from a post-send one (never retried,
   // to avoid re-submitting a non-idempotent request).
-  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                          const HttpRequest& req, SteadyClock::time_point ioDeadline,
-                                          bool& requestSent) {
+  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd, HttpRequest& req,
+                                          SteadyClock::time_point ioDeadline, bool& requestSent) {
 #ifdef AERONET_ENABLE_HTTP2
     if (_type == Type::Http2) {
       return exchangeForHttp2(client, transport, fd, req, ioDeadline, requestSent);
@@ -116,7 +115,7 @@ class ClientConnection {
 
  private:
   [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
-                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
+                                                   HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                    bool& requestSent);
 
   // Write the request head followed by the body, pumping the event loop on would-block. While both buffers
@@ -134,17 +133,6 @@ class ClientConnection {
   [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                   bool& requestSent);
-
-  // Build the request header block (pseudo-headers first, then regular headers, all names lowercased --
-  // RFC 9113 §8.2/§8.3) as flat "name: value\r\n" lines into client.requestBuffer(), ready for
-  // Http2Connection::sendHeaders. Connection-specific headers are dropped and Host becomes :authority.
-  static void buildHeaderBlockForHttp2(HttpClient& client, const HttpRequest& req);
-
-  // Build the trailing header block (request trailers, RFC 9113 §8.1) as flat "name: value\r\n" lines
-  // into client.requestBuffer(), ready for the trailing Http2Connection::sendHeaders call. Names are
-  // lowercased in place; trailers carry no pseudo-headers. Only meaningful when req.trailersSize() != 0.
-  // Safe to reuse the request scratch buffer: the initial header block was already HPACK-encoded away.
-  static void buildTrailerBlockForHttp2(HttpClient& client, const HttpRequest& req);
 
   std::unique_ptr<Http2ClientEngine> _h2;  // engaged iff _type == Type::Http2
 #endif

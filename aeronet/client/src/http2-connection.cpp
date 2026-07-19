@@ -22,7 +22,6 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
-#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -31,13 +30,11 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/tolower-str.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet::internal {
@@ -148,11 +145,11 @@ class Http2ClientEngine {
 
   // Send-side flow-control budget for `streamId`: min(stream window, connection window), never negative.
   [[nodiscard]] std::size_t sendWindow(uint32_t streamId) noexcept {
-    const http2::Http2Stream* stream = _conn.getStream(streamId);
-    if (stream == nullptr) {
+    const http2::Http2Stream* pStream = _conn.getStream(streamId);
+    if (pStream == nullptr) {
       return 0;
     }
-    return static_cast<std::size_t>(std::max(std::min(stream->sendWindow(), _conn.connectionSendWindow()), 0));
+    return static_cast<std::size_t>(std::max(std::min(pStream->sendWindow(), _conn.connectionSendWindow()), 0));
   }
 
   // Whether this pooled connection can host one more exchange: connection open (no GOAWAY in either
@@ -341,108 +338,6 @@ void ClientConnection::reset() noexcept {
 
 bool ClientConnection::canTakeAnotherStream() const noexcept { return _type != Type::Http2 || _h2->reusable(); }
 
-void ClientConnection::buildHeaderBlockForHttp2(HttpClient& client, const HttpRequest& req) {
-  RawChars& out = client.requestBuffer();
-  out.clear();
-
-  const std::string_view methodStr = http::MethodToStr(req.method());
-  const std::string_view scheme = req.scheme();
-  const std::string_view target = req.target();
-
-  // Single scan of the user headers, then derive the injection decisions -- shared with (and identical to)
-  // the HTTP/1.1 builder. An explicit Host becomes the :authority value.
-  const std::string_view authorityOverride = req.hostHeaderValue();
-
-  // Headers a request must not carry in HTTP/2 (connection-specific, RFC 9113 §8.2.2) are dropped, as is
-  // Host (carried as :authority). TE survives only as "TE: trailers". Content-Type / Content-Length are
-  // dropped on a redirect rewrite to GET, and Content-Length is rewritten when the body was compressed.
-  const auto skipHeader = [](std::string_view name, std::string_view value) {
-    return CaseInsensitiveEqual(name, http::Host) || CaseInsensitiveEqual(name, http::Connection) ||
-           CaseInsensitiveEqual(name, "keep-alive") || CaseInsensitiveEqual(name, "proxy-connection") ||
-           CaseInsensitiveEqual(name, http::TransferEncoding) || CaseInsensitiveEqual(name, http::Upgrade) ||
-           (CaseInsensitiveEqual(name, http::TE) && !CaseInsensitiveEqual(value, "trailers"));
-  };
-
-  // First pass: exact byte count of the flat "name: value\r\n" block -- ONE allocation.
-  constexpr std::size_t kLineOverhead = http::HeaderSep.size() + http::CRLF.size();
-  std::size_t neededSize = http::PseudoHeaderMethod.size() + methodStr.size() + kLineOverhead +
-                           http::PseudoHeaderScheme.size() + scheme.size() + kLineOverhead +
-                           http::PseudoHeaderAuthority.size() + kLineOverhead + http::PseudoHeaderPath.size() +
-                           target.size() + kLineOverhead;
-  neededSize += authorityOverride.size();
-  for (const auto& [name, value] : req.headers()) {
-    if (!skipHeader(name, value)) {
-      neededSize += name.size() + value.size() + kLineOverhead;
-    }
-  }
-
-  out.ensureAvailableCapacity(neededSize);
-  char* pEnd = out.data();
-
-  // Append "name: " (names below are compile-time constants, already lowercase).
-  const auto appendName = [&pEnd](std::string_view name) {
-    pEnd = Append(name, pEnd);
-    pEnd = Append(http::HeaderSep, pEnd);
-  };
-
-  // Pseudo-headers first (mandatory order, RFC 9113 §8.3).
-  appendName(http::PseudoHeaderMethod);
-  pEnd = Append(methodStr, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-
-  appendName(http::PseudoHeaderScheme);
-  pEnd = Append(scheme, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-
-  appendName(http::PseudoHeaderAuthority);
-  pEnd = Append(authorityOverride, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-
-  appendName(http::PseudoHeaderPath);
-  pEnd = Append(target, pEnd);
-  pEnd = Append(http::CRLF, pEnd);
-
-  // User headers, names lowercased in place (HTTP/2 field names must be lowercase, RFC 9113 §8.2).
-  for (const auto& [name, value] : req.headers()) {
-    if (skipHeader(name, value)) {
-      continue;
-    }
-    char* nameBeg = pEnd;
-    pEnd = Append(name, pEnd);
-    aeronet::tolower(nameBeg, name.size());
-    pEnd = Append(http::HeaderSep, pEnd);
-    pEnd = Append(value, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-  }
-  out.setSize(static_cast<std::size_t>(pEnd - out.data()));
-}
-
-void ClientConnection::buildTrailerBlockForHttp2(HttpClient& client, const HttpRequest& req) {
-  // The initial header block was already HPACK-encoded into the connection output buffer, so the request
-  // scratch buffer is free to be reused for the trailing header block. Trailers carry neither pseudo-headers
-  // nor connection-specific fields, so this is a straight lowercased "name: value\r\n" copy -- one allocation.
-  RawChars& out = client.requestBuffer();
-  out.clear();
-
-  constexpr std::size_t kLineOverhead = http::HeaderSep.size() + http::CRLF.size();
-  std::size_t neededSize = 0;
-  for (const auto& [name, value] : req.trailers()) {
-    neededSize += name.size() + value.size() + kLineOverhead;
-  }
-
-  out.ensureAvailableCapacity(neededSize);
-  char* pEnd = out.data();
-  for (const auto& [name, value] : req.trailers()) {
-    char* nameBeg = pEnd;
-    pEnd = Append(name, pEnd);
-    aeronet::tolower(nameBeg, name.size());  // HTTP/2 field names must be lowercase (RFC 9113 §8.2)
-    pEnd = Append(http::HeaderSep, pEnd);
-    pEnd = Append(value, pEnd);
-    pEnd = Append(http::CRLF, pEnd);
-  }
-  out.setSize(static_cast<std::size_t>(pEnd - out.data()));
-}
-
 HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
@@ -462,8 +357,6 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   bodyBuf.clear();  // reuse the buffer's allocation across requests
   const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes);
 
-  buildHeaderBlockForHttp2(client, req);
-
   // TODO: what about file bodies ?
   std::string_view body = req.bodyInMemory();
 
@@ -471,17 +364,24 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   // are present, END_STREAM must be withheld from the initial HEADERS and from the final DATA frame so the
   // stream stays open until the trailers are shipped. endStreamSent tracks whether our send side was closed
   // (through HEADERS, DATA, or trailers) so the post-exchange cleanup below chooses finalize vs RST_STREAM.
-  const bool hasTrailers = req.trailersSize() != 0;
-  bool endStreamSent = body.empty() && !hasTrailers;
+  bool endStreamSent = body.empty();
+
+  const auto method = req.method();
+  const bool isTlsRequest = req.isTlsRequest();
+  const std::string_view target = req.target();
+  const std::string_view authority = req.hostHeaderValue();
 
   const http2::ErrorCode headersErr =
-      conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), endStreamSent);
+      conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority, HeadersView(req.headersFlatView()),
+                              endStreamSent, &config.globalHeaders);
   if (headersErr != http2::ErrorCode::NoError) {
     log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(),
                http2::ErrorCodeName(headersErr));
     engine.endExchange();
     return std::unexpected(HttpClientErrc::connectionClosed);
   }
+
+  const bool hasTrailers = req.trailersSize() != 0;
 
   // Ship the request head (plus preface / housekeeping frames), then the body under send flow control.
   // An early response (RFC 9113 §8.1: the server answers before the whole request was uploaded) stops
@@ -515,9 +415,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   // or the server answered early (RFC 9113 §8.1) -- the half-open stream is then aborted with RST_STREAM.
   if (hasTrailers && ioRes && bodyOff == body.size() && engine.failure() == Http2ClientEngine::Failure::None &&
       !engine.responseComplete()) {
-    buildTrailerBlockForHttp2(client, req);
-    const http2::ErrorCode trailerErr =
-        conn.sendHeaders(streamId, http::StatusCode{}, HeadersView(client.requestBuffer()), /*endStream=*/true);
+    const http2::ErrorCode trailerErr = conn.sendRequestHeaders(
+        streamId, method, isTlsRequest, {}, {}, HeadersView(req.trailersFlatView()), /*endStream=*/true);
     if (trailerErr != http2::ErrorCode::NoError) {
       log::error("HTTP/2 client: sending trailers on stream {} failed ({})", streamId,
                  http2::ErrorCodeName(trailerErr));

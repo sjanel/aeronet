@@ -124,7 +124,7 @@ TEST_F(PathHandlerEntryTest, SetPathEmpty) {
   EXPECT_THROW(router.setPath(http::Method::GET, "/", RequestHandler{}), std::invalid_argument);
   EXPECT_THROW(router.setPath(http::Method::GET, "/", StreamingHandler{}), std::invalid_argument);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  EXPECT_THROW(router.setPath(http::Method::GET, "/", AsyncRequestHandler{}), std ::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/", AsyncRequestHandler{}), std::invalid_argument);
 #endif
 }
 

@@ -81,6 +81,30 @@ class HeadersView {
   [[nodiscard]] iterator begin() const noexcept { return {_beg, _end}; }
   [[nodiscard]] iterator end() const noexcept { return {_end, _end}; }
 
+  // Optimized search for a header name with colon (case-sensitive) in the flat headers view.
+  // Returns true if the header is found, false otherwise.
+  [[nodiscard]] bool containsCaseSensitive(std::string_view headerNameWithColon) const noexcept {
+    std::string_view flatHeaders(_beg, _end);
+
+    assert(headerNameWithColon.ends_with(http::HeaderSep));  // must include the colon
+
+    std::size_t pos = 0;
+    while (true) {
+      pos = flatHeaders.find(headerNameWithColon, pos);
+      if (pos == std::string_view::npos) {
+        break;
+      }
+      // Check that the match is at the start of a line (after CRLF or at the beginning of the string)
+      if (pos == 0 ||
+          (pos >= http::CRLF.size() && flatHeaders.substr(pos - http::CRLF.size(), http::CRLF.size()) == http::CRLF)) {
+        return true;
+      }
+      pos += headerNameWithColon.size();
+    }
+
+    return false;
+  }
+
  private:
   const char* _beg{};
   const char* _end{};

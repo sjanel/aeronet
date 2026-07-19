@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -11,12 +10,14 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-version.hpp"
 
 namespace aeronet {
 
 struct DecompressionConfig;
 
 namespace internal {
+class ClientConnection;
 struct HttpClientCodec;
 struct UrlParseResult;
 }  // namespace internal
@@ -159,8 +160,9 @@ class HttpRequest final : public HttpMessage {
   // Append a header line (duplicates allowed, fastest path).
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
-  // Do not insert any reserved header (for which IsReservedRequestHeader is true), doing so is undefined behavior.
-  // Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw std::invalid_argument.
+  // Do not insert any reserved header (for which IsReservedOrForbiddenRequestHeader is true), doing so is undefined
+  // behavior. Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw
+  // std::invalid_argument.
   //  - Content-Type should be set along with the body methods
   //  - Content-Length is managed by the library and should not be set manually.
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
@@ -558,8 +560,8 @@ class HttpRequest final : public HttpMessage {
     return std::move(bodyInlineAppend(maxLen, std::forward<Writer>(writer), contentType));
   }
 
-  // Stream the contents of an already-open file as the response body.
-  // This methods takes ownership of the 'file' object into the response and sends the entire file.
+  // Stream the contents of an already-open file as the request body.
+  // This methods takes ownership of the 'file' object into the request and sends the entire file.
   // Notes:
   //   - file should be opened (`file` must be true)
   //   - Trailers are NOT permitted when using file
@@ -629,20 +631,8 @@ class HttpRequest final : public HttpMessage {
     return std::move(trailerAddLine(key, value));
   }
 
-  [[nodiscard]] std::string_view completeRequestForHttp11() const {
-    return {_data.data() + _originKeyLen, _data.data() + _data.size()};
-  }
-
-  // Serialize this request as an HTTP/1.1 chunked message (with trailers) into `out`, a caller-owned reused
-  // scratch buffer, and leave `out` holding exactly the bytes to send. Only meaningful when the request
-  // carries trailers (trailersSize() != 0) and an in-memory (inline or captured) body: the body is emitted
-  // as a single chunk followed by the terminating zero-length chunk and the trailer lines. The Content-Length
-  // header is swapped for Transfer-Encoding: chunked and, when addTrailerHeader is enabled, a Trailer header
-  // listing the trailer names is inserted. This does not mutate the request, so the HTTP/2 path (which sends
-  // trailers natively) and transparent retries keep the original buffer intact.
-  void writeChunkedRequestForHttp11(RawChars& out) const;
-
  private:
+  friend class internal::ClientConnection;
   friend class HttpClient;
   friend class HttpRequestView;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
@@ -724,35 +714,17 @@ class HttpRequest final : public HttpMessage {
   // Get a null-terminated host C-string for the lifetime of the returned RAII object, without port.
   [[nodiscard]] HostCStr hostCStr() const noexcept { return {const_cast<char*>(host().data()), _hostLen}; }
 
-  void prepareForFinalization() {
-#ifdef AERONET_ENABLE_HTTP2
-    makeAllHeaderNamesLowercaseForHttp2();
-#endif
+  [[nodiscard]] HttpRequest finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
+                                                   const DecompressionConfig& decompressionConfig) const;
 
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    // If the response has trailers, the finalization of the body was made at the first added trailer in trailerAddLine.
-    if (_opts.isAutomaticDirectCompression() && trailersSize() == 0) {
-      finalizeInlineBody();
+  void finalizeTrailersForHttp11(std::size_t minCapturedBodySize) {
+    if (!hasChunkedTransferEncoding()) {
+      HttpMessage::finalizeForHttp1(http::HTTP_1_1, _opts, nullptr, minCapturedBodySize);
     }
-#endif
   }
 
-  // Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
-  // After calling this function, the HttpRequest object is still valid and can be reused to build another request,
-  // but the HttpMessageData has been created by copy. To avoid the copy, use the rvalue overload below.
-  [[nodiscard]] HttpRequest finalize(internal::HttpClientCodec& clientCodec,
-                                     const DecompressionConfig& decompressionConfig) const;
-
-  // Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
-  // After calling this function, the HttpRequest object is no longer valid and should not be used.
-  // Use the const version if you want to keep using the HttpRequest object after finalization.
-  void finalize() { prepareForFinalization(); }
-
-  constexpr void setHeadersStartPos(std::uint64_t pos) {
-    if (pos > kHeadersStartMask) {
-      throw std::overflow_error("HttpRequest status line is too large");
-    }
-    setHeadersStartPosNoCheck(pos);
+  [[nodiscard]] std::string_view completeRequestForHttp11() const {
+    return {_data.data() + _originKeyLen, _data.data() + _data.size()};
   }
 
   // URL data - will be set at construction time and cannot be modified.

@@ -170,10 +170,11 @@ class HttpClientConfig {
   };
   RequestCompression requestCompression;
 
-  // Outbound request bodies up to this size (bytes) are copied into the request head buffer and flushed
-  // with a single contiguous write() instead of a scatter writev()/ordered TLS write; larger bodies are
-  // streamed zero-copy alongside the head. Applies to the final (possibly compressed) body. Default: 8 KiB.
-  std::size_t maxCapturedRequestBodyBytes{8UL * 1024UL};
+  // For requests with captured bodies smaller than this threshold, HttpRequest will concatenate the captured body
+  // contents with the head in the same buffer. This can be efficient for small
+  // bodies because it improves cache locality. Only used in HTTP/1.1.
+  // Larger bodies will be kept separate. Default: 1 KiB.
+  std::size_t minCapturedBodySize{1024UL};
 
   // Telemetry configuration (OpenTelemetry tracing + DogStatsD metrics)
   TelemetryConfig telemetry;
@@ -215,8 +216,8 @@ class HttpClientConfig {
   }
 
   // Threshold below which an outbound body is folded into the head buffer for a single contiguous write.
-  HttpClientConfig& withMaxCapturedRequestBodyBytes(std::size_t maxBytes) {
-    maxCapturedRequestBodyBytes = maxBytes;
+  HttpClientConfig& withMinCapturedBodySize(std::size_t minBytes) {
+    minCapturedBodySize = minBytes;
     return *this;
   }
 

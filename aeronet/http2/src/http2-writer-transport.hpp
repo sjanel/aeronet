@@ -39,8 +39,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
                    Encoding /*compressionFormat*/, std::size_t /*declaredLength*/, bool isHead) override {
     _isHead = isHead;
 
-    // HTTP/2 requires lowercase header names
-    response.finalizeForHttp2();
+    response.finalizeHeadersAndBody();
 
     // Finalize Date header (same as sendResponse path)
     WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.dateHeaderStartPos());
