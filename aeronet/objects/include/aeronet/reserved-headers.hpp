@@ -3,30 +3,9 @@
 #include <algorithm>
 #include <string_view>
 
-#include "aeronet/tolower-str.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
-
-namespace detail {
-
-template <auto& kReservedOrderedLowerCaseHeaders>
-constexpr bool IsReservedHeaderImpl(std::string_view name) noexcept {
-  static_assert(std::ranges::is_sorted(kReservedOrderedLowerCaseHeaders));
-
-  static constexpr auto kMaxLenReserved =
-      std::ranges::max_element(kReservedOrderedLowerCaseHeaders, {}, [](std::string_view sv) {
-        return sv.size();
-      })->size();
-  if (name.size() > kMaxLenReserved) {
-    return false;
-  }
-
-  char lowerCaseName[kMaxLenReserved];
-  tolower_n(name.data(), name.size(), lowerCaseName);
-  return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, name.size()});
-}
-
-}  // namespace detail
 
 // Centralized rule for HTTP response headers the user may not set directly (normal or streaming path).
 // These are either automatically emitted (Date, Content-Type, Content-Length, Connection, Transfer-Encoding) or
@@ -42,15 +21,16 @@ constexpr bool IsReservedHeaderImpl(std::string_view name) noexcept {
 constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
   static constexpr std::string_view kHeaders[] = {"connection", "content-length", "content-type",      "date",
                                                   "te",         "trailer",        "transfer-encoding", "upgrade"};
-  return detail::IsReservedHeaderImpl<kHeaders>(name);
+  return std::ranges::any_of(kHeaders,
+                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
 }
 
 // Same as IsReservedResponseHeader but for request headers.
 constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kHeaders[] = {"connection",        "content-length", "content-type", "host",
-                                                  "location",          "server",         "te",           "trailer",
-                                                  "transfer-encoding", "upgrade"};
-  return detail::IsReservedHeaderImpl<kHeaders>(name);
+  static constexpr std::string_view kHeaders[] = {"content-length", "content-type",      "expect", "host", "te",
+                                                  "trailer",        "transfer-encoding", "upgrade"};
+  return std::ranges::any_of(kHeaders,
+                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
 }
 
 // RFC 7230 §4.1.2: Certain headers MUST NOT appear in trailers (chunked transfer encoding).
@@ -85,18 +65,8 @@ constexpr bool IsForbiddenTrailerHeader(std::string_view name) noexcept {
                                                                             "trailer",
                                                                             "transfer-encoding",
                                                                             "vary"};
-  static_assert(std::ranges::is_sorted(kForbiddenOrderedTrailersLowercase));
-  static constexpr auto kMaxLenReserved =
-      std::ranges::max_element(kForbiddenOrderedTrailersLowercase, {}, [](std::string_view sv) {
-        return sv.size();
-      })->size();
-  if (name.size() > kMaxLenReserved) {
-    return false;
-  }
-
-  char lowerCaseName[kMaxLenReserved];
-  tolower_n(name.data(), name.size(), lowerCaseName);
-  return std::ranges::binary_search(kForbiddenOrderedTrailersLowercase, std::string_view{lowerCaseName, name.size()});
+  return std::ranges::any_of(kForbiddenOrderedTrailersLowercase,
+                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
 }
 
 }  // namespace aeronet::http
