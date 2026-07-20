@@ -468,7 +468,6 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
 
     // Then, we need to decompress the compressed data in the copy and restore the encoder state to what it was before
     // finalizeInlineBody() was called
-    // TODO: check that it's ok to reuse the clientCodec.decompressOut here.
     std::string_view decoded;
     const auto decodeRes = internal::HttpCodec::DecompressFullBody(
         clientCodec.decompressionState, decompressionConfig, headerValueOrEmpty(http::ContentEncoding),

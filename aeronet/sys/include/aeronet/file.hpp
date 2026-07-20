@@ -20,6 +20,14 @@ class File {
 
   static constexpr std::size_t kError = std::numeric_limits<std::size_t>::max();
 
+  struct Identity {
+    [[nodiscard]] const std::byte* data() const noexcept { return reinterpret_cast<const std::byte*>(&device); }
+    [[nodiscard]] static constexpr std::size_t size() noexcept { return sizeof(device) + sizeof(inode); }
+
+    uint64_t device{};
+    uint64_t inode{};
+  };
+
   // Default-constructed File is closed / empty.
   File() noexcept = default;
 
@@ -63,6 +71,9 @@ class File {
   // Returns kInvalidTimePoint if the metadata could not be obtained (in which case the File is also closed).
   [[nodiscard]] SysTimePoint lastModified() const noexcept { return _mtime; }
 
+  // Return the file's current descriptor identity and metadata. An invalid result means fstat failed.
+  [[nodiscard]] Identity identity() const noexcept { return _identity; }
+
   // Read up to dst.size() bytes starting at the given absolute offset.
   // Uses pread() so it does not modify the file's current offset.
   // Returns the number of bytes read (0 on EOF). Returns kError on error.
@@ -74,6 +85,8 @@ class File {
 
  private:
   friend struct ConnectionState;
+  // PlainTransport streams a file body straight to the socket via sendfile(2) and needs the raw fd.
+  friend class PlainTransport;
 
   // Returns the raw underlying file descriptor. Valid only when BaseFd is opened.
   // The caller does NOT take ownership of the descriptor; the File instance remains
@@ -82,6 +95,7 @@ class File {
 
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
+  Identity _identity;
   std::size_t _fileSize{kError};
   SysTimePoint _mtime{SysTimePoint::max()};  // == kInvalidTimePoint sentinel when metadata is unavailable
 };

@@ -19,6 +19,7 @@ namespace aeronet {
 class HttpClient;
 class HttpRequest;
 class ITransport;
+struct FilePayload;
 
 #ifdef AERONET_ENABLE_HTTP2
 struct Http2Config;
@@ -128,6 +129,14 @@ class ClientConnection {
                                                                              std::string_view body,
                                                                              SteadyClock::time_point deadline,
                                                                              bool& requestSent);
+
+  // Stream a captured file body to the transport after the head has been written, reading it from disk in
+  // bounded chunks (into HttpClient's reusable scratch buffer) so it is never fully materialized in memory.
+  // Pumps the event loop on would-block and sets `requestSent` as soon as any byte reaches the transport.
+  // Returns an empty result on success or an HttpClientErrc on read / write failure / timeout.
+  [[nodiscard]] static std::expected<void, HttpClientErrc> writeFileBodyForHttp11(
+      HttpClient& client, ITransport& transport, NativeHandle fd, const FilePayload& filePayload,
+      SteadyClock::time_point deadline, bool& requestSent);
 
 #ifdef AERONET_ENABLE_HTTP2
   [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,

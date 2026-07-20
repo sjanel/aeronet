@@ -429,8 +429,12 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
     }
 
     const auto windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
-    const std::size_t chunkSize = std::min({pending.length, windowLimit, static_cast<std::size_t>(peerMaxFrame),
-                                            static_cast<std::size_t>(_fileSendBuffer.capacity())});
+    const std::size_t chunkSize = std::min({
+        pending.length,
+        windowLimit,
+        static_cast<std::size_t>(peerMaxFrame),
+        static_cast<std::size_t>(_fileSendBuffer.capacity()),
+    });
     // All min() inputs are > 0: pending.remaining (loop condition), windowLimit (checked > 0),
     // peerMaxFrame (>= 16384 per HTTP/2), fileSendBuffer capacity (always > 0).
     assert(chunkSize != 0 && "chunkSize cannot be 0 when all inputs are positive");
@@ -665,7 +669,10 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingFile));
   } else if (transport.hasPendingData()) {
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(PendingStreamingSend{
-        .buffer = transport.extractPendingBuffer(), .offset = 0, .trailersData = transport.extractPendingTrailers()});
+        .buffer = transport.extractPendingBuffer(),
+        .offset = 0,
+        .trailersData = transport.extractPendingTrailers(),
+    });
   }
 
   // Clean up stream request (keep stream entry for pending sends)

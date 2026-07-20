@@ -8,6 +8,7 @@
 #include <unistd.h>
 #elifdef AERONET_WINDOWS
 #include <io.h>
+#include <windows.h>
 #endif
 
 #include <cerrno>
@@ -81,10 +82,12 @@ inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 
 // Stat the descriptor once, filling both size and last-modification time. On failure the descriptor is
 // closed, the size is set to File::kError and the mtime is left at the kInvalidTimePoint sentinel.
-inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut) {
+inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, File::Identity& identity) {
 #ifdef AERONET_POSIX
   struct stat st{};
   if (fd && ::fstat(fd.fd(), &st) == 0) {
+    identity.device = static_cast<uint64_t>(st.st_dev);
+    identity.inode = static_cast<uint64_t>(st.st_ino);
     sizeOut = static_cast<std::size_t>(st.st_size);
     // POSIX names the modification-time timespec `st_mtim`; Apple/BSD name it `st_mtimespec`.
 #ifdef AERONET_MACOS
@@ -97,11 +100,23 @@ inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut) {
     return;
   }
 #elifdef AERONET_WINDOWS
-  struct _stat64 st{};
-  if (fd && _fstat64(static_cast<int>(fd.fd()), &st) == 0) {
-    sizeOut = static_cast<std::size_t>(st.st_size);
-    mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(std::chrono::seconds{st.st_mtime})};
-    return;
+  HANDLE handle = fd ? reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(fd.fd()))) : INVALID_HANDLE_VALUE;
+  if (handle != INVALID_HANDLE_VALUE && handle != nullptr) {
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (GetFileInformationByHandle(handle, &info)) {
+      identity.device = static_cast<uint64_t>(info.dwVolumeSerialNumber);
+      identity.inode = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+      sizeOut = static_cast<std::size_t>((static_cast<uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow);
+
+      ULARGE_INTEGER uli{};
+      uli.LowPart = info.ftLastWriteTime.dwLowDateTime;
+      uli.HighPart = info.ftLastWriteTime.dwHighDateTime;
+      constexpr uint64_t kFileTimeToUnixEpoch100ns = 116444736000000000ULL;
+      using Ticks100ns = std::chrono::duration<int64_t, std::ratio<1, 10'000'000> >;
+      mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(
+          Ticks100ns{static_cast<int64_t>(uli.QuadPart - kFileTimeToUnixEpoch100ns)})};
+      return;
+    }
   }
 #endif
   fd.close();
@@ -132,17 +147,18 @@ inline BaseFd DuplicateFileBaseFd(const BaseFd& src) {
 
 File::File(std::string_view path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
-  StatFile(_fd, _fileSize, _mtime);
+  StatFile(_fd, _fileSize, _mtime, _identity);
 }
 
 File::File(const char* path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
-  StatFile(_fd, _fileSize, _mtime);
+  StatFile(_fd, _fileSize, _mtime, _identity);
 }
 
 File::File(const File& rhs)
     : _fd(DuplicateFileBaseFd(rhs._fd)),
       _mimeMappingIdx(rhs._mimeMappingIdx),
+      _identity(rhs._identity),
       _fileSize(_fd ? rhs._fileSize : kError),
       _mtime(_fd ? rhs._mtime : SysTimePoint::max()) {}
 
@@ -150,6 +166,7 @@ File& File::operator=(const File& rhs) {
   if (this != &rhs) {
     BaseFd newFd = DuplicateFileBaseFd(rhs._fd);
     _mimeMappingIdx = rhs._mimeMappingIdx;
+    _identity = rhs._identity;
     _fileSize = newFd ? rhs._fileSize : kError;
     _mtime = newFd ? rhs._mtime : SysTimePoint::max();
     _fd = std::move(newFd);  // old fd (if any) closed by BaseFd's move-assignment
