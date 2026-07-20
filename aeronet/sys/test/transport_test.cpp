@@ -2,19 +2,26 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
+#include "aeronet/file.hpp"
 #include "aeronet/system-error.hpp"
 
 #define AERONET_WANT_READ_WRITE_OVERRIDES
+#define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_POSIX
+#include <sys/socket.h>
 #include <unistd.h>
 #endif
 
@@ -184,6 +191,111 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   auto res = transport.write(head, body);
   EXPECT_EQ(res.bytesProcessed, 2U);
   EXPECT_EQ(res.want, TransportHint::WriteReady);
+}
+
+// A minimal transport that overrides nothing beyond the two pure-virtual I/O methods, so it inherits the
+// ITransport defaults: no sendfile support, and a sendFile() that reports it is unsupported.
+class BaseDefaultsTransport final : public ITransport {
+ public:
+  TransportResult read(char* /*buf*/, std::size_t /*len*/) override { return {0, TransportHint::None}; }
+  TransportResult write(std::string_view /*data*/) override { return {0, TransportHint::None}; }
+};
+
+TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
+  BaseDefaultsTransport transport;
+  EXPECT_FALSE(transport.supportsSendfile());
+  File file;  // ignored by the default sendFile()
+  std::size_t offset = 0;
+  const auto res = transport.sendFile(file, offset, 0);
+  EXPECT_EQ(res.bytesProcessed, 0U);
+  EXPECT_EQ(res.want, TransportHint::Error);
+}
+
+TEST(PlainTransport, SupportsSendfile) {
+  PlainTransport transport(-1, ZerocopyMode::Disabled, 0U);
+  EXPECT_TRUE(transport.supportsSendfile());
+}
+
+TEST(PlainTransport, SendFileTransfersFileToSocketPeer) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd sendFd(sv[0]);
+  BaseFd peerFd(sv[1]);
+
+  static constexpr std::string_view kPayload = "sendfile-unit-payload";
+  test::ScopedTempDir tmpDir("aeronet-transport-sendfile");
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(static_cast<bool>(file));
+
+  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+  std::size_t offset = 0;
+  std::size_t remaining = file.size();
+  while (remaining != 0) {
+    const auto res = transport.sendFile(file, offset, remaining);
+    ASSERT_EQ(res.want, TransportHint::None);
+    ASSERT_GT(res.bytesProcessed, 0U);
+    remaining -= res.bytesProcessed;
+  }
+
+  std::array<char, 64> buf{};
+  const auto nbRead = ::read(sv[1], buf.data(), buf.size());
+  ASSERT_EQ(nbRead, static_cast<int64_t>(kPayload.size()));
+  EXPECT_EQ(std::string_view(buf.data(), kPayload.size()), kPayload);
+}
+
+TEST(PlainTransport, SendFileReportsWriteReadyOnWouldBlockAndRetriesOnEINTR) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd sendFd(sv[0]);
+  BaseFd peerFd(sv[1]);
+
+  test::ScopedTempDir tmpDir("aeronet-transport-sendfile-wb");
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(static_cast<bool>(file));
+
+  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+
+  // A full send buffer surfaces as EAGAIN -> WriteReady with no progress.
+  test::SetSendfileActions(sv[0], {IoAction{-1, error::kWouldBlock}});
+  std::size_t offset = 0;
+  auto res = transport.sendFile(file, offset, file.size());
+  EXPECT_EQ(res.bytesProcessed, 0U);
+  EXPECT_EQ(res.want, TransportHint::WriteReady);
+
+  // EINTR is retried internally, so the caller only observes the eventual success.
+  test::SetSendfileActions(sv[0], {IoAction{-1, error::kInterrupted}, IoAction{4, 0}});
+  auto res2 = transport.sendFile(file, offset, file.size());
+  EXPECT_EQ(res2.bytesProcessed, 4U);
+  EXPECT_EQ(res2.want, TransportHint::None);
+}
+
+TEST(PlainTransport, SendFileReportsErrorOnFatalFailureAndOnUnexpectedEof) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd sendFd(sv[0]);
+  BaseFd peerFd(sv[1]);
+
+  test::ScopedTempDir tmpDir("aeronet-transport-sendfile-err");
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(static_cast<bool>(file));
+
+  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+
+  // A fatal error (peer reset / broken pipe) surfaces as Error.
+  test::SetSendfileActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
+  std::size_t offset = 0;
+  auto res = transport.sendFile(file, offset, file.size());
+  EXPECT_EQ(res.bytesProcessed, 0U);
+  EXPECT_EQ(res.want, TransportHint::Error);
+
+  // sendfile() returning 0 means the input file ended early (truncated) -> Error, never an infinite spin.
+  test::SetSendfileActions(sv[0], {IoAction{0, 0}});
+  auto res2 = transport.sendFile(file, offset, file.size());
+  EXPECT_EQ(res2.bytesProcessed, 0U);
+  EXPECT_EQ(res2.want, TransportHint::Error);
 }
 
 TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {

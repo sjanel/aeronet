@@ -10,6 +10,8 @@
 
 namespace aeronet {
 
+class File;
+
 // Indicates what the transport layer needs to proceed after a non-blocking I/O operation returns EAGAIN/WANT.
 enum class TransportHint : uint8_t {
   None,        // No special action needed (operation completed or fatal error)
@@ -71,6 +73,22 @@ class ITransport {
     return result;
   }
 
+  // Whether this transport can transfer a file region straight to the socket with a single zero-copy
+  // syscall (sendfile / TransmitFile), bypassing a user-space read + write. True only for plain
+  // (unencrypted) transports; a TLS transport must read + encrypt in user space (kTLS aside, which the
+  // client does not set up), so it reports false and the caller falls back to read() + write().
+  [[nodiscard]] virtual bool supportsSendfile() const noexcept { return false; }
+
+  // Zero-copy transfer of up to `count` bytes from the open file `file` starting at `offset`, straight to
+  // the socket. Only valid when supportsSendfile() is true (the default is a no-op guarded by that).
+  // `offset` is advanced by the number of bytes actually sent. Returns the standard TransportResult:
+  // `bytesProcessed` sent (may be a partial send), with `want` set to WriteReady when the socket send
+  // buffer is full or to Error on a fatal failure - exactly like write().
+  virtual TransportResult sendFile([[maybe_unused]] const File& file, [[maybe_unused]] std::size_t& offset,
+                                   [[maybe_unused]] std::size_t count) {
+    return {0, TransportHint::Error};
+  }
+
   [[nodiscard]] virtual bool handshakeDone() const noexcept { return true; }
 
   /// Check if the transport has internally buffered data ready to read.
@@ -110,6 +128,12 @@ class PlainTransport final : public ITransport {
 
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
+
+  /// A plain socket can transfer a file region with the zero-copy sendfile(2) path.
+  [[nodiscard]] bool supportsSendfile() const noexcept override { return true; }
+
+  /// Zero-copy sendfile(2) of a file region straight to the socket (no user-space copy).
+  TransportResult sendFile(const File& file, std::size_t& offset, std::size_t count) override;
 };
 
 }  // namespace aeronet

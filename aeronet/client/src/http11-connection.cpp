@@ -1,10 +1,14 @@
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <expected>
+#include <span>
 #include <string_view>
 
 #include "aeronet/client-connection.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/file-payload.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -13,6 +17,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"
@@ -54,6 +59,80 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
   return {};
 }
 
+std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(HttpClient& client, ITransport& transport,
+                                                                             NativeHandle fd,
+                                                                             const FilePayload& filePayload,
+                                                                             SteadyClock::time_point deadline,
+                                                                             bool& requestSent) {
+  const File& file = filePayload.file;
+  std::size_t fileOffset = filePayload.offset;
+  std::size_t remaining = filePayload.length;
+
+  if (transport.supportsSendfile()) {
+    // Plain socket: hand the region to the kernel via sendfile(2). The bytes go straight from the page
+    // cache to the socket - never copied into user space (mirrors the server's response sendfile path).
+    while (remaining != 0) {
+      const ITransport::TransportResult transportRes = transport.sendFile(file, fileOffset, remaining);
+      if (transportRes.bytesProcessed != 0) {
+        requestSent = true;
+        remaining -= transportRes.bytesProcessed;  // sendFile already advanced fileOffset
+        continue;
+      }
+      if (transportRes.want == TransportHint::Error) {
+        log::error("HTTP/1.1 client: sendfile of request body failed (offset={}, remaining={})", fileOffset, remaining);
+        return std::unexpected(HttpClientErrc::writeError);
+      }
+      const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
+      if (!client.waitIo(fd, interest, deadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+    }
+    return {};
+  }
+
+  // TLS (or any transport that cannot sendfile): read the file in bounded chunks and write it through the
+  // transport, which encrypts in user space. Stream at most this many bytes per read + write iteration so
+  // a large file is never fully materialized in memory (the head already declared the exact Content-Length).
+  static constexpr std::size_t kFileChunk = 64UL * 1024UL;
+  // Reuse the client's request/body scratch buffer as the file read staging area: it is idle during the
+  // send phase (only borrowed later by ResponseParser, which clears it) and reused across requests.
+  RawChars& chunkBuf = client.bodyBuffer();
+  chunkBuf.clear();
+  while (remaining != 0) {
+    const std::size_t toRead = std::min(remaining, kFileChunk);
+    chunkBuf.ensureAvailableCapacityExponential(toRead);
+    const std::size_t nread = file.readAt(std::as_writable_bytes(std::span<char>(chunkBuf.data(), toRead)), fileOffset);
+    if (nread == 0 || nread == File::kError) {
+      // A short read to 0 (file truncated under us) or an I/O error leaves the declared Content-Length
+      // unfulfilled: the request framing is broken, so abort the exchange.
+      log::error("HTTP/1.1 client: reading request file body failed (offset={}, remaining={})", fileOffset, remaining);
+      return std::unexpected(HttpClientErrc::writeError);
+    }
+    const std::string_view chunk(chunkBuf.data(), nread);
+    std::size_t off = 0;
+    while (off < chunk.size()) {
+      const ITransport::TransportResult transportRes = transport.write(chunk.substr(off));
+      off += transportRes.bytesProcessed;
+      if (off != 0) {
+        requestSent = true;
+      }
+      if (off >= chunk.size()) {
+        break;
+      }
+      if (transportRes.want == TransportHint::Error) {
+        return std::unexpected(HttpClientErrc::writeError);
+      }
+      const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
+      if (!client.waitIo(fd, interest, deadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+    }
+    fileOffset += nread;
+    remaining -= nread;
+  }
+  return {};
+}
+
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
@@ -70,9 +149,22 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
     req.finalizeTrailersForHttp11(config.minCapturedBodySize);
   }
   std::string_view head = req.completeRequestForHttp11();
-  std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
-  if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
-    return std::unexpected(wr.error());
+  if (req.hasBodyFile()) {
+    // A captured file body is streamed from disk after the head (never copied into the head buffer, nor
+    // fully loaded in memory). The head already carries the exact Content-Length of the file payload.
+    if (auto wr = writeAllForHttp11(client, transport, fd, head, std::string_view{}, ioDeadline, requestSent); !wr) {
+      return std::unexpected(wr.error());
+    }
+    if (auto wr = writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent); !wr) {
+      return std::unexpected(wr.error());
+    }
+  } else {
+    // A captured (not inlined) in-memory body is streamed separately so it is never copied into the head
+    // buffer; an inlined body already rides inside the head.
+    std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
+    if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
+      return std::unexpected(wr.error());
+    }
   }
 
   // The chunked-body reassembly buffer is borrowed from the client (reused across exchanges) rather than
@@ -82,10 +174,12 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
-    parser.setDecodeContext({.state = &client._codec.decompressionState,
-                             .config = &config.decompression,
-                             .out = &client._codec.decompressOut,
-                             .tmp = &client._codec.decompressTmp});
+    parser.setDecodeContext({
+        .state = &client._codec.decompressionState,
+        .config = &config.decompression,
+        .out = &client._codec.decompressOut,
+        .tmp = &client._codec.decompressTmp,
+    });
   }
   HttpResponse resp;
   RawChars& responseBuffer = client.responseBuffer();

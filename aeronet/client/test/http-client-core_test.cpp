@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -24,6 +25,7 @@
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
@@ -40,6 +42,7 @@
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/timedef.hpp"
@@ -57,7 +60,6 @@
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include <filesystem>
 #include <fstream>
 
 #include "aeronet/test-tls-helper.hpp"
@@ -217,6 +219,7 @@ test::TestServer CreateTestServer() {
   return testServer;
 }
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 test::TestServer ts = CreateTestServer();
 auto port = ts.port();
 
@@ -508,6 +511,361 @@ TEST_F(HttpClientE2ETest, DeleteWorks) {
   auto resp = client.del(Url("/resource")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "deleted");
+}
+
+namespace {
+// Deterministic, position-dependent payload so a mis-ordered / truncated file upload is caught.
+std::string MakeFilePayload(std::size_t size) {
+  std::string payload(size, '\0');
+  for (std::size_t idx = 0; idx < size; ++idx) {
+    payload[idx] = static_cast<char>('A' + (idx % 61));
+  }
+  return payload;
+}
+
+// Advertises sendfile support and scripts the sendFile() outcomes so the HTTP/1.1 file-body sendfile loop
+// can be exercised deterministically (would-block -> retry, fatal error, and a persistent would-block that
+// times out) without depending on socket buffer sizing. The head write is accepted verbatim and a canned
+// 200 response is served on read().
+class ScriptedSendfileTransport final : public ITransport {
+ public:
+  enum class Mode : uint8_t { WouldBlockThenSuccess, Error, AlwaysWouldBlock };
+
+  explicit ScriptedSendfileTransport(Mode mode) : _mode(mode) {}
+
+  TransportResult read(char* buf, std::size_t len) override {
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    if (_responseOffset == kResponse.size()) {
+      return {0, TransportHint::None};
+    }
+    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
+    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
+    _responseOffset += size;
+    return {size, TransportHint::None};
+  }
+
+  TransportResult write(std::string_view data) override { return {data.size(), TransportHint::None}; }
+  TransportResult write(std::string_view head, std::string_view body) override {
+    return {head.size() + body.size(), TransportHint::None};
+  }
+
+  [[nodiscard]] bool supportsSendfile() const noexcept override { return true; }
+
+  TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) override {
+    ++_sendFileCalls;
+    if (_mode == Mode::Error) {
+      return {0, TransportHint::Error};
+    }
+    if (_mode == Mode::AlwaysWouldBlock) {
+      return {0, TransportHint::WriteReady};
+    }
+    // WouldBlockThenSuccess: report a full send buffer once, then complete the transfer.
+    if (_sendFileCalls == 1) {
+      return {0, TransportHint::WriteReady};
+    }
+    offset += count;  // mirror Sendfile advancing the offset by the bytes sent
+    return {count, TransportHint::None};
+  }
+
+  [[nodiscard]] std::size_t sendFileCalls() const noexcept { return _sendFileCalls; }
+
+ private:
+  Mode _mode;
+  std::size_t _responseOffset{0};
+  std::size_t _sendFileCalls{0};
+};
+
+// A transport that reports no sendfile support, so a file body takes the read-into-buffer + write fallback
+// (the TLS path in production). The head write is accepted verbatim; the body write() is scripted so the
+// fallback's write-error and write-would-block branches can be reached deterministically.
+class ScriptedFallbackTransport final : public ITransport {
+ public:
+  enum class Mode : uint8_t { AcceptWrites, WriteError, WriteWouldBlock };
+
+  explicit ScriptedFallbackTransport(Mode mode) : _mode(mode) {}
+
+  TransportResult read(char* buf, std::size_t len) override {
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    if (_responseOffset == kResponse.size()) {
+      return {0, TransportHint::None};
+    }
+    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
+    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
+    _responseOffset += size;
+    return {size, TransportHint::None};
+  }
+
+  // Body chunk writes (single-buffer): scripted per mode.
+  TransportResult write(std::string_view data) override {
+    switch (_mode) {
+      case Mode::WriteError:
+        return {0, TransportHint::Error};
+      case Mode::WriteWouldBlock:
+        return {0, TransportHint::WriteReady};
+      default:
+        return {data.size(), TransportHint::None};
+    }
+  }
+
+  // Head write (scatter): always accepted verbatim so the body phase is reached.
+  TransportResult write(std::string_view head, std::string_view body) override {
+    return {head.size() + body.size(), TransportHint::None};
+  }
+
+  // supportsSendfile() intentionally not overridden -> inherits false (read + write fallback path).
+
+ private:
+  Mode _mode;
+  std::size_t _responseOffset{0};
+};
+}  // namespace
+
+// The sendfile loop must pump the event loop when the socket send buffer is full (sendFile reports
+// WriteReady) and resume once it drains, completing the upload.
+TEST_F(HttpClientE2ETest, FileBodySendfileWouldBlockThenResumes) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"sendfile-payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedSendfileTransport transport(ScriptedSendfileTransport::Mode::WouldBlockThenSuccess);
+  test::ClientConnection socket(ts.port());  // a real, writable fd so waitIo(EventOut) returns promptly
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, socket.fd(), req, SteadyClock::now() + std::chrono::seconds{1},
+                                    requestSent);
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->bodyInMemory(), "ok");
+  EXPECT_TRUE(requestSent);
+  EXPECT_GE(transport.sendFileCalls(), 2U);  // at least one would-block + one successful send
+}
+
+// A fatal sendfile error aborts the exchange with a write error.
+TEST_F(HttpClientE2ETest, FileBodySendfileErrorFailsExchange) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"sendfile-payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedSendfileTransport transport(ScriptedSendfileTransport::Mode::Error);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// A sendfile that never drains (persistent would-block) must eventually surface a timeout when the event
+// loop wait cannot make progress before the deadline.
+TEST_F(HttpClientE2ETest, FileBodySendfileTimesOut) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"sendfile-payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedSendfileTransport transport(ScriptedSendfileTransport::Mode::AlwaysWouldBlock);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  // kInvalidHandle + an already-elapsed deadline: waitIo(EventOut) cannot succeed -> timeout.
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+// The read + write fallback (non-sendfile transports, e.g. TLS) must abort when the file cannot be fully
+// read: truncating the file after the request is built makes readAt() hit EOF before the declared
+// Content-Length, which is unfulfillable framing.
+TEST_F(HttpClientE2ETest, FileBodyFallbackReadErrorFailsExchange) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, MakeFilePayload(4096));
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  ASSERT_EQ(file.size(), 4096U);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  // Truncate under us: the open fd now reads 0 bytes though Content-Length was 4096.
+  std::filesystem::resize_file(tmp.filePath(), 0);
+
+  ScriptedFallbackTransport transport(ScriptedFallbackTransport::Mode::AcceptWrites);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// The read + write fallback must surface a fatal transport write error.
+TEST_F(HttpClientE2ETest, FileBodyFallbackWriteErrorFailsExchange) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, MakeFilePayload(1024));
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedFallbackTransport transport(ScriptedFallbackTransport::Mode::WriteError);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// A file-body request must surface a failure to write the request head (before any body byte is streamed);
+// nothing reached the transport, so the request stays retriable.
+TEST_F(HttpClientE2ETest, FileBodyHeadWriteErrorFailsExchange) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"file-head-write-error"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::Error);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+  EXPECT_FALSE(requestSent);
+}
+
+// The read + write fallback must time out when the body write never drains before the deadline.
+TEST_F(HttpClientE2ETest, FileBodyFallbackWriteTimesOut) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, MakeFilePayload(1024));
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedFallbackTransport transport(ScriptedFallbackTransport::Mode::WriteWouldBlock);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+// A request whose body is a captured file must stream the file contents on the wire (the head declares
+// the file's Content-Length): the server echoes back exactly the file bytes.
+TEST_F(HttpClientE2ETest, PostFileBodySmall) {
+  const std::string payload = MakeFilePayload(37);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/test");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// A file larger than the 64 KiB read/write chunk must be streamed across several read + write iterations
+// and reassembled intact by the server.
+TEST_F(HttpClientE2ETest, PostFileBodyLargeMultiChunk) {
+  const std::string payload = MakeFilePayload((256UL * 1024) + 123);  // > 64 KiB chunk, non-aligned tail
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// An empty file body frames as Content-Length: 0 with no body bytes on the wire.
+TEST_F(HttpClientE2ETest, PostEmptyFileBody) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  ASSERT_EQ(file.size(), 0U);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/test");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+// A file body restricted to a [offset, offset+length) sub-range must upload only that slice.
+TEST_F(HttpClientE2ETest, PutFileBodyWithOffsetAndLength) {
+  const std::string payload = MakeFilePayload(500);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  constexpr std::size_t kOffset = 100;
+  constexpr std::size_t kLength = 250;
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::PUT, Url("/put")).file(std::move(file), kOffset, kLength, "text/plain");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), std::string_view(payload).substr(kOffset, kLength));
+}
+
+// A file body must survive keep-alive connection reuse: two successive file uploads on the same client
+// (pooled connection) each frame and echo correctly.
+TEST_F(HttpClientE2ETest, FileBodyOverKeepAliveConnection) {
+  const std::string first = MakeFilePayload(80UL * 1024);   // multi-chunk
+  const std::string second = MakeFilePayload(12UL * 1024);  // single-chunk
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmpFirst(tmpDir, first);
+  test::ScopedTempFile tmpSecond(tmpDir, second);
+
+  HttpClient client;  // keep-alive on by default
+  {
+    File file(tmpFirst.filePath().string());
+    ASSERT_TRUE(file);
+    auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+    auto resp = client.request(std::move(req)).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.bodyInMemory(), first);
+  }
+  {
+    File file(tmpSecond.filePath().string());
+    ASSERT_TRUE(file);
+    auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+    auto resp = client.request(std::move(req)).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.bodyInMemory(), second);
+  }
 }
 
 TEST_F(HttpClientE2ETest, HeadConvenienceVerb) {
@@ -812,6 +1170,51 @@ TEST_F(HttpClientCacheE2ETest, CapturedRequestBodyParticipatesInCacheKey) {
   EXPECT_EQ(_counterHits.load(), 1);
 }
 
+TEST_F(HttpClientCacheE2ETest, FileRequestBodyParticipatesInCacheKey) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile firstFile(tmpDir, "first");
+  test::ScopedTempFile secondFile(tmpDir, "other");  // Same length, distinct path and content.
+
+  File first(firstFile.filePath().string());
+  File firstAgain(firstFile.filePath().string());
+  File second(secondFile.filePath().string());
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(firstAgain);
+  ASSERT_TRUE(second);
+
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
+  auto firstRequest = client.makeRequest(http::Method::GET, Url("/counter"));
+  firstRequest.file(std::move(first));
+
+  auto samePathRequest = client.makeRequest(http::Method::GET, Url("/counter"));
+  samePathRequest.file(std::move(firstAgain));
+
+  auto differentPathRequest = client.makeRequest(http::Method::GET, Url("/counter"));
+  differentPathRequest.file(std::move(second));
+
+  EXPECT_EQ(client.request(firstRequest).value().bodyInMemory(), "1");
+  EXPECT_EQ(client.request(samePathRequest).value().bodyInMemory(), "1");  // Same path -> cache hit.
+  EXPECT_EQ(client.request(differentPathRequest).value().bodyInMemory(), "2");
+  EXPECT_EQ(client.request(differentPathRequest).value().bodyInMemory(), "2");  // Same path -> cache hit.
+  EXPECT_EQ(_counterHits.load(), 2);
+}
+
+TEST_F(HttpClientCacheE2ETest, FileRequestBodySharesCacheEntryLimitWithInlineBody) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile file(tmpDir, "file");
+  File fileBody(file.filePath().string());
+  ASSERT_TRUE(fileBody);
+
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}).withCacheMaxEntries(1));
+  EXPECT_EQ(client.get(Url("/counter")).value().bodyInMemory(), "1");  // Caches the inline request.
+
+  auto fileRequest = client.makeRequest(http::Method::GET, Url("/counter"));
+  fileRequest.file(std::move(fileBody));
+  EXPECT_EQ(client.request(fileRequest).value().bodyInMemory(), "2");  // Caches the file request, evicting inline.
+  EXPECT_EQ(client.get(Url("/counter")).value().bodyInMemory(), "3");  // Inline request was evicted.
+  EXPECT_EQ(_counterHits.load(), 3);
+}
+
 TEST_F(HttpClientCacheE2ETest, ClearResponseCacheForcesRefetch) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
   EXPECT_EQ(client.get(Url("/counter")).value().bodyInMemory(), "1");
@@ -877,7 +1280,7 @@ class HttpClientCompressionE2E : public ::testing::Test {
     });
     // Returns the Accept-Encoding header the server received (to observe what the client advertised).
     router.setPath(http::Method::GET, "/accept-encoding", [](const HttpRequestView& req) {
-      return HttpResponse(http::StatusCodeOK, std::string(req.headerValueOrEmpty("accept-encoding")), "text/plain");
+      return HttpResponse(http::StatusCodeOK, req.headerValueOrEmpty("accept-encoding"), "text/plain");
     });
     // A large, highly compressible blob so the server compresses the response.
     router.setPath(http::Method::GET, "/blob",
