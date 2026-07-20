@@ -910,7 +910,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   // Encode :status pseudo-header first if present
   if (statusCode >= 100) {
     char statusBuf[3];
-    const std::string_view statusStr(statusBuf, write3(statusBuf, statusCode));
+    const std::string_view statusStr(statusBuf, writeStatusCode(statusBuf, statusCode));
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 

@@ -33,6 +33,21 @@ TEST(SimpleCharConv, Write3) {
   EXPECT_EQ(std::string_view(buf, sizeof(buf)), "187");
 }
 
+TEST(SimpleCharConv, WriteStatusCode) {
+  char buf[3];
+  auto ptr = writeStatusCode(buf, http::StatusCodeOK);
+  ASSERT_EQ(ptr - buf, 3);
+  EXPECT_EQ(std::string_view(buf, sizeof(buf)), "200");
+
+  ptr = writeStatusCode(buf, http::StatusCodeNotFound);
+  ASSERT_EQ(ptr - buf, 3);
+  EXPECT_EQ(std::string_view(buf, sizeof(buf)), "404");
+
+  ptr = writeStatusCode(buf, http::StatusCodeInternalServerError);
+  ASSERT_EQ(ptr - buf, 3);
+  EXPECT_EQ(std::string_view(buf, sizeof(buf)), "500");
+}
+
 TEST(SimpleCharConv, Write4) {
   char buf[4];
   auto ptr = write4(buf, 7);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstring>
 #include <string_view>
 
 #include "aeronet/simple-charconv.hpp"
@@ -84,35 +85,50 @@ inline SysTimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
 /// WWW, DD Mon YYYY HH:MM:SS GMT
 /// Returns pointer past last written char.
 constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
-  using namespace std::chrono;
+  // Fixed-width tables: no pointer-array indirection, just base + index*3.
+  static constexpr char kWeekdays[][3] = {
+      {'S', 'u', 'n'}, {'M', 'o', 'n'}, {'T', 'u', 'e'}, {'W', 'e', 'd'},
+      {'T', 'h', 'u'}, {'F', 'r', 'i'}, {'S', 'a', 't'},
+  };
 
-  static constexpr const char* const WEEKDAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  static constexpr const char* const MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  static constexpr char kMonths[][3] = {
+      {'J', 'a', 'n'}, {'F', 'e', 'b'}, {'M', 'a', 'r'}, {'A', 'p', 'r'}, {'M', 'a', 'y'}, {'J', 'u', 'n'},
+      {'J', 'u', 'l'}, {'A', 'u', 'g'}, {'S', 'e', 'p'}, {'O', 'c', 't'}, {'N', 'o', 'v'}, {'D', 'e', 'c'},
+  };
+
+  static constexpr char kSkeleton[] = {
+      '?', '?', '?', ',', ' ', '?', '?', ' ', '?', '?', '?', ' ', '?', '?', '?',
+      '?', ' ', '?', '?', ':', '?', '?', ':', '?', '?', ' ', 'G', 'M', 'T',
+  };
+
+  using namespace std::chrono;
 
   const sys_seconds secTp = time_point_cast<seconds>(tp);
   const auto day_point = floor<days>(secTp);
   const year_month_day ymd{day_point};
   const weekday wd{day_point};
-  const hh_mm_ss hms{secTp - day_point};
 
-  out = copy3(out, WEEKDAYS[wd.c_encoding()]);
-  *out = ',';
-  *++out = ' ';
-  out = write2(++out, static_cast<unsigned>(ymd.day()));
-  *out = ' ';
-  out = copy3(++out, MONTHS[static_cast<unsigned>(ymd.month()) - 1]);
-  *out = ' ';
-  out = write4(++out, static_cast<int>(ymd.year()));
-  *out = ' ';
-  out = write2(++out, hms.hours().count());
-  *out = ':';
-  out = write2(++out, hms.minutes().count());
-  *out = ':';
-  out = write2(++out, hms.seconds().count());
-  *out = ' ';
+  // Seconds since midnight, in [0, 86400). Two divisions instead of three:
+  // m and s are both derived from the remainder after removing hours.
+  const unsigned tod = static_cast<unsigned>((secTp - day_point).count());
+  const unsigned hour = tod / 3600;
+  const unsigned rem = tod - (hour * 3600);
+  const unsigned min = rem / 60;
+  const unsigned sec = rem - (min * 60);
 
-  return copy3(++out, "GMT");
+  std::memcpy(out, kSkeleton, sizeof(kSkeleton));
+
+  std::memcpy(out, kWeekdays[wd.c_encoding()], sizeof(kWeekdays[0]));
+  write2(out + 5, static_cast<unsigned>(ymd.day()));
+
+  std::memcpy(out + 8, kMonths[static_cast<unsigned>(ymd.month()) - 1], sizeof(kMonths[0]));
+
+  write4(out + 12, static_cast<int>(ymd.year()));
+  write2(out + 17, hour);
+  write2(out + 20, min);
+  write2(out + 23, sec);
+
+  return out + sizeof(kSkeleton);
 }
 
 inline constexpr SysTimePoint kInvalidTimePoint = SysTimePoint::max();
