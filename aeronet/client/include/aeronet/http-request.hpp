@@ -717,15 +717,21 @@ class HttpRequest final : public HttpMessage {
   [[nodiscard]] HttpRequest finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
                                                    const DecompressionConfig& decompressionConfig) const;
 
-  void finalizeTrailersForHttp11(std::size_t minCapturedBodySize) {
-    if (!hasChunkedTransferEncoding()) {
-      HttpMessage::finalizeForHttp1(http::HTTP_1_1, _opts, nullptr, minCapturedBodySize);
+  [[nodiscard]] HttpRequest finalizeTrailersForHttp11(std::size_t minCapturedBodySize) const {
+    HttpRequest copy = clone();
+    if (!copy.hasChunkedTransferEncoding()) {
+      copy.HttpMessage::finalizeForHttp1(http::HTTP_1_1, copy._opts, nullptr, minCapturedBodySize);
     }
+    return copy;
   }
 
   [[nodiscard]] std::string_view completeRequestForHttp11() const {
     return {_data.data() + _originKeyLen, _data.data() + _data.size()};
   }
+
+  [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return _payloadVariant.view(); }
+
+  [[nodiscard]] HttpRequest clone() const;
 
   // URL data - will be set at construction time and cannot be modified.
   uint16_t _hostLen;       // length of host

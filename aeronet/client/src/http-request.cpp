@@ -441,11 +441,7 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   return true;
 }
 
-// Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
-// After calling this function, the HttpRequest object is still valid and can be reused to build another request,
-// but the HttpMessageData has been created by copy. To avoid the copy, use the rvalue overload below.
-[[nodiscard]] HttpRequest HttpRequest::finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
-                                                              const DecompressionConfig& decompressionConfig) const {
+HttpRequest HttpRequest::clone() const {
   HttpRequest copy(HttpMessage::Check::No);
 
   copy._data = _data;
@@ -456,6 +452,16 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   copy._hostLen = _hostLen;
   copy._port = _port;
   copy._originKeyLen = _originKeyLen;
+
+  return copy;
+}
+
+// Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
+// After calling this function, the HttpRequest object is still valid and can be reused to build another request,
+// but the HttpMessageData has been created by copy. To avoid the copy, use the rvalue overload below.
+[[nodiscard]] HttpRequest HttpRequest::finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
+                                                              const DecompressionConfig& decompressionConfig) const {
+  HttpRequest copy = clone();
 
   copy.HttpMessage::finalizeHeadersAndBody();
 

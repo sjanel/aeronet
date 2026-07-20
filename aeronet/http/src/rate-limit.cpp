@@ -12,7 +12,7 @@
 #include <string_view>
 
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/ndigits.hpp"
+#include "aeronet/nchars.hpp"
 
 namespace aeronet {
 
@@ -176,21 +176,21 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
   const auto windowMs = static_cast<uint64_t>(_redisConfig.windowSeconds) * 1000;
   const auto maxInWindow = static_cast<uint64_t>(config.requestsPerSecond) * _redisConfig.windowSeconds;
 
-  const auto nowMsNDigits = ndigits(nowMs);
-  const auto windowMsNDigits = ndigits(windowMs);
-  const auto maxInWindowNDigits = ndigits(maxInWindow);
+  const auto nowMsNbChars = nchars(nowMs);
+  const auto windowMsNbChars = nchars(windowMs);
+  const auto maxInWindowNbChars = nchars(maxInWindow);
 
-  const uint32_t neededSize = static_cast<uint32_t>(nowMsNDigits + windowMsNDigits + maxInWindowNDigits);
+  const uint32_t neededSize = static_cast<uint32_t>(nowMsNbChars + windowMsNbChars + maxInWindowNbChars);
   char* pArgs = _charStorage.allocateAndDefaultConstruct(neededSize);
 
-  req.args[0] = std::string_view(pArgs, nowMsNDigits);
-  pArgs = std::to_chars(pArgs, pArgs + nowMsNDigits, nowMs).ptr;
+  req.args[0] = std::string_view(pArgs, nowMsNbChars);
+  pArgs = std::to_chars(pArgs, pArgs + nowMsNbChars, nowMs).ptr;
 
-  req.args[1] = std::string_view(pArgs, windowMsNDigits);
-  pArgs = std::to_chars(pArgs, pArgs + windowMsNDigits, windowMs).ptr;
+  req.args[1] = std::string_view(pArgs, windowMsNbChars);
+  pArgs = std::to_chars(pArgs, pArgs + windowMsNbChars, windowMs).ptr;
 
-  req.args[2] = std::string_view(pArgs, maxInWindowNDigits);
-  pArgs = std::to_chars(pArgs, pArgs + maxInWindowNDigits, maxInWindow).ptr;
+  req.args[2] = std::string_view(pArgs, maxInWindowNbChars);
+  pArgs = std::to_chars(pArgs, pArgs + maxInWindowNbChars, maxInWindow).ptr;
 
   return req;
 }
