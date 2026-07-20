@@ -63,13 +63,12 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
     Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
-    char* insertPtr =
-        WriteCRLFHeader(http::ContentType, contentType, _data.data() + kReasonBeg + kDateHeaderLenWithCRLF);
-    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
-    insertPtr = Append(http::DoubleCRLF, insertPtr);
-    const auto bodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
+    char* pData = Append(http::CRLF, _data.data() + kReasonBeg + kDateHeaderLenWithCRLF);
+    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
+
+    const auto bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
     setBodyStartPos(bodyStartPos);
-    Copy(body, insertPtr);
+    Copy(body, pData);
     _data.setSize(bodyStartPos + body.size());
   }
 }
@@ -104,13 +103,13 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   }
   if (body.empty()) {
     bodyStartPos += http::CRLF.size();
+    Copy(http::DoubleCRLF, _data.data() + bodyStartPos - http::DoubleCRLF.size());
   } else {
-    char* insertPtr = WriteCRLFHeader(http::ContentType, contentType, _data.data() + bodyStartPos - http::CRLF.size());
-    insertPtr = WriteCRLFHeader(http::ContentLength, body.size(), insertPtr);
-    bodyStartPos = static_cast<std::uint64_t>(insertPtr + http::DoubleCRLF.size() - _data.data());
-    Copy(body, insertPtr + http::DoubleCRLF.size());
+    char* pData = Append(http::CRLF, _data.data() + bodyStartPos - http::CRLF.size());
+    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
+    bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
+    Copy(body, pData);
   }
-  Copy(http::DoubleCRLF, _data.data() + bodyStartPos - http::DoubleCRLF.size());
   setBodyStartPos(bodyStartPos);
   _data.setSize(bodyStartPos + body.size());
 }

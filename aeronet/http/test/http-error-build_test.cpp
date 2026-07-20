@@ -79,3 +79,12 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "1024"))) << full;
   EXPECT_TRUE(full.ends_with("\r\n\r\n" + largeBody)) << full;
 }
+
+TEST(HttpErrorBuildTest, ShouldEmitContentType) {
+  // When body is empty, Content-Length should be 0 and no body data should be present
+  auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
+  std::string_view full(data);
+
+  EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain))) << full;
+  EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
+}

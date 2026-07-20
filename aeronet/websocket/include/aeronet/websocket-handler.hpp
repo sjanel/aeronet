@@ -190,7 +190,7 @@ class WebSocketHandler final : public IProtocolHandler {
     Open,           // Normal operation
     CloseSent,      // We sent Close, waiting for peer's Close
     CloseReceived,  // Peer sent Close, we need to respond
-    Closed          // Close handshake complete
+    Closed,         // Close handshake complete
   };
 
   /// State for message reassembly from fragments.
