@@ -35,7 +35,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/ndigits.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -346,9 +346,9 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   // CONNECT needs an explicit "host:port" authority (RFC 9110 section 9.3.6); IPv6 literals are bracketed.
   const std::string_view host = req.host();
   const bool ipv6 = host.contains(':');
-  const uint16_t port = req.port();
-  const auto portDigits = ndigits(port);
-  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portDigits;
+  const auto port = req.port();
+  const auto portNbChars = nchars(port);
+  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portNbChars;
 
   RawChars& reqBuffer = _reqBodyScratch;
   reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
@@ -361,7 +361,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
       *out++ = ']';
     }
     *out++ = ':';
-    return std::to_chars(out, out + portDigits, port).ptr;
+    return std::to_chars(out, out + portNbChars, port).ptr;
   };
   char* pEnd = reqBuffer.data();
   pEnd = Append(kConnect, pEnd);

@@ -7,7 +7,7 @@
 #include <string_view>
 
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/ndigits.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -25,7 +25,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
 
   // small helper: append integer value and the unit (with leading space)
   const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
-    out.ensureAvailableCapacityExponential(ndigits(value) + 1U + unit.size());
+    out.ensureAvailableCapacityExponential(nchars(value) + 1U + unit.size());
     char* ptr = out.data() + out.size();
 
     ptr = std::to_chars(ptr, out.data() + out.capacity(), value).ptr;
@@ -67,7 +67,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     }
 
     // print one decimal: int.frac unit
-    out.ensureAvailableCapacityExponential(ndigits(finalInt) + 1U + ndigits(finalFrac) + 1U + units[unitIdx].size());
+    out.ensureAvailableCapacityExponential(nchars(finalInt) + 1U + nchars(finalFrac) + 1U + units[unitIdx].size());
 
     char* ptr = out.data() + out.size();
 

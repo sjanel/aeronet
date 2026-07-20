@@ -144,15 +144,20 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
   // CONNECT line written by establishProxyTunnel.
   if (req.trailersSize() != 0) {
     // Trailers require Transfer-Encoding: chunked on the wire (RFC 7230 section 4.1.2). Serialize the whole
-    // chunked request (with trailers).
-    // TODO: is it possible for the same request to be later sent with HTTP/2?
-    req.finalizeTrailersForHttp11(config.minCapturedBodySize);
-  }
-  std::string_view head = req.completeRequestForHttp11();
-  if (req.hasBodyFile()) {
+    // chunked request on a copy. The original stays protocol-neutral because a retry or redirect may later
+    // select HTTP/2, where trailers use a trailing HEADERS frame and Transfer-Encoding is forbidden.
+    HttpRequest wireReq = req.finalizeTrailersForHttp11(config.minCapturedBodySize);
+    const std::string_view head = wireReq.completeRequestForHttp11();
+    const std::string_view body = wireReq.hasBodyCaptured() ? wireReq.capturedPayloadForHttp11() : std::string_view{};
+    if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
+      return std::unexpected(wr.error());
+    }
+  } else if (req.hasBodyFile()) {
     // A captured file body is streamed from disk after the head (never copied into the head buffer, nor
     // fully loaded in memory). The head already carries the exact Content-Length of the file payload.
-    if (auto wr = writeAllForHttp11(client, transport, fd, head, std::string_view{}, ioDeadline, requestSent); !wr) {
+    if (auto wr = writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), std::string_view{},
+                                    ioDeadline, requestSent);
+        !wr) {
       return std::unexpected(wr.error());
     }
     if (auto wr = writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent); !wr) {
@@ -161,8 +166,10 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
   } else {
     // A captured (not inlined) in-memory body is streamed separately so it is never copied into the head
     // buffer; an inlined body already rides inside the head.
-    std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
-    if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
+    const std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
+    if (auto wr =
+            writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), body, ioDeadline, requestSent);
+        !wr) {
       return std::unexpected(wr.error());
     }
   }
