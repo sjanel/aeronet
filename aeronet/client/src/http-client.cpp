@@ -20,6 +20,8 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/file-payload.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
@@ -675,8 +677,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
 }
 
 bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {
-  // TODO: can we activate cache for file payloads?
-  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method()) && !req.hasBodyFile();
+  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method());
 }
 
 std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
@@ -686,21 +687,56 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
     return req._data;
   }
 
-  assert(!req.hasBodyFile());
-
-  // Layout: [1 method-idx byte][url]['\n'][headers]['\n'][body]. The two '\n' separators keep the key
-  // unambiguous (a URL never contains a raw newline, and the flat header block ends each line with CRLF), so
-  // distinct (url, headers, body) triples can never collide by concatenation.
   _cacheKeyScratch.clear();
-  _cacheKeyScratch.reserve(req._data.size() + req.bodySize());
-  _cacheKeyScratch.unchecked_append(req._data);
-  _cacheKeyScratch.unchecked_append(req.bodyInMemory());
+  const FilePayload* filePayload = req.filePayloadPtr();
+
+  if (filePayload == nullptr) {
+    const std::string_view bodyInMemory = req.bodyInMemory();
+    const std::string_view trailers = req.trailersFlatView();
+    _cacheKeyScratch.reserve(req._data.size() + bodyInMemory.size() + trailers.size());
+    _cacheKeyScratch.unchecked_append(req._data);
+    _cacheKeyScratch.unchecked_append(bodyInMemory);
+    _cacheKeyScratch.unchecked_append(trailers);
+    return _cacheKeyScratch;
+  }
+
+  const File& file = filePayload->file;
+  const File::Identity identity = file.identity();
+  const auto fileSz = file.size();
+
+  // Path, range, and the descriptor's current identity are enough to distinguish file payloads without walking
+  // their contents.
+
+  static constexpr auto kIdentitySize = File::Identity::size();
+  const auto lastModifiedCount = file.lastModified().time_since_epoch().count();
+
+  const auto appendNumber = [](auto value, char* pData) {
+    std::memcpy(pData, reinterpret_cast<const char*>(&value), sizeof(value));
+    return pData + sizeof(value);
+  };
+
+  _cacheKeyScratch.reserve(kIdentitySize + sizeof(filePayload->offset) + sizeof(filePayload->length) +
+                           sizeof(lastModifiedCount) + sizeof(fileSz) + req._data.size());
+
+  char* pData = _cacheKeyScratch.data();
+
+  std::memcpy(pData, identity.data(), kIdentitySize);
+  pData += kIdentitySize;
+
+  pData = appendNumber(filePayload->offset, pData);
+  pData = appendNumber(filePayload->length, pData);
+  pData = appendNumber(lastModifiedCount, pData);
+  pData = appendNumber(fileSz, pData);
+  pData = Append(req._data, pData);
+
+  _cacheKeyScratch.setSize(static_cast<std::size_t>(pData - _cacheKeyScratch.data()));
 
   return _cacheKeyScratch;
 }
 
 void HttpClient::pruneExpiredCache(SteadyClock::time_point now) {
   const auto refresh = _config.cache.refreshPeriod;
+
   for (auto it = _cache.begin(); it != _cache.end();) {
     if (std::chrono::duration_cast<HttpClientConfig::Duration>(now - it->second.lastUpdated) >= refresh) {
       it = _cache.erase(it);

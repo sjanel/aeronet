@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -20,6 +21,7 @@
 #include "aeronet/aeronet.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
@@ -34,6 +36,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
@@ -505,6 +508,106 @@ TEST(HttpClientHttp2E2ETest, PostEchoLargeBodyExercisesSendFlowControl) {
   auto resp = client.post(Url("/echo"), payload, "application/octet-stream").value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// --- Request file bodies ---------------------------------------------------
+// Over HTTP/2 a file body cannot be sent with sendfile(2): the payload must be split into DATA frames
+// (flow control + max frame size), so the engine reads the file in bounded chunks and frames them,
+// exactly like the server reads file responses. The server echoes back the exact file bytes.
+
+TEST(HttpClientHttp2E2ETest, PostFileBodySmall) {
+  static constexpr std::string_view kPayload = "small-http2-file-body";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/test");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), kPayload);
+  EXPECT_TRUE(lastSeenHttp2.load(std::memory_order_relaxed));
+}
+
+// A 1 MiB file body forces many DATA frames across several flow-control windows and multiple file reads
+// (the per-flush cap is 64 KiB): the engine must stall on flow control, resume on WINDOW_UPDATEs, and
+// reassemble the file intact on the server.
+TEST(HttpClientHttp2E2ETest, PostFileBodyLargeExercisesSendFlowControl) {
+  const std::string payload = MakeLargeBody();
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// An empty file body frames as END_STREAM on the HEADERS block (no DATA frame), Content-Length: 0.
+TEST(HttpClientHttp2E2ETest, PostEmptyFileBody) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+  ASSERT_EQ(file.size(), 0U);
+
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/test");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+// A file body restricted to a [offset, offset+length) sub-range uploads only that slice.
+TEST(HttpClientHttp2E2ETest, PostFileBodyWithOffsetAndLength) {
+  const std::string payload = MakeLargeBody();  // 1 MiB, position-dependent
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  constexpr std::size_t kOffset = 1000;
+  constexpr std::size_t kLength = 200UL * 1024;  // spans several DATA frames
+  HttpClient client = MakeHttp2Client();
+  auto req =
+      client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), kOffset, kLength, "application/test");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), std::string_view(payload).substr(kOffset, kLength));
+}
+
+// The HTTP/2 file-body loop must abort when the file cannot be fully read: truncating the file after the
+// request is built makes the first readAt() hit EOF before the declared body length. The scripted
+// transport accepts the preface + HEADERS write; the read-error is hit before any response is read.
+TEST(HttpClientHttp2E2ETest, PostFileBodyReadErrorFailsExchange) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, MakeLargeBody());
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client = MakeHttp2Client();
+  auto req = client.makeRequest(http::Method::POST, "http://example.test/upload")
+                 .file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  // Truncate under us: the open fd now reads 0 bytes though the body length was 1 MiB.
+  std::filesystem::resize_file(tmp.filePath(), 0);
+
+  // CloseOnRead accepts all writes (preface + HEADERS) and never feeds a response; the exchange fails at
+  // the first file read, before any transport read.
+  ScriptedHttp2Transport transport(ScriptedHttp2Transport::Action::CloseOnRead);
+  internal::ClientConnection connection(client.config().http2);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req,
+                                    SteadyClock::now() + std::chrono::seconds{1}, requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
 }
 
 TEST(HttpClientHttp2E2ETest, LargeResponseBodyReassembledAcrossDataFrames) {

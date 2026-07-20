@@ -12,12 +12,14 @@
 #include <utility>
 
 #include "aeronet/aeronet.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
 
@@ -47,6 +49,9 @@ class HttpClientTlsE2ETest : public ::testing::Test {
     Router router;
     router.setPath(http::Method::GET, "/secure",
                    [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "secret", "text/plain"); });
+    router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
+      return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
+    });
 
     HttpServerConfig cfg;
     // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner.
@@ -116,6 +121,29 @@ TEST_F(HttpClientTlsE2ETest, BadCaFileThrows) {
   cfg.withTlsCaFile("/nonexistent/aeronet-no-such-ca.pem");
   HttpClient client(cfg);
   EXPECT_THROW({ [[maybe_unused]] auto res = client.get(url("/secure")); }, HttpClientException);
+}
+
+// Over TLS a file body cannot use sendfile(2) (the bytes must be encrypted in user space), so the client
+// falls back to reading the file in bounded chunks and writing them through the TLS transport. A large,
+// multi-chunk file must still be echoed back byte-for-byte.
+TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsUsesReadWriteFallback) {
+  std::string payload((256UL * 1024) + 77, '\0');  // > 64 KiB chunk, non-aligned tail
+  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+    payload[idx] = static_cast<char>('A' + (idx % 61));
+  }
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::POST, url("/echo")).file(std::move(file), "application/octet-stream");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
+  EXPECT_EQ(resp.bodyInMemory(), payload);
 }
 
 TEST_F(HttpClientTlsE2ETest, KeepAliveOverTls) {

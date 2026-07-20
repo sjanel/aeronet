@@ -14,6 +14,8 @@
 
 #include "aeronet/client-connection.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/file-payload.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -357,14 +359,23 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   bodyBuf.clear();  // reuse the buffer's allocation across requests
   const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes);
 
-  // TODO: what about file bodies ?
-  std::string_view body = req.bodyInMemory();
+  // The request body is either held in memory (inlined or captured) or a captured file payload streamed
+  // from disk. Both expose their total length through bodyLength(); a file body is read into the client's
+  // reusable scratch buffer in flow-control-bounded chunks below (never fully materialized in memory).
+  const bool isFileBody = req.hasBodyFile();
+  const std::size_t bodyLen = req.bodyLength();
+  const std::string_view body = isFileBody ? std::string_view{} : req.bodyInMemory();
+  const FilePayload* filePayload = isFileBody ? req.filePayloadPtr() : nullptr;
+  RawChars& fileChunkBuf = client.bodyBuffer();  // idle during the send phase; only used for a file body
+  if (isFileBody) {
+    fileChunkBuf.clear();
+  }
 
   // Request trailers (RFC 9113 §8.1) ride in a trailing HEADERS block that carries END_STREAM. When they
   // are present, END_STREAM must be withheld from the initial HEADERS and from the final DATA frame so the
   // stream stays open until the trailers are shipped. endStreamSent tracks whether our send side was closed
   // (through HEADERS, DATA, or trailers) so the post-exchange cleanup below chooses finalize vs RST_STREAM.
-  bool endStreamSent = body.empty();
+  bool endStreamSent = bodyLen == 0;
 
   const auto method = req.method();
   const bool isTlsRequest = req.isTlsRequest();
@@ -388,7 +399,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
   // the upload; the leftover half-open stream is aborted below.
   auto ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
   std::size_t bodyOff = 0;
-  while (ioRes && bodyOff < body.size() && engine.failure() == Http2ClientEngine::Failure::None &&
+  while (ioRes && bodyOff < bodyLen && engine.failure() == Http2ClientEngine::Failure::None &&
          !engine.responseComplete()) {
     const std::size_t window = engine.sendWindow(streamId);
     if (window == 0) {
@@ -396,11 +407,30 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
       ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
       continue;
     }
-    const std::size_t chunkSize = std::min({body.size() - bodyOff, window, kMaxDataBytesPerFlush});
+    const std::size_t attempt = std::min({bodyLen - bodyOff, window, kMaxDataBytesPerFlush});
+    std::span<const std::byte> chunk;
+    std::size_t chunkSize = attempt;
+    if (isFileBody) {
+      // sendData copies the payload into the connection's output buffer, so the scratch buffer can be
+      // reused for the next chunk. A short read (< attempt) is fine; only a 0-length read / error before
+      // the whole payload was sent breaks the declared Content-Length.
+      fileChunkBuf.ensureAvailableCapacityExponential(attempt);
+      const std::size_t nread = filePayload->file.readAt(
+          std::as_writable_bytes(std::span<char>(fileChunkBuf.data(), attempt)), filePayload->offset + bodyOff);
+      if (nread == 0 || nread == File::kError) {
+        log::error("HTTP/2 client: reading request file body on stream {} failed (offset={}, remaining={})", streamId,
+                   filePayload->offset + bodyOff, bodyLen - bodyOff);
+        engine.endExchange();
+        return std::unexpected(HttpClientErrc::writeError);
+      }
+      chunkSize = nread;
+      chunk = std::as_bytes(std::span<const char>(fileChunkBuf.data(), nread));
+    } else {
+      chunk = std::as_bytes(std::span<const char>(body.data() + bodyOff, attempt));
+    }
     // Hold END_STREAM back for the trailing HEADERS block when trailers follow the body.
-    const bool endStream = (bodyOff + chunkSize == body.size()) && !hasTrailers;
-    const http2::ErrorCode dataErr =
-        conn.sendData(streamId, std::as_bytes(std::span{body.data() + bodyOff, chunkSize}), endStream);
+    const bool endStream = (bodyOff + chunkSize == bodyLen) && !hasTrailers;
+    const http2::ErrorCode dataErr = conn.sendData(streamId, chunk, endStream);
     if (dataErr != http2::ErrorCode::NoError) {
       log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, http2::ErrorCodeName(dataErr));
       engine.endExchange();
@@ -413,7 +443,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
 
   // Ship the request trailers once the whole body has gone out. Skipped when the exchange already failed
   // or the server answered early (RFC 9113 §8.1) -- the half-open stream is then aborted with RST_STREAM.
-  if (hasTrailers && ioRes && bodyOff == body.size() && engine.failure() == Http2ClientEngine::Failure::None &&
+  if (hasTrailers && ioRes && bodyOff == bodyLen && engine.failure() == Http2ClientEngine::Failure::None &&
       !engine.responseComplete()) {
     const http2::ErrorCode trailerErr = conn.sendRequestHeaders(
         streamId, method, isTlsRequest, {}, {}, HeadersView(req.trailersFlatView()), /*endStream=*/true);
