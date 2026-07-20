@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"

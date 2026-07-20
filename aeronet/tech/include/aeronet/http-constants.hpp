@@ -42,8 +42,16 @@ inline constexpr std::string_view PATCH = "PATCH";
 // They are in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
 inline constexpr std::string_view Connection = "connection";
 inline constexpr std::string_view TransferEncoding = "transfer-encoding";
-inline constexpr std::string_view ContentLength = "content-length";
+
+inline constexpr std::string_view Date = "date";
+inline constexpr std::string_view CRLFDateHeaderSep = "\r\ndate: ";
+
 inline constexpr std::string_view ContentType = "content-type";
+inline constexpr std::string_view ContentTypeHeaderSep = "content-type: ";
+
+inline constexpr std::string_view ContentLength = "content-length";
+inline constexpr std::string_view CRLFContentLengthHeaderSep = "\r\ncontent-length: ";
+
 inline constexpr std::string_view CacheControl = "cache-control";
 inline constexpr std::string_view ContentDisposition = "content-disposition";
 inline constexpr std::string_view ContentEncoding = "content-encoding";
@@ -55,7 +63,7 @@ inline constexpr std::string_view Trailer = "trailer";
 inline constexpr std::string_view Upgrade = "upgrade";
 inline constexpr std::string_view Expect = "expect";
 inline constexpr std::string_view Host = "host";
-inline constexpr std::string_view Date = "date";
+
 inline constexpr std::string_view Server = "server";
 inline constexpr std::string_view Location = "location";
 inline constexpr std::string_view Vary = "vary";
@@ -66,11 +74,6 @@ inline constexpr std::string_view ContentRange = "content-range";
 inline constexpr std::string_view ETag = "etag";
 inline constexpr std::string_view LastModified = "last-modified";
 inline constexpr std::string_view Range = "range";
-inline constexpr std::string_view IfRange = "if-range";
-inline constexpr std::string_view IfModifiedSince = "if-modified-since";
-inline constexpr std::string_view IfUnmodifiedSince = "if-unmodified-since";
-inline constexpr std::string_view IfNoneMatch = "if-none-match";
-inline constexpr std::string_view IfMatch = "if-match";
 inline constexpr std::string_view AccessControlAllowOrigin = "access-control-allow-origin";
 inline constexpr std::string_view AccessControlAllowCredentials = "access-control-allow-credentials";
 inline constexpr std::string_view AccessControlAllowMethods = "access-control-allow-methods";

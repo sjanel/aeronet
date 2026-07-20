@@ -1,10 +1,12 @@
 ﻿#include "aeronet/http-error-build.hpp"
 
-#include <charconv>
+#include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <string_view>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -13,7 +15,6 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
 
 namespace aeronet {
 
@@ -25,50 +26,44 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   const std::size_t globalHeadersSize = globalHeaders.fullSizeWithLastSep();
   const auto nbCharsBodyLen = nchars(body.size());
 
-  // Exact allocation size
-  RawChars out(http::HTTP11Sv.size() + 1UL + kStatusLen + 1UL + reason.size() + http::CRLF.size() + http::Date.size() +
-               http::HeaderSep.size() + RFC7231DateStrLen + http::CRLF.size() + http::ContentLength.size() +
-               http::HeaderSep.size() + nbCharsBodyLen + http::CRLF.size() + http::Connection.size() +
-               http::HeaderSep.size() + http::close.size() + http::DoubleCRLF.size() + globalHeadersSize + body.size());
+  static constexpr std::string_view kHTTP11Str = "HTTP/1.1 ";
+  static constexpr std::string_view kConnectionCloseStr = "\r\nconnection: close\r\n";
 
-  char* ptr = out.data();
+  // Exact allocation size
+  RawChars out(
+      kHTTP11Str.size() + kStatusLen + 1UL + reason.size() + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) +
+      kConnectionCloseStr.size() + globalHeadersSize + http::HeaderSize(http::ContentLength.size(), nbCharsBodyLen) +
+      http::HeaderSize(http::ContentType.size(), http::ContentTypeTextPlain.size()) + http::CRLF.size() + body.size());
+
+  char* pData = out.data();
 
   // Status line: HTTP/1.1 404 Not Found\r\n
-  ptr = Append(http::HTTP11Sv, ptr);
-  *ptr++ = ' ';
-  ptr = write3(ptr, status);
-  *ptr++ = ' ';
-  ptr = Append(reason, ptr);
-  ptr = Append(http::CRLF, ptr);
+  std::memcpy(pData, kHTTP11Str.data(), kHTTP11Str.size());
+  pData += kHTTP11Str.size();
+
+  pData = writeStatusCode(pData, status);
+  *pData++ = ' ';
+  pData = Append(reason, pData);
 
   // date: Wed, 21 Oct 2015 07:28:00 GMT
-  ptr = Append(http::Date, ptr);
-  ptr = Append(http::HeaderSep, ptr);
-  ptr = TimeToStringRFC7231(SysClock::now(), ptr);
-  ptr = Append(http::CRLF, ptr);
-
-  // content-length
-  ptr = Append(http::ContentLength, ptr);
-  ptr = Append(http::HeaderSep, ptr);
-  ptr = std::to_chars(ptr, ptr + nbCharsBodyLen, body.size()).ptr;
-  ptr = Append(http::CRLF, ptr);
+  pData = WriteCRLFDateHeader(SysClock::now(), pData);
 
   // connection: close
-  ptr = Append(http::Connection, ptr);
-  ptr = Append(http::HeaderSep, ptr);
-  ptr = Append(http::close, ptr);
-  ptr = Append(http::CRLF, ptr);
+  std::memcpy(pData, kConnectionCloseStr.data(), kConnectionCloseStr.size());
+  pData += kConnectionCloseStr.size();
 
   // Append global headers
-  ptr = Append(globalHeaders.fullStringWithLastSep(), ptr);
+  pData = Append(globalHeaders.fullStringWithLastSep(), pData);
 
-  // End of headers
-  ptr = Append(http::CRLF, ptr);
+  // content-length
+  pData = WriteContentTypeContentLengthDoubleCRLF(http::ContentTypeTextPlain, body.size(), pData);
 
   // Body
-  ptr = Append(body, ptr);
+  pData = Append(body, pData);
 
-  out.setSize(static_cast<std::size_t>(ptr - out.data()));
+  assert(static_cast<std::size_t>(pData - out.data()) == out.capacity());
+
+  out.setSize(static_cast<std::size_t>(pData - out.data()));
 
   return out;
 }

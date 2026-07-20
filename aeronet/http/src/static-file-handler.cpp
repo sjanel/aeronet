@@ -46,6 +46,19 @@
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
+
+namespace http {
+
+namespace {
+constexpr std::string_view IfRange = "if-range";
+constexpr std::string_view IfModifiedSince = "if-modified-since";
+constexpr std::string_view IfUnmodifiedSince = "if-unmodified-since";
+constexpr std::string_view IfNoneMatch = "if-none-match";
+constexpr std::string_view IfMatch = "if-match";
+}  // namespace
+
+}  // namespace http
+
 namespace {
 
 struct PathString {
