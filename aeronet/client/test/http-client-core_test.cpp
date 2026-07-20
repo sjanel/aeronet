@@ -1544,6 +1544,21 @@ TEST_F(HttpClientTrailerE2ETest, SendsMultipleRequestTrailers) {
   EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "2");
 }
 
+TEST_F(HttpClientTrailerE2ETest, SendsLargeCapturedBodyWithTrailer) {
+  HttpClientConfig cfg;
+  cfg.minCapturedBodySize = 0;
+  HttpClient client(cfg);
+  const std::string payload(1UL << 20, 'x');
+  auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
+  req.body(std::string(payload), "text/plain").trailerAddLine("x-checksum", "large-body");
+
+  const auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "large-body");
+  EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+}
+
 // The chunked+trailer request must be fully framed so the connection stays reusable: a plain request right
 // after a trailered one (on the same client) must frame and parse cleanly, whether or not the connection is
 // pooled. Also guards against request trailers leaking into the next request's server-side view.
