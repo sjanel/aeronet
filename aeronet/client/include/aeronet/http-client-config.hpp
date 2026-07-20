@@ -92,7 +92,8 @@ class HttpClientConfig {
   // cache and deliberately does NOT interpret HTTP cache-control semantics (`Cache-Control`, `ETag`,
   // `Vary`, `Age`, ...): the refresh period is authoritative. Entries are keyed by request method + URL +
   // request headers + body, so requests that differ in any of those (e.g. a different `Authorization`) never
-  // share an entry. Only successful (2xx) responses are stored, and only for methods in `methods` (default
+  // share an entry. File bodies are identified without reading their contents, using the byte range, and
+  // current descriptor metadata. Only successful (2xx) responses are stored, and only for methods in `methods` (default
   // GET + HEAD). Disabled by default (`refreshPeriod == 0`); enable it by setting a positive refresh period
   // (`Duration::max()` caches for the client's whole lifetime). The cache lives in the HttpClient and shares
   // its single-threaded assumption.

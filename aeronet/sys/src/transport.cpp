@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/file.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/sendfile.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
@@ -209,6 +211,33 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
     ret.bytesProcessed += static_cast<std::size_t>(nbWritten);
   }
 
+  return ret;
+}
+
+ITransport::TransportResult PlainTransport::sendFile(const File& file, std::size_t& offset, std::size_t count) {
+  TransportResult ret{0, TransportHint::None};
+  for (;;) {
+    // Sendfile advances `offset` by the number of bytes sent (0 on error / would-block).
+    const int64_t nbSent = Sendfile(_fd, static_cast<int>(file.fd()), offset, count);
+    if (nbSent > 0) {
+      ret.bytesProcessed = static_cast<std::size_t>(nbSent);
+      break;
+    }
+    if (nbSent == 0) {
+      // sendfile() returns 0 at end-of-input: the file was truncated below the region we promised to send
+      // (its length was validated against the file size when the payload was set). The declared
+      // Content-Length can no longer be honored, so surface a fatal error rather than spin.
+      ret.want = TransportHint::Error;
+      break;
+    }
+    const int err = LastSystemError();
+    if (err == error::kInterrupted) {
+      continue;  // interrupted before any byte was sent: retry immediately
+    }
+    // Kernel send buffer full => wait for writable; anything else is fatal (peer reset, broken pipe, ...).
+    ret.want = (err == error::kWouldBlock) ? TransportHint::WriteReady : TransportHint::Error;
+    break;
+  }
   return ret;
 }
 

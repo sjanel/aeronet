@@ -31,7 +31,7 @@ class ResponseParser {
   enum class Status : uint8_t {
     NeedMore,  // not enough bytes yet (read more, unless eof)
     Complete,  // a full response was parsed into the HttpResponse
-    Error      // malformed response / limit exceeded
+    Error,     // malformed response / limit exceeded
   };
 
   // `bodyBuf` is the reassembly buffer for chunked bodies (Length / UntilClose bodies stay contiguous in
@@ -77,7 +77,7 @@ class ResponseParser {
     BodyChunkCrlf,
     BodyChunkTrailers,
     BodyUntilClose,
-    Done
+    Done,
   };
   enum class Framing : uint8_t { None, Length, Chunked, UntilClose };
 

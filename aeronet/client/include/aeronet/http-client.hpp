@@ -183,7 +183,9 @@ class HttpClient {
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
   [[nodiscard]] bool cacheEligible(const HttpRequest& req) const noexcept;
   // Build the cache key (method + url + headers + body) into the reusable _cacheKeyScratch buffer and return
-  // a view of it. The view stays valid until the next buildCacheKey call (requestUncached never touches it).
+  // a view of it. Requests fully stored in _data return that buffer directly, avoiding a copy. A file body whose
+  // descriptor cannot be statted has no usable key, so caching is bypassed. The view stays valid until the next
+  // buildCacheKey call (requestUncached never touches it).
   std::string_view buildCacheKey(const HttpRequest& req);
   // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
   // Amortized periodic pruning of expired entries happens here.
