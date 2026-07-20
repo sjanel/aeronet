@@ -119,7 +119,7 @@ HttpResponse& HttpResponse::status(http::StatusCode statusCode) & {
   if (statusCode < 100 || statusCode > 999) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");
   }
-  write3(_data.data() + kStatusCodeBeg, statusCode);
+  writeStatusCode(_data.data() + kStatusCodeBeg, statusCode);
   return *this;
 }
 

@@ -137,7 +137,7 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   // "\" <status> <bytesOut>"
   *out++ = '"';
   *out++ = ' ';
-  out = write3(out, metrics.status);
+  out = writeStatusCode(out, metrics.status);
   *out++ = ' ';
   out = AppendIntegral(out, metrics.bytesOut);
 
@@ -188,7 +188,7 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   out = Append(kPathPart, out);
   out = Append(metrics.path, out);
   out = Append(kStatusPart, out);
-  out = write3(out, metrics.status);
+  out = writeStatusCode(out, metrics.status);
   out = Append(kBytesOutPart, out);
   out = AppendIntegral(out, metrics.bytesOut);
   out = Append(kDurationPart, out);
