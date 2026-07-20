@@ -34,7 +34,6 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/nchars.hpp"
-#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/static-file-config.hpp"
@@ -685,9 +684,9 @@ bool IfRangeAllowsPartial(std::string_view value, std::string_view etag, SysTime
   return lastModified <= parsed;
 }
 
-inline constexpr std::string_view kBytesPrefixStr = "bytes ";
-inline constexpr std::size_t kMaxRangeHeaderLen =
-    kBytesPrefixStr.size() + (3UL * ndigits(std::numeric_limits<std::uint64_t>::max())) + 2UL;  // +2 for '-' and '/'
+constexpr std::string_view kBytesPrefixStr = "bytes ";
+constexpr std::size_t kMaxRangeHeaderLen =
+    kBytesPrefixStr.size() + (3UL * nchars(std::numeric_limits<std::uint64_t>::max())) + 2UL;
 
 struct RangeHeaderBuf {
   static_assert(kMaxRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
@@ -714,9 +713,9 @@ RangeHeaderBuf BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::
   return result;
 }
 
-inline constexpr std::string_view kUnsatisfiedRangePrefixStr = "bytes */";
-inline constexpr std::size_t kMaxUnsatisfiedRangeHeaderLen =
-    kUnsatisfiedRangePrefixStr.size() + ndigits(std::numeric_limits<std::uint64_t>::max());
+constexpr std::string_view kUnsatisfiedRangePrefixStr = "bytes */";
+constexpr std::size_t kMaxUnsatisfiedRangeHeaderLen =
+    kUnsatisfiedRangePrefixStr.size() + nchars(std::numeric_limits<std::uint64_t>::max());
 
 struct UnsatisfiedRangeHeaderBuf {
   static_assert(kMaxUnsatisfiedRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());

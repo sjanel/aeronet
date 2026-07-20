@@ -6,7 +6,7 @@
 #include <string_view>
 
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/ndigits.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/url-encode.hpp"
 
@@ -71,7 +71,7 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
   }
 
   const bool addPort = targetPort != kStandardHttpsPort;
-  const auto hostNbDigits = addPort ? ndigits(targetPort) : 0;
+  const auto hostNbDigits = addPort ? nchars(targetPort) : 0;
 
   std::size_t requiredCapacity = kHttpsScheme.size() + host.size();
   if (addPort) {

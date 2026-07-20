@@ -70,11 +70,14 @@ class HttpRequestTest : public ::testing::Test {
 
   static bool HasTransferEncodingChunked(const HttpRequest& req) { return req.hasChunkedTransferEncoding(); }
 
-  static std::string_view FinalizeTrailersForHttp11(
-      HttpRequest& req, std::size_t minCapturedBodySize = std::numeric_limits<std::size_t>::max()) {
-    req.finalizeTrailersForHttp11(minCapturedBodySize);
-    return req.completeRequestForHttp11();
+  static HttpRequest FinalizeTrailersForHttp11(
+      const HttpRequest& req, std::size_t minCapturedBodySize = std::numeric_limits<std::size_t>::max()) {
+    return req.finalizeTrailersForHttp11(minCapturedBodySize);
   }
+
+  static std::string_view CompleteRequestForHttp11(const HttpRequest& req) { return req.completeRequestForHttp11(); }
+
+  static std::string_view CapturedPayloadForHttp11(const HttpRequest& req) { return req.capturedPayloadForHttp11(); }
 
   static bool IsAutomaticDirectCompression(const HttpRequest& req) { return req._opts.isAutomaticDirectCompression(); }
 
@@ -646,10 +649,15 @@ TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
   req.trailerAddLine("X-First", "one").trailerAddLine("X-Second", "two");
 
   EXPECT_FALSE(HasTransferEncodingChunked(req));
-  std::string_view wire = FinalizeTrailersForHttp11(req);
-  EXPECT_TRUE(HasTransferEncodingChunked(req));
-  FinalizeTrailersForHttp11(req);  // should be no-op if called again
-  EXPECT_TRUE(HasTransferEncodingChunked(req));
+  const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
+  const std::string_view wire = CompleteRequestForHttp11(wireReq);
+  EXPECT_TRUE(HasTransferEncodingChunked(wireReq));
+
+  // HTTP/1.1 framing must not mutate the reusable request: a retry or redirect can select HTTP/2.
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  EXPECT_EQ(req.bodyInMemory(), "payload");
+  EXPECT_EQ(req.trailerValueOrEmpty("X-First"), "one");
+  EXPECT_FALSE(req.headerValue(http::TransferEncoding).has_value());
 
   EXPECT_TRUE(wire.starts_with("POST /p HTTP/1.1\r\n"));
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
@@ -659,12 +667,31 @@ TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
   EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-First: one\r\nX-Second: two\r\n\r\n"));
 }
 
+TEST_F(HttpRequestTest, ChunkedRequestSerializationKeepsLargeCapturedSourceProtocolNeutral) {
+  const std::string payload(1UL << 20, 'x');
+  auto req = makeRequest(http::Method::POST, "http://h/p").body(std::string(payload));
+  req.trailerAddLine("X-Checksum", "abc123");
+
+  const HttpRequest wireReq = FinalizeTrailersForHttp11(req, 0);
+  const std::string_view wireHead = CompleteRequestForHttp11(wireReq);
+
+  EXPECT_TRUE(wireHead.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
+                                std::string(http::chunked) + std::string(http::CRLF)));
+  EXPECT_TRUE(CapturedPayloadForHttp11(wireReq).ends_with("\r\n0\r\nX-Checksum: abc123\r\n\r\n"));
+
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  EXPECT_EQ(req.bodyInMemory(), payload);
+  EXPECT_EQ(req.trailerValueOrEmpty("X-Checksum"), "abc123");
+  EXPECT_FALSE(req.headerValue(http::TransferEncoding).has_value());
+}
+
 TEST_F(HttpRequestTest, EmptyBodyRequestShouldNotHaveZeroContentLengthHeader) {
   auto req = makeRequest(http::Method::POST, "http://h/p");
   req.headerAddLine("X-Custom", "value");
   EXPECT_FALSE(HasTransferEncodingChunked(req));
-  std::string_view wire = FinalizeTrailersForHttp11(req);
-  EXPECT_FALSE(HasTransferEncodingChunked(req));
+  const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
+  const std::string_view wire = CompleteRequestForHttp11(wireReq);
+  EXPECT_FALSE(HasTransferEncodingChunked(wireReq));
 
   EXPECT_FALSE(wire.contains(std::string(http::ContentLength) + std::string(http::HeaderSep)));
 }
@@ -673,8 +700,10 @@ TEST_F(HttpRequestTest, ChunkedRequestSerializationCanOmitTrailerHeader) {
   auto req = makeRequestWithoutTrailerHeader(http::Method::POST, "http://h/p").body("payload");
   req.trailerAddLine("X-Only", "value");
   EXPECT_FALSE(HasTransferEncodingChunked(req));
-  std::string_view wire = FinalizeTrailersForHttp11(req);
-  EXPECT_TRUE(HasTransferEncodingChunked(req));
+  const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
+  const std::string_view wire = CompleteRequestForHttp11(wireReq);
+  EXPECT_TRUE(HasTransferEncodingChunked(wireReq));
+  EXPECT_FALSE(HasTransferEncodingChunked(req));
 
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                             std::string(http::chunked) + std::string(http::CRLF)));

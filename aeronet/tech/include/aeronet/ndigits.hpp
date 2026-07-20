@@ -21,7 +21,7 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
 
   // Powers of 10 - 1 up to the maximum of U
   static constexpr unsigned int kMaxNbBits = (sizeof(U) * 8U) - 1U;
-  static constexpr auto pow10 = []() {
+  static constexpr auto pow10 = [] {
     std::array<U, std::numeric_limits<U>::digits10 + 1> arr{};
     arr[0] = 9U;
     for (unsigned int i = 1U; i < std::numeric_limits<U>::digits10; ++i) {
