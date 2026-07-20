@@ -71,11 +71,11 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
   }
 
   const bool addPort = targetPort != kStandardHttpsPort;
-  const auto hostNbDigits = addPort ? nchars(targetPort) : 0;
+  const std::uint8_t hostNbChars = addPort ? nchars(targetPort) : 0;
 
   std::size_t requiredCapacity = kHttpsScheme.size() + host.size();
   if (addPort) {
-    requiredCapacity += 1 + static_cast<std::size_t>(hostNbDigits);  // ':' + port digits
+    requiredCapacity += 1U + hostNbChars;  // ':' + port digits
   }
 
   out.reserve(requiredCapacity);
