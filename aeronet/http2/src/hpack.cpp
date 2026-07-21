@@ -19,7 +19,6 @@
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/tolower-str.hpp"
 
 namespace aeronet::http2 {
 
@@ -508,51 +507,9 @@ constexpr uint16_t DecodeHuffmanSymbol(uint32_t code, uint8_t numBits) noexcept 
   return 0xFFFF;  // Not found
 }
 
+constexpr std::size_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
+
 }  // namespace
-
-HpackDynamicEntry::HpackDynamicEntry(std::string_view name, std::string_view value)
-    : _pData(static_cast<char*>(std::malloc(name.size() + value.size()))),
-      _nameLength(SafeCast<uint32_t>(name.size())),
-      _valueLength(SafeCast<uint32_t>(value.size())) {
-  if (_pData == nullptr) {
-    throw std::bad_alloc();
-  }
-  tolower_n(name.data(), name.size(), _pData);
-  Copy(value, _pData + name.size());
-}
-
-HpackDynamicEntry::HpackDynamicEntry(HpackDynamicEntry&& rhs, std::string_view name, std::string_view value)
-    : _pData(std::exchange(rhs._pData, nullptr)),
-      _nameLength(SafeCast<uint32_t>(name.size())),
-      _valueLength(SafeCast<uint32_t>(value.size())) {
-  if (rhs.size() < size()) {
-    char* newData = static_cast<char*>(std::realloc(_pData, name.size() + value.size()));
-    if (newData == nullptr) {
-      std::free(_pData);
-      _pData = nullptr;
-      throw std::bad_alloc();
-    }
-    _pData = newData;
-  }
-  tolower_n(name.data(), name.size(), _pData);
-  Copy(value, _pData + name.size());
-}
-
-HpackDynamicEntry::HpackDynamicEntry(HpackDynamicEntry&& rhs) noexcept
-    : _pData(std::exchange(rhs._pData, nullptr)),
-      _nameLength(std::exchange(rhs._nameLength, 0)),
-      _valueLength(std::exchange(rhs._valueLength, 0)) {}
-
-HpackDynamicEntry& HpackDynamicEntry::operator=(HpackDynamicEntry&& rhs) noexcept {
-  assert(this != &rhs);
-  std::free(_pData);
-  _pData = std::exchange(rhs._pData, nullptr);
-  _nameLength = std::exchange(rhs._nameLength, 0);
-  _valueLength = std::exchange(rhs._valueLength, 0);
-  return *this;
-}
-
-HpackDynamicEntry::~HpackDynamicEntry() { std::free(_pData); }
 
 std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStaticTable; }
 
@@ -561,7 +518,7 @@ std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStati
 // ============================
 
 bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
-  const std::size_t entrySize = name.size() + value.size() + HpackDynamicEntry::kOverhead;
+  const std::size_t entrySize = name.size() + value.size() + kHpackOverhead;
 
   // If entry is larger than max size, clear the table (RFC 7541 §4.4)
   if (_maxSize < entrySize) {
@@ -569,20 +526,20 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
     return false;
   }
 
-  HpackDynamicEntry newEntry;
+  http::Header newEntry;
 
   if (_maxSize < _currentSize + entrySize) {
     do {
-      HpackDynamicEntry evicted = evict();
-      if (newEntry.unallocated()) {
-        newEntry = HpackDynamicEntry(std::move(evicted), name, value);
+      http::Header evicted = evict();
+      if (newEntry.empty()) {
+        newEntry = http::Header(std::move(evicted), name, value);
       }
     } while (_maxSize < _currentSize + entrySize);
   } else {
     // Fast path (no eviction) - construct then noexcept-move into the vector.
     // Using insert (noexcept move) instead of emplace avoids exception-handling
     // code around the malloc inside the constructor, producing tighter codegen.
-    newEntry = HpackDynamicEntry(name, value);
+    newEntry = http::Header(name, value);
   }
 
   _entries.insert(_entries.begin(), std::move(newEntry));
@@ -605,9 +562,9 @@ void HpackDynamicTable::clear() noexcept {
   _currentSize = 0;
 }
 
-HpackDynamicEntry HpackDynamicTable::evict() {
-  HpackDynamicEntry evictedEntry = std::move(_entries.back());
-  _currentSize -= evictedEntry.size();
+http::Header HpackDynamicTable::evict() {
+  http::Header evictedEntry = std::move(_entries.back());
+  _currentSize -= evictedEntry.size() + kHpackOverhead;
   _entries.pop_back();
   return evictedEntry;
 }
@@ -980,17 +937,17 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
 
   output.ensureAvailableCapacityExponential(1U + continuationBytes);
 
-  std::byte* pInsertPtr = output.data() + output.size();
+  std::byte* pData = output.data() + output.size();
 
-  *pInsertPtr++ = static_cast<std::byte>(prefixMask | maxPrefix);
+  *pData++ = static_cast<std::byte>(prefixMask | maxPrefix);
 
   while (value >= 128) {
-    *pInsertPtr++ = static_cast<std::byte>((value & 0x7F) | 0x80);
+    *pData++ = static_cast<std::byte>((value & 0x7F) | 0x80);
     value >>= 7;
   }
-  *pInsertPtr++ = static_cast<std::byte>(value);
+  *pData++ = static_cast<std::byte>(value);
 
-  output.setSize(static_cast<std::size_t>(pInsertPtr - output.data()));
+  output.setEnd(pData);
 }
 
 std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
@@ -1005,7 +962,7 @@ void EncodeHuffman(RawBytes& output, std::string_view str) {
 
   output.ensureAvailableCapacityExponential(HuffmanEncodedLength(str));
 
-  std::byte* pInsertPtr = output.data() + output.size();
+  std::byte* pData = output.data() + output.size();
 
   for (char ch : str) {
     const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
@@ -1014,16 +971,16 @@ void EncodeHuffman(RawBytes& output, std::string_view str) {
     currentBits += code.bitLength;
     while (currentBits >= 8) {
       currentBits -= 8;
-      *pInsertPtr++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFF);
+      *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFF);
     }
   }
 
   // Pad with EOS prefix (all 1s)
   if (currentBits > 0) {
     const uint8_t padding = static_cast<uint8_t>((1U << (8 - currentBits)) - 1);
-    *pInsertPtr++ = static_cast<std::byte>((currentCode << (8 - currentBits)) | padding);
+    *pData++ = static_cast<std::byte>((currentCode << (8 - currentBits)) | padding);
   }
-  output.setSize(static_cast<std::size_t>(pInsertPtr - output.data()));
+  output.setEnd(pData);
 }
 
 void EncodeString(RawBytes& output, std::string_view str) {

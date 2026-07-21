@@ -102,10 +102,10 @@ class Http1WriterTransport final : public IWriterTransport {
       const auto totalSize = nbDigitsHex + http::CRLF.size() + data.size() + http::CRLF.size();
 
       RawChars chunkBuffer(totalSize);
-      char* insertPtr = to_lower_hex(data.size(), chunkBuffer.data());
-      insertPtr = Append(http::CRLF, insertPtr);
-      insertPtr = Append(data, insertPtr);
-      insertPtr = Append(http::CRLF, insertPtr);
+      char* pData = to_lower_hex(data.size(), chunkBuffer.data());
+      pData = Append(http::CRLF, pData);
+      pData = Append(data, pData);
+      pData = Append(http::CRLF, pData);
       chunkBuffer.setSize(totalSize);
 
       return enqueue(HttpMessageData(std::move(chunkBuffer)));
@@ -135,7 +135,7 @@ class Http1WriterTransport final : public IWriterTransport {
       insertPtr += trailers.size();
       insertPtr = Append(http::CRLF, insertPtr);
 
-      trailers.setSize(static_cast<std::size_t>(insertPtr - trailers.data()));
+      trailers.setEnd(insertPtr);
     }
 
     return enqueue(HttpMessageData(std::move(trailers)));

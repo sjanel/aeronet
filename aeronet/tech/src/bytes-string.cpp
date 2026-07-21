@@ -32,7 +32,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     *ptr++ = ' ';
     ptr = Append(unit, ptr);
 
-    out.setSize(static_cast<std::size_t>(ptr - out.data()));
+    out.setEnd(ptr);
   };
 
   // Bytes: print integer bytes
@@ -77,7 +77,7 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     *ptr++ = ' ';
     ptr = Append(units[unitIdx], ptr);
 
-    out.setSize(static_cast<std::size_t>(ptr - out.data()));
+    out.setEnd(ptr);
 
     return;
   }

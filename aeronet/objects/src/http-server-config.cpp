@@ -14,6 +14,7 @@
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -271,12 +272,14 @@ HttpServerConfig& HttpServerConfig::withGlobalHeaders(std::span<const http::Head
     throw std::invalid_argument("too many global headers");
   }
   globalHeaders.clear();
-  std::ranges::for_each(headers, [this](const http::Header& header) { globalHeaders.append(header.http1Raw()); });
+  std::ranges::for_each(headers, [this](const http::Header& header) {
+    globalHeaders.appendAsHttp1Header(header.name(), header.value());
+  });
   return *this;
 }
 
 HttpServerConfig& HttpServerConfig::addGlobalHeader(const http::Header& header) {
-  globalHeaders.append(header.http1Raw());
+  globalHeaders.appendAsHttp1Header(header.name(), header.value());
   return *this;
 }
 
@@ -338,32 +341,7 @@ void HttpServerConfig::validate() {
     throw std::invalid_argument("too many global headers");
   }
 
-  for (std::string_view headerNameValue : globalHeaders) {
-    const auto colonPos = headerNameValue.find(http::HeaderSep);
-    if (colonPos == std::string_view::npos) {
-      throw std::invalid_argument("header missing http::HeaderSep separator in global headers");
-    }
-
-    std::string_view headerName = headerNameValue.substr(0, colonPos);
-
-    if (http::IsReservedResponseHeader(headerName)) {
-      throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", headerName));
-    }
-
-    if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument(std::format("header has invalid name: '{}'", headerName));
-    }
-
-    std::string_view headerValue = TrimOws(headerNameValue.substr(colonPos + 1));
-    if (!http::IsValidHeaderValue(headerValue)) {
-      throw std::invalid_argument(std::format("header has invalid value: '{}'", headerValue));
-    }
-
-#ifdef AERONET_ENABLE_HTTP2
-    // forces lower-case header names for HTTP/2
-    tolower(const_cast<char*>(headerName.data()), headerName.size());
-#endif
-  }
+  Validate(globalHeaders, HeaderType::Response);
 
   telemetry.validate();
   tls.validate();

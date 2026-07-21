@@ -331,7 +331,7 @@ std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> 
     Write32BE(pEnd + 2, entry.value);
     pEnd += 6;
   }
-  buffer.setSize(static_cast<std::size_t>(pEnd - buffer.data()));
+  buffer.setEnd(pEnd);
 
   return FrameHeader::kSize + payloadSize;
 }

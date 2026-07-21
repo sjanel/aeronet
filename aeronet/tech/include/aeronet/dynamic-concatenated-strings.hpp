@@ -13,6 +13,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
@@ -68,10 +69,26 @@ class DynamicConcatenatedStrings {
 
     _buf.ensureAvailableCapacityExponential(len + kSep.size());
 
-    char* pInsertPtr = _buf.data() + _buf.size();
-    pInsertPtr = std::to_chars(pInsertPtr, pInsertPtr + len, value).ptr;
-    pInsertPtr = Append(kSep, pInsertPtr);
-    _buf.setSize(static_cast<decltype(_buf)::size_type>(pInsertPtr - _buf.data()));
+    char* pData = _buf.data() + _buf.size();
+    pData = std::to_chars(pData, pData + len, value).ptr;
+    pData = Append(kSep, pData);
+    _buf.setEnd(pData);
+  }
+
+  void appendAsHttp1Header(std::string_view name, std::string_view value) {
+    static_assert(kSep == http::CRLF,
+                  "DynamicConcatenatedStrings::appendAsHttp1Header: separator must be CRLF for HTTP/1.1 headers");
+    if (name.contains(kSep) || value.contains(kSep)) {
+      throw std::invalid_argument("DynamicConcatenatedStrings::appendAsHttp1Header: name or value contains separator");
+    }
+    _buf.ensureAvailableCapacityExponential(name.size() + http::HeaderSep.size() + value.size() + kSep.size());
+
+    char* pData = _buf.data() + _buf.size();
+    pData = Append(name, pData);
+    pData = Append(http::HeaderSep, pData);
+    pData = Append(value, pData);
+    pData = Append(kSep, pData);
+    _buf.setEnd(pData);
   }
 
   // Insert one element for native Glaze readable array support.

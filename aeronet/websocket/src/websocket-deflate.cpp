@@ -202,7 +202,7 @@ void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
     *ptr++ = '=';
     ptr = std::to_chars(ptr, output.data() + output.capacity(), params.clientMaxWindowBits).ptr;
   }
-  output.setSize(static_cast<RawChars::size_type>(ptr - output.data()));
+  output.setEnd(ptr);
 }
 
 struct DeflateContext::Impl {
