@@ -13,7 +13,11 @@ namespace aeronet {
 // padding to stay liberal with third-party tokens.
 
 namespace detail {
-inline constexpr char kB64UrlTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+inline constexpr char kB64UrlTable[] = {
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
+    'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
+    's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '_',
+};
 
 // 6-bit value of a base64url symbol, or -1 when the character is not in the alphabet. Computed
 // inline (every branch runs during decoding) rather than via a compile-time lookup table.
