@@ -64,21 +64,17 @@ void TLSConfig::validate() {
   }
 
   // Validate min/max version allowed tokens (if set)
-  if (minVersion != Version{}) {
-    if (minVersion != TLS_1_2 && minVersion != TLS_1_3) {
-      char buf[Version::kStrLen];
-      minVersion.writeFull(buf);
-      log::critical("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
-      throw std::invalid_argument("Unsupported tls minVersion");
-    }
+  if (minVersion != Version{} && minVersion != TLS_1_2 && minVersion != TLS_1_3) {
+    char buf[Version::kStrLen];
+    minVersion.writeFull(buf);
+    log::critical("Unsupported tls minVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
+    throw std::invalid_argument("Unsupported tls minVersion");
   }
-  if (maxVersion != Version{}) {
-    if (maxVersion != TLS_1_2 && maxVersion != TLS_1_3) {
-      char buf[Version::kStrLen];
-      maxVersion.writeFull(buf);
-      log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
-      throw std::invalid_argument("Unsupported tls maxVersion");
-    }
+  if (maxVersion != Version{} && maxVersion != TLS_1_2 && maxVersion != TLS_1_3) {
+    char buf[Version::kStrLen];
+    maxVersion.writeFull(buf);
+    log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
+    throw std::invalid_argument("Unsupported tls maxVersion");
   }
 
   auto alpnProtocols = this->alpnProtocols();

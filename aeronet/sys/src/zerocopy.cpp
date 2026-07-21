@@ -58,9 +58,14 @@ int64_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondB
   // Use sendmsg with MSG_ZEROCOPY for large payloads
   // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  iovec iov[]{{const_cast<char*>(firstBuf.data()), firstBuf.size()},
-              // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-              {const_cast<char*>(secondBuf.data()), secondBuf.size()}};
+  iovec iov[]{
+      {const_cast<char*>(firstBuf.data()), firstBuf.size()},
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      {
+          const_cast<char*>(secondBuf.data()),
+          secondBuf.size(),
+      },
+  };
 
   msghdr msg{};
   msg.msg_iov = iov;

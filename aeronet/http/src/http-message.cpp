@@ -967,6 +967,28 @@ constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
 }  // namespace
 
+char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize) {
+  char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
+
+  std::memcpy(pData, http::ContentTypeHeaderSep.data(), http::ContentTypeHeaderSep.size());
+  pData += http::ContentTypeHeaderSep.size();
+
+  pData = Append(contentType, pData);
+
+  std::memcpy(pData, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
+  pData += http::CRLFContentLengthHeaderSep.size();
+
+  pData = std::to_chars(pData, pData + std::numeric_limits<std::size_t>::digits10 + 1, bodySize).ptr;
+
+  std::memcpy(pData, http::DoubleCRLF.data(), http::DoubleCRLF.size());
+  pData += http::DoubleCRLF.size();
+
+  const auto bodyStart = static_cast<std::uint64_t>(pData - _data.data());
+  setBodyStartPos(bodyStart);
+  _data.setSize(bodyStart);
+  return pData;
+}
+
 bool HttpMessage::hasChunkedTransferEncoding() const noexcept {
   return kEndChunkedBody.size() < _opts._trailerLen && std::memcmp(_data.data() + _data.size() - _opts._trailerLen,
                                                                    kEndChunkedBody.data(), kEndChunkedBody.size()) == 0;

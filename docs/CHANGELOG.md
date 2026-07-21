@@ -34,6 +34,7 @@ All notable changes to aeronet are documented in this file.
 - **glaze JSON/YAML reads could over-read a non-null-terminated body buffer** — `HttpRequestView::bodyAs<T>()` / `bodyAsYaml<T>()` now parse with `null_terminated = false`.
 - **Out-of-bounds read on a stale poll event (rare macOS-only crash)** — `ConnectionStorage::iterator(fd)` now maps any out-of-range fd to `end()` instead of dereferencing past the (shrunk) connection vector.
 - Fixed a Debug-only compilation error in `aeronet::fullVersionStringView()` (`<aeronet/version.hpp>`).
+- Added `Content-type` header for built-in server error messages with a body.
 
 ### Improvements
 
