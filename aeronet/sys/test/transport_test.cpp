@@ -193,6 +193,8 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
+namespace {
+
 // A minimal transport that overrides nothing beyond the two pure-virtual I/O methods, so it inherits the
 // ITransport defaults: no sendfile support, and a sendFile() that reports it is unsupported.
 class BaseDefaultsTransport final : public ITransport {
@@ -200,6 +202,8 @@ class BaseDefaultsTransport final : public ITransport {
   TransportResult read(char* /*buf*/, std::size_t /*len*/) override { return {0, TransportHint::None}; }
   TransportResult write(std::string_view /*data*/) override { return {0, TransportHint::None}; }
 };
+
+}  // namespace
 
 TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
   BaseDefaultsTransport transport;

@@ -5,6 +5,8 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-status-code.hpp"
+
 namespace aeronet {
 
 TEST(SimpleCharConv, Write2) {
