@@ -70,7 +70,7 @@ constexpr int8_t from_hex_digit(char ch) {
   };
 
   static constexpr HexTable kHexTable = [] {
-    HexTable table;
+    HexTable table{};
     for (signed char& val : table.data) {
       val = -1;
     }

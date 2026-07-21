@@ -134,6 +134,7 @@ test::TestServer CreateTestServer() {
   return testServer;
 }
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 test::TestServer ts = CreateTestServer();
 const auto port = ts.port();
 

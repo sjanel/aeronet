@@ -39,7 +39,7 @@ struct TlsHttp2TestServer {
     });
   }
 
-  [[nodiscard]] uint16_t port() const { return server.port(); }
+  [[nodiscard]] uint16_t port() const noexcept { return server.port(); }
   void stop() { server.stop(); }
 
   /// Set the unified request handler (works for both HTTP/1.1 and HTTP/2)
