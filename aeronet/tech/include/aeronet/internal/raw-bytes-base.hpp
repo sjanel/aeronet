@@ -134,6 +134,13 @@ class RawBytesBase {
     _size = newSize;
   }
 
+  void setEnd(const_pointer newEnd) noexcept {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(newEnd >= _buf && newEnd <= _buf + _capacity);
+#endif
+    _size = static_cast<size_type>(newEnd - _buf);
+  }
+
   // Increases the size of the buffer by delta.
   void addSize(size_type delta) noexcept {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS

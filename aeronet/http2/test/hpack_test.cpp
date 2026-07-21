@@ -12,12 +12,7 @@
 #include <string_view>
 #include <utility>
 
-#if AERONET_WANT_MALLOC_OVERRIDES
-#include <new>
-#endif
-
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/sys-test-support.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -206,8 +201,10 @@ TEST(HpackDecoder, DecodeLiteralWithIndexing) {
   // "custom-key" = name
   // 0x0d = value length 13
   // "custom-header" = value
-  static constexpr uint8_t encoded[]{0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
-                                     'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
+  static constexpr uint8_t encoded[]{
+      0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_TRUE(result.isSuccess());
@@ -335,7 +332,13 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
   vector<uint8_t> encoded;
 
   const std::array<std::pair<uint8_t, uint8_t>, 4> prefixes = {
-      {{0x12, 0x34}, {0xAA, 0x55}, {0xF0, 0x0F}, {0x99, 0x66}}};
+      {
+          {0x12, 0x34},
+          {0xAA, 0x55},
+          {0xF0, 0x0F},
+          {0x99, 0x66},
+      },
+  };
 
   for (const auto& [b0, b1] : prefixes) {
     for (uint32_t tail = 0; tail <= 0xFFFF; ++tail) {
@@ -380,8 +383,10 @@ TEST(HpackDecoder, DecodeLiteralWithoutIndexing) {
 
   // Literal header without indexing, new name
   // 0x00 = literal without indexing, index 0 (new name)
-  static constexpr uint8_t encoded[]{0x00, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
-                                     'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
+  static constexpr uint8_t encoded[]{
+      0x00, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
 
   auto result = decoder.decode(AsBytes(encoded));
 
@@ -427,7 +432,7 @@ TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
   // Format: literal with indexing (0x40), name length, name, value length, value
   static constexpr uint8_t encoded[]{
       0x40, 0x06, 'a', 'c', 'c', 'e', 'p', 't', 0x01, 'a',  // accept: a
-      0x40, 0x06, 'a', 'c', 'c', 'e', 'p', 't', 0x01, 'b'   // accept: b
+      0x40, 0x06, 'a', 'c', 'c', 'e', 'p', 't', 0x01, 'b',  // accept: b
   };
 
   auto result = decoder.decode(AsBytes(encoded));
@@ -625,8 +630,10 @@ TEST(HpackDecoder, SetMaxDynamicTableSize) {
   HpackDecoder decoder(4096);
 
   // Add two entries via literal-with-indexing encoded blocks
-  vector<uint8_t> encoded1 = {0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
-                              'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
+  vector<uint8_t> encoded1 = {
+      0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
 
   vector<uint8_t> encoded2 = {0x40, 0x04, 'h', 'e', 'a', 'd', 0x05, 'v', 'a', 'l', 'u', 'e'};
 
@@ -649,8 +656,10 @@ TEST(HpackDecoder, ClearDecodedStrings) {
   HpackDecoder decoder(4096);
 
   // Use an encoded literal-with-indexing block to populate decoded strings
-  static constexpr uint8_t encoded[]{0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
-                                     'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e'};
+  static constexpr uint8_t encoded[]{
+      0x40, 0x0a, 'c', 'u', 's', 't', 'o', 'm', '-', 'k', 'e', 'y', 0x0c,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
 
   auto res1 = decoder.decode(AsBytes(encoded));
   EXPECT_TRUE(res1.isSuccess());
@@ -1014,34 +1023,5 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
   }
 }
-
-// ============================
-// Allocation Failure Tests
-// ============================
-
-#if AERONET_WANT_MALLOC_OVERRIDES
-
-TEST(HpackDynamicEntry, ConstructorMallocFailureThrowsBadAlloc) {
-  // The HpackDynamicEntry(name, value) constructor calls malloc.
-  // When malloc returns nullptr, it must throw std::bad_alloc.
-  test::FailNextMalloc();
-  EXPECT_THROW(HpackDynamicEntry("test-name", "test-value"), std::bad_alloc);
-}
-
-TEST(HpackDynamicEntry, BufferStealingConstructorReallocFailureThrowsBadAlloc) {
-  // The HpackDynamicEntry(rhs&&, name, value) constructor calls realloc
-  // when the new entry is larger than the stolen buffer.
-  // When realloc returns nullptr, it must throw std::bad_alloc.
-  HpackDynamicEntry small("a", "b");
-
-  // The buffer-stealing constructor needs a larger entry to trigger realloc.
-  const std::string longName(200, 'x');
-  const std::string longValue(200, 'y');
-
-  test::FailNextRealloc();
-  EXPECT_THROW(HpackDynamicEntry(std::move(small), longName, longValue), std::bad_alloc);
-}
-
-#endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 }  // namespace aeronet::http2

@@ -297,7 +297,7 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
           pEnd = Append(beg, pos, pEnd);
           pEnd = Append(data, pEnd);
           pEnd = Append(beg + pos, val.second - pos, pEnd);
-          buf.setSize(static_cast<RawChars::size_type>(pEnd - buf.data()));
+          buf.setEnd(pEnd);
           _data = std::move(buf);
         } else if constexpr (std::is_same_v<T, std::string_view>) {
           // switch to RawChars to simplify appending
@@ -308,7 +308,7 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
           pEnd = Append(data, pEnd);
           pEnd = Append(val.data() + pos, val.size() - pos, pEnd);
 
-          buf.setSize(static_cast<RawChars::size_type>(pEnd - buf.data()));
+          buf.setEnd(pEnd);
 
           _data = std::move(buf);
         }

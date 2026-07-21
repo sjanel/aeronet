@@ -152,7 +152,7 @@ bool AdjustWithUnit(UnitDuration unitDuration, std::chrono::milliseconds& dur, i
 
     auto ptr = std::to_chars(ret.data() + ret.size(), ret.data() + ret.capacity(), countInThisDurationUnit).ptr;
     ptr = Append(unitDuration.first, ptr);
-    ret.setSize(static_cast<uint32_t>(ptr - ret.data()));
+    ret.setEnd(ptr);
 
     dur -= countInThisDurationUnit * unitDuration.second;
     if (--nbSignificantUnits == 0) {

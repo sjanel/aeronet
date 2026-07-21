@@ -1,6 +1,5 @@
 #include "aeronet/http-helpers.hpp"
 
-#include <cstddef>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
@@ -20,7 +19,7 @@ RawChars MakeHttp1HeaderLine(std::string_view name, std::string_view value, bool
     ptr = Append(http::CRLF, ptr);
   }
 
-  line.setSize(static_cast<std::size_t>(ptr - line.data()));
+  line.setEnd(ptr);
 
   return line;
 }
@@ -40,7 +39,7 @@ RawChars BuildRawHttp11(std::string_view method, std::string_view target, std::s
   ptr = Append(http::CRLF, ptr);
   ptr = Append(body, ptr);
 
-  raw.setSize(static_cast<std::size_t>(ptr - raw.data()));
+  raw.setEnd(ptr);
 
   return raw;
 }

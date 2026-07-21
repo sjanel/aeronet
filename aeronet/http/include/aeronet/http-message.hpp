@@ -478,7 +478,7 @@ class HttpMessage {
       if (isHead()) {
         setHeadSize(written);
       } else {
-        _data.setSize(static_cast<std::size_t>(pData + written - _data.data()));
+        _data.setEnd(pData + written);
       }
 
       replaceHeaderValueNoRealloc(getContentLengthValuePtr(), written);
