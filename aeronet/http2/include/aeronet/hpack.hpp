@@ -201,7 +201,7 @@ class HpackEncoder {
   enum class IndexingMode : std::uint8_t {
     Indexed,          ///< Add to dynamic table (default)
     WithoutIndexing,  ///< Don't add to dynamic table
-    NeverIndexed      ///< Never index (sensitive values)
+    NeverIndexed,     ///< Never index (sensitive values)
   };
 
   /// Encode a header field and append to the output buffer.
