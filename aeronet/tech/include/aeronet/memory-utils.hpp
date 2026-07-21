@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstring>
 
+#include "aeronet/compiler-config.hpp"
+
 namespace aeronet {
 
 // Copy sz bytes from pSrc into pDes, as of std::memcpy(pDest, pSrc, sz).
@@ -13,7 +15,7 @@ namespace aeronet {
 // emit a couple of overlapping fixed-width stores inline, avoiding the call. Microbenchmarks
 // (benchmarks/internal/memory-utils_bench.cpp) show ~1.9x on isolated small copies and ~1.5x on a realistic HTTP
 // fragment mix, with no regression above the threshold (it falls straight back to std::memcpy).
-constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
+constexpr void Copy(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AERONET_RESTRICT pDes) noexcept {
   static_assert(sizeof(*pSrc) == 1 && sizeof(*pDes) == 1, "Copy only works for byte pointers");
   if consteval {
     for (std::size_t i = 0; i < sz; ++i) {
@@ -57,7 +59,7 @@ constexpr void Copy(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
 }
 
 // Append sz bytes from pSrc into pDes, returning a pointer to the first byte after the appended data.
-constexpr auto* Append(const auto* pSrc, std::size_t sz, auto* pDes) noexcept {
+constexpr auto* Append(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AERONET_RESTRICT pDes) noexcept {
   Copy(pSrc, sz, pDes);
   return pDes + sz;
 }
