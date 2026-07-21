@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/toupperlower.hpp"
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)
@@ -180,7 +181,7 @@ constexpr void tolower(char* buf, std::size_t len) {
 
 // Apply tolower from 'from' to 'to' for len bytes.
 // from and to buffers should be at least of size 'len'.
-constexpr void tolower_n(const char* from, std::size_t len, char* to) {
+constexpr void tolower_n(const char* from, std::size_t len, char* AERONET_RESTRICT to) {
   std::size_t pos = 0;
   static constexpr std::size_t kAlign = alignof(std::uint64_t);
 

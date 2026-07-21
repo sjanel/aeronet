@@ -1,25 +1,23 @@
 #pragma once
 
+#include <cstring>
 #include <string_view>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/compiler-config.hpp"
+#include "aeronet/memory-utils.hpp"
 
 namespace aeronet {
 
 template <class IsNotEncodedFunc>
 constexpr auto URLEncodedSize(std::string_view data, IsNotEncodedFunc isNotEncodedFunc) {
-  std::string_view::size_type nbChars = 0;
+  std::string_view::size_type nbExtraBytes = 0;
 
-  // not using std::ranges::count_if to avoid <algorithm> include in a header file
   for (char ch : data) {
-    if (isNotEncodedFunc(ch)) {
-      ++nbChars;
-    } else {
-      nbChars += 3UL;
-    }
+    nbExtraBytes += 2 * static_cast<std::string_view::size_type>(!isNotEncodedFunc(ch));
   }
 
-  return nbChars;
+  return data.size() + nbExtraBytes;
 }
 
 /// This function converts the given input string to a URL encoded string.
@@ -29,15 +27,25 @@ constexpr auto URLEncodedSize(std::string_view data, IsNotEncodedFunc isNotEncod
 /// URLEncodedSize(data, isNotEncodedFunc) bytes). The function returns a pointer to the char immediately after the last
 /// written char in the buffer.
 template <class IsNotEncodedFunc>
-char* URLEncode(std::string_view data, IsNotEncodedFunc isNotEncodedFunc, char* buf) {
-  for (char ch : data) {
-    if (isNotEncodedFunc(ch)) {
-      *buf++ = ch;
-    } else {
-      *buf = '%';
-      buf = to_upper_hex(ch, ++buf);
+char* URLEncode(std::string_view data, IsNotEncodedFunc isNotEncodedFunc, char* AERONET_RESTRICT buf) {
+  const char* it = data.data();
+  const char* const last = it + data.size();
+
+  while (it != last) {
+    const char* const runStart = it;
+    while (it != last && isNotEncodedFunc(*it)) {
+      ++it;
+    }
+
+    buf = Append(runStart, static_cast<std::size_t>(it - runStart), buf);
+
+    if (it != last) {
+      *buf++ = '%';
+      buf = to_upper_hex(static_cast<unsigned char>(*it), buf);
+      ++it;
     }
   }
+
   return buf;
 }
 

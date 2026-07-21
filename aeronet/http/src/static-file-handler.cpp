@@ -83,7 +83,7 @@ struct PathString {
 // Use a constexpr lookup table indexed by unsigned char for a fast, branchless test.
 // This avoids multiple comparisons and gives the compiler a chance to emit a single
 // table-lookup instruction. We use unsigned char to index the array safely.
-constexpr auto kUnreservedTable = []() constexpr {
+constexpr auto kUnreservedTable = [] constexpr {
   std::array<bool, std::numeric_limits<unsigned char>::max() + 1> table{};
 
   std::ranges::fill(table.begin() + 'A', table.begin() + 'Z' + 1, true);
