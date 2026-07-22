@@ -699,36 +699,25 @@ bool IfRangeAllowsPartial(std::string_view value, std::string_view etag, SysTime
 
 constexpr std::string_view kBytesPrefixStr = "bytes ";
 constexpr std::size_t kMaxRangeHeaderLen =
-    kBytesPrefixStr.size() + (3UL * nchars(std::numeric_limits<std::uint64_t>::max())) + 2UL;
+    kBytesPrefixStr.size() + (3UL * (std::numeric_limits<std::uint64_t>::digits10 + 1)) + 2UL;
 
-struct RangeHeaderBuf {
-  static_assert(kMaxRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
+char* BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::uint64_t total, char* pData) {
+  pData = Append(kBytesPrefixStr, pData);
 
-  char buf[kMaxRangeHeaderLen];
-  std::uint8_t len;
-};
+  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(start)>::digits10 + 1, start).ptr;
+  *pData++ = '-';
 
-RangeHeaderBuf BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::uint64_t total) {
-  RangeHeaderBuf result;
+  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(start)>::digits10 + 1, start + length - 1).ptr;
+  *pData++ = '/';
 
-  auto* buf = Append(kBytesPrefixStr, result.buf);
+  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(total)>::digits10 + 1, total).ptr;
 
-  buf = std::to_chars(buf, buf + nchars(start), start).ptr;
-  *buf++ = '-';
-
-  buf = std::to_chars(buf, buf + nchars(start + length - 1), start + length - 1).ptr;
-  *buf++ = '/';
-
-  buf = std::to_chars(buf, buf + nchars(total), total).ptr;
-  assert(buf <= result.buf + kMaxRangeHeaderLen);
-  result.len = static_cast<std::uint8_t>(buf - result.buf);
-
-  return result;
+  return pData;
 }
 
 constexpr std::string_view kUnsatisfiedRangePrefixStr = "bytes */";
 constexpr std::size_t kMaxUnsatisfiedRangeHeaderLen =
-    kUnsatisfiedRangePrefixStr.size() + nchars(std::numeric_limits<std::uint64_t>::max());
+    kUnsatisfiedRangePrefixStr.size() + std::numeric_limits<std::uint64_t>::digits10 + 1;
 
 struct UnsatisfiedRangeHeaderBuf {
   static_assert(kMaxUnsatisfiedRangeHeaderLen <= std::numeric_limits<std::uint8_t>::max());
@@ -741,7 +730,7 @@ UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   UnsatisfiedRangeHeaderBuf result;
   auto* buf = Append(kUnsatisfiedRangePrefixStr, result.buf);
 
-  buf = std::to_chars(buf, buf + nchars(total), total).ptr;
+  buf = std::to_chars(buf, buf + std::numeric_limits<decltype(total)>::digits10 + 1, total).ptr;
   assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
   result.len = static_cast<std::uint8_t>(buf - result.buf);
 
@@ -820,41 +809,59 @@ bool BuildMultipartBody(const File& file, std::span<const RangeSelection> ranges
 
   assert(ranges.size() > 1U);
 
-  resp.bodyAppend("\r\n--", std::string_view(contentTypeHeader, endPtr));
+  static constexpr std::string_view kBoundaryPrefix = "\r\n--";
+  static constexpr std::string_view kBoundarySuffix = "--\r\n";
+  static constexpr std::string_view kContentTypeHeader = "\r\nContent-Type: ";
+  static constexpr std::string_view kContentRangeHeader = "\r\nContent-Range: ";
 
+  // Compute additional body size.
+  std::size_t neededSize = kBoundaryPrefix.size();
   for (const auto& rng : ranges) {
-    // Part delimiter
-    resp.bodyAppend(boundarySv);
-    resp.bodyAppend("\r\nContent-Type: ");
-    resp.bodyAppend(contentType);
-    resp.bodyAppend("\r\nContent-Range: ");
-
-    // Build Content-Range value: "bytes START-END/TOTAL"
-    const auto rangeHdr = BuildRangeHeader(rng.offset, rng.length, fileSize);
-    resp.bodyAppend(std::string_view(rangeHdr.buf, rangeHdr.len));
-    resp.bodyAppend(http::DoubleCRLF);
-
-    // Read file data for this range
-    bool error = false;
-    resp.bodyInlineAppend(rng.length, [&file, &rng, &error](std::byte* buf) {
-      const std::size_t bytesRead = file.readAt(std::span<std::byte>(buf, rng.length), rng.offset);
-      if (bytesRead != rng.length) {
-        error = true;
-        return static_cast<std::size_t>(0);
-      }
-      return bytesRead;
-    });
-    if (error) {
-      resp.body(std::string_view{});
-      return false;
-    }
-
-    resp.bodyAppend("\r\n--");
+    neededSize += boundarySv.size();
+    neededSize += kContentTypeHeader.size() + contentType.size();
+    neededSize += kContentRangeHeader.size() + kMaxRangeHeaderLen + http::DoubleCRLF.size();
+    neededSize += rng.length;
+    neededSize += kBoundaryPrefix.size();
   }
 
-  // Closing boundary
-  resp.bodyAppend(boundarySv);
-  resp.bodyAppend("--\r\n");
+  neededSize += boundarySv.size() + kBoundarySuffix.size();
+
+  bool error = false;
+  resp.bodyInlineAppend(
+      neededSize,
+      [fileSize, contentType, boundarySv, &file, &ranges, &error](char* pInsert) {
+        char* pData = Append(kBoundaryPrefix, pInsert);
+
+        for (const auto& rng : ranges) {
+          pData = Append(boundarySv, pData);
+          pData = Append(kContentTypeHeader, pData);
+          pData = Append(contentType, pData);
+          pData = Append(kContentRangeHeader, pData);
+
+          pData = BuildRangeHeader(rng.offset, rng.length, fileSize, pData);
+          pData = Append(http::DoubleCRLF, pData);
+
+          const std::size_t bytesRead =
+              file.readAt(std::span<std::byte>(reinterpret_cast<std::byte*>(pData), rng.length), rng.offset);
+          if (bytesRead != rng.length) {
+            error = true;
+            return static_cast<std::size_t>(0);
+          }
+          pData += bytesRead;
+
+          pData = Append(kBoundaryPrefix, pData);
+        }
+
+        pData = Append(boundarySv, pData);
+        pData = Append(kBoundarySuffix, pData);
+
+        return static_cast<std::size_t>(pData - pInsert);
+      },
+      std::string_view(contentTypeHeader, endPtr));
+  if (error) {
+    resp.body(std::string_view{});
+    return false;
+  }
 
   resp.status(http::StatusCodePartialContent);
 
@@ -1148,10 +1155,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
         }
         if (rangeResult.kind == MultiRangeResult::Kind::SingleValid) {
           const auto& sel = rangeResult.ranges[0];
-          const auto singleHeader = BuildRangeHeader(sel.offset, sel.length, fileSize);
+          char buf[kMaxRangeHeaderLen];
+          char* pEndRangeHeader = BuildRangeHeader(sel.offset, sel.length, fileSize, buf);
 
           resp.status(http::StatusCodePartialContent);
-          resp.headerAddLine(http::ContentRange, std::string_view(singleHeader.buf, singleHeader.len));
+          resp.headerAddLine(http::ContentRange, std::string_view(buf, pEndRangeHeader));
           resp.file(std::move(file), sel.offset, sel.length, contentTypeForFile);
           return resp;
         }
