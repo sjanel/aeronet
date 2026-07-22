@@ -11,6 +11,7 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/object-pool.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/time-constants.hpp"
@@ -23,6 +24,11 @@ namespace aeronet {
 class StaticFileHandler {
  public:
   explicit StaticFileHandler(std::filesystem::path rootDirectory, StaticFileConfig config = {});
+
+  StaticFileHandler(const StaticFileHandler& rhs);
+  StaticFileHandler(StaticFileHandler&&) noexcept = default;
+  StaticFileHandler& operator=(const StaticFileHandler& rhs);
+  StaticFileHandler& operator=(StaticFileHandler&&) noexcept = default;
 
   /// Build a response for the given request. Only GET and HEAD are served.
   [[nodiscard]] HttpResponse operator()(const HttpRequestView& request) const;
@@ -61,16 +67,29 @@ class StaticFileHandler {
   [[nodiscard]] const CachedFileHeaders& resolveHeaderMeta(std::string_view filePath, const File& file,
                                                            CachedFileHeaders& scratch) const;
 
+  // One cached entry plus its LRU-list linkage. Allocated from a pool that provides pointer-stability across
+  // growth, so the map value is a plain CacheNode* and the LRU links are plain CacheNode* too - no index
+  // indirection needed. The *map* itself may still relocate elements on erase()/rehash (open addressing), but
+  // it only ever stores a pointer to the node, never the node itself, so that relocation never touches this data.
+  struct CacheNode {
+    CachedFileHeaders headers;
+    RawChars32 key;             // needed to erase the map entry when this node is evicted
+    CacheNode* pPrev{nullptr};  // neighbor towards the MRU head
+    CacheNode* pNext{nullptr};  // neighbor towards the LRU tail
+  };
+
+  void lruUnlink(CacheNode* pNode) const;
+  void lruPushFront(CacheNode* pNode) const;
+
   friend class StaticFileHandlerTest;
 
   std::filesystem::path _root;
   StaticFileConfig _config;
-  // Keyed by the resolved file path. Heterogeneous lookup (CityHash + std::equal_to<>) keeps request-time lookups
-  // allocation-free; a RawChars32 key is only materialized when a new entry is inserted.
-  mutable flat_hash_map<RawChars32, CachedFileHeaders, CityHash, std::equal_to<>> _headerCache;
-  // Monotonically increasing "logical clock" stamped onto an entry each time it is used, so the entry with the
-  // smallest stamp is the least-recently used. Never wraps in practice (2^64 accesses per handler instance).
-  mutable std::uint64_t _headerCacheClock{0};
+
+  mutable flat_hash_map<RawChars32, CacheNode*, CityHash, std::equal_to<>> _headerCache;
+  mutable ObjectPool<CacheNode> _headerCachePool;
+  mutable CacheNode* _lruHead{nullptr};  // most-recently-used
+  mutable CacheNode* _lruTail{nullptr};  // least-recently-used (eviction victim)
 };
 
 }  // namespace aeronet
