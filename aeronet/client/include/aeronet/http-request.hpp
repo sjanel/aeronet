@@ -726,7 +726,7 @@ class HttpRequest final : public HttpMessage {
   }
 
   [[nodiscard]] std::string_view completeRequestForHttp11() const {
-    return {_data.data() + _originKeyLen, _data.data() + _data.size()};
+    return {_data.data() + _originKeyLen, _data.end()};
   }
 
   [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return _payloadVariant.view(); }
