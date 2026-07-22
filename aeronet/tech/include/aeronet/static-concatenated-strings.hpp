@@ -106,7 +106,7 @@ class StaticConcatenatedStrings {
       Copy(str, data + oldBegPos);
       _buf.addSize(static_cast<size_type>(delta));
       // update offsets for subsequent parts
-      for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] += static_cast<size_type>(delta);
       }
     } else if (newSize < oldSize) {
@@ -116,7 +116,7 @@ class StaticConcatenatedStrings {
       Copy(str, data + oldBegPos);
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
       // update offsets for subsequent parts
-      for (auto offsetIdx = static_cast<typename Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
+      for (auto offsetIdx = static_cast<Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
       }
     } else {
@@ -191,17 +191,17 @@ class StaticConcatenatedStrings {
 
  private:
   const char* begPtr(size_type idx) const noexcept {
-    return _buf.data() + static_cast<std::ptrdiff_t>(
-                             idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})]);
+    return _buf.data() +
+           static_cast<std::ptrdiff_t>(idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})]);
   }
 
   size_type sizeAt(size_type idx) const noexcept {
     if (_buf.empty()) {
       return 0;
     }
-    const size_type begPos = idx == 0 ? 0 : _offsets[static_cast<typename Offsets::size_type>(idx - size_type{1})];
+    const size_type begPos = idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})];
     const size_type endPos =
-        (idx + 1 == kParts ? _buf.size() : _offsets[static_cast<typename Offsets::size_type>(idx)]) - size_type{1};
+        (idx + 1 == kParts ? _buf.size() : _offsets[static_cast<Offsets::size_type>(idx)]) - size_type{1};
     return endPos - begPos;
   }
 

@@ -63,7 +63,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
 
   assert(static_cast<std::size_t>(pData - out.data()) == out.capacity());
 
-  out.setSize(static_cast<std::size_t>(pData - out.data()));
+  out.setEnd(pData);
 
   return out;
 }

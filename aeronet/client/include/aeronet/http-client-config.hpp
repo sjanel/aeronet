@@ -183,7 +183,7 @@ class HttpClientConfig {
   void validate() const;
 
   HttpClientConfig& addGlobalHeader(const http::Header& header) {
-    globalHeaders.append(header.http1Raw());
+    globalHeaders.appendAsHttp1Header(header.name(), header.value());
     return *this;
   }
 

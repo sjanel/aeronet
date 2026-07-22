@@ -88,7 +88,7 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
     *pEnd++ = ':';
     pEnd = std::to_chars(pEnd, out.data() + out.capacity(), targetPort).ptr;
   }
-  out.setSize(static_cast<RawChars::size_type>(pEnd - out.data()));
+  out.setEnd(pEnd);
   return true;
 }
 
@@ -100,7 +100,7 @@ void AppendUrlEncodedPath(RawChars& out, std::string_view decodedPath) {
   out.ensureAvailableCapacity(URLEncodedSize(decodedPath, isPathSafe));
   char* pEnd = URLEncode(decodedPath, isPathSafe, out.data() + out.size());
 
-  out.setSize(static_cast<RawChars::size_type>(pEnd - out.data()));
+  out.setEnd(pEnd);
 }
 
 void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_view decodedKey,
@@ -117,7 +117,7 @@ void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_vie
   *pEnd++ = '=';
   pEnd = URLEncode(decodedValue, isUnreserved, pEnd);
 
-  out.setSize(static_cast<RawChars::size_type>(pEnd - out.data()));
+  out.setEnd(pEnd);
 }
 
 }  // namespace aeronet::http

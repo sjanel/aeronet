@@ -322,7 +322,7 @@ struct HttpServerConfig {
   // Will add all the headers defined here in all server responses, if not explicitly set by the user for a given
   // response. Defaults to a list of one entry "server: aeronet".
   // Each added header MUST have their key and value separated by (exactly one) aeronet::http::HeaderSep.
-  // The maximum number of global headers is kMaxGlobalHeaders.
+  // The maximum number of server global headers is kMaxGlobalHeaders.
   ConcatenatedHeaders globalHeaders{{"server: aeronet"}};
 
   // ===========================================
