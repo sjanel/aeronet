@@ -37,7 +37,7 @@ enum class ConnectionState : uint8_t {
   /// GOAWAY received, no new streams, processing existing streams.
   GoAwayReceived,
   /// Connection closed.
-  Closed
+  Closed,
 };
 
 /// Callback for handling stream data.
@@ -67,7 +67,7 @@ class Http2Connection {
       OutputReady,  ///< Output buffer has data to send
       Error,        ///< Protocol error, connection should be closed
       GoAway,       ///< GOAWAY sent/received, begin drain
-      Closed        ///< Connection is closed
+      Closed,       ///< Connection is closed
     };
 
     Action action{Action::Continue};

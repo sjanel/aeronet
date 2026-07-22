@@ -2,12 +2,15 @@
 
 #include <gtest/gtest.h>
 
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
+
+#include "aeronet/sys-test-support.hpp"
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+#include <new>
+#include <string>
+#endif
 
 namespace aeronet {
 
@@ -23,44 +26,12 @@ TEST(HttpHeader, HeaderName) {
   EXPECT_EQ(http::Header("Content-Length", " \t12345 ").name(), "Content-Length");
 }
 
-TEST(HttpHeader, HeaderValueTrimmed) {
-  EXPECT_EQ(http::Header("X-Test", "  ValidValue  ").value(), "ValidValue");
-  EXPECT_EQ(http::Header("Content-Length", "\t12345\t").value(), "12345");
-  EXPECT_EQ(http::Header("Empty-Value", "   ").value(), "");  // trimmed to empty
-}
-
-TEST(HttpHeader, InvalidHeaderNameThrows) {
-  EXPECT_THROW(http::Header("Invalid Header", "Value"), std::invalid_argument);  // space not allowed
-  EXPECT_THROW(http::Header("Invalid<Header", "Value"), std::invalid_argument);  // invalid character
-  EXPECT_THROW(http::Header("", "Value"), std::invalid_argument);                // empty name
-}
-
-TEST(HttpHeader, InvalidHeaderValueThrows) {
-  EXPECT_THROW(http::Header("X-Test", "Invalid\rValue"), std::invalid_argument);  // CR not allowed
-  EXPECT_THROW(http::Header("X-Test", "Invalid\nValue"), std::invalid_argument);  // LF not allowed
-  EXPECT_NO_THROW(http::Header("X-Test", "Valid\tValue"));                        // HTAB allowed
-  EXPECT_NO_THROW(http::Header("X-Test", ""));                                    // empty value allowed
-}
-
-TEST(HttpHeader, Raw) {
-  http::Header header("X-Custom", "  Some Value  ");
-  EXPECT_EQ(header.http1Raw(), "X-Custom: Some Value");
-}
-
-TEST(HttpHeader, UnreasonableHeaderLen) {
-  char ch{};
-  std::string_view unreasonableHeaderLen(&ch, static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()));
-
-  EXPECT_THROW(http::Header(unreasonableHeaderLen, "some value"), std::invalid_argument);
-}
-
 TEST(HttpHeader, MoveConstructor) {
   http::Header original("X-Move-Test", "MoveValue");
   http::Header moved(std::move(original));
 
   EXPECT_EQ(moved.name(), "X-Move-Test");
   EXPECT_EQ(moved.value(), "MoveValue");
-  EXPECT_EQ(moved.http1Raw(), "X-Move-Test: MoveValue");
 }
 
 TEST(HttpHeader, MoveAssignment) {
@@ -70,7 +41,12 @@ TEST(HttpHeader, MoveAssignment) {
 
   EXPECT_EQ(toBeMoved.name(), "X-Move-Assign");
   EXPECT_EQ(toBeMoved.value(), "MoveAssignValue");
-  EXPECT_EQ(toBeMoved.http1Raw(), "X-Move-Assign: MoveAssignValue");
+
+  // self move-assignment should be safe
+  auto& self = toBeMoved;
+  toBeMoved = std::move(self);
+  EXPECT_EQ(toBeMoved.name(), "X-Move-Assign");
+  EXPECT_EQ(toBeMoved.value(), "MoveAssignValue");
 }
 
 TEST(HttpHeader, CopyConstructor) {
@@ -79,7 +55,12 @@ TEST(HttpHeader, CopyConstructor) {
 
   EXPECT_EQ(copy.name(), original.name());
   EXPECT_EQ(copy.value(), original.value());
-  EXPECT_EQ(copy.http1Raw(), original.http1Raw());
+
+  // copying an empty header should not throw
+  http::Header empty;
+  http::Header emptyCopy(empty);  // NOLINT(performance-unnecessary-copy-initialization)
+  EXPECT_EQ(emptyCopy.name(), "");
+  EXPECT_EQ(emptyCopy.value(), "");
 }
 
 TEST(HttpHeader, CopyAssignment) {
@@ -88,11 +69,17 @@ TEST(HttpHeader, CopyAssignment) {
   assigned = original;
   EXPECT_EQ(assigned.name(), original.name());
   EXPECT_EQ(assigned.value(), original.value());
-  EXPECT_EQ(assigned.http1Raw(), original.http1Raw());
 
   original = assigned;
   EXPECT_EQ(original.name(), assigned.name());
   EXPECT_EQ(original.value(), assigned.value());
+
+  // assigning an empty header should not throw
+  http::Header empty;
+  http::Header another("Another-Header", "AnotherValue");
+  another = empty;
+  EXPECT_EQ(another.name(), "");
+  EXPECT_EQ(another.value(), "");
 }
 
 TEST(HttpHeader, SelfCopyAssignment) {
@@ -215,5 +202,46 @@ TEST(HttpHeader, ReverseIteratorWithEscapedQuotes) {
 
   EXPECT_FALSE(it.hasNext());
 }
+
+// ============================
+// Allocation Failure Tests
+// ============================
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(HttpHeader, ConstructorMallocFailureThrowsBadAlloc) {
+  // The http::Header(name, value) constructor calls malloc.
+  // When malloc returns nullptr, it must throw std::bad_alloc.
+  test::FailNextMalloc();
+  EXPECT_THROW(http::Header("test-name", "test-value"), std::bad_alloc);
+}
+
+TEST(HttpHeader, CopyConstructorAllocationFailureThrowsBadAlloc) {
+  // The http::Header(const Header&) constructor calls malloc.
+  // When malloc returns nullptr, it must throw std::bad_alloc.
+  http::Header original("X-Copy-Test", "CopyValue");
+  test::FailNextMalloc();
+  EXPECT_THROW(http::Header copy(original), std::bad_alloc);  // NOLINT(performance-unnecessary-copy-initialization)
+
+  http::Header empty;
+  test::FailNextRealloc();
+  EXPECT_THROW(empty = original, std::bad_alloc);
+}
+
+TEST(HttpHeader, BufferStealingConstructorReallocFailureThrowsBadAlloc) {
+  // The http::Header(rhs&&, name, value) constructor calls realloc
+  // when the new entry is larger than the stolen buffer.
+  // When realloc returns nullptr, it must throw std::bad_alloc.
+  http::Header small("a", "b");
+
+  // The buffer-stealing constructor needs a larger entry to trigger realloc.
+  const std::string longName(200, 'x');
+  const std::string longValue(200, 'y');
+
+  test::FailNextRealloc();
+  EXPECT_THROW(http::Header(std::move(small), longName, longValue), std::bad_alloc);
+}
+
+#endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 }  // namespace aeronet

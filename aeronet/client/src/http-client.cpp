@@ -364,13 +364,14 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
     *out++ = ':';
     return std::to_chars(out, out + portNbChars, port).ptr;
   };
-  char* pEnd = reqBuffer.data();
-  pEnd = Append(kConnect, pEnd);
-  pEnd = appendAuthority(pEnd);
-  pEnd = Append(kConnectMid, pEnd);
-  pEnd = appendAuthority(pEnd);
-  pEnd = Append(http::DoubleCRLF, pEnd);
-  reqBuffer.setSize(static_cast<std::size_t>(pEnd - reqBuffer.data()));
+
+  char* pData = reqBuffer.data();
+  pData = Append(kConnect, pData);
+  pData = appendAuthority(pData);
+  pData = Append(kConnectMid, pData);
+  pData = appendAuthority(pData);
+  pData = Append(http::DoubleCRLF, pData);
+  reqBuffer.setEnd(pData);
 
   // Write the CONNECT request in full, pumping the event loop on would-block.
   const std::string_view head = reqBuffer;
@@ -730,7 +731,7 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   pData = appendNumber(fileSz, pData);
   pData = Append(req._data, pData);
 
-  _cacheKeyScratch.setSize(static_cast<std::size_t>(pData - _cacheKeyScratch.data()));
+  _cacheKeyScratch.setEnd(pData);
 
   return _cacheKeyScratch;
 }

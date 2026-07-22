@@ -1,11 +1,14 @@
 #include "aeronet/access-log-writer.hpp"
 
+#include <fcntl.h>
+
 #include <cassert>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <concepts>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -15,11 +18,9 @@
 #endif
 
 #ifdef AERONET_WINDOWS
-#include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
 #else
-#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -107,53 +108,52 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
                                              (std::numeric_limits<decltype(metrics.bytesOut)>::digits10 + 1U) +
                                              kReferer.size() + metrics.userAgent.size() + 2U);
 
-  char* out = _buffer.data() + _buffer.size();
+  char* pData = _buffer.data() + _buffer.size();
 
   // Client IP
-  out = Append(metrics.clientIp, out);
+  pData = Append(metrics.clientIp, pData);
 
   // " - - ["
-  out = Append(kSep1, out);
+  pData = Append(kSep1, pData);
 
   // Timestamp in ISO 8601 with ms
-  out = TimeToStringISO8601UTCWithMs(SysClock::now(), out);
+  pData = TimeToStringISO8601UTCWithMs(SysClock::now(), pData);
 
   // "] \""
-  *out++ = ']';
-  *out++ = ' ';
-  *out++ = '"';
+  std::memcpy(pData, "] \"", 3U);  // NOLINT(bugprone-not-null-terminated-result)
+  pData += 3;
 
   // Method
-  out = Append(methodStr, out);
-  *out++ = ' ';
+  pData = Append(methodStr, pData);
+  *pData++ = ' ';
 
   // Path
-  out = Append(metrics.path, out);
-  *out++ = ' ';
+  pData = Append(metrics.path, pData);
+  *pData++ = ' ';
 
   // "HTTP/X.Y"
-  out = metrics.version.writeFull(out);
+  pData = metrics.version.writeFull(pData);
 
   // "\" <status> <bytesOut>"
-  *out++ = '"';
-  *out++ = ' ';
-  out = writeStatusCode(out, metrics.status);
-  *out++ = ' ';
-  out = AppendIntegral(out, metrics.bytesOut);
+  *pData++ = '"';
+  *pData++ = ' ';
+  pData = writeStatusCode(pData, metrics.status);
+  *pData++ = ' ';
+  pData = AppendIntegral(pData, metrics.bytesOut);
 
   // " \"-\" \""
-  out = Append(kReferer, out);
+  pData = Append(kReferer, pData);
 
   // User-Agent
   if (!metrics.userAgent.empty()) {
-    out = Append(metrics.userAgent, out);
+    pData = Append(metrics.userAgent, pData);
   }
 
   // "\"\n"
-  *out++ = '"';
-  *out++ = '\n';
+  *pData++ = '"';
+  *pData++ = '\n';
 
-  _buffer.setSize(static_cast<decltype(_buffer)::size_type>(out - _buffer.data()));
+  _buffer.setEnd(pData);
 }
 
 void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {

@@ -210,15 +210,15 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
 
   _data.reserve(neededCapacity);
 
-  char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
+  char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
+  setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
-    pInsert = Append(http::CRLF, pInsert);
-    pInsert = Append(concatenatedHeaders, pInsert);
-    pInsert -= http::CRLF.size();  // remove the last CRLF
+    pData = Append(http::CRLF, pData);
+    pData = Append(concatenatedHeaders, pData);
+    pData -= http::CRLF.size();  // remove the last CRLF
   }
-  pInsert = Append(http::DoubleCRLF, pInsert);
-  _data.setSize(static_cast<uint64_t>(pInsert - _data.data()));
+  pData = Append(http::DoubleCRLF, pData);
+  _data.setEnd(pData);
 
   assert(_data.size() == _data.capacity());
 }
@@ -269,7 +269,7 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   } else {
     pData = Append(http::DoubleCRLF, pData);
   }
-  _data.setSize(static_cast<uint64_t>(pData - _data.data()));
+  _data.setEnd(pData);
   assert(_data.size() + additionalCapacity == _data.capacity());
   setBodyStartPos(_data.size() - body.size());
 }

@@ -295,6 +295,7 @@ AeronetAddUnitTest(
     test/http-header_test.cpp
     LIBRARIES
     aeronet_tech
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

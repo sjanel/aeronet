@@ -213,16 +213,16 @@ std::string Jwt::encode(std::string_view claimsJson, const JwtKey& key, JwtAlgor
   const auto jsonStrSize = ComputeJsonStringSize(keyId);
 
   RawChars buf(kAlg.size() + algStr.size() + kType.size() + (keyId.empty() ? 0U : (kKid.size() + jsonStrSize)) + 1U);
-  char* pInsertPtr = buf.data();
-  pInsertPtr = Append(kAlg, pInsertPtr);
-  pInsertPtr = Append(algStr, pInsertPtr);
-  pInsertPtr = Append(kType, pInsertPtr);
+  char* pData = buf.data();
+  pData = Append(kAlg, pData);
+  pData = Append(algStr, pData);
+  pData = Append(kType, pData);
   if (!keyId.empty()) {
-    pInsertPtr = Append(kKid, pInsertPtr);
-    pInsertPtr = AppendJsonString(keyId, pInsertPtr);
+    pData = Append(kKid, pData);
+    pData = AppendJsonString(keyId, pData);
   }
-  *pInsertPtr++ = '}';
-  buf.setSize(static_cast<std::size_t>(pInsertPtr - buf.data()));
+  *pData++ = '}';
+  buf.setEnd(pData);
 
   // Reserve the "header.payload" signing input in a single allocation (the signature, whose size we
   // only know after signing, is appended afterwards).

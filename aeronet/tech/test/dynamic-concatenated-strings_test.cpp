@@ -322,4 +322,16 @@ TYPED_TEST(DynamicConcatenatedStringsTest, EqualityOperator) {
   EXPECT_NE(pool1, pool2);
 }
 
+TEST(ConcatenatedHeaders, AppendHttp1Header) {
+  TestTypeCRLF32 headers;
+  headers.appendAsHttp1Header("host", "example.com");
+  headers.appendAsHttp1Header("user-agent", "MyBrowser/1.0");
+  headers.appendAsHttp1Header("accept", "text/html");
+
+  EXPECT_EQ(headers.fullString(), "host: example.com\r\nuser-agent: MyBrowser/1.0\r\naccept: text/html");
+
+  EXPECT_THROW(headers.appendAsHttp1Header("invalid-header", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(headers.appendAsHttp1Header("\r\ninvalid-header", "value"), std::invalid_argument);
+}
+
 }  // namespace aeronet
