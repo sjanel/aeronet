@@ -497,7 +497,7 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
     }
   };
 
-  auto make_suspended = []() -> HandleBox { co_return; };
+  auto make_suspended = [] -> HandleBox { co_return; };
 
   auto box = make_suspended();
   auto handle = box.release();
