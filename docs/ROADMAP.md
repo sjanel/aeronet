@@ -18,34 +18,103 @@
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
   (Content-Encoding + compressed Content-Length) when desired.
-- **Performance improvements**:
-  - Further hot-path cache locality optimization
 - Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
   - Support tags/labels for metrics
-- **Configurable read chunk size for the Http client**: currently the client reads in 16 KiB chunks; allow tuning this for large responses or low-memory environments.
 - **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
 
-### Performance improvement ideas
+### Performance optimization backlog
 
-#### Low priority / specialized
+Status: repository-wide source audit completed on 2026-07-22; the opportunities below are not yet implemented or
+proven faster. They are ordered by expected leverage, not by unverified percentage estimates.
 
-- **`ConnectionState` bool bit-packing** - 10 scattered `bool` fields + `CloseMode` / `ProtocolType` enums waste bytes to padding between larger fields. Pack booleans into a `uint16_t` bitfield, or reorder all fields by descending size. Saves ~16–32 bytes per `ConnectionState` - meaningful at 10 K+ connections.
-- **Brotli encoder context reuse across sessions** - Brotli state is destroyed and recreated each session, unlike Zstd (`ZSTD_CCtx_reset()`) and Zlib (stream reuse). Explore caching the `BrotliEncoderState` and resetting parameters between sessions, or a lighter reinit pattern.
-- Enforce backpressure correctness to avoid overload and wasted work.
-- **Scatter-write HTTP/2 DATA frames** - build the 9-byte frame header and the body slice as a `writev` gather instead of copying the payload behind the header, mirroring the HTTP/1.1 head+body scatter write. Removes a copy on the HTTP/2 hot send path.
-- `io_uring` support for Linux (future major feature, likely separate transport layer implementation).
+#### P1 - copies, allocations and asymptotic hot paths
 
-#### Benchmark gaps
+- **HTTP/2 outbound frame representation** - `Http2Connection::sendData()` currently copies every payload behind a
+  9-byte frame header in `_outputBuffer`, and `encodeHeaders()` moves then recopies oversized HPACK blocks when emitting
+  CONTINUATION frames. Design a queued-fragment / gather-write representation that can retain payload ownership across
+  partial writes and flow-control stalls, then use scatter I/O where the transport supports it. This shared HTTP/2 core
+  serves both client and server, so validate response streaming, client uploads, plain TCP, TLS and short-write paths.
+- **HPACK dynamic table churn and lookup** - `HpackDynamicTable::add()` front-inserts into a `vector` (O(n) relocation),
+  while `HpackEncoder::findHeader()` linearly scans dynamic entries for every encoded header. Benchmark a circular
+  contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test
+  an optional name/value index. Select the design on combined insert/evict/indexed-access/lookup results rather than
+  assuming a `deque` wins despite its weaker locality.
+- **HTTP client response ownership** - HTTP/1.1 identity bodies and assembled HTTP/2 bodies are read into reusable client
+  buffers and then copied once by `HttpResponse::body()`. Introduce a safe ownership-transfer or result-owned-buffer path
+  that removes the final large-body copy without allowing a later pooled request to invalidate an earlier response.
+  Cover identity, chunked, compressed, empty and 1 MiB+ responses. This complements the request-side wire-buffer
+  unification already listed in the HTTP client section below.
+- **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and
+  `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit
+  high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and
+  already-computed responses to grow without a configured bound. Validate memory plateaus under slow-reader tests before
+  measuring normal-load overhead.
 
-The following micro-benchmarks are missing and should be added to validate the above improvements:
+#### P2 - cache locality, dispatch and repeated scans
 
-| Gap | Validates |
-|-----|-----------|
-| HPACK dynamic table churn (insert / evict profile) | Dynamic table `vector` → `deque` & static table hash |
-| 1 000+ concurrent stream create / destroy | Per-stream map consolidation |
-| Compressed response throughput (per-chunk alloc overhead) | Response writer buffer pooling |
-| `ConnectionState` `sizeof` / cache-line analysis | Bool bit-packing |
-| WebSocket large-frame demasking throughput | SIMD XOR demasking |
+- **HTTP/2 stream lookup and hot/cold layout** - extend the stream benchmark beyond insert/erase to randomized lookup,
+  DATA/WINDOW_UPDATE processing and close/prune churn at 1, 100, 1,000 and 10,000 active streams. Use the profile to decide
+  between the current flat hash map, a tiny recent-stream cache, denser indexing, or splitting frequently touched state
+  from callbacks, header storage and other cold fields.
+- **Transport dispatch without RTTI probes** - `ITransport` virtualizes every read/write and several server paths also
+  `dynamic_cast` to `PlainTransport` or `TlsTransport`. Prototype a tagged final transport/variant or cached capabilities
+  (`plain`, `TLS`, `sendfile`, kTLS) and compare cycles, branch misses and binary size on plain and TLS workloads. Adopt it
+  only if the gain pays for the larger dispatch surface and preserves optional TLS compilation.
+- **HTTP header mutation/search** - `HttpMessage` repeatedly scans the flat CRLF buffer for lookup, append, remove and
+  override operations. First profile realistic 4/8/16/32-header construction and middleware mutation. If scans dominate,
+  evaluate known-header offsets or a lazy compact index that is invalidated on mutation without adding allocation or
+  meaningful `sizeof(HttpMessage)` cost to the common case.
+- **TCP cork syscall policy** - Linux response dispatch currently wraps eligible sends in `TcpCorkGuard`, issuing cork and
+  uncork `setsockopt` calls even for responses that may already fit in one gathered write. Benchmark disabled, always-on
+  and size/write-count-threshold policies for 0 B, 512 B, 4 KiB and streaming responses; retain cork only where packet
+  reduction outweighs the extra syscalls and latency.
+- **JWT/JWKS verification primitives** - `Jwks::find()` scans every key for each token and base64url decoding classifies
+  every character through branches. Add end-to-end JWT decode/verify benchmarks by algorithm, token size and JWKS size,
+  then compare linear lookup with a compact sorted/hash index and branch classification with a 256-byte decode table.
+  Include missing-`kid` and malformed-input cases so failure paths do not regress.
+- **Hot object layout audit** - record `sizeof`, alignment and cache-line access profiles for `ConnectionState`,
+  `Http2Stream`, `WebSocketHandler`, `HttpMessage`, `HttpRequestView` and client connection state at 10 K simulated
+  connections/streams. Move genuinely cold optional state behind existing natural-empty/pool mechanisms only when cache
+  results beat the added indirection. `ConnectionState` lifecycle flags are already bit-packed; do not reopen that item
+  without new layout evidence.
+- **Compression/decompression retained memory** - benchmark codec context reset, scratch-buffer growth and peak retained
+  capacity across alternating tiny/large bodies and many keep-alive sessions. Tune growth/shrink thresholds per codec,
+  and continue the Brotli reset/reuse research, only when allocation traces show a benefit over the existing reusable
+  `BufferCache` / `ObjectArrayPool` paths.
+
+#### P3 - platform and build experiments
+
+- **Configurable/adaptive HTTP client reads** - the client currently requests fixed 16 KiB chunks for HTTP/1.1 and HTTP/2
+  receives. Benchmark configurable 4/16/64 KiB and adaptive growth under small responses, bulk transfers, TLS
+  and constrained-memory workloads before exposing a knob or policy.
+- **Repeat-connection latency** - add a bounded TTL DNS cache and client-side TLS session reuse only after benchmarks
+  separate resolver, TCP and handshake time. Expiry, address rotation and failed-resumption fallback must remain explicit.
+- **Profile-guided builds** - evaluate PGO (and BOLT on supported Linux toolchains) in the benchmark binaries against the
+  existing Release + IPO baseline. Keep this an opt-in build/documentation path: installed library code must not assume
+  the benchmark host's CPU or workload.
+- **Platform event backends** - continue the dedicated IOCP, native macOS `EVFILT_TIMER`, and Linux `io_uring` work already
+  listed elsewhere in this roadmap. Treat these as transport/backend projects with end-to-end results, not local syscall
+  substitutions.
+
+#### Benchmark ideas
+
+Existing `hpack_bench`, `http2_flow_control_bench` and WebSocket mask benchmarks cover basic steady-state operations, so
+extend them instead of duplicating them. The WebSocket large-frame SIMD masking gap previously listed here is complete.
+
+| Benchmark gap | Decision it must support |
+| --- | --- |
+| HPACK insert/evict churn plus hit/miss lookup at multiple table sizes | Dynamic-table container and optional index |
+| HTTP/2 DATA + large HEADERS/CONTINUATION output with partial writes | Fragment queue / scatter-write representation |
+| Stream randomized lookup, frame processing and prune churn through 10 K streams | Stream map/cache and hot/cold split |
+| Client identity/chunked/compressed responses from 0 B through 100 MiB | Response-buffer ownership transfer |
+| Static-file cache hit/miss/thrash at capacities 64 through 4,096 | O(1) or amortized eviction policy |
+| Transport dispatch and response-size syscall counts, plain + TLS | Tagged transport and TCP cork threshold |
+| Header lookup/mutation with 4 through 32 fields | Flat scan versus compact/lazy indexing |
+| JWT decode/verify with 1 through 1,000 JWKs | `kid` index and base64url decode strategy |
+| Slow-reader and delayed zerocopy-completion memory plateau | Deferred-output high-water marks |
+| Codec alternating-size sessions with allocation and peak-capacity counters | Scratch growth/shrink and context reuse |
+| Fragmented + compressed WebSocket message processing | End-to-end frame/reassembly path beyond mask-only throughput |
+| Hot-structure `sizeof` and 10 K-object random-access profile | Layout changes without speculative padding claims |
 
 ## Long-term / Nice-to-have
 
@@ -109,6 +178,9 @@ if (result && result->status() == 200) {
 
 Still planned:
 
+Client performance work from the repository-wide audit (response-buffer ownership, receive sizing, and DNS/TLS reuse)
+is tracked in the [performance optimization backlog](#performance-optimization-backlog) above.
+
 - **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so
   handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing**
   in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per
@@ -116,14 +188,10 @@ Still planned:
 - **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the
   client builds the request directly in the buffer it writes, with zero reassembly (today request fields are
   copied once into the send buffer).
-- **Zero-copy body delivery** for identity responses (the body is currently copied once into the result), plus
-  pluggable timeouts / cancellation.
+- **Pluggable timeouts / cancellation** for in-flight client exchanges.
 - **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and
   decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client
   currently emits none).
-- **Connection latency caching**: a small TTL DNS-resolution cache and client-side TLS session-ticket reuse
-  across pooled connections, to cut connect/handshake latency on repeat origins (pairs with the response
-  cache; the server already issues session tickets).
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
 
 #### Server-Sent Events (SSE) convenience layer
