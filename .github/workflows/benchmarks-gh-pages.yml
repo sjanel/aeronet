@@ -52,16 +52,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y gcc-13 g++-13 libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
-
-      - name: Set compiler environment
-        run: |
-          echo "CC=gcc-13" >> $GITHUB_ENV
-          echo "CXX=g++-13" >> $GITHUB_ENV
-
-      - name: Show compiler version
-        run: |
-          $CXX --version
+          sudo apt install -y build-essential libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
 
       - name: Configure benchmark build
         run: |
