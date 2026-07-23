@@ -833,7 +833,7 @@ if (created) {
 
 Highlights:
 
-- Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`).
+- Plain HTTP and HTTPS (HTTPS requires `-DAERONET_ENABLE_OPENSSL=ON`; SNI + peer/hostname verification on by default, configurable via `HttpClientConfig`). With no explicit CA configured (`withTlsCaFile` / `withTlsCaPath`), the client trusts the system store: OpenSSL's default paths and the `SSL_CERT_FILE` / `SSL_CERT_DIR` environment variables, plus - when neither is set - well-known locations such as `/etc/ssl/certs/ca-certificates.crt`, so HTTPS verification works out of the box even on minimal images that lack OpenSSL's compiled-in CA directory.
 - **Native HTTP/2** (requires `-DAERONET_ENABLE_HTTP2=ON`, on by default), reusing the server's HPACK + frame codecs. `HttpClientConfig::httpVersion` selects the mode: `Auto` (the default - https negotiates `h2` via ALPN with an `http/1.1` fallback, plain http stays HTTP/1.1), `Http2` (require HTTP/2: ALPN `h2` only over https, prior-knowledge h2c over plain http) or `Http1_1` (never speak HTTP/2). The same `request()`/`get()`/`post()` API serves both protocols; a pooled HTTP/2 connection keeps its negotiated settings and HPACK tables across requests.
 - Per-origin keep-alive connection pooling with a transparent retry on a stale pooled connection.
 - **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy - an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).

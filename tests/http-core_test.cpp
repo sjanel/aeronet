@@ -1645,14 +1645,12 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
 }
 
 TEST(HttpStats, BasicCountersIncrement) {
-  HttpServerConfig cfg;
-  cfg.withMaxRequestsPerConnection(5);
-  test::TestServer ts(cfg);
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse(200).body("hello"); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(5); });
+  ts.router().setDefault(
+      []([[maybe_unused]] const HttpRequestView& req) { return req.makeResponse(200).body("hello"); });
   // Single request via throwing helper
   auto resp = test::requestOrThrow(ts.port());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  ts.stop();
   auto st = ts.server.stats();
   EXPECT_GT(st.totalBytesQueued, 0U);  // headers+body accounted
   EXPECT_GT(st.totalBytesWrittenImmediate + st.totalBytesWrittenFlush, 0U);
@@ -2409,7 +2407,7 @@ TEST(HttpsRedirectIntegration, EmitsRequestMetrics) {
 }
 
 namespace {
-std::string BlockingFetch(uint16_t port, std::string_view verb, std::string_view target) {
+std::string BlockingFetch(std::string_view verb, std::string_view target) {
   test::RequestOptions opt;
   opt.method = verb;
   opt.target = target;
@@ -2421,7 +2419,7 @@ std::string BlockingFetch(uint16_t port, std::string_view verb, std::string_view
   return *resp;
 }
 
-std::string RequestVerb(auto port, std::string_view verb, std::string_view target) {
+std::string RequestVerb(std::string_view verb, std::string_view target) {
   test::ClientConnection sock(port);
   auto fd = sock.fd();
 
@@ -2434,7 +2432,7 @@ std::string RequestVerb(auto port, std::string_view verb, std::string_view targe
   return test::recvUntilClosed(fd);
 }
 
-std::string RequestMethod(auto port, std::string_view method, std::string_view path, std::string_view body = {}) {
+std::string RequestMethod(std::string_view method, std::string_view path, std::string_view body = {}) {
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
 
@@ -2506,7 +2504,7 @@ TEST(HttpStreaming, ChunkedSimple) {
     writer.end();
     writer.end();  // second end() should be no-op
   });
-  std::string resp = BlockingFetch(port, "GET", "/stream");
+  std::string resp = BlockingFetch("GET", "/stream");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("X-Custom: value\r\n"));
   ASSERT_FALSE(resp.contains("X-Custom-2"));  // header added after headers sent should be ignored
@@ -2525,7 +2523,7 @@ TEST(HttpStreaming, HttpHeaderValuesAreTrimmed) {
     writer.writeBody("data");
     writer.end();
   });
-  std::string resp = BlockingFetch(port, "GET", "/trim-headers");
+  std::string resp = BlockingFetch("GET", "/trim-headers");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("X-Trimmed: trimmed-value\r\n"));
   EXPECT_TRUE(resp.contains("X-Also-Trimmed: another-trim\r\n"));
@@ -2546,7 +2544,7 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
     writer.reason("Not Found");  // should be ignored after end
   });
 
-  std::string resp = BlockingFetch(port, "GET", "/file");
+  std::string resp = BlockingFetch("GET", "/file");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -2573,7 +2571,7 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
     writer.end();
   });
 
-  std::string resp = BlockingFetch(port, "GET", "/file");
+  std::string resp = BlockingFetch("GET", "/file");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -2598,7 +2596,7 @@ TEST(HttpStreaming, SendFileHeadSuppressesBody) {
     writer.end();
   });
 
-  std::string resp = BlockingFetch(port, "HEAD", "/file");
+  std::string resp = BlockingFetch("HEAD", "/file");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(kPayload.size()))));
@@ -2619,7 +2617,7 @@ TEST(HttpStreaming, SendFileErrors) {
     EXPECT_FALSE(writer.file(File("/nonexistent/path")));  // should be no-op
   });
 
-  std::string resp = BlockingFetch(port, "GET", "/file-after-write");
+  std::string resp = BlockingFetch("GET", "/file-after-write");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -2642,7 +2640,7 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
     writer.end();
   });
 
-  std::string resp = BlockingFetch(port, "GET", "/file-override-cl");
+  std::string resp = BlockingFetch("GET", "/file-override-cl");
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "35")));
@@ -2662,7 +2660,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
     writer.writeBody("ignored body");  // should not be emitted for HEAD
     writer.end();
   });
-  std::string resp = BlockingFetch(port, "HEAD", "/head");
+  std::string resp = BlockingFetch("HEAD", "/head");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
   // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
@@ -2815,8 +2813,8 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
     writer.end();
   });
 
-  std::string getResp = RequestVerb(port, "GET", "/hdr");
-  std::string headResp = RequestVerb(port, "HEAD", "/hdr");
+  std::string getResp = RequestVerb("GET", "/hdr");
+  std::string headResp = RequestVerb("HEAD", "/hdr");
 
   // Basic status line check
   ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
@@ -2852,10 +2850,10 @@ TEST(HttpServerMixed, MixedPerPathHandlers) {
   ts.router().setPath(http::Method::POST, "/mix", [](const HttpRequestView& /*unused*/) {
     return HttpResponse(201).reason("Created").body("NORMAL");
   });
-  std::string getResp = RequestMethod(port, "GET", "/mix");
+  std::string getResp = RequestMethod("GET", "/mix");
   auto decoded = ExtractBody(getResp);
   EXPECT_EQ(decoded, "STREAM");
-  std::string postResp = RequestMethod(port, "POST", "/mix", "x");
+  std::string postResp = RequestMethod("POST", "/mix", "x");
   EXPECT_TRUE(postResp.contains("NORMAL"));
 }
 
@@ -2892,11 +2890,11 @@ TEST(HttpServerMixed, GlobalFallbackPrecedence) {
   // path-specific normal overrides global fallbacks
   ts.router().setPath(http::Method::GET, "/n", [](const HttpRequestView&) { return HttpResponse("PN"); });
 
-  std::string pathStreamResp = RequestMethod(port, "GET", "/s");
+  std::string pathStreamResp = RequestMethod("GET", "/s");
   EXPECT_TRUE(pathStreamResp.contains("PS"));
-  std::string pathNormalResp = RequestMethod(port, "GET", "/n");
+  std::string pathNormalResp = RequestMethod("GET", "/n");
   EXPECT_TRUE(pathNormalResp.contains("PN"));
-  std::string fallback = RequestMethod(port, "GET", "/other");
+  std::string fallback = RequestMethod("GET", "/other");
   // Should use global streaming first (higher precedence than global normal)
   EXPECT_TRUE(fallback.contains("STREAMFALLBACK"));
 }
@@ -2905,7 +2903,7 @@ TEST(HttpServerMixed, GlobalNormalOnlyWhenNoStreaming) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("GN"); });
 
-  std::string result = RequestMethod(port, "GET", "/x");
+  std::string result = RequestMethod("GET", "/x");
   EXPECT_TRUE(result.contains("GN"));
 }
 
@@ -2918,7 +2916,7 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
     writer.writeBody("SHOULD_NOT_APPEAR");  // for HEAD this must be suppressed by writer
     writer.end();
   });
-  std::string headResp = RequestMethod(port, "HEAD", "/head");
+  std::string headResp = RequestMethod("HEAD", "/head");
   // Body should be empty; ensure word not present and Content-Length: 0 (or if chunked not used at all)
   auto headerEnd = headResp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
@@ -2937,12 +2935,12 @@ TEST(HttpServerMixed, MethodNotAllowedWhenOnlyOtherStreamingMethodRegistered) {
     writer.writeBody("OKGET");
     writer.end();
   });
-  std::string postResp = RequestMethod(port, "POST", "/m405", "data");
+  std::string postResp = RequestMethod("POST", "/m405", "data");
   // Expect 405 Method Not Allowed
   EXPECT_TRUE(postResp.starts_with("HTTP/1.1 405"));
   EXPECT_TRUE(postResp.contains("Method Not Allowed"));
   // Ensure GET still works and returns streaming body
-  std::string getResp2 = RequestMethod(port, "GET", "/m405");
+  std::string getResp2 = RequestMethod("GET", "/m405");
   auto decoded2 = ExtractBody(getResp2);
   EXPECT_EQ(decoded2, "OKGET");
 }
@@ -3234,7 +3232,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
     EXPECT_TRUE(writer.finished());
     EXPECT_FALSE(writer.failed());
   });
-  std::string resp = BlockingFetch(port, "GET", "/adaptive");
+  std::string resp = BlockingFetch("GET", "/adaptive");
   auto stats = ts.server.stats();
   EXPECT_GT(stats.totalBytesWrittenImmediate, kLargeSize);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));

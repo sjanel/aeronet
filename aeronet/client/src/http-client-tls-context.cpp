@@ -9,6 +9,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -75,7 +77,57 @@ void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
   }
 }
 
+// Well-known Linux system CA bundle files probed (in priority order) when the caller configures no explicit trust
+// store and the environment does not already point OpenSSL at one. This is the same set curl / Go / Python
+// fall back to. OpenSSL's own SSL_CTX_set_default_verify_paths() only consults its compiled-in directory
+// (often /usr/lib/ssl) plus the SSL_CERT_FILE / SSL_CERT_DIR env vars, and that directory is frequently
+// absent from minimal container images that ship just /etc/ssl/certs/ca-certificates.crt -- leaving the
+// store empty and every verification failing with "certificate verify failed".
+constexpr const char* const kDefaultCaBundleFiles[] = {
+    "/etc/ssl/certs/ca-certificates.crt",  // Debian, Ubuntu, Gentoo, Arch, Alpine
+    "/etc/pki/tls/certs/ca-bundle.crt",    // Fedora, RHEL, CentOS
+    "/etc/ssl/ca-bundle.pem",              // openSUSE
+    "/etc/pki/tls/cacert.pem",             // OpenELEC / old RHEL
+    "/etc/ssl/cert.pem",                   // Alpine, FreeBSD, macOS (LibreSSL)
+};
+
+// Well-known hashed-cert directories probed as a fallback in the same situation.
+constexpr const char* const kDefaultCaBundleDirs[] = {
+    "/etc/ssl/certs",                // Debian, Ubuntu, SUSE
+    "/etc/pki/tls/certs",            // Fedora, RHEL
+    "/system/etc/security/cacerts",  // Android
+};
+
+// True when the environment already points OpenSSL at a trust store through SSL_CERT_FILE / SSL_CERT_DIR
+// (the env var names are queried from OpenSSL itself). In that case SSL_CTX_set_default_verify_paths()
+// honours it, so aeronet must not widen that (possibly deliberately restricted) trust set by loading the
+// well-known system bundles on top of it.
+bool SystemTrustStoreConfiguredViaEnv() {
+  const char* envNames[] = {::X509_get_default_cert_file_env(), ::X509_get_default_cert_dir_env()};
+  return std::ranges::any_of(envNames, [](const char* envName) {
+    const char* pEnv = std::getenv(envName);
+    return pEnv != nullptr && *pEnv != '\0';
+  });
+}
+
 }  // namespace
+
+bool LoadExistingCaBundles(void* sslCtx, std::span<const char* const> caFiles, std::span<const char* const> caDirs) {
+  auto* ctx = static_cast<SSL_CTX*>(sslCtx);
+  std::error_code ec;
+  bool loaded = false;
+  for (const char* caFile : caFiles) {
+    if (std::filesystem::is_regular_file(caFile, ec) && ::SSL_CTX_load_verify_locations(ctx, caFile, nullptr) == 1) {
+      loaded = true;
+    }
+  }
+  for (const char* caDir : caDirs) {
+    if (std::filesystem::is_directory(caDir, ec) && ::SSL_CTX_load_verify_locations(ctx, nullptr, caDir) == 1) {
+      loaded = true;
+    }
+  }
+  return loaded;
+}
 
 HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   cfg.validate();
@@ -144,7 +196,16 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
         throw HttpClientException("Failed to load TLS CA trust store");
       }
     } else {
+      // No explicit trust store configured: fall back to the system's. OpenSSL's default resolution
+      // honours the SSL_CERT_FILE / SSL_CERT_DIR environment variables and its compiled-in default paths.
       trustLoaded = ::SSL_CTX_set_default_verify_paths(pSsl) == 1;
+      // OpenSSL's compiled-in default directory (often /usr/lib/ssl) is frequently absent from minimal
+      // container images that ship only a bundle such as /etc/ssl/certs/ca-certificates.crt, which would
+      // otherwise leave the store empty and fail every verification. Unless the environment already points
+      // OpenSSL at a store, augment it with any well-known system CA location that exists (best effort).
+      if (!SystemTrustStoreConfiguredViaEnv()) {
+        trustLoaded = LoadExistingCaBundles(pSsl, kDefaultCaBundleFiles, kDefaultCaBundleDirs) || trustLoaded;
+      }
       if (!trustLoaded) {
         throw HttpClientException("Failed to load default TLS trust store");
       }

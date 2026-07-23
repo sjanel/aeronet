@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <span>
 
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/native-handle.hpp"
@@ -36,5 +37,15 @@ class HttpClientTlsContext {
  private:
   void* pCtx{};
 };
+
+// Best-effort augmentation of an OpenSSL trust store: load into `sslCtx` (an `SSL_CTX*`, taken as `void*`
+// to keep OpenSSL out of this header) every CA bundle file in `caFiles` and every hashed-cert directory in
+// `caDirs` that currently exists on disk. Returns true iff at least one location was loaded. aeronet uses
+// this to complement OpenSSL's own default trust store with well-known system locations, so HTTPS
+// verification works out of the box on minimal container images whose OpenSSL build points its compiled-in
+// default directory at a path they do not ship. Exposed (rather than translation-unit-local) so it can be
+// unit-tested with injected paths.
+[[nodiscard]] bool LoadExistingCaBundles(void* sslCtx, std::span<const char* const> caFiles,
+                                         std::span<const char* const> caDirs);
 
 }  // namespace aeronet::internal
