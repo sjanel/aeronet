@@ -737,8 +737,8 @@ UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   return result;
 }
 
-inline constexpr std::size_t kBoundarySize = 24;
-inline constexpr std::string_view kAeronetPrefix = "aeronet";
+constexpr std::size_t kBoundarySize = 24;
+constexpr std::string_view kAeronetPrefix = "aeronet";
 
 struct Boundary {
   char data[kBoundarySize];
@@ -884,6 +884,24 @@ StaticFileHandler::StaticFileHandler(std::filesystem::path rootDirectory, Static
   }
 }
 
+StaticFileHandler::StaticFileHandler(const StaticFileHandler& rhs) : _root(rhs._root), _config(rhs._config) {
+  // Do not copy the cache contents; the new instance starts with an empty cache.
+}
+
+StaticFileHandler& StaticFileHandler::operator=(const StaticFileHandler& rhs) {
+  if (this != &rhs) [[likely]] {
+    // Clear the current cache and reset LRU pointers.
+    _headerCache.clear();
+    _headerCachePool.clear();
+    _lruHead = nullptr;
+    _lruTail = nullptr;
+
+    _root = rhs._root;
+    _config = rhs._config;
+  }
+  return *this;
+}
+
 StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequestView& request,
                                                                   std::filesystem::path& resolvedPath) const {
   std::string_view rawPath = request.path();
@@ -972,35 +990,40 @@ const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta
     return scratch;
   }
 
-  // Single hash probe: locate the existing entry or insert a fresh (empty) one. This avoids a second lookup and a
-  // copy of the CachedFileHeaders on the miss path (it is filled in place below), and stays allocation-free on a
-  // hit (the RawChars32 key is only materialized when an entry is actually inserted).
-  auto [it, inserted] = _headerCache.try_emplace(filePath);
-  CachedFileHeaders& entry = it->second;
+  // Single hash probe, as before. Value is a raw CacheNode*, default-constructed to nullptr on insert so we can
+  // tell "just created the slot" apart from "found an existing node" without a second lookup.
+  auto [it, inserted] = _headerCache.try_emplace(filePath, nullptr);
+
   if (!inserted) {
-    // Validate the cached entry against the freshly stat'd metadata; rebuild in place if the file changed.
-    if (entry.fileSize != file.size() || entry.lastModified != file.lastModified()) {
-      buildHeaderMeta(filePath, file, entry);
+    CacheNode* pNode = it->second;
+    if (pNode->headers.fileSize != file.size() || pNode->headers.lastModified != file.lastModified()) {
+      buildHeaderMeta(filePath, file, pNode->headers);
     }
-    entry.lruSeq = ++_headerCacheClock;  // mark as most-recently used
-    return entry;
+    // Pool-owned node: address is stable, so this pointer surgery is safe regardless of what the map does
+    // internally (rehash, backward-shift on other keys, etc).
+    lruUnlink(pNode);
+    lruPushFront(pNode);
+    return pNode->headers;
   }
 
-  // Newly inserted entry: fill it and stamp it as most-recently used *before* any eviction, so it holds the newest
-  // recency stamp and can never be chosen as the victim below.
-  buildHeaderMeta(filePath, file, entry);
-  entry.lruSeq = ++_headerCacheClock;
-
-  // The just-inserted entry may have pushed us one over capacity (note the strict '>': the new key is already in).
-  if (_headerCache.size() <= _config.headerCacheCapacity) {
-    return entry;
+  // Miss: evict first if we're already at the configured budget, then allocate. destroyAndRelease() returns the
+  // freed slot to the pool's free-list, so steady-state churn (evict one, allocate one) does not grow the pool
+  // further once it has reached 'headerCacheCapacity' live nodes - allocateAndConstruct() below just reuses it.
+  if (_headerCachePool.size() >= _config.headerCacheCapacity) {
+    CacheNode* pVictim = _lruTail;
+    lruUnlink(pVictim);
+    _headerCache.erase(pVictim->key);
+    _headerCachePool.destroyAndRelease(pVictim);
+    // 'it' may have been invalidated by the erase() above if the map relocated elements - re-probe.
+    it = _headerCache.find(filePath);
   }
 
-  // Evict the least-recently-used entry. erase() may relocate other elements in the open-addressing table, so
-  // 'entry'/'it' must not be reused afterwards — re-fetch the entry we just inserted (guaranteed present: it holds
-  // the newest stamp, so it was not the victim).
-  _headerCache.erase(std::ranges::min_element(_headerCache, {}, [](const auto& kv) { return kv.second.lruSeq; }));
-  return _headerCache.find(filePath)->second;
+  CacheNode* pNode = _headerCachePool.allocateAndConstruct();
+  pNode->key = RawChars32(filePath);
+  buildHeaderMeta(filePath, file, pNode->headers);
+  it->second = pNode;
+  lruPushFront(pNode);
+  return pNode->headers;
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const {
@@ -1086,7 +1109,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   File file(pathString.c_str(), File::OpenMode::ReadOnly);
   if (!file) {
-    // resolveTarget already confirmed the file exists, so failure here is a system error (e.g. EMFILE), not "not found"
+    // resolveTarget already confirmed the file exists, so failure here is a system error (e.g. EMFILE), not "not
+    // found"
     resp = HttpResponse(http::StatusCodeServiceUnavailable, "Unable to open file\n");
     return resp;
   }
@@ -1198,6 +1222,24 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
     resp.file(std::move(file), contentTypeForFile);
   }
   return resp;
+}
+
+void StaticFileHandler::lruUnlink(CacheNode* pNode) const {
+  ((pNode->pPrev != nullptr) ? pNode->pPrev->pNext : _lruHead) = pNode->pNext;
+  ((pNode->pNext != nullptr) ? pNode->pNext->pPrev : _lruTail) = pNode->pPrev;
+  pNode->pPrev = pNode->pNext = nullptr;
+}
+
+void StaticFileHandler::lruPushFront(CacheNode* pNode) const {
+  pNode->pPrev = nullptr;
+  pNode->pNext = _lruHead;
+  if (_lruHead != nullptr) {
+    _lruHead->pPrev = pNode;
+  }
+  _lruHead = pNode;
+  if (_lruTail == nullptr) {
+    _lruTail = pNode;
+  }
 }
 
 }  // namespace aeronet

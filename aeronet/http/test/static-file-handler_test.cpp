@@ -161,6 +161,68 @@ TEST_F(StaticFileHandlerTest, Basic) {
   EXPECT_FALSE(tmpFile.filePath().empty());
 }
 
+TEST_F(StaticFileHandlerTest, CopyConstructorShouldNotCopyCache) {
+  std::string fileContent = "Hello, static file!";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp1 = handler(req);
+  EXPECT_EQ(resp1.status(), http::StatusCodeOK);
+  EXPECT_EQ(headerCacheSize(handler), 1U);
+
+  // Copy-construct a new handler; the cache should be empty
+  StaticFileHandler copyHandler(handler);  // NOLINT(performance-unnecessary-copy-initialization)
+  EXPECT_EQ(headerCacheSize(copyHandler), 0U);
+
+  // The original handler's cache should still have the entry
+  EXPECT_EQ(headerCacheSize(handler), 1U);
+}
+
+TEST_F(StaticFileHandlerTest, CopyAssignmentShouldNotCopyCache) {
+  std::string fileContent = "Hello, static file!";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp1 = handler(req);
+  EXPECT_EQ(resp1.status(), http::StatusCodeOK);
+  EXPECT_EQ(headerCacheSize(handler), 1U);
+
+  test::ScopedTempDir tmpDir2;
+  test::ScopedTempFile tmpFile2(tmpDir2, fileContent);
+
+  // Copy-assign a new handler; the cache should be empty
+  StaticFileHandler copyHandler(tmpFile2.dirPath());
+  copyHandler = handler;
+  EXPECT_EQ(headerCacheSize(copyHandler), 0U);
+
+  // The original handler's cache should still have the entry
+  EXPECT_EQ(headerCacheSize(handler), 1U);
+}
+
+TEST_F(StaticFileHandlerTest, CopyAssignmentToSelfShouldNotDoAnything) {
+  std::string fileContent = "Hello, static file!";
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  StaticFileHandler handler(tmpFile.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp1 = handler(req);
+  EXPECT_EQ(resp1.status(), http::StatusCodeOK);
+  EXPECT_EQ(headerCacheSize(handler), 1U);
+
+  // Copy-assign to self; the cache should remain unchanged
+  auto& selfHandler = handler;
+  selfHandler = handler;
+  EXPECT_EQ(headerCacheSize(selfHandler), 1U);
+}
+
 TEST_F(StaticFileHandlerTest, HeadRequests) {
   std::string fileContent = "Hello, static file!";
   test::ScopedTempFile tmpFile(tmpDir, fileContent);
