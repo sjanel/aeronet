@@ -29,11 +29,9 @@ inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequestView& request, Mid
   tracing::SpanRAII spanScope(std::move(span));
 
   if (spanScope.span) {
-    spanScope.span->setAttribute("aeronet.middleware.phase", phase == MiddlewareMetrics::Phase::Pre
-                                                                 ? std::string_view("request")
-                                                                 : std::string_view("response"));
-    spanScope.span->setAttribute("aeronet.middleware.scope",
-                                 isGlobal ? std::string_view("global") : std::string_view("route"));
+    spanScope.span->setAttribute("aeronet.middleware.phase",
+                                 phase == MiddlewareMetrics::Phase::Pre ? "request" : "response");
+    spanScope.span->setAttribute("aeronet.middleware.scope", isGlobal ? "global" : "route");
     spanScope.span->setAttribute("aeronet.middleware.index", static_cast<int64_t>(index));
     spanScope.span->setAttribute("aeronet.middleware.streaming", static_cast<int64_t>(streaming));
     spanScope.span->setAttribute("http.method", http::MethodToStr(request.method()));
