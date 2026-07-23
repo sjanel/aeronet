@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -16,13 +15,9 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decompression-config.hpp"
-#include "aeronet/http-constants.hpp"
-#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
@@ -30,7 +25,6 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
-#include "aeronet/tolower-str.hpp"
 #endif
 
 namespace aeronet {
