@@ -11,7 +11,6 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/object-pool.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -29,7 +28,7 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-handler-state.hpp"
-#include "aeronet/http-response.hpp"
+#include "aeronet/object-pool.hpp"
 #endif
 
 namespace aeronet {
