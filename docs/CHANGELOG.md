@@ -2,16 +2,18 @@
 
 All notable changes to aeronet are documented in this file.
 
-## Unreleased
+## Unreleased changes
 
-### Breaking changes
+## [1.4.0] - 2026-07-23
+
+### 1.4.0 Breaking changes
 
 - **`HttpRequest` has been renamed into `HttpRequestView`** to better reflect its non-owning semantics. `HttpRequest` is now a concrete owning type used in the `HttpClient` API to build a request, mirroring `HttpResponse`.
 - **HTTP/2-specific `HttpRequestView` APIs** (`isHttp2()`, `streamId()`, `scheme()`, `authority()`) are now compiled only when `AERONET_ENABLE_HTTP2` is on. Without HTTP/2, use the HTTP/1.x equivalents (e.g. `headerValueOrEmpty("Host")` for `authority()`).
 - **JSON/YAML body helpers now require `<aeronet/http-json.hpp>`**: `HttpResponse::bodyJson`/`bodyYaml` and `HttpRequestView::bodyAs`/`bodyAsYaml` keep their declarations in the core headers, but their definitions (and the Glaze include) moved to the new opt-in `<aeronet/http-json.hpp>` to keep Glaze's compile cost out of the core. Code using the `<aeronet/aeronet.hpp>` umbrella is unaffected.
 - **The `aeronet::log` API now requires `<aeronet/log.hpp>`**: the core headers no longer pull in spdlog transitively, so callers of `aeronet::log::*` must include it directly.
 
-### New features
+### 1.4.0 New features
 
 - **HTTP client (`HttpClient`, `AERONET_ENABLE_HTTP_CLIENT`)**: a new synchronous HTTP client built on aeronet's own non-blocking transport + event-loop bricks, speaking both **HTTP/1.1 and HTTP/2** natively (HTTP/2 reuses the server's HPACK + frame codecs, adding no dependency; the version is selected per client via `HttpClientConfig::httpVersion` — `Auto` / `Http2` / `Http1_1` — with ALPN negotiation over TLS and prior-knowledge h2c over cleartext). It provides HTTPS through the shared `TlsTransport` (peer/hostname verification, TLS version bounds, custom CA bundle, cipher list, mutual-TLS), per-origin **keep-alive connection pooling**, automatic **redirect following** with RFC 7231 method/body rewriting, a configurable **retry policy** with exponential backoff, transparent **compression / decompression** reusing the server codec bricks, outbound **request trailers** over both HTTP/1.1 (chunked framing) and HTTP/2 (a trailing HEADERS block), **request bodies streamed directly from an open file** (`HttpRequest::file(...)`, with an optional offset/length sub-range) — zero-copy `sendfile(2)` over cleartext HTTP/1.1, read-and-encrypt over TLS, and bounded reads framed into DATA frames over HTTP/2 (tests: `aeronet/client/test/http-client-core_test.cpp` `*FileBody*`, `http-client-http2-e2e_test.cpp` `*FileBody*`, `http-client-tls-e2e_test.cpp` `PostFileBodyOverTls*`, `aeronet/sys/test/transport_test.cpp` `*SendFile*`), cleartext **forward-proxy** support (`withProxy`, opening an HTTP `CONNECT` tunnel for https origins), and an opt-in **time-based response cache** for idempotent requests (`withCache`). Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`), so per-request runtime failures are values rather than exceptions; a single `HttpClient` is not thread-safe (use one per thread). See [HTTP client](../README.md#http-client).
 - **JWT (JWS profile) module (`aeronet_jwt`, `AERONET_ENABLE_JWT`)**: sign and verify JSON Web Tokens (RFC 7519) across the full JWS algorithm suite (HMAC `HS*`, RSA `RS*`/`PS*`, ECDSA `ES*`, `EdDSA`) over the OpenSSL already linked for TLS. Claim validation (`exp`/`nbf`/`iss`/`aud`/`sub` with configurable leeway + injectable clock), JWK/JWKS parsing with `kid` selection, and a security posture enforced by construction (`alg:none` always rejected, algorithm-family anti-confusion, signature verified before any claim, constant-time HMAC). Exception-free, JWE out of scope, and enabled by default whenever OpenSSL + Glaze are present (a `cmake_dependent_option`, no new dependency). Also ships a url-safe, no-padding `base64url` codec in `aeronet/tech`. See [FEATURES.md](FEATURES.md).
@@ -21,7 +23,7 @@ All notable changes to aeronet are documented in this file.
 - **Client address on the request**: `HttpRequestView::clientAddress()`, populated from the peer socket address for both HTTP/1.1 and HTTP/2.
 - **HTTP/2 request trailers**: the server now accepts a trailing `HEADERS` block on a request stream (RFC 9113 §8.1) and surfaces its fields through `HttpRequestView::trailers()` / `trailerValueOrEmpty()`, exactly like HTTP/1.1 chunked trailers. Pseudo-header fields in trailers and a trailing block that does not end the stream are rejected with `RST_STREAM(PROTOCOL_ERROR)`; trailer bytes count toward the request header-size budget. Tests: `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RequestTrailers*`), `aeronet/client/test/http-client-http2-e2e_test.cpp` (`*RequestTrailer*`, `LargeBodyThenTrailers`, `ReusableAfterTraileredRequest`).
 
-### Bug fixes
+### 1.4.0 Bug fixes
 
 - **Request trailers could leak across keep-alive requests**: after a chunked request carrying trailers, the per-connection trailer length was not reset for a subsequent fixed-length request on the same connection, so the server spuriously re-parsed the previous request's trailer bytes into `HttpRequestView::trailers()`. The trailer length is now cleared for non-chunked bodies.
 - **HTTP/2 responses larger than the peer's flow-control window could never be delivered** — a buffered response body exceeding the stream/connection send window (e.g. > ~64 KiB against the RFC 9113 default window) failed with `FLOW_CONTROL_ERROR` and hung; the window-exhausted remainder is now deferred and flushed as `WINDOW_UPDATE`s arrive, trailers included.
@@ -36,7 +38,7 @@ All notable changes to aeronet are documented in this file.
 - Fixed a Debug-only compilation error in `aeronet::fullVersionStringView()` (`<aeronet/version.hpp>`).
 - Added `Content-type` header for built-in server error messages with a body.
 
-### Improvements
+### 1.4.0 Improvements
 
 - **Raised status line max size from 64KiB to 16MiB** - this is not so useful for `HttpResponse` because reason should not be used, but may be interesting for very long URLs in `HttpRequest`.
 - **Lower compile-time footprint of the core HTTP headers**: the two compile-time heaviest dependencies — Glaze and spdlog — no longer leak into the widely-included headers, so most translation units stop paying for them even when they never serialize JSON or log (see the header breaking changes above).
