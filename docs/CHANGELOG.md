@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased changes
 
+### Bug Fixes
+
+- **Fix compilation with OpenSSL**: cmake configuration did not export publicly the `aeronet_tls` static library.
+
 ## [1.4.0] - 2026-07-23
 
 ### 1.4.0 Breaking changes

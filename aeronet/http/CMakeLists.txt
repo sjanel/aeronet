@@ -18,9 +18,7 @@ target_link_libraries(aeronet_http
 )
 
 if(AERONET_ENABLE_OPENSSL)
-    find_package(OpenSSL REQUIRED)
-    target_link_libraries(aeronet_http PRIVATE OpenSSL::Crypto)
-    target_link_libraries(aeronet_http PRIVATE aeronet_tls)
+    target_link_libraries(aeronet_http PUBLIC aeronet_tls)
 endif()
 
 if(AERONET_ENABLE_WEBSOCKET)
@@ -30,7 +28,6 @@ endif()
 target_include_directories(aeronet_http
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<$<BOOL:${AERONET_ENABLE_OPENSSL}>:$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/tls/include>>
         $<INSTALL_INTERFACE:include>
 )
 
