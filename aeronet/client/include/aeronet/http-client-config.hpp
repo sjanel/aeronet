@@ -309,7 +309,10 @@ class HttpClientConfig {
   }
 
 #ifdef AERONET_ENABLE_OPENSSL
-  // Optional CA bundle file / directory. When both empty, the system default trust store is used.
+  // Optional CA bundle file / directory. When both empty, the system trust store is used: OpenSSL's own
+  // default paths (honouring the SSL_CERT_FILE / SSL_CERT_DIR environment variables) plus, when neither
+  // env var is set, any well-known system CA location that exists (e.g. /etc/ssl/certs/ca-certificates.crt)
+  // - so verification works out of the box on minimal images whose OpenSSL default directory is absent.
   [[nodiscard]] std::string_view tlsCaFile() const { return _strings[kCaFile]; }
   [[nodiscard]] const char* tlsCaFileCStr() const { return _strings.c_str(kCaFile); }
   HttpClientConfig& withTlsCaFile(std::string_view caFile) {

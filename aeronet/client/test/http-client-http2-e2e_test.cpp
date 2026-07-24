@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -44,7 +43,8 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include <csignal>
 
-#include "aeronet/test-tls-helper.hpp"
+#include "aeronet/test_server_http2_tls_fixture.hpp"
+#include "aeronet/test_server_tls_fixture.hpp"
 #endif
 
 namespace aeronet {
@@ -863,31 +863,31 @@ TEST(HttpClientHttp2E2ETest, ServerGoAwayAfterStreamBudgetReconnects) {
 
 namespace {
 
-// TLS server factory: h2 is offered through ALPN by default; `enableHttp2 = false` restricts the
-// server to http/1.1 so the client's Http2 mode has nothing to negotiate.
-std::unique_ptr<SingleHttpServer> MakeTlsServer(std::string_view cert, std::string_view key,
-                                                std::atomic<bool>& sawHttp2, uint16_t& port, bool enableHttp2 = true) {
+std::atomic<bool> sawHttp2{false};
+
+test::TlsHttp2TestServer tlsTs;
+const uint16_t tlsPort = tlsTs.port();
+
+void ConfigureTlsTs(auto& testServer, bool enableHttp2 = true) {
   // A client dropping its connection right after the handshake (the ALPN-mismatch test) can make the
   // in-process server's OpenSSL stack write to a closed fd, raising SIGPIPE on Linux -- same mitigation
   // as test_tls_client.cpp. Windows has no SIGPIPE concept.
 #ifdef AERONET_POSIX
   std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
-  Router router;
-  router.setPath(http::Method::GET, "/hello", [&sawHttp2](const HttpRequestView& req) {
-    sawHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
-    return HttpResponse(http::StatusCodeOK, "tls-world", "text/plain");
+
+  testServer.server.postConfigUpdate([enableHttp2](HttpServerConfig& cfg) {
+    cfg.http2.enable = enableHttp2;
+    if (enableHttp2) {
+      cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer h2 via ALPN (not advertised by default)
+    }
   });
-  HttpServerConfig cfg;
-  cfg.withPort(0).withPollInterval(std::chrono::milliseconds{20}).withTlsCertKeyMemory(cert, key);
-  cfg.http2.enable = enableHttp2;
-  if (enableHttp2) {
-    cfg.withTlsAlpnProtocols({"h2", "http/1.1"});  // offer h2 via ALPN (not advertised by default)
-  }
-  auto server = std::make_unique<SingleHttpServer>(std::move(cfg), std::move(router));
-  port = server->port();
-  server->start();
-  return server;
+  testServer.server.postRouterUpdate([](Router& router) {
+    router.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
+      sawHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
+      return req.makeResponse(http::StatusCodeOK, "tls-world", "text/plain");
+    });
+  });
 }
 
 HttpClientConfig TlsClientConfig(HttpVersionMode mode) {
@@ -897,51 +897,47 @@ HttpClientConfig TlsClientConfig(HttpVersionMode mode) {
   return cfg;
 }
 
-std::string TlsUrl(uint16_t port) { return "https://localhost:" + std::to_string(port) + "/hello"; }
+std::string TlsUrl(uint16_t po) { return "https://localhost:" + std::to_string(po) + "/hello"; }
 
 }  // namespace
 
 TEST(HttpClientHttp2TlsE2ETest, AutoModeNegotiatesH2ViaAlpn) {
-  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  std::atomic<bool> sawHttp2{false};
-  uint16_t port{0};
-  auto server = MakeTlsServer(cert, key, sawHttp2, port);
+  ConfigureTlsTs(tlsTs);
+  sawHttp2.store(false, std::memory_order_relaxed);
   HttpClient client(TlsClientConfig(HttpVersionMode::Auto));
-  auto resp = client.get(TlsUrl(port)).value();
+  auto resp = client.get(TlsUrl(tlsPort)).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "tls-world");
   EXPECT_TRUE(sawHttp2.load(std::memory_order_relaxed));
 }
 
 TEST(HttpClientHttp2TlsE2ETest, Http2ModeNegotiatesH2ViaAlpn) {
-  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  std::atomic<bool> sawHttp2{false};
-  uint16_t port{0};
-  auto server = MakeTlsServer(cert, key, sawHttp2, port);
+  ConfigureTlsTs(tlsTs);
+  sawHttp2.store(false, std::memory_order_relaxed);
   HttpClient client(TlsClientConfig(HttpVersionMode::Http2));
-  auto resp = client.get(TlsUrl(port)).value();
+  auto resp = client.get(TlsUrl(tlsPort)).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(sawHttp2.load(std::memory_order_relaxed));
 }
 
 TEST(HttpClientHttp2TlsE2ETest, Http11ModeNeverNegotiatesH2) {
-  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  std::atomic<bool> sawHttp2{true};
-  uint16_t port{0};
-  auto server = MakeTlsServer(cert, key, sawHttp2, port);
+  ConfigureTlsTs(tlsTs);
+  sawHttp2.store(false, std::memory_order_relaxed);
   HttpClient client(TlsClientConfig(HttpVersionMode::Http1_1));
-  auto resp = client.get(TlsUrl(port)).value();
+  auto resp = client.get(TlsUrl(tlsPort)).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_FALSE(sawHttp2.load(std::memory_order_relaxed));
 }
 
 TEST(HttpClientHttp2TlsE2ETest, Http2ModeFailsWhenOriginHasNoH2) {
-  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  std::atomic<bool> sawHttp2{false};
-  uint16_t port{0};
-  auto server = MakeTlsServer(cert, key, sawHttp2, port, /*enableHttp2=*/false);
+  test::TlsTestServer tlsTsNoHttp2;
+
+  const uint16_t tlsPortNoHttp2 = tlsTsNoHttp2.port();
+
+  ConfigureTlsTs(tlsTsNoHttp2, /*enableHttp2=*/false);
+  sawHttp2.store(false, std::memory_order_relaxed);
   HttpClient client(TlsClientConfig(HttpVersionMode::Http2));
-  auto res = client.get(TlsUrl(port));
+  auto res = client.get(TlsUrl(tlsPortNoHttp2));
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error(), HttpClientErrc::protocolUnsupported);
 }
