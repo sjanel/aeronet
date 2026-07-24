@@ -1,15 +1,18 @@
 #include <gtest/gtest.h>
+#include <openssl/ssl.h>
 #include <openssl/x509.h>
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/aeronet.hpp"
 #include "aeronet/file.hpp"
@@ -19,6 +22,7 @@
 #include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/scoped-env-var.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
@@ -26,14 +30,26 @@
 namespace aeronet {
 namespace {
 
-// Write PEM text to a unique temp file and return its path (caller-owned for the test duration).
-std::filesystem::path WriteTempPem(std::string_view pem, std::string_view tag) {
-  static int counter = 0;
-  std::filesystem::path path = std::filesystem::temp_directory_path() /
-                               ("aeronet-client-test-" + std::string(tag) + "-" + std::to_string(++counter) + ".pem");
-  std::ofstream(path) << pem;
-  return path;
-}
+// Write PEM text to a unique temp file in a RAII wrapper.
+struct TempPemWriter {
+  TempPemWriter(std::string_view pem, std::string_view tag) {
+    static int counter = 0;
+    path = std::filesystem::temp_directory_path() /
+           ("aeronet-client-test-" + std::string(tag) + "-" + std::to_string(++counter) + ".pem");
+    std::ofstream(path) << pem;
+  }
+
+  TempPemWriter(const TempPemWriter&) = delete;
+  TempPemWriter& operator=(const TempPemWriter&) = delete;
+  TempPemWriter(TempPemWriter&&) = delete;
+  TempPemWriter& operator=(TempPemWriter&&) = delete;
+
+  ~TempPemWriter() { std::filesystem::remove(path); }
+
+  [[nodiscard]] std::string string() const { return path.string(); }
+
+  std::filesystem::path path;
+};
 
 // HTTPS end-to-end: an aeronet TLS server with an ephemeral self-signed cert, hit by HttpClient.
 class HttpClientTlsE2ETest : public ::testing::Test {
@@ -103,7 +119,7 @@ TEST_F(HttpClientTlsE2ETest, VerificationFailsForUntrustedCert) {
 TEST_F(HttpClientTlsE2ETest, TrustsServerViaCaFile) {
   // Trust the server's self-signed cert by pointing the client at it as a CA file: exercises the
   // SSL_CTX_load_verify_locations (CA-file) trust-store branch with a successful verification.
-  const auto caPath = WriteTempPem(_certPem, "ca");
+  const TempPemWriter caPath(_certPem, "ca");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = true;
   cfg.withTlsCaFile(caPath.string());
@@ -111,8 +127,26 @@ TEST_F(HttpClientTlsE2ETest, TrustsServerViaCaFile) {
   auto resp = client.get(url("/secure")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
-  std::filesystem::remove(caPath);
 }
+
+#ifdef AERONET_POSIX
+TEST_F(HttpClientTlsE2ETest, TrustsServerViaSslCertFileEnvWithoutExplicitCa) {
+  // With no explicit CA configured, the client falls back to the system trust store, which honours the
+  // SSL_CERT_FILE environment variable (and therefore skips the well-known-location augmentation). Point it
+  // at the server's self-signed cert and verification passes without any withTlsCaFile call.
+  const TempPemWriter caPath(_certPem, "envca");
+  const std::string caPathStr = caPath.string();
+
+  test::ScopedEnvVar sslCertFile("SSL_CERT_FILE", caPathStr.c_str());
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;  // no explicit CA file/path -> system store, which includes SSL_CERT_FILE
+  HttpClient client(cfg);
+  auto resp = client.get(url("/secure")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "secret");
+}
+#endif  // AERONET_POSIX
 
 TEST_F(HttpClientTlsE2ETest, BadCaFileThrows) {
   // A non-existent CA file makes SSL_CTX_load_verify_locations fail at context build time.
@@ -240,32 +274,29 @@ TEST(HttpClientTlsErrorTest, MissingClientCertFileThrows) {
 TEST(HttpClientTlsErrorTest, ValidCertFileWithBadKeyFileThrows) {
   // A real certificate file but a missing key file: the certificate loads, then the key load fails.
   auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  const auto certPath = WriteTempPem(cert, "okcert");
+  const TempPemWriter certPath(cert, "okcert");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile(certPath.string(), "/nonexistent/aeronet-no-key.pem");
   HttpClient client(cfg);
   EXPECT_THROW({ [[maybe_unused]] auto res = client.get("https://localhost:9/"); }, HttpClientException);
-  std::filesystem::remove(certPath);
 }
 
 TEST(HttpClientTlsErrorTest, MismatchedClientCertKeyFilesThrow) {
   auto [certA, keyA] = test::MakeEphemeralCertKey("localhost");
   auto [certB, keyB] = test::MakeEphemeralCertKey("localhost");
-  const auto certPath = WriteTempPem(certA, "mismatched-cert");
-  const auto keyPath = WriteTempPem(keyB, "mismatched-key");
+  const TempPemWriter certPath(certA, "mismatched-cert");
+  const TempPemWriter keyPath(keyB, "mismatched-key");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile(certPath.string(), keyPath.string());
 
   EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
-  std::filesystem::remove(certPath);
-  std::filesystem::remove(keyPath);
 }
 
 TEST(HttpClientTlsErrorTest, PartialClientCertificateFileConfigurationIsIgnored) {
   auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  const auto certPath = WriteTempPem(cert, "cert-only");
+  const TempPemWriter certPath(cert, "cert-only");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile(certPath.string(), "");
@@ -273,7 +304,6 @@ TEST(HttpClientTlsErrorTest, PartialClientCertificateFileConfigurationIsIgnored)
   internal::HttpClientTlsContext context(cfg);
 
   EXPECT_FALSE(context.empty());
-  std::filesystem::remove(certPath);
 }
 
 TEST(HttpClientTlsErrorTest, DefaultCaDirectoryCanBeLoadedExplicitly) {
@@ -303,13 +333,37 @@ TEST(HttpClientTlsErrorTest, MissingCaDirectoryThrows) {
 
 TEST(HttpClientTlsErrorTest, CaPathMustBeDirectory) {
   auto [cert, key] = test::MakeEphemeralCertKey("localhost");
-  const auto certPath = WriteTempPem(cert, "ca-path-file");
+  const TempPemWriter certPath(cert, "ca-path-file");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = true;
   cfg.withTlsCaPath(certPath.string());
 
   EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
-  std::filesystem::remove(certPath);
+}
+
+TEST(HttpClientTlsTrustStoreTest, LoadExistingCaBundlesLoadsExistingLocationsAndSkipsMissing) {
+  // Injected-path unit test of the well-known-CA loader used to augment the default trust store: an
+  // existing bundle file and an existing directory each load, while non-existent paths are skipped.
+  auto [cert, key] = test::MakeEphemeralCertKey("localhost");
+  const TempPemWriter caPath(cert, "wellknown-ca");
+  const std::string caPathStr = caPath.string();
+  const auto caDir = std::filesystem::temp_directory_path() / "aeronet-castore-dir-test";
+  std::filesystem::create_directory(caDir);
+  const std::string caDirStr = caDir.string();
+
+  SSL_CTX* ctx = ::SSL_CTX_new(::TLS_client_method());
+  ASSERT_NE(ctx, nullptr);
+
+  const std::vector<const char*> existingFile{caPathStr.c_str()};
+  const std::vector<const char*> existingDir{caDirStr.c_str()};
+  const std::vector<const char*> missing{"/nonexistent/aeronet-no-such-ca.pem"};
+
+  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx, existingFile, {}));   // existing bundle file loads
+  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx, {}, existingDir));    // existing directory loads
+  EXPECT_FALSE(internal::LoadExistingCaBundles(ctx, missing, missing));  // nothing exists -> nothing loaded
+
+  ::SSL_CTX_free(ctx);
+  std::filesystem::remove(caDir);
 }
 
 TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwnership) {
@@ -387,8 +441,8 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTripFromFiles) {
   const std::string url = "https://localhost:" + std::to_string(port) + "/secure";
 
   // Present the client certificate from PEM files (exercises the file-based mTLS load path).
-  const auto certPath = WriteTempPem(clientCert, "clicert");
-  const auto keyPath = WriteTempPem(clientKey, "clikey");
+  const TempPemWriter certPath(clientCert, "clicert");
+  const TempPemWriter keyPath(clientKey, "clikey");
 
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
@@ -397,9 +451,6 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTripFromFiles) {
   auto resp = client.get(url).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
-
-  std::filesystem::remove(certPath);
-  std::filesystem::remove(keyPath);
 }
 
 // A server that requires a client certificate must reject the TLS handshake when the client presents

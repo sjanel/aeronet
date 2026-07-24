@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <concepts>
 #include <cstdint>
 
@@ -23,32 +24,34 @@ constexpr auto write2(auto buf, std::integral auto value) noexcept {
       {'9', '9'},
   };
 
+  assert(value >= 0 && static_cast<uint64_t>(value) < (sizeof(kDigitPairs) / sizeof(kDigitPairs[0])));
+
   const char* pCouple = kDigitPairs[static_cast<uint8_t>(value)];
-  buf[0] = pCouple[0];
-  buf[1] = pCouple[1];
-  return buf + 2;
+  *buf++ = pCouple[0];
+  *buf++ = pCouple[1];
+  return buf;
 }
 
 constexpr auto write4(auto buf, std::integral auto value) noexcept {
   // Single div/mod by a compile-time constant (100), reusing write2's
   // table for both halves instead of extracting four digits separately.
-  write2(buf, static_cast<unsigned>(value / 100));
-  return write2(buf + 2, static_cast<unsigned>(value % 100));
+  buf = write2(buf, static_cast<unsigned>(value / 100));
+  return write2(buf, static_cast<unsigned>(value % 100));
 }
 
 // Write a valid status code (100-599) into buf, which must have room for at least 3 bytes. Returns the pointer
 // immediately after the last written byte.
-constexpr auto writeStatusCode(char* buf, http::StatusCode status) noexcept {
-  buf[0] = static_cast<char>('1' + ((status - 100) / 100));
-  return write2(buf + 1, static_cast<uint16_t>(status % 100));
+constexpr auto writeStatusCode(auto* buf, http::StatusCode status) noexcept {
+  *buf = static_cast<char>('1' + ((status - 100) / 100));
+  return write2(++buf, static_cast<uint16_t>(status % 100));
 }
 
 constexpr auto write3(auto buf, std::integral auto value) noexcept {
   const auto lhs = value / 100;
   const auto rhs = value - (lhs * 100);
 
-  *buf++ = static_cast<char>('0' + lhs);
-  return write2(buf, rhs);
+  *buf = static_cast<char>('0' + lhs);
+  return write2(++buf, rhs);
 }
 
 // Copy exactly 3 chars from a string_view known to have size >= 3.
