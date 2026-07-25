@@ -2,7 +2,6 @@
 
 #include <amc/type_traits.hpp>
 #include <cassert>
-#include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +12,11 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
@@ -64,13 +64,13 @@ class DynamicConcatenatedStrings {
   }
 
   // Append a new string part, from the string representation of an integral value.
-  void append(std::integral auto value) {
-    const auto len = nchars(value);
-
-    _buf.ensureAvailableCapacityExponential(len + kSep.size());
+  void append(std::unsigned_integral auto value) {
+    const auto nbDigitsValue = ndigits(value);
+    _buf.ensureAvailableCapacityExponential(static_cast<std::size_t>(std::is_signed_v<decltype(value)>) + kSep.size() +
+                                            nbDigitsValue);
 
     char* pData = _buf.data() + _buf.size();
-    pData = std::to_chars(pData, pData + len, value).ptr;
+    pData = WriteInt(pData, value, nbDigitsValue);
     pData = Append(kSep, pData);
     _buf.setEnd(pData);
   }

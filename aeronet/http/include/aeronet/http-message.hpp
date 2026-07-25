@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +17,7 @@
 #include <vector>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
@@ -29,6 +29,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/time-constants.hpp"
@@ -237,7 +238,7 @@ class HttpMessage {
   template <std::integral T>
   class IntegralCharBuffer {
    public:
-    explicit IntegralCharBuffer(T value) : _end(std::to_chars(_buf, _buf + sizeof(_buf), value).ptr) {}
+    explicit IntegralCharBuffer(T value) : _end(WriteInt(_buf, value, ndigits(value))) {}
 
     operator std::string_view() const { return {_buf, _end}; }
 
@@ -451,12 +452,13 @@ class HttpMessage {
     }
 
     const auto contentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentType.size());
-    const auto contentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), nchars(maxLen));
+    const auto maxLenNbDigits = ndigits(maxLen);
+    const auto contentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), maxLenNbDigits);
 
     // Reserve exact capacity (no exponential growth)
     _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
 
-    char* pData = addContentTypeAndContentLengthHeaders(contentType, maxLen);
+    char* pData = addContentTypeAndContentLengthHeaders(contentType, maxLen, maxLenNbDigits);
 
     // Call writer at body start position
     std::size_t written;
@@ -471,7 +473,7 @@ class HttpMessage {
     if (written == 0) {
       // erase both content-length and content-type headers
       _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - internalBodyAndTrailersLen());
-      Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
+      Copy(http::CRLF, _data.end() - http::CRLF.size());
       setBodyStartPos(_data.size());
     } else {
       // Set final size
@@ -535,8 +537,7 @@ class HttpMessage {
 
     bodyAppendUpdateHeaders(contentType, defaultContentType, maxBodyLen);
 
-    char* first =
-        _opts.isAutomaticDirectCompression() ? _data.data() + _data.size() + maxLen : _data.data() + _data.size();
+    char* first = _data.end() + (maxLen * static_cast<std::size_t>(_opts.isAutomaticDirectCompression()));
 
     std::size_t written;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
@@ -551,7 +552,7 @@ class HttpMessage {
       if (oldBodyLen == 0 && !_opts.isAutomaticDirectCompression()) {
         // erase both content-length and content-type headers
         _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize);
-        Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
+        Copy(http::CRLF, _data.end() - http::CRLF.size());
         adjustBodyStartNoCheck(-static_cast<int64_t>(contentLengthHeaderSize) -
                                static_cast<int64_t>(contentTypeHeaderSize));
       } else {
@@ -656,7 +657,7 @@ class HttpMessage {
   }
 
   [[nodiscard]] std::string_view internalTrailers() const noexcept {
-    const char* endPtr = _data.data() + _data.size();
+    const char* endPtr = _data.end();
     return {endPtr - trailersSize(), endPtr};
   }
 
@@ -932,11 +933,11 @@ class HttpMessage {
   }
 
   void replaceHeaderValueNoRealloc(char* first, std::size_t newValue) {
-    const auto newValueLen = nchars(newValue);
+    const auto newValueLen = ndigits(newValue);
     // TODO: for content-length becoming smaller, could we avoid the memmove for large bodies and fill the remaining
     // bytes with spaces?
     resizeHeaderValue(first, newValueLen);
-    std::to_chars(first, first + newValueLen, newValue);
+    WriteUInt(first, newValue, newValueLen);
   }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -950,7 +951,8 @@ class HttpMessage {
 
   // Add Content-Type and Content-Length headers for a new body, erasing any existing body and its headers if needed.
   // Returns a pointer to the position where the body should be written (immediately after the CRLFCRLF sequence).
-  char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize);
+  char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
+                                              uint8_t nbDigitsBodySize);
 
   [[nodiscard]] bool hasChunkedTransferEncoding() const noexcept;
 

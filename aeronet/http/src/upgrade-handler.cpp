@@ -15,6 +15,7 @@
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
+#include <cstring>
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
@@ -276,18 +277,23 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
 
   // Include negotiated extensions
   if (validationResult.deflateParams.has_value()) {
-    const auto valueSize = ComputeDeflateResponseSize(*validationResult.deflateParams);
+    const auto& params = validationResult.deflateParams.value();
+    const auto nDigitsServerMaxWindowBits = ndigits(params.serverMaxWindowBits);
+    const auto nDigitsClientMaxWindowBits = ndigits(params.clientMaxWindowBits);
+
+    const auto valueSize = ComputeDeflateResponseSize(params, nDigitsServerMaxWindowBits, nDigitsClientMaxWindowBits);
     response.ensureAvailableCapacityExponential(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() +
                                                 valueSize + http::CRLF.size() + http::CRLF.size());
 
-    char* insertPtr = response.data() + response.size();
-    insertPtr = Append(websocket::SecWebSocketExtensions, insertPtr);
-    Copy(http::HeaderSep, insertPtr);
+    char* pData = response.data() + response.size();
+    pData = Append(websocket::SecWebSocketExtensions, pData);
+    std::memcpy(pData, http::HeaderSep.data(), http::HeaderSep.size());
+    pData += http::HeaderSep.size();
     response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
 
-    websocket::BuildDeflateResponse(*validationResult.deflateParams, response);
+    websocket::BuildDeflateResponse(params, response);
 
-    Copy(http::CRLF, response.data() + response.size());
+    std::memcpy(response.data() + response.size(), http::CRLF.data(), http::CRLF.size());
     response.addSize(http::CRLF.size());
   }
 

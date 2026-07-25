@@ -1,12 +1,12 @@
 #include "aeronet/https-redirect.hpp"
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/url-encode.hpp"
 
@@ -71,11 +71,11 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
   }
 
   const bool addPort = targetPort != kStandardHttpsPort;
-  const std::uint8_t hostNbChars = addPort ? nchars(targetPort) : 0;
+  const std::uint8_t hostNbDigits = addPort ? ndigits(targetPort) : 0;
 
   std::size_t requiredCapacity = kHttpsScheme.size() + host.size();
   if (addPort) {
-    requiredCapacity += 1U + hostNbChars;  // ':' + port digits
+    requiredCapacity += 1U + hostNbDigits;  // ':' + port digits
   }
 
   out.reserve(requiredCapacity);
@@ -86,7 +86,7 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
 
   if (addPort) {
     *pEnd++ = ':';
-    pEnd = std::to_chars(pEnd, out.data() + out.capacity(), targetPort).ptr;
+    pEnd = WriteUInt(pEnd, targetPort, hostNbDigits);
   }
   out.setEnd(pEnd);
   return true;

@@ -103,6 +103,7 @@ endif()
 # Keep individual files separate because each defines its own benchmark main.
 # If you add more files here, add a corresponding AeronetAddProjectBenchmark call.
 
+set(AERONET_BENCH_INTERNAL_DECIMAL_WRITER ${AERONET_BENCH_ROOT}/internal/decimal-writer_bench.cpp)
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
@@ -151,6 +152,9 @@ function(AeronetAddProjectBenchmark target)
     message(STATUS "Activate LTO for ${target}")
   endif()
 endfunction()
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-decimal-writer ${AERONET_BENCH_INTERNAL_DECIMAL_WRITER})
+set_target_properties(aeronet-bench-internal-decimal-writer PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-keep-alive-deadline-queue ${AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE})
 set_target_properties(aeronet-bench-internal-keep-alive-deadline-queue PROPERTIES FOLDER "benchmarks/internal")

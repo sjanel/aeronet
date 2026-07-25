@@ -10,12 +10,14 @@
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -146,11 +148,13 @@ namespace {
 bool AdjustWithUnit(UnitDuration unitDuration, std::chrono::milliseconds& dur, int& nbSignificantUnits,
                     RawChars32& ret) {
   if (dur >= unitDuration.second) {
-    const auto countInThisDurationUnit =
-        std::chrono::duration_cast<decltype(unitDuration.second)>(dur).count() / unitDuration.second.count();
-    ret.ensureAvailableCapacityExponential(nchars(countInThisDurationUnit) + unitDuration.first.size());
+    const auto countInThisDurationUnit = static_cast<std::make_unsigned_t<std::chrono::milliseconds::rep>>(
+        std::chrono::duration_cast<decltype(unitDuration.second)>(dur).count() / unitDuration.second.count());
+    const auto nDigitsCountInThisDurationUnit = ndigits(countInThisDurationUnit);
 
-    auto ptr = std::to_chars(ret.data() + ret.size(), ret.data() + ret.capacity(), countInThisDurationUnit).ptr;
+    ret.ensureAvailableCapacityExponential(nDigitsCountInThisDurationUnit + unitDuration.first.size());
+
+    auto ptr = WriteInt(ret.data() + ret.size(), countInThisDurationUnit, nDigitsCountInThisDurationUnit);
     ptr = Append(unitDuration.first, ptr);
     ret.setEnd(ptr);
 
@@ -194,7 +198,7 @@ std::string_view::size_type DurationLen(std::chrono::milliseconds dur, int nbSig
     if (dur >= unitDuration.second) {
       const auto countInThisDurationUnit =
           std::chrono::duration_cast<decltype(unitDuration.second)>(dur).count() / unitDuration.second.count();
-      ret += nchars(countInThisDurationUnit);
+      ret += ndigits(countInThisDurationUnit);
       ret += unitDuration.first.size();
       dur -= countInThisDurationUnit * unitDuration.second;
       if (--nbSignificantUnits == 0) {

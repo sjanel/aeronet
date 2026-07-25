@@ -351,7 +351,7 @@ TEST(HttpClientTlsTrustStoreTest, LoadExistingCaBundlesLoadsExistingLocationsAnd
   std::filesystem::create_directory(caDir);
   const std::string caDirStr = caDir.string();
 
-  SSL_CTX* ctx = ::SSL_CTX_new(::TLS_client_method());
+  auto* ctx = ::SSL_CTX_new(::TLS_client_method());
   ASSERT_NE(ctx, nullptr);
 
   const std::vector<const char*> existingFile{caPathStr.c_str()};
