@@ -16,10 +16,10 @@
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/decode.h>
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
 #endif
@@ -184,22 +184,25 @@ inline std::string fullVersionWithRuntime() {
   const uint16_t minor = static_cast<uint16_t>((fullVersion >> 12) & 0xFFF);
   const uint16_t patch = static_cast<uint16_t>(fullVersion & 0xFFF);
 
+  const auto nDigitsMajor = ndigits(major);
+  const auto nDigitsMinor = ndigits(minor);
+  const auto nDigitsPatch = ndigits(patch);
+
   // reserve enough space for the base string + brotli version
-  fullVersionStr.resize_and_overwrite(kBaseStr.size() + 3U + nchars(major) + nchars(minor) + nchars(patch),
-                                      [major, minor, patch](char* data, std::size_t sz) {
-                                        char* end = data + sz;
+  fullVersionStr.resize_and_overwrite(
+      kBaseStr.size() + 3U + nDigitsMajor + nDigitsMinor + nDigitsPatch,
+      [major, minor, patch, nDigitsMajor, nDigitsMinor, nDigitsPatch](char* data, std::size_t sz) {
+        data = Append(kBaseStr, data);
+        *data++ = ' ';
 
-                                        data = Append(kBaseStr, data);
-                                        *data++ = ' ';
+        data = WriteUInt(data, major, nDigitsMajor);
+        *data++ = '.';
+        data = WriteUInt(data, minor, nDigitsMinor);
+        *data++ = '.';
+        data = WriteUInt(data, patch, nDigitsPatch);
 
-                                        data = std::to_chars(data, end, major).ptr;
-                                        *data++ = '.';
-                                        data = std::to_chars(data, end, minor).ptr;
-                                        *data++ = '.';
-                                        data = std::to_chars(data, end, patch).ptr;
-
-                                        return sz;
-                                      });
+        return sz;
+      });
 
 #else
   fullVersionStr.assign(fullVersionStringView());

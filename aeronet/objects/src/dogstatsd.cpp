@@ -12,8 +12,10 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
@@ -44,8 +46,7 @@ constexpr std::string_view FormatFloating(double value, char* buffer) {
 }
 
 constexpr std::string_view FormatInteger(std::integral auto value, char* buffer) {
-  const auto [ptr, ec] = std::to_chars(buffer, buffer + kMaxIntegerStrBufferSize, value);
-  assert(ec == std::errc{});
+  const auto ptr = WriteInt(buffer, value, ndigits(value));
   return {buffer, ptr};
 }
 

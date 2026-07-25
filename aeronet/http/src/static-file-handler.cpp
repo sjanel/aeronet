@@ -23,6 +23,7 @@
 
 #include "aeronet/bytes-string.hpp"
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message.hpp"
@@ -33,7 +34,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mime-mappings.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/static-file-config.hpp"
@@ -219,12 +220,11 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
   if (truncated) {
     body.append("<p id=\"truncated\">Listing truncated after ");
 
-    const auto nbCharEntries = nchars(entries.size());
-    body.ensureAvailableCapacityExponential(nbCharEntries);
-    [[maybe_unused]] auto ptr =
-        std::to_chars(body.data() + body.size(), body.data() + body.capacity(), entries.size()).ptr;
-    assert(ptr == body.data() + body.size() + nbCharEntries);
-    body.addSize(nbCharEntries);
+    const auto nDigitsEntries = ndigits(entries.size());
+    body.ensureAvailableCapacityExponential(nDigitsEntries);
+    [[maybe_unused]] auto ptr = WriteUInt(body.data() + body.size(), entries.size(), nDigitsEntries);
+    assert(ptr == body.data() + body.size() + nDigitsEntries);
+    body.addSize(nDigitsEntries);
     body.append(" entries.</p>\n");
   }
   body.append("<footer>Served by aeronet</footer>\n</body>\n</html>\n");
@@ -395,7 +395,7 @@ struct MultiRangeResult {
   vector<RangeSelection> ranges;
 };
 
-inline constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
+constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
 
 std::size_t ParseSize(std::string_view token) {
   assert(token == TrimOws(token));
@@ -704,15 +704,14 @@ constexpr std::size_t kMaxRangeHeaderLen =
 char* BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::uint64_t total, char* pData) {
   pData = Append(kBytesPrefixStr, pData);
 
-  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(start)>::digits10 + 1, start).ptr;
+  pData = WriteUInt(pData, start, ndigits(start));
   *pData++ = '-';
 
-  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(start)>::digits10 + 1, start + length - 1).ptr;
+  const auto middle = start + length - 1;
+  pData = WriteUInt(pData, middle, ndigits(middle));
   *pData++ = '/';
 
-  pData = std::to_chars(pData, pData + std::numeric_limits<decltype(total)>::digits10 + 1, total).ptr;
-
-  return pData;
+  return WriteUInt(pData, total, ndigits(total));
 }
 
 constexpr std::string_view kUnsatisfiedRangePrefixStr = "bytes */";
@@ -730,7 +729,7 @@ UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   UnsatisfiedRangeHeaderBuf result;
   auto* buf = Append(kUnsatisfiedRangePrefixStr, result.buf);
 
-  buf = std::to_chars(buf, buf + std::numeric_limits<decltype(total)>::digits10 + 1, total).ptr;
+  buf = WriteUInt(buf, total, ndigits(total));
   assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
   result.len = static_cast<std::uint8_t>(buf - result.buf);
 

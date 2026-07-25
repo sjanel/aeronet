@@ -20,7 +20,7 @@ namespace {
 
 constexpr std::string_view kMultipartMediaType{"multipart/form-data"};
 
-std::string_view StripQuotes(std::string_view value) {
+constexpr std::string_view StripQuotes(std::string_view value) {
   if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
     value.remove_prefix(1);
     value.remove_suffix(1);

@@ -19,6 +19,7 @@
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
@@ -36,7 +37,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -348,12 +349,12 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   const std::string_view host = req.host();
   const bool ipv6 = host.contains(':');
   const auto port = req.port();
-  const auto portNbChars = nchars(port);
-  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + portNbChars;
+  const auto postNbDigits = ndigits(port);
+  const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + postNbDigits;
 
   RawChars& reqBuffer = _reqBodyScratch;
   reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
-  const auto appendAuthority = [&](char* out) {
+  const auto appendAuthority = [ipv6, host, port, postNbDigits](char* out) {
     if (ipv6) {
       *out++ = '[';
     }
@@ -362,7 +363,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
       *out++ = ']';
     }
     *out++ = ':';
-    return std::to_chars(out, out + portNbChars, port).ptr;
+    return WriteUInt(out, port, postNbDigits);
   };
 
   char* pData = reqBuffer.data();
