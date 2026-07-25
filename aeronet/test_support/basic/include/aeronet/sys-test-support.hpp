@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #include "aeronet/decimal-writer.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #endif
 
 // Auto-define AERONET_WANT_SYS_OVERRIDES on Linux. This guards all

@@ -1082,16 +1082,18 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::
     }
   }
 
-  RequestMetrics metrics{status,
-                         request.method(),
-                         request.version(),
-                         reusedConnection,
-                         request.path(),
-                         clientIp,
-                         request.headerValueOrEmpty("user-agent"),
-                         bytesIn,
-                         0,
-                         _connections.now - request.reqStart()};
+  RequestMetrics metrics{
+      status,
+      request.method(),
+      request.version(),
+      reusedConnection,
+      request.path(),
+      clientIp,
+      request.headerValueOrEmpty("user-agent"),
+      bytesIn,
+      0,
+      _connections.now - request.reqStart(),
+  };
 
   if (_accessLog) {
     _accessLog.log(metrics);

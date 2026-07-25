@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -103,8 +104,11 @@ class Http1WriterTransport final : public IWriterTransport {
 
       RawChars chunkBuffer(totalSize);
       char* pData = to_lower_hex(data.size(), chunkBuffer.data());
+
       pData = Append(http::CRLF, pData);
+
       pData = Append(data, pData);
+
       pData = Append(http::CRLF, pData);
       chunkBuffer.setSize(totalSize);
 
@@ -129,13 +133,14 @@ class Http1WriterTransport final : public IWriterTransport {
       // trailers already contain header lines; prepend "0\r\n" and append final "\r\n"
       // shift right to make space for "0\r\n"
       std::memmove(trailers.data() + 1UL + http::CRLF.size(), trailers.data(), trailers.size());
-      char* insertPtr = trailers.data();
-      *insertPtr++ = '0';
-      insertPtr = Append(http::CRLF, insertPtr);
-      insertPtr += trailers.size();
-      insertPtr = Append(http::CRLF, insertPtr);
+      char* pData = trailers.data();
+      *pData++ = '0';
 
-      trailers.setEnd(insertPtr);
+      pData = Append(http::CRLF, pData);
+      pData += trailers.size();
+      pData = Append(http::CRLF, pData);
+
+      trailers.setEnd(pData);
     }
 
     return enqueue(HttpMessageData(std::move(trailers)));

@@ -35,6 +35,7 @@
 #include "aeronet/ndigits.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -275,13 +276,13 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 #endif
     }
 
-    char* insertPtr;
+    char* pData;
     if (!hadBody) {
       _data.ensureAvailableCapacityExponential(neededNewSize);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       adjustEncodingHeaders();
 #endif
-      insertPtr = WriteHeader(http::ContentType, contentTypeValue, _data.data() + bodyStartPos() - http::CRLF.size());
+      pData = WriteHeader(http::ContentType, contentTypeValue, _data.data() + bodyStartPos() - http::CRLF.size());
     } else {
       const auto bodyStart = bodyStartPos();
       const auto oldContentTypeAndLengthSize =
@@ -296,11 +297,11 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       _data.setSize(bodyStart);
       adjustEncodingHeaders();
 #endif
-      insertPtr = Append(contentTypeValue, getContentTypeValuePtr());
+      pData = Append(contentTypeValue, getContentTypeValuePtr());
     }
-    insertPtr = WriteCRLFHeader(http::ContentLength, newBodySize, insertPtr);
-    insertPtr = Append(http::DoubleCRLF, insertPtr);
-    const auto newBodyStartPos = static_cast<std::uint64_t>(insertPtr - _data.data());
+    pData = WriteCRLFHeader(http::ContentLength, newBodySize, pData);
+    pData = Append(http::DoubleCRLF, pData);
+    const auto newBodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
     setBodyStartPos(newBodyStartPos);
     _data.setSize(newBodyStartPos);
   }
@@ -936,31 +937,32 @@ inline bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const c
   return pData[0] >= '2' && std::memcmp(pData, "204", 3U) != 0 && std::memcmp(pData, "304", 3U) != 0;
 }
 
-constexpr char* ReplaceContentLengthWithTransferEncoding(char* insertPtr, std::string_view newTrailersFlatView,
+constexpr std::string_view kTrailerHeaderAndSep = JoinStringView_v<http::Trailer, http::HeaderSep>;
+
+constexpr char* ReplaceContentLengthWithTransferEncoding(char* pData, std::string_view newTrailersFlatView,
                                                          bool addTrailerHeader) {
-  insertPtr = insertPtr + http::CRLF.size();
+  pData = pData + http::CRLF.size();
 
   // If adding Trailer header, write it now
   if (addTrailerHeader) {
-    insertPtr = Append(http::Trailer, insertPtr);
-    insertPtr = Append(http::HeaderSep, insertPtr);
+    pData = Append(kTrailerHeaderAndSep, pData);
 
     bool isFirst = true;
     for (const auto& [name, value] : HeadersView(newTrailersFlatView)) {
       if (isFirst) {
         isFirst = false;
       } else {
-        insertPtr = Append(kTrailerValueSep, insertPtr);
+        pData = Append(kTrailerValueSep, pData);
       }
-      insertPtr = Append(name, insertPtr);
+      pData = Append(name, pData);
     }
-    insertPtr = Append(http::CRLF, insertPtr);
+    pData = Append(http::CRLF, pData);
   }
 
   // Write Transfer-Encoding: chunked header
-  insertPtr = Append(kTransferEncodingChunkedCRLF, insertPtr);
+  pData = Append(kTransferEncodingChunkedCRLF, pData);
 
-  return insertPtr - http::CRLF.size();
+  return pData - http::CRLF.size();
 }
 
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
@@ -971,18 +973,15 @@ char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view conten
                                                          uint8_t nbDigitsBodySize) {
   char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
 
-  std::memcpy(pData, http::ContentTypeHeaderSep.data(), http::ContentTypeHeaderSep.size());
-  pData += http::ContentTypeHeaderSep.size();
+  pData = Append(http::ContentTypeHeaderSep, pData);
 
   pData = Append(contentType, pData);
 
-  std::memcpy(pData, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
-  pData += http::CRLFContentLengthHeaderSep.size();
+  pData = Append(http::CRLFContentLengthHeaderSep, pData);
 
   pData = WriteUInt(pData, bodySize, nbDigitsBodySize);
 
-  std::memcpy(pData, http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  pData += http::DoubleCRLF.size();
+  pData = Append(http::DoubleCRLF, pData);
 
   const auto bodyStart = static_cast<std::uint64_t>(pData - _data.data());
   setBodyStartPos(bodyStart);
@@ -1082,24 +1081,26 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
           flatTrailersView = std::string_view(newTrailersDataPtr, flatTrailersView.size());
         }
 
-        char* insertPtr = Append(http::Trailer, getContentLengthHeaderLinePtr() + http::CRLF.size());
-        insertPtr = Append(http::HeaderSep, insertPtr);
+        char* pData = getContentLengthHeaderLinePtr() + http::CRLF.size();
+
+        pData = Append(kTrailerHeaderAndSep, pData);
+
         bool isFirst = true;
         for (const auto& [name, value] : HeadersView(flatTrailersView)) {
           if (!isFirst) {
-            insertPtr = Append(kTrailerValueSep, insertPtr);
+            pData = Append(kTrailerValueSep, pData);
           }
-          insertPtr = Append(name, insertPtr);
+          pData = Append(name, pData);
           isFirst = false;
         }
 
-        std::memcpy(insertPtr, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
-        insertPtr += http::CRLFContentLengthHeaderSep.size();
+        pData = Append(http::CRLFContentLengthHeaderSep, pData);
 
-        insertPtr = WriteUInt(insertPtr, bodySz, ndigits(bodySz));
+        pData = WriteUInt(pData, bodySz, ndigits(bodySz));
 
-        insertPtr = Append(http::DoubleCRLF, insertPtr);
-        const auto newBodyStartPos = static_cast<std::size_t>(insertPtr - _data.data());
+        pData = Append(http::DoubleCRLF, pData);
+
+        const auto newBodyStartPos = static_cast<std::size_t>(pData - _data.data());
         _data.setSize(newBodyStartPos);
         setBodyStartPos(newBodyStartPos);
       } else if (hasBodyInlined()) {
@@ -1202,8 +1203,9 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
         headersInsertPtr = ReplaceContentLengthWithTransferEncoding(getContentLengthHeaderLinePtr(), trailersFlatView(),
                                                                     addTrailerHeader);
 
-        char* insertPtr = to_lower_hex(bodySz, headersInsertPtr + totalNewHeadersSize + http::DoubleCRLF.size());
-        insertPtr = Append(http::CRLF, insertPtr);
+        char* pData = to_lower_hex(bodySz, headersInsertPtr + totalNewHeadersSize + http::DoubleCRLF.size());
+
+        pData = Append(http::CRLF, pData);
 
         Copy(http::DoubleCRLF, newDoubleCRLFPtr);
 
@@ -1212,16 +1214,16 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
           // Body only without trailers
           // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-          insertPtr = Append(bodyAndTrailersView.data(), bodySz, insertPtr);
+          pData = Append(bodyAndTrailersView.data(), bodySz, pData);
 
           // Write end chunked body
-          insertPtr = Append(kEndChunkedBody, insertPtr);
+          pData = Append(kEndChunkedBody, pData);
 
           // trailers
-          insertPtr = Append(bodyAndTrailersView.data() + bodySz, trailersSize(), insertPtr);
+          pData = Append(bodyAndTrailersView.data() + bodySz, trailersSize(), pData);
 
           // Final CRLF
-          Copy(http::CRLF, insertPtr);
+          Copy(http::CRLF, pData);
 
           _payloadVariant = {};
         } else {
