@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <glaze/glaze.hpp>
 #include <span>
 #include <string>
@@ -103,34 +102,31 @@ char* AppendJsonString(std::string_view str, char* pInsertPtr) {
   for (char ch : str) {
     switch (ch) {
       case '"':
-        std::memcpy(pInsertPtr, "\\\"", 2);
-        pInsertPtr += 2;
+        pInsertPtr = Append("\\\"", pInsertPtr);
         break;
       case '\\':
-        std::memcpy(pInsertPtr, "\\\\", 2);
-        pInsertPtr += 2;
+        pInsertPtr = Append("\\\\", pInsertPtr);
         break;
       case '\n':
-        std::memcpy(pInsertPtr, "\\n", 2);
-        pInsertPtr += 2;
+        pInsertPtr = Append("\\n", pInsertPtr);
         break;
       case '\r':
-        std::memcpy(pInsertPtr, "\\r", 2);
-        pInsertPtr += 2;
+        pInsertPtr = Append("\\r", pInsertPtr);
         break;
       case '\t':
-        std::memcpy(pInsertPtr, "\\t", 2);
-        pInsertPtr += 2;
+        pInsertPtr = Append("\\t", pInsertPtr);
         break;
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
           static constexpr char kHex[] = "0123456789abcdef";
-          const char esc[] = {'\\',
-                              'u',
-                              '0',
-                              '0',
-                              kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF],
-                              kHex[static_cast<unsigned char>(ch) & 0xF]};
+          const char esc[] = {
+              '\\',
+              'u',
+              '0',
+              '0',
+              kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF],
+              kHex[static_cast<unsigned char>(ch) & 0xF],
+          };
           pInsertPtr = Append(esc, sizeof(esc), pInsertPtr);
         } else {
           *pInsertPtr++ = ch;
@@ -214,9 +210,13 @@ std::string Jwt::encode(std::string_view claimsJson, const JwtKey& key, JwtAlgor
 
   RawChars buf(kAlg.size() + algStr.size() + kType.size() + (keyId.empty() ? 0U : (kKid.size() + jsonStrSize)) + 1U);
   char* pData = buf.data();
+
   pData = Append(kAlg, pData);
+
   pData = Append(algStr, pData);
+
   pData = Append(kType, pData);
+
   if (!keyId.empty()) {
     pData = Append(kKid, pData);
     pData = AppendJsonString(keyId, pData);

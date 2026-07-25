@@ -6,7 +6,6 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
-#include <cstring>
 #include <stdexcept>
 #include <string_view>
 
@@ -105,8 +104,7 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   pData = TimeToStringISO8601UTCWithMs(SysClock::now(), pData);
 
   // "] \""
-  std::memcpy(pData, "] \"", 3U);  // NOLINT(bugprone-not-null-terminated-result)
-  pData += 3;
+  pData = Append("] \"", pData);
 
   // Method
   pData = Append(methodStr, pData);

@@ -21,7 +21,6 @@
 
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB

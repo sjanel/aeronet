@@ -1,7 +1,7 @@
 #pragma once
 
 #include <concepts>
-#include <cstring>
+#include <cstddef>
 #include <string_view>
 
 #include "aeronet/decimal-writer.hpp"
@@ -16,14 +16,12 @@ namespace aeronet {
 constexpr char* WriteHeader(std::string_view key, std::string_view value, char* insertPtr) {
   insertPtr = Append(key, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);
-
   return Append(value, insertPtr);
 }
 
 constexpr char* WriteHeader(std::string_view key, std::integral auto value, char* insertPtr) {
   insertPtr = Append(key, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);
-
   return WriteInt(insertPtr, value, ndigits(value));
 }
 
@@ -31,7 +29,8 @@ constexpr char* WriteHeader(std::string_view key, std::integral auto value, char
 // Returns the pointer immediately after the last written byte.
 // Header key must not be empty, but header value may be empty.
 constexpr char* WriteHeaderCRLF(std::string_view key, std::string_view value, char* insertPtr) {
-  return Append(http::CRLF, WriteHeader(key, value, insertPtr));
+  char* pData = WriteHeader(key, value, insertPtr);
+  return Append(http::CRLF, pData);
 }
 
 // Same as above, but CRLF is first
@@ -47,24 +46,19 @@ constexpr char* WriteCRLFHeader(std::string_view key, std::integral auto value, 
 // Returns the pointer immediately after the last written byte.
 // Given buffer requires a size of at least "Date".size() + HeaderSep.size() + RFC7231DateStrLen + CRLF.size().
 inline char* WriteCRLFDateHeader(SysTimePoint tp, char* insertPtr) {
-  std::memcpy(insertPtr, http::CRLFDateHeaderSep.data(), http::CRLFDateHeaderSep.size());
-  return TimeToStringRFC7231(tp, insertPtr + http::CRLFDateHeaderSep.size());
+  return TimeToStringRFC7231(tp, Append(http::CRLFDateHeaderSep, insertPtr));
 }
 
 inline char* WriteContentTypeContentLengthDoubleCRLF(std::string_view contentType, std::size_t bodySize, char* pData) {
-  std::memcpy(pData, http::ContentTypeHeaderSep.data(), http::ContentTypeHeaderSep.size());
-  pData += http::ContentTypeHeaderSep.size();
+  pData = Append(http::ContentTypeHeaderSep, pData);
 
   pData = Append(contentType, pData);
 
-  std::memcpy(pData, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
-  pData += http::CRLFContentLengthHeaderSep.size();
+  pData = Append(http::CRLFContentLengthHeaderSep, pData);
 
   pData = WriteUInt(pData, bodySize, ndigits(bodySize));
 
-  std::memcpy(pData, http::DoubleCRLF.data(), http::DoubleCRLF.size());
-  pData += http::DoubleCRLF.size();
-  return pData;
+  return Append(http::DoubleCRLF, pData);
 }
 
 }  // namespace aeronet

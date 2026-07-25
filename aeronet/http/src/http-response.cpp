@@ -63,7 +63,10 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
     Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
-    char* pData = Append(http::CRLF, _data.data() + kReasonBeg + kDateHeaderLenWithCRLF);
+    char* pData = _data.data() + kReasonBeg + kDateHeaderLenWithCRLF;
+
+    pData = Append(http::CRLF, pData);
+
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
 
     const auto bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
@@ -96,16 +99,20 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
   std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
   if (!concatenatedHeaders.empty()) {
-    char* insertPtr = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
-    insertPtr = Append(http::CRLF, insertPtr);
-    Copy(concatenatedHeaders, insertPtr);
+    char* pData = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
+
+    pData = Append(http::CRLF, pData);
+
+    Copy(concatenatedHeaders, pData);
     bodyStartPos += concatenatedHeaders.size();
   }
   if (body.empty()) {
     bodyStartPos += http::CRLF.size();
     Copy(http::DoubleCRLF, _data.data() + bodyStartPos - http::DoubleCRLF.size());
   } else {
-    char* pData = Append(http::CRLF, _data.data() + bodyStartPos - http::CRLF.size());
+    char* pData = _data.data() + bodyStartPos - http::CRLF.size();
+    pData = Append(http::CRLF, pData);
+
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
     bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
     Copy(body, pData);
