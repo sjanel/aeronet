@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### Improvements
 
 - **Replace std::to_chars(int) with faster custom WriteInt**
+- **Get rid of `<aeronet/stringconv.hpp>`: removed internal function `StringToTimeISO8601UTC` that now becomes useless.
 
 ## [1.4.1] - 2026-07-25
 

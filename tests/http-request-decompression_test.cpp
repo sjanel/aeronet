@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/compression-test-helpers.hpp"
@@ -28,7 +30,6 @@
 #include "aeronet/router.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -154,7 +155,12 @@ TEST(HttpRequestDecompression, SingleLargePayloadWithHeadersCheck) {
       EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), GetEncodingStr(enc));
       EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName), std::to_string(compressedSize));
 
-      EXPECT_EQ(req.body().size(), StringToIntegral<std::size_t>(req.headerValueOrEmpty(http::ContentLength)));
+      const auto contentLenghSv = req.headerValueOrEmpty(http::ContentLength);
+      uint64_t computedSz{};
+      EXPECT_EQ(std::from_chars(contentLenghSv.data(), contentLenghSv.data() + contentLenghSv.size(), computedSz).ec,
+                std::errc{});
+
+      EXPECT_EQ(req.body().size(), computedSz);
 
       return HttpResponse("Z");
     });

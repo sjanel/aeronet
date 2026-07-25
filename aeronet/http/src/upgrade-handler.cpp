@@ -20,6 +20,7 @@
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"

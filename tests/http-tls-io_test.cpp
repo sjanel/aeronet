@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -28,7 +30,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/static-file-handler.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
@@ -457,7 +458,9 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   const auto headers = parsed.headers;
   const auto it = headers.find(http::ContentLength);
   ASSERT_NE(it, headers.end());
-  EXPECT_EQ(StringToIntegral<std::uint64_t>(it->second), size);
+  uint64_t computedSz{};
+  EXPECT_EQ(std::from_chars(it->second.data(), it->second.data() + it->second.size(), computedSz).ec, std::errc{});
+  EXPECT_EQ(computedSz, size);
   // Compare content without printing huge data on failure
   const auto& body = parsed.body;
   EXPECT_TRUE(body == data) << "Body content mismatch (size: " << body.size() << " bytes)";
