@@ -109,16 +109,16 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
     return;
   }
 
-  char* data = _buf.data() + _buf.size();
+  char* pData = _buf.data() + _buf.size();
 
-  data = Append(ns(), data);
-  data = Append(metric, data);
-  *data++ = ':';
-  data = Append(value, data);
-  data = Append(typeSuffix, data);
+  pData = Append(ns(), pData);
+  pData = Append(metric, pData);
+  *pData++ = ':';
+  pData = Append(value, pData);
+  pData = Append(typeSuffix, pData);
   if (tagsSize != 0) {
-    data = Append(kTagsPrefix, data);
-    data = Append(tags.fullString(), data);
+    pData = Append(kTagsPrefix, pData);
+    pData = Append(tags.fullString(), pData);
   }
 
   if (_fd.send(_buf.data() + _buf.size(), dataSize) == -1) {

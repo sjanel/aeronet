@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cstddef>
-#include <cstring>
 #include <string_view>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -38,8 +37,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   char* pData = out.data();
 
   // Status line: HTTP/1.1 404 Not Found\r\n
-  std::memcpy(pData, kHTTP11Str.data(), kHTTP11Str.size());
-  pData += kHTTP11Str.size();
+  pData = Append(kHTTP11Str, pData);
 
   pData = writeStatusCode(pData, status);
   *pData++ = ' ';
@@ -49,8 +47,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   pData = WriteCRLFDateHeader(SysClock::now(), pData);
 
   // connection: close
-  std::memcpy(pData, kConnectionCloseStr.data(), kConnectionCloseStr.size());
-  pData += kConnectionCloseStr.size();
+  pData = Append(kConnectionCloseStr, pData);
 
   // Append global headers
   pData = Append(globalHeaders.fullStringWithLastSep(), pData);

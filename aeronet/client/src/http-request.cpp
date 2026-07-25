@@ -25,6 +25,7 @@
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 #include "url-parse.hpp"
 
 namespace aeronet {
@@ -108,21 +109,19 @@ constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTls
   return sz + 1U + http::HTTP10Sv.size() + http::DoubleCRLF.size();
 }
 
-inline char* AppendScheme(bool isTls, char* pData) {
+constexpr char* AppendScheme(bool isTls, char* pData) {
   if (isTls) {
-    // NOLINTNEXTLINE(bugprone-not-null-terminated-result)
-    std::memcpy(pData, "https://", 8U);
-    pData += 8U;
+    static constexpr std::string_view kHttps = "https://";
+    pData = Append(kHttps, pData);
   } else {
-    // NOLINTNEXTLINE(bugprone-not-null-terminated-result)
-    std::memcpy(pData, "http://", 7U);
-    pData += 7U;
+    static constexpr std::string_view kHttp = "http://";
+    pData = Append(kHttp, pData);
   }
   return pData;
 }
 
-inline char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIpv6,
-                      const internal::UrlParseResult& urlParseResult, char* pData) {
+constexpr char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIpv6,
+                         const internal::UrlParseResult& urlParseResult, char* pData) {
   // Write origin key at beginning of buffer: "scheme://host:port" (RFC 9112 section 3.2.1, 3.2.2, 9.3.6).
   char* const pOriginKeyBeg = pData;
   pData = AppendScheme(urlParseResult.isTls, pData);
@@ -150,12 +149,13 @@ inline char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIpv6,
   }
 
   *pData++ = ' ';
-  pData = Append(http::HTTP11Sv, pData);
+
+  static constexpr std::string_view kHostPrefix =
+      JoinStringView_v<http::HTTP11Sv, http::CRLF, http::Host, http::HeaderSep>;
 
   // Host Header
-  pData = Append(http::CRLF, pData);
-  pData = Append(http::Host, pData);
-  pData = Append(http::HeaderSep, pData);
+  pData = Append(kHostPrefix, pData);
+
   if (hostIsIpv6) {
     *pData++ = '[';
   }
@@ -214,12 +214,14 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
 
   char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
   setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
-  if (!concatenatedHeaders.empty()) {
+  if (concatenatedHeaders.empty()) {
+    pData = Append(http::DoubleCRLF, pData);
+  } else {
     pData = Append(http::CRLF, pData);
     pData = Append(concatenatedHeaders, pData);
-    pData -= http::CRLF.size();  // remove the last CRLF
+    pData = Append(http::CRLF, pData);
   }
-  pData = Append(http::DoubleCRLF, pData);
+
   _data.setEnd(pData);
 
   assert(_data.size() + additionalCapacity == _data.capacity());
@@ -262,8 +264,7 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
     pData -= http::CRLF.size();  // remove the last CRLF
   }
   if (!body.empty()) {
-    std::memcpy(pData, http::CRLF.data(), http::CRLF.size());
-    pData += http::CRLF.size();
+    pData = Append(http::CRLF, pData);
 
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
 
