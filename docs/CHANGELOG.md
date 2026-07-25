@@ -2,13 +2,19 @@
 
 All notable changes to aeronet are documented in this file.
 
+## Unreleased
+
+### Improvements
+
+- **Replace std::to_chars(int) with faster custom WriteInt**
+
 ## [1.4.1] - 2026-07-25
 
-### Bug Fixes
+### 1.4.1 Bug Fixes
 
 - **Fix compilation with OpenSSL**: cmake configuration did not export publicly the `aeronet_tls` static library.
 
-### Improvements
+### 1.4.1 Improvements
 
 - **HTTP client: HTTPS verification failed on minimal Linux images lacking OpenSSL's default CA directory.** When no explicit CA was configured (`tlsCaFile` / `tlsCaPath` empty) and peer verification was on, `HttpClient` relied solely on `SSL_CTX_set_default_verify_paths()`, whose compiled-in directory (often `/usr/lib/ssl`) is frequently absent from minimal container images that ship only a bundle such as `/etc/ssl/certs/ca-certificates.crt`. The trust store was then empty and every handshake failed with `certificate verify failed`. The client now still honours OpenSSL's default paths and the `SSL_CERT_FILE` / `SSL_CERT_DIR` environment variables, but - when neither env var is set - also probes the well-known system CA locations (e.g. `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/certs`) and loads whatever exists, so HTTPS works out of the box. Tests: `aeronet/client/test/http-client-tls-e2e_test.cpp` (`TrustsServerViaSslCertFileEnvWithoutExplicitCa`, `LoadExistingCaBundlesLoadsExistingLocationsAndSkipsMissing`).
 - **New `HttpClient::makeRequest` constructors for convenience**: `makeRequest(std::size_t additionalCapacity, std::string_view method, std::string_view url)` useful to add headers before body without reallocations.

@@ -4,18 +4,11 @@
 
 #include <cassert>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
-#include <concepts>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
-
-#ifndef NDEBUG
-#include <system_error>
-#endif
 
 #ifdef AERONET_WINDOWS
 #include <io.h>
@@ -25,11 +18,13 @@
 #endif
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
@@ -37,16 +32,6 @@
 #include "aeronet/timestring.hpp"
 
 namespace aeronet {
-
-namespace {
-
-constexpr char* AppendIntegral(char* out, std::integral auto value) {
-  const auto [ptr, ec] = std::to_chars(out, out + std::numeric_limits<decltype(value)>::digits10 + 1, value);
-  assert(ec == std::errc{});
-  return ptr;
-}
-
-}  // namespace
 
 AccessLogWriter::AccessLogWriter(const AccessLogConfig& config) : _format(config.format), _sink(config.sink) {
   if (_sink == AccessLogConfig::Sink::None) {
@@ -102,11 +87,11 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   static constexpr std::string_view kReferer = R"( "-" ")";
 
   const auto methodStr = http::MethodToStr(metrics.method);
+  const auto nDigitsMetricsBytesOut = ndigits(metrics.bytesOut);
 
   _buffer.ensureAvailableCapacityExponential(metrics.clientIp.size() + kSep1.size() + ISO8601UTCWithMsStrLen + 3U +
                                              methodStr.size() + 1U + metrics.path.size() + 1U + 8U + 2U + 3U + 1U +
-                                             (std::numeric_limits<decltype(metrics.bytesOut)>::digits10 + 1U) +
-                                             kReferer.size() + metrics.userAgent.size() + 2U);
+                                             nDigitsMetricsBytesOut + kReferer.size() + metrics.userAgent.size() + 2U);
 
   char* pData = _buffer.data() + _buffer.size();
 
@@ -139,7 +124,7 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   *pData++ = ' ';
   pData = writeStatusCode(pData, metrics.status);
   *pData++ = ' ';
-  pData = AppendIntegral(pData, metrics.bytesOut);
+  pData = WriteInt(pData, metrics.bytesOut, nDigitsMetricsBytesOut);
 
   // " \"-\" \""
   pData = Append(kReferer, pData);
@@ -160,8 +145,6 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   auto methodStr = http::MethodToStr(metrics.method);
   auto durationUs = std::chrono::duration_cast<std::chrono::microseconds>(metrics.duration).count();
 
-  static constexpr auto kMaxCharsDuration = std::numeric_limits<decltype(durationUs)>::digits10 + 1;
-
   static constexpr std::string_view kTsPart = R"({"ts":")";
   static constexpr std::string_view kMethodPart = R"(","method":")";
   static constexpr std::string_view kPathPart = R"(","path":")";
@@ -172,11 +155,14 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   static constexpr std::string_view kUaPart = R"(","ua":")";
   static constexpr std::string_view kEndPart = "\"}\n";
 
+  const auto nDigitsMetricsBytesOut = ndigits(metrics.bytesOut);
+  const auto nDigitsDurationUs = ndigits(durationUs);
+
   _buffer.ensureAvailableCapacityExponential(
       kTsPart.size() + ISO8601UTCWithMsStrLen + kMethodPart.size() + methodStr.size() + kPathPart.size() +
-      metrics.path.size() + kStatusPart.size() + 3U + kBytesOutPart.size() +
-      (std::numeric_limits<decltype(metrics.bytesOut)>::digits10 + 1U) + kDurationPart.size() + kMaxCharsDuration +
-      kIpPart.size() + metrics.clientIp.size() + kUaPart.size() + metrics.userAgent.size() + kEndPart.size());
+      metrics.path.size() + kStatusPart.size() + 3U + kBytesOutPart.size() + nDigitsMetricsBytesOut +
+      kDurationPart.size() + nDigitsDurationUs + kIpPart.size() + metrics.clientIp.size() + kUaPart.size() +
+      metrics.userAgent.size() + kEndPart.size());
 
   // Manual JSON to avoid Glaze linkage issues with local/anonymous types.
   char* out = _buffer.data() + _buffer.size();
@@ -190,9 +176,9 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   out = Append(kStatusPart, out);
   out = writeStatusCode(out, metrics.status);
   out = Append(kBytesOutPart, out);
-  out = AppendIntegral(out, metrics.bytesOut);
+  out = WriteInt(out, metrics.bytesOut, nDigitsMetricsBytesOut);
   out = Append(kDurationPart, out);
-  out = AppendIntegral(out, durationUs);
+  out = WriteInt(out, durationUs, nDigitsDurationUs);
   out = Append(kIpPart, out);
   out = Append(metrics.clientIp, out);
   out = Append(kUaPart, out);

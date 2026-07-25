@@ -68,7 +68,8 @@ struct DeflateNegotiatedParams {
                                                                        const DeflateConfig& serverConfig);
 
 /// Compute the size of the Sec-WebSocket-Extensions response header value for permessage-deflate.
-std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params);
+std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t nDigitsServerMaxWindowBits,
+                                       uint8_t nDigitsClientMaxWindowBits);
 
 /// Build the Sec-WebSocket-Extensions response header value for permessage-deflate.
 /// @param params The negotiated parameters

@@ -11,8 +11,9 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -159,7 +160,8 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
 #endif
 }
 
-std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params) {
+std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t nDigitsServerMaxWindowBits,
+                                       uint8_t nDigitsClientMaxWindowBits) {
   std::size_t size = kPermessageDeflate.size();
   if (params.serverNoContextTakeover) {
     size += kSemicolonSpace.size() + kServerNoContextTakeover.size();
@@ -168,16 +170,20 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params) {
     size += kSemicolonSpace.size() + kClientNoContextTakeover.size();
   }
   if (params.serverMaxWindowBits < 15) {
-    size += kSemicolonSpace.size() + kServerMaxWindowBits.size() + 1U + nchars(params.serverMaxWindowBits);
+    size += kSemicolonSpace.size() + kServerMaxWindowBits.size() + 1U + nDigitsServerMaxWindowBits;
   }
   if (params.clientMaxWindowBits < 15) {
-    size += kSemicolonSpace.size() + kClientMaxWindowBits.size() + 1U + nchars(params.clientMaxWindowBits);
+    size += kSemicolonSpace.size() + kClientMaxWindowBits.size() + 1U + nDigitsClientMaxWindowBits;
   }
   return size;
 }
 
 void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
-  output.ensureAvailableCapacity(ComputeDeflateResponseSize(params));
+  const auto nDigitsServerMaxWindowBits = ndigits(params.serverMaxWindowBits);
+  const auto nDigitsClientMaxWindowBits = ndigits(params.clientMaxWindowBits);
+
+  output.ensureAvailableCapacity(
+      ComputeDeflateResponseSize(params, nDigitsServerMaxWindowBits, nDigitsClientMaxWindowBits));
   char* ptr = output.data() + output.size();
 
   ptr = Append(kPermessageDeflate, ptr);
@@ -194,13 +200,13 @@ void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
     ptr = Append(kSemicolonSpace, ptr);
     ptr = Append(kServerMaxWindowBits, ptr);
     *ptr++ = '=';
-    ptr = std::to_chars(ptr, output.data() + output.capacity(), params.serverMaxWindowBits).ptr;
+    ptr = WriteUInt(ptr, params.serverMaxWindowBits, nDigitsServerMaxWindowBits);
   }
   if (params.clientMaxWindowBits < 15) {
     ptr = Append(kSemicolonSpace, ptr);
     ptr = Append(kClientMaxWindowBits, ptr);
     *ptr++ = '=';
-    ptr = std::to_chars(ptr, output.data() + output.capacity(), params.clientMaxWindowBits).ptr;
+    ptr = WriteUInt(ptr, params.clientMaxWindowBits, nDigitsClientMaxWindowBits);
   }
   output.setEnd(ptr);
 }

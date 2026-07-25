@@ -8,6 +8,9 @@
 #include <string_view>
 #include <system_error>
 
+#include "aeronet/decimal-writer.hpp"
+#include "aeronet/ndigits.hpp"
+
 namespace aeronet {
 
 // Logging helpers for StringToIntegral error paths. They are defined out-of-line in stringconv.cpp so
@@ -33,7 +36,7 @@ Integral StringToIntegral(const char* begPtr, std::size_t len) {
 
   if (ptr != endPtr) {
     char bufRet[std::numeric_limits<decltype(ret)>::digits10 + 2];
-    const char* pEndBuf = std::to_chars(bufRet, bufRet + sizeof(bufRet), ret).ptr;
+    const char* pEndBuf = WriteInt(bufRet, ret, ndigits(ret));
     std::string_view retStr(bufRet, pEndBuf);
     LogStringToIntegralPartialDecode(ptr - begPtr, std::string_view(begPtr, len), retStr);
   }

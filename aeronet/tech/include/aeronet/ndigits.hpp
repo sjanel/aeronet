@@ -16,11 +16,20 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
     return 1U;
   }
 
+  if constexpr (sizeof(n) <= sizeof(std::uint16_t)) {
+    static constexpr uint16_t kThresholds[] = {100, 1000, 10000};
+    uint8_t digits = 2;
+    digits += static_cast<uint8_t>(n >= kThresholds[0]);
+    digits += static_cast<uint8_t>(n >= kThresholds[1]);
+    digits += static_cast<uint8_t>(n >= kThresholds[2]);
+    return digits;
+  }
+
   // Pin the largest unsigned type
   using U = std::uintmax_t;
 
   // Powers of 10 - 1 up to the maximum of U
-  static constexpr unsigned int kMaxNbBits = (sizeof(U) * 8U) - 1U;
+  static constexpr uint8_t kMaxNbBits = (sizeof(U) * 8U) - 1U;
   static constexpr auto pow10 = [] {
     std::array<U, std::numeric_limits<U>::digits10 + 1> arr{};
     arr[0] = 9U;
@@ -33,25 +42,21 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
 
   // We need to cast to uintmax_t otherwise it would return the number of leading zeros
   // in the type of n, which can be smaller than uintmax_t.
-  const unsigned int floorLog2 = kMaxNbBits - static_cast<unsigned int>(std::countl_zero(static_cast<U>(n)));
+  const uint8_t floorLog2 = kMaxNbBits - static_cast<uint8_t>(std::countl_zero(static_cast<U>(n)));
 
   // estimate decimal digits-1 using fixed-point approximation of log10(2)
   // multiply by 1233/4096 ~= log10(2)
-  unsigned int estimate = (floorLog2 * 1233U) >> 12U;
+  uint8_t estimate = static_cast<uint8_t>((1233U * floorLog2) >> 12U);
 
   // The fixed-point approximation (1233/4096) guarantees the initial estimate
   // never exceeds `digits10` (it may reach `digits10` for wider types).
   // Sanity-check at compile-time so future edits (or larger integral types)
   // won't break the invariant.
-  static_assert(((kMaxNbBits * 1233U) >> 12U) <= std::numeric_limits<U>::digits10,
+  static_assert(((1233U * kMaxNbBits) >> 12U) <= std::numeric_limits<U>::digits10,
                 "ndigits approximation bound changed");
 
   // The initial estimate may occasionally be low by at most one
-  if (pow10[estimate] < n) {
-    ++estimate;
-  }
-
-  return static_cast<std::uint8_t>(estimate + 1U);
+  return estimate + 1U + static_cast<uint8_t>(pow10[estimate] < n);
 }
 
 // Signed wrapper: compute absolute value safely in unsigned type to avoid

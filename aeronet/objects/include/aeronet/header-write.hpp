@@ -1,13 +1,13 @@
 #pragma once
 
-#include <charconv>
 #include <concepts>
 #include <cstring>
-#include <limits>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
@@ -24,7 +24,7 @@ constexpr char* WriteHeader(std::string_view key, std::integral auto value, char
   insertPtr = Append(key, insertPtr);
   insertPtr = Append(http::HeaderSep, insertPtr);
 
-  return std::to_chars(insertPtr, insertPtr + std::numeric_limits<decltype(value)>::digits10 + 1, value).ptr;
+  return WriteInt(insertPtr, value, ndigits(value));
 }
 
 // Write an HTTP header field to the given buffer, including a last CRLF.
@@ -60,7 +60,7 @@ inline char* WriteContentTypeContentLengthDoubleCRLF(std::string_view contentTyp
   std::memcpy(pData, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
   pData += http::CRLFContentLengthHeaderSep.size();
 
-  pData = std::to_chars(pData, pData + std::numeric_limits<std::size_t>::digits10 + 1, bodySize).ptr;
+  pData = WriteUInt(pData, bodySize, ndigits(bodySize));
 
   std::memcpy(pData, http::DoubleCRLF.data(), http::DoubleCRLF.size());
   pData += http::DoubleCRLF.size();
