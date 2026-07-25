@@ -645,7 +645,8 @@ class HttpRequest final : public HttpMessage {
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.
   explicit constexpr HttpRequest([[maybe_unused]] HttpMessage::Check check) noexcept : HttpMessage(check) {}
 
-  HttpRequest(http::Method method, std::string_view url, std::string_view concatenatedHeaders, Options opts);
+  HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+              std::string_view concatenatedHeaders, Options opts);
 
   HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
               std::string_view concatenatedHeaders, Options opts, std::string_view body, std::string_view contentType);
