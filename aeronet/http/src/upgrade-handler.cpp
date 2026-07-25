@@ -15,7 +15,6 @@
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
-#include <cstring>
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
@@ -288,13 +287,12 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
 
     char* pData = response.data() + response.size();
     pData = Append(websocket::SecWebSocketExtensions, pData);
-    std::memcpy(pData, http::HeaderSep.data(), http::HeaderSep.size());
-    pData += http::HeaderSep.size();
+    pData = Append(http::HeaderSep, pData);
     response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
 
     websocket::BuildDeflateResponse(params, response);
 
-    std::memcpy(response.data() + response.size(), http::CRLF.data(), http::CRLF.size());
+    Copy(http::CRLF, response.data() + response.size());
     response.addSize(http::CRLF.size());
   }
 
