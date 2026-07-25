@@ -83,7 +83,15 @@ class HttpClient {
   // Accept-Encoding, User-Agent, ...).
   // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...).
   [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url) {
-    return {method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
+    return {0, method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
+  }
+
+  // Build a request with the given method and url, and additional capacity for the request buffer. The returned
+  // HttpRequest is mutable and can be further configured (headers, body, ...). The request is pre-configured based on
+  // the client config (e.g. Accept-Encoding, User-Agent, ...). Throws std::invalid_argument if the url is invalid (e.g.
+  // malformed, missing scheme, unsupported scheme, ...).
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url) {
+    return {additionalCapacity, method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
   }
 
   // Build a request with the given method, url and body. The returned HttpRequest is mutable and

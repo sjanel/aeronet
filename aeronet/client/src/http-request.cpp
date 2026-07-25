@@ -184,7 +184,8 @@ std::size_t ComputeHostHeaderSize(std::string_view host, bool hostIsIpv6, bool h
 
 }  // namespace
 
-HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_view concatenatedHeaders, Options opts)
+HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                         std::string_view concatenatedHeaders, Options opts)
     : HttpMessage(opts) {
   const auto res = internal::ParseUrl(url);
   if (res.host.empty()) {
@@ -204,7 +205,7 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
 
   const auto neededCapacity =
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
-      hostHeaderSize + concatenatedHeaders.size() + _originKeyLen;
+      hostHeaderSize + concatenatedHeaders.size() + additionalCapacity + _originKeyLen;
 
   setBodyStartPos(neededCapacity);
 
@@ -220,7 +221,7 @@ HttpRequest::HttpRequest(http::Method method, std::string_view url, std::string_
   pData = Append(http::DoubleCRLF, pData);
   _data.setEnd(pData);
 
-  assert(_data.size() == _data.capacity());
+  assert(_data.size() + additionalCapacity == _data.capacity());
 }
 
 HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,

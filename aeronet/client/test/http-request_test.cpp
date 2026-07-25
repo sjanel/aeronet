@@ -38,11 +38,11 @@ namespace aeronet {
 class HttpRequestTest : public ::testing::Test {
  protected:
   HttpRequest makeRequest(http::Method method, std::string_view url) {
-    return {method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
+    return {0, method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
   }
 
   HttpRequest makeRequest(http::Method method, std::string_view url, std::string_view concatenatedHeaders) {
-    return {method, url, concatenatedHeaders, makeRequestOptions()};
+    return {0, method, url, concatenatedHeaders, makeRequestOptions()};
   }
 
   HttpRequest makeRequest(http::Method method, std::string_view url, std::string_view concatenatedHeaders,
@@ -52,7 +52,7 @@ class HttpRequestTest : public ::testing::Test {
   }
 
   HttpRequest makeRequestWithoutTrailerHeader(http::Method method, std::string_view url) {
-    return {method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions(false)};
+    return {0, method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions(false)};
   }
 
   static internal::CompressionState CreateResponseCompressionState(CompressionConfig* config) {
