@@ -49,7 +49,6 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/static-file-handler.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
@@ -4116,7 +4115,9 @@ TEST(HttpLargeFile, ServeLargeFile) {
   const auto headers = parsed.headers;
   const auto it = headers.find(http::ContentLength);
   ASSERT_NE(it, headers.end());
-  EXPECT_EQ(StringToIntegral<std::uint64_t>(it->second), size);
+  uint64_t computedSz{};
+  EXPECT_EQ(std::from_chars(it->second.data(), it->second.data() + it->second.size(), computedSz).ec, std::errc{});
+  EXPECT_EQ(computedSz, size);
   EXPECT_TRUE(parsed.body == data);
 }
 

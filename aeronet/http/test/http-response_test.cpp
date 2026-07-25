@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -42,7 +43,6 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
@@ -193,8 +193,9 @@ TEST_F(HttpResponseTest, StatusFromRvalue) {
 }
 
 TEST_F(HttpResponseTest, BodyFromSpanBytesLValue) {
-  static constexpr std::byte bodyBytes[]{std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'},
-                                         std::byte{'o'}};
+  static constexpr std::byte bodyBytes[]{
+      std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'},
+  };
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::span<const std::byte>(bodyBytes));
   EXPECT_EQ(resp.bodyInMemory(), "Hello");
@@ -265,8 +266,9 @@ TEST_F(HttpResponseTest, ConstructorWithBody) {
 }
 
 TEST_F(HttpResponseTest, ConstructorFromBytesSpan) {
-  static constexpr std::byte bodyBytes[]{std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'},
-                                         std::byte{'o'}};
+  static constexpr std::byte bodyBytes[]{
+      std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'},
+  };
   HttpResponse resp(bodyBytes);
   EXPECT_EQ(resp.bodyInMemory(), "Hello");
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/octet-stream");
@@ -1865,7 +1867,12 @@ TEST_F(HttpResponseTest, BodyFromConstCharStar) {
 TEST_F(HttpResponseTest, BodyFromSpanBytesRValue) {
   auto resp = HttpResponse(http::StatusCodeOK)
                   .body(std::span<const std::byte>(std::vector<std::byte>{
-                      std::byte{'W'}, std::byte{'o'}, std::byte{'r'}, std::byte{'l'}, std::byte{'d'}}));
+                      std::byte{'W'},
+                      std::byte{'o'},
+                      std::byte{'r'},
+                      std::byte{'l'},
+                      std::byte{'d'},
+                  }));
   EXPECT_EQ(resp.bodyInMemory(), "World");
 }
 
@@ -1908,21 +1915,35 @@ TEST_F(HttpResponseTest, BodyFromUniquePtrCharRValue) {
 }
 
 TEST_F(HttpResponseTest, BodyFromVectorBytes) {
-  std::vector<std::byte> bodyBytes = {std::byte{'B'}, std::byte{'y'}, std::byte{'t'}, std::byte{'e'}, std::byte{'s'}};
+  std::vector<std::byte> bodyBytes = {
+      std::byte{'B'}, std::byte{'y'}, std::byte{'t'}, std::byte{'e'}, std::byte{'s'},
+  };
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::move(bodyBytes));
   EXPECT_EQ(resp.bodyInMemory(), "Bytes");
 
   resp = makePrepared(PreparedOptions{.head = true});
-  resp.body(std::vector<std::byte>{std::byte{'B'}, std::byte{'y'}, std::byte{'t'}, std::byte{'e'}, std::byte{'s'}});
+  resp.body(std::vector<std::byte>{
+      std::byte{'B'},
+      std::byte{'y'},
+      std::byte{'t'},
+      std::byte{'e'},
+      std::byte{'s'},
+  });
   EXPECT_EQ(resp.bodyInMemory(), "");
   EXPECT_EQ(resp.bodyInMemoryLength(), 5UL);
 }
 
 TEST_F(HttpResponseTest, BodyFromVectorBytesRValue) {
   auto resp = HttpResponse(http::StatusCodeOK)
-                  .body(std::vector<std::byte>{std::byte{'R'}, std::byte{'V'}, std::byte{'a'}, std::byte{'l'},
-                                               std::byte{'u'}, std::byte{'e'}});
+                  .body(std::vector<std::byte>{
+                      std::byte{'R'},
+                      std::byte{'V'},
+                      std::byte{'a'},
+                      std::byte{'l'},
+                      std::byte{'u'},
+                      std::byte{'e'},
+                  });
   EXPECT_EQ(resp.bodyInMemory(), "RValue");
 }
 
@@ -1939,8 +1960,9 @@ TEST_F(HttpResponseTest, BodyFromVectorCharRValue) {
 }
 
 TEST_F(HttpResponseTest, BodyStaticBytes) {
-  static constexpr std::byte bodyBytes[]{std::byte{'S'}, std::byte{'t'}, std::byte{'a'},
-                                         std::byte{'t'}, std::byte{'i'}, std::byte{'c'}};
+  static constexpr std::byte bodyBytes[]{
+      std::byte{'S'}, std::byte{'t'}, std::byte{'a'}, std::byte{'t'}, std::byte{'i'}, std::byte{'c'},
+  };
   HttpResponse resp(http::StatusCodeOK);
   resp.bodyStatic(std::span<const std::byte>(bodyBytes), "application/octet-stream");
   EXPECT_EQ(resp.bodyInMemory(), "Static");
@@ -2586,8 +2608,9 @@ TEST_F(HttpResponseTest, Body_NoEncodingNegotiated_NoCompression) {
 
 // Test successful compression with compressed body
 TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
-  static constexpr std::string_view kVaryContents[] = {"", http::AcceptEncoding, "User-Agent",
-                                                       "Accept-Encoding, User-Agent", "*"};
+  static constexpr std::string_view kVaryContents[] = {
+      "", http::AcceptEncoding, "User-Agent", "Accept-Encoding, User-Agent", "*",
+  };
 
   const std::string body(1024, 'A');  // Compressible content
   for (std::string_view varyContent : kVaryContents) {
@@ -3575,7 +3598,7 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
   bool hasContentLen = false;
   for (auto& hdr : pr.headers) {
     if (hdr.first == http::ContentLength) {
-      contentLen = StringToIntegral<std::size_t>(hdr.second);
+      EXPECT_EQ(std::from_chars(hdr.second.data(), hdr.second.data() + hdr.second.size(), contentLen).ec, std::errc());
       hasContentLen = true;
       break;
     }
@@ -3968,7 +3991,9 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         ++connCount;
       } else if (headerPair.first == http::ContentLength) {
         ++clCount;
-        clVal = StringToIntegral<std::size_t>(headerPair.second);
+        EXPECT_EQ(
+            std::from_chars(headerPair.second.data(), headerPair.second.data() + headerPair.second.size(), clVal).ec,
+            std::errc());
       }
     }
     EXPECT_EQ(dateCount, 1);
@@ -4349,8 +4374,11 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoDirectCompressionNoTrailers_Id
 
 TEST_F(HttpResponseTest, FinalizationCombinations) {
   static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
-  static constexpr std::string_view kConcatenatedGlobalHeaders[] = {"", "server: aeronet\r\n",
-                                                                    "x-custom: value\r\nx-another: another-value\r\n"};
+  static constexpr std::string_view kConcatenatedGlobalHeaders[] = {
+      "",
+      "server: aeronet\r\n",
+      "x-custom: value\r\nx-another: another-value\r\n",
+  };
 
   // This test covers ALL combinations of:
   // - prepared vs non-prepared response

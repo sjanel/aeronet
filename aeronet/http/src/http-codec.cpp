@@ -2,12 +2,17 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
 #include <utility>
+
+#ifndef NDEBUG
+#include <system_error>
+#endif
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decimal-writer.hpp"
@@ -29,7 +34,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/stringconv.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/encode.h>
@@ -197,7 +201,10 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
     const auto contentLenIt = headersMap.find(http::ContentLength);
     if (contentLenIt != headersMap.end()) {
       const std::string_view contentLenValue = contentLenIt->second;
-      const std::size_t declaredLen = StringToIntegral<std::size_t>(contentLenValue);
+      std::size_t declaredLen;
+      [[maybe_unused]] const auto ret =
+          std::from_chars(contentLenValue.data(), contentLenValue.data() + contentLenValue.size(), declaredLen);
+      assert(ret.ec == std::errc());  // Content-Length is guaranteed to be a valid integer by the HTTP parser
 
       return declaredLen >= streamingDecompressionThresholdBytes;
     }

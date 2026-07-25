@@ -1,5 +1,6 @@
 #include <benchmark/benchmark.h>
 
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -23,7 +24,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/single-http-server.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
 
@@ -201,7 +201,8 @@ ENDPOINT_ASYNC("GET", benchutil::kHeaderPath,
                               Action act() override{auto szParam = request->getQueryParameter("size");
 auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
     oatpp::web::protocol::http::Status::CODE_200, szParam);
-auto nbHeaders = StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+int nbHeaders{};
+std::from_chars(szParam->data(), szParam->data() + szParam->size(), nbHeaders);
 for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
   resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
 }
@@ -236,7 +237,8 @@ struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
     auto szParam = req->getQueryParameter("size");
     auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
         oatpp::web::protocol::http::Status::CODE_200, szParam);
-    auto nbHeaders = StringToIntegral<int>(std::string_view(szParam->data(), szParam->size()));
+    int nbHeaders{};
+    std::from_chars(szParam->data(), szParam->data() + szParam->size(), nbHeaders);
     for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
       resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
     }

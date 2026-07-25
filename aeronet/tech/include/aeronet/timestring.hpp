@@ -60,26 +60,6 @@ constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
   return ++out;
 }
 
-/// Parse a string representation of a given time point in ISO 8601 UTC (RFC-3339 extended form to be more precise)
-/// format with maximum performance and return a time_point. Accepted formats are the following (even without trailing
-/// Z, the time will be considered UTC):
-///  - YYYY
-///  - YYYY-MM
-///  - YYYY-MM-DD
-///  - YYYY-MM-DDTHH
-///  - YYYY-MM-DDTHH:MM
-///  - YYYY-MM-DDTHH:MM:SS
-///  - YYYY-MM-DDTHH:MM:SS.sss
-///  - YYYY-MM-DDTHH:MM:SS.sssZ
-///  - YYYY-MM-DDTHH:MM:SS.sss+00:00
-///  - YYYY-MM-DDTHH:MM:SS.sss-05:30
-/// Warning: Few checks are done on the input. It should contain at least 19 chars (up to the seconds part).
-SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr);
-
-inline SysTimePoint StringToTimeISO8601UTC(std::string_view timeStr) {
-  return StringToTimeISO8601UTC(timeStr.data(), timeStr.data() + timeStr.size());
-}
-
 /// Format a time point to an RFC7231 IMF-fixdate string (e.g. "Sun, 06 Nov 1994 08:49:37 GMT").
 /// Buffer must have space for at least 29 characters (no null terminator added):
 /// WWW, DD Mon YYYY HH:MM:SS GMT
