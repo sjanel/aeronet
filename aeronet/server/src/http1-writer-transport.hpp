@@ -1,6 +1,5 @@
 #pragma once
 
-#include <charconv>
 #include <cstddef>
 #include <limits>
 #include <span>
@@ -9,6 +8,7 @@
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
@@ -19,7 +19,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error-message.hpp"
@@ -59,12 +59,12 @@ class Http1WriterTransport final : public IWriterTransport {
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
       _chunked = true;
     } else if (!response.hasBodyFile()) {
-      const auto declaredLengthIntegralLen = nchars(declaredLength);
+      const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
       response._data.ensureAvailableCapacity(needed);
       char declaredLenBuf[std::numeric_limits<decltype(declaredLength)>::digits10 + 1];
-      std::string_view declaredLenStr(
-          declaredLenBuf, std::to_chars(declaredLenBuf, declaredLenBuf + sizeof(declaredLenBuf), declaredLength).ptr);
+      std::string_view declaredLenStr(declaredLenBuf,
+                                      WriteUInt(declaredLenBuf, declaredLength, declaredLengthIntegralLen));
       response.headerAddLineUnchecked(http::ContentLength, declaredLenStr);
       _chunked = false;
     }

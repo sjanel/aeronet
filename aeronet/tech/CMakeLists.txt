@@ -59,6 +59,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    decimal-writer_test
+    test/decimal-writer_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     duration-string_test
     test/duration-string_test.cpp
     LIBRARIES

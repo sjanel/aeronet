@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <bitset>
 #include <cassert>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +15,7 @@
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
@@ -32,6 +32,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -332,7 +333,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
   assert(static_cast<uint64_t>(static_cast<int64_t>(_data.size()) + diff) <= _data.capacity());
 
   // should not point to internal memory
-  assert(newBody.empty() || newBody.data() <= _data.data() || newBody.data() > _data.data() + _data.size());
+  assert(newBody.empty() || newBody.data() <= _data.data() || newBody.data() > _data.end());
 
   _data.adjustSize(diff);
   Copy(newBody, _data.data() + bodyStartPos());
@@ -378,8 +379,8 @@ void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType
     }
     if (!contentType.empty()) {
       char* pContentTypeValuePtr = getContentTypeValuePtr();
-      const auto it = SearchCRLF(pContentTypeValuePtr, _data.data() + _data.size());
-      assert(it != _data.data() + _data.size());
+      const auto it = SearchCRLF(pContentTypeValuePtr, _data.end());
+      assert(it != _data.end());
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
 
       neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
@@ -778,7 +779,7 @@ void HttpMessage::trailerAddLine(std::string_view name, std::string_view value) 
     _payloadVariant.addSize(lineSize);
   } else {
     _data.ensureAvailableCapacityExponential(neededCapacity);
-    insertPtr = _data.data() + _data.size();
+    insertPtr = _data.end();
     _data.addSize(lineSize);
   }
 
@@ -822,7 +823,7 @@ void HttpMessage::bodyAppendUpdateHeaders(std::string_view givenContentType, std
     if (givenContentType.empty()) {
       givenContentType = defaultContentType;
     }
-    addContentTypeAndContentLengthHeaders(givenContentType, totalBodyLen);
+    addContentTypeAndContentLengthHeaders(givenContentType, totalBodyLen, ndigits(totalBodyLen));
   } else {
     if (!givenContentType.empty()) {
       replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
@@ -866,8 +867,7 @@ std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size
   auto& compressionState = *_opts._pCompressionState;
   auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
   assert(encoderCtx.minEncodeChunkCapacity(sz) <= _data.availableCapacity());
-  const auto result =
-      encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.data() + _data.size());
+  const auto result = encoderCtx.encodeChunk(std::string_view(pData, sz), _data.availableCapacity(), _data.end());
 
   return GetWrittenOrThrow(result, "HttpMessage::appendEncodedInlineOrThrow compression failed");
 }
@@ -885,7 +885,7 @@ void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
         additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
     _data.ensureAvailableCapacityExponential(neededCapacity);
 
-    const auto result = encoder.end(_data.availableCapacity(), _data.data() + _data.size());
+    const auto result = encoder.end(_data.availableCapacity(), _data.end());
     const auto written = GetWrittenOrThrow(result, "HttpMessage::finalizeInlineBody compression failed");
     if (written == 0) {
       break;
@@ -907,7 +907,7 @@ void HttpMessage::removeBodyAndItsHeaders() {
   char* contentTypeHeaderLinePtr = getContentTypeHeaderLinePtr();
   assert(std::string_view(contentTypeHeaderLinePtr + http::CRLF.size(), http::ContentType.size()) == http::ContentType);
   _data.setSize(static_cast<std::size_t>(contentTypeHeaderLinePtr - _data.data()) + http::DoubleCRLF.size());
-  Copy(http::CRLF, _data.data() + _data.size() - http::CRLF.size());
+  Copy(http::CRLF, _data.end() - http::CRLF.size());
   setBodyStartPosNoCheck(_data.size());
 
   // Also remove vary and content-encoding headers if present
@@ -967,7 +967,8 @@ constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
 }  // namespace
 
-char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize) {
+char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
+                                                         uint8_t nbDigitsBodySize) {
   char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
 
   std::memcpy(pData, http::ContentTypeHeaderSep.data(), http::ContentTypeHeaderSep.size());
@@ -978,7 +979,7 @@ char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view conten
   std::memcpy(pData, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
   pData += http::CRLFContentLengthHeaderSep.size();
 
-  pData = std::to_chars(pData, pData + std::numeric_limits<std::size_t>::digits10 + 1, bodySize).ptr;
+  pData = WriteUInt(pData, bodySize, nbDigitsBodySize);
 
   std::memcpy(pData, http::DoubleCRLF.data(), http::DoubleCRLF.size());
   pData += http::DoubleCRLF.size();
@@ -990,8 +991,8 @@ char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view conten
 }
 
 bool HttpMessage::hasChunkedTransferEncoding() const noexcept {
-  return kEndChunkedBody.size() < _opts._trailerLen && std::memcmp(_data.data() + _data.size() - _opts._trailerLen,
-                                                                   kEndChunkedBody.data(), kEndChunkedBody.size()) == 0;
+  return kEndChunkedBody.size() < _opts._trailerLen &&
+         std::memcmp(_data.end() - _opts._trailerLen, kEndChunkedBody.data(), kEndChunkedBody.size()) == 0;
 }
 
 void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
@@ -1091,13 +1092,11 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
           insertPtr = Append(name, insertPtr);
           isFirst = false;
         }
-        insertPtr = Append(http::CRLF, insertPtr);
-        // Now append back Content-Length header
-        insertPtr = Append(http::ContentLength, insertPtr);
-        insertPtr = Append(http::HeaderSep, insertPtr);
 
-        insertPtr =
-            std::to_chars(insertPtr, insertPtr + std::numeric_limits<decltype(bodySz)>::digits10 + 1, bodySz).ptr;
+        std::memcpy(insertPtr, http::CRLFContentLengthHeaderSep.data(), http::CRLFContentLengthHeaderSep.size());
+        insertPtr += http::CRLFContentLengthHeaderSep.size();
+
+        insertPtr = WriteUInt(insertPtr, bodySz, ndigits(bodySz));
 
         insertPtr = Append(http::DoubleCRLF, insertPtr);
         const auto newBodyStartPos = static_cast<std::size_t>(insertPtr - _data.data());

@@ -6,6 +6,9 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+
+#include "aeronet/decimal-writer.hpp"
+#include "aeronet/nchars.hpp"
 #endif
 
 // Auto-define AERONET_WANT_SYS_OVERRIDES on Linux. This guards all
@@ -28,7 +31,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -73,7 +75,7 @@ inline std::optional<std::string> PathForFd(int fd) {
   static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
   char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
   char* ptr = Append(kPathPrefix, linkBuf);
-  ptr = std::to_chars(ptr, linkBuf + sizeof(linkBuf), fd).ptr;
+  ptr = WriteInt(ptr, fd, ndigits(fd));
   *ptr = '\0';
 
   std::string pathBuf(512U, '\0');
@@ -261,7 +263,7 @@ Fn ResolveNext(const char* /*name*/) {
 //    our failure injection overrides.
 // 2. Non-glibc systems (like musl/Alpine) - without __libc_malloc fallback,
 //    dlsym resolution can deadlock or recurse during early initialization.
-#if defined(__SANITIZE_ADDRESS__)
+#ifdef __SANITIZE_ADDRESS__
 #define AERONET_WANT_MALLOC_OVERRIDES 0
 #elif defined(__clang__) && defined(__has_feature)
 #if __has_feature(address_sanitizer)

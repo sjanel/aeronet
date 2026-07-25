@@ -1,7 +1,6 @@
 #include "aeronet/rate-limit.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -11,8 +10,9 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 
 namespace aeronet {
 
@@ -176,21 +176,21 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
   const auto windowMs = static_cast<uint64_t>(_redisConfig.windowSeconds) * 1000;
   const auto maxInWindow = static_cast<uint64_t>(config.requestsPerSecond) * _redisConfig.windowSeconds;
 
-  const auto nowMsNbChars = nchars(nowMs);
-  const auto windowMsNbChars = nchars(windowMs);
-  const auto maxInWindowNbChars = nchars(maxInWindow);
+  const auto nowMsNbDigits = ndigits(nowMs);
+  const auto windowMsNbDigits = ndigits(windowMs);
+  const auto maxInWindowNbDigits = ndigits(maxInWindow);
 
-  const uint32_t neededSize = static_cast<uint32_t>(nowMsNbChars + windowMsNbChars + maxInWindowNbChars);
+  const uint32_t neededSize = static_cast<uint32_t>(nowMsNbDigits + windowMsNbDigits + maxInWindowNbDigits);
   char* pArgs = _charStorage.allocateAndDefaultConstruct(neededSize);
 
-  req.args[0] = std::string_view(pArgs, nowMsNbChars);
-  pArgs = std::to_chars(pArgs, pArgs + nowMsNbChars, nowMs).ptr;
+  req.args[0] = std::string_view(pArgs, nowMsNbDigits);
+  pArgs = WriteInt(pArgs, nowMs, nowMsNbDigits);
 
-  req.args[1] = std::string_view(pArgs, windowMsNbChars);
-  pArgs = std::to_chars(pArgs, pArgs + windowMsNbChars, windowMs).ptr;
+  req.args[1] = std::string_view(pArgs, windowMsNbDigits);
+  pArgs = WriteInt(pArgs, windowMs, windowMsNbDigits);
 
-  req.args[2] = std::string_view(pArgs, maxInWindowNbChars);
-  pArgs = std::to_chars(pArgs, pArgs + maxInWindowNbChars, maxInWindow).ptr;
+  req.args[2] = std::string_view(pArgs, maxInWindowNbDigits);
+  pArgs = WriteInt(pArgs, maxInWindow, maxInWindowNbDigits);
 
   return req;
 }

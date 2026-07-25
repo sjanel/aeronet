@@ -80,7 +80,7 @@ TYPED_TEST(DynamicConcatenatedStringsTest, InitializerListConstructor) {
 
 TYPED_TEST(DynamicConcatenatedStringsTest, AppendIntegral) {
   TypeParam pool({"one", "two", "three"});
-  pool.append(42);
+  pool.append(42U);
   EXPECT_FALSE(pool.empty());
   EXPECT_EQ(pool.nbConcatenatedStrings(), 4U);
   EXPECT_EQ(pool.fullSize(), pool.fullString().size());

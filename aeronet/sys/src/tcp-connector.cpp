@@ -11,7 +11,6 @@
 #endif
 
 #include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -22,8 +21,10 @@
 #include <string_view>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/socket-ops.hpp"  // GetSocketError (and SetNonBlocking / SetCloseOnExec off-Linux)
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
@@ -96,8 +97,7 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
   addrinfo* res = nullptr;
 
   char portStr[std::numeric_limits<uint16_t>::digits10 + 2];
-  auto endPtr = std::to_chars(portStr, portStr + sizeof(portStr), port).ptr;
-  *endPtr = '\0';
+  *WriteUInt(portStr, port, ndigits(port)) = '\0';
 
   int gai;
   {

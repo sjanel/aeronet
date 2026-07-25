@@ -2,14 +2,13 @@
 
 #include <algorithm>
 #include <cassert>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-client-codec.hpp"
@@ -23,7 +22,7 @@
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "url-parse.hpp"
@@ -129,7 +128,9 @@ inline char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIpv6,
   pData = AppendScheme(urlParseResult.isTls, pData);
   pData = Append(urlParseResult.host, pData);
   *pData++ = ':';  // port is always specified in origin key
-  pData = std::to_chars(pData, pData + std::numeric_limits<uint16_t>::max(), urlParseResult.port).ptr;
+
+  const auto portNbDigits = ndigits(urlParseResult.port);
+  pData = WriteUInt(pData, urlParseResult.port, portNbDigits);
   const std::string_view originKey(pOriginKeyBeg, pData);
 
   // From there, the request buffer will start.
@@ -164,7 +165,7 @@ inline char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIpv6,
   }
   if (urlParseResult.hasNonDefaultPort()) {
     *pData++ = ':';
-    pData = std::to_chars(pData, pData + std::numeric_limits<uint16_t>::max(), urlParseResult.port).ptr;
+    pData = WriteUInt(pData, urlParseResult.port, portNbDigits);
   }
 
   return pData;
@@ -192,16 +193,16 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
     throw std::invalid_argument("Invalid URL");
   }
 
-  const auto portNbChars = nchars(res.port);
+  const auto portNbDigits = ndigits(res.port);
   const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
   const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
   _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
 
   const bool hostIsIpv6 = res.host.contains(':');
-  auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
+  auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
   const auto neededCapacity =
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
@@ -234,16 +235,16 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
     throw std::invalid_argument("Invalid URL");
   }
 
-  const auto portNbChars = nchars(res.port);
+  const auto portNbDigits = ndigits(res.port);
   const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
   const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
   _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
 
   const bool hostIsIpv6 = res.host.contains(':');
-  const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
+  const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
   const auto neededCapacity =
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
@@ -332,12 +333,11 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 }
 
 const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
-  const auto* pHostHeaderEnd =
-      SearchCRLF(_data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(),
-                 _data.data() + _data.size());
+  const auto* pHostHeaderEnd = SearchCRLF(
+      _data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(), _data.end());
   const auto oldHostHeaderEndPos = static_cast<uint64_t>(pHostHeaderEnd - _data.data());
 
-  const auto portNbChars = nchars(res.port);
+  const auto portNbDigits = ndigits(res.port);
   const bool hasNonTlsProxy = _opts.hasProxy() && !res.isTls;
   const auto method = this->method();
   const auto methodLen = this->methodLen();
@@ -345,7 +345,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
 
   _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
   _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbChars);
+  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
 
   const char* pErrorMsg = CheckTarget(res.target, HttpMessage::kHeaderPosNbBits, _originKeyLen);
   if (pErrorMsg != nullptr) {
@@ -353,7 +353,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   }
 
   const bool hostIsIpv6 = res.host.contains(':');
-  const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbChars);
+  const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
   const auto newHostHeaderEndPos =
       _originKeyLen + methodLen + 1U + res.target.size() + 1U + http::HTTP11Sv.size() + hostHeaderSize;

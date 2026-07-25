@@ -2,17 +2,15 @@
 
 #include <algorithm>
 #include <cassert>
-#include <charconv>
-#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
@@ -27,7 +25,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -99,16 +97,17 @@ struct VaryResult {
 
 inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, HeadersViewMap::iterator encodingHeaderIt,
                                                  std::string_view src, std::size_t additionalCapacity, RawChars& buf) {
-  const std::size_t decompressedSizeNbChars = nchars(src.size());
-  buf.ensureAvailableCapacity(decompressedSizeNbChars + additionalCapacity);
+  const auto decompressedSizeNbDigits = ndigits(src.size());
+
+  buf.ensureAvailableCapacity(additionalCapacity + decompressedSizeNbDigits);
 
   // Set the new decompressed body AFTER reallocating the buffer above.
   std::string_view body = buf;
 
-  std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbChars);
-  [[maybe_unused]] const auto [ptr, errc] = std::to_chars(buf.end(), buf.end() + decompressedSizeNbChars, src.size());
-  assert(errc == std::errc{} && ptr == buf.end() + decompressedSizeNbChars);
-  buf.addSize(decompressedSizeNbChars);
+  std::string_view decompressedSizeStr(buf.end(), decompressedSizeNbDigits);
+  [[maybe_unused]] const auto ptr = WriteUInt(buf.end(), src.size(), decompressedSizeNbDigits);
+  assert(ptr == buf.end() + decompressedSizeNbDigits);
+  buf.addSize(decompressedSizeNbDigits);
 
   // Update Content encoding and Content-Length headers, and set special aeronet headers containing original values.
   const std::string_view encodingStr = encodingHeaderIt->second;
@@ -416,8 +415,8 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       http::HeaderSize(http::ContentEncoding.size(), contentEncodingStr.size());
 
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
-  const auto nCharsBodySz = nchars(bodySz);
-  const auto nCharsMaxCompressedSize = nchars(maxCompressedBytes);
+  const auto nDigitsBodySz = ndigits(bodySz);
+  const auto nDigitsMaxCompressedSize = ndigits(maxCompressedBytes);
   const std::size_t contentTypeLinePos = static_cast<std::size_t>(msg.getContentTypeHeaderLinePtr() - pData);
   const std::size_t contentLengthLinePos = static_cast<std::size_t>(msg.getContentLengthHeaderLinePtr() - pData);
   const std::size_t oldDataSz = msg._data.size();
@@ -428,8 +427,8 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   //   - temp compressed output (capped by maxCompressedBytes + 1)
   //   - final compressed output (capped by maxCompressedBytes)
   const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const std::size_t contentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nCharsBodySz);
-  const std::size_t upperContentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nCharsMaxCompressedSize);
+  const std::size_t contentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nDigitsBodySz);
+  const std::size_t upperContentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nDigitsMaxCompressedSize);
 
   static_assert(http::HeaderSize(http::ContentEncoding.size(), 1U) >= std::numeric_limits<std::size_t>::digits10 + 1,
                 "headersShift cannot be negative for below logic");
@@ -599,10 +598,9 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
   // Write new Content-Length, padded with spaces if the number of chars of the actual compressed size is smaller than
   // the number of chars of the declared max compressed size (worst case).
-  [[maybe_unused]] const auto tcRes = std::to_chars(out - nCharsMaxCompressedSize, out, totalCompSize);
-  assert(tcRes.ec == std::errc{});
-  std::memset(tcRes.ptr, ' ', static_cast<std::size_t>(out - tcRes.ptr));  // pad with spaces if needed
-  out -= nCharsMaxCompressedSize;
+  [[maybe_unused]] const auto pEnd = WriteUInt(out - nDigitsMaxCompressedSize, totalCompSize, ndigits(totalCompSize));
+  std::memset(pEnd, ' ', static_cast<std::size_t>(out - pEnd));  // pad with spaces if needed
+  out -= nDigitsMaxCompressedSize;
 
   // Write '\r\nContent-Length: ' just before the new Content-Length value.
   Copy(kCRLFContentLengthHeaderSep, out - kCRLFContentLengthHeaderSep.size());

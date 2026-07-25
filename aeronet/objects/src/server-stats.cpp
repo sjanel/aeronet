@@ -1,13 +1,14 @@
 #include "aeronet/server-stats.hpp"
 
 #include <cassert>
-#include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <string>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 
 namespace aeronet {
 
@@ -15,9 +16,9 @@ namespace {
 
 void Append(std::string& out, std::integral auto value) {
   const std::size_t oldSize = out.size();
-  const std::size_t width = nchars(value);
-  out.resize_and_overwrite(oldSize + width, [oldSize, width, value](char* data, std::size_t /*n*/) {
-    std::to_chars(data + oldSize, data + oldSize + width, value);
+  const auto width = ndigits(value);
+  out.resize_and_overwrite(oldSize + width, [oldSize, width, value](char* data, [[maybe_unused]] std::size_t sz) {
+    WriteInt(data + oldSize, value, width);
     return oldSize + width;
   });
 }

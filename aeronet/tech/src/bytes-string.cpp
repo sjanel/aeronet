@@ -1,13 +1,13 @@
 #include "aeronet/bytes-string.hpp"
 
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string_view>
 
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/nchars.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -25,10 +25,11 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
 
   // small helper: append integer value and the unit (with leading space)
   const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
-    out.ensureAvailableCapacityExponential(nchars(value) + 1U + unit.size());
+    const auto nDigitsValue = ndigits(value);
+    out.ensureAvailableCapacityExponential(1U + unit.size() + nDigitsValue);
     char* ptr = out.data() + out.size();
 
-    ptr = std::to_chars(ptr, out.data() + out.capacity(), value).ptr;
+    ptr = WriteUInt(ptr, value, nDigitsValue);
     *ptr++ = ' ';
     ptr = Append(unit, ptr);
 
@@ -67,13 +68,15 @@ void AddFormattedSize(std::uintmax_t size, RawChars& out) {
     }
 
     // print one decimal: int.frac unit
-    out.ensureAvailableCapacityExponential(nchars(finalInt) + 1U + nchars(finalFrac) + 1U + units[unitIdx].size());
+    const auto nDigitsFinalInt = ndigits(finalInt);
+    const auto nDigitsFinalFrac = ndigits(finalFrac);
+    out.ensureAvailableCapacityExponential(1U + nDigitsFinalInt + nDigitsFinalFrac + 1U + units[unitIdx].size());
 
     char* ptr = out.data() + out.size();
 
-    ptr = std::to_chars(ptr, out.data() + out.capacity(), finalInt).ptr;
+    ptr = WriteUInt(ptr, finalInt, nDigitsFinalInt);
     *ptr++ = '.';
-    ptr = std::to_chars(ptr, out.data() + out.capacity(), finalFrac).ptr;
+    ptr = WriteUInt(ptr, finalFrac, nDigitsFinalFrac);
     *ptr++ = ' ';
     ptr = Append(units[unitIdx], ptr);
 
