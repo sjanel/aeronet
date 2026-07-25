@@ -4,123 +4,17 @@
 #include <array>
 #include <cctype>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <ctime>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/cctype.hpp"
-#include "aeronet/ipow.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/stringconv.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
-
-SysTimePoint StringToTimeISO8601UTC(const char* begPtr, const char* endPtr) {
-  const auto sz = endPtr - begPtr;
-  if (sz < 4) [[unlikely]] {
-    log::critical("ISO8601 Time string '{}' is too short, expected at least 4 characters",
-                  std::string_view(begPtr, endPtr));
-    throw std::invalid_argument("ISO8601 Time string too short");
-  }
-
-  std::chrono::year year(read4(begPtr));
-  std::chrono::month month = std::chrono::January;
-  std::chrono::day day = std::chrono::day{1};
-  uint8_t hours = 0;
-  uint8_t minutes = 0;
-  uint8_t seconds = 0;
-
-  const auto* begSuffix = begPtr + 10;
-
-  if (sz >= 7) {
-    month = std::chrono::month(static_cast<unsigned>(read2(begPtr + 5)));
-    if (sz >= 10) {
-      day = std::chrono::day(static_cast<unsigned>(read2(begPtr + 8)));
-      if (sz >= 13) {
-        hours = read2(begPtr + 11);
-        begSuffix = begPtr + 13;
-        if (sz >= 16) {
-          minutes = read2(begPtr + 14);
-          begSuffix = begPtr + 16;
-          if (sz >= 19) {
-            seconds = read2(begPtr + 17);
-            begSuffix = begPtr + 19;
-          }
-        }
-      }
-    }
-  }
-
-  std::chrono::year_month_day ymd{year, month, day};
-
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr)
-  if (!ymd.ok() || hours > 23 || minutes > 59 || seconds > 60) [[unlikely]] {  // 60 is possible with leap second
-    log::critical("Invalid date or time in ISO8601 Time string '{}'", std::string_view(begPtr, endPtr));
-    throw std::invalid_argument("Invalid date or time in ISO8601 Time string");
-  }
-
-  SysTimePoint ts = std::chrono::sys_days{ymd} + std::chrono::hours{hours} + std::chrono::minutes{minutes} +
-                    std::chrono::seconds{seconds};
-
-  // For inputs like this,
-  // 'begSuffix' will point here:
-  //              |
-  //              v
-  //  - YYYY-MM-DDT
-  //                 |
-  //                 v
-  //  - YYYY-MM-DDTHHZ
-  //                    |
-  //                    v
-  //  - YYYY-MM-DDTHH:MM+05:00
-  //                       |
-  //                       v
-  //  - YYYY-MM-DDTHH:MM:SS.sssZ
-  if (begSuffix < endPtr) {
-    // Parse local time offset, if present
-    if (*(endPtr - 1) == 'Z') {
-      // remove the Z, consider UTC anyways
-      --endPtr;
-    } else if (*(endPtr - 6) == '-') {
-      ts += std::chrono::hours{read2(endPtr - 5)} + std::chrono::minutes{read2(endPtr - 2)};
-      endPtr -= 6;
-    } else if (*(endPtr - 6) == '+') {
-      ts -= std::chrono::hours{read2(endPtr - 5)} + std::chrono::minutes{read2(endPtr - 2)};
-      endPtr -= 6;
-    }
-
-    if (*begSuffix == '.') {
-      // parse sub-seconds parts until the end (possible 'Z' removed)
-      const int64_t subSecondsSz = std::min(static_cast<int64_t>(endPtr - ++begSuffix), static_cast<int64_t>(9));
-      switch (subSecondsSz) {
-        case 0:
-          break;
-        case 3:  // milliseconds
-          ts += std::chrono::duration_cast<SysDuration>(std::chrono::milliseconds{read3(begSuffix)});
-          break;
-        case 6:  // microseconds
-          ts += std::chrono::duration_cast<SysDuration>(std::chrono::microseconds{read6(begSuffix)});
-          break;
-        case 9:  // nanoseconds
-          ts += std::chrono::duration_cast<SysDuration>(std::chrono::nanoseconds{read9(begSuffix)});
-          break;
-        default:
-          ts += std::chrono::duration_cast<SysDuration>(
-              std::chrono::nanoseconds{StringToIntegral<int32_t>(begSuffix, static_cast<std::size_t>(subSecondsSz)) *
-                                       static_cast<int32_t>(ipow10(static_cast<uint8_t>(9 - subSecondsSz)))});
-          break;
-      }
-    }
-  }
-
-  return ts;
-}
 
 SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   SysTimePoint ret = kInvalidTimePoint;
