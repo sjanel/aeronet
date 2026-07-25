@@ -450,7 +450,7 @@ TEST_F(HttpClientE2ETest, CustomRequestHeaderIsSent) {
   HttpClient client;
   // The /echo route echoes the body; here we just assert a custom header does not break the round-trip
   // and that an explicit Host override is honoured by the builder.
-  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  auto req = client.makeRequest(50UL, http::Method::GET, Url("/hello"));
   req.headerAddLine("X-Test", "1").header("User-Agent", "custom-agent/1.0");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
