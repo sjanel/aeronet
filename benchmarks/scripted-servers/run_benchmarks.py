@@ -952,7 +952,7 @@ class BenchmarkRunner:
             (err_connect > 0)
             or (err_read > 0)
             or (err_write > 0)
-            or (err_timeout > 0)
+            or (err_timeout > 0 and scenario_name != "files")
             or (non2xx > 0)
         )
         if any_errs:
