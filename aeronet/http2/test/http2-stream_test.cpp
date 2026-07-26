@@ -3,13 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <type_traits>
 
 #include "aeronet/http2-frame-types.hpp"
 
 namespace aeronet::http2 {
-
-namespace {
 
 // ============================
 // Initial State Tests
@@ -448,21 +445,4 @@ TEST(Http2Stream, SetErrorCode) {
   EXPECT_EQ(stream.errorCode(), ErrorCode::Cancel);
 }
 
-// ============================
-// Stream State Name Tests
-// ============================
-
-TEST(Http2Stream, StreamStateName) {
-  EXPECT_EQ(StreamStateName(StreamState::Idle), "idle");
-  EXPECT_EQ(StreamStateName(StreamState::Open), "open");
-  EXPECT_EQ(StreamStateName(StreamState::HalfClosedLocal), "half-closed (local)");
-  EXPECT_EQ(StreamStateName(StreamState::HalfClosedRemote), "half-closed (remote)");
-  EXPECT_EQ(StreamStateName(StreamState::Closed), "closed");
-  EXPECT_EQ(StreamStateName(StreamState::ReservedLocal), "reserved (local)");
-  EXPECT_EQ(StreamStateName(StreamState::ReservedRemote), "reserved (remote)");
-
-  EXPECT_EQ(StreamStateName(static_cast<StreamState>(static_cast<std::underlying_type_t<StreamState>>(-1))), "unknown");
-}
-
-}  // namespace
 }  // namespace aeronet::http2

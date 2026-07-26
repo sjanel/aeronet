@@ -156,7 +156,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 ### Feature Matrix (Concise)
 
 | Category | Implemented (✔) | Notes |
-|----------|-----------------|-------|
+| ---------- | ----------------- | ------- |
 | Core HTTP/1.1 parsing | ✔ | Request line, headers, chunked bodies, pipelining |
 | Routing | ✔ | Exact path + method allow‑lists; streaming + fixed |
 | Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
@@ -180,7 +180,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 ### Developer / Operational Features
 
 | Feature | Notes |
-|---------|-------|
+| --------- | ------- |
 | Epoll edge-triggered loop | One thread per `SingleHttpServer`; writev used for header+body scatter-gather |
 | `SO_REUSEPORT` scaling | Horizontal multi-reactor capability |
 | Multi-instance wrapper | `MultiHttpServer` orchestrates N reactors (N threads) |
@@ -417,7 +417,7 @@ server.setMetricsCallback([](const SingleHttpServer::RequestMetrics& m){
 Current fields (alpha – subject to change before 1.0):
 
 | Field | Description |
-|-------|-------------|
+| ------- | ------------- |
 | method | Original request method string |
 | target | Request target (decoded path) |
 | status | Response status code (best-effort 200 for streaming if not overridden) |
@@ -556,7 +556,7 @@ This is the simplest horizontal scaling strategy before introducing a worker poo
 #### Summary table
 
 | Variant | Header | Launch API | Blocking? | Threads Created | Scaling Model | Typical Use Case | Restartable? | Notes |
-|---------|--------|------------|-----------|--------------------|---------------|------------------|--------------|-------|
+| --------- | -------- | ------------ | ----------- | -------------------- | --------------- | ------------------ | -------------- | ------- |
 | `SingleHttpServer` | `aeronet/single-http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | 0 | Single reactor | Dedicated thread you manage or simple main-thread server | Yes | Minimal overhead, zero thread creation |
 | `SingleHttpServer` | `aeronet/single-http-server.hpp` | `start()` (void convenience) / `startDetached()` / `startDetachedAndStopWhen(pred)` / `startDetachedWithStopToken(token)` | No (`startDetached()` returns `AsyncHandle`) | 1 `std::jthread` (owned by handle) | Single reactor (background) | Non-blocking single server, calling thread remains free | Yes | `startDetached()` returns RAII handle; `start()` is a void convenience |
 | `HttpServer` | `aeronet/http-server.hpp` | `run()` / `runUntil(pred)` | Yes (caller thread blocks) | N (`threadCount`) | Horizontal `SO_REUSEPORT` multi-reactor | Multi-core throughput, blocking orchestration | Yes | All reactors run on caller thread until stop |
@@ -642,22 +642,22 @@ You have two ways to construct a `HttpResponse`:
 
 You can build it thanks to the numerous provided methods to store the main components of a HTTP response (status code, reason, headers, body and trailers):
 
-| Operation          | Complexity           | Notes                                  |
-|--------------------|----------------------|----------------------------------------|
-| `status()`         | O(1)                 | Overwrites 3 digits                    |
-| `reason()`         | O(trailing)          | One tail `memmove` if size delta       |
-| `header()`         | O(headers + bodyLen) | Linear scan + maybe one shift          |
-| `headerAddLine()`      | O(bodyLen)           | Shift tail once; no scan               |
-| `headerRemoveLine()`   | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift          |
-| `headerRemoveValue()`   | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift          |
-| `body()` (inline)  | O(delta) + realloc   | Exponential growth strategy            |
-| `body()` (capture) | O(1)                 | Zero copy client buffer capture        |
-| `bodyStatic()` (capture) | O(1)                 | Zero copy client buffer capture        |
-| `bodyAppend()` (inline) | O(delta) + realloc   | Exponential growth strategy, zero-copy support            |
-| `bodyInlineAppend()` | O(delta) + realloc   | Exponential growth strategy            |
-| `bodyInlineSet()` | O(1) + realloc   | Exact growth strategy            |
-| `file()`           | O(1)                 | Zero-copy sendfile helper              |
-| `trailerAddLine()`     | O(1)                 | Append-only; no scan (only after body) |
+| Operation                | Complexity           | Notes                                          |
+| ------------------------ | -------------------- | ---------------------------------------------- |
+| `status()`               | O(1)                 | Overwrites 3 digits                            |
+| `reason()`               | O(trailing)          | One tail `memmove` if size delta               |
+| `header()`               | O(headers + bodyLen) | Linear scan + maybe one shift                  |
+| `headerAddLine()`        | O(bodyLen)           | Shift tail once; no scan                       |
+| `headerRemoveLine()`     | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift        |
+| `headerRemoveValue()`    | O(headers + bodyLen) | Linear scan (reverse) + maybe one shift        |
+| `body()` (inline)        | O(delta) + realloc   | Exponential growth strategy                    |
+| `body()` (capture)       | O(1)                 | Zero copy client buffer capture                |
+| `bodyStatic()` (capture) | O(1)                 | Zero copy client buffer capture                |
+| `bodyAppend()` (inline)  | O(delta) + realloc   | Exponential growth strategy, zero-copy support |
+| `bodyInlineAppend()`     | O(delta) + realloc   | Exponential growth strategy                    |
+| `bodyInlineSet()`        | O(1) + realloc       | Exact growth strategy                          |
+| `file()`                 | O(1)                 | Zero-copy sendfile helper                      |
+| `trailerAddLine()`       | O(1)                 | Append-only; no scan (only after body)         |
 
 Usage guidelines:
 
@@ -1004,7 +1004,7 @@ and writes through the TLS transport.
 ## Platform Support
 
 | Platform | Status | I/O backend | Notes |
-|----------|--------|-------------|-------|
+| ---------- | -------- | ------------- | ------- |
 | **Linux** (x86_64, aarch64) | Full support | epoll (edge-triggered) | Primary platform; all features including kTLS, `MSG_ZEROCOPY`, `sendfile`. Tested on **Ubuntu** and **Alpine** in the CI. |
 | **macOS** (Apple Silicon / x86_64) | Supported | kqueue | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
 | **Windows** (x64, MSVC) | Supported | WSAPoll | Core HTTP/WebSocket server; Linux-specific optimizations auto-disabled |
@@ -1077,7 +1077,7 @@ The test suite uses a unified helper for simple GETs, streaming incremental read
 Summary of current automated test coverage (see `tests/` directory). Legend: ✅ covered by explicit test(s), ⚠ partial / indirect, ❌ not yet.
 
 | Area | Feature | Test Status | Notes / Representative Test Files |
-|------|---------|-------------|-----------------------------------|
+| ------ | --------- | ------------- | ----------------------------------- |
 | Parsing | Request line (method/target/version) | ✅ | `http-parser-errors_test.cpp`, `http-core_test.cpp` |
 | Parsing | Unsupported HTTP version (505) | ✅ | `http-parser-errors_test.cpp` |
 | Parsing | Header parsing & lookup | ✅ | `http-core_test.cpp`, `http-core_test.cpp` |
@@ -1090,7 +1090,7 @@ Summary of current automated test coverage (see `tests/` directory). Legend: ✅
 | Expect | 100-continue w/ non-zero length | ✅ | `http-parser-errors_test.cpp` |
 | Expect | No 100 for zero-length | ✅ | `http-parser-errors_test.cpp`, `http-additional_test.cpp` |
 | Keep-Alive | Basic keep-alive persistence | ✅ | `http-core_test.cpp` |
-| Keep-Alive | Max requests per connection | ✅ | `http-additional_test.cpp`|
+| Keep-Alive | Max requests per connection | ✅ | `http-additional_test.cpp` |
 | Keep-Alive | Idle timeout close | ⚠ | Indirectly covered; explicit idle-time tests are planned |
 | Pipelining | Sequential pipeline of requests | ✅ | `http-additional_test.cpp` |
 | Pipelining | Malformed second request handling | ✅ | `http-additional_test.cpp` |

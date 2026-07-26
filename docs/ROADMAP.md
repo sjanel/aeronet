@@ -7,20 +7,22 @@
   - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
 - Create doc pages using **Material for MkDocs** tool (for instance). To create first class documentation for aeronet, we need to have a proper documentation site with a good theme and navigation. This will help users understand how to use the library and its features.
-- Make a real `HttpRequest` object. `HttpRequestView` and `HttpResponse` share a lot of semantics, except for the status-line. We could extract common bricks in a base `HttpMessage` class and have HttpResponse and HttpRequest derive from it (unfortunately, HttpRequestView is the name of the class coming from a view on a request arriving in a server, so we cannot rename it). This will allow us to have a proper HttpRequest object that can be used to send requests to other servers.
-- Rename `HttpRequestView` to `HttpRequestView` and keep `HttpRequestView` as a builder object for the HTTP client (this will help to have a clearer naming especially for above requirement).
+- Improve and fix `scripts/profile_benchmark.sh`. Make it possible to use perf in scripted benchmarks and generate flamegraphs.
 
 ## Medium priority
 
-- **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
-- **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 - **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
-- **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
-  (Content-Encoding + compressed Content-Length) when desired.
 - Enhance `telemetry` with more detailed HTTP/2 metrics: per-stream stats, HPACK compression ratios, frame type distributions.
   - Support tags/labels for metrics
 - **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
+
+## Low priority
+
+- **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
+- **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
+- **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
+  (Content-Encoding + compressed Content-Length) when desired.
 
 ### Performance optimization backlog
 

@@ -32,7 +32,7 @@ enum class FrameType : uint8_t {
   WindowUpdate = 0x08,  // WINDOW_UPDATE frame - flow control
   Continuation = 0x09,  // CONTINUATION frame - continuation of header block
   // 0x0A-0xFE reserved for extensions
-  Unknown = 0xFF  // Sentinel for unknown/invalid frame types
+  Unknown = 0xFF,  // Sentinel for unknown/invalid frame types
 };
 
 // HTTP/2 Error Codes (RFC 9113 §7)
@@ -103,31 +103,10 @@ inline constexpr uint8_t ContinuationEndHeaders = 0x04;  // END_HEADERS: end of 
 
 // HTTP/2 Default Values (RFC 9113 §6.5.2)
 // =======================================
-inline constexpr uint32_t kDefaultHeaderTableSize = 4096;
-inline constexpr uint32_t kDefaultEnablePush = 1;
-inline constexpr uint32_t kDefaultMaxConcurrentStreams = 100;  // RFC says unlimited, but we set a reasonable default
 inline constexpr uint32_t kDefaultInitialWindowSize = 65535;
-inline constexpr uint32_t kDefaultMaxFrameSize = 16384;
-inline constexpr uint32_t kDefaultMaxHeaderListSize = 8192;  // RFC says unlimited, but we set a reasonable default
-
-// HTTP/2 Limits (RFC 9113)
-// ========================
-inline constexpr uint32_t kMinMaxFrameSize = 16384;           // Minimum allowed SETTINGS_MAX_FRAME_SIZE
-inline constexpr uint32_t kMaxMaxFrameSize = (1U << 24) - 1;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
-inline constexpr uint32_t kMaxWindowSize = (1U << 31) - 1;    // Maximum flow control window size
-inline constexpr uint32_t kMaxStreamId = (1U << 31) - 1;      // Maximum stream identifier
 
 // Frame header size is always 9 bytes
 inline constexpr std::size_t kFrameHeaderSize = 9;
-
-// Stream identifier constants
-inline constexpr uint32_t kConnectionStreamId = 0;  // Stream 0 is the connection control stream
-
-// Check if a stream ID is valid for client-initiated streams (odd numbers)
-[[nodiscard]] constexpr bool IsClientStream(uint32_t streamId) noexcept { return (streamId & 1) != 0; }
-
-// Check if a stream ID is valid for server-initiated streams (even numbers, non-zero)
-[[nodiscard]] constexpr bool IsServerStream(uint32_t streamId) noexcept { return streamId != 0 && (streamId & 1) == 0; }
 
 // HTTP/2 Stream States (RFC 9113 §5.1)
 // ====================================

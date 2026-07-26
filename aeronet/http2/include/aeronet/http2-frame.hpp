@@ -3,76 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string_view>
 
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
-
-/// Convert FrameType to human-readable string for logging/debugging.
-constexpr std::string_view FrameTypeName(FrameType type) noexcept {
-  switch (type) {
-    case FrameType::Data:
-      return "DATA";
-    case FrameType::Headers:
-      return "HEADERS";
-    case FrameType::Priority:
-      return "PRIORITY";
-    case FrameType::RstStream:
-      return "RST_STREAM";
-    case FrameType::Settings:
-      return "SETTINGS";
-    case FrameType::PushPromise:
-      return "PUSH_PROMISE";
-    case FrameType::Ping:
-      return "PING";
-    case FrameType::GoAway:
-      return "GOAWAY";
-    case FrameType::WindowUpdate:
-      return "WINDOW_UPDATE";
-    case FrameType::Continuation:
-      return "CONTINUATION";
-    default:
-      return "UNKNOWN";
-  }
-}
-
-/// Convert ErrorCode to human-readable string for logging/debugging.
-constexpr std::string_view ErrorCodeName(ErrorCode code) noexcept {
-  switch (code) {
-    case ErrorCode::NoError:
-      return "NO_ERROR";
-    case ErrorCode::ProtocolError:
-      return "PROTOCOL_ERROR";
-    case ErrorCode::InternalError:
-      return "INTERNAL_ERROR";
-    case ErrorCode::FlowControlError:
-      return "FLOW_CONTROL_ERROR";
-    case ErrorCode::SettingsTimeout:
-      return "SETTINGS_TIMEOUT";
-    case ErrorCode::StreamClosed:
-      return "STREAM_CLOSED";
-    case ErrorCode::FrameSizeError:
-      return "FRAME_SIZE_ERROR";
-    case ErrorCode::RefusedStream:
-      return "REFUSED_STREAM";
-    case ErrorCode::Cancel:
-      return "CANCEL";
-    case ErrorCode::CompressionError:
-      return "COMPRESSION_ERROR";
-    case ErrorCode::ConnectError:
-      return "CONNECT_ERROR";
-    case ErrorCode::EnhanceYourCalm:
-      return "ENHANCE_YOUR_CALM";
-    case ErrorCode::InadequateSecurity:
-      return "INADEQUATE_SECURITY";
-    case ErrorCode::Http11Required:
-      return "HTTP_1_1_REQUIRED";
-    default:
-      return "UNKNOWN_ERROR";
-  }
-}
 
 /// HTTP/2 frame header (9 bytes) as defined in RFC 9113 §4.1.
 /// Layout: Length (3 bytes) | Type (1 byte) | Flags (1 byte) | Reserved (1 bit) | Stream ID (31 bits)
@@ -265,8 +201,7 @@ std::size_t WriteSettingsAckFrame(RawBytes& buffer);
 std::size_t WritePingFrame(RawBytes& buffer, PingFrame pingFrame);
 
 /// Write a GOAWAY frame.
-std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode errorCode,
-                             std::string_view debugData = {});
+std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode errorCode, ErrorMsg msg);
 
 /// Write a WINDOW_UPDATE frame.
 std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t windowSizeIncrement);

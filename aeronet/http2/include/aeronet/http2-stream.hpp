@@ -1,43 +1,15 @@
 #pragma once
 
 #include <cstdint>
-#include <string_view>
 
 #include "aeronet/http2-frame-types.hpp"
 
 namespace aeronet::http2 {
 
-// StreamState is already defined in http2-frame-types.hpp (included via http2-frame.hpp)
-
-/// Convert StreamState to human-readable string.
-[[nodiscard]] constexpr std::string_view StreamStateName(StreamState state) noexcept {
-  switch (state) {
-    case StreamState::Idle:
-      return "idle";
-    case StreamState::ReservedLocal:
-      return "reserved (local)";
-    case StreamState::ReservedRemote:
-      return "reserved (remote)";
-    case StreamState::Open:
-      return "open";
-    case StreamState::HalfClosedLocal:
-      return "half-closed (local)";
-    case StreamState::HalfClosedRemote:
-      return "half-closed (remote)";
-    case StreamState::Closed:
-      return "closed";
-    default:
-      return "unknown";
-  }
-}
-
 /// HTTP/2 stream (RFC 9113 §5).
 ///
 /// Represents a single HTTP/2 stream within a connection.
 /// Manages stream state, flow control, and priority information.
-///
-/// Thread safety: NOT thread-safe. Streams are managed by the connection
-/// on the single-threaded event loop.
 class Http2Stream {
  public:
   /// Create a new stream with the given ID.
@@ -182,7 +154,6 @@ class Http2Stream {
 
  private:
   uint32_t _streamId;
-  ErrorCode _errorCode{ErrorCode::NoError};
 
   // Flow control
   int32_t _sendWindow;
@@ -191,6 +162,7 @@ class Http2Stream {
 
   // Priority
   uint32_t _streamDependency{0};
+  ErrorCode _errorCode{ErrorCode::NoError};
   uint16_t _weight{16};  // 1-256 (default is 16)
   StreamState _state{StreamState::Idle};
   bool _exclusive{false};

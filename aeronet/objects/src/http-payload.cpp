@@ -29,11 +29,11 @@ HttpPayload::HttpPayload(const HttpPayload& rhs) {
                       std::is_same_v<T, RawChars>) {
           _data = val;
         } else if constexpr (std::is_same_v<T, CharBuffer>) {
-          CharBuffer copy{std::make_unique<char[]>(val.second), val.second};
+          CharBuffer copy{std::make_unique_for_overwrite<char[]>(val.second), val.second};
           std::memcpy(copy.first.get(), val.first.get(), val.second);
           _data = std::move(copy);
         } else if constexpr (std::is_same_v<T, BytesBuffer>) {
-          BytesBuffer copy{std::make_unique<std::byte[]>(val.second), val.second};
+          BytesBuffer copy{std::make_unique_for_overwrite<std::byte[]>(val.second), val.second};
           std::memcpy(copy.first.get(), val.first.get(), val.second);
           _data = std::move(copy);
         } else {

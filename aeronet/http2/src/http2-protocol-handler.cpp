@@ -35,8 +35,9 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -141,7 +142,8 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
       break;
     case Http2Connection::ProcessResult::Action::Error:
       output.action = ProtocolProcessResult::Action::CloseImmediate;
-      log::error("HTTP/2 protocol error: {} ({})", result.errorMessage, ErrorCodeName(result.errorCode));
+      log::error("HTTP/2 protocol error: {} ({})", ErrorCodeName(result.errorCode),
+                 ConvertProcessResultErrorMsgToSv(result.errorMsg));
       break;
     case Http2Connection::ProcessResult::Action::GoAway:
       output.action = ProtocolProcessResult::Action::Close;
@@ -157,7 +159,7 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
 
 namespace {
 
-http::Method ParseHttpMethod(std::string_view method) noexcept {
+http::Method ParseHttpMethod(std::string_view method) {
   if (method == "GET") {
     return http::Method::GET;
   }
@@ -186,6 +188,7 @@ http::Method ParseHttpMethod(std::string_view method) noexcept {
     return http::Method::TRACE;
   }
   // Fallback to GET for unknown methods
+  log::debug("Unknown HTTP method received: {}", method);
   return http::Method::GET;
 }
 

@@ -30,8 +30,8 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -50,10 +50,14 @@ std::string_view TlsHttp2Client::Response::header(std::string_view name) const n
 
 TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
     : _port(port),
-      _tlsClient(
-          port,
-          TlsClient::Options{
-              .alpn = {"h2"}, .clientCertPem = {}, .clientKeyPem = {}, .trustedServerCertPem = {}, .serverName = {}}),
+      _tlsClient(port,
+                 TlsClient::Options{
+                     .alpn = {"h2"},
+                     .clientCertPem = {},
+                     .clientKeyPem = {},
+                     .trustedServerCertPem = {},
+                     .serverName = {},
+                 }),
       _http2Connection(std::make_unique<http2::Http2Connection>(config, false))  // client side
 {
   if (!_tlsClient.handshakeOk()) {
