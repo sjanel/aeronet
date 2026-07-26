@@ -98,13 +98,14 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   pData = Append(metrics.clientIp, pData);
 
   // " - - ["
-  pData = Append(kSep1, pData);
+  pData = AppendFixed<kSep1>(pData);
 
   // Timestamp in ISO 8601 with ms
   pData = TimeToStringISO8601UTCWithMs(SysClock::now(), pData);
 
   // "] \""
-  pData = Append("] \"", pData);
+  static constexpr std::string_view kTsEnd = "] \"";
+  pData = AppendFixed<kTsEnd>(pData);
 
   // Method
   pData = Append(methodStr, pData);
@@ -125,7 +126,7 @@ void AccessLogWriter::formatCLF(const RequestMetrics& metrics) {
   pData = WriteInt(pData, metrics.bytesOut, nDigitsMetricsBytesOut);
 
   // " \"-\" \""
-  pData = Append(kReferer, pData);
+  pData = AppendFixed<kReferer>(pData);
 
   // User-Agent
   if (!metrics.userAgent.empty()) {
@@ -165,23 +166,23 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
   // Manual JSON to avoid Glaze linkage issues with local/anonymous types.
   char* out = _buffer.data() + _buffer.size();
 
-  out = Append(kTsPart, out);
+  out = AppendFixed<kTsPart>(out);
   out = TimeToStringISO8601UTCWithMs(SysClock::now(), out);
-  out = Append(kMethodPart, out);
+  out = AppendFixed<kMethodPart>(out);
   out = Append(methodStr, out);
-  out = Append(kPathPart, out);
+  out = AppendFixed<kPathPart>(out);
   out = Append(metrics.path, out);
-  out = Append(kStatusPart, out);
+  out = AppendFixed<kStatusPart>(out);
   out = writeStatusCode(out, metrics.status);
-  out = Append(kBytesOutPart, out);
+  out = AppendFixed<kBytesOutPart>(out);
   out = WriteInt(out, metrics.bytesOut, nDigitsMetricsBytesOut);
-  out = Append(kDurationPart, out);
+  out = AppendFixed<kDurationPart>(out);
   out = WriteInt(out, durationUs, nDigitsDurationUs);
-  out = Append(kIpPart, out);
+  out = AppendFixed<kIpPart>(out);
   out = Append(metrics.clientIp, out);
-  out = Append(kUaPart, out);
+  out = AppendFixed<kUaPart>(out);
   out = Append(metrics.userAgent, out);
-  out = Append(kEndPart, out);
+  out = AppendFixed<kEndPart>(out);
 
   _buffer.setSize(static_cast<decltype(_buffer)::size_type>(out - _buffer.data()));
 }

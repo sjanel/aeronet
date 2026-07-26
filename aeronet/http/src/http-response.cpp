@@ -60,12 +60,12 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
   setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
   if (body.empty()) {
     setBodyStartPosNoCheck(kInitialBodyStart);
-    Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
+    CopyFixed<http::DoubleCRLF>(_data.data() + kInitialBodyStart - http::DoubleCRLF.size());
     _data.setSize(kInitialBodyStart);
   } else {
     char* pData = _data.data() + kReasonBeg + kDateHeaderLenWithCRLF;
 
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
 
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
 
@@ -82,7 +82,7 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   status(code);
   setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
   setBodyStartPosNoCheck(kInitialBodyStart);
-  Copy(http::DoubleCRLF, _data.data() + kInitialBodyStart - http::DoubleCRLF.size());
+  CopyFixed<http::DoubleCRLF>(_data.data() + kInitialBodyStart - http::DoubleCRLF.size());
   _data.setSize(kInitialBodyStart);
 }
 
@@ -101,17 +101,17 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   if (!concatenatedHeaders.empty()) {
     char* pData = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
 
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
 
     Copy(concatenatedHeaders, pData);
     bodyStartPos += concatenatedHeaders.size();
   }
   if (body.empty()) {
     bodyStartPos += http::CRLF.size();
-    Copy(http::DoubleCRLF, _data.data() + bodyStartPos - http::DoubleCRLF.size());
+    CopyFixed<http::DoubleCRLF>(_data.data() + bodyStartPos - http::DoubleCRLF.size());
   } else {
     char* pData = _data.data() + bodyStartPos - http::CRLF.size();
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
 
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
     bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());

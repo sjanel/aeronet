@@ -1496,9 +1496,9 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
               RawChars buf(kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size());
               buf.setSize(buf.capacity());
 
-              char* insertPtr = Append(kHttpResponseLinePrefix, buf.data());
+              char* insertPtr = AppendFixed<kHttpResponseLinePrefix>(buf.data());
               insertPtr = writeStatusCode(insertPtr, status);
-              Copy(http::DoubleCRLF, insertPtr);
+              CopyFixed<http::DoubleCRLF>(insertPtr);
 
               queueData(cnxIt, HttpMessageData(std::move(buf)));
               break;
