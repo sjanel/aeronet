@@ -10,14 +10,11 @@ Run: python python_server.py [--port N] [--threads N] [--static DIR] [--routes N
 
 import argparse
 import gzip
-import json
 import os
 import random
-import re
 import string
 import time
 from pathlib import Path
-from typing import Optional
 import sys
 
 try:
@@ -26,7 +23,6 @@ try:
         PlainTextResponse,
         JSONResponse,
         Response,
-        FileResponse,
     )
     from starlette.routing import Route, Mount
     from starlette.requests import Request
