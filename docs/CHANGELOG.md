@@ -8,6 +8,7 @@ All notable changes to aeronet are documented in this file.
 
 - **Replace std::to_chars(int) with faster custom WriteInt**
 - **Get rid of `<aeronet/stringconv.hpp>`: removed internal function `StringToTimeISO8601UTC` that now becomes useless.
+- **Remove limit of number of settings in SETTINGS frame header in HTTP2**: The HTTP/2 spec does not limit the number of settings in a SETTINGS frame, but aeronet previously limited it to 16. This limit has been removed, and the SETTINGS frame is now parsed according to the spec without any arbitrary limit.
 
 ## [1.4.1] - 2026-07-25
 

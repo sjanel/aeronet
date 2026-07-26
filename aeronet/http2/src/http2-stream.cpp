@@ -7,12 +7,6 @@
 
 namespace aeronet::http2 {
 
-namespace {
-
-constexpr uint32_t kMaxWindowSize = (1U << 31) - 1;  // Maximum flow control window size
-
-}
-
 Http2Stream::Http2Stream(uint32_t streamId, uint32_t initialWindowSize) noexcept
     : _streamId(streamId),
       _sendWindow(static_cast<int32_t>(initialWindowSize)),
@@ -161,12 +155,11 @@ bool Http2Stream::consumeRecvWindow(uint32_t bytes) noexcept {
 
 ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
   // Check for overflow: RFC 9113 §6.9 specifies max window size as 2^31-1
-
   if (increment == 0) {
     return ErrorCode::ProtocolError;
   }
 
-  int64_t newWindow = static_cast<int64_t>(_sendWindow) + static_cast<int64_t>(increment);
+  const int64_t newWindow = static_cast<int64_t>(_sendWindow) + static_cast<int64_t>(increment);
   if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;
   }
@@ -176,12 +169,11 @@ ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
 }
 
 ErrorCode Http2Stream::increaseRecvWindow(uint32_t increment) noexcept {
-  // Security hardening: check for overflow. RFC 9113 §6.9.1 mandates that a window
+  // Check for overflow. RFC 9113 §6.9.1 mandates that a window
   // size must never exceed 2^31-1 (kMaxWindowSize). Without this check, a bug or
   // double-increment could silently overflow the int32_t window.
-
-  int64_t newWindow = static_cast<int64_t>(_recvWindow) + static_cast<int64_t>(increment);
-  if (std::cmp_less(kMaxWindowSize, newWindow)) [[unlikely]] {
+  const int64_t newWindow = static_cast<int64_t>(_recvWindow) + static_cast<int64_t>(increment);
+  if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;
   }
 
@@ -195,12 +187,12 @@ ErrorCode Http2Stream::updateInitialWindowSize(uint32_t newInitialWindowSize) no
   // it maintains by the difference between the new value and the old value.
 
   // Compute delta in 64-bit to avoid overflow
-  int64_t delta = static_cast<int64_t>(newInitialWindowSize) - static_cast<int64_t>(_initialSendWindow);
+  const int64_t delta = static_cast<int64_t>(newInitialWindowSize) - static_cast<int64_t>(_initialSendWindow);
 
   // Check for overflow
-  int64_t newWindow = static_cast<int64_t>(_sendWindow) + delta;
+  const int64_t newWindow = static_cast<int64_t>(_sendWindow) + delta;
 
-  if (std::cmp_less(kMaxWindowSize, newWindow) || newWindow < 0) [[unlikely]] {
+  if (std::cmp_less(kMaxWindowSize, newWindow) || newWindow < 0) {
     return ErrorCode::FlowControlError;
   }
 
