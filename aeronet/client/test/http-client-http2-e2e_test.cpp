@@ -32,6 +32,7 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -166,7 +167,7 @@ class ScriptedHttp2Transport final : public ITransport {
     if (action == Action::RstStream) {
       http2::WriteRstStreamFrame(fault, 1, http2::ErrorCode::Cancel);
     } else {
-      http2::WriteGoAwayFrame(fault, 0, http2::ErrorCode::NoError, "maintenance");
+      http2::WriteGoAwayFrame(fault, 0, http2::ErrorCode::NoError, http2::ErrorMsg::NoError);
     }
     _reads.emplace_back(reinterpret_cast<const char*>(fault.data()), fault.size());
   }
@@ -253,7 +254,7 @@ class LoopbackHttp2Transport final : public ITransport {
     while (!_clientInput.empty()) {
       const auto input = std::as_bytes(std::span<const char>(_clientInput.data(), _clientInput.size()));
       const auto processed = _server.processInput(input);
-      EXPECT_NE(processed.action, http2::Http2Connection::ProcessResult::Action::Error) << processed.errorMessage;
+      EXPECT_NE(processed.action, http2::Http2Connection::ProcessResult::Action::Error);
       if (processed.bytesConsumed == 0) {
         break;
       }

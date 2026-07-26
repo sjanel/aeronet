@@ -1,5 +1,6 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -53,9 +54,6 @@ class File {
   // kError, lastModified() is the invalid sentinel.
   File(const File& rhs);
   File& operator=(const File& rhs);
-
-  // Declaring the copy ops above suppresses implicit move generation, so restore it explicitly: moving just
-  // steals the BaseFd (no dup()) and copies the trivial metadata fields.
   File(File&&) noexcept = default;
   File& operator=(File&&) noexcept = default;
 
@@ -82,6 +80,8 @@ class File {
   // Returns the probable content type based on the file extension.
   // If not found, return 'application/octet-stream'.
   [[nodiscard]] std::string_view detectedContentType() const;
+
+  using trivially_relocatable = amc::is_trivially_relocatable<BaseFd>::type;
 
  private:
   friend struct ConnectionState;

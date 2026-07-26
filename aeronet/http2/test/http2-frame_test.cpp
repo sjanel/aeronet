@@ -8,36 +8,12 @@
 #include <cstring>
 #include <span>
 
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
-
-namespace {
-
-// Helper to create a span from raw bytes
-template <std::size_t N>
-std::span<const std::byte> AsSpan(const std::array<std::byte, N>& arr) {
-  return std::span<const std::byte>(arr.data(), arr.size());
-}
-
-}  // namespace
-
-TEST(Http2FrameNames, FrameTypeName_AllKnown) {
-  EXPECT_EQ(FrameTypeName(FrameType::Data), "DATA");
-  EXPECT_EQ(FrameTypeName(FrameType::Headers), "HEADERS");
-  EXPECT_EQ(FrameTypeName(FrameType::Priority), "PRIORITY");
-  EXPECT_EQ(FrameTypeName(FrameType::RstStream), "RST_STREAM");
-  EXPECT_EQ(FrameTypeName(FrameType::Settings), "SETTINGS");
-  EXPECT_EQ(FrameTypeName(FrameType::PushPromise), "PUSH_PROMISE");
-  EXPECT_EQ(FrameTypeName(FrameType::Ping), "PING");
-  EXPECT_EQ(FrameTypeName(FrameType::GoAway), "GOAWAY");
-  EXPECT_EQ(FrameTypeName(FrameType::WindowUpdate), "WINDOW_UPDATE");
-  EXPECT_EQ(FrameTypeName(FrameType::Continuation), "CONTINUATION");
-
-  // Unknown extension value -> "UNKNOWN"
-  EXPECT_EQ(FrameTypeName(static_cast<FrameType>(0x0A)), "UNKNOWN");
-}
 
 TEST(Http2FrameNames, ErrorCodeName_AllKnown) {
   EXPECT_EQ(ErrorCodeName(ErrorCode::NoError), "NO_ERROR");
@@ -56,7 +32,7 @@ TEST(Http2FrameNames, ErrorCodeName_AllKnown) {
   EXPECT_EQ(ErrorCodeName(ErrorCode::Http11Required), "HTTP_1_1_REQUIRED");
 
   // Unknown numeric value -> "UNKNOWN_ERROR"
-  EXPECT_EQ(ErrorCodeName(static_cast<ErrorCode>(0xFF)), "UNKNOWN_ERROR");
+  EXPECT_EQ(ErrorCodeName(static_cast<ErrorCode>(256U)), "UNKNOWN_ERROR");
 }
 
 // ============================
@@ -65,14 +41,14 @@ TEST(Http2FrameNames, ErrorCodeName_AllKnown) {
 
 TEST(Http2Frame, ParseFrameHeaderBasic) {
   // A minimal frame header: DATA frame, length 0, flags 0, stream 1
-  std::array<std::byte, 9> raw = {
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00},                  // length: 0
-      std::byte{0x00},                                                    // type: DATA
-      std::byte{0x00},                                                    // flags: 0
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}  // stream ID: 1
+  const std::byte raw[]{
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00},                   // length: 0
+      std::byte{0x00},                                                     // type: DATA
+      std::byte{0x00},                                                     // flags: 0
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01},  // stream ID: 1
   };
 
-  FrameHeader header = ParseFrameHeader(AsSpan(raw));
+  FrameHeader header = ParseFrameHeader(raw);
   EXPECT_EQ(header.length, 0);
   EXPECT_EQ(header.type, FrameType::Data);
   EXPECT_EQ(header.flags, 0);
@@ -81,14 +57,14 @@ TEST(Http2Frame, ParseFrameHeaderBasic) {
 
 TEST(Http2Frame, ParseFrameHeaderWithLength) {
   // HEADERS frame, length 256, flags END_HEADERS, stream 3
-  std::array<std::byte, 9> raw = {
-      std::byte{0x00}, std::byte{0x01}, std::byte{0x00},                  // length: 256
-      std::byte{0x01},                                                    // type: HEADERS
-      std::byte{0x04},                                                    // flags: END_HEADERS
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03}  // stream ID: 3
+  const std::byte raw[]{
+      std::byte{0x00}, std::byte{0x01}, std::byte{0x00},                   // length: 256
+      std::byte{0x01},                                                     // type: HEADERS
+      std::byte{0x04},                                                     // flags: END_HEADERS
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},  // stream ID: 3
   };
 
-  FrameHeader header = ParseFrameHeader(AsSpan(raw));
+  FrameHeader header = ParseFrameHeader(raw);
   EXPECT_EQ(header.length, 256U);
   EXPECT_EQ(header.type, FrameType::Headers);
   EXPECT_EQ(header.flags, FrameFlags::HeadersEndHeaders);
@@ -129,7 +105,7 @@ TEST(Http2Frame, ParseDataFrameSimple) {
   header.streamId = 1;
 
   DataFrame frame;
-  FrameParseResult result = ParseDataFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseDataFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.endStream);
@@ -140,9 +116,9 @@ TEST(Http2Frame, ParseDataFrameSimple) {
 TEST(Http2Frame, ParseDataFrameWithPadding) {
   // Padded data frame: pad_length=2, data="AB", padding=00 00
   std::array<std::byte, 5> payload = {
-      std::byte{0x02},                  // pad length
-      std::byte{'A'}, std::byte{'B'},   // data
-      std::byte{0x00}, std::byte{0x00}  // padding
+      std::byte{0x02},                   // pad length
+      std::byte{'A'},  std::byte{'B'},   // data
+      std::byte{0x00}, std::byte{0x00},  // padding
   };
 
   FrameHeader header{};
@@ -152,7 +128,7 @@ TEST(Http2Frame, ParseDataFrameWithPadding) {
   header.streamId = 1;
 
   DataFrame frame;
-  FrameParseResult result = ParseDataFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseDataFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.padLength, 2U);
@@ -163,7 +139,7 @@ TEST(Http2Frame, ParseDataFrameWithPadding) {
 
 TEST(Http2Frame, WriteDataFrame) {
   RawBytes buffer;
-  std::array<std::byte, 5> data = {std::byte{'h'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
+  const std::byte data[]{std::byte{'h'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
 
   std::size_t written = WriteDataFrame(buffer, 1, data, true);
 
@@ -192,11 +168,11 @@ TEST(Http2Frame, InvalidLength) {
 // ============================
 
 TEST(Http2Frame, ParseHeadersFrameSimple) {
-  std::array<std::byte, 4> payload = {
+  const std::byte payload[]{
       std::byte{0x82},  // Indexed header field: :method: GET
       std::byte{0x86},  // Indexed header field: :scheme: https
       std::byte{0x84},  // Indexed header field: :path: /
-      std::byte{0x01}   // Indexed header field: :authority (index 1)
+      std::byte{0x01},  // Indexed header field: :authority (index 1)
   };
 
   FrameHeader header{};
@@ -206,7 +182,7 @@ TEST(Http2Frame, ParseHeadersFrameSimple) {
   header.streamId = 1;
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.endHeaders);
@@ -216,10 +192,10 @@ TEST(Http2Frame, ParseHeadersFrameSimple) {
 }
 
 TEST(Http2Frame, ParseHeadersFrameWithPriority) {
-  std::array<std::byte, 9> payload = {
+  const std::byte payload[]{
       std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // stream dependency
       std::byte{0xFF},                                                     // weight 255 on wire => 256 actual
-      std::byte{0x82}, std::byte{0x86}, std::byte{0x84}, std::byte{0x01}   // header block
+      std::byte{0x82}, std::byte{0x86}, std::byte{0x84}, std::byte{0x01},  // header block
   };
 
   FrameHeader header{};
@@ -229,7 +205,7 @@ TEST(Http2Frame, ParseHeadersFrameWithPriority) {
   header.streamId = 1;
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.hasPriority);
@@ -258,7 +234,12 @@ TEST(Http2Frame, ParseHeadersFrameEmptyPayloadWithPaddedFlag) {
 
 TEST(Http2Frame, ParseHeadersFrameWithPadding) {
   // Padded headers: pad_length=2, header block "AB", padding 0x00 0x00
-  std::array<std::byte, 4> payload = {std::byte{0x02}, std::byte{'A'}, std::byte{'B'}, std::byte{0x00}};
+  const std::byte payload[]{
+      std::byte{0x02},
+      std::byte{'A'},
+      std::byte{'B'},
+      std::byte{0x00},
+  };
 
   FrameHeader header{};
   header.length = 4;
@@ -267,7 +248,7 @@ TEST(Http2Frame, ParseHeadersFrameWithPadding) {
   header.streamId = 1;
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.padLength, 2U);
@@ -276,10 +257,14 @@ TEST(Http2Frame, ParseHeadersFrameWithPadding) {
 
 TEST(Http2Frame, WriteHeadersFrame) {
   RawBytes buffer;
-  std::array<std::byte, 3> headerBlock = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
+  const std::byte headerBlock[]{
+      std::byte{0x82},
+      std::byte{0x86},
+      std::byte{0x84},
+  };
 
   WriteFrame(buffer, FrameType::Headers, ComputeHeaderFrameFlags(true, true), 1,
-             static_cast<uint32_t>(headerBlock.size()));
+             static_cast<uint32_t>(sizeof(headerBlock)));
   buffer.append(headerBlock);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
@@ -296,9 +281,9 @@ TEST(Http2Frame, WriteHeadersFrame) {
 // ============================
 
 TEST(Http2Frame, ParsePriorityFrame) {
-  std::array<std::byte, 5> payload = {
+  const std::byte payload[]{
       std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x03},  // exclusive, depends on 3
-      std::byte{0x0F}                                                      // weight 15 on wire => 16 actual
+      std::byte{0x0F},                                                     // weight 15 on wire => 16 actual
   };
 
   FrameHeader header{};
@@ -308,7 +293,7 @@ TEST(Http2Frame, ParsePriorityFrame) {
   header.streamId = 5;
 
   PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParsePriorityFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.exclusive);
@@ -334,8 +319,11 @@ TEST(Http2Frame, WritePriorityFrame) {
 // ============================
 
 TEST(Http2Frame, ParseRstStreamFrame) {
-  std::array<std::byte, 4> payload = {
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x08}  // CANCEL
+  const std::byte payload[] = {
+      std::byte{0x00},
+      std::byte{0x00},
+      std::byte{0x00},
+      std::byte{0x08},  // CANCEL
   };
 
   FrameHeader header{};
@@ -345,7 +333,7 @@ TEST(Http2Frame, ParseRstStreamFrame) {
   header.streamId = 1;
 
   RstStreamFrame frame;
-  FrameParseResult result = ParseRstStreamFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseRstStreamFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.errorCode, ErrorCode::Cancel);
@@ -383,11 +371,11 @@ TEST(Http2Frame, ParseSettingsFrameEmpty) {
 }
 
 TEST(Http2Frame, ParseSettingsFrameWithEntries) {
-  std::array<std::byte, 12> payload = {
+  const std::byte payload[]{
       std::byte{0x00}, std::byte{0x03},                                    // MAX_CONCURRENT_STREAMS
       std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x64},  // value: 100
       std::byte{0x00}, std::byte{0x04},                                    // INITIAL_WINDOW_SIZE
-      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}   // value: 65536
+      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},  // value: 65536
   };
 
   FrameHeader header{};
@@ -397,7 +385,7 @@ TEST(Http2Frame, ParseSettingsFrameWithEntries) {
   header.streamId = 0;
 
   SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseSettingsFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_FALSE(frame.isAck);
@@ -410,8 +398,10 @@ TEST(Http2Frame, ParseSettingsFrameWithEntries) {
 
 TEST(Http2Frame, WriteSettingsFrame) {
   RawBytes buffer;
-  std::array<SettingsEntry, 2> entries = {SettingsEntry{SettingsParameter::MaxConcurrentStreams, 100},
-                                          SettingsEntry{SettingsParameter::InitialWindowSize, 65536}};
+  const SettingsEntry entries[]{
+      SettingsEntry{SettingsParameter::MaxConcurrentStreams, 100},
+      SettingsEntry{SettingsParameter::InitialWindowSize, 65536},
+  };
 
   WriteSettingsFrame(buffer, entries);
 
@@ -440,8 +430,10 @@ TEST(Http2Frame, WriteSettingsAckFrame) {
 // ============================
 
 TEST(Http2Frame, ParsePingFrame) {
-  std::array<std::byte, 8> payload = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
-                                      std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+  const std::byte payload[]{
+      std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+      std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
+  };
 
   FrameHeader header{};
   header.length = 8;
@@ -450,7 +442,7 @@ TEST(Http2Frame, ParsePingFrame) {
   header.streamId = 0;
 
   PingFrame frame;
-  FrameParseResult result = ParsePingFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParsePingFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.isAck);
@@ -462,8 +454,10 @@ TEST(Http2Frame, WritePingFrame) {
   RawBytes buffer;
   PingFrame pingFrame;
   pingFrame.isAck = true;
-  static constexpr std::byte opaqueData[] = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
-                                             std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+  static constexpr std::byte opaqueData[] = {
+      std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
+      std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
+  };
 
   std::memcpy(pingFrame.opaqueData, opaqueData, sizeof(opaqueData));
 
@@ -482,10 +476,10 @@ TEST(Http2Frame, WritePingFrame) {
 // ============================
 
 TEST(Http2Frame, ParseGoAwayFrame) {
-  std::array<std::byte, 13> payload = {
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x05},                  // last stream ID: 5
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},                  // NO_ERROR
-      std::byte{'t'},  std::byte{'e'},  std::byte{'s'},  std::byte{'t'},  std::byte{0x00}  // debug data
+  const std::byte payload[]{
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x05},                   // last stream ID: 5
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},                   // NO_ERROR
+      std::byte{'t'},  std::byte{'e'},  std::byte{'s'},  std::byte{'t'},  std::byte{0x00},  // debug data
   };
 
   FrameHeader header{};
@@ -495,7 +489,7 @@ TEST(Http2Frame, ParseGoAwayFrame) {
   header.streamId = 0;
 
   GoAwayFrame frame;
-  FrameParseResult result = ParseGoAwayFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseGoAwayFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.lastStreamId, 5U);
@@ -505,13 +499,13 @@ TEST(Http2Frame, ParseGoAwayFrame) {
 
 TEST(Http2Frame, WriteGoAwayFrame) {
   RawBytes buffer;
-  WriteGoAwayFrame(buffer, 5, ErrorCode::NoError, "test");
+  WriteGoAwayFrame(buffer, 5, ErrorCode::NoError, ErrorMsg::NoError);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
   EXPECT_EQ(header.type, FrameType::GoAway);
-  EXPECT_EQ(header.length, 12U);  // 8 + 4 bytes debug data
+  EXPECT_EQ(header.length, 16U);  // 8 + 8 bytes debug data
 }
 
 // ============================
@@ -519,12 +513,15 @@ TEST(Http2Frame, WriteGoAwayFrame) {
 // ============================
 
 TEST(Http2Frame, ParseWindowUpdateFrame) {
-  std::array<std::byte, 4> payload = {
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x10}, std::byte{0x00}  // increment: 4096
+  const std::byte payload[] = {
+      std::byte{0x00},
+      std::byte{0x00},
+      std::byte{0x10},
+      std::byte{0x00},  // increment: 4096
   };
 
   WindowUpdateFrame frame;
-  FrameParseResult result = ParseWindowUpdateFrame(AsSpan(payload), frame);
+  FrameParseResult result = ParseWindowUpdateFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.windowSizeIncrement, 4096U);
@@ -547,7 +544,7 @@ TEST(Http2Frame, WriteWindowUpdateFrame) {
 // ============================
 
 TEST(Http2Frame, ParseContinuationFrame) {
-  std::array<std::byte, 3> payload = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
+  const std::byte payload[] = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
 
   FrameHeader header{};
   header.length = 3;
@@ -556,7 +553,7 @@ TEST(Http2Frame, ParseContinuationFrame) {
   header.streamId = 1;
 
   ContinuationFrame frame;
-  ParseContinuationFrame(header, AsSpan(payload), frame);
+  ParseContinuationFrame(header, payload, frame);
 
   EXPECT_TRUE(frame.endHeaders);
   EXPECT_EQ(frame.headerBlockFragment.size(), 3U);
@@ -564,7 +561,7 @@ TEST(Http2Frame, ParseContinuationFrame) {
 
 TEST(Http2Frame, WriteContinuationFrame) {
   RawBytes buffer;
-  std::array<std::byte, 3> headerBlock = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
+  const std::byte headerBlock[]{std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
 
   WriteContinuationFrame(buffer, 1, headerBlock, true);
 
@@ -581,8 +578,10 @@ TEST(Http2Frame, WriteContinuationFrame) {
 // ============================
 
 TEST(Http2Frame, ParseDataFrameInvalidPadding) {
-  std::array<std::byte, 2> payload = {std::byte{0x05},  // pad length: 5 (but only 1 byte of actual data)
-                                      std::byte{'A'}};
+  const std::byte payload[]{
+      std::byte{0x05},  // pad length: 5 (but only 1 byte of actual data)
+      std::byte{'A'},
+  };
 
   FrameHeader header{};
   header.length = 2;
@@ -591,7 +590,7 @@ TEST(Http2Frame, ParseDataFrameInvalidPadding) {
   header.streamId = 1;
 
   DataFrame frame;
-  FrameParseResult result = ParseDataFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseDataFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::InvalidPadding);
 }
@@ -614,8 +613,9 @@ TEST(Http2Frame, ParseDataFrameEmptyPayloadWithPaddedFlag) {
 
 TEST(Http2Frame, ParseSettingsFrameInvalidLength) {
   // Settings entries must be 6 bytes each
-  std::array<std::byte, 5> payload = {std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},
-                                      std::byte{0x10}};
+  const std::byte payload[] = {
+      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x10},
+  };
 
   FrameHeader header{};
   header.length = 5;
@@ -624,13 +624,13 @@ TEST(Http2Frame, ParseSettingsFrameInvalidLength) {
   header.streamId = 0;
 
   SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseSettingsFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
 
 TEST(Http2Frame, ParsePingFrameInvalidLength) {
-  std::array<std::byte, 4> payload = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+  const std::byte payload[]{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
   FrameHeader header{};
   header.length = 4;
@@ -639,13 +639,13 @@ TEST(Http2Frame, ParsePingFrameInvalidLength) {
   header.streamId = 0;
 
   PingFrame frame;
-  FrameParseResult result = ParsePingFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParsePingFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
 
 TEST(Http2Frame, ParseRstStreamFrameInvalidLength) {
-  std::array<std::byte, 3> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
   FrameHeader header{};
   header.length = 3;
@@ -654,13 +654,13 @@ TEST(Http2Frame, ParseRstStreamFrameInvalidLength) {
   header.streamId = 1;
 
   RstStreamFrame frame;
-  FrameParseResult result = ParseRstStreamFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParseRstStreamFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
 
 TEST(Http2Frame, ParsePriorityFrameInvalidLength) {
-  std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
   FrameHeader header{};
   header.length = 4;
@@ -669,16 +669,16 @@ TEST(Http2Frame, ParsePriorityFrameInvalidLength) {
   header.streamId = 1;
 
   PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(header, AsSpan(payload), frame);
+  FrameParseResult result = ParsePriorityFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
 
 TEST(Http2Frame, ParseWindowUpdateFrameInvalidLength) {
-  std::array<std::byte, 3> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
   WindowUpdateFrame frame;
-  FrameParseResult result = ParseWindowUpdateFrame(AsSpan(payload), frame);
+  FrameParseResult result = ParseWindowUpdateFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -712,9 +712,11 @@ TEST(Http2Frame, RoundTripDataFrame) {
 
 TEST(Http2Frame, RoundTripSettingsFrame) {
   RawBytes buffer;
-  std::array<SettingsEntry, 3> entries = {SettingsEntry{SettingsParameter::HeaderTableSize, 8192},
-                                          SettingsEntry{SettingsParameter::MaxConcurrentStreams, 50},
-                                          SettingsEntry{SettingsParameter::MaxFrameSize, 32768}};
+  std::array<SettingsEntry, 3> entries = {
+      SettingsEntry{SettingsParameter::HeaderTableSize, 8192},
+      SettingsEntry{SettingsParameter::MaxConcurrentStreams, 50},
+      SettingsEntry{SettingsParameter::MaxFrameSize, 32768},
+  };
 
   WriteSettingsFrame(buffer, entries);
 

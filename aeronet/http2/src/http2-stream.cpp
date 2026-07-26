@@ -7,6 +7,12 @@
 
 namespace aeronet::http2 {
 
+namespace {
+
+constexpr uint32_t kMaxWindowSize = (1U << 31) - 1;  // Maximum flow control window size
+
+}
+
 Http2Stream::Http2Stream(uint32_t streamId, uint32_t initialWindowSize) noexcept
     : _streamId(streamId),
       _sendWindow(static_cast<int32_t>(initialWindowSize)),

@@ -22,6 +22,7 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -561,8 +562,11 @@ TEST(Http2Connection, RecvRstStreamClosesAndDecrementsActiveStreamCount) {
 
   const uint32_t code = static_cast<uint32_t>(ErrorCode::Cancel);
   const std::array<std::byte, 4> payload = {
-      std::byte{static_cast<uint8_t>((code >> 24) & 0xFF)}, std::byte{static_cast<uint8_t>((code >> 16) & 0xFF)},
-      std::byte{static_cast<uint8_t>((code >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(code & 0xFF)}};
+      std::byte{static_cast<uint8_t>((code >> 24) & 0xFF)},
+      std::byte{static_cast<uint8_t>((code >> 16) & 0xFF)},
+      std::byte{static_cast<uint8_t>((code >> 8) & 0xFF)},
+      std::byte{static_cast<uint8_t>(code & 0xFF)},
+  };
   FrameHeader header;
   header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::RstStream;
@@ -662,7 +666,7 @@ TEST(Http2Connection, InitiateGoAway) {
   conn.onOutputWritten(conn.getPendingOutput().size());
 
   // Initiate GOAWAY
-  conn.initiateGoAway(ErrorCode::NoError, "graceful shutdown");
+  conn.initiateGoAway(ErrorCode::NoError, ErrorMsg::NoError);
 
   EXPECT_EQ(conn.state(), ConnectionState::GoAwaySent);
   EXPECT_TRUE(conn.hasPendingOutput());
@@ -2142,7 +2146,7 @@ TEST(Http2Connection, ProcessInputInGoAwaySentState) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Initiate GOAWAY
-  conn.initiateGoAway(ErrorCode::NoError, "test");
+  conn.initiateGoAway(ErrorCode::NoError, ErrorMsg::NoError);
   ASSERT_EQ(conn.state(), ConnectionState::GoAwaySent);
   if (conn.hasPendingOutput()) {
     conn.onOutputWritten(conn.getPendingOutput().size());

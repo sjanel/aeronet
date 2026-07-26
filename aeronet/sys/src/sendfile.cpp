@@ -21,7 +21,7 @@
 
 namespace aeronet {
 
-int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_t count) noexcept {
+int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_t count) {
 #ifdef AERONET_LINUX
   static_assert(sizeof(ssize_t) <= sizeof(int64_t), "ssize_t must fit in int64_t");
   off_t off = static_cast<off_t>(offset);

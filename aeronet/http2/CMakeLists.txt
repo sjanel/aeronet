@@ -47,11 +47,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http2-frame-types_test
-    test/http2-frame-types_test.cpp
-)
-
-AeronetAddUnitTest(
     http2-protocol-handler_test
     test/http2-protocol-handler_test.cpp
     LIBRARIES

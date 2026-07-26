@@ -99,7 +99,11 @@ TS=$(date +%Y%m%d-%H%M%S)
 PERF_DATA="perf.data.${TS}"
 
 echo "Recording perf data to ${PERF_DATA} (freq=${FREQ})..."
-sudo "$PERF_BIN" record -F "${FREQ}" -g -o "${PERF_DATA}" -- "${BINARY}" "${ARGS[@]}"
+sudo "$PERF_BIN" record \
+    -g --call-graph fp \
+    -e cycles \
+    -o "${PERF_DATA}" \
+    -- "${BINARY}" "${ARGS[@]}"
 
 # perf record runs as root, so the output file is owned by root. Change ownership
 # to the current user so subsequent perf script/conversion commands can read it.
