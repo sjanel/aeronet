@@ -105,11 +105,11 @@ class Http1WriterTransport final : public IWriterTransport {
       RawChars chunkBuffer(totalSize);
       char* pData = to_lower_hex(data.size(), chunkBuffer.data());
 
-      pData = Append(http::CRLF, pData);
+      pData = AppendFixed<http::CRLF>(pData);
 
       pData = Append(data, pData);
 
-      pData = Append(http::CRLF, pData);
+      pData = AppendFixed<http::CRLF>(pData);
       chunkBuffer.setSize(totalSize);
 
       return enqueue(HttpMessageData(std::move(chunkBuffer)));
@@ -136,9 +136,9 @@ class Http1WriterTransport final : public IWriterTransport {
       char* pData = trailers.data();
       *pData++ = '0';
 
-      pData = Append(http::CRLF, pData);
+      pData = AppendFixed<http::CRLF>(pData);
       pData += trailers.size();
-      pData = Append(http::CRLF, pData);
+      pData = AppendFixed<http::CRLF>(pData);
 
       trailers.setEnd(pData);
     }

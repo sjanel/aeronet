@@ -71,7 +71,7 @@ class DynamicConcatenatedStrings {
 
     char* pData = _buf.data() + _buf.size();
     pData = WriteInt(pData, value, nbDigitsValue);
-    pData = Append(kSep, pData);
+    pData = AppendFixed<kSep>(pData);
     _buf.setEnd(pData);
   }
 
@@ -85,9 +85,9 @@ class DynamicConcatenatedStrings {
 
     char* pData = _buf.data() + _buf.size();
     pData = Append(name, pData);
-    pData = Append(http::HeaderSep, pData);
+    pData = AppendFixed<http::HeaderSep>(pData);
     pData = Append(value, pData);
-    pData = Append(kSep, pData);
+    pData = AppendFixed<kSep>(pData);
     _buf.setEnd(pData);
   }
 

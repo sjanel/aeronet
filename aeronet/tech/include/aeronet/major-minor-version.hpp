@@ -59,7 +59,7 @@ class MajorMinorVersion {
 
   // Write the full version string (e.g. "HTTP/1.1") to out.
   // Returns pointer to one past the last written character.
-  constexpr char* writeFull(char* out) const { return writeMajorMinor(Append(kPrefix, out)); }
+  constexpr char* writeFull(char* out) const { return writeMajorMinor(AppendFixed<kPrefix>(out)); }
 
   // Write just the "X.Y" part of the version to out.
   // Returns pointer to one past the last written character.

@@ -191,7 +191,7 @@ inline std::string fullVersionWithRuntime() {
   fullVersionStr.resize_and_overwrite(
       kBaseStr.size() + 3U + nDigitsMajor + nDigitsMinor + nDigitsPatch,
       [major, minor, patch, nDigitsMajor, nDigitsMinor, nDigitsPatch](char* data, std::size_t sz) {
-        data = Append(kBaseStr, data);
+        data = AppendFixed<kBaseStr>(data);
         *data++ = ' ';
 
         data = WriteUInt(data, major, nDigitsMajor);

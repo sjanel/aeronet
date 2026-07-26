@@ -702,7 +702,7 @@ constexpr std::size_t kMaxRangeHeaderLen =
     kBytesPrefixStr.size() + (3UL * (std::numeric_limits<std::uint64_t>::digits10 + 1)) + 2UL;
 
 char* BuildRangeHeader(std::uint64_t start, std::uint64_t length, std::uint64_t total, char* pData) {
-  pData = Append(kBytesPrefixStr, pData);
+  pData = AppendFixed<kBytesPrefixStr>(pData);
 
   pData = WriteUInt(pData, start, ndigits(start));
   *pData++ = '-';
@@ -727,7 +727,7 @@ struct UnsatisfiedRangeHeaderBuf {
 
 UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   UnsatisfiedRangeHeaderBuf result;
-  auto* buf = Append(kUnsatisfiedRangePrefixStr, result.buf);
+  auto* buf = AppendFixed<kUnsatisfiedRangePrefixStr>(result.buf);
 
   buf = WriteUInt(buf, total, ndigits(total));
   assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
@@ -755,7 +755,7 @@ Boundary GenerateBoundary() {
 
   Boundary res;
 
-  auto* insertPtr = Append(kAeronetPrefix, res.data);
+  auto* insertPtr = AppendFixed<kAeronetPrefix>(res.data);
   std::memset(insertPtr, '0', nbZeros);
 
   insertPtr = to_lower_hex(val, insertPtr + nbZeros);
@@ -803,7 +803,7 @@ bool BuildMultipartBody(const File& file, std::span<const RangeSelection> ranges
   static constexpr std::string_view kContentTypeHeaderPrefix = "multipart/byteranges; boundary=";
 
   char contentTypeHeader[kContentTypeHeaderPrefix.size() + kBoundarySize];
-  char* endPtr = Append(kContentTypeHeaderPrefix, contentTypeHeader);
+  char* endPtr = AppendFixed<kContentTypeHeaderPrefix>(contentTypeHeader);
   endPtr = Append(boundarySv, endPtr);
 
   assert(ranges.size() > 1U);
@@ -829,16 +829,16 @@ bool BuildMultipartBody(const File& file, std::span<const RangeSelection> ranges
   resp.bodyInlineAppend(
       neededSize,
       [fileSize, contentType, boundarySv, &file, &ranges, &error](char* pInsert) {
-        char* pData = Append(kBoundaryPrefix, pInsert);
+        char* pData = AppendFixed<kBoundaryPrefix>(pInsert);
 
         for (const auto& rng : ranges) {
           pData = Append(boundarySv, pData);
-          pData = Append(kContentTypeHeader, pData);
+          pData = AppendFixed<kContentTypeHeader>(pData);
           pData = Append(contentType, pData);
-          pData = Append(kContentRangeHeader, pData);
+          pData = AppendFixed<kContentRangeHeader>(pData);
 
           pData = BuildRangeHeader(rng.offset, rng.length, fileSize, pData);
-          pData = Append(http::DoubleCRLF, pData);
+          pData = AppendFixed<http::DoubleCRLF>(pData);
 
           const std::size_t bytesRead =
               file.readAt(std::span<std::byte>(reinterpret_cast<std::byte*>(pData), rng.length), rng.offset);
@@ -848,11 +848,11 @@ bool BuildMultipartBody(const File& file, std::span<const RangeSelection> ranges
           }
           pData += bytesRead;
 
-          pData = Append(kBoundaryPrefix, pData);
+          pData = AppendFixed<kBoundaryPrefix>(pData);
         }
 
         pData = Append(boundarySv, pData);
-        pData = Append(kBoundarySuffix, pData);
+        pData = AppendFixed<kBoundarySuffix>(pData);
 
         return static_cast<std::size_t>(pData - pInsert);
       },

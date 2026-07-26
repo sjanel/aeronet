@@ -96,25 +96,31 @@ constexpr std::size_t ComputeJsonStringSize(std::string_view str) {
   return size;
 }
 
+constexpr std::string_view kQuoteEsc = "\\\"";
+constexpr std::string_view kBackslashEsc = "\\\\";
+constexpr std::string_view kNewlineEsc = "\\n";
+constexpr std::string_view kCarriageReturnEsc = "\\r";
+constexpr std::string_view kTabEsc = "\\t";
+
 // Append a quoted, minimally-escaped JSON string. Only the JOSE "kid" we emit flows through here.
 char* AppendJsonString(std::string_view str, char* pInsertPtr) {
   *pInsertPtr++ = '"';
   for (char ch : str) {
     switch (ch) {
       case '"':
-        pInsertPtr = Append("\\\"", pInsertPtr);
+        pInsertPtr = AppendFixed<kQuoteEsc>(pInsertPtr);
         break;
       case '\\':
-        pInsertPtr = Append("\\\\", pInsertPtr);
+        pInsertPtr = AppendFixed<kBackslashEsc>(pInsertPtr);
         break;
       case '\n':
-        pInsertPtr = Append("\\n", pInsertPtr);
+        pInsertPtr = AppendFixed<kNewlineEsc>(pInsertPtr);
         break;
       case '\r':
-        pInsertPtr = Append("\\r", pInsertPtr);
+        pInsertPtr = AppendFixed<kCarriageReturnEsc>(pInsertPtr);
         break;
       case '\t':
-        pInsertPtr = Append("\\t", pInsertPtr);
+        pInsertPtr = AppendFixed<kTabEsc>(pInsertPtr);
         break;
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
@@ -211,14 +217,14 @@ std::string Jwt::encode(std::string_view claimsJson, const JwtKey& key, JwtAlgor
   RawChars buf(kAlg.size() + algStr.size() + kType.size() + (keyId.empty() ? 0U : (kKid.size() + jsonStrSize)) + 1U);
   char* pData = buf.data();
 
-  pData = Append(kAlg, pData);
+  pData = AppendFixed<kAlg>(pData);
 
   pData = Append(algStr, pData);
 
-  pData = Append(kType, pData);
+  pData = AppendFixed<kType>(pData);
 
   if (!keyId.empty()) {
-    pData = Append(kKid, pData);
+    pData = AppendFixed<kKid>(pData);
     pData = AppendJsonString(keyId, pData);
   }
   *pData++ = '}';
