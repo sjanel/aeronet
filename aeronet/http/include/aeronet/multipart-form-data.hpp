@@ -49,6 +49,7 @@ class MultipartFormData {
 
    private:
     friend class MultipartFormData;
+
     std::size_t headerOffset{0};
     std::size_t headerCount{0};
     const vector<MultipartHeaderView>& headerStore;
