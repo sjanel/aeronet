@@ -601,7 +601,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
   // Write DoubleCRLF before the compressed body.
   char* out = msg._data.data() + newBodyStartPos - http::DoubleCRLF.size();
-  Copy(http::DoubleCRLF, out);
+  CopyFixed<http::DoubleCRLF>(out);
 
   // Write new Content-Length, padded with spaces if the number of chars of the actual compressed size is smaller than
   // the number of chars of the declared max compressed size (worst case).
@@ -610,7 +610,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   out -= nDigitsMaxCompressedSize;
 
   // Write '\r\nContent-Length: ' just before the new Content-Length value.
-  Copy(kCRLFContentLengthHeaderSep, out - kCRLFContentLengthHeaderSep.size());
+  CopyFixed<kCRLFContentLengthHeaderSep>(out - kCRLFContentLengthHeaderSep.size());
   out -= kCRLFContentLengthHeaderSep.size();
 
   // Write '\r\nContent-Type: XXXX' just before the Content-Length line.
@@ -623,7 +623,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
   // Write '\r\nVary: Accept-Encoding' if needed.
   if (addVaryHeaderLine) {
-    Copy(kCRLFVaryAcceptEncodingLine, out - kCRLFVaryAcceptEncodingLine.size());
+    CopyFixed<kCRLFVaryAcceptEncodingLine>(out - kCRLFVaryAcceptEncodingLine.size());
   } else if (needVaryAcceptEncoding) {
     // We are in the case of an existing Vary header without Accept-Encoding, we will append ", Accept-Encoding" to it.
     // The insertion point is guaranteed to be before the Content-Type line because of the heuristic in
@@ -632,9 +632,9 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     const std::size_t tailLen = contentTypeLinePos - varyResult.valueLast;
     std::memmove(out + additionalVaryLen, out, tailLen);
     if (varyResult.valueLast != varyResult.valueFirst) {
-      out = Append(kVaryHeaderValueSep, out);
+      out = AppendFixed<kVaryHeaderValueSep>(out);
     }
-    Copy(http::AcceptEncoding, out);
+    CopyFixed<http::AcceptEncoding>(out);
   }
 
   // Finalize response metadata to reflect compression

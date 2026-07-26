@@ -15,6 +15,10 @@ namespace aeronet {
 // emit a couple of overlapping fixed-width stores inline, avoiding the call. Microbenchmarks
 // (benchmarks/internal/memory-utils_bench.cpp) show ~1.9x on isolated small copies and ~1.5x on a realistic HTTP
 // fragment mix, with no regression above the threshold (it falls straight back to std::memcpy).
+// General-purpose copy for sizes only known at runtime (bounded small-size
+// branch table to avoid a real memcpy() call for short lengths). For
+// compile-time-constant sizes, prefer CopyFixed()/AppendFixed() instead —
+// it produces smaller, faster code in that case.
 constexpr void Copy(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AERONET_RESTRICT pDes) noexcept {
   static_assert(sizeof(*pSrc) == 1 && sizeof(*pDes) == 1, "Copy only works for byte pointers");
   if consteval {

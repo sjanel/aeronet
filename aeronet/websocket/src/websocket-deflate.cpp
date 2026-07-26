@@ -186,25 +186,25 @@ void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
       ComputeDeflateResponseSize(params, nDigitsServerMaxWindowBits, nDigitsClientMaxWindowBits));
   char* ptr = output.data() + output.size();
 
-  ptr = Append(kPermessageDeflate, ptr);
+  ptr = AppendFixed<kPermessageDeflate>(ptr);
 
   if (params.serverNoContextTakeover) {
-    ptr = Append(kSemicolonSpace, ptr);
-    ptr = Append(kServerNoContextTakeover, ptr);
+    ptr = AppendFixed<kSemicolonSpace>(ptr);
+    ptr = AppendFixed<kServerNoContextTakeover>(ptr);
   }
   if (params.clientNoContextTakeover) {
-    ptr = Append(kSemicolonSpace, ptr);
-    ptr = Append(kClientNoContextTakeover, ptr);
+    ptr = AppendFixed<kSemicolonSpace>(ptr);
+    ptr = AppendFixed<kClientNoContextTakeover>(ptr);
   }
   if (params.serverMaxWindowBits < 15) {
-    ptr = Append(kSemicolonSpace, ptr);
-    ptr = Append(kServerMaxWindowBits, ptr);
+    ptr = AppendFixed<kSemicolonSpace>(ptr);
+    ptr = AppendFixed<kServerMaxWindowBits>(ptr);
     *ptr++ = '=';
     ptr = WriteUInt(ptr, params.serverMaxWindowBits, nDigitsServerMaxWindowBits);
   }
   if (params.clientMaxWindowBits < 15) {
-    ptr = Append(kSemicolonSpace, ptr);
-    ptr = Append(kClientMaxWindowBits, ptr);
+    ptr = AppendFixed<kSemicolonSpace>(ptr);
+    ptr = AppendFixed<kClientMaxWindowBits>(ptr);
     *ptr++ = '=';
     ptr = WriteUInt(ptr, params.clientMaxWindowBits, nDigitsClientMaxWindowBits);
   }

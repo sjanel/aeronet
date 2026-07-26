@@ -74,7 +74,7 @@ namespace aeronet::test {
 inline std::optional<std::string> PathForFd(int fd) {
   static constexpr std::string_view kPathPrefix = "/proc/self/fd/";
   char linkBuf[kPathPrefix.size() + std::numeric_limits<int>::digits10 + 2];
-  char* ptr = Append(kPathPrefix, linkBuf);
+  char* ptr = AppendFixed<kPathPrefix>(linkBuf);
   ptr = WriteInt(ptr, fd, ndigits(fd));
   *ptr = '\0';
 

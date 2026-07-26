@@ -13,10 +13,10 @@ RawChars MakeHttp1HeaderLine(std::string_view name, std::string_view value, bool
   char* ptr = line.data();
 
   ptr = Append(name, ptr);
-  ptr = Append(http::HeaderSep, ptr);
+  ptr = AppendFixed<http::HeaderSep>(ptr);
   ptr = Append(value, ptr);
   if (withCRLF) {
-    ptr = Append(http::CRLF, ptr);
+    ptr = AppendFixed<http::CRLF>(ptr);
   }
 
   line.setEnd(ptr);
@@ -34,9 +34,9 @@ RawChars BuildRawHttp11(std::string_view method, std::string_view target, std::s
   ptr = Append(method, ptr);
   *ptr++ = ' ';
   ptr = Append(target, ptr);
-  ptr = Append(kHttp11, ptr);
+  ptr = AppendFixed<kHttp11>(ptr);
   ptr = Append(extraHeaders, ptr);
-  ptr = Append(http::CRLF, ptr);
+  ptr = AppendFixed<http::CRLF>(ptr);
   ptr = Append(body, ptr);
 
   raw.setEnd(ptr);

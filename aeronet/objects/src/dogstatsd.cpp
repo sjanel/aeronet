@@ -117,7 +117,7 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
   pData = Append(value, pData);
   pData = Append(typeSuffix, pData);
   if (tagsSize != 0) {
-    pData = Append(kTagsPrefix, pData);
+    pData = AppendFixed<kTagsPrefix>(pData);
     pData = Append(tags.fullString(), pData);
   }
 

@@ -37,7 +37,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   char* pData = out.data();
 
   // Status line: HTTP/1.1 404 Not Found\r\n
-  pData = Append(kHTTP11Str, pData);
+  pData = AppendFixed<kHTTP11Str>(pData);
 
   pData = writeStatusCode(pData, status);
   *pData++ = ' ';
@@ -47,7 +47,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   pData = WriteCRLFDateHeader(SysClock::now(), pData);
 
   // connection: close
-  pData = Append(kConnectionCloseStr, pData);
+  pData = AppendFixed<kConnectionCloseStr>(pData);
 
   // Append global headers
   pData = Append(globalHeaders.fullStringWithLastSep(), pData);
