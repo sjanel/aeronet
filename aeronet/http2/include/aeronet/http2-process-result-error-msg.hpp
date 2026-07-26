@@ -1,0 +1,54 @@
+#pragma once
+
+#include <cstdint>
+
+namespace aeronet::http2 {
+
+enum class ErrorMsg : uint8_t {
+  NoError,
+  InvalidConnectionPreface,
+  FrameExceedsMaximumSize,
+  ExpectedCONTINUATIONFrame,
+  UnexpectedPUSH_PROMISE,
+  DATAFrameOnStreamZero,
+  InvalidPaddingInDATAFrame,
+  InvalidDATAFrame,
+  DATAOnClosedStream,
+  ConnectionFlowControlExceeded,
+  HEADERSFrameOnStreamZero,
+  InvalidPaddingInHEADERSFrame,
+  InvalidHEADERSFrame,
+  ServerInitiatedStreamIdFromClient,
+  StreamIdNotIncreasing,
+  StreamFlowControlExceeded,
+  StreamDependsOnItself,
+  MaxConcurrentStreamsExceeded,
+  HeaderBlockTooLarge,
+  InvalidStreamStateForHEADERS,
+  HPACKDecodingFailed,
+  PRIORITYFrameOnStreamZero,
+  InvalidPRIORITYFrame,
+  TooManyPRIORITYFramesOnIdleStreams,
+  RST_STREAMFrameOnStreamZero,
+  InvalidRST_STREAMFrame,
+  SETTINGSFrameOnNonZeroStream,
+  InvalidSETTINGSFrame,
+  InvalidENABLE_PUSHValue,
+  InitialWindowSizeTooLarge,
+  WindowSizeUpdateOverflow,
+  InvalidMAX_FRAMESize,
+  PINGFrameOnNonZeroStream,
+  InvalidPINGFrame,
+  GOAWAYFrameOnNonZeroStream,
+  InvalidGOAWAYFrame,
+  InvalidWINDOW_UPDATEFrame,
+  ZeroWINDOW_UPDATEIncrement,
+  ZeroWINDOW_UPDATEIncrementOnConnection,
+  ConnectionWindowOverflow,
+  StreamWindowOverflow,
+  CONTINUATIONOnWrongStream,
+  StreamNotFoundForCONTINUATION,
+  UnexpectedCONTINUATIONFrame,
+};
+
+}

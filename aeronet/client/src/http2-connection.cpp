@@ -28,8 +28,9 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
@@ -201,8 +202,8 @@ class Http2ClientEngine {
         const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
         using Action = http2::Http2Connection::ProcessResult::Action;
         if (processed.action == Action::Error) {
-          log::error("HTTP/2 client: protocol error: {} ({})", processed.errorMessage,
-                     http2::ErrorCodeName(processed.errorCode));
+          log::error("HTTP/2 client: protocol error: {} ({})", http2::ErrorCodeName(processed.errorCode),
+                     ConvertProcessResultErrorMsgToSv(processed.errorMsg));
           return std::unexpected(HttpClientErrc::malformedResponse);
         }
         if (processed.action == Action::Closed) {

@@ -19,6 +19,6 @@ namespace aeronet {
 //          len is in/out).
 // Windows: uses TransmitFile.  `fileFd` is a CRT file descriptor (from
 //          _open / open) — it is converted internally via _get_osfhandle.
-int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_t count) noexcept;
+int64_t Sendfile(NativeHandle outFd, int fileFd, std::size_t& offset, std::size_t count);
 
 }  // namespace aeronet
