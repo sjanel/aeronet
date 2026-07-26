@@ -81,7 +81,7 @@ bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t t
   out.reserve(requiredCapacity);
   char* pEnd = out.data();
 
-  pEnd = Append(kHttpsScheme, pEnd);
+  pEnd = AppendFixed<kHttpsScheme>(pEnd);
   pEnd = Append(host, pEnd);
 
   if (addPort) {

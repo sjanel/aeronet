@@ -112,10 +112,10 @@ constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTls
 constexpr char* AppendScheme(bool isTls, char* pData) {
   if (isTls) {
     static constexpr std::string_view kHttps = "https://";
-    pData = Append(kHttps, pData);
+    pData = AppendFixed<kHttps>(pData);
   } else {
     static constexpr std::string_view kHttp = "http://";
-    pData = Append(kHttp, pData);
+    pData = AppendFixed<kHttp>(pData);
   }
   return pData;
 }
@@ -154,7 +154,7 @@ constexpr char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIp
       JoinStringView_v<http::HTTP11Sv, http::CRLF, http::Host, http::HeaderSep>;
 
   // Host Header
-  pData = Append(kHostPrefix, pData);
+  pData = AppendFixed<kHostPrefix>(pData);
 
   if (hostIsIpv6) {
     *pData++ = '[';
@@ -215,11 +215,11 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
   setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
   if (concatenatedHeaders.empty()) {
-    pData = Append(http::DoubleCRLF, pData);
+    pData = AppendFixed<http::DoubleCRLF>(pData);
   } else {
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
     pData = Append(concatenatedHeaders, pData);
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
   }
 
   _data.setEnd(pData);
@@ -259,18 +259,18 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
   setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
   if (!concatenatedHeaders.empty()) {
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
     pData = Append(concatenatedHeaders, pData);
     pData -= http::CRLF.size();  // remove the last CRLF
   }
   if (!body.empty()) {
-    pData = Append(http::CRLF, pData);
+    pData = AppendFixed<http::CRLF>(pData);
 
     pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
 
     pData = Append(body, pData);
   } else {
-    pData = Append(http::DoubleCRLF, pData);
+    pData = AppendFixed<http::DoubleCRLF>(pData);
   }
   _data.setEnd(pData);
   assert(_data.size() + additionalCapacity == _data.capacity());

@@ -286,13 +286,13 @@ RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validation
                                                 valueSize + http::CRLF.size() + http::CRLF.size());
 
     char* pData = response.data() + response.size();
-    pData = Append(websocket::SecWebSocketExtensions, pData);
-    pData = Append(http::HeaderSep, pData);
+    pData = AppendFixed<websocket::SecWebSocketExtensions>(pData);
+    pData = AppendFixed<http::HeaderSep>(pData);
     response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
 
     websocket::BuildDeflateResponse(params, response);
 
-    Copy(http::CRLF, response.data() + response.size());
+    CopyFixed<http::CRLF>(response.data() + response.size());
     response.addSize(http::CRLF.size());
   }
 

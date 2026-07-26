@@ -367,11 +367,11 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   };
 
   char* pData = reqBuffer.data();
-  pData = Append(kConnect, pData);
+  pData = AppendFixed<kConnect>(pData);
   pData = appendAuthority(pData);
-  pData = Append(kConnectMid, pData);
+  pData = AppendFixed<kConnectMid>(pData);
   pData = appendAuthority(pData);
-  pData = Append(http::DoubleCRLF, pData);
+  pData = AppendFixed<http::DoubleCRLF>(pData);
   reqBuffer.setEnd(pData);
 
   // Write the CONNECT request in full, pumping the event loop on would-block.

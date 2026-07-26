@@ -473,7 +473,7 @@ class HttpMessage {
     if (written == 0) {
       // erase both content-length and content-type headers
       _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - internalBodyAndTrailersLen());
-      Copy(http::CRLF, _data.end() - http::CRLF.size());
+      CopyFixed<http::CRLF>(_data.end() - http::CRLF.size());
       setBodyStartPos(_data.size());
     } else {
       // Set final size
@@ -552,7 +552,7 @@ class HttpMessage {
       if (oldBodyLen == 0 && !_opts.isAutomaticDirectCompression()) {
         // erase both content-length and content-type headers
         _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize);
-        Copy(http::CRLF, _data.end() - http::CRLF.size());
+        CopyFixed<http::CRLF>(_data.end() - http::CRLF.size());
         adjustBodyStartNoCheck(-static_cast<int64_t>(contentLengthHeaderSize) -
                                static_cast<int64_t>(contentTypeHeaderSize));
       } else {
