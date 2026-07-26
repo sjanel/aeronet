@@ -83,8 +83,8 @@
 #include "aeronet/upgrade-handler.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #endif

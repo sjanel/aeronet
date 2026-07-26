@@ -133,10 +133,12 @@ class Http1WriterTransport final : public IWriterTransport {
       // trailers already contain header lines; prepend "0\r\n" and append final "\r\n"
       // shift right to make space for "0\r\n"
       std::memmove(trailers.data() + 1UL + http::CRLF.size(), trailers.data(), trailers.size());
-      char* pData = trailers.data();
-      *pData++ = '0';
 
-      pData = AppendFixed<http::CRLF>(pData);
+      static constexpr std::string_view kEndChunkPrefix = "0\r\n";
+
+      char* pData = trailers.data();
+
+      pData = AppendFixed<kEndChunkPrefix>(pData);
       pData += trailers.size();
       pData = AppendFixed<http::CRLF>(pData);
 

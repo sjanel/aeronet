@@ -19,6 +19,7 @@
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -43,6 +44,9 @@ constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256UL * 1024;
 // real request processing. ENHANCE_YOUR_CALM is sent when exceeded.
 constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 
+constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
+constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
+
 }  // namespace
 
 // ============================
@@ -65,7 +69,7 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer)
 
 Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std::byte> data) {
   if (data.empty()) {
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::Continue};
   }
 
   switch (_state) {
@@ -83,7 +87,7 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
 
     default:
       assert(_state == ConnectionState::Closed);
-      return ProcessResult{ProcessResult::Action::Closed, ErrorCode::NoError, 0, {}};
+      return ProcessResult{ProcessResult::Action::Closed};
   }
 }
 
@@ -97,12 +101,12 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
   }
 }
 
-void Http2Connection::initiateGoAway(ErrorCode errorCode, std::string_view debugData) {
+void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
   if (_state == ConnectionState::Closed || _state == ConnectionState::GoAwaySent) {
     return;
   }
 
-  WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, debugData);
+  WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, msg);
   _state = ConnectionState::GoAwaySent;
   _goAwayLastStreamId = _lastPeerStreamId;
 }
@@ -201,11 +205,7 @@ ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream)
   Http2Stream* pStream = &it->second;
 
   // Transition stream state
-  const ErrorCode err = pStream->onSendHeaders(endStream);
-  if (err != ErrorCode::NoError) {
-    return err;
-  }
-  return ErrorCode::NoError;
+  return pStream->onSendHeaders(endStream);
 }
 
 namespace {
@@ -329,8 +329,6 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   }
 }
 
-void Http2Connection::sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuffer, pingFrame); }
-
 void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
   const auto it = _streams.find(streamId);
   if (it != _streams.end() && it->second.isClosed()) {
@@ -365,12 +363,12 @@ Http2Connection::ProcessResult Http2Connection::processPreface(std::span<const s
   if (_isServer) {
     // Server expects client preface
     if (data.size() < kConnectionPrefaceLength) {
-      return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+      return ProcessResult{ProcessResult::Action::Continue};
     }
     // Compare against the connection preface string
     std::string_view dataView(reinterpret_cast<const char*>(data.data()), kConnectionPrefaceLength);
     if (dataView != kConnectionPreface) [[unlikely]] {
-      return connectionError(ErrorCode::ProtocolError, "Invalid connection preface");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidConnectionPreface);
     }
 
     _state = ConnectionState::AwaitingSettings;
@@ -382,12 +380,12 @@ Http2Connection::ProcessResult Http2Connection::processPreface(std::span<const s
       sendSettings();
     }
 
-    return ProcessResult{ProcessResult::Action::OutputReady, ErrorCode::NoError, kConnectionPrefaceLength, {}};
+    return ProcessResult{ProcessResult::Action::OutputReady, kConnectionPrefaceLength};
   }
   // Client-side: we would have sent preface first
   // For now, just move to awaiting settings
   _state = ConnectionState::AwaitingSettings;
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const std::byte> data) {
@@ -398,7 +396,7 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
 
     // Check frame size limits
     if (header.length > _localSettings.maxFrameSize) {
-      return connectionError(ErrorCode::FrameSizeError, "Frame exceeds maximum size");
+      return connectionError(ErrorCode::FrameSizeError, ErrorMsg::FrameExceedsMaximumSize);
     }
 
     std::size_t totalFrameSize = FrameHeader::kSize + header.length;
@@ -422,18 +420,14 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
     data = data.subspan(totalFrameSize);
   }
 
-  return ProcessResult{
-      hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue,
-      ErrorCode::NoError,
-      totalConsumed,
-      {},
-  };
+  return ProcessResult{hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue,
+                       totalConsumed};
 }
 
 Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header, std::span<const std::byte> payload) {
   // CONTINUATION frames must follow HEADERS/PUSH_PROMISE
   if (_expectingContinuation && header.type != FrameType::Continuation) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "Expected CONTINUATION frame");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::ExpectedCONTINUATIONFrame);
   }
 
   switch (header.type) {
@@ -449,7 +443,7 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
       return handleSettingsFrame(header, payload);
     case FrameType::PushPromise:
       // Server doesn't receive PUSH_PROMISE, client-only
-      return connectionError(ErrorCode::ProtocolError, "Unexpected PUSH_PROMISE");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::UnexpectedPUSH_PROMISE);
     case FrameType::Ping:
       return handlePingFrame(header, payload);
     case FrameType::GoAway:
@@ -460,45 +454,46 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
       return handleContinuationFrame(header, payload);
     default:
       // Unknown frame types are ignored (RFC 9113 §4.1)
-      return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+      log::debug("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type));
+      return ProcessResult{ProcessResult::Action::Continue};
   }
 }
 
 Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader header,
                                                                 std::span<const std::byte> payload) {
   if (header.streamId == 0) {
-    return connectionError(ErrorCode::ProtocolError, "DATA frame on stream 0");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::DATAFrameOnStreamZero);
   }
 
   DataFrame frame;
   FrameParseResult parseResult = ParseDataFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
     if (parseResult == FrameParseResult::InvalidPadding) {
-      return connectionError(ErrorCode::ProtocolError, "Invalid padding in DATA frame");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInDATAFrame);
     }
-    return connectionError(ErrorCode::FrameSizeError, "Invalid DATA frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidDATAFrame);
   }
 
   // Flow control: count full payload including padding
   auto payloadSize = static_cast<int32_t>(payload.size());
 
   if (payloadSize > _connectionRecvWindow) {
-    return connectionError(ErrorCode::FlowControlError, "Connection flow control exceeded");
+    return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionFlowControlExceeded);
   }
   _connectionRecvWindow -= payloadSize;
 
   auto it = _streams.find(header.streamId);
   if (it == _streams.end()) {
     // Stream may have been reset
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::Continue};
   }
 
   if (!it->second.canReceive()) {
-    return streamError(header.streamId, ErrorCode::StreamClosed, "DATA on closed stream");
+    return streamError(header.streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
   }
 
   if (!it->second.consumeRecvWindow(static_cast<uint32_t>(payloadSize))) {
-    return streamError(header.streamId, ErrorCode::FlowControlError, "Stream flow control exceeded");
+    return streamError(header.streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
   }
 
   // canReceive() above already ensures the stream is Open or HalfClosedLocal,
@@ -525,28 +520,28 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     closeStream(it);
   }
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader header,
                                                                    std::span<const std::byte> payload) {
   if (header.streamId == 0) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "HEADERS frame on stream 0");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::HEADERSFrameOnStreamZero);
   }
 
   // Check for GOAWAY - don't accept new streams
   if ((_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
       header.streamId > _goAwayLastStreamId) {
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};  // Ignore
+    return ProcessResult{ProcessResult::Action::Continue};  // Ignore
   }
 
   HeadersFrame frame;
   FrameParseResult parseResult = ParseHeadersFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
     if (parseResult == FrameParseResult::InvalidPadding) {
-      return connectionError(ErrorCode::ProtocolError, "Invalid padding in HEADERS frame");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInHEADERSFrame);
     }
-    return connectionError(ErrorCode::FrameSizeError, "Invalid HEADERS frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame);
   }
 
   // Get or create stream
@@ -558,11 +553,11 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
       // Client-initiated streams must be odd and increasing
       if ((header.streamId & 1) == 0) [[unlikely]] {
         _streams.erase(it);
-        return connectionError(ErrorCode::ProtocolError, "Server-initiated stream ID from client");
+        return connectionError(ErrorCode::ProtocolError, ErrorMsg::ServerInitiatedStreamIdFromClient);
       }
       if (header.streamId <= _lastPeerStreamId) [[unlikely]] {
         _streams.erase(it);
-        return connectionError(ErrorCode::ProtocolError, "Stream ID not increasing");
+        return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamIdNotIncreasing);
       }
     }
 
@@ -570,7 +565,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     // (not _peerSettings which limits streams WE initiate).
     if (_activeStreamCount >= _localSettings.maxConcurrentStreams) [[unlikely]] {
       _streams.erase(it);
-      return connectionError(ErrorCode::ProtocolError, "Max concurrent streams exceeded");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::MaxConcurrentStreamsExceeded);
     }
 
     ++_activeStreamCount;
@@ -581,7 +576,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   // Handle priority if present
   if (frame.hasPriority) {
     if (frame.streamDependency == header.streamId) [[unlikely]] {
-      return streamError(header.streamId, ErrorCode::ProtocolError, "Stream depends on itself");
+      return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
     }
     pStream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
   }
@@ -591,19 +586,19 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     // Security hardening (CVE-2024-27316): reject oversized initial header block fragment
     // to prevent unbounded memory growth via CONTINUATION flood.
     if (frame.headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
-      return connectionError(ErrorCode::EnhanceYourCalm, "Header block too large");
+      return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::HeaderBlockTooLarge);
     }
     _expectingContinuation = true;
     _headerBlockStreamId = header.streamId;
     _headerBlockEndStream = frame.endStream;
     _headerBlockBuffer.assign(frame.headerBlockFragment);
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::Continue};
   }
 
   // Complete header block - decode and deliver
   ErrorCode err = pStream->onRecvHeaders(frame.endStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(header.streamId, err, "Invalid stream state for HEADERS");
+    return streamError(header.streamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
   }
 
   // Decode headers
@@ -612,30 +607,30 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   // Decode and emit headers via helper
   ErrorCode decodeErr = decodeAndEmitHeaders(header.streamId, headerSpan, frame.endStream);
   if (decodeErr != ErrorCode::NoError) [[unlikely]] {
-    return connectionError(decodeErr, "HPACK decoding failed");
+    return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
   if (frame.endStream && pStream->isClosed()) {
     closeStream(it);
   }
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader header,
                                                                     std::span<const std::byte> payload) {
   if (header.streamId == 0) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "PRIORITY frame on stream 0");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::PRIORITYFrameOnStreamZero);
   }
 
   PriorityFrame frame;
   FrameParseResult parseResult = ParsePriorityFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid PRIORITY frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidPRIORITYFrame);
   }
 
   if (frame.streamDependency == header.streamId) [[unlikely]] {
-    return streamError(header.streamId, ErrorCode::ProtocolError, "Stream depends on itself");
+    return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
   }
 
   Http2Stream* pStream = getStream(header.streamId);
@@ -646,24 +641,24 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
     // prevent a flood of cheap PRIORITY frames from starving real request processing.
     ++_idlePriorityFrameCount;
     if (_idlePriorityFrameCount > kMaxIdlePriorityFrames) [[unlikely]] {
-      return connectionError(ErrorCode::EnhanceYourCalm, "Too many PRIORITY frames on idle streams");
+      return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFramesOnIdleStreams);
     }
   }
   // PRIORITY can be sent for idle streams (pre-allocation)
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader header,
                                                                      std::span<const std::byte> payload) {
   if (header.streamId == 0) {
-    return connectionError(ErrorCode::ProtocolError, "RST_STREAM frame on stream 0");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::RST_STREAMFrameOnStreamZero);
   }
 
   RstStreamFrame frame;
   FrameParseResult parseResult = ParseRstStreamFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid RST_STREAM frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidRST_STREAMFrame);
   }
 
   auto it = _streams.find(header.streamId);
@@ -676,19 +671,19 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     }
   }
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader header,
                                                                     std::span<const std::byte> payload) {
   if (header.streamId != 0) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "SETTINGS frame on non-zero stream");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::SETTINGSFrameOnNonZeroStream);
   }
 
   SettingsFrame frame;
   FrameParseResult parseResult = ParseSettingsFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid SETTINGS frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
   }
 
   if (frame.isAck) {
@@ -696,7 +691,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
       _state = ConnectionState::Open;
     }
     _settingsAckReceived = true;
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::Continue};
   }
 
   // Apply settings
@@ -709,7 +704,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
         break;
       case SettingsParameter::EnablePush:
         if (entry.value > 1) [[unlikely]] {
-          return connectionError(ErrorCode::ProtocolError, "Invalid ENABLE_PUSH value");
+          return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidENABLE_PUSHValue);
         }
         _peerSettings.enablePush = (entry.value == 1);
         break;
@@ -718,20 +713,20 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
         break;
       case SettingsParameter::InitialWindowSize:
         if (entry.value > 0x7FFFFFFF) [[unlikely]] {
-          return connectionError(ErrorCode::FlowControlError, "Initial window size too large");
+          return connectionError(ErrorCode::FlowControlError, ErrorMsg::InitialWindowSizeTooLarge);
         }
         // Update all existing streams
         for (auto& [id, stream] : _streams) {
           ErrorCode err = stream.updateInitialWindowSize(entry.value);
           if (err != ErrorCode::NoError) [[unlikely]] {
-            return connectionError(err, "Window size update overflow");
+            return connectionError(err, ErrorMsg::WindowSizeUpdateOverflow);
           }
         }
         _peerSettings.initialWindowSize = entry.value;
         break;
       case SettingsParameter::MaxFrameSize:
-        if (entry.value < 16384 || entry.value > 16777215) [[unlikely]] {
-          return connectionError(ErrorCode::ProtocolError, "Invalid MAX_FRAME_SIZE");
+        if (entry.value < kMinMaxFrameSize || entry.value > kMaxMaxFrameSize) [[unlikely]] {
+          return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidMAX_FRAMESize);
         }
         _peerSettings.maxFrameSize = entry.value;
         break;
@@ -752,42 +747,42 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     _state = ConnectionState::Open;
   }
 
-  return ProcessResult{ProcessResult::Action::OutputReady, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::OutputReady};
 }
 
 Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader header,
                                                                 std::span<const std::byte> payload) {
   if (header.streamId != 0) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "PING frame on non-zero stream");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::PINGFrameOnNonZeroStream);
   }
 
   PingFrame frame;
   FrameParseResult parseResult = ParsePingFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid PING frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidPINGFrame);
   }
 
   if (!frame.isAck) {
     // Send PING response
     frame.isAck = true;
     WritePingFrame(_outputBuffer, frame);
-    return ProcessResult{ProcessResult::Action::OutputReady, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::OutputReady};
   }
 
   // PING ACK received - could track RTT here
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(FrameHeader header,
                                                                   std::span<const std::byte> payload) {
   if (header.streamId != 0) {
-    return connectionError(ErrorCode::ProtocolError, "GOAWAY frame on non-zero stream");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::GOAWAYFrameOnNonZeroStream);
   }
 
   GoAwayFrame frame;
   FrameParseResult parseResult = ParseGoAwayFrame(header, payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid GOAWAY frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidGOAWAYFrame);
   }
 
   _state = ConnectionState::GoAwayReceived;
@@ -798,7 +793,7 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(FrameHeader he
     _onGoAway(frame.lastStreamId, frame.errorCode, debugData);
   }
 
-  return ProcessResult{ProcessResult::Action::GoAway, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::GoAway};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHeader header,
@@ -806,21 +801,21 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
   WindowUpdateFrame frame;
   FrameParseResult parseResult = ParseWindowUpdateFrame(payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, "Invalid WINDOW_UPDATE frame");
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidWINDOW_UPDATEFrame);
   }
 
   if (frame.windowSizeIncrement == 0) {
     if (header.streamId == 0) [[unlikely]] {
-      return connectionError(ErrorCode::ProtocolError, "Zero WINDOW_UPDATE increment on connection");
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection);
     }
-    return streamError(header.streamId, ErrorCode::ProtocolError, "Zero WINDOW_UPDATE increment");
+    return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
   }
 
   if (header.streamId == 0) {
     // Connection-level
     int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
     if (newWindow > 0x7FFFFFFF) [[unlikely]] {
-      return connectionError(ErrorCode::FlowControlError, "Connection window overflow");
+      return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionWindowOverflow);
     }
     _connectionSendWindow = static_cast<int32_t>(newWindow);
   } else {
@@ -829,7 +824,7 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     if (pStream != nullptr) {
       ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
       if (err != ErrorCode::NoError) [[unlikely]] {
-        return streamError(header.streamId, err, "Stream window overflow");
+        return streamError(header.streamId, err, ErrorMsg::StreamWindowOverflow);
       }
     }
   }
@@ -838,17 +833,17 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     _onWindowUpdate(header.streamId, frame.windowSizeIncrement);
   }
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHeader header,
                                                                         std::span<const std::byte> payload) {
   if (!_expectingContinuation) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "Unexpected CONTINUATION frame");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::UnexpectedCONTINUATIONFrame);
   }
 
   if (header.streamId != _headerBlockStreamId) [[unlikely]] {
-    return connectionError(ErrorCode::ProtocolError, "CONTINUATION on wrong stream");
+    return connectionError(ErrorCode::ProtocolError, ErrorMsg::CONTINUATIONOnWrongStream);
   }
 
   ContinuationFrame frame;
@@ -857,36 +852,36 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
   // Security hardening (CVE-2024-27316): enforce a bound on the total accumulated
   // header block size to prevent CONTINUATION flood attacks that grow memory unboundedly.
   if (_headerBlockBuffer.size() + frame.headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
-    return connectionError(ErrorCode::EnhanceYourCalm, "Header block too large");
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::HeaderBlockTooLarge);
   }
 
   // Append to header block buffer
   _headerBlockBuffer.append(frame.headerBlockFragment);
 
   if (!frame.endHeaders) {
-    return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+    return ProcessResult{ProcessResult::Action::Continue};
   }
 
   // Complete header block
   _expectingContinuation = false;
 
-  auto it = _streams.find(_headerBlockStreamId);
+  const auto it = _streams.find(_headerBlockStreamId);
   if (it == _streams.end()) [[unlikely]] {
-    return connectionError(ErrorCode::InternalError, "Stream not found for CONTINUATION");
+    return connectionError(ErrorCode::InternalError, ErrorMsg::StreamNotFoundForCONTINUATION);
   }
 
-  ErrorCode err = it->second.onRecvHeaders(_headerBlockEndStream);
+  const ErrorCode err = it->second.onRecvHeaders(_headerBlockEndStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(_headerBlockStreamId, err, "Invalid stream state for HEADERS");
+    return streamError(_headerBlockStreamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
   }
 
   // Decode complete header block
-  auto headerSpan = std::span<const std::byte>(_headerBlockBuffer);
+  const auto headerSpan = std::span<const std::byte>(_headerBlockBuffer);
 
   // Decode and emit headers via helper
   ErrorCode decodeErr = decodeAndEmitHeaders(_headerBlockStreamId, headerSpan, _headerBlockEndStream);
   if (decodeErr != ErrorCode::NoError) [[unlikely]] {
-    return connectionError(decodeErr, "HPACK decoding failed");
+    return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
   if (_headerBlockEndStream && it->second.isClosed()) {
@@ -896,7 +891,7 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
   _headerBlockBuffer.clear();
   _headerBlockStreamId = 0;
 
-  return ProcessResult{ProcessResult::Action::Continue, ErrorCode::NoError, 0, {}};
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 // ============================
@@ -910,7 +905,8 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   // Encode :status pseudo-header first if present
   if (statusCode >= 100) {
     char statusBuf[3];
-    const std::string_view statusStr(statusBuf, writeStatusCode(statusBuf, statusCode));
+    writeStatusCode(statusBuf, statusCode);
+    const std::string_view statusStr(statusBuf, sizeof(statusBuf));
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 
@@ -1044,7 +1040,7 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 // ============================
 
 void Http2Connection::sendSettings() {
-  const SettingsEntry entries[] = {
+  const SettingsEntry entries[]{
       SettingsEntry{SettingsParameter::HeaderTableSize, _localSettings.headerTableSize},
       SettingsEntry{SettingsParameter::EnablePush, static_cast<uint32_t>(_localSettings.enablePush)},
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, _localSettings.maxConcurrentStreams},
@@ -1067,17 +1063,17 @@ void Http2Connection::sendSettings() {
 // Error handling
 // ============================
 
-Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, const char* message) {
-  initiateGoAway(code, message);
+Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, ErrorMsg msg) {
+  initiateGoAway(code, msg);
   _state = ConnectionState::Closed;
 
-  return ProcessResult{ProcessResult::Action::Error, code, 0, message};
+  return ProcessResult{ProcessResult::Action::Error, code, msg};
 }
 
-Http2Connection::ProcessResult Http2Connection::streamError(uint32_t streamId, ErrorCode code, const char* message) {
+Http2Connection::ProcessResult Http2Connection::streamError(uint32_t streamId, ErrorCode code, ErrorMsg msg) {
   sendRstStream(streamId, code);
 
-  return ProcessResult{ProcessResult::Action::OutputReady, code, 0, message};
+  return ProcessResult{ProcessResult::Action::OutputReady, code, msg};
 }
 
 }  // namespace aeronet::http2

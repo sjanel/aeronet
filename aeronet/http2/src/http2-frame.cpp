@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <string_view>
 
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
@@ -77,6 +79,7 @@ FrameHeader ParseFrameHeader(std::span<const std::byte> data) noexcept {
 }
 
 void WriteFrameHeader(std::byte* buffer, FrameHeader header) noexcept {
+  assert(header.length <= 0xFFFFFFU && "frame length exceeds 24-bit protocol limit");
   Write24BE(buffer, header.length);
   buffer[3] = static_cast<std::byte>(header.type);
   buffer[4] = static_cast<std::byte>(header.flags);
@@ -181,6 +184,8 @@ FrameParseResult ParseRstStreamFrame(FrameHeader /*header*/, std::span<const std
     return FrameParseResult::FrameSizeError;
   }
 
+  static_assert(sizeof(ErrorCode) == 4, "ErrorCode must be 4 bytes (or logic below needs to change)");
+
   out.errorCode = static_cast<ErrorCode>(Read32BE(payload.data()));
   return FrameParseResult::Ok;
 }
@@ -234,6 +239,8 @@ FrameParseResult ParseGoAwayFrame(FrameHeader /*header*/, std::span<const std::b
     return FrameParseResult::FrameSizeError;
   }
 
+  static_assert(sizeof(ErrorCode) == 4, "ErrorCode must be 4 bytes (or logic below needs to change)");
+
   out.lastStreamId = Read32BE(payload.data()) & 0x7FFFFFFF;
   out.errorCode = static_cast<ErrorCode>(Read32BE(payload.data() + 4));
   out.debugData = payload.subspan(8);
@@ -273,21 +280,26 @@ std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, s
 
   buffer.ensureAvailableCapacityExponential(FrameHeader::kSize + 5UL + headerBlock.size());
 
-  WriteFrameHeader(
-      buffer.end(),
-      CreateFrameHeader(FrameType::Headers, ComputeHeaderFrameFlags(endStream, endHeaders, FrameFlags::HeadersPriority),
-                        streamId, static_cast<uint32_t>(payloadSize)));
-  buffer.addSize(FrameHeader::kSize);
+  std::byte* pData = buffer.end();
+
+  WriteFrameHeader(pData, CreateFrameHeader(FrameType::Headers,
+                                            ComputeHeaderFrameFlags(endStream, endHeaders, FrameFlags::HeadersPriority),
+                                            streamId, static_cast<uint32_t>(payloadSize)));
+  pData += FrameHeader::kSize;
 
   // Write priority
   uint32_t depWithExcl = streamDependency;
   if (exclusive) {
     depWithExcl |= 0x80000000;
   }
-  Write32BE(buffer.end(), depWithExcl);
-  buffer.addSize(4);
-  buffer.unchecked_push_back(static_cast<std::byte>(weight));
-  buffer.unchecked_append(headerBlock);
+
+  Write32BE(pData, depWithExcl);
+  pData += 4;
+
+  *pData++ = static_cast<std::byte>(weight);
+  pData = Append(headerBlock.data(), headerBlock.size(), pData);
+
+  buffer.setEnd(pData);
 
   return FrameHeader::kSize + payloadSize;
 }
@@ -319,19 +331,19 @@ std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> 
 
   buffer.ensureAvailableCapacityExponential(FrameHeader::kSize + payloadSize);
 
-  std::byte* pEnd = buffer.end();
+  std::byte* pData = buffer.end();
 
-  WriteFrameHeader(pEnd,
+  WriteFrameHeader(pData,
                    CreateFrameHeader(FrameType::Settings, FrameFlags::None, 0, static_cast<uint32_t>(payloadSize)));
-  pEnd += FrameHeader::kSize;
+  pData += FrameHeader::kSize;
 
   // Write settings entries
   for (const auto& entry : entries) {
-    Write16BE(pEnd, static_cast<uint16_t>(entry.id));
-    Write32BE(pEnd + 2, entry.value);
-    pEnd += 6;
+    Write16BE(pData, static_cast<uint16_t>(entry.id));
+    Write32BE(pData + 2, entry.value);
+    pData += 6;
   }
-  buffer.setEnd(pEnd);
+  buffer.setEnd(pData);
 
   return FrameHeader::kSize + payloadSize;
 }
@@ -347,22 +359,27 @@ std::size_t WritePingFrame(RawBytes& buffer, PingFrame pingFrame) {
   return ret;
 }
 
-std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData) {
+std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode errorCode, ErrorMsg msg) {
+  const auto debugData = ConvertProcessResultErrorMsgToSv(msg);
   const std::size_t payloadSize = 8 + debugData.size();
 
   buffer.ensureAvailableCapacityExponential(FrameHeader::kSize + 8UL + debugData.size());
 
-  WriteFrameHeader(buffer.end(),
+  std::byte* pData = buffer.end();
+
+  WriteFrameHeader(pData,
                    CreateFrameHeader(FrameType::GoAway, FrameFlags::None, 0, static_cast<uint32_t>(payloadSize)));
-  buffer.addSize(FrameHeader::kSize);
+  pData += FrameHeader::kSize;
 
   // Write last stream ID and error code
-  Write32BE(buffer.end(), lastStreamId);
-  Write32BE(buffer.end() + 4, static_cast<uint32_t>(errorCode));
-  buffer.addSize(8);
+  Write32BE(pData, lastStreamId);
+  pData += 4;
+  Write32BE(pData, static_cast<uint32_t>(errorCode));
+  pData += 4;
 
   // Write debug data
-  buffer.unchecked_append(reinterpret_cast<const std::byte*>(debugData.data()), debugData.size());
+  pData = Append(reinterpret_cast<const std::byte*>(debugData.data()), debugData.size(), pData);
+  buffer.setEnd(pData);
 
   return FrameHeader::kSize + payloadSize;
 }

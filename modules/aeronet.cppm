@@ -317,13 +317,6 @@ using aeronet::http2::FrameType;
 using aeronet::http2::SettingsParameter;
 using aeronet::http2::StreamState;
 
-// Enum helpers
-using aeronet::http2::ErrorCodeName;
-using aeronet::http2::FrameTypeName;
-using aeronet::http2::IsClientStream;
-using aeronet::http2::IsServerStream;
-using aeronet::http2::StreamStateName;
-
 // Frame types & parsing (in umbrella via http2-frame.hpp)
 using aeronet::http2::ComputeHeaderFrameFlags;
 using aeronet::http2::ContinuationFrame;
@@ -377,18 +370,8 @@ using aeronet::http2::FrameFlags::SettingsAck;
 using aeronet::http2::kAlpnH2;
 using aeronet::http2::kAlpnH2c;
 using aeronet::http2::kConnectionPreface;
-using aeronet::http2::kConnectionStreamId;
-using aeronet::http2::kDefaultEnablePush;
-using aeronet::http2::kDefaultHeaderTableSize;
 using aeronet::http2::kDefaultInitialWindowSize;
-using aeronet::http2::kDefaultMaxConcurrentStreams;
-using aeronet::http2::kDefaultMaxFrameSize;
-using aeronet::http2::kDefaultMaxHeaderListSize;
 using aeronet::http2::kFrameHeaderSize;
-using aeronet::http2::kMaxMaxFrameSize;
-using aeronet::http2::kMaxStreamId;
-using aeronet::http2::kMaxWindowSize;
-using aeronet::http2::kMinMaxFrameSize;
 }  // namespace http2
 #endif
 

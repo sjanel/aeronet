@@ -33,6 +33,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -1007,7 +1008,7 @@ TEST(Http2Core, GoAwayReceivedPreventsNewStreamsBeyondLastStreamId) {
 
   // Send GOAWAY to server with lastStreamId=1.
   RawBytes go;
-  WriteGoAwayFrame(go, 1, ErrorCode::NoError, "drain");
+  WriteGoAwayFrame(go, 1, ErrorCode::NoError, ErrorMsg::NoError);
   auto resGo = h2.server.processInput(AsSpan(go));
   ASSERT_NE(resGo.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(h2.server.state(), ConnectionState::GoAwayReceived);
@@ -1030,7 +1031,7 @@ TEST(Http2Core, InitiateGoAwayQueuesFrameAndUpdatesState) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  h2.server.initiateGoAway(ErrorCode::NoError, "shutdown");
+  h2.server.initiateGoAway(ErrorCode::NoError, ErrorMsg::NoError);
   EXPECT_EQ(h2.server.state(), ConnectionState::GoAwaySent);
 
   auto out = h2.server.getPendingOutput();
@@ -1307,14 +1308,14 @@ TEST(Http2Core, GoAwayCallbackIsInvoked) {
   h2.connect(true);
 
   RawBytes go;
-  WriteGoAwayFrame(go, 0, ErrorCode::EnhanceYourCalm, "too many requests");
+  WriteGoAwayFrame(go, 0, ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFramesOnIdleStreams);
 
   auto res = h2.client.processInput(AsSpan(go));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
 
   ASSERT_EQ(h2.clientGoAway.size(), 1U);
   EXPECT_EQ(h2.clientGoAway[0].errorCode, ErrorCode::EnhanceYourCalm);
-  EXPECT_EQ(h2.clientGoAway[0].debug, "too many requests");
+  EXPECT_EQ(h2.clientGoAway[0].debug, "Too Many PRIORITY Frames On Idle Streams");
 }
 
 TEST(Http2Core, WindowUpdateIncreasesConnectionRecvWindow) {

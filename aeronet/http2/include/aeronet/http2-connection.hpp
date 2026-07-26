@@ -15,6 +15,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 
@@ -70,10 +71,23 @@ class Http2Connection {
       Closed,       ///< Connection is closed
     };
 
-    Action action{Action::Continue};
+    // Construct a ProcessResult with the specified action.
+    // bytesConsumed is initialized to 0, errorCode and errorMsg to NoError.
+    explicit ProcessResult(Action action) : action(action) {}
+
+    // Construct a ProcessResult with the specified action and bytes consumed.
+    // errorCode and errorMsg are initialized to NoError.
+    ProcessResult(Action action, std::size_t bytesConsumed) : action(action), bytesConsumed(bytesConsumed) {}
+
+    // Construct a ProcessResult with the specified action, error code, and error message.
+    // bytesConsumed is initialized to 0.
+    ProcessResult(Action action, ErrorCode errorCode, ErrorMsg errorMsg)
+        : errorCode(errorCode), action(action), errorMsg(errorMsg) {}
+
     ErrorCode errorCode{ErrorCode::NoError};
+    Action action{Action::Continue};
+    ErrorMsg errorMsg{ErrorMsg::NoError};
     std::size_t bytesConsumed{0};
-    const char* errorMessage;
   };
 
   /// Create a new HTTP/2 connection with the specified configuration.
@@ -122,7 +136,7 @@ class Http2Connection {
   /// Initiate graceful shutdown by sending GOAWAY.
   /// @param errorCode Error code to include in GOAWAY (default: NO_ERROR)
   /// @param debugData Optional debug data string
-  void initiateGoAway(ErrorCode errorCode = ErrorCode::NoError, std::string_view debugData = {});
+  void initiateGoAway(ErrorCode errorCode = ErrorCode::NoError, ErrorMsg msg = ErrorMsg::NoError);
 
   /// Send the server connection preface (SETTINGS frame) immediately.
   /// For HTTP/2 over TLS (ALPN "h2"), the server must send its SETTINGS frame
@@ -193,7 +207,7 @@ class Http2Connection {
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
   /// Send PING frame.
-  void sendPing(PingFrame pingFrame);
+  void sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuffer, pingFrame); }
 
   /// Send WINDOW_UPDATE frame.
   /// @param streamId Stream ID (0 for connection-level)
@@ -317,8 +331,8 @@ class Http2Connection {
   // Error handling
   // ============================
 
-  ProcessResult connectionError(ErrorCode code, const char* message);
-  ProcessResult streamError(uint32_t streamId, ErrorCode code, const char* message);
+  ProcessResult connectionError(ErrorCode code, ErrorMsg msg);
+  ProcessResult streamError(uint32_t streamId, ErrorCode code, ErrorMsg msg);
 
   // ============================
   // Member variables
