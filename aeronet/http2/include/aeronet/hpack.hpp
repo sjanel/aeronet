@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
-#include <type_traits>
 
 #include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-header.hpp"
@@ -177,8 +176,6 @@ class HpackEncoder {
 
   /// Find a header in the static and dynamic tables.
   [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value);
-
-  using trivially_relocatable = std::true_type;
 
  private:
   HpackDynamicTable _dynamicTable;

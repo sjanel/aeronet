@@ -355,47 +355,6 @@ TEST(Http2Frame, WriteRstStreamFrame) {
 // SETTINGS Frame Tests
 // ============================
 
-TEST(Http2Frame, ParseSettingsFrameEmpty) {
-  FrameHeader header{};
-  header.length = 0;
-  header.type = FrameType::Settings;
-  header.flags = FrameFlags::SettingsAck;
-  header.streamId = 0;
-
-  SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, std::span<const std::byte>{}, frame);
-
-  EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_TRUE(frame.isAck);
-  EXPECT_EQ(frame.entryCount, 0);
-}
-
-TEST(Http2Frame, ParseSettingsFrameWithEntries) {
-  const std::byte payload[]{
-      std::byte{0x00}, std::byte{0x03},                                    // MAX_CONCURRENT_STREAMS
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x64},  // value: 100
-      std::byte{0x00}, std::byte{0x04},                                    // INITIAL_WINDOW_SIZE
-      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00},  // value: 65536
-  };
-
-  FrameHeader header{};
-  header.length = 12;
-  header.type = FrameType::Settings;
-  header.flags = 0;
-  header.streamId = 0;
-
-  SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, payload, frame);
-
-  EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_FALSE(frame.isAck);
-  EXPECT_EQ(frame.entryCount, 2U);
-  EXPECT_EQ(frame.entries[0].id, SettingsParameter::MaxConcurrentStreams);
-  EXPECT_EQ(frame.entries[0].value, 100U);
-  EXPECT_EQ(frame.entries[1].id, SettingsParameter::InitialWindowSize);
-  EXPECT_EQ(frame.entries[1].value, 65536U);
-}
-
 TEST(Http2Frame, WriteSettingsFrame) {
   RawBytes buffer;
   const SettingsEntry entries[]{
@@ -611,24 +570,6 @@ TEST(Http2Frame, ParseDataFrameEmptyPayloadWithPaddedFlag) {
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
 
-TEST(Http2Frame, ParseSettingsFrameInvalidLength) {
-  // Settings entries must be 6 bytes each
-  const std::byte payload[] = {
-      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x10},
-  };
-
-  FrameHeader header{};
-  header.length = 5;
-  header.type = FrameType::Settings;
-  header.flags = 0;
-  header.streamId = 0;
-
-  SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, payload, frame);
-
-  EXPECT_EQ(result, FrameParseResult::FrameSizeError);
-}
-
 TEST(Http2Frame, ParsePingFrameInvalidLength) {
   const std::byte payload[]{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
@@ -708,33 +649,6 @@ TEST(Http2Frame, RoundTripDataFrame) {
   for (int idx = 0; idx < 10; ++idx) {
     EXPECT_EQ(frame.data[static_cast<std::size_t>(idx)], static_cast<std::byte>(idx));
   }
-}
-
-TEST(Http2Frame, RoundTripSettingsFrame) {
-  RawBytes buffer;
-  std::array<SettingsEntry, 3> entries = {
-      SettingsEntry{SettingsParameter::HeaderTableSize, 8192},
-      SettingsEntry{SettingsParameter::MaxConcurrentStreams, 50},
-      SettingsEntry{SettingsParameter::MaxFrameSize, 32768},
-  };
-
-  WriteSettingsFrame(buffer, entries);
-
-  auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
-  FrameHeader header = ParseFrameHeader(span);
-
-  SettingsFrame frame;
-  FrameParseResult result = ParseSettingsFrame(header, span.subspan(FrameHeader::kSize), frame);
-
-  EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_FALSE(frame.isAck);
-  EXPECT_EQ(frame.entryCount, 3U);
-  EXPECT_EQ(frame.entries[0].id, SettingsParameter::HeaderTableSize);
-  EXPECT_EQ(frame.entries[0].value, 8192U);
-  EXPECT_EQ(frame.entries[1].id, SettingsParameter::MaxConcurrentStreams);
-  EXPECT_EQ(frame.entries[1].value, 50U);
-  EXPECT_EQ(frame.entries[2].id, SettingsParameter::MaxFrameSize);
-  EXPECT_EQ(frame.entries[2].value, 32768U);
 }
 
 }  // namespace aeronet::http2

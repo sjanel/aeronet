@@ -26,6 +26,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "http2-read-write.hpp"
 
 namespace aeronet::http2 {
 
@@ -426,7 +427,7 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
 
 Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header, std::span<const std::byte> payload) {
   // CONTINUATION frames must follow HEADERS/PUSH_PROMISE
-  if (_expectingContinuation && header.type != FrameType::Continuation) [[unlikely]] {
+  if (_expectingContinuation && header.type != FrameType::Continuation) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::ExpectedCONTINUATIONFrame);
   }
 
@@ -454,7 +455,7 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
       return handleContinuationFrame(header, payload);
     default:
       // Unknown frame types are ignored (RFC 9113 §4.1)
-      log::debug("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type));
+      log::warn("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type));
       return ProcessResult{ProcessResult::Action::Continue};
   }
 }
@@ -467,7 +468,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   DataFrame frame;
   FrameParseResult parseResult = ParseDataFrame(header, payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
+  if (parseResult != FrameParseResult::Ok) {
     if (parseResult == FrameParseResult::InvalidPadding) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInDATAFrame);
     }
@@ -676,17 +677,15 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
 
 Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader header,
                                                                     std::span<const std::byte> payload) {
-  if (header.streamId != 0) [[unlikely]] {
+  if (header.streamId != 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::SETTINGSFrameOnNonZeroStream);
   }
 
-  SettingsFrame frame;
-  FrameParseResult parseResult = ParseSettingsFrame(header, payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
-    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
-  }
-
-  if (frame.isAck) {
+  const bool isAck = header.hasFlag(FrameFlags::SettingsAck);
+  if (isAck) {
+    if (!payload.empty()) {
+      return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
+    }
     if (_state == ConnectionState::AwaitingSettings) {
       _state = ConnectionState::Open;
     }
@@ -694,55 +693,73 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
-  // Apply settings
-  for (std::size_t idx = 0; idx < frame.entryCount; ++idx) {
-    const auto& entry = frame.entries[idx];
-    switch (entry.id) {
+  if (payload.size() % 6 != 0) {
+    return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
+  }
+
+  // payload.size() is already bounded by SETTINGS_MAX_FRAME_SIZE, checked upstream during generic frame header parsing
+  // (common protection for all types).
+  const std::size_t numEntries = payload.size() / 6;
+
+  static constexpr uint32_t kUnsetWindowSizeValue = std::numeric_limits<uint32_t>::max();
+
+  static_assert(kUnsetWindowSizeValue > kMaxWindowSize, "kUnsetWindowSizeValue must be greater than kMaxWindowSize");
+
+  uint32_t newInitialWindowSize = kUnsetWindowSizeValue;  // "last wins", applied only once
+
+  for (std::size_t idx = 0; idx < numEntries; ++idx) {
+    const std::byte* entry = payload.data() + (idx * 6);
+    const SettingsParameter id = static_cast<SettingsParameter>(Read16BE(entry));
+    const uint32_t value = Read32BE(entry + 2);
+
+    switch (id) {
       case SettingsParameter::HeaderTableSize:
-        _peerSettings.headerTableSize = entry.value;
-        _hpackEncoder.setMaxDynamicTableSize(entry.value);
+        _peerSettings.headerTableSize = value;
+        _hpackEncoder.setMaxDynamicTableSize(value);
         break;
       case SettingsParameter::EnablePush:
-        if (entry.value > 1) [[unlikely]] {
+        if (value > 1) {
           return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidENABLE_PUSHValue);
         }
-        _peerSettings.enablePush = (entry.value == 1);
+        _peerSettings.enablePush = (value == 1);
         break;
       case SettingsParameter::MaxConcurrentStreams:
-        _peerSettings.maxConcurrentStreams = entry.value;
+        _peerSettings.maxConcurrentStreams = value;
         break;
       case SettingsParameter::InitialWindowSize:
-        if (entry.value > 0x7FFFFFFF) [[unlikely]] {
+        if (value > kMaxWindowSize) {
           return connectionError(ErrorCode::FlowControlError, ErrorMsg::InitialWindowSizeTooLarge);
         }
-        // Update all existing streams
-        for (auto& [id, stream] : _streams) {
-          ErrorCode err = stream.updateInitialWindowSize(entry.value);
-          if (err != ErrorCode::NoError) [[unlikely]] {
-            return connectionError(err, ErrorMsg::WindowSizeUpdateOverflow);
-          }
-        }
-        _peerSettings.initialWindowSize = entry.value;
+        newInitialWindowSize = value;  // not applied immediately
         break;
       case SettingsParameter::MaxFrameSize:
-        if (entry.value < kMinMaxFrameSize || entry.value > kMaxMaxFrameSize) [[unlikely]] {
+        if (value < kMinMaxFrameSize || value > kMaxMaxFrameSize) {
           return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidMAX_FRAMESize);
         }
-        _peerSettings.maxFrameSize = entry.value;
+        _peerSettings.maxFrameSize = value;
         break;
       case SettingsParameter::MaxHeaderListSize:
-        _peerSettings.maxHeaderListSize = entry.value;
+        _peerSettings.maxHeaderListSize = value;
         break;
       default:
-        log::warn("Ignoring unknown SETTINGS parameter ID {}", static_cast<int>(entry.id));
+        log::warn("Ignoring unknown SETTINGS parameter ID {}", static_cast<int>(id));
         break;
     }
   }
 
-  // Send SETTINGS ACK
+  // A single pass over the streams, regardless of the number of occurrences in the frame.
+  if (newInitialWindowSize != kUnsetWindowSizeValue) {
+    for (auto& [id, stream] : _streams) {
+      ErrorCode err = stream.updateInitialWindowSize(newInitialWindowSize);
+      if (err != ErrorCode::NoError) {
+        return connectionError(err, ErrorMsg::WindowSizeUpdateOverflow);
+      }
+    }
+    _peerSettings.initialWindowSize = newInitialWindowSize;
+  }
+
   sendSettingsAck();
 
-  // If we were awaiting settings, now we're open
   if (_state == ConnectionState::AwaitingSettings) {
     _state = ConnectionState::Open;
   }
@@ -800,12 +817,12 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
                                                                         std::span<const std::byte> payload) {
   WindowUpdateFrame frame;
   FrameParseResult parseResult = ParseWindowUpdateFrame(payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
+  if (parseResult != FrameParseResult::Ok) {
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidWINDOW_UPDATEFrame);
   }
 
   if (frame.windowSizeIncrement == 0) {
-    if (header.streamId == 0) [[unlikely]] {
+    if (header.streamId == 0) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection);
     }
     return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
@@ -814,7 +831,7 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
   if (header.streamId == 0) {
     // Connection-level
     int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
-    if (newWindow > 0x7FFFFFFF) [[unlikely]] {
+    if (std::cmp_greater(newWindow, kMaxWindowSize)) {
       return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionWindowOverflow);
     }
     _connectionSendWindow = static_cast<int32_t>(newWindow);
@@ -823,7 +840,7 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     Http2Stream* pStream = getStream(header.streamId);
     if (pStream != nullptr) {
       ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
-      if (err != ErrorCode::NoError) [[unlikely]] {
+      if (err != ErrorCode::NoError) {
         return streamError(header.streamId, err, ErrorMsg::StreamWindowOverflow);
       }
     }
