@@ -460,33 +460,33 @@ class BenchmarkRunner:
         if not source_file.is_file():
             raise BenchmarkError("UndertowBenchServer.java not found")
         jars = [
-            "undertow-core-2.4.1.Final.jar",
+            "undertow-core-2.4.2.Final.jar",
             "xnio-api-3.8.17.Final.jar",
             "xnio-nio-3.8.17.Final.jar",
             "jboss-logging-3.6.3.Final.jar",
             "wildfly-common-2.0.1.jar",
             "jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.18.1.jar",
-            "smallrye-common-cpu-2.18.1.jar",
-            "smallrye-common-expression-2.18.1.jar",
-            "smallrye-common-os-2.18.1.jar",
-            "smallrye-common-ref-2.18.1.jar",
-            "smallrye-common-constraint-2.18.1.jar",
+            "smallrye-common-net-2.19.0.jar",
+            "smallrye-common-cpu-2.19.0.jar",
+            "smallrye-common-expression-2.19.0.jar",
+            "smallrye-common-os-2.19.0.jar",
+            "smallrye-common-ref-2.19.0.jar",
+            "smallrye-common-constraint-2.19.0.jar",
         ]
         base_url = "https://repo1.maven.org/maven2"
         jar_urls = {
-            "undertow-core-2.4.1.Final.jar": f"{base_url}/io/undertow/undertow-core/2.4.1.Final/undertow-core-2.4.1.Final.jar",
+            "undertow-core-2.4.2.Final.jar": f"{base_url}/io/undertow/undertow-core/2.4.2.Final/undertow-core-2.4.2.Final.jar",
             "xnio-api-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-api/3.8.17.Final/xnio-api-3.8.17.Final.jar",
             "xnio-nio-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-nio/3.8.17.Final/xnio-nio-3.8.17.Final.jar",
             "jboss-logging-3.6.3.Final.jar": f"{base_url}/org/jboss/logging/jboss-logging/3.6.3.Final/jboss-logging-3.6.3.Final.jar",
             "wildfly-common-2.0.1.jar": f"{base_url}/org/wildfly/common/wildfly-common/2.0.1/wildfly-common-2.0.1.jar",
             "jboss-threads-3.9.2.jar": f"{base_url}/org/jboss/threads/jboss-threads/3.9.2/jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-net/2.18.1/smallrye-common-net-2.18.1.jar",
-            "smallrye-common-cpu-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-cpu/2.18.1/smallrye-common-cpu-2.18.1.jar",
-            "smallrye-common-expression-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-expression/2.18.1/smallrye-common-expression-2.18.1.jar",
-            "smallrye-common-os-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-os/2.18.1/smallrye-common-os-2.18.1.jar",
-            "smallrye-common-ref-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-ref/2.18.1/smallrye-common-ref-2.18.1.jar",
-            "smallrye-common-constraint-2.18.1.jar": f"{base_url}/io/smallrye/common/smallrye-common-constraint/2.18.1/smallrye-common-constraint-2.18.1.jar",
+            "smallrye-common-net-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-net/2.19.0/smallrye-common-net-2.19.0.jar",
+            "smallrye-common-cpu-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-cpu/2.19.0/smallrye-common-cpu-2.19.0.jar",
+            "smallrye-common-expression-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-expression/2.19.0/smallrye-common-expression-2.19.0.jar",
+            "smallrye-common-os-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-os/2.19.0/smallrye-common-os-2.19.0.jar",
+            "smallrye-common-ref-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-ref/2.19.0/smallrye-common-ref-2.19.0.jar",
+            "smallrye-common-constraint-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-constraint/2.19.0/smallrye-common-constraint-2.19.0.jar",
         }
         for jar in jars:
             jar_path = undertow_dir / jar
