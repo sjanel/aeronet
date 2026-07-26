@@ -107,6 +107,7 @@ inline constexpr uint32_t kDefaultInitialWindowSize = 65535;
 
 // Frame header size is always 9 bytes
 inline constexpr std::size_t kFrameHeaderSize = 9;
+inline constexpr uint32_t kMaxWindowSize = (1U << 31) - 1;  // Maximum flow control window size (RFC 9113 §6.9.1)
 
 // HTTP/2 Stream States (RFC 9113 §5.1)
 // ====================================

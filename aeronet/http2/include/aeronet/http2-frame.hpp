@@ -85,17 +85,6 @@ struct RstStreamFrame {
   ErrorCode errorCode;
 };
 
-/// Parsed SETTINGS frame.
-struct SettingsFrame {
-  // Security hardening: use 16 instead of 6 to accommodate future RFC extensions
-  // and unknown settings that must be ignored per RFC 9113 §6.5.2, rather than silently dropped.
-  static constexpr std::size_t kMaxEntries = 16;
-
-  SettingsEntry entries[kMaxEntries];
-  std::size_t entryCount;
-  bool isAck;
-};
-
 /// Parsed PING frame.
 struct PingFrame {
   std::byte opaqueData[8];
@@ -142,10 +131,6 @@ enum class FrameParseResult : uint8_t { Ok, NeedMoreData, FrameSizeError, Protoc
 /// Parse a RST_STREAM frame payload.
 [[nodiscard]] FrameParseResult ParseRstStreamFrame(FrameHeader header, std::span<const std::byte> payload,
                                                    RstStreamFrame& out) noexcept;
-
-/// Parse a SETTINGS frame payload.
-[[nodiscard]] FrameParseResult ParseSettingsFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                  SettingsFrame& out) noexcept;
 
 /// Parse a PING frame payload.
 [[nodiscard]] FrameParseResult ParsePingFrame(FrameHeader header, std::span<const std::byte> payload,
