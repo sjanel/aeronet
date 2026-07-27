@@ -451,16 +451,19 @@ void HttpRequestView::markAwaitingCallback() const noexcept {
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
-void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+std::function<void(std::coroutine_handle<>, std::function<void()>)> HttpRequestView::copyPostCallback() const {
   if (_h2PostCallback) {
-    _h2PostCallback(handle, std::move(work));
-    return;
+    return _h2PostCallback;
   }
   auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
   assert(asyncState->postCallback);
-  asyncState->postCallback(handle, std::move(work));
+  return asyncState->postCallback;
+}
+
+void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+  copyPostCallback()(handle, std::move(work));
 }
 #endif
 

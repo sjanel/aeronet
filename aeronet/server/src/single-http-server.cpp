@@ -887,10 +887,12 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   state.request.pinHeadStorage(state, _connections.asyncHandlerStatePool());
 
   // Install the postCallback function for deferred work
-  asyncState.postCallback = [this, fd = cnxIt->fd()](std::coroutine_handle<> handle, std::function<void()> work) {
-    postAsyncCallback(fd, handle, std::move(work));
+  asyncState.postCallback = [this, fd = cnxIt->fd(), generation = state.generation](std::coroutine_handle<> handle,
+                                                                                    std::function<void()> work) {
+    postAsyncCallback(fd, generation, handle, std::move(work));
   };
 
+  refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
   return asyncState.active;
 }
@@ -1059,6 +1061,8 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
                           _telemetry, false, _callbacks.middlewareMetrics);
   finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy);
   *asyncState = {};
+  state.lastActivity = std::chrono::steady_clock::now();
+  refreshKeepAliveDeadline(cnxIt);
 }
 #endif
 
@@ -1608,6 +1612,11 @@ void SingleHttpServer::applyPendingUpdates() {
 
     for (auto& cb : callbacks) {
       try {
+        auto it = _connections.iterator(cb.connectionFd);
+        if (!IsValid(_connections, it) || _connections.connectionState(it).generation != cb.connectionGeneration) {
+          continue;
+        }
+
         // Execute any pre-resume work
         if (cb.work) {
           try {
@@ -1619,8 +1628,8 @@ void SingleHttpServer::applyPendingUpdates() {
           }
         }
 
-        auto it = _connections.iterator(cb.connectionFd);
-        if (IsValid(_connections, it)) {
+        it = _connections.iterator(cb.connectionFd);
+        if (IsValid(_connections, it) && _connections.connectionState(it).generation == cb.connectionGeneration) {
           ConnectionState& state = _connections.connectionState(it);
 #ifdef AERONET_ENABLE_HTTP2
           // For HTTP/2 connections, delegate to the protocol handler which tracks per-stream async state.
@@ -1635,8 +1644,8 @@ void SingleHttpServer::applyPendingUpdates() {
             continue;
           }
 #endif
-          if (auto* asyncState = state.pAsyncState();
-              asyncState != nullptr && asyncState->active && asyncState->handle == cb.handle) {
+          auto* asyncState = state.pAsyncState();
+          if (asyncState != nullptr && asyncState->active && asyncState->handle == cb.handle) {
             asyncState->awaitReason = AsyncHandlerState::AwaitReason::None;
             resumeAsyncHandler(it);
           }
@@ -1644,10 +1653,8 @@ void SingleHttpServer::applyPendingUpdates() {
           // On platforms without a real timer fd (Windows, macOS), sweep maintenance may not
           // run often enough, causing Connection: close requests to linger.
           it = _connections.iterator(cb.connectionFd);
-          if (IsValid(_connections, it)) {
-            if (_connections.connectionState(it).canCloseConnectionForDrain()) {
-              closeConnection(it);
-            }
+          if (IsValid(_connections, it) && _connections.connectionState(it).canCloseConnectionForDrain()) {
+            closeConnection(it);
           }
         }
       } catch (const std::exception& ex) {
@@ -1662,11 +1669,11 @@ void SingleHttpServer::applyPendingUpdates() {
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void SingleHttpServer::postAsyncCallback(NativeHandle connectionFd, std::coroutine_handle<> handle,
-                                         std::function<void()> work) {
+void SingleHttpServer::postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration,
+                                         std::coroutine_handle<> handle, std::function<void()> work) {
   {
     std::scoped_lock lock(_updates.lock);
-    _updates.asyncCallbacks.emplace_back(connectionFd, handle, std::move(work));
+    _updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle, std::move(work));
     _updates.hasAsyncCallbacks.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
@@ -1754,9 +1761,10 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
-  h2Handler->setAsyncPostCallback([this, fd = clientFd](std::coroutine_handle<> handle, std::function<void()> work) {
-    postAsyncCallback(fd, handle, std::move(work));
-  });
+  h2Handler->setAsyncPostCallback(
+      [this, fd = clientFd, generation = state.generation](std::coroutine_handle<> handle, std::function<void()> work) {
+        postAsyncCallback(fd, generation, handle, std::move(work));
+      });
 #endif
 }
 

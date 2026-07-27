@@ -536,6 +536,43 @@ TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
   EXPECT_TRUE(suspendedFlag) << "markAwaitingCallback should have set the H2 suspended flag";
 }
 
+TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
+  bool suspendedFlag = false;
+  setH2SuspendedFlag(&suspendedFlag);
+
+  std::atomic<bool> workStarted{false};
+  std::atomic<bool> finishWork{false};
+  std::atomic<bool> postCallbackInvoked{false};
+  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, const std::function<void()>&) {
+    postCallbackInvoked.store(true, std::memory_order_release);
+  });
+
+  {
+    auto awaitable = req.deferWork([&] {
+      workStarted.store(true, std::memory_order_release);
+      while (!finishWork.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      return std::string(1024, 'x');
+    });
+    awaitable.await_suspend(std::coroutine_handle<>{});
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!workStarted.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    ASSERT_TRUE(workStarted.load(std::memory_order_acquire));
+  }
+
+  finishWork.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!postCallbackInvoked.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(postCallbackInvoked.load(std::memory_order_acquire));
+  EXPECT_TRUE(suspendedFlag);
+}
+
 #endif
 
 TEST_F(HttpRequestViewTest, NotEnoughDataNoEndOfHeaders) {

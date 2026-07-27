@@ -170,6 +170,9 @@ struct ConnectionState {
   uint32_t requestDeadlineMs{kInactiveRelativeMs};
   // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
   uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  uint32_t generation{0};
+#endif
 
   char clientAddressBuffer[kFormattedAddressCapacity];
 
@@ -242,7 +245,6 @@ struct ConnectionState {
 
   // Async handler state is pooled by ConnectionStorage to avoid per-connection inline bloat.
   PoolPtr<AsyncHandlerState> asyncState;
-
 #endif
 };
 
