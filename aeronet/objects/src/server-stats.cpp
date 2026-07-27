@@ -27,7 +27,6 @@ void Append(std::string& out, std::integral auto value) {
 
 constexpr std::string_view kOpen = "{";
 constexpr std::string_view kClose = "}";
-constexpr std::string_view kComma = ",";
 
 constexpr std::string_view kTotalBytesQueued = R"("totalBytesQueued":)";
 constexpr std::string_view kTotalBytesWrittenImmediate = R"(,"totalBytesWrittenImmediate":)";
@@ -39,6 +38,8 @@ constexpr std::string_view kMaxConnectionOutboundBuffer = R"(,"maxConnectionOutb
 constexpr std::string_view kTotalRequestsServed = R"(,"totalRequestsServed":)";
 
 #ifdef AERONET_ENABLE_OPENSSL
+constexpr std::string_view kComma = ",";
+
 constexpr std::string_view kKtlsSendEnabledConnections = R"(,"ktlsSendEnabledConnections":)";
 constexpr std::string_view kKtlsSendEnableFallbacks = R"(,"ktlsSendEnableFallbacks":)";
 constexpr std::string_view kKtlsSendForcedShutdowns = R"(,"ktlsSendForcedShutdowns":)";
