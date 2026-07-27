@@ -103,7 +103,13 @@ inline void CheckHandshake(bool isTlsEnabled, ConnectionState& state, TlsMetrics
 
 void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  const auto* asyncState = state.pAsyncState();
+  bool asyncHandlerActive = asyncState != nullptr && asyncState->active;
+  if (!_config.enableKeepAlive || state.isTunneling() || asyncHandlerActive) {
+#else
   if (!_config.enableKeepAlive || state.isTunneling()) {
+#endif
     _keepAliveDeadlines.remove(state);
     return;
   }

@@ -637,7 +637,41 @@ auto makePollIntervalScope(std::chrono::milliseconds interval) {
       [](HttpServerConfig& config, std::chrono::milliseconds poll) { config.withPollInterval(poll); }, interval);
 }
 
+auto makeKeepAliveTimeoutScope(std::chrono::milliseconds timeout) {
+  return test::ScopedConfigUpdate<std::chrono::milliseconds>(
+      ts, [](const HttpServerConfig& config) { return config.keepAliveTimeout; },
+      [](HttpServerConfig& config, std::chrono::milliseconds keepAliveTimeout) {
+        config.withKeepAliveTimeout(keepAliveTimeout);
+      },
+      timeout);
+}
+
 }  // namespace
+
+TEST(HttpRouting, DeferredWorkIsNotSweptByKeepAliveTimeout) {
+  constexpr auto keepAliveTimeout = std::chrono::milliseconds{20};
+  constexpr auto workDuration = keepAliveTimeout * 5;
+
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/async-slow-work",
+                                 [workDuration](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   auto body = co_await req.deferWork([workDuration] {
+                                     std::this_thread::sleep_for(workDuration);
+                                     return std::string{"completed"};
+                                   });
+                                   co_return HttpResponse(http::StatusCodeOK).body(std::move(body));
+                                 });
+
+  auto timeout = makeKeepAliveTimeoutScope(keepAliveTimeout);
+  auto pollInterval = makePollIntervalScope(std::chrono::milliseconds{5});
+
+  test::RequestOptions opts;
+  opts.target = "/async-slow-work";
+  opts.recvTimeout = std::chrono::seconds{1};
+  const auto response = test::requestOrThrow(ts.port(), opts);
+
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\ncompleted")) << response;
+}
 
 TEST(HttpRouting, AsyncBodyReadTimeout) {
   RouterUpdateProxy router = ts.resetRouterAndGet();

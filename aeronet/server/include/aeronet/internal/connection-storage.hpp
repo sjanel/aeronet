@@ -194,7 +194,7 @@ class ConnectionStorage {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncHandlerStatePool& asyncHandlerStatePool() noexcept { return _asyncHandlerStatePool; }
-  const AsyncHandlerStatePool& asyncHandlerStatePool() const noexcept { return _asyncHandlerStatePool; }
+  [[nodiscard]] const AsyncHandlerStatePool& asyncHandlerStatePool() const noexcept { return _asyncHandlerStatePool; }
 #endif
 
   std::chrono::steady_clock::time_point now;
@@ -211,10 +211,15 @@ class ConnectionStorage {
       statePtr->reset();
     }
     statePtr->lastActivity = now;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    statePtr->generation = _nextConnectionGeneration;
+    ++_nextConnectionGeneration;
+#endif
     return statePtr;
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  uint32_t _nextConnectionGeneration{0};
   AsyncHandlerStatePool _asyncHandlerStatePool;
 #endif
 
