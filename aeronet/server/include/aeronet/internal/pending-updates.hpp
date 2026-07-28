@@ -34,6 +34,7 @@ struct PendingUpdates {
   // Async callback posted from background threads to resume coroutines.
   struct AsyncCallback {
     NativeHandle connectionFd;  // connection fd for O(1) hash map lookup
+    uint32_t connectionGeneration;
     std::coroutine_handle<> handle;
     std::function<void()> work;  // optional work to execute before resuming
   };

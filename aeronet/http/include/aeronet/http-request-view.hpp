@@ -16,6 +16,7 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
+#include <memory>
 #include <thread>
 
 #include "aeronet/async-handler-state.hpp"
@@ -111,7 +112,11 @@ class HttpRequestView {
    public:
     using WorkFn = std::function<Result()>;
 
-    DeferredWorkAwaitable(HttpRequestView& request, WorkFn work) noexcept : _request(request), _work(std::move(work)) {}
+    DeferredWorkAwaitable(HttpRequestView& request, WorkFn work)
+        : _request(request),
+          _work(std::move(work)),
+          _state(std::make_shared<State>()),
+          _postCallback(request.copyPostCallback()) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return false; }
 
@@ -119,19 +124,18 @@ class HttpRequestView {
       _request.markAwaitingCallback();
 
       auto work = std::move(_work);
-      Result* resultPtr = &_result;
-      std::exception_ptr* exPtr = &_exception;
+      auto state = _state;
+      auto postCallback = std::move(_postCallback);
 
-      std::thread([&req = _request, handle, work = std::move(work), resultPtr, exPtr]() mutable {
+      std::thread([handle, work = std::move(work), state = std::move(state),
+                   postCallback = std::move(postCallback)]() mutable {
         try {
-          *resultPtr = work();
+          state->result = work();
         } catch (...) {
-          *exPtr = std::current_exception();
+          state->exception = std::current_exception();
         }
         try {
-          // nullptr work: result is already stored in _result/_exception on the coroutine
-          // frame, so no pre-resume work needs to run on the event-loop thread.
-          req.postCallback(handle, nullptr);
+          postCallback(handle, nullptr);
         } catch (const std::exception& ex) {
           // postCallback throws when the channel to the event loop is broken, which
           // typically means the connection was closed while background work was running.
@@ -145,17 +149,22 @@ class HttpRequestView {
     }
 
     [[nodiscard]] Result await_resume() {
-      if (_exception) {
-        std::rethrow_exception(_exception);
+      if (_state->exception) {
+        std::rethrow_exception(_state->exception);
       }
-      return std::move(_result);
+      return std::move(_state->result);
     }
 
    private:
+    struct State {
+      Result result{};
+      std::exception_ptr exception;
+    };
+
     HttpRequestView& _request;
     WorkFn _work;
-    Result _result{};
-    std::exception_ptr _exception;
+    std::shared_ptr<State> _state;
+    std::function<void(std::coroutine_handle<>, std::function<void()>)> _postCallback;
   };
 #endif
 
@@ -577,6 +586,7 @@ class HttpRequestView {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void markAwaitingBody() const noexcept;
   void markAwaitingCallback() const noexcept;
+  [[nodiscard]] std::function<void(std::coroutine_handle<>, std::function<void()>)> copyPostCallback() const;
 
   // Signals the server's event loop to resume the coroutine identified by `handle`.
   // Typically called from a background thread (e.g. the detached thread inside
@@ -614,6 +624,7 @@ class HttpRequestView {
   bool decodePath(char* pathStart, char* pathEnd);
 
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
+
   struct BodyAccessBridge {
     using AggregateFn = std::string_view (*)(HttpRequestView&, void* context);
     using ReadChunkFn = std::string_view (*)(HttpRequestView&, void* context, std::size_t maxBytes);

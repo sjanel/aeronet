@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### Bug Fixes
+
+- **Async handlers: heap-use-after-free when a connection was closed during a long `deferWork()`**: a request whose async handler ran slow background work (e.g. a multi-second database query) could have its connection swept by the keep-alive idle timeout while the work was still in flight. When the background thread finished it wrote its result into the coroutine frame / connection memory that had already been freed by the event-loop thread, which AddressSanitizer reported as a `heap-use-after-free`. The fix is threefold: (1) `DeferredWorkAwaitable` now stores the result/exception in a `shared_ptr` state co-owned by the background thread and copies the event-loop post-callback at construction, so the worker never dereferences the `HttpRequestView` or the coroutine frame after completion; (2) connections with an active async handler are excluded from the keep-alive deadline sweep and re-armed once the response is flushed, so an in-flight request is no longer closed as if idle; (3) each connection carries a monotonic `generation` token that is validated before a posted async completion runs its pre-resume work or resumes the coroutine, so a stale completion can never resume a different connection that reused the same fd. Applies to both HTTP/1.x and HTTP/2 async paths. Tests: `aeronet/http/test/http-request-view_test.cpp` (`DeferredWorkCompletionOutlivesAwaitableStorage`), `tests/http-routing_test.cpp` (`DeferredWorkIsNotSweptByKeepAliveTimeout`).
+
 ### Improvements
 
 - **Replace std::to_chars(int) with faster custom WriteInt**
