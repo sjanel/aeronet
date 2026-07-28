@@ -580,7 +580,8 @@ class SingleHttpServer {
 
   // Post an async callback to be processed in the event loop, then resume the coroutine.
   // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(NativeHandle connectionFd, std::coroutine_handle<> handle, std::function<void()> work);
+  void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle,
+                         std::function<void()> work);
 
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
