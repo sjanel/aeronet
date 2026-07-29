@@ -67,7 +67,7 @@ namespace {
 inline void IncrementTlsFailureReason(TlsMetricsInternal& metrics, std::string_view reason) {
   auto [it, inserted] = metrics.handshakeFailureReasons.emplace(reason, 1);
   if (!inserted) {
-    ++(it->second);
+    ++it->second;
   }
 }
 

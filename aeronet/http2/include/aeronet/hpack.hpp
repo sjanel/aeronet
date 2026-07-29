@@ -28,7 +28,7 @@ namespace aeronet::http2 {
 class HpackDynamicTable {
  public:
   /// Create a dynamic table with the specified maximum size in bytes.
-  explicit HpackDynamicTable(std::size_t maxSize = 4096) noexcept : _maxSize(maxSize) {}
+  explicit HpackDynamicTable(std::size_t maxSizeBytes) noexcept : _maxSizeBytes(maxSizeBytes) {}
 
   /// Add a new entry to the front of the table.
   /// May trigger eviction of old entries if the new entry doesn't fit.
@@ -36,17 +36,19 @@ class HpackDynamicTable {
   bool add(std::string_view name, std::string_view value);
 
   /// Get entry at the specified dynamic table index (0 = most recent).
-  /// Returns nullptr if index is out of bounds.
-  [[nodiscard]] const http::Header& operator[](uint32_t index) const noexcept { return _entries[index]; }
+  /// Index must be lower than entryCount().
+  [[nodiscard]] const http::Header& operator[](uint32_t index) const noexcept {
+    return _entries[_entries.size() - 1U - index];
+  }
 
   /// Get the number of entries in the dynamic table.
-  [[nodiscard]] std::size_t entryCount() const noexcept { return _entries.size(); }
+  [[nodiscard]] std::size_t entryCount() const noexcept { return _entries.size() - _firstLive; }
 
   /// Get the current size of the dynamic table in bytes.
-  [[nodiscard]] std::size_t currentSize() const noexcept { return _currentSize; }
+  [[nodiscard]] std::size_t currentSizeBytes() const noexcept { return _currentSizeBytes; }
 
   /// Get the maximum size of the dynamic table in bytes.
-  [[nodiscard]] std::size_t maxSize() const noexcept { return _maxSize; }
+  [[nodiscard]] std::size_t maxSizeBytes() const noexcept { return _maxSizeBytes; }
 
   /// Update the maximum size of the dynamic table.
   /// May trigger eviction if the new size is smaller than the current size.
@@ -58,9 +60,18 @@ class HpackDynamicTable {
  private:
   http::Header evict();
 
+  // Live entries occupy [_firstLive, _entries.size()) in chronological order: _entries[_firstLive] is the oldest, so
+  // the next to be evicted, and _entries.back() is the newest. RFC 7541 numbers the dynamic table newest-first, which
+  // is why operator[] reverses the index.
+  //
+  // Storing it this way makes add() an amortised push_back and evict() a cursor bump. Keeping the RFC order in memory
+  // instead would mean inserting at the front, which relocates every live entry on every single add.
+  // Only the 16-byte Header handles move; the name/value buffers they point at never do, so string_views handed out by
+  // the decoder stay valid across add(), evict() and compact().
   vector<http::Header> _entries;
-  std::size_t _currentSize{0};
-  std::size_t _maxSize;
+  std::size_t _currentSizeBytes{0};
+  std::size_t _maxSizeBytes;
+  uint32_t _firstLive{0};
 };
 
 /// Result of looking up a header in the HPACK tables.
@@ -82,7 +93,7 @@ struct HpackLookupResult {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  explicit HpackDecoder(std::size_t maxDynamicTableSize = 4096, bool mergeAllowedForUnknownRequestHeaders = true)
+  explicit HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders = true)
       : _dynamicTable(maxDynamicTableSize),
         _decodedStrings(128U),
         _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
