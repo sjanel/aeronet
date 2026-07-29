@@ -201,7 +201,7 @@ inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
     const auto contentLenIt = headersMap.find(http::ContentLength);
     if (contentLenIt != headersMap.end()) {
       const std::string_view contentLenValue = contentLenIt->second;
-      std::size_t declaredLen;
+      std::size_t declaredLen{};
       [[maybe_unused]] const auto ret =
           std::from_chars(contentLenValue.data(), contentLenValue.data() + contentLenValue.size(), declaredLen);
       assert(ret.ec == std::errc());  // Content-Length is guaranteed to be a valid integer by the HTTP parser
