@@ -211,6 +211,18 @@ class BenchmarkRunner:
         self.logs_dir.mkdir(exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.result_file = self.output_dir / f"benchmark_{timestamp}.txt"
+        self.profiler: Optional[PerfProfiler] = None
+        if args.profile:
+            try:
+                self.profiler = PerfProfiler(
+                    self.output_dir / "profiles" / timestamp,
+                    frequency=args.profile_frequency,
+                    call_graph=args.profile_call_graph,
+                    install_flamegraph=args.profile_install_flamegraph,
+                    open_hotspot=args.profile_hotspot,
+                )
+            except RuntimeError as exc:
+                raise BenchmarkError(str(exc)) from exc
         # Human-readable date of the benchmark run ("date of the shoot"), embedded in
         # the txt + JSON reports and surfaced in every rendered HTML report.
         self.run_datetime = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -538,6 +550,11 @@ class BenchmarkRunner:
 
     def run(self) -> None:
         is_h2 = self.protocol in ("h2c", "h2-tls")
+        if self.profiler is not None:
+            try:
+                self.profiler.check_permissions()
+            except RuntimeError as exc:
+                raise BenchmarkError(str(exc)) from exc
         if is_h2:
             self._ensure_h2load_available()
             self._prepare_h2load_body_files()
@@ -864,6 +881,30 @@ class BenchmarkRunner:
         )
         return median_out
 
+    def _start_perf_profile(
+        self, server: str, scenario_name: str, sample: int
+    ) -> Optional[PerfRecording]:
+        if self.profiler is None:
+            return None
+        handle = self.server_processes.get(server)
+        if handle is None or handle.popen.poll() is not None:
+            raise BenchmarkError(f"Cannot profile {server}: server process is not running")
+        artifact_parts = [self.protocol, server, scenario_name]
+        if self.repeat > 1:
+            artifact_parts.append(f"sample-{sample + 1}")
+        try:
+            return self.profiler.start(handle.popen.pid, artifact_parts)
+        except RuntimeError as exc:
+            raise BenchmarkError(str(exc)) from exc
+
+    def _stop_perf_profile(self, recording: Optional[PerfRecording]) -> None:
+        if recording is None or self.profiler is None:
+            return
+        try:
+            self.profiler.stop(recording)
+        except RuntimeError as exc:
+            print(f"WARNING: {exc}", file=sys.stderr)
+
     def _run_single(
         self,
         server: str,
@@ -925,6 +966,7 @@ class BenchmarkRunner:
         outputs: List[str] = []
         last_fail_output = ""
         for sample in range(self.repeat):
+            recording = self._start_perf_profile(server, scenario_name, sample)
             try:
                 result = subprocess.run(
                     bench_cmd, capture_output=True, text=True, check=True
@@ -938,6 +980,8 @@ class BenchmarkRunner:
                     f"(exit {exc.returncode}){sample_note}"
                 )
                 print(last_fail_output)
+            finally:
+                self._stop_perf_profile(recording)
         if not outputs:
             self._store_result(server, scenario_name, "-", "-", "-", latency_raw="-", timeout_errors=0)
             self._append_result_block(server, scenario_name, last_fail_output, error=True)
@@ -1167,10 +1211,14 @@ class BenchmarkRunner:
         # request count), preferring non-crashed samples. Each sample carries its own
         # crash-retry fallback.
         samples: List[Tuple[int, str, bool]] = []
-        for _sample in range(self.repeat):
-            sample_output, sample_crashed = self._acquire_h2load_output(cmd, conns)
-            succeeded_sample = int(self._parse_h2load_output(sample_output).get("succeeded", 0))
-            samples.append((succeeded_sample, sample_output, sample_crashed))
+        for sample in range(self.repeat):
+            recording = self._start_perf_profile(server, scenario_name, sample)
+            try:
+                sample_output, sample_crashed = self._acquire_h2load_output(cmd, conns)
+                succeeded_sample = int(self._parse_h2load_output(sample_output).get("succeeded", 0))
+                samples.append((succeeded_sample, sample_output, sample_crashed))
+            finally:
+                self._stop_perf_profile(recording)
         output, h2load_crashed = self._select_median_h2load_output(samples)
 
         metrics = self._parse_h2load_output(output)
@@ -2135,7 +2183,7 @@ class BenchmarkRunner:
 
 # ------------------------------ Table printer ------------------------------ #
 
-from bench_utils import TablePrinter, format_rps  # noqa: E402
+from bench_utils import PerfProfiler, PerfRecording, TablePrinter, format_rps  # noqa: E402
 
 
 # ------------------------------- CLI parsing ------------------------------- #
@@ -2225,6 +2273,33 @@ def parse_args() -> argparse.Namespace:
         help="Disable pinning the server and load generator (wrk/h2load) to disjoint CPU "
         "cores. Pinning (Linux + taskset, enough cores) reduces load-generator/server "
         "contention; auto-disabled on small boxes (e.g. 2-core CI runners).",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Record each measured server/scenario sample with perf and generate profile artifacts",
+    )
+    parser.add_argument(
+        "--profile-frequency",
+        type=int,
+        default=200,
+        help="perf sampling frequency used with --profile (default: 200)",
+    )
+    parser.add_argument(
+        "--profile-call-graph",
+        choices=["dwarf", "fp", "lbr"],
+        default="dwarf",
+        help="perf call graph mode used with --profile (default: dwarf)",
+    )
+    parser.add_argument(
+        "--profile-install-flamegraph",
+        action="store_true",
+        help="Install Brendan Gregg's FlameGraph scripts in the user cache when needed",
+    )
+    parser.add_argument(
+        "--profile-hotspot",
+        action="store_true",
+        help="Open each generated perf.data in Hotspot (best with one server/scenario)",
     )
     return parser.parse_args()
 
