@@ -163,112 +163,93 @@ cmake --build build --target run-aeronet-bench
 
 ## Future Ideas
 
-- Optional integration with `perf` / hardware counters (off by default).
-- Flamegraph helper script capturing `perf record -g` around a chosen benchmark.
 - Automatic detection of regression (simple % threshold) when explicitly requested.
 
-## Benchmark profiling with perf and kcachegrind
+## Profiling with perf
 
-This file explains how to profile the `aeronet` benchmarks using `perf` and visualize the results with `kcachegrind` (via callgrind format) or with FlameGraph.
+`scripts/profile_benchmark.sh` records a command or an existing PID, exports `perf.script`, and generates
+`flamegraph.svg` when Brendan Gregg's FlameGraph scripts are installed. It uses DWARF call graphs by default,
+which work with optimized binaries even when frame pointers are unavailable.
 
-### Quick helper
-
-We include a small helper script at `scripts/profile_benchmark.sh` that automates a typical workflow:
-
-- Build (optional) with frame pointers and debuginfo
-- Run `perf record` with call-graph sampling
-- Convert the `perf.data` to a callgrind file (if conversion tools are available) or to a FlameGraph SVG
-
-### Usage examples
-
-1) Build and profile the throughput benchmark (recommended):
+Build benchmarks as `RelWithDebInfo` with frame pointers:
 
 ```bash
-# from repository root
-./scripts/profile_benchmark.sh --build -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+./scripts/profile_benchmark.sh --build
 ```
 
-1) Profile an already-built binary (sample frequency 400Hz):
+Record any finite benchmark command:
 
 ```bash
-./scripts/profile_benchmark.sh --freq 400 -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+./scripts/profile_benchmark.sh --freq 400 -- ./build-profile/aeronet-bench-internal-router
 ```
 
-### What the script does
-
-- Runs `perf record -F <freq> -g -- <binary> ...` as root (sudo) to capture user-space stacks
-- Writes `perf.data.YYYYMMDD-HHMMSS` and `perf_script.YYYYMMDD-HHMMSS.txt`
-- Attempts to convert the `perf script` output to callgrind format using one of:
-  - `perf2calltree` (packaged with kcachegrind on some distros)
-  - `/usr/share/kcachegrind/perf2calltree` (if present)
-  - `gprof2calltree` (Python tool)
-- If conversion tools are not found, it can generate a FlameGraph SVG if you clone Brendan Gregg's FlameGraph under `scripts/FlameGraph`.
-
-### Installing useful tools on Ubuntu
+Attach to an already-running server and open the result in Hotspot:
 
 ```bash
-sudo apt update
-# perf (kernel tools), kcachegrind, flamegraph helper
-sudo apt install -y linux-tools-$(uname -r) linux-tools-common kcachegrind python3-pip
-pip3 install gprof2calltree
+./scripts/profile_benchmark.sh --pid "$(pidof aeronet-bench-server)" --hotspot
 ```
 
-If `perf2calltree` is missing in your distro package, you can install `kcachegrind` which may include it, or fetch `perf2calltree` from the perf-tools or kcachegrind source.
+Hotspot is discovered on `PATH`, under `~/Downloads/hotspot-*.AppImage`, or under
+`~/Applications/hotspot-*.AppImage`. Use `--hotspot-bin FILE` to override it.
 
-### Converting manually
+### Scripted server and client profiles
 
-If you prefer to do things by hand:
-
-1. Record:
+The scripted runners can profile the measured process directly. Server runs attach after warmup and record
+the server while `wrk` or `h2load` drives it. Client runs record the selected finite client driver, including
+its in-process warmup, and do not record the shared server.
 
 ```bash
-sudo perf record -F 200 -g -o perf.data -- ./build/benchmarks/aeronet-bench-throughput --duration 10
+# One server workload, with an SVG flamegraph and Hotspot view.
+python3 benchmarks/scripted-servers/run_benchmarks.py \
+  --server aeronet --scenario headers --duration 15s \
+  --profile --profile-install-flamegraph --profile-hotspot
+
+# One client workload.
+python3 benchmarks/scripted-clients/run_client_benchmarks.py \
+  --client aeronet --scenario small-get --duration 15s \
+  --profile --profile-install-flamegraph --profile-hotspot
 ```
 
-1. Export perf script:
+Profiling artifacts are stored below the runner's output directory:
+
+```text
+results/profiles/<run>/<protocol>/<server-or-client>/<scenario>/
+  perf.data
+  perf.script
+  flamegraph.svg
+```
+
+With `--repeat N`, server profiles get an additional `sample-N/` directory so each measured run remains
+separate. Avoid `--profile-hotspot` with broad multi-scenario runs because it opens one GUI window per profile.
+
+### Permissions and tools
+
+Install perf using the package matching the running kernel. On Ubuntu or Debian:
 
 ```bash
-perf script -i perf.data > perf_script.txt
+sudo apt install linux-tools-$(uname -r) linux-tools-common
 ```
 
-1. Convert to callgrind (one of):
+The scripted runners cannot prompt for `sudo` after starting child processes. Allow per-process perf recording
+before running them:
 
 ```bash
-# If perf2calltree present
-perf script -i perf.data | perf2calltree > callgrind.out
-
-# Or using gprof2calltree
-perf script -i perf.data > perf_for_gprof.txt
-gprof2calltree -i perf_for_gprof.txt -o callgrind.out
+sudo sysctl kernel.perf_event_paranoid=1
 ```
 
-1. Open callgrind in kcachegrind:
+For a single direct command, `profile_benchmark.sh --sudo -- ...` is also supported. The runner preflight and
+the helper both report the current `kernel.perf_event_paranoid` value when access is denied.
+
+Pass `--profile-install-flamegraph` in a scripted run, or `--install-flamegraph` to the helper, to clone
+FlameGraph into `${XDG_CACHE_HOME:-~/.cache}/aeronet/FlameGraph`. Existing recordings can be processed again
+without rerunning the workload:
 
 ```bash
-kcachegrind callgrind.out
+./scripts/profile_benchmark.sh --input path/to/perf.data --install-flamegraph --hotspot
 ```
 
-### FlameGraph (alternative visualization)
-
-Clone FlameGraph and run stackcollapse & flamegraph:
-
-```bash
-git clone https://github.com/brendangregg/FlameGraph.git scripts/FlameGraph
-perf script -i perf.data | scripts/FlameGraph/stackcollapse-perf.pl | scripts/FlameGraph/flamegraph.pl > flamegraph.svg
-# open flamegraph.svg in a browser
-```
-
-### Notes and tips
-
-- Build with `-fno-omit-frame-pointer` for the best call stacks if your compiler and target support it (x86_64). The helper script configures that when run with `--build`.
-- Use `RelWithDebInfo` to keep optimizations but also have debug symbols.
-- For in-depth CPU tracing of syscalls or kernel stacks, you can drop `-g` and collect kernel stacks too, but that makes conversion harder.
-- When running in containers or VMs, ensure `perf_event` access is allowed (sometimes `sysctl kernel.perf_event_paranoid=1` or lower is required).
-
-If you'd like, I can:
-
-- Add a small CMake target to build all benchmark binaries in `build/benchmarks` in one step
-- Run a sample profiling pass here and attach the generated `callgrind.out` and `flamegraph.svg` (if you consent to uploading artifacts)
+The helper also accepts `--flamegraph-dir DIR`, `--call-graph dwarf|fp|lbr`, `--event EVENT`, and
+`--output-dir DIR`; run it with `--help` for the complete interface.
 
 ## HTTP/2 Performance Testing Plan with h2load
 
