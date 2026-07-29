@@ -15,6 +15,7 @@ All notable changes to aeronet are documented in this file.
 - **Remove limit of number of settings in SETTINGS frame header in HTTP2**: The HTTP/2 spec does not limit the number of settings in a SETTINGS frame, but aeronet previously limited it to 16. This limit has been removed, and the SETTINGS frame is now parsed according to the spec without any arbitrary limit.
 - **Fix MSVC harmless warnings of unreachable code in ndigits.hpp**
 - **Fix gcc harmless warnings of sign conversion in ndigits.hpp**
+- **Optimized HPACK Huffman decoding** with a smaller lookup table, canonical fallback, and correct padding handling, significantly improving encode/decode performance. Reworked static header lookup using a collision-free perfect hash and optimized dynamic table insertion/eviction to eliminate unnecessary memory moves. Removed redundant Huffman length computation during encoding and reduced memory usage, yielding up to **46% faster decoding**, **30% faster round-trips**, and **63% faster static header lookups**.
 
 ## [1.4.1] - 2026-07-25
 

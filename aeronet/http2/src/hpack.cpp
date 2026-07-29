@@ -124,19 +124,31 @@ constexpr std::size_t kStaticHeaderNameMaxLen =
         ->name.size();
 
 // ============================
-// Static Table Hash Lookup
+// Static Table Name Lookup
 // ============================
-// O(1) hash-based lookup for static table header names, replacing binary search.
-// Uses FNV-1a hash with open-addressing linear probing.
+// The 52 distinct names of the RFC 7541 static table are known at compile time and can never change, so this is a
+// perfect-hashing problem rather than a general hashing one. The triple (length, first byte, last byte) is already
+// injective over those 52 names, and multiply-shifting it with kStaticNameHashMultiplier spreads them over 128 slots
+// with no collision at all (asserted below).
+//
+// That buys two things over hashing the whole name:
+// - the slot is 3 loads plus a multiply and a shift, with no loop, so the cost no longer scales with the name length
+//   and there is no serialised multiply chain;
+// - a perfect hash needs no probe sequence, so a lookup is one string comparison, never a chain of them.
 
-/// Compile-time FNV-1a hash for header name strings.
-constexpr uint32_t FnvHash(std::string_view sv) noexcept {
-  uint32_t hash = 2166136261U;
-  for (char ch : sv) {
-    hash ^= static_cast<uint32_t>(static_cast<uint8_t>(ch));
-    hash *= 16777619U;
-  }
-  return hash;
+/// Injective key over the static table names. Only valid for a non-empty name.
+constexpr uint32_t StaticNameKey(std::string_view name) noexcept {
+  return static_cast<uint32_t>(name.size()) | (static_cast<uint32_t>(static_cast<uint8_t>(name.front())) << 8U) |
+         (static_cast<uint32_t>(static_cast<uint8_t>(name.back())) << 16U);
+}
+
+constexpr uint32_t kStaticNameHashBits = 7;
+constexpr uint32_t kStaticNameHashSize = 1UL << kStaticNameHashBits;
+constexpr uint32_t kStaticNameHashMultiplier = 0x8FEBA71BU;
+
+/// Slot of 'name' in kStaticNameHashTable. Only valid for a non-empty name.
+constexpr uint32_t StaticNameSlot(std::string_view name) noexcept {
+  return (StaticNameKey(name) * kStaticNameHashMultiplier) >> (32U - kStaticNameHashBits);
 }
 
 /// Entry in the static table name hash map.
@@ -147,12 +159,12 @@ struct StaticNameHashEntry {
   uint8_t count;        ///< Number of consecutive entries with this name
 };
 
-constexpr uint32_t kStaticNameHashBits = 6;
-constexpr uint32_t kStaticNameHashSize = 1UL << kStaticNameHashBits;
-constexpr uint32_t kStaticNameHashMask = kStaticNameHashSize - 1;
-
 constexpr auto kStaticNameHashTable = []() {
-  std::array<StaticNameHashEntry, kStaticNameHashSize> table{};
+  struct Table {
+    StaticNameHashEntry slots[kStaticNameHashSize]{};
+    bool perfect{true};
+  };
+  Table ret;
 
   // Walk kStaticTableByName (sorted by name) and collect unique name ranges
   uint32_t idx = 0;
@@ -162,16 +174,20 @@ constexpr auto kStaticNameHashTable = []() {
     while (idx < kStaticTableByName.size() && kStaticTableByName[idx].name == name) {
       ++idx;
     }
-    // Insert into hash table with linear probing
-    auto slot = FnvHash(name) & kStaticNameHashMask;
-    while (!table[slot].name.empty()) {
-      slot = (slot + 1) & kStaticNameHashMask;
+    const auto slot = StaticNameSlot(name);
+    if (!ret.slots[slot].name.empty()) {
+      ret.perfect = false;
     }
-    table[slot] = {name, static_cast<uint8_t>(start), static_cast<uint8_t>(idx - start)};
+    ret.slots[slot] = {name, static_cast<uint8_t>(start), static_cast<uint8_t>(idx - start)};
   }
 
-  return table;
+  return ret;
 }();
+
+// If this ever fires, the lookup in findHeader would silently start missing names: it does not probe. Pick a new
+// kStaticNameHashMultiplier that is collision-free again (any odd 32-bit constant can be searched for).
+static_assert(kStaticNameHashTable.perfect,
+              "kStaticNameHashMultiplier is no longer a perfect hash over the static table names");
 
 // Huffman decoding table (RFC 7541 Appendix B)
 // This is a simplified representation - each entry contains the symbol and the number of bits
@@ -448,63 +464,133 @@ constexpr HuffmanCode kHuffmanCodes[] = {
 };
 
 // ============================
-// Optimized Huffman Decode Table
+// Optimized Huffman Decode Tables
 // ============================
-// Uses a two-level lookup table for fast decoding:
-// - Level 1: 9-bit lookup (covers codes 5-9 bits, most common symbols)
-// - Level 2: For longer codes, continue bit-by-bit with a state machine
+// Decoding works on a 64-bit MSB-aligned bit window and has two tiers:
+// - Tier 1: a direct-mapped table indexed by the top 8 bits. Covers every code of 5..8 bits, which is 74 of the 257
+//   symbols but well over 99% of the bytes in real header text (all lowercase letters, digits and common
+//   punctuation). One load, no branching on bit length.
+// - Tier 2: canonical decoding for the 9..30 bit codes, see kHuffmanLevels below.
+//
+// 8 bits is the exact useful width: RFC 7541 has no 9-bit code, so a 9-bit table would cover the same symbols with
+// twice the footprint. 256 entries keep the table at 1 KB, which matters because a busy server touches it from every
+// connection.
 
-// Level 1 table entry: if bits_needed <= 9, we can decode in one lookup
+// Tier 1 table entry.
 struct HuffmanDecodeEntry {
-  uint16_t symbol;   // Decoded symbol (0-255), or 256 for EOS, or 0xFFFF if needs more bits
-  uint8_t bitsUsed;  // Number of bits consumed (0 if needs more bits)
+  uint16_t symbol;   // Decoded symbol (0-255); meaningless when bitsUsed == 0
+  uint8_t bitsUsed;  // Number of bits consumed, or 0 when the code is longer than the tier-1 window
 };
 
-// Build level 1 table at compile time (512 entries for 9-bit lookup)
-constexpr std::size_t kHuffmanLevel1Bits = 9;
+constexpr std::size_t kHuffmanLevel1Bits = 8;
 constexpr std::size_t kHuffmanLevel1Size = 1ULL << kHuffmanLevel1Bits;
 
 constexpr auto kHuffmanDecodeTable = []() {
   std::array<HuffmanDecodeEntry, kHuffmanLevel1Size> table;
 
-  // Initialize all entries as "needs more bits"
-  std::ranges::fill(table, HuffmanDecodeEntry{0xFFFF, 0});
+  // Entries left at bitsUsed == 0 mean "code is longer than the window, fall through to tier 2".
+  std::ranges::fill(table, HuffmanDecodeEntry{0, 0});
 
-  // Fill in entries for codes that fit in 9 bits or less
   for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
     const auto [code, bitLen] = kHuffmanCodes[sym];
-
-    if (bitLen <= kHuffmanLevel1Bits) {
-      // This symbol can be decoded with level 1 lookup
-      // The code is left-aligned in the lookup, so we need to fill all entries
-      // where the top 'bitLen' bits match
-      const std::size_t shift = kHuffmanLevel1Bits - bitLen;
-      const std::size_t baseIdx = static_cast<std::size_t>(code) << shift;
-      const std::size_t numEntries = 1ULL << shift;
-
-      for (std::size_t iter = 0; iter < numEntries; ++iter) {
-        table[baseIdx + iter].symbol = static_cast<uint16_t>(sym);
-        table[baseIdx + iter].bitsUsed = bitLen;
-      }
+    if (bitLen > kHuffmanLevel1Bits) {
+      continue;
+    }
+    // The window is left-aligned, so one code owns every index sharing its top bitLen bits.
+    const std::size_t shift = kHuffmanLevel1Bits - bitLen;
+    const std::size_t baseIdx = static_cast<std::size_t>(code) << shift;
+    for (std::size_t iter = 0, numEntries = 1ULL << shift; iter < numEntries; ++iter) {
+      table[baseIdx + iter] = {static_cast<uint16_t>(sym), bitLen};
     }
   }
 
   return table;
 }();
 
-// For codes longer than 9 bits, we use a simple state machine approach
-// with the original kHuffmanCodes table, but optimized with early exit
+// ---- Tier 2: canonical decoding
+//
+// The RFC 7541 code is canonical: within one bit length the codes are consecutive and follow symbol order, and
+// firstCode[len] == (firstCode[prev] + count[prev]) << (len - prev). Consequently the MSB-aligned 64-bit windows of
+// the 21 used bit lengths partition [0, 2^64) exactly, in increasing length order. So walking the lengths and taking
+// the first one whose window bound covers the current window yields the right code length in at most 21 integer
+// compares, instead of rescanning all 257 codes once per candidate length.
+//
+// Bounds are stored inclusive: the exclusive bound of the 30-bit level is 2^64 and would wrap to 0.
+struct HuffmanLevel {
+  uint64_t maxWindow;    ///< Largest MSB-aligned window value belonging to this bit length
+  uint32_t firstCode;    ///< Smallest code of this bit length
+  uint16_t symbolIndex;  ///< Index in kHuffmanSymbols of the symbol owning firstCode
+  uint8_t bitLength;
+};
 
-/// Fast path: try to decode using accumulated bits directly
-constexpr uint16_t DecodeHuffmanSymbol(uint32_t code, uint8_t numBits) noexcept {
-  // Binary search could be used, but linear scan with early exit is often faster
-  // for the HPACK Huffman table due to good cache locality
-  for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
-    if (kHuffmanCodes[sym].bitLength == numBits && kHuffmanCodes[sym].code == code) {
-      return static_cast<uint16_t>(sym);
+// Symbols ordered by (bitLength, code). Symbols sharing a bit length have consecutive codes but *not* consecutive
+// symbol values, so tier 2 needs this indirection rather than a base-plus-offset arithmetic.
+constexpr auto kHuffmanSymbols = [] {
+  std::array<uint16_t, std::size(kHuffmanCodes)> symbols{};
+  std::size_t pos = 0;
+  for (uint32_t bitLen = 1; bitLen <= 30; ++bitLen) {
+    for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
+      if (kHuffmanCodes[sym].bitLength == bitLen) {
+        symbols[pos++] = static_cast<uint16_t>(sym);
+      }
     }
   }
-  return 0xFFFF;  // Not found
+  return symbols;
+}();
+
+constexpr auto kHuffmanLevels = [] {
+  // 21 distinct bit lengths are used; size the array to the worst case and carry the real count.
+  struct Levels {
+    HuffmanLevel levels[30]{};  // 1..30 bits, inclusive
+    std::size_t count{};
+  };
+  Levels ret;
+
+  std::size_t pos = 0;
+  for (uint32_t bitLen = 1; bitLen <= 30; ++bitLen) {
+    std::size_t count = 0;
+    uint32_t firstCode = 0;
+    for (auto kHuffmanCode : kHuffmanCodes) {
+      if (kHuffmanCode.bitLength == bitLen) {
+        if (count == 0) {
+          firstCode = kHuffmanCode.code;
+        }
+        ++count;
+      }
+    }
+    if (count == 0) {
+      continue;
+    }
+    const auto shift = 64U - bitLen;
+    const uint64_t maxWindow = (static_cast<uint64_t>(firstCode + count - 1) << shift) | ((1ULL << shift) - 1U);
+    ret.levels[ret.count++] = {maxWindow, firstCode, static_cast<uint16_t>(pos), static_cast<uint8_t>(bitLen)};
+    pos += count;
+  }
+
+  return ret;
+}();
+
+/// Decode one symbol of 9..30 bits from an MSB-aligned bit window.
+/// Every 64-bit window maps to exactly one symbol, so this always succeeds; invalid input is detected by the caller
+/// (a code longer than the bits actually available, or EOS appearing in the data).
+struct HuffmanCanonicalResult {
+  uint16_t symbol;
+  uint8_t bitLength;
+};
+
+constexpr HuffmanCanonicalResult DecodeHuffmanCanonical(uint64_t window) noexcept {
+  static_assert(kHuffmanLevels.levels[kHuffmanLevels.count - 1].maxWindow == std::numeric_limits<uint64_t>::max(),
+                "kHuffmanLevels must cover the whole window space");
+  uint32_t idx = 0;
+  while (true) {
+    assert(idx < kHuffmanLevels.count);
+    const auto& level = kHuffmanLevels.levels[idx];
+    if (window <= level.maxWindow) {
+      const auto code = static_cast<uint32_t>(window >> (64U - level.bitLength));
+      return {kHuffmanSymbols[level.symbolIndex + (code - level.firstCode)], level.bitLength};
+    }
+    ++idx;
+  }
 }
 
 constexpr std::size_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
@@ -520,52 +606,71 @@ std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStati
 bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
   const std::size_t entrySize = name.size() + value.size() + kHpackOverhead;
 
-  // If entry is larger than max size, clear the table (RFC 7541 §4.4)
-  if (_maxSize < entrySize) {
-    clear();
-    return false;
-  }
+  if (_maxSizeBytes < _currentSizeBytes + entrySize) {
+    // If entry is larger than max size, clear the table (RFC 7541 §4.4)
+    if (_maxSizeBytes < entrySize) {
+      clear();
+      return false;
+    }
 
-  http::Header newEntry;
-
-  if (_maxSize < _currentSize + entrySize) {
+    http::Header newEntry;
     do {
       http::Header evicted = evict();
       if (newEntry.empty()) {
+        // reuse memory from the evicted entry to avoid a new malloc/free pair
         newEntry = http::Header(std::move(evicted), name, value);
       }
-    } while (_maxSize < _currentSize + entrySize);
+    } while (_maxSizeBytes < _currentSizeBytes + entrySize);
+
+    // Add the entry after the eviction(s).
+    _entries.push_back(std::move(newEntry));
   } else {
     // Fast path (no eviction) - construct then noexcept-move into the vector.
-    // Using insert (noexcept move) instead of emplace avoids exception-handling
+    // Using push_back (noexcept move) instead of emplace_back avoids exception-handling
     // code around the malloc inside the constructor, producing tighter codegen.
-    newEntry = http::Header(name, value);
+    _entries.push_back(http::Header(name, value));
   }
 
-  _entries.insert(_entries.begin(), std::move(newEntry));
-  _currentSize += entrySize;
+  _currentSizeBytes += entrySize;
 
   return true;
 }
 
 void HpackDynamicTable::setMaxSize(std::size_t maxSize) {
-  _maxSize = maxSize;
+  _maxSizeBytes = maxSize;
 
   // Evict entries until we fit
-  while (_maxSize < _currentSize) {
+  while (_maxSizeBytes < _currentSizeBytes) {
     evict();
   }
 }
 
 void HpackDynamicTable::clear() noexcept {
   _entries.clear();
-  _currentSize = 0;
+  _firstLive = 0;
+  _currentSizeBytes = 0;
 }
 
 http::Header HpackDynamicTable::evict() {
-  http::Header evictedEntry = std::move(_entries.back());
-  _currentSize -= evictedEntry.size() + kHpackOverhead;
-  _entries.pop_back();
+  assert(_firstLive < _entries.size());
+
+  // The oldest entry sits at the cursor; retiring it is a move plus a cursor bump.
+  http::Header evictedEntry = std::move(_entries[_firstLive]);
+  _currentSizeBytes -= evictedEntry.size() + kHpackOverhead;
+  ++_firstLive;
+
+  if (_firstLive == _entries.size()) {
+    // Table is empty again - reset rather than leave a retired prefix behind.
+    _entries.clear();
+    _firstLive = 0;
+  } else if (_firstLive >= _entries.size() - _firstLive) {
+    // Retired prefix has grown to at least the size of the live range. Reclaiming it here bounds the array at twice
+    // the live entry count and amortises to one relocation per add.
+    // Drop the retired prefix, moving the live entries back to offset 0.
+    _entries.erase(_entries.begin(), _entries.begin() + _firstLive);
+    _firstLive = 0;
+  }
+
   return evictedEntry;
 }
 
@@ -767,10 +872,6 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
 }
 
 std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
-  // Optimized Huffman decoding using two-level lookup table:
-  // - Level 1: 9-bit lookup handles codes up to 9 bits (most common symbols)
-  // - Level 2: Fallback to direct table scan for longer codes
-
   // Max decoded length for N input bytes: at most floor(8*N/5) symbols.
   const auto maxLen = SafeCast<CharStorageSizeType>((data.size() * 8U) / 5);
   char* buf = _decodedStrings.allocateAndDefaultConstruct(maxLen);
@@ -782,67 +883,54 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   int32_t bitsInBuffer = 0;
   std::size_t byteIdx = 0;
 
-  while (byteIdx < data.size() || bitsInBuffer >= 5) {
-    // Refill bit buffer - pack bytes from MSB side
-    while (bitsInBuffer <= 56 && byteIdx < data.size()) {
+  while (true) {
+    // Refill bit buffer - pack bytes from MSB side.
+    // Stopping at 55 caps bitsInBuffer at 63, which keeps the padding shift below the width of the type while still
+    // guaranteeing the 30 bits the longest code needs.
+    while (bitsInBuffer <= 55 && byteIdx < data.size()) {
       bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(data[byteIdx])) << (56 - bitsInBuffer);
       bitsInBuffer += 8;
       ++byteIdx;
     }
 
-    assert(bitsInBuffer >= 5 && "Insufficient bits in buffer while decoding Huffman symbol");
-
-    // Try level 1 lookup if we have enough bits
-    if (std::cmp_greater_equal(bitsInBuffer, kHuffmanLevel1Bits)) {
-      const auto lookupBits = static_cast<std::size_t>(bitBuffer >> (64 - kHuffmanLevel1Bits));
-      const auto& entry = kHuffmanDecodeTable[lookupBits];
-
-      if (entry.bitsUsed != 0 && std::cmp_less_equal(entry.bitsUsed, bitsInBuffer)) {
-        // Fast path: symbol decoded in level 1
-        assert(entry.symbol != 256 && "EOS should not appear in level 1 table");
-        assert(sz < maxLen);
-        buf[sz++] = static_cast<char>(entry.symbol);
-
-        bitBuffer <<= entry.bitsUsed;
-        bitsInBuffer -= entry.bitsUsed;
-        continue;
-      }
-    }
-
-    // Slow path: need more than 9 bits, or level 1 lookup didn't match
-    // Try to decode starting from the minimum bit length we can have
-    bool found = false;
-    const int32_t startBits = std::cmp_greater_equal(bitsInBuffer, kHuffmanLevel1Bits) ? 10 : 5;
-
-    for (int32_t numBits = startBits; numBits <= 30 && numBits <= bitsInBuffer; ++numBits) {
-      const auto code = static_cast<uint32_t>(bitBuffer >> (64 - numBits));
-      const uint16_t sym = DecodeHuffmanSymbol(code, static_cast<uint8_t>(numBits));
-
-      if (sym != 0xFFFF) {
-        if (sym == 256) [[unlikely]] {
-          _decodedStrings.shrinkLastAllocated(buf, 0);
-          return {};  // EOS in data
-        }
-
-        assert(sz < maxLen);
-        buf[sz++] = static_cast<char>(sym);
-
-        bitBuffer <<= numBits;
-        bitsInBuffer -= numBits;
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      if (bitsInBuffer >= 30) {
-        // We have enough bits but couldn't decode - invalid encoding
-        _decodedStrings.shrinkLastAllocated(buf, 0);
-        return {};
-      }
-      // Need more data but we've consumed all input - will check padding below
+    if (bitsInBuffer == 0) {
       break;
     }
+    assert(bitsInBuffer > 0 && bitsInBuffer < 64);
+
+    // Set every bit past the real ones, so a lookup never depends on how many bits are left. A valid stream is padded
+    // with the EOS prefix (all 1s), so this reproduces exactly what the encoder wrote and lets the tier-1 table serve
+    // the final symbol of the string. Without it the tail of *every* string would fall through to the slow path.
+    const uint64_t window = bitBuffer | (~uint64_t{0} >> bitsInBuffer);
+
+    const auto& entry = kHuffmanDecodeTable[static_cast<std::size_t>(window >> (64U - kHuffmanLevel1Bits))];
+    uint16_t symbol = entry.symbol;
+    int32_t bitLength = entry.bitsUsed;
+
+    if (bitLength == 0) {
+      // Code is longer than the tier-1 window: decode canonically.
+      const auto canonical = DecodeHuffmanCanonical(window);
+      symbol = canonical.symbol;
+      bitLength = canonical.bitLength;
+    }
+
+    // Must come before the EOS test: trailing padding is all 1s, which is the EOS prefix, so a tail of padding always
+    // "decodes" to EOS. Only a code that fits in the bits actually present is a real symbol.
+    if (bitLength > bitsInBuffer) {
+      break;  // What is left is padding; validated below.
+    }
+
+    if (symbol == 256) [[unlikely]] {
+      _decodedStrings.shrinkLastAllocated(buf, 0);
+      return {};  // EOS must not appear in the data (RFC 7541 §5.2)
+    }
+
+    assert(symbol < 256);
+    assert(sz < maxLen);
+    buf[sz++] = static_cast<char>(symbol);
+
+    bitBuffer <<= bitLength;
+    bitsInBuffer -= bitLength;
   }
 
   // Validate remaining bits are EOS padding (all 1s, less than 8 bits)
@@ -885,32 +973,37 @@ http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
 }
 
 const char* HpackDecoder::storeHeader(http::HeaderView header) {
-  char* headerPtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.name.size()));
-  Copy(header.name, headerPtr);
+  char* pName = _decodedStrings.allocateAndDefaultConstruct(
+      SafeCast<CharStorageSizeType>(header.name.size() + header.value.size()));
+  Copy(header.name, pName);
 
-  char* valuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(header.value.size()));
-  Copy(header.value, valuePtr);
+  char* pValue = pName + header.name.size();
+  Copy(header.value, pValue);
 
   auto [it, inserted] =
-      _decodedHeadersMap.try_emplace(std::string_view(headerPtr, header.name.size()), valuePtr, header.value.size());
+      _decodedHeadersMap.try_emplace(std::string_view(pName, header.name.size()), pValue, header.value.size());
 
   if (!inserted) {
     // Header already exists
     std::string_view existingValue = it->second;
 
-    _decodedStrings.shrinkLastAllocated(valuePtr, 0);  // valuePtr not needed anymore
+    // value not needed anymore
+    _decodedStrings.shrinkLastAllocated(pName, header.name.size());
 
     const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
     if (mergeSep == '\0') {
       return "Duplicated header forbidden to merge";
     }
 
-    const std::size_t newValueLen = existingValue.size() + 1UL + header.value.size();
-    char* newValuePtr = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
-    Copy(existingValue, newValuePtr);
-    newValuePtr[existingValue.size()] = mergeSep;
-    Copy(header.value, newValuePtr + existingValue.size() + 1UL);
-    it->second = std::string_view(newValuePtr, newValueLen);
+    const std::size_t newValueLen = existingValue.size() + 1U + header.value.size();
+
+    char* pData = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
+
+    pData = Append(existingValue, pData);
+    *pData++ = mergeSep;
+    pData = Append(header.value, pData);
+
+    it->second = std::string_view(pData - newValueLen, newValueLen);
   }
 
   return nullptr;
@@ -956,11 +1049,14 @@ std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
          8;
 }
 
-void EncodeHuffman(RawBytes& output, std::string_view str) {
+/// Encode 'str' with the RFC 7541 Huffman code. 'encodedLen' must be HuffmanEncodedLength(str): the caller already
+/// needs it to decide between Huffman and raw, so it is passed in rather than walking the string a second time.
+void EncodeHuffman(RawBytes& output, std::string_view str, std::size_t encodedLen) {
   uint64_t currentCode = 0;
   uint8_t currentBits = 0;
 
-  output.ensureAvailableCapacityExponential(HuffmanEncodedLength(str));
+  assert(encodedLen == HuffmanEncodedLength(str));
+  output.ensureAvailableCapacityExponential(encodedLen);
 
   std::byte* pData = output.data() + output.size();
 
@@ -988,7 +1084,7 @@ void EncodeString(RawBytes& output, std::string_view str) {
   if (huffmanLen < str.size()) {
     // Huffman encoding is more efficient
     EncodeInteger(output, huffmanLen, 7, 0x80);
-    EncodeHuffman(output, str);
+    EncodeHuffman(output, str, huffmanLen);
     return;
   }
 
@@ -1066,28 +1162,24 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
 
   HpackLookupResult result;
 
-  // Search static table first, using hash-based O(1) lookup.
+  // Search static table first. The hash is perfect over the static names, so a single slot and a single comparison
+  // settle it - no probe sequence.
   if (name.size() >= kStaticHeaderNameMinLen && name.size() <= kStaticHeaderNameMaxLen) {
-    auto slot = FnvHash(name) & kStaticNameHashMask;
-    while (!kStaticNameHashTable[slot].name.empty()) {
-      if (kStaticNameHashTable[slot].name == name) {
-        const auto& hashEntry = kStaticNameHashTable[slot];
-        for (uint8_t ii = 0; ii < hashEntry.count; ++ii) {
-          const auto entryIdx = kStaticTableByName[hashEntry.sortedStart + ii].index;
-          const auto& entry = kStaticTable[entryIdx];
-          if (result.match == HpackLookupResult::Match::None) {
-            result.index = 1U + entryIdx;  // RFC 7541 is 1-based
-            result.match = HpackLookupResult::Match::NameOnly;
-          }
-          if (entry.value == value) {
-            result.index = 1U + entryIdx;
-            result.match = HpackLookupResult::Match::Full;
-            return result;
-          }
+    const auto& hashEntry = kStaticNameHashTable.slots[StaticNameSlot(name)];
+    if (hashEntry.name == name) {
+      for (uint8_t ii = 0; ii < hashEntry.count; ++ii) {
+        const auto entryIdx = kStaticTableByName[hashEntry.sortedStart + ii].index;
+        const auto& entry = kStaticTable[entryIdx];
+        if (result.match == HpackLookupResult::Match::None) {
+          result.index = 1U + entryIdx;  // RFC 7541 is 1-based
+          result.match = HpackLookupResult::Match::NameOnly;
         }
-        break;
+        if (entry.value == value) {
+          result.index = 1U + entryIdx;
+          result.match = HpackLookupResult::Match::Full;
+          return result;
+        }
       }
-      slot = (slot + 1) & kStaticNameHashMask;
     }
   }
 

@@ -73,8 +73,8 @@ TEST(HpackDynamicTable, InitialState) {
   HpackDynamicTable table(4096);
 
   EXPECT_EQ(table.entryCount(), 0U);
-  EXPECT_EQ(table.currentSize(), 0U);
-  EXPECT_EQ(table.maxSize(), 4096U);
+  EXPECT_EQ(table.currentSizeBytes(), 0U);
+  EXPECT_EQ(table.maxSizeBytes(), 4096U);
 }
 
 TEST(HpackDynamicTable, AddEntry) {
@@ -85,7 +85,7 @@ TEST(HpackDynamicTable, AddEntry) {
   EXPECT_TRUE(added);
   EXPECT_EQ(table.entryCount(), 1U);
   // Size = name length + value length + 32
-  EXPECT_EQ(table.currentSize(), 13U + 12U + 32U);
+  EXPECT_EQ(table.currentSizeBytes(), 13U + 12U + 32U);
 }
 
 TEST(HpackDynamicTable, GetEntry) {
@@ -133,7 +133,23 @@ TEST(HpackDynamicTable, SetMaxSize) {
   table.setMaxSize(50);
 
   EXPECT_EQ(table.entryCount(), 1U);
-  EXPECT_LE(table.currentSize(), 50U);
+  EXPECT_LE(table.currentSizeBytes(), 50U);
+}
+
+TEST(HpackDynamicTable, EvictingLastEntryResetsTable) {
+  HpackDynamicTable table(4096);
+  table.add("header", "value");
+
+  table.setMaxSize(0);
+
+  EXPECT_EQ(table.entryCount(), 0U);
+  EXPECT_EQ(table.currentSizeBytes(), 0U);
+
+  table.setMaxSize(4096);
+  table.add("new-header", "new-value");
+
+  EXPECT_EQ(table.entryCount(), 1U);
+  EXPECT_EQ(table[0].name(), "new-header");
 }
 
 TEST(HpackDynamicTable, Clear) {
@@ -145,7 +161,7 @@ TEST(HpackDynamicTable, Clear) {
   table.clear();
 
   EXPECT_EQ(table.entryCount(), 0U);
-  EXPECT_EQ(table.currentSize(), 0U);
+  EXPECT_EQ(table.currentSizeBytes(), 0U);
 }
 
 TEST(HpackDynamicTable, AddEntryTooLarge) {
@@ -488,7 +504,7 @@ TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  EXPECT_EQ(decoder.dynamicTable().maxSize(), 1024U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 1024U);
 }
 
 TEST(HpackDecoder, InvalidIndexedHeader) {
@@ -647,8 +663,8 @@ TEST(HpackDecoder, SetMaxDynamicTableSize) {
   // Now reduce the max dynamic table size to force eviction
   decoder.setMaxDynamicTableSize(50);
 
-  EXPECT_EQ(decoder.dynamicTable().maxSize(), 50U);
-  EXPECT_LE(decoder.dynamicTable().currentSize(), 50U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 50U);
+  EXPECT_LE(decoder.dynamicTable().currentSizeBytes(), 50U);
   EXPECT_LT(decoder.dynamicTable().entryCount(), 2U);
 }
 
@@ -997,7 +1013,7 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
 TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
   using namespace aeronet::http2;
 
-  HpackDecoder decoder;
+  HpackDecoder decoder(4096);
 
   // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(123456789);  // deterministic seed for reproducibility
@@ -1021,6 +1037,78 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     auto res = decoder.decode(AsBytes(buf));
 
     ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
+  }
+}
+
+// ============================
+// Huffman Coverage Tests
+// ============================
+// The decoder pads its bit window with 1s once the input is exhausted so the fast table can serve the last symbol of a
+// string. Since the RFC 7541 padding is itself a run of 1s (the EOS prefix), a tail of padding always looks like the
+// start of EOS. These tests pin down that a valid stream is never mistaken for one containing EOS, whatever the number
+// of leftover bits, and that every code length decodes.
+
+namespace {
+
+// Round-trip 'value' as a header value through the encoder and decoder and return what came back.
+std::string HuffmanRoundTrip(std::string_view value) {
+  HpackEncoder encoder(4096);
+  HpackDecoder decoder(4096);
+  RawBytes encoded;
+  encoder.encode(encoded, "x-rt", value);
+  const auto result = decoder.decode(encoded);
+  if (!result.isSuccess()) {
+    return "<decode-failed>";
+  }
+  const auto it = result.decodedHeaders.find("x-rt");
+  if (it == result.decodedHeaders.end()) {
+    return "<missing>";
+  }
+  return std::string(it->second);
+}
+
+}  // namespace
+
+TEST(HpackHuffman, RoundTripsEveryPaddingRemainder) {
+  // 'a' is a 5-bit code, so growing a run of 'a's walks the leftover-bit count through all of 0..7 and every string
+  // here ends on padding that is a prefix of EOS.
+  for (std::size_t len = 1; len <= 64; ++len) {
+    const std::string value(len, 'a');
+    EXPECT_EQ(HuffmanRoundTrip(value), value) << "length " << len;
+  }
+}
+
+TEST(HpackHuffman, RoundTripsEveryByteValue) {
+  // Covers all 257 code lengths, including the 9..30 bit codes that bypass the fast table.
+  for (int ch = 0; ch < 256; ++ch) {
+    const std::string value(4, static_cast<char>(ch));
+    EXPECT_EQ(HuffmanRoundTrip(value), value) << "byte " << ch;
+  }
+}
+
+TEST(HpackHuffman, RoundTripsCharactersNeedingLongCodes) {
+  // Every printable ASCII character whose code exceeds the fast-table window.
+  static constexpr std::string_view kLongCoded = R"(!"#$'()+<>?@[\]^`{|}~)";
+  EXPECT_EQ(HuffmanRoundTrip(kLongCoded), kLongCoded);
+  for (char ch : kLongCoded) {
+    const std::string value(1, ch);
+    EXPECT_EQ(HuffmanRoundTrip(value), value) << "char " << ch;
+  }
+}
+
+TEST(HpackHuffman, RoundTripsMixedLengthStrings) {
+  static constexpr std::array<std::string_view, 8> kValues{
+      "a",
+      "ab",
+      "abc",  // encodes to exactly 2 bytes, leaving zero padding bits
+      "application/json",
+      "Mon, 01 Jan 2024 00:00:00 GMT",
+      R"(W/"abc123")",
+      "https://bench.example.com/dashboard?q=1&r=2",
+      "\x01\x7f\xff mixed \xc3\xa9",
+  };
+  for (auto value : kValues) {
+    EXPECT_EQ(HuffmanRoundTrip(value), value) << "value " << value;
   }
 }
 
