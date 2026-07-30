@@ -361,6 +361,8 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     string-trim_test
     test/string-trim_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(

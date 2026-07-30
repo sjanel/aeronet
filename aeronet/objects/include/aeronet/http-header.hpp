@@ -4,6 +4,8 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/is-header-whitespace.hpp"
+
 namespace aeronet::http {
 
 struct HeaderView {
@@ -56,10 +58,6 @@ class Header {
   uint32_t _nameLength{};
   uint32_t _valueLength{};
 };
-
-// RFC 7230 §3.2: Header field values can be preceded and followed by optional whitespace (OWS).
-// OWS is defined as zero or more spaces (SP) or horizontal tabs (HTAB).
-constexpr bool IsHeaderWhitespace(char ch) noexcept { return ch == ' ' || ch == '\t'; }
 
 // Helper to iterate Content-Encoding header values in reverse order.
 // Given header value should be trimmed on the extremities before use.
