@@ -2,35 +2,23 @@
 
 #include <string_view>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/string-trim.hpp"
 
 namespace aeronet::http {
 
 // Parse a single HTTP header line (range [lineStart, lineLast)).
 // Returns pair of (name, value) string_views, or empty name view on failure.
-constexpr HeaderView ParseHeaderLine(const char* lineStart, const char* lineLast) {
-  const char* colonPtr = lineStart;
-  while (colonPtr < lineLast && *colonPtr != ':') {
-    ++colonPtr;
+// Both production callers invoke this from their header-processing loops, so duplicating this small
+// hot-path primitive avoids a call per header with negligible code-size cost.
+AERONET_ALWAYS_INLINE constexpr HeaderView ParseHeaderLine(const char* lineStart, const char* lineLast) {
+  const std::string_view line(lineStart, lineLast);
+  const auto colonPos = line.find(':');
+  if (colonPos == std::string_view::npos) [[unlikely]] {
+    return HeaderView{};
   }
-
-  // Value may be preceded by optional whitespace
-  const char* valueFirst = colonPtr + 1;
-  while (valueFirst < lineLast && IsHeaderWhitespace(*valueFirst)) {
-    ++valueFirst;
-  }
-  const char* valueLast = lineLast;
-  while (valueLast > valueFirst && IsHeaderWhitespace(*(valueLast - 1))) {
-    --valueLast;
-  }
-
-  HeaderView ret{std::string_view(lineStart, colonPtr), std::string_view(valueFirst, valueLast)};
-
-  if (colonPtr == lineLast) {
-    // malformed: no colon
-    ret.name = {};
-  }
-  return ret;
+  return HeaderView{line.substr(0, colonPos), TrimOws(line.substr(colonPos + 1))};
 }
 
 }  // namespace aeronet::http

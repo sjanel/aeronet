@@ -104,6 +104,7 @@ endif()
 # If you add more files here, add a corresponding AeronetAddProjectBenchmark call.
 
 set(AERONET_BENCH_INTERNAL_DECIMAL_WRITER ${AERONET_BENCH_ROOT}/internal/decimal-writer_bench.cpp)
+set(AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD ${AERONET_BENCH_ROOT}/internal/init-try-set-head_bench.cpp)
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
@@ -156,6 +157,9 @@ endfunction()
 AeronetAddProjectBenchmark(aeronet-bench-internal-decimal-writer ${AERONET_BENCH_INTERNAL_DECIMAL_WRITER})
 set_target_properties(aeronet-bench-internal-decimal-writer PROPERTIES FOLDER "benchmarks/internal")
 
+AeronetAddProjectBenchmark(aeronet-bench-internal-init-try-set-head ${AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD})
+set_target_properties(aeronet-bench-internal-init-try-set-head PROPERTIES FOLDER "benchmarks/internal")
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-keep-alive-deadline-queue ${AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE})
 set_target_properties(aeronet-bench-internal-keep-alive-deadline-queue PROPERTIES FOLDER "benchmarks/internal")
 
@@ -194,8 +198,8 @@ endif()
 # HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)
 if(AERONET_ENABLE_HTTP2)
   set(AERONET_BENCH_INTERNAL_HPACK ${AERONET_BENCH_ROOT}/internal/hpack_bench.cpp)
-  set(AERONET_BENCH_INTERNAL_H2_FRAME ${AERONET_BENCH_ROOT}/internal/http2_frame_bench.cpp)
-  set(AERONET_BENCH_INTERNAL_H2_FLOW ${AERONET_BENCH_ROOT}/internal/http2_flow_control_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_H2_FRAME ${AERONET_BENCH_ROOT}/internal/http2-frame_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_H2_FLOW ${AERONET_BENCH_ROOT}/internal/http2-flow-control_bench.cpp)
 
   AeronetAddProjectBenchmark(aeronet-bench-internal-hpack ${AERONET_BENCH_INTERNAL_HPACK})
   target_link_libraries(aeronet-bench-internal-hpack PRIVATE aeronet_http2)
