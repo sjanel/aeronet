@@ -17,6 +17,7 @@ All notable changes to aeronet are documented in this file.
 - **Fix gcc harmless warnings of sign conversion in ndigits.hpp**
 - **Optimized HPACK Huffman decoding** with a smaller lookup table, canonical fallback, and correct padding handling, significantly improving encode/decode performance. Reworked static header lookup using a collision-free perfect hash and optimized dynamic table insertion/eviction to eliminate unnecessary memory moves. Removed redundant Huffman length computation during encoding and reduced memory usage, yielding up to **46% faster decoding**, **30% faster round-trips**, and **63% faster static header lookups**.
 - **Benchmark profiling workflow**: `scripts/profile_benchmark.sh` now supports reliable command/PID recording, existing `perf.data` post-processing, SVG flamegraphs, and Hotspot AppImage discovery. Scripted server and client benchmarks can profile each measured workload directly with `--profile`.
+- **Simplify and optimize ParseHeaderLine**: use `std::string_view::find` that decays to `std::memchr` for faster colon search, and added force inline to gain an additional 7 % speedup (and no extra code generation). Total expected speedup are roughly **~40%** for typical browser headers, **~30%** for API proxy headers, and **~0%** for short names headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
 
 ## [1.4.1] - 2026-07-25
 
