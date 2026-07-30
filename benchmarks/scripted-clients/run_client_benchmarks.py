@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # aeronet driver is always present; the others depend on what was built (libcurl / drogon / beast).
 CLIENT_ORDER = ["aeronet", "curl", "drogon", "beast"]
@@ -134,6 +134,7 @@ def run_driver(
     duration: str,
     warmup: str,
     protocol: str,
+    profiler: Optional[Any] = None,
 ) -> Optional[dict]:
     cmd = [
         str(binary),
@@ -148,11 +149,22 @@ def run_driver(
     body_size = SCENARIO_BODY_SIZE.get(scenario)
     if body_size is not None:
         cmd += ["--body-size", str(body_size)]
+    profile_dir = None
+    if profiler is not None:
+        client_name = binary.name.removesuffix("-bench-client")
+        cmd, profile_dir = profiler.wrap_command(
+            cmd, [protocol, client_name, scenario]
+        )
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         print(f"  ! {binary.name} timed out on {scenario}", file=sys.stderr)
         return None
+    if profiler is not None and profile_dir is not None:
+        try:
+            profiler.process(profile_dir)
+        except RuntimeError as exc:
+            print(f"  ! {exc}", file=sys.stderr)
     # The JSON result is the last non-empty stdout line (drivers may print warnings to stderr).
     for line in reversed(out.stdout.strip().splitlines()):
         line = line.strip()
@@ -195,6 +207,18 @@ def _table_printer():
     except ImportError as exc:  # bench_utils lives next to run_benchmarks.py
         raise BenchError(f"could not import TablePrinter from {server_dir}: {exc}") from exc
     return TablePrinter
+
+
+def _perf_profiler_class():
+    """Import the profiler shared with the scripted-server runner."""
+    server_dir = Path(__file__).resolve().parent.parent / "scripted-servers"
+    if str(server_dir) not in sys.path:
+        sys.path.insert(0, str(server_dir))
+    try:
+        from bench_utils import PerfProfiler
+    except ImportError as exc:
+        raise BenchError(f"could not import PerfProfiler from {server_dir}: {exc}") from exc
+    return PerfProfiler
 
 
 def print_summary(results: List[dict], clients: List[str], scenarios: List[str]) -> None:
@@ -355,7 +379,44 @@ def main() -> int:
     parser.add_argument("--build-dir", default=None, help="override build dir auto-detection")
     parser.add_argument("--output", default=str(script_dir / "results"), help="artifact output directory")
     parser.add_argument("--html", action="store_true", help="also write an HTML report")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Record each client/scenario with perf and generate profile artifacts",
+    )
+    parser.add_argument(
+        "--profile-frequency", type=int, default=200,
+        help="perf sampling frequency used with --profile (default: 200)",
+    )
+    parser.add_argument(
+        "--profile-call-graph", choices=["dwarf", "fp", "lbr"], default="dwarf",
+        help="perf call graph mode used with --profile (default: dwarf)",
+    )
+    parser.add_argument(
+        "--profile-install-flamegraph", action="store_true",
+        help="Install Brendan Gregg's FlameGraph scripts in the user cache when needed",
+    )
+    parser.add_argument(
+        "--profile-hotspot", action="store_true",
+        help="Open each generated perf.data in Hotspot (best with one client/scenario)",
+    )
     args = parser.parse_args()
+
+    profiler = None
+    if args.profile:
+        PerfProfiler = _perf_profiler_class()
+        profile_timestamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            profiler = PerfProfiler(
+                Path(args.output).resolve() / "profiles" / profile_timestamp,
+                frequency=args.profile_frequency,
+                call_graph=args.profile_call_graph,
+                install_flamegraph=args.profile_install_flamegraph,
+                open_hotspot=args.profile_hotspot,
+            )
+            profiler.check_permissions()
+        except RuntimeError as exc:
+            raise BenchError(str(exc)) from exc
 
     build_dir = Path(args.build_dir).resolve() if args.build_dir else find_build_dir(script_dir)
     server_bin = build_dir / "benchmarks/scripted-servers/aeronet-bench-server"
@@ -408,7 +469,10 @@ def main() -> int:
         for scenario in scenarios:
             print(f"\n--- {scenario} ---")
             for name, binary in available:
-                res = run_driver(binary, base_url, scenario, args.threads, args.duration, args.warmup, protocol)
+                res = run_driver(
+                    binary, base_url, scenario, args.threads, args.duration,
+                    args.warmup, protocol, profiler,
+                )
                 if res is None:
                     continue
                 results.append(res)

@@ -1,194 +1,405 @@
 #!/usr/bin/env bash
-# Simple helper to profile a benchmark binary with perf and produce output
-# consumable by kcachegrind (callgrind format) or FlameGraph (SVG).
-#
-# Usage:
-#   ./scripts/profile_benchmark.sh --build -- ./build/benchmarks/throughput --arg val
-# Options:
-#   --build    : run a CMake configure/build step (RelWithDebInfo, frame pointers)
-#   --freq N   : sampling frequency for perf record (default 200)
-#
+
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
 
 FREQ=200
+EVENT=cycles
+CALL_GRAPH=dwarf
 DO_BUILD=0
+BUILD_DIR="${REPO_ROOT}/build-profile"
+OUTPUT_DIR=""
+PERF_DATA=""
+INPUT_DATA=""
+TARGET_PID=""
+RECORD_ONLY=0
+GENERATE_FLAMEGRAPH=1
+FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-}"
+INSTALL_FLAMEGRAPH=0
+OPEN_HOTSPOT=0
+HOTSPOT_BIN="${HOTSPOT_BIN:-}"
+USE_SUDO=0
+COMMAND=()
+
+Usage() {
+  cat <<'EOF'
+Profile an aeronet benchmark with Linux perf.
+
+Usage:
+  scripts/profile_benchmark.sh [options] -- <command> [args...]
+  scripts/profile_benchmark.sh [options] --pid <pid>
+  scripts/profile_benchmark.sh [options] --input <perf.data>
+  scripts/profile_benchmark.sh --build [--build-dir <dir>]
+
+Recording options:
+  --pid PID              Attach to a running process instead of launching a command.
+  --freq N               Sampling frequency (default: 200).
+  --event EVENT          perf event to sample (default: cycles).
+  --call-graph MODE      Call graph mode: dwarf, fp, or lbr (default: dwarf).
+  --sudo                 Run perf record with sudo. Not supported with --record-only.
+  --record-only          Record without post-processing. Intended for benchmark runners.
+
+Artifact options:
+  --output-dir DIR       Artifact directory (default: profiles/profile-<timestamp>).
+  --data FILE            Exact output perf.data path. Implies its parent output directory.
+  --input FILE           Post-process an existing perf.data without recording.
+  --no-flamegraph        Do not generate flamegraph.svg.
+  --flamegraph-dir DIR   Directory containing stackcollapse-perf.pl and flamegraph.pl.
+  --install-flamegraph   Clone FlameGraph into the user cache if it is not installed.
+  --hotspot              Open perf.data in Hotspot after recording/post-processing.
+  --hotspot-bin FILE     Hotspot executable or AppImage path.
+
+Build options:
+  --build                Configure and build benchmarks with debug info and frame pointers.
+  --build-dir DIR        Profile build directory (default: build-profile).
+
+Examples:
+  scripts/profile_benchmark.sh -- ./build-release/benchmarks/internal/router_bench
+  scripts/profile_benchmark.sh --pid "$(pidof aeronet-bench-server)" --hotspot
+  scripts/profile_benchmark.sh --input profiles/run/perf.data --install-flamegraph
+
+Hotspot is discovered on PATH and as ~/Downloads/hotspot-*.AppImage.
+EOF
+}
+
+Die() {
+  echo "error: $*" >&2
+  exit 2
+}
+
+NeedValue() {
+  [[ $# -ge 2 ]] || Die "$1 requires a value"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --build)
-      DO_BUILD=1; shift;;
+      DO_BUILD=1
+      shift
+      ;;
+    --build-dir)
+      NeedValue "$@"
+      BUILD_DIR=$2
+      shift 2
+      ;;
     --freq)
-      FREQ="$2"; shift 2;;
+      NeedValue "$@"
+      FREQ=$2
+      shift 2
+      ;;
+    --event)
+      NeedValue "$@"
+      EVENT=$2
+      shift 2
+      ;;
+    --call-graph)
+      NeedValue "$@"
+      CALL_GRAPH=$2
+      shift 2
+      ;;
+    --output-dir)
+      NeedValue "$@"
+      OUTPUT_DIR=$2
+      shift 2
+      ;;
+    --data)
+      NeedValue "$@"
+      PERF_DATA=$2
+      shift 2
+      ;;
+    --input)
+      NeedValue "$@"
+      INPUT_DATA=$2
+      shift 2
+      ;;
+    --pid)
+      NeedValue "$@"
+      TARGET_PID=$2
+      shift 2
+      ;;
+    --record-only)
+      RECORD_ONLY=1
+      shift
+      ;;
+    --no-flamegraph)
+      GENERATE_FLAMEGRAPH=0
+      shift
+      ;;
+    --flamegraph-dir)
+      NeedValue "$@"
+      FLAMEGRAPH_DIR=$2
+      shift 2
+      ;;
+    --install-flamegraph)
+      INSTALL_FLAMEGRAPH=1
+      shift
+      ;;
+    --hotspot)
+      OPEN_HOTSPOT=1
+      shift
+      ;;
+    --hotspot-bin)
+      NeedValue "$@"
+      HOTSPOT_BIN=$2
+      shift 2
+      ;;
+    --sudo)
+      USE_SUDO=1
+      shift
+      ;;
     --)
-      shift; break;;
+      shift
+      COMMAND=("$@")
+      break
+      ;;
     -h|--help)
-      sed -n '1,200p' "$0"; exit 0;;
+      Usage
+      exit 0
+      ;;
     *)
-      break;;
+      Die "unknown option: $1"
+      ;;
   esac
 done
 
-BINARY=""
-ARGS=()
-if [[ $# -ge 1 ]]; then
-  BINARY="$1"; shift
-  ARGS=("$@")
+[[ "$FREQ" =~ ^[1-9][0-9]*$ ]] || Die "--freq must be a positive integer"
+[[ "$CALL_GRAPH" == dwarf || "$CALL_GRAPH" == fp || "$CALL_GRAPH" == lbr ]] \
+  || Die "--call-graph must be dwarf, fp, or lbr"
+[[ -z "$TARGET_PID" || "$TARGET_PID" =~ ^[1-9][0-9]*$ ]] || Die "--pid must be a positive integer"
+if [[ -n "$FLAMEGRAPH_DIR" ]]; then
+  [[ -x "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" && -x "${FLAMEGRAPH_DIR}/flamegraph.pl" ]] \
+    || Die "FlameGraph scripts not found in: $FLAMEGRAPH_DIR"
 fi
 
-if [[ $DO_BUILD -eq 1 && -z "$BINARY" ]]; then
-  echo "Configuring and building with frame-pointers and debuginfo..."
-  cmake -S . -B build -G Ninja \
-    -DAERONET_BUILD_TESTS=0 \
-    -DAERONET_BUILD_EXAMPLES=0 \
-    -DAERONET_BUILD_BENCHMARKS=1 \
-    -DAERONET_BENCH_ENABLE_DROGON=0 \
-    -DAERONET_BENCH_ENABLE_OATPP=0 \
-    -DAERONET_BENCH_ENABLE_HTTPLIB=0 \
+if [[ -n "$INPUT_DATA" && ( -n "$TARGET_PID" || ${#COMMAND[@]} -gt 0 ) ]]; then
+  Die "--input cannot be combined with --pid or a command"
+fi
+if [[ -n "$TARGET_PID" && ${#COMMAND[@]} -gt 0 ]]; then
+  Die "use either --pid or a command, not both"
+fi
+if [[ $RECORD_ONLY -eq 1 && -n "$INPUT_DATA" ]]; then
+  Die "--record-only cannot be combined with --input"
+fi
+if [[ $RECORD_ONLY -eq 1 && $USE_SUDO -eq 1 ]]; then
+  Die "--sudo is not supported with --record-only; configure perf permissions for scripted benchmarks"
+fi
+
+if [[ $DO_BUILD -eq 1 ]]; then
+  echo "Configuring profile build in ${BUILD_DIR}..." >&2
+  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -G Ninja \
+    -DAERONET_BUILD_TESTS=OFF \
+    -DAERONET_BUILD_EXAMPLES=OFF \
+    -DAERONET_BUILD_BENCHMARKS=ON \
+    -DAERONET_BENCH_ENABLE_DROGON=OFF \
+    -DAERONET_BENCH_ENABLE_OATPP=OFF \
+    -DAERONET_BENCH_ENABLE_HTTPLIB=OFF \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_CXX_FLAGS_RELEASE="-g -fno-omit-frame-pointer -O2" \
-    -DCMAKE_C_FLAGS_RELEASE="-g -fno-omit-frame-pointer -O2"
-  cmake --build build -j
-  echo "Build complete. Re-run the script with the benchmark binary to profile it, e.g."
-  echo "  $0 -- ./build/benchmarks/aeronet-bench-throughput --duration 10"
-  exit 0
+    -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer" \
+    -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer"
+  cmake --build "$BUILD_DIR"
+  echo "Profile build complete: ${BUILD_DIR}" >&2
 fi
 
-if [[ -z "$BINARY" ]]; then
-  echo "Usage: $0 [--build] [--freq N] -- <benchmark-binary> [args...]"
+if [[ -z "$INPUT_DATA" && -z "$TARGET_PID" && ${#COMMAND[@]} -eq 0 ]]; then
+  if [[ $DO_BUILD -eq 1 ]]; then
+    exit 0
+  fi
+  Usage >&2
   exit 2
 fi
 
-# Locate a usable perf binary. /usr/bin/perf is a wrapper that expects a
-# kernel-specific binary under /usr/lib/linux-tools/$(uname -r)/perf. On some
-# distros that wrapper prints a helpful hint and exits with non-zero; in that
-# case search for an existing perf binary from other linux-tools packages and
-# use it.
-PERF_BIN=""
-if command -v perf >/dev/null 2>&1; then
-  # test if the wrapper resolves to a usable binary
-  if perf --version >/dev/null 2>&1; then
-    PERF_BIN="$(command -v perf)"
-  else
-    PERF_BIN=""
+FindPerf() {
+  local candidate
+  if [[ -n "${PERF_BIN:-}" && -x "${PERF_BIN}" ]]; then
+    printf '%s\n' "$PERF_BIN"
+    return
   fi
-fi
-
-if [[ -z "$PERF_BIN" ]]; then
-  # search known locations for a perf binary installed by linux-tools packages
-  for p in /usr/lib/linux-tools-*/perf /usr/lib/linux-tools/*/perf /usr/lib/linux-hwe-*/perf; do
-    if [[ -x "$p" ]]; then
-      PERF_BIN="$p"
-      break
+  if command -v perf >/dev/null 2>&1 && perf --version >/dev/null 2>&1; then
+    command -v perf
+    return
+  fi
+  for candidate in /usr/lib/linux-tools-*/perf /usr/lib/linux-tools/*/perf /usr/lib/linux-hwe-*/perf; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
     fi
   done
-fi
+  return 1
+}
 
-if [[ -z "$PERF_BIN" ]]; then
-  echo "Error: 'perf' not found or wrapper points to missing kernel-specific binary." >&2
-  echo "On Ubuntu you can try: sudo apt install linux-tools-$(uname -r) linux-cloud-tools-$(uname -r)" >&2
-  echo "Or create a symlink from an existing perf binary into /usr/lib/linux-tools/$(uname -r)/perf" >&2
+PERF_BIN=$(FindPerf) || {
+  echo "error: perf is not installed or its kernel-specific executable is missing." >&2
+  echo "Ubuntu/Debian: sudo apt install linux-tools-$(uname -r)" >&2
   exit 1
+}
+
+timestamp=$(date +%Y%m%d-%H%M%S)
+if [[ -n "$INPUT_DATA" ]]; then
+  [[ -f "$INPUT_DATA" ]] || Die "perf data file not found: $INPUT_DATA"
+  PERF_DATA=$INPUT_DATA
+  if [[ -z "$OUTPUT_DIR" ]]; then
+    OUTPUT_DIR=$(dirname "$PERF_DATA")
+  fi
 else
-  echo "Using perf: $PERF_BIN"
-fi
-
-# Timestamped perf data file
-TS=$(date +%Y%m%d-%H%M%S)
-PERF_DATA="perf.data.${TS}"
-
-echo "Recording perf data to ${PERF_DATA} (freq=${FREQ})..."
-sudo "$PERF_BIN" record \
-    -g --call-graph fp \
-    -e cycles \
-    -o "${PERF_DATA}" \
-    -- "${BINARY}" "${ARGS[@]}"
-
-# perf record runs as root, so the output file is owned by root. Change ownership
-# to the current user so subsequent perf script/conversion commands can read it.
-if [[ -f "${PERF_DATA}" ]]; then
-  sudo chown "$(id -u):$(id -g)" "${PERF_DATA}"
-  # also chown any related files perf may have written with the same prefix
-  prefix="${PERF_DATA%.*}"
-  # iterate only if the glob matches
-  if compgen -G "${prefix}*" > /dev/null; then
-    for f in ${prefix}*; do
-      if [[ -e "$f" ]]; then
-        sudo chown "$(id -u):$(id -g)" "$f" || true
-      fi
-    done
+  if [[ -n "$PERF_DATA" && -z "$OUTPUT_DIR" ]]; then
+    OUTPUT_DIR=$(dirname "$PERF_DATA")
+  fi
+  if [[ -z "$OUTPUT_DIR" ]]; then
+    OUTPUT_DIR="${REPO_ROOT}/profiles/profile-${timestamp}"
+  fi
+  if [[ -z "$PERF_DATA" ]]; then
+    PERF_DATA="${OUTPUT_DIR}/perf.data"
   fi
 fi
+mkdir -p "$OUTPUT_DIR"
 
-echo "Generating perf script..."
-"$PERF_BIN" script -i "${PERF_DATA}" > "perf_script.${TS}.txt"
-CALLGRIND_OUT="callgrind.${TS}.out"
+PrintPerfPermissionHint() {
+  local paranoid="unknown"
+  if [[ -r /proc/sys/kernel/perf_event_paranoid ]]; then
+    paranoid=$(</proc/sys/kernel/perf_event_paranoid)
+  fi
+  cat >&2 <<EOF
+perf recording failed (kernel.perf_event_paranoid=${paranoid}).
+For a one-off command, retry with --sudo. For scripted benchmarks, allow
+unprivileged profiling before the run, for example:
+  sudo sysctl kernel.perf_event_paranoid=1
+To persist it, add 'kernel.perf_event_paranoid=1' to a sysctl.d configuration.
+EOF
+}
 
-# Optional filtering: keep only samples that match PERF_INCLUDE and do not match PERF_EXCLUDE
-FILTERED_PERF_SCRIPT="perf_script.${TS}.filtered.txt"
-if [[ -n "${PERF_INCLUDE:-}" || -n "${PERF_EXCLUDE:-}" ]]; then
-  echo "Filtering perf script with PERF_INCLUDE='${PERF_INCLUDE:-}' PERF_EXCLUDE='${PERF_EXCLUDE:-}'..."
-  python3 "${SCRIPT_DIR}/_ext/filter_perf_script.py" "perf_script.${TS}.txt" "${FILTERED_PERF_SCRIPT}" --include "${PERF_INCLUDE:-}" --exclude "${PERF_EXCLUDE:-}"
-  PERF_SCRIPT_TO_USE="${FILTERED_PERF_SCRIPT}"
-else
-  PERF_SCRIPT_TO_USE="perf_script.${TS}.txt"
-fi
-if command -v perf2calltree >/dev/null 2>&1; then
-  echo "Converting to callgrind via perf2calltree..."
-  # Prefer converting from the (optionally filtered) perf script
-  perf2calltree < "${PERF_SCRIPT_TO_USE}" > "${CALLGRIND_OUT}"
-  echo "Callgrind output: ${CALLGRIND_OUT}"
-  echo "Open with: kcachegrind ${CALLGRIND_OUT}"
-  exit 0
-fi
-
-if [[ -x "/usr/share/kcachegrind/perf2calltree" ]]; then
-  echo "Using /usr/share/kcachegrind/perf2calltree to convert..."
-  "$PERF_BIN" script -i "${PERF_DATA}" | "/usr/share/kcachegrind/perf2calltree" > "${CALLGRIND_OUT}"
-  echo "Callgrind output: ${CALLGRIND_OUT}"
-  echo "Open with: kcachegrind ${CALLGRIND_OUT}"
-  exit 0
-fi
-
-echo "perf2calltree not found. Trying gprof2calltree (py) if installed..."
-if command -v gprof2calltree >/dev/null 2>&1; then
-  echo "Converting via gprof2calltree (expects gprof-like input). Attempting perf script -> gprof2calltree..."
-  # Use the filtered perf script if present
-  cp "${PERF_SCRIPT_TO_USE}" perf_for_gprof.${TS}.txt
-  gprof2calltree -i perf_for_gprof.${TS}.txt -o "${CALLGRIND_OUT}"
-  echo "Callgrind output: ${CALLGRIND_OUT}"
-  echo "Open with: kcachegrind ${CALLGRIND_OUT}"
-  exit 0
-fi
-
-echo "Falling back to FlameGraph generation (if you have Brendan Gregg's FlameGraph scripts)..."
-if [[ -d "${SCRIPT_DIR}/FlameGraph" ]]; then
-  echo "Using local FlameGraph/stackcollapse-perf.pl and flamegraph.pl"
-  # use filtered script if available for flamegraph
-  if [[ -f "${PERF_SCRIPT_TO_USE}" ]]; then
-    "${SCRIPT_DIR}/FlameGraph/stackcollapse-perf.pl" "${PERF_SCRIPT_TO_USE}" | "${SCRIPT_DIR}/FlameGraph/flamegraph.pl" > "flamegraph.${TS}.svg"
+record_status=0
+if [[ -z "$INPUT_DATA" ]]; then
+  record_command=(
+    "$PERF_BIN" record
+    --freq "$FREQ"
+    --event "$EVENT"
+    --call-graph "$CALL_GRAPH"
+    --output "$PERF_DATA"
+  )
+  if [[ -n "$TARGET_PID" ]]; then
+    kill -0 "$TARGET_PID" 2>/dev/null || Die "process is not running: $TARGET_PID"
+    record_command+=(--pid "$TARGET_PID" --inherit)
+    echo "Recording PID ${TARGET_PID} to ${PERF_DATA}..." >&2
   else
-    "$PERF_BIN" script -i "${PERF_DATA}" | "${SCRIPT_DIR}/FlameGraph/stackcollapse-perf.pl" | "${SCRIPT_DIR}/FlameGraph/flamegraph.pl" > "flamegraph.${TS}.svg"
+    record_command+=(-- "${COMMAND[@]}")
+    echo "Recording command to ${PERF_DATA}: ${COMMAND[*]}" >&2
   fi
-  echo "FlameGraph: flamegraph.${TS}.svg"
-  # Also try our local minimal converter as a fallback to produce a callgrind file
-  if [[ -x "${SCRIPT_DIR}/_ext/perf_script_to_callgrind.py" || -f "${SCRIPT_DIR}/_ext/perf_script_to_callgrind.py" ]]; then
-    echo "Also running local perf_script_to_callgrind.py fallback to generate callgrind..."
-    python3 "${SCRIPT_DIR}/_ext/perf_script_to_callgrind.py" "perf_script.${TS}.txt" "${CALLGRIND_OUT}" || true
-    if [[ -f "${CALLGRIND_OUT}" ]]; then
-      echo "Callgrind output (fallback): ${CALLGRIND_OUT}"
-      echo "Open with: kcachegrind ${CALLGRIND_OUT}"
+
+  if [[ $RECORD_ONLY -eq 1 ]]; then
+    exec "${record_command[@]}"
+  fi
+
+  if [[ $USE_SUDO -eq 1 ]]; then
+    record_command=(sudo -- "${record_command[@]}")
+  fi
+  set +e
+  "${record_command[@]}"
+  record_status=$?
+  set -e
+
+  if [[ $USE_SUDO -eq 1 && -f "$PERF_DATA" ]]; then
+    sudo chown "$(id -u):$(id -g)" "$PERF_DATA"
+  fi
+  if [[ ! -s "$PERF_DATA" ]]; then
+    PrintPerfPermissionHint
+    if [[ $record_status -eq 0 ]]; then
+      exit 1
+    fi
+    exit "$record_status"
+  fi
+  if [[ $record_status -ne 0 ]]; then
+    echo "warning: perf record exited with status ${record_status}; processing captured samples." >&2
+  fi
+fi
+
+PERF_SCRIPT="${OUTPUT_DIR}/perf.script"
+echo "Writing ${PERF_SCRIPT}..." >&2
+"$PERF_BIN" script --input "$PERF_DATA" > "$PERF_SCRIPT"
+
+FindFlameGraphDir() {
+  local candidate
+  if [[ -n "$FLAMEGRAPH_DIR" ]]; then
+    printf '%s\n' "$FLAMEGRAPH_DIR"
+    return
+  fi
+
+  local collapse=""
+  local render=""
+  collapse=$(command -v stackcollapse-perf.pl 2>/dev/null || true)
+  render=$(command -v flamegraph.pl 2>/dev/null || true)
+  if [[ -n "$collapse" && -n "$render" && $(dirname "$collapse") == "$(dirname "$render")" ]]; then
+    dirname "$collapse"
+    return
+  fi
+
+  for candidate in \
+    "${SCRIPT_DIR}/FlameGraph" \
+    "${HOME}/FlameGraph" \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/aeronet/FlameGraph" \
+    /usr/local/share/FlameGraph \
+    /usr/share/FlameGraph \
+    /usr/share/flamegraph; do
+    if [[ -x "${candidate}/stackcollapse-perf.pl" && -x "${candidate}/flamegraph.pl" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+if [[ $GENERATE_FLAMEGRAPH -eq 1 ]]; then
+  if ! resolved_flamegraph_dir=$(FindFlameGraphDir); then
+    if [[ $INSTALL_FLAMEGRAPH -eq 1 ]]; then
+      command -v git >/dev/null 2>&1 || Die "git is required by --install-flamegraph"
+      resolved_flamegraph_dir="${XDG_CACHE_HOME:-${HOME}/.cache}/aeronet/FlameGraph"
+      mkdir -p "$(dirname "$resolved_flamegraph_dir")"
+      echo "Installing FlameGraph in ${resolved_flamegraph_dir}..." >&2
+      git clone --depth 1 https://github.com/brendangregg/FlameGraph.git "$resolved_flamegraph_dir"
+    else
+      resolved_flamegraph_dir=""
     fi
   fi
-  exit 0
+
+  if [[ -n "$resolved_flamegraph_dir" ]]; then
+    flamegraph_output="${OUTPUT_DIR}/flamegraph.svg"
+    echo "Writing ${flamegraph_output}..." >&2
+    "${resolved_flamegraph_dir}/stackcollapse-perf.pl" "$PERF_SCRIPT" \
+      | "${resolved_flamegraph_dir}/flamegraph.pl" > "$flamegraph_output"
+  else
+    cat >&2 <<EOF
+warning: FlameGraph scripts were not found; perf.data and perf.script are available.
+Re-run with --input "$PERF_DATA" --install-flamegraph, or pass --flamegraph-dir.
+EOF
+  fi
 fi
 
-echo "No conversion tool found. Helpful next steps:" 
-echo " - Install kcachegrind and perf2calltree (Debian/Ubuntu: sudo apt install kcachegrind)" 
-echo " - If perf2calltree not packaged: get the script from perf-tools repo or check /usr/share/kcachegrind/perf2calltree" 
-echo " - Alternatively clone FlameGraph and run:"
-echo "     git clone https://github.com/brendangregg/FlameGraph.git ${SCRIPT_DIR}/FlameGraph"
-echo "     perf script -i ${PERF_DATA} | ${SCRIPT_DIR}/FlameGraph/stackcollapse-perf.pl | ${SCRIPT_DIR}/FlameGraph/flamegraph.pl > flamegraph.${TS}.svg"
+FindHotspot() {
+  local candidate
+  if [[ -n "$HOTSPOT_BIN" ]]; then
+    [[ -x "$HOTSPOT_BIN" ]] || Die "Hotspot is not executable: $HOTSPOT_BIN"
+    printf '%s\n' "$HOTSPOT_BIN"
+    return
+  fi
+  if command -v hotspot >/dev/null 2>&1; then
+    command -v hotspot
+    return
+  fi
+  for candidate in "${HOME}"/Downloads/hotspot-*.AppImage "${HOME}"/Applications/hotspot-*.AppImage; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
 
-echo "Perf raw script is at perf_script.${TS}.txt if you want to inspect frames." 
+if [[ $OPEN_HOTSPOT -eq 1 ]]; then
+  resolved_hotspot=$(FindHotspot) || Die "Hotspot not found; use --hotspot-bin <path>"
+  echo "Opening ${PERF_DATA} with ${resolved_hotspot}..." >&2
+  "$resolved_hotspot" "$PERF_DATA" >/dev/null 2>&1 &
+fi
+
+echo "Profile artifacts: ${OUTPUT_DIR}" >&2
+exit "$record_status"

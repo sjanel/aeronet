@@ -253,7 +253,7 @@ run_benchmarks.py --protocol h2c --server aeronet,go --scenario headers,mixed
 **HTTP/2 framework support:**
 
 | Server | h2c | h2-tls | Notes |
-|--------|-----|--------|-------|
+| -------- | ----- | -------- | ------- |
 | aeronet | Yes | Yes | Full HTTP/2 support |
 | rust | Yes | Yes | hyper-util auto-detect |
 | undertow | Yes | Yes | UndertowOptions.ENABLE_HTTP2 |
@@ -277,6 +277,9 @@ run_benchmarks.py --protocol http1   # Protocol: http1 (default), h2c, h2-tls
 run_benchmarks.py --h2-streams 10    # Multiplexed streams per h2 connection (default: 10)
 run_benchmarks.py --repeat 3         # Take N samples per case, report the median (default: 1)
 run_benchmarks.py --no-cpu-pin       # Disable automatic taskset pinning of server vs load generator
+run_benchmarks.py --profile          # Record each measured server/scenario with perf
+run_benchmarks.py --profile-install-flamegraph # Install FlameGraph scripts and generate SVGs
+run_benchmarks.py --profile-hotspot  # Open each perf.data in Hotspot
 
 # Run multiple values (comma-separated)
 run_benchmarks.py --server aeronet,beast,python --scenario headers,body,routing
@@ -284,12 +287,25 @@ run_benchmarks.py --server aeronet,beast,python --scenario headers,body,routing
 # Available scenarios: headers, body, static, cpu, mixed, files, routing, tls
 ```
 
+For a focused CPU profile, enable perf access first and select one server/scenario:
+
+```bash
+sudo sysctl kernel.perf_event_paranoid=1
+run_benchmarks.py --server aeronet --scenario headers --duration 15s \
+  --profile --profile-install-flamegraph --profile-hotspot
+```
+
+Warmup traffic is excluded. Profiles are written below `OUTPUT/profiles/<run>/<protocol>/<server>/<scenario>/`.
+With `--repeat N`, each measured sample gets its own `sample-N/` directory. See
+[`../../docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#profiling-with-perf) for call-graph settings, direct PID
+attachment, existing-data processing, and Hotspot discovery.
+
 ## Server Implementations
 
 All servers implement identical endpoints:
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | `/ping` | GET | Returns "pong" (minimal latency test) |
 | `/headers` | GET | Returns N headers based on `?count=N` query param |
 | `/uppercase` | POST | Converts request body to uppercase |
@@ -307,7 +323,7 @@ All servers implement identical endpoints:
 ### Supported Servers
 
 | Server | Language | File | Notes |
-|--------|----------|------|-------|
+| -------- | ---------- | ------ | ------- |
 | aeronet | C++ | `aeronet_server.cpp` | Primary benchmark target |
 | drogon | C++ | `drogon_server.cpp` | Popular C++ async framework |
 | uwebsockets | C++ | `uwebsockets_server.cpp` | High-perf WebSocket-first framework |
@@ -522,7 +538,7 @@ go install github.com/matttomasetti/websocket-bench@latest
 ### WS Scenarios (k6)
 
 | Scenario | Script | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | echo-small | `k6/ws_echo_small.js` | 128B text echo, measures RTT under load |
 | echo-medium | `k6/ws_echo_medium.js` | 2KB payload echo, higher bandwidth |
 | mix | `k6/ws_mix_text_binary.js` | Alternating text + binary frames |
@@ -561,7 +577,7 @@ Each `run_ws_benchmarks.py` execution now automatically generates:
 ### WS Server Support
 
 | Server | Port | WebSocket `/ws` |
-|--------|------|-----------------|
+| -------- | ------ | ----------------- |
 | aeronet | 8080 | Yes |
 | drogon | 8081 | Yes |
 | uwebsockets | 8088 | Yes |
