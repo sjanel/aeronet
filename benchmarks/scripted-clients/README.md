@@ -82,7 +82,23 @@ Options:
 --output DIR         artifact output directory (default: ./results)
 --html               also write an HTML report with bar charts
 --build-dir DIR      override build-dir auto-detection
+--profile            record each client/scenario with perf
+--profile-install-flamegraph  install FlameGraph scripts and generate SVGs
+--profile-hotspot    open each perf.data in Hotspot
 ```
+
+For a focused CPU profile, enable perf access first and select one client/scenario:
+
+```bash
+sudo sysctl kernel.perf_event_paranoid=1
+./run_client_benchmarks.py --client aeronet --scenario small-get --duration 15s \
+  --profile --profile-install-flamegraph --profile-hotspot
+```
+
+The complete client driver process is profiled, including its configured in-process warmup; the shared server
+is not. Artifacts are written below
+`OUTPUT/profiles/<run>/<protocol>/<client>/<scenario>/`. See
+[`../../docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#profiling-with-perf) for the full workflow.
 
 ## Protocols
 

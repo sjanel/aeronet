@@ -2,7 +2,161 @@
 """Shared utilities for HTTP and WebSocket benchmark scripts."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+@dataclass
+class PerfRecording:
+    process: subprocess.Popen
+    output_dir: Path
+    data_path: Path
+    log_fp: Any
+
+
+class PerfProfiler:
+    """Record and post-process benchmark processes through profile_benchmark.sh."""
+
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        frequency: int,
+        call_graph: str,
+        install_flamegraph: bool,
+        open_hotspot: bool,
+    ) -> None:
+        if frequency <= 0:
+            raise RuntimeError("perf sampling frequency must be a positive integer")
+        if call_graph not in {"dwarf", "fp", "lbr"}:
+            raise RuntimeError(f"unsupported perf call graph mode: {call_graph}")
+        self.output_dir = output_dir
+        self.frequency = frequency
+        self.call_graph = call_graph
+        self.install_flamegraph = install_flamegraph
+        self.open_hotspot = open_hotspot
+        self.helper = Path(__file__).resolve().parents[2] / "scripts/profile_benchmark.sh"
+        if not self.helper.is_file() or not os.access(self.helper, os.X_OK):
+            raise RuntimeError(f"Profiling helper is missing or not executable: {self.helper}")
+
+    def check_permissions(self) -> None:
+        perf = shutil.which("perf")
+        if perf is None:
+            raise RuntimeError("perf is not installed or is not available in PATH")
+        check = subprocess.run(
+            [perf, "stat", "--event", "cycles", "--", "true"],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
+            return
+        paranoid = "unknown"
+        paranoid_path = Path("/proc/sys/kernel/perf_event_paranoid")
+        if paranoid_path.is_file():
+            paranoid = paranoid_path.read_text(encoding="ascii").strip()
+        detail = [line.strip() for line in check.stderr.splitlines() if line.strip()]
+        reason = next(
+            (
+                line
+                for line in detail
+                if "permission" in line.lower() or "access to performance" in line.lower()
+            ),
+            detail[0] if detail else "perf stat failed",
+        )
+        raise RuntimeError(
+            f"perf cannot access CPU events (kernel.perf_event_paranoid={paranoid}): {reason}\n"
+            "Enable scripted profiling before the run, for example:\n"
+            "  sudo sysctl kernel.perf_event_paranoid=1"
+        )
+
+    def wrap_command(
+        self, command: Sequence[str], artifact_parts: Sequence[str]
+    ) -> Tuple[List[str], Path]:
+        artifact_dir = self._artifact_dir(artifact_parts)
+        data_path = artifact_dir / "perf.data"
+        return [
+            str(self.helper),
+            "--record-only",
+            "--freq", str(self.frequency),
+            "--call-graph", self.call_graph,
+            "--data", str(data_path),
+            "--",
+            *command,
+        ], artifact_dir
+
+    def start(self, pid: int, artifact_parts: Sequence[str]) -> PerfRecording:
+        artifact_dir = self._artifact_dir(artifact_parts)
+        data_path = artifact_dir / "perf.data"
+        log_path = artifact_dir / "perf-record.log"
+        log_fp = log_path.open("w", encoding="utf-8", errors="replace")
+        process = subprocess.Popen(
+            [
+                str(self.helper),
+                "--record-only",
+                "--freq", str(self.frequency),
+                "--call-graph", self.call_graph,
+                "--data", str(data_path),
+                "--pid", str(pid),
+            ],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+        )
+        time.sleep(0.15)
+        if process.poll() is not None:
+            log_fp.close()
+            detail = log_path.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(f"perf failed to attach to PID {pid}:\n{detail}")
+        return PerfRecording(process, artifact_dir, data_path, log_fp)
+
+    def stop(self, recording: PerfRecording) -> Path:
+        process = recording.process
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        recording.log_fp.close()
+        return self.process(recording.output_dir)
+
+    def process(self, artifact_dir: Path) -> Path:
+        data_path = artifact_dir / "perf.data"
+        if not data_path.is_file() or data_path.stat().st_size == 0:
+            log_path = artifact_dir / "perf-record.log"
+            detail = ""
+            if log_path.is_file():
+                detail = log_path.read_text(encoding="utf-8", errors="replace").strip()
+            suffix = f":\n{detail}" if detail else ""
+            raise RuntimeError(f"perf produced no data at {data_path}{suffix}")
+        command = [
+            str(self.helper),
+            "--input", str(data_path),
+            "--output-dir", str(artifact_dir),
+        ]
+        if self.install_flamegraph:
+            command.append("--install-flamegraph")
+        if self.open_hotspot:
+            command.append("--hotspot")
+        completed = subprocess.run(command)
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"profile post-processing failed for {data_path} (exit {completed.returncode})"
+            )
+        print(f"    Profile: {artifact_dir}", file=sys.stderr)
+        return artifact_dir
+
+    def _artifact_dir(self, artifact_parts: Sequence[str]) -> Path:
+        artifact_dir = self.output_dir.joinpath(*artifact_parts)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        return artifact_dir
 
 
 def format_rps(value: Any) -> str:
