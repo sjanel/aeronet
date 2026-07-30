@@ -5,6 +5,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/sys-test-support.hpp"
 
 #if AERONET_WANT_MALLOC_OVERRIDES
