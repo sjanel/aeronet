@@ -53,6 +53,7 @@
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/search-crlf.hpp"
 
 namespace aeronet {
 

@@ -18,10 +18,10 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/single-http-server.hpp"
 
 namespace aeronet {

@@ -17,13 +17,14 @@ namespace {
 // Copy into a guarded buffer and assert the bytes landed exactly, with neither under- nor over-write.
 // The overlapping fast path reads/writes [0, k) and [len - k, len); these checks pin down that it never
 // touches a byte outside [dst, dst + len).
-void CheckCopy(std::string_view sv) {
+template <typename CopyFn>
+void CheckGuardedCopy(std::string_view sv, CopyFn copyFn) {
   constexpr char kGuard = '\x7f';
   constexpr std::size_t kPad = 8;
   std::string buf(sv.size() + (2 * kPad), kGuard);
   char* dst = buf.data() + kPad;
 
-  Copy(sv, dst);
+  copyFn(dst);
 
   EXPECT_EQ(std::string_view(dst, sv.size()), sv) << "len=" << sv.size();
   // Leading guard bytes untouched.
@@ -35,6 +36,23 @@ void CheckCopy(std::string_view sv) {
     EXPECT_EQ(buf[kPad + sv.size() + i], kGuard) << "overwrite at i=" << i << " len=" << sv.size();
   }
 }
+
+void CheckCopy(std::string_view sv) {
+  CheckGuardedCopy(sv, [sv](char* dst) { Copy(sv, dst); });
+}
+
+void CheckRawCopy(std::string_view sv) {
+  CheckGuardedCopy(sv, [sv](char* dst) { Copy(sv.data(), sv.size(), dst); });
+}
+
+constexpr bool CheckConstexprRawCopy() {
+  constexpr std::array<char, 6> source{'a', 'e', 'r', 'o', 'n', 'e'};
+  std::array<char, source.size()> destination{};
+  Copy(source.data(), source.size(), destination.data());
+  return source == destination;
+}
+
+static_assert(CheckConstexprRawCopy());
 
 }  // namespace
 
@@ -55,11 +73,49 @@ TEST(MemoryUtilsCopy, AllSizesAcrossDispatchBoundaries) {
 TEST(MemoryUtilsCopy, BoundaryLengths) {
   // Spot-check the off-by-one neighbours of every internal threshold.
   const std::string base(64, 'q');
-  for (std::size_t len :
-       {std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{7}, std::size_t{8}, std::size_t{15},
-        std::size_t{16}, std::size_t{17}, std::size_t{31}, std::size_t{32}, std::size_t{33}, std::size_t{64}}) {
+  for (std::size_t len : {
+           std::size_t{1},
+           std::size_t{2},
+           std::size_t{3},
+           std::size_t{4},
+           std::size_t{7},
+           std::size_t{8},
+           std::size_t{15},
+           std::size_t{16},
+           std::size_t{17},
+           std::size_t{31},
+           std::size_t{32},
+           std::size_t{33},
+           std::size_t{64},
+       }) {
     CheckCopy(std::string_view(base.data(), len));
   }
+}
+
+TEST(MemoryUtilsRawCopy, MultipleSizeTypesAcrossDispatchBoundaries) {
+  std::string payload;
+  payload.reserve(48);
+  for (std::size_t i = 0; i < 48; ++i) {
+    payload.push_back(static_cast<char>('A' + (i % 26)));
+  }
+
+  for (std::size_t len = 0; len <= payload.size(); ++len) {
+    const std::string_view sv(payload.data(), len);
+
+    CheckRawCopy(sv);
+  }
+}
+
+TEST(MemoryUtilsRawCopy, SupportsBytePointers) {
+  constexpr std::byte source[]{
+      std::byte{0x00}, std::byte{0x11}, std::byte{0x7f}, std::byte{0x80}, std::byte{0xff},
+  };
+  std::array<std::byte, std::size(source)> destination{};
+
+  Copy(source, std::size(source), destination.data());
+
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(destination.data()), std::size(destination)),
+            std::string_view(reinterpret_cast<const char*>(source), std::size(source)));
 }
 
 TEST(MemoryUtilsAppend, ReturnsAdvancedPointerAndCopies) {
@@ -69,35 +125,6 @@ TEST(MemoryUtilsAppend, ReturnsAdvancedPointerAndCopies) {
   end = Append(std::string_view("x"), end);
   EXPECT_EQ(end, buf.data() + 7);
   EXPECT_EQ(std::string_view(buf.data(), 7), "Host: x");
-}
-
-TEST(MemoryUtilsSearchCRLF, FindsAndReportsAbsence) {
-  // SearchCRLF operates on raw char pointers (it uses std::memchr internally), so feed it
-  // data()/data()+size() rather than begin()/end(): on libstdc++/libc++ string_view::iterator
-  // is const char*, but on MSVC it is a wrapper class that does not convert to const char*.
-  std::string_view withCrlf = "abc\r\ndef";
-  const char* withCrlfBeg = withCrlf.data();
-  const char* withCrlfEnd = withCrlfBeg + withCrlf.size();
-  const char* it = SearchCRLF(withCrlfBeg, withCrlfEnd);
-  ASSERT_NE(it, withCrlfEnd);
-  EXPECT_EQ(static_cast<std::size_t>(it - withCrlfBeg), 3U);
-
-  // A lone CR (no following LF) must not be reported as a CRLF.
-  std::string_view loneCr = "abc\rdef";
-  const char* loneCrBeg = loneCr.data();
-  const char* loneCrEnd = loneCrBeg + loneCr.size();
-  EXPECT_EQ(SearchCRLF(loneCrBeg, loneCrEnd), loneCrEnd);
-
-  std::string_view none = "no line break here";
-  const char* noneBeg = none.data();
-  const char* noneEnd = noneBeg + none.size();
-  EXPECT_EQ(SearchCRLF(noneBeg, noneEnd), noneEnd);
-
-  // CR as the final byte: there is no room for a following LF.
-  std::string_view trailingCr = "abc\r";
-  const char* trailingCrBeg = trailingCr.data();
-  const char* trailingCrEnd = trailingCrBeg + trailingCr.size();
-  EXPECT_EQ(SearchCRLF(trailingCrBeg, trailingCrEnd), trailingCrEnd);
 }
 
 }  // namespace aeronet
