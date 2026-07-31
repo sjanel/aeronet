@@ -13,13 +13,12 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/async-handler-state.hpp"
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
 #endif
 
+#include "aeronet/async-handler-state.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/header-line-parse.hpp"
@@ -34,10 +33,10 @@
 #include "aeronet/http-version.hpp"
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/major-minor-version.hpp"
-#include "aeronet/memory-utils.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/template-constants.hpp"
 #include "aeronet/tracing/tracer.hpp"
