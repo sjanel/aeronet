@@ -146,6 +146,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    search-crlf_test
+    test/search-crlf_test.cpp
+)
+
+AeronetAddUnitTest(
     simple-charconv_test
     test/simple-charconv_test.cpp
     LIBRARIES

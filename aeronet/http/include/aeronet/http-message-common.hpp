@@ -6,7 +6,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-trim.hpp"
 

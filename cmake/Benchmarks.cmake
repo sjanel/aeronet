@@ -108,6 +108,7 @@ set(AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD ${AERONET_BENCH_ROOT}/internal/init
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
+set(AERONET_BENCH_INTERNAL_SEARCH_CRLF ${AERONET_BENCH_ROOT}/internal/search-crlf_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
 set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-utils_bench.cpp)
 set(AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK ${AERONET_BENCH_ROOT}/internal/reserved-header-check_bench.cpp)
@@ -168,6 +169,9 @@ set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "be
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
 set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-search-crlf ${AERONET_BENCH_INTERNAL_SEARCH_CRLF} LIBRARIES aeronet_tech)
+set_target_properties(aeronet-bench-internal-search-crlf PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")

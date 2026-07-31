@@ -21,10 +21,10 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/memory-utils.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "url-parse.hpp"
 
