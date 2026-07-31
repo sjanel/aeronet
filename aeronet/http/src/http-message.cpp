@@ -35,6 +35,7 @@
 #include "aeronet/ndigits.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"

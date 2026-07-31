@@ -22,12 +22,12 @@ namespace aeronet {
 constexpr void Copy(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AERONET_RESTRICT pDes) noexcept {
   static_assert(sizeof(*pSrc) == 1 && sizeof(*pDes) == 1, "Copy only works for byte pointers");
   if consteval {
-    for (std::size_t i = 0; i < sz; ++i) {
-      pDes[i] = pSrc[i];
+    for (std::size_t idx = 0; idx < sz; ++idx) {
+      pDes[idx] = pSrc[idx];
     }
     return;
   }
-  if (sz > 32) {
+  if (sz > 32U) {
     std::memcpy(pDes, pSrc, sz);
   }
   // Overlapping copies. Each branch picks the largest fixed chunk k in {16, 8, 4, 2, 1} with k <= len. Since
@@ -45,19 +45,19 @@ constexpr void Copy(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AER
   //                                      \________________/
   //                                      overlap [2, 8) rewritten with the same bytes
   //     union of writes = [0, 10): exact, no out-of-bounds store (16 bytes moved, 6 of them twice).
-  else if (sz >= 16) {
-    std::memcpy(pDes, pSrc, 16);
-    std::memcpy(pDes + sz - 16, pSrc + sz - 16, 16);
-  } else if (sz >= 8) {
-    std::memcpy(pDes, pSrc, 8);
-    std::memcpy(pDes + sz - 8, pSrc + sz - 8, 8);
-  } else if (sz >= 4) {
-    std::memcpy(pDes, pSrc, 4);
-    std::memcpy(pDes + sz - 4, pSrc + sz - 4, 4);
-  } else if (sz >= 2) {
-    std::memcpy(pDes, pSrc, 2);
-    std::memcpy(pDes + sz - 2, pSrc + sz - 2, 2);
-  } else if (sz == 1) {
+  else if (sz >= 16U) {
+    std::memcpy(pDes, pSrc, 16U);
+    std::memcpy(pDes + sz - 16U, pSrc + sz - 16U, 16U);
+  } else if (sz >= 8U) {
+    std::memcpy(pDes, pSrc, 8U);
+    std::memcpy(pDes + sz - 8U, pSrc + sz - 8U, 8U);
+  } else if (sz >= 4U) {
+    std::memcpy(pDes, pSrc, 4U);
+    std::memcpy(pDes + sz - 4U, pSrc + sz - 4U, 4U);
+  } else if (sz >= 2U) {
+    std::memcpy(pDes, pSrc, 2U);
+    std::memcpy(pDes + sz - 2U, pSrc + sz - 2U, 2U);
+  } else if (sz == 1U) {
     pDes[0] = pSrc[0];
   }
 }
@@ -66,21 +66,6 @@ constexpr void Copy(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AER
 constexpr auto* Append(const auto* AERONET_RESTRICT pSrc, std::size_t sz, auto* AERONET_RESTRICT pDes) noexcept {
   Copy(pSrc, sz, pDes);
   return pDes + sz;
-}
-
-// Search for CRLF in the range [begin, end). If found, return a pointer to the CR character. Otherwise, return end.
-[[nodiscard]] inline auto* SearchCRLF(auto* begin, auto* end) noexcept {
-  static_assert(sizeof(*begin) == 1, "SearchCRLF only works on byte ranges");
-  for (; begin != end; ++begin) {
-    begin = static_cast<decltype(begin)>(std::memchr(begin, '\r', static_cast<std::size_t>(end - begin)));
-    if (begin == nullptr) {
-      return end;
-    }
-    if (begin + 1 < end && begin[1U] == '\n') {
-      return begin;
-    }
-  }
-  return end;
 }
 
 }  // namespace aeronet

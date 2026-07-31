@@ -9,7 +9,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/memory-utils.hpp"
+#include "aeronet/search-crlf.hpp"
 
 namespace aeronet {
 
