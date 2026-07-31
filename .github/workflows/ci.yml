@@ -521,11 +521,17 @@ jobs:
       - name: Verify markdown C/C++ examples (compile & link)
         run: |
           set -euo pipefail
-          echo "Running markdown examples verifier against README.md and FEATURES.md"
+          echo "Running markdown examples verifier against README.md, FEATURES.md, and the getting-started guide"
           NUM_PROC=$(nproc)
           # Use half the CPUs for parallelism, but at least 1
           JOBS=$(( ((NUM_PROC + 1) / 2) ))
-          scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md
+          scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md docs/getting-started/first-server.md
+
+      - name: Build MkDocs site
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --quiet --requirement requirements-docs.txt
+          python3 -m mkdocs build --strict --site-dir /tmp/aeronet-docs-site
 
   macos:
     name: macOS
