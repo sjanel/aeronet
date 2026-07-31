@@ -196,7 +196,7 @@ Behavior summary
 - The authority-form target must carry a **numeric** port (RFC 9110 §9.3.6 / RFC 3986 `port = *DIGIT`); a missing
   separator, an empty/non-numeric port, or a value `> 65535` is rejected with `400 Bad Request` before any name
   resolution (service names such as `host:https` are not accepted). Tests:
-  [http-connect_test.cpp](../tests/http-connect_test.cpp) (`NonNumericConnectPortReturns400`,
+  [http-connect_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/http-connect_test.cpp) (`NonNumericConnectPortReturns400`,
   `OutOfRangeConnectPortReturns400`, `EmptyConnectPortReturns400`).
 - The server uses a small `ConnectResult` helper to capture whether the upstream connection completed immediately or is
   still pending (`EINPROGRESS`) on a non-blocking socket. Pending connects are tracked using a `connectPending` flag
@@ -242,6 +242,8 @@ Behavior summary
   `RST_STREAM` with `CONNECT_ERROR` is sent per RFC 7540 §8.3.
 - When the HTTP/2 connection itself is closed, all tunnel upstream fds are drained and released.
 
+<a id="performance--architecture"></a>
+
 ## Performance / architecture
 
 ### Execution model & scaling
@@ -270,6 +272,8 @@ Behavior summary
 - [x] HTTP/2 benchmarks using [h2load](https://nghttp2.org/documentation/h2load-howto.html) (nghttp2). Supports both h2c (cleartext) and h2-tls modes via `run_benchmarks.py --protocol h2c|h2-tls`. All existing benchmark scenarios are supported. Competitor servers (drogon, axum, undertow, go, python/hypercorn) are updated for HTTP/2. Internal micro-benchmarks for HPACK, frame parsing, and flow control are also included. See `benchmarks/scripted-servers/README.md` and `.github/workflows/benchmarks-h2.yml`.
 - [x] WebSocket benchmarks using [k6](https://k6.io/) and optionally [websocket-bench](https://github.com/matttomasetti/websocket-bench). Six scenarios (echo-small, echo-medium, mix text+binary, ping-pong, connection churn, compression) compare aeronet, uWebSockets, and Drogon via a `/ws` echo endpoint. Orchestrated by `run_ws_benchmarks.py`. See `benchmarks/scripted-servers/README.md`.
 - [x] Async handler state pooling for lower per-connection footprint: `ConnectionState` now stores `AsyncHandlerState*` and `ConnectionStorage` allocates/releases async state instances from a dedicated `ObjectPool<ConnectionState::AsyncHandlerState>`.
+
+<a id="memory-management--stdstring_view-safety"></a>
 
 ### Memory Management & std::string_view Safety
 
@@ -471,6 +475,8 @@ static constexpr std::byte kLargeStaticBytes[]{ std::byte{'A'} /* ... large stat
 resp.bodyStatic(kLargeStaticBytes);
 ```
 
+<a id="compression--negotiation"></a>
+
 ## Compression & Negotiation
 
 Supported (build‑flag gated): gzip, deflate (zlib-ng), zstd, brotli.
@@ -561,8 +567,8 @@ router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequestVie
 direct compression (captured bodies are compressed at finalization). Use `body(std::string_view, ...)`
 for inline storage with direct compression eligibility.
 
-Tests: [aeronet/http/test/http-response_test.cpp](aeronet/http/test/http-response_test.cpp) (unit),
-[tests/http-compression_test.cpp](tests/http-compression_test.cpp) (e2e - `DirectCompression_*` tests).
+Tests: [aeronet/http/test/http-response_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/http-response_test.cpp) (unit),
+[tests/http-compression_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/http-compression_test.cpp) (e2e - `DirectCompression_*` tests).
 
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 
@@ -1226,7 +1232,7 @@ Key characteristics:
 
 This mechanism is recommended for most deployments where a clean shutdown on `SIGINT`/`SIGTERM` is desired without writing custom signal-handling code. For containerized environments (Kubernetes, Docker), it ensures that `SIGTERM` (sent by orchestrators during pod shutdown) triggers a graceful drain with a bounded timeout, improving availability during rolling updates.
 
-Where to look: [`signal-handler.hpp`](../aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](../tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
+Where to look: [`signal-handler.hpp`](https://github.com/sjanel/aeronet/blob/main/aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](https://github.com/sjanel/aeronet/blob/main/tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
 
 #### stop() vs beginDrain() - intent, semantics and guidance
 
@@ -1261,6 +1267,8 @@ The library exposes two related shutdown controls and they serve different inten
   - `HttpServer::beginDrain()` forward to their underlying `SingleHttpServer` instances so the same graceful behavior is available for background or multi‑reactor setups. `stop()` continues to request immediate termination on wrappers as before.
 
 Recommendation: prefer `beginDrain()` when you intend to quiesce traffic and let outstanding requests complete; use `stop()` when you require immediate termination. If you need a blocking API (wait until drain completes), add a small wait in the supervisor code that observes `isDraining()`/`isRunning()` or joins the server thread - the public API intentionally separates "request" (non‑blocking) from "wait" to keep shutdown control explicit.
+
+<a id="reserved--managed-response-headers"></a>
 
 ## Reserved & Managed Response Headers
 
@@ -1473,7 +1481,7 @@ router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> Req
 - **Type-safe**: The return type of `deferWork` matches the return type of the work function.
 - **Sequential composition**: You can chain multiple `deferWork` calls:
 
-Runnable demo: [examples/async-handlers.cpp](examples/async-handlers.cpp) (binary `aeronet-async-handlers`) exposes `/async` and `/users/{id}` endpoints showing deferWork with and without request bodies.
+Runnable demo: [examples/async-handlers.cpp](https://github.com/sjanel/aeronet/blob/main/examples/async-handlers.cpp) (binary `aeronet-async-handlers`) exposes `/async` and `/users/{id}` endpoints showing deferWork with and without request bodies.
 
 ```cpp
 Router router;
@@ -1648,6 +1656,8 @@ routerConfig.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Redirect
 
 Rationale: Normalize avoids duplicate handler registration while preserving SEO-friendly consistent canonical paths; Redirect enforces consistent public URLs; Strict maximizes explicitness (APIs where `/v1/resource` vs `/v1/resource/` semantics differ).
 
+<a id="routing-patterns--path-parameters"></a>
+
 ### Routing patterns & path parameters
 
 #### Path pattern syntax
@@ -1763,6 +1773,8 @@ router.setPath(http::Method::GET, "/files/{}/chunk/{}", [](const HttpRequestView
 });
 // In handler: req.pathParams().at("0"), req.pathParams().at("1")
 ```
+
+<a id="construction-model-raii--ephemeral-ports"></a>
 
 ## Construction Model (RAII & Ephemeral Ports)
 
@@ -1940,7 +1952,7 @@ SingleHttpServer server(std::move(cfg));
 - The test suite includes `http_probes_test.cpp` which validates startup/readiness transitions and drain-time
   behavior. Tests also cover collision detection for probe paths.
 - The dedicated probe listener is covered by the `MultiHttpServerDedicatedProbes` suite in
-  [tests/multi-http-server_test.cpp](../tests/multi-http-server_test.cpp): probes served off the application port,
+  [tests/multi-http-server_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/multi-http-server_test.cpp): probes served off the application port,
   a probe staying responsive while a worker is blocked in a handler, the liveness heartbeat tripping on a wedged
   worker and recovering, readiness reporting `503` during drain, and dedicated-port validation.
 
@@ -2319,6 +2331,8 @@ Examples:
 - To allow TRACE only on plaintext: `cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);`
 - To allow TRACE on both plaintext and TLS: `cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);`
 
+<a id="streaming-responses-chunked--incremental"></a>
+
 ## Streaming Responses (Chunked / Incremental)
 
 Handlers can produce bodies incrementally using a streaming handler registration instead of fixed responses. When streaming, headers are deferred until either a compression decision (if enabled) or first write.
@@ -2369,6 +2383,8 @@ Testing: see `tests/http_streaming.cpp`.
 - [x] 416 (Range Not Satisfiable) with `Content-Range: bytes */N`
 - [x] Integration hooks in `HttpServerConfig::staticFiles`
 
+<a id="static-file-handler-rfc-7233--rfc-7232"></a>
+
 ## Static File Handler (RFC 7233 / RFC 7232)
 
 `StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range semantics.
@@ -2415,7 +2431,7 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   **least-recently-used** entry so the cache stays bounded while keeping the hot working set resident. Set
   `headerCacheCapacity` to **0** (or use `withHeaderCacheCapacity(0)`) to disable the cache. A
   `contentTypeResolver` callback, when installed, is invoked at most once per (file, stat) rather than on every request.
-  See [tests](../aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
+  See [tests](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
 
 - **Content-Type resolution**: when serving files the handler resolves the `Content-Type` header with the following
   precedence: (1) a user-provided content-type resolver callback (if installed) and returning a non-empty value,
@@ -2483,6 +2499,8 @@ coalescing, boundary generation, and multipart body assembly paths.
 # Test multi-range request
 curl -i -H "Range: bytes=0-3,10-13" http://localhost:8080/somefile.txt
 ```
+
+<a id="mixed-mode--dispatch-precedence"></a>
 
 ## Mixed Mode & Dispatch Precedence
 
@@ -3292,6 +3310,8 @@ Test infrastructure for verifying server behavior under realistic network condit
 
 - **Read-EAGAIN with EPOLLET**: Simulated EAGAIN on reads (`eagainAfterEveryNReads`) is incompatible with edge-triggered epoll in integration tests. When the transport returns `{0, ReadReady}`, the server waits for a new EPOLLIN edge, but the socket already has data so no edge fires. EAGAIN simulation works correctly in unit tests (no event loop) and for writes (EPOLLOUT re-triggers because the socket is always writable).
 
+<a id="jwt-rfc-7519--jws-profile"></a>
+
 ## JWT (RFC 7519 — JWS profile)
 
 Compile-time module `aeronet_jwt` providing JSON Web Token signing and verification. It implements
@@ -3455,8 +3475,8 @@ Serialize any Glaze-compatible object directly into the response body, avoiding 
 > the Glaze dependency, which is expensive to compile. To keep that cost out of the widely-included core
 > headers, their definitions live in `<aeronet/http-json.hpp>`. Include it wherever you serialize/parse
 > JSON or YAML (the `<aeronet/aeronet.hpp>` umbrella already does). Tests:
-> [config-loader_test.cpp](../aeronet/http/test/config-loader_test.cpp) (response side),
-> [http-request_test.cpp](../aeronet/http/test/http-request_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
+> [config-loader_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/config-loader_test.cpp) (response side),
+> [http-request_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/http-request_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
 
 ```cpp
 #include <unordered_map>
