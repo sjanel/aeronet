@@ -896,20 +896,8 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
   EXPECT_EQ(initialUpdate.get_future().wait_for(200ms), std::future_status::ready);
 
   stopSource.request_stop();
-  std::this_thread::sleep_for(30ms);
-
-  bool stopObserved = false;
-  const auto deadline = std::chrono::steady_clock::now() + 200ms;
-  while (std::chrono::steady_clock::now() < deadline) {
-    try {
-      test::simpleGet(port, "/token");
-    } catch (...) {
-      stopObserved = true;
-      break;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  EXPECT_TRUE(stopObserved) << "MultiHttpServer should stop responding once the stop token fires";
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 2s))
+      << "MultiHttpServer should close its listener once the stop token fires";
 
   handle.stop();
   handle.rethrowIfError();

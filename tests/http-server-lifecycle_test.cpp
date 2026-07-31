@@ -254,30 +254,29 @@ TEST(HttpServerCopy, CopyConstruct) {
 }
 
 TEST(HttpServerRestart, RestartPossible) {
-  std::atomic_bool stop1{false};
-  std::atomic_bool stop2{false};
-  SingleHttpServer server(HttpServerConfig{});
-  auto port = server.port();
+  HttpServerConfig config;
+  config.withPollInterval(1ms);
+  SingleHttpServer server(std::move(config));
+  const auto port = server.port();
   server.router().setDefault(
       [](const HttpRequestView& req) { return HttpResponse(std::string("ORIG:") + std::string(req.path())); });
 
-  std::jthread th([&] {
-    server.runUntil([&] { return stop1.load(); });
-    server.runUntil([&] { return stop2.load(); });
-  });
-  test::WaitForServer(server);
-  std::string resp = test::simpleGet(port, "/mv");
+  const auto runOnce = [&](std::string_view path) {
+    std::jthread thread([&](const std::stop_token& token) { server.runUntil([&] { return token.stop_requested(); }); });
+    EXPECT_TRUE(test::WaitForServer(server));
+    std::string response = test::simpleGet(port, path);
+    thread.request_stop();
+    return response;
+  };
 
-  ASSERT_TRUE(resp.contains("ORIG:/mv"));
+  const std::string resp1 = runOnce("/mv");
+  ASSERT_TRUE(resp1.contains("ORIG:/mv"));
 
-  stop1.store(true);
-
-  // Should start a second time, same port.
+  // The first thread was joined by runOnce, so teardown is complete before rebinding the same port.
   EXPECT_EQ(port, server.port());
 
-  resp = test::simpleGet(port, "/mv2");
-  ASSERT_TRUE(resp.contains("ORIG:/mv2"));
-  stop2.store(true);
+  const std::string resp2 = runOnce("/mv2");
+  ASSERT_TRUE(resp2.contains("ORIG:/mv2"));
 }
 
 TEST(HttpServerCopy, CopyAssignWhileStopped) {
@@ -728,8 +727,10 @@ TEST(HttpServerAsyncHandle, StartAndStopWhen) {
   // Trigger predicate
   done.store(true);
 
-  // Server should have stopped
+  // Predicate-driven exit must close the listener before the worker finishes.
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 2s));
   EXPECT_TRUE(test::WaitForServer(server, false));
+  handle.stop();
   EXPECT_NO_THROW(handle.rethrowIfError());
 }
 
@@ -751,8 +752,10 @@ TEST(HttpServerAsyncHandle, StartWithStopToken) {
   // Request stop via token
   source.request_stop();
 
-  // Server should have stopped
+  // Stop-token exit must close the listener before the worker finishes.
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 2s));
   EXPECT_TRUE(test::WaitForServer(server, false));
+  handle.stop();
   EXPECT_NO_THROW(handle.rethrowIfError());
 }
 

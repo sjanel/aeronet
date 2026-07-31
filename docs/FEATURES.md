@@ -1195,6 +1195,7 @@ Key API points:
 - **Wrappers** - `HttpServer::beginDrain()` / `isDraining()` forward to the underlying `SingleHttpServer` instances, enabling the same graceful drain flow when the server runs on background threads or across multiple reactors.
 - Draining is restart-friendly: once all connections are gone (or the deadline forces closure) the lifecycle resets to `Idle` and the server can be started again with another `run()`.
 - `stop()` remains the immediate shutdown primitive; it transitions to `Stopping`, force-closes all connections and wakes the event loop right away.
+- Predicate and stop-token exits close the listener and active connections on the event-loop thread before returning, including `startDetachedAndStopWhen()` and `startDetachedWithStopToken()`.
 
 This drain lifecycle allows supervisors to quiesce traffic (e.g., removing an instance from load balancers) while letting outstanding requests complete and optionally bounding the wait for stubborn clients.
 
