@@ -468,13 +468,8 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   auto& firstServer = _servers.front();
 
-  // On restart (when copies from the previous cycle still exist), fully
-  // reinitialize the first server's listener.  After a stop cycle in multi-
-  // server mode the event-loop thread may have exited via predicate before the
-  // maintenance tick called closeListener(), leaving the listen socket open or
-  // the event loop in a stale state.  Re-creating both here - on the single
-  // main thread before any worker threads start - guarantees a clean state and
-  // avoids a racy in-thread initListener() call.
+  // On restart, bind the first server before copying it so every worker gets a fresh listener and event loop. Do this
+  // on the controller thread before launching workers to avoid concurrent listener initialization.
   if (_servers.size() > 1UL) {
     firstServer.closeListener();
     firstServer.initListener();

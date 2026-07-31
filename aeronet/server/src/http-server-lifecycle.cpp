@@ -399,7 +399,13 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
   while (_lifecycle.isActive() && !predicate()) {
     eventLoop();
   }
+
+  // A predicate can become true after eventLoop() returns, bypassing the teardown normally performed inside it.
+  // Close all network resources before leaving runUntil() on every platform. This must remain on the event-loop
+  // thread because Windows WSAPoll registrations cannot be mutated safely by the controller thread.
   if (_lifecycle.isActive()) {
+    closeListener();
+    closeAllConnections();
     _lifecycle.reset();
   }
 }
