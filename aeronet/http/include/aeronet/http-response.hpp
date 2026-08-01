@@ -761,16 +761,20 @@ class HttpResponse final : public HttpMessage {
 #ifdef AERONET_ENABLE_HTTP_CLIENT
   // Deep-copy this message into an independent, fully-owning HttpMessage. HttpMessage is otherwise move-only
   // (it may own a move-only captured payload), so this is the explicit way to duplicate one: it copies the
-  // head buffer, the normalization state and the (in-memory) body -- a captured body is re-materialized into
+  // head buffer, the normalization state and the (in-memory) body - a captured body is re-materialized into
   // an owning buffer, behaviourally identical since a payload is only ever consumed as a byte view. Intended
   // for callers that must retain a copy of a message they do not own (e.g. HttpClient's response cache).
-  // File payloads and HEAD size-only payloads are not supported (asserted): a parsed client response, the
-  // only current caller, always inlines its body, so it never carries either.
+  // File payloads and HEAD size-only payloads are not supported (asserted): parsed client responses can own
+  // captured receive/decode buffers, but never carry either of those payload forms.
   [[nodiscard]] HttpResponse cloneFinalized() const {
     HttpResponse copy(HttpMessage::Check{});
     copy._data = _data;
     copy._posBitmap = _posBitmap;
-    assert(_payloadVariant.empty());
+    assert(!_payloadVariant.isFilePayload());
+    assert(!_payloadVariant.isSizeOnly());
+    if (!_payloadVariant.empty()) {
+      copy._payloadVariant = HttpPayload(RawChars(_payloadVariant.view()));
+    }
     copy._opts = _opts;
     return copy;
   }
