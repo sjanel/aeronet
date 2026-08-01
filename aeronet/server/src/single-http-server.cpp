@@ -206,13 +206,15 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
     }
   };
 
-  if (!_lifecycle.isActive()) {
-    wrappedUpdater(_router);
-    return;
-  }
-
   {
     std::scoped_lock lock(_updates.lock);
+    // beginStartup() takes this same lock before publishing Starting. A direct update
+    // therefore completes before startup begins; every later update is queued for the
+    // event-loop thread and clamped there.
+    if (_lifecycle.isIdle()) {
+      wrappedUpdater(_router);
+      return;
+    }
     _updates.router.emplace_back(std::move(wrappedUpdater));
     _updates.hasRouter.store(true, std::memory_order_release);
   }
