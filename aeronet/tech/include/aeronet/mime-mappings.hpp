@@ -5,8 +5,48 @@
 
 namespace aeronet {
 
+// Packs up to kMaxChars bytes of a file extension into a single uint64_t,
+// case-folding ASCII letters to lowercase along the way (digits already have
+// bit 0x20 set, so they're untouched by the fold).
+//
+// Characters are placed big-endian (first char = most significant byte), and
+// unused trailing bytes are padded with 0x20 (space), which is numerically
+// below any digit or letter. Consequence: comparing two MIMEExtensionCode
+// values numerically gives EXACTLY the same result as comparing the original
+// (lowercased) extension strings lexicographically, including "shorter
+// prefix sorts first" (e.g. "js" < "json"). So a table written in plain
+// alphabetical order is automatically sorted by MIMEExtensionCode -- one
+// array serves as both the readable source and the binary-search table.
+class MIMEExtensionCode {
+ public:
+  static constexpr auto kMaxChars = sizeof(uint64_t);  // current longest known: 5 ("woff2", "pjpeg")
+
+  constexpr explicit MIMEExtensionCode(std::string_view ext) : _code(Pack(ext)) {}
+
+  // Implicit on purpose: lets MIMEMapping's initializer list stay written as
+  // plain string literals, e.g. {"7z", "application/x-7z-compressed"}.
+  template <unsigned N>
+    requires(N <= kMaxChars + 1U)
+  constexpr MIMEExtensionCode(const char (&ext)[N]) : MIMEExtensionCode(std::string_view(ext, N - 1U)) {}
+
+  constexpr bool operator==(const MIMEExtensionCode&) const = default;
+  constexpr auto operator<=>(const MIMEExtensionCode&) const = default;
+
+ private:
+  static constexpr uint64_t Pack(std::string_view ext) {
+    uint64_t code = 0;
+    for (std::string_view::size_type charIdx = 0; charIdx < ext.size(); ++charIdx) {
+      code |= static_cast<uint64_t>(static_cast<unsigned char>(ext[charIdx])) << (8U * (kMaxChars - 1U - charIdx));
+    }
+    // lower case ASCII letters
+    return code | 0x2020202020202020ULL;
+  }
+
+  uint64_t _code{};
+};
+
 struct MIMEMapping {
-  std::string_view extension;
+  MIMEExtensionCode extensionCode;
   std::string_view mimeType;
 };
 
@@ -14,6 +54,9 @@ using MIMETypeIdx = uint8_t;
 
 inline constexpr MIMETypeIdx kUnknownMIMEMappingIdx = static_cast<MIMETypeIdx>(~0);
 
+// Single source of truth, written in plain alphabetical order for
+// readability -- this order is also required for binary search on
+// extensionCode (enforced by static_assert in the .cpp).
 inline constexpr MIMEMapping kMIMEMappings[] = {
     {"7z", "application/x-7z-compressed"},
     {"aac", "audio/aac"},

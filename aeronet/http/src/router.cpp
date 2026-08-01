@@ -24,6 +24,7 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
+#include "aeronet/path-param-capture.hpp"
 #include "aeronet/router-config.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
