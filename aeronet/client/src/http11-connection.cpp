@@ -174,8 +174,9 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
     }
   }
 
-  // The chunked-body reassembly buffer is borrowed from the client (reused across exchanges) rather than
-  // owned by the parser, so a keep-alive connection streaming chunked responses never re-grows it.
+  // The chunked-body reassembly buffer is borrowed from the client. Suitably-sized allocations move into the response
+  // and get an equal-capacity replacement; oversized scratch stays with the client while its small body is copied.
+  // Both paths preserve reuse without making a later request invalidate the returned response.
   ResponseParser parser(client.bodyBuffer());
   parser.reset(req.method() == http::Method::HEAD);
   if (config.decompression.enable) {

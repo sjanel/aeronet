@@ -477,6 +477,61 @@ TEST(ResponseParserTest, ChunkedDataCrlfPendingNeedsMore) {
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
 
+TEST(ResponseParserTest, ChunkedBodyTransfersAllocationAndPreservesScratchCapacity) {
+  const std::string payload(4096, 'x');
+  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1000\r\n";
+  raw.append(payload);
+
+  RawChars bodyBuf;
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  HttpResponse first;
+  ASSERT_EQ(parser.parse(raw, false, first, kMax), ResponseParser::Status::NeedMore);
+  const char* firstAllocation = bodyBuf.data();
+  const std::size_t scratchCapacity = bodyBuf.capacity();
+  ASSERT_NE(firstAllocation, nullptr);
+  ASSERT_EQ(bodyBuf.size(), payload.size());
+
+  raw.append("\r\n0\r\n\r\n");
+  ASSERT_EQ(parser.parse(raw, false, first, kMax), ResponseParser::Status::Complete);
+  EXPECT_TRUE(first.hasBodyCaptured());
+  EXPECT_EQ(first.bodyInMemory(), payload);
+  EXPECT_EQ(first.bodyInMemory().data(), firstAllocation);
+  EXPECT_TRUE(bodyBuf.empty());
+  EXPECT_EQ(bodyBuf.capacity(), scratchCapacity);
+  EXPECT_NE(bodyBuf.data(), firstAllocation);
+
+  // The replacement is used directly by the next exchange, while the first response remains independent.
+  const std::string secondPayload(2048, 'y');
+  std::string secondRaw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n800\r\n";
+  secondRaw.append(secondPayload);
+  secondRaw.append("\r\n0\r\n\r\n");
+  const char* secondAllocation = bodyBuf.data();
+  parser.reset(false);
+  HttpResponse second;
+  ASSERT_EQ(parser.parse(secondRaw, false, second, kMax), ResponseParser::Status::Complete);
+  EXPECT_EQ(second.bodyInMemory(), secondPayload);
+  EXPECT_EQ(second.bodyInMemory().data(), secondAllocation);
+  EXPECT_EQ(first.bodyInMemory(), payload);
+}
+
+TEST(ResponseParserTest, OversizedScratchStaysReusableForSmallChunkedBody) {
+  RawChars bodyBuf(4096);
+  const char* scratchAllocation = bodyBuf.data();
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  HttpResponse resp;
+  ASSERT_EQ(
+      parser.parse("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false, resp, kMax),
+      ResponseParser::Status::Complete);
+  EXPECT_FALSE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+  EXPECT_NE(resp.bodyInMemory().data(), scratchAllocation);
+  EXPECT_TRUE(bodyBuf.empty());
+  EXPECT_EQ(bodyBuf.data(), scratchAllocation);
+  EXPECT_EQ(bodyBuf.capacity(), 4096);
+}
+
 // A terminating zero-length chunk whose trailer block is not yet closed (and no EOF): keep waiting.
 TEST(ResponseParserTest, ChunkedTrailersPendingNeedsMore) {
   HttpResponse resp;
@@ -530,10 +585,13 @@ std::string LengthFramed(std::string_view encodingName, std::string_view body) {
 }  // namespace
 
 TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
-  const std::string payload = test::MakePatternedPayload(4096);
+  const std::string payload = test::MakePatternedPayload(64UL * 1024UL);
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, payload);
     Decode decode;
+    const std::size_t decodeScratchCapacity = payload.size();
+    decode.tmp = RawChars(decodeScratchCapacity);
+    const char* decodedAllocation = decode.tmp.data();
     ResponseParser parser(decode.bodyBuf);
     parser.reset(false);
     parser.setDecodeContext(decode.ctx());
@@ -542,6 +600,10 @@ TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
     const auto st = parser.parse(raw, false, resp, kMaxResponseBytes);
     EXPECT_EQ(st, ResponseParser::Status::Complete) << GetEncodingStr(enc);
     EXPECT_EQ(resp.bodyInMemory(), payload) << GetEncodingStr(enc);
+    EXPECT_TRUE(resp.hasBodyCaptured()) << GetEncodingStr(enc);
+    EXPECT_EQ(resp.bodyInMemory().data(), decodedAllocation) << GetEncodingStr(enc);
+    EXPECT_EQ(decode.out.capacity(), decodeScratchCapacity) << GetEncodingStr(enc);
+    EXPECT_NE(decode.out.data(), decodedAllocation) << GetEncodingStr(enc);
     EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty()) << GetEncodingStr(enc);
     EXPECT_EQ(resp.headerValueOrEmpty("content-type"), "text/plain") << GetEncodingStr(enc);
   }
@@ -596,6 +658,26 @@ TEST(ResponseParserDecompress, IdentityEncodingPassesThroughAndDropsHeader) {
   const auto st = parser.parse(LengthFramed("identity", "hello"), false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "hello");
+  EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
+}
+
+TEST(ResponseParserDecompress, IdentityChunkedTransfersReassemblyAllocation) {
+  Decode decode;
+  decode.bodyBuf = RawChars(8);
+  const char* bodyAllocation = decode.bodyBuf.data();
+  ResponseParser parser(decode.bodyBuf);
+  parser.reset(false);
+  parser.setDecodeContext(decode.ctx());
+  HttpResponse resp;
+  const auto st = parser.parse(
+      "HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+      false, resp, kMaxResponseBytes);
+  EXPECT_EQ(st, ResponseParser::Status::Complete);
+  EXPECT_TRUE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+  EXPECT_EQ(resp.bodyInMemory().data(), bodyAllocation);
+  EXPECT_EQ(decode.bodyBuf.capacity(), 8);
+  EXPECT_NE(decode.bodyBuf.data(), bodyAllocation);
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
 }
 

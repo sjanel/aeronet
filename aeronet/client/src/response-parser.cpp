@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -23,6 +24,11 @@ constexpr bool LastTransferEncodingIsChunked(std::string_view value) {
   const auto comma = value.rfind(',');
   std::string_view last = comma == std::string_view::npos ? value : value.substr(comma + 1);
   return CaseInsensitiveEqual(TrimOws(last), http::chunked);
+}
+
+// True when `view` covers exactly the initialized bytes owned by `buffer`.
+constexpr bool IsWholeBufferView(std::string_view view, std::string_view buffer) noexcept {
+  return view.size() == buffer.size() && view.data() == buffer.data();
 }
 
 // Scan a (possibly comma-separated) Connection token list, flagging the close / keep-alive directives.
@@ -73,9 +79,33 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
   const std::string_view contentType =
       _contentTypeLen == 0 ? http::ContentTypeApplicationOctetStream : buffer.substr(_contentTypeOff, _contentTypeLen);
   // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are still contiguous in the
-  // receive buffer, so they are installed straight from it (resp.body() performs the single owning copy).
+  // receive buffer, so only the latter require an owning copy into the response.
   const std::string_view body =
       _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+
+  // Transfer a suitably-sized scratch allocation into the response and preserve an equal-capacity empty replacement.
+  // If the scratch is over twice the body size, retain it and copy the small body instead of making both the response
+  // and client pin that high-water allocation. The common stable-size path keeps the same allocation count and retained
+  // capacity as before, but removes the large final memcpy.
+  const auto install = [&resp, contentType](std::string_view installedBody, RawChars* owner) {
+    if (owner == nullptr || installedBody.empty()) {
+      resp.body(installedBody, contentType);
+      return;
+    }
+
+    assert(IsWholeBufferView(installedBody, *owner));
+    if (owner->capacity() - installedBody.size() > installedBody.size()) {
+      resp.body(installedBody, contentType);
+      owner->clear();
+      return;
+    }
+
+    RawChars replacement(owner->capacity());
+    resp.setBodyHeaders(contentType, installedBody.size(), HttpMessage::BodySetContext::Captured);
+    resp.setBodyInternal({});
+    resp.setCapturedPayload(std::move(*owner));
+    *owner = std::move(replacement);
+  };
 
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
@@ -90,11 +120,19 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
         return Status::Error;
       }
       resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
-      resp.body(decoded, contentType);
+      RawChars* decodedOwner;
+      if (IsWholeBufferView(decoded, *_decode.out)) {
+        decodedOwner = _decode.out;
+      } else if (IsWholeBufferView(decoded, *_bodyBuf)) {
+        decodedOwner = _bodyBuf;
+      } else {
+        decodedOwner = nullptr;
+      }
+      install(decoded, decodedOwner);
       return Status::Complete;
     }
   }
-  resp.body(body, contentType);
+  install(body, _framing == Framing::Chunked ? _bodyBuf : nullptr);
   return Status::Complete;
 }
 

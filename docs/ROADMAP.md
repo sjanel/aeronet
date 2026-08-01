@@ -39,11 +39,12 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
   contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test
   an optional name/value index. Select the design on combined insert/evict/indexed-access/lookup results rather than
   assuming a `deque` wins despite its weaker locality.
-- **HTTP client response ownership** - HTTP/1.1 identity bodies and assembled HTTP/2 bodies are read into reusable client
-  buffers and then copied once by `HttpResponse::body()`. Introduce a safe ownership-transfer or result-owned-buffer path
-  that removes the final large-body copy without allowing a later pooled request to invalidate an earlier response.
-  Cover identity, chunked, compressed, empty and 1 MiB+ responses. This complements the request-side wire-buffer
-  unification already listed in the HTTP client section below.
+- **HTTP client response ownership** - suitably-sized HTTP/1.1 chunk reassembly and decompression outputs now rotate
+  their scratch allocations into `HttpResponse`, preserving an equal-capacity replacement while removing the final
+  body copy. Oversized scratch stays reusable and falls back to copying a small body, avoiding duplicate high-water
+  retention. Identity bodies embedded in the HTTP/1.1 receive buffer and assembled HTTP/2 bodies still need a safe
+  ownership-transfer or result-owned-buffer path. Cover identity, chunked, compressed, empty and 1 MiB+ responses. This
+  complements the request-side wire-buffer unification already listed in the HTTP client section below.
 - **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and
   `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit
   high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and
