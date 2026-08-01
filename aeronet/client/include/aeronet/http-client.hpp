@@ -307,8 +307,10 @@ class HttpClient {
   // CONNECT line); once it is fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target
   // (borrowed by ResponseParser, which clears it in reset()). Kept distinct from _responseBuffer because
   // chunked de-framing reads from that receive buffer while writing into this one. HTTP/2 only uses the
-  // phase-1 role. Reused across requests so a keep-alive connection never re-grows the allocation. Exposed
-  // through the requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
+  // phase-1 role. On body completion, a suitably-sized allocation moves into the response and gets an equal-capacity
+  // replacement; an oversized scratch is retained and the smaller body copied. This preserves steady-state reuse
+  // without pinning two high-water allocations after a large-to-small response transition. Exposed through the
+  // requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
   RawChars _reqBodyScratch;
   RawChars _responseBuffer;  // reused across requests: raw bytes are read straight into its tail
   // Forward-proxy host, empty when no proxy is configured (parsed once from HttpClientConfig::proxyUrl at
