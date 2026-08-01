@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <stop_token>
 #include <thread>
@@ -16,9 +17,9 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
