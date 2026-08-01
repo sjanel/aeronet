@@ -71,12 +71,29 @@ class LifecycleTrackerGuard {
   std::weak_ptr<ServerLifecycleTracker> _tracker;
 };
 
+class LifecycleResetterRAII {
+ public:
+  LifecycleResetterRAII(internal::Lifecycle& lifecycle) : _lifecycle(lifecycle) {}
+
+  LifecycleResetterRAII(const LifecycleResetterRAII&) = delete;
+  LifecycleResetterRAII(LifecycleResetterRAII&&) noexcept = delete;
+  LifecycleResetterRAII& operator=(const LifecycleResetterRAII&) = delete;
+  LifecycleResetterRAII& operator=(LifecycleResetterRAII&&) noexcept = delete;
+
+  ~LifecycleResetterRAII() { _lifecycle.reset(); }
+
+ private:
+  internal::Lifecycle& _lifecycle;
+};
+
 }  // namespace
 
 PollTimeoutPolicy SingleHttpServer::MakePollTimeoutPolicy(const HttpServerConfig& config) {
-  return PollTimeoutPolicy{.baseTimeout = config.pollInterval,
-                           .minFactor = config.pollIntervalMinFactor,
-                           .maxFactor = config.pollIntervalMaxFactor};
+  return PollTimeoutPolicy{
+      .baseTimeout = config.pollInterval,
+      .minFactor = config.pollIntervalMinFactor,
+      .maxFactor = config.pollIntervalMaxFactor,
+  };
 }
 
 SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
@@ -352,7 +369,7 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 }
 
 void SingleHttpServer::prepareRun() {
-  if (_lifecycle.isActive()) {
+  if (!_lifecycle.isStarting()) {
     throw std::logic_error("Server is already running");
   }
   if (!_listenSocket) {
@@ -374,23 +391,36 @@ void SingleHttpServer::prepareRun() {
   _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
 }
 
-void SingleHttpServer::run() {
+void SingleHttpServer::beginStartup() {
+  std::scoped_lock lock(_updates.lock);
+  if (!_lifecycle.tryEnterStarting()) {
+    throw std::logic_error("Server is already running");
+  }
+}
+
+void SingleHttpServer::runStarted() {
   prepareRun();
   _lifecycle.enterRunning();
+  LifecycleResetterRAII resetter(_lifecycle);
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
   while (_lifecycle.isActive()) {
     eventLoop();
   }
-  _lifecycle.reset();
 }
 
-void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
+void SingleHttpServer::run() {
+  beginStartup();
+  runStarted();
+}
+
+void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
   // Check the predicate before initializing resources.  When used inside
   // MultiHttpServer, the stop flag is set before server.stop() calls
   // closeListener().  Without this early check, a late-scheduled thread
   // could be inside initListener() (creating socket / event loop) while
   // the main thread concurrently calls closeListener(), causing a data race.
   if (predicate()) {
+    _lifecycle.reset();
     return;
   }
   prepareRun();
@@ -412,19 +442,28 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
 
 void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
-SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<bool()> extraPredicate) {
-  if (_lifecycle.isActive()) {
-    throw std::logic_error("Server is already running");
+void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
+  if (predicate()) {
+    return;
   }
+
+  beginStartup();
+  runUntilStarted(predicate);
+}
+
+SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<bool()> extraPredicate) {
+  beginStartup();
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
   return {std::jthread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
             try {
-              runUntil([&st, &pred]() { return st.stop_requested() || (pred && pred()); });
+              runUntilStarted([&st, &pred]() { return st.stop_requested() || (pred && pred()); });
             } catch (const std::exception& ex) {
+              _lifecycle.reset();
               log::error("Event loop thread exiting due to exception: {}", ex.what());
               *errorPtr = std::current_exception();
             } catch (...) {
+              _lifecycle.reset();
               log::error("Event loop thread exiting due to unknown exception");
               *errorPtr = std::current_exception();
             }
@@ -441,8 +480,9 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
 }
 
 void SingleHttpServer::stop() noexcept {
-  auto prevState = _lifecycle.exchangeStopping();
-  if (prevState == internal::Lifecycle::State::Running || prevState == internal::Lifecycle::State::Draining) {
+  const auto prevState = _lifecycle.exchangeStopping();
+  if (prevState == internal::Lifecycle::State::Starting || prevState == internal::Lifecycle::State::Running ||
+      prevState == internal::Lifecycle::State::Draining) {
     // Wake the event loop immediately so it notices the Stopping state and exits
     // before we close the listen socket.  On Windows, closing the listen socket
     // while WSAPoll holds it can cause WSAPoll to hang indefinitely.
@@ -473,7 +513,7 @@ void SingleHttpServer::stop() noexcept {
 }
 
 void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
-  if (!_lifecycle.isActive() || _lifecycle.isStopping()) {
+  if (_lifecycle.cannotBeginDraining()) {
     return;
   }
 
@@ -510,24 +550,24 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Liveness: Always returns 200 OK if the server is responding.
   // Indicates the application is alive (not deadlocked/crashed).
   _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequestView&) { return HttpResponse("OK"); });
+                  [](const HttpRequestView& req) { return req.makeResponse("OK"); });
 
   // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
   // Used by load balancers to determine if instance should receive traffic.
-  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequestView&) {
+  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequestView& req) {
     const bool isReady = _lifecycle.ready();
-    return HttpResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
-                        isReady ? "OK" : "Not Ready");
+    return req.makeResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                            isReady ? "OK" : "Not Ready");
   });
 
   // Startup: Returns 200 once server is running (listener active).
   // Note: Since aeronet has no separate initialization phase, this is essentially
   // equivalent to liveness. Provided for Kubernetes compatibility where startup
   // probes can have different timeout/period settings for slow-starting applications.
-  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequestView&) {
+  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequestView& req) {
     const bool isStarted = _lifecycle.started();
-    return HttpResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
-                        isStarted ? "OK" : "Starting");
+    return req.makeResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                            isStarted ? "OK" : "Starting");
   });
 }
 

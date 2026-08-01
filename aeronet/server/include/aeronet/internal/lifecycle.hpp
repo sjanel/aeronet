@@ -16,7 +16,7 @@ namespace aeronet::internal {
 }
 
 struct Lifecycle {
-  enum class State : uint8_t { Idle, Running, Draining, Stopping };
+  enum class State : uint8_t { Idle, Starting, Running, Draining, Stopping };
 
   Lifecycle() = default;
 
@@ -59,16 +59,30 @@ struct Lifecycle {
     }
   }
 
+  // Atomically reserve the lifecycle for startup before creating the event-loop thread.
+  // This prevents mutations from taking the pre-start direct-update path while prepareRun()
+  // is inspecting the router.
+  [[nodiscard]] bool tryEnterStarting() noexcept {
+    State expected = State::Idle;
+    return state.compare_exchange_strong(expected, State::Starting, std::memory_order_relaxed);
+  }
+
   void enterRunning() noexcept {
     state.store(State::Running, std::memory_order_relaxed);
     drainDeadlineEnabled = false;
   }
 
-  // Atomically set state to Stopping if current state is Running or Draining.
+  // Atomically set state to Stopping if current state is Starting, Running, or Draining.
   // Returns the previous state.
   State exchangeStopping() noexcept {
-    State expected = State::Running;
-    // Use strong compare_exchange to change Running -> Stopping atomically.
+    State expected = State::Starting;
+    // Use strong compare_exchange to change Starting -> Stopping atomically.
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
+      drainDeadlineEnabled = false;
+      return expected;
+    }
+    // Also handle Running -> Stopping.
+    expected = State::Running;
     if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
       drainDeadlineEnabled = false;
       return expected;
@@ -97,17 +111,25 @@ struct Lifecycle {
 
   [[nodiscard]] bool isIdle() const noexcept { return state.load(std::memory_order_relaxed) == State::Idle; }
   [[nodiscard]] bool isRunning() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
+  [[nodiscard]] bool isStarting() const noexcept { return state.load(std::memory_order_relaxed) == State::Starting; }
   [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_relaxed) == State::Draining; }
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_relaxed) == State::Stopping; }
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
+  [[nodiscard]] bool cannotBeginDraining() const noexcept {
+    const State current = state.load(std::memory_order_relaxed);
+    return current == State::Idle || current == State::Starting || current == State::Stopping;
+  }
 
   [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
   [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
 
   // Probe status derived from state (no need for separate atomics):
-  // - started: true when server has entered the event loop (state != Idle)
+  // - started: true once server initialization has completed (state != Idle/Starting)
   // - ready: true when server is accepting normal traffic (state == Running)
-  [[nodiscard]] bool started() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
+  [[nodiscard]] bool started() const noexcept {
+    const State current = state.load(std::memory_order_relaxed);
+    return current != State::Idle && current != State::Starting;
+  }
   [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
 
   // Loop heartbeat used by a dedicated probe listener to detect a wedged event loop.

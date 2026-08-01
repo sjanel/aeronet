@@ -49,6 +49,26 @@ TEST(LifecycleTest, ResetClearsState) {
   EXPECT_FALSE(lifecycle.ready());
 }
 
+TEST(LifecycleTest, StartingStateIsActiveButNotReady) {
+  Lifecycle lifecycle;
+
+  EXPECT_TRUE(lifecycle.tryEnterStarting());
+  EXPECT_FALSE(lifecycle.tryEnterStarting());
+  EXPECT_TRUE(lifecycle.isActive());
+  EXPECT_TRUE(lifecycle.isStarting());
+  EXPECT_FALSE(lifecycle.isRunning());
+  EXPECT_FALSE(lifecycle.started());
+  EXPECT_FALSE(lifecycle.ready());
+}
+
+TEST(LifecycleTest, StopTransitionsStartingState) {
+  Lifecycle lifecycle;
+  ASSERT_TRUE(lifecycle.tryEnterStarting());
+
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Starting);
+  EXPECT_TRUE(lifecycle.isStopping());
+}
+
 TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
   Lifecycle lifecycle;
   lifecycle.enterRunning();
