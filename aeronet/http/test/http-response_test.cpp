@@ -4849,6 +4849,21 @@ TEST_F(HttpResponseTest, CloneWithHeadersAndInlineBody) {
   EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(resp)));
 }
 
+TEST_F(HttpResponseTest, CloneWithCapturedBodyOwnsIndependentCopy) {
+  const std::string payload(4096, 'x');
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string(payload));
+  ASSERT_TRUE(resp.hasBodyCaptured());
+
+  HttpResponse copy = cloneFinalized(resp);
+  EXPECT_TRUE(copy.hasBodyCaptured());
+  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
+  EXPECT_NE(copy.bodyInMemory().data(), resp.bodyInMemory().data());
+
+  resp.body("changed");
+  EXPECT_EQ(copy.bodyInMemory(), payload);
+}
+
 #endif
 
 }  // namespace aeronet

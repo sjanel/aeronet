@@ -35,10 +35,10 @@ class ResponseParser {
   };
 
   // `bodyBuf` is the reassembly buffer for chunked bodies (Length / UntilClose bodies stay contiguous in
-  // the caller's receive buffer and never touch it). It is borrowed, not owned: the caller supplies a
-  // reusable buffer (HttpClient::bodyBuffer()) so its allocation persists across exchanges instead of being
-  // freed and re-grown per response. It must outlive the parser and stay distinct from the receive buffer
-  // fed to parse() (de-framing reads from that buffer while writing into this one).
+  // the caller's receive buffer and never touch it). It is borrowed, not owned: a suitably-sized completed
+  // body is transferred into the response and replaced with an equal-capacity empty allocation; an oversized
+  // scratch is instead retained while the small body is copied. It must outlive the parser and stay distinct
+  // from the receive buffer fed to parse() (de-framing reads from that buffer while writing into this one).
   explicit ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(&bodyBuf) {}
 
   // Optional automatic response-body decompression. When `state` is non-null and the response carries a

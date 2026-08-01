@@ -11,6 +11,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
+- **Faster HTTP/1.1 client response capture**: completed chunked and decompressed bodies now transfer suitably sized scratch allocations into `HttpResponse` instead of making a final body copy, while oversized scratch remains reusable for small bodies. The 256 KiB chunked parser microbenchmark is about **39% faster**.
 - Added a Material for MkDocs documentation site with structured English navigation, local/CI validation, and GitHub Pages deployment alongside the live benchmark dashboards.
 - **Replace std::to_chars(int) with faster custom WriteInt**
 - **Get rid of `<aeronet/stringconv.hpp>`: removed internal function `StringToTimeISO8601UTC` that now becomes useless.

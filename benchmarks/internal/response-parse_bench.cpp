@@ -1,10 +1,8 @@
 // Micro-benchmark for the HTTP/1.1 client ResponseParser chunked-body reassembly path.
 //
-// The parser borrows its chunked reassembly buffer (HttpClient::bodyBuffer()) instead of owning it, so a
-// keep-alive connection streaming chunked responses reuses a single allocation across exchanges. This
-// benchmark contrasts reusing the borrowed buffer (steady state) against re-allocating it on every exchange
-// (the previous owned-member behaviour) to size the win. Length-framed bodies never touch the buffer, so
-// only the chunked path is measured here.
+// On completion, the parser transfers its chunked reassembly allocation into HttpResponse and installs an
+// equal-capacity empty replacement. This benchmark covers that steady-state rotation: the next keep-alive
+// exchange does not re-grow its scratch buffer, while the completed body avoids a second large copy.
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
@@ -43,9 +41,8 @@ std::string MakeChunkedResponse(std::size_t bodyBytes, std::size_t chunkBytes) {
 // 256 KiB body in 1 KiB chunks (256 chunks): forces the reassembly buffer to grow to the full body size.
 const std::string kChunkedResponse = MakeChunkedResponse(256UL * 1024UL, 1024UL);
 
-// Reuse one borrowed reassembly buffer across every parse (current behaviour: HttpClient::bodyBuffer()).
-void BM_ChunkedReuseBuffer(benchmark::State& state) {
-  RawChars bodyBuf;  // persists across iterations, as HttpClient::bodyBuffer() does across exchanges
+void BM_ChunkedTransferBody(benchmark::State& state) {
+  RawChars bodyBuf;
   for (auto _ : state) {
     HttpResponse resp;
     ResponseParser parser(bodyBuf);
@@ -56,22 +53,7 @@ void BM_ChunkedReuseBuffer(benchmark::State& state) {
   }
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(kChunkedResponse.size()));
 }
-BENCHMARK(BM_ChunkedReuseBuffer);
-
-// Re-allocate the reassembly buffer on every parse (the previous owned-member behaviour).
-void BM_ChunkedFreshBuffer(benchmark::State& state) {
-  for (auto _ : state) {
-    RawChars bodyBuf;  // fresh allocation every iteration
-    HttpResponse resp;
-    ResponseParser parser(bodyBuf);
-    parser.reset(false);
-    auto st = parser.parse(kChunkedResponse, false, resp, kMaxResponseBytes);
-    benchmark::DoNotOptimize(st);
-    benchmark::DoNotOptimize(resp.bodyInMemory().data());
-  }
-  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(kChunkedResponse.size()));
-}
-BENCHMARK(BM_ChunkedFreshBuffer);
+BENCHMARK(BM_ChunkedTransferBody);
 
 }  // namespace
 }  // namespace aeronet
