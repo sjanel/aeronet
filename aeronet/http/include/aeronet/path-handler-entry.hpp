@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 
@@ -109,6 +110,20 @@ class PathHandlerEntry {
     _pathConfig.requestTimeout = ms;
     return *this;
   }
+
+  /// Access this route's effective configuration.
+  [[nodiscard]] const PathEntryConfig& pathConfig() const noexcept { return _pathConfig; }
+
+  /// Access middleware executed before this route's handler.
+  [[nodiscard]] std::span<const RequestMiddleware> preMiddlewareRange() const noexcept { return _preMiddleware; }
+
+  /// Access middleware executed after this route's handler.
+  [[nodiscard]] std::span<const ResponseMiddleware> postMiddlewareRange() const noexcept { return _postMiddleware; }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+  /// Access this route's WebSocket endpoint, if any.
+  [[nodiscard]] const WebSocketEndpoint* webSocketEndpoint() const noexcept { return _websocketEndpoint.get(); }
+#endif
 
  private:
   friend class Router;

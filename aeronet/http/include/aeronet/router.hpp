@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "aeronet/city-hash.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
@@ -172,98 +173,99 @@ class Router {
 
   struct RoutingResult {
     enum class RedirectSlashMode : int8_t {
-      None,        // Indicates that no redirection is needed
-      AddSlash,    // Indicates that a redirection to add a trailing slash is needed
-      RemoveSlash  // Indicates that a redirection to remove a trailing slash is needed
+      None,         // Indicates that no redirection is needed
+      AddSlash,     // Indicates that a redirection to add a trailing slash is needed
+      RemoveSlash,  // Indicates that a redirection to remove a trailing slash is needed
     };
 
     enum class HandlerKind : uint8_t {
       None,
       Request,
-      Streaming
+      Streaming,
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      ,
-      Async
+      Async,
 #endif
     };
 
     // Captured path parameters for the matched route, if any.
     // The span is valid until next call to match() on the same Router instance.
-    [[nodiscard]] std::span<const PathParamCapture> pathParams() const { return {pPathParams, nbPathParams}; }
+    [[nodiscard]] std::span<const PathParamCapture> pathParams() const noexcept {
+      return {_pPathParams, _nbPathParams};
+    }
 
     // The ordered range of RequestMiddleware to be applied.
-    [[nodiscard]] RequestMiddlewareRange preMiddlewareRange() const { return {pPreMiddleware, nbPreMiddleware}; }
+    [[nodiscard]] RequestMiddlewareRange preMiddlewareRange() const noexcept {
+      return _pPathEntry == nullptr ? RequestMiddlewareRange{} : _pPathEntry->preMiddlewareRange();
+    }
 
     // The ordered range of ResponseMiddleware to be applied.
-    [[nodiscard]] ResponseMiddlewareRange postMiddlewareRange() const { return {pPostMiddleware, nbPostMiddleware}; }
-
-    [[nodiscard]] const RequestHandler* requestHandler() const {
-      return handlerKind == HandlerKind::Request ? handler.request : nullptr;
-    }
-    [[nodiscard]] const StreamingHandler* streamingHandler() const {
-      return handlerKind == HandlerKind::Streaming ? handler.streaming : nullptr;
-    }
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    [[nodiscard]] const AsyncRequestHandler* asyncRequestHandler() const {
-      return handlerKind == HandlerKind::Async ? handler.async : nullptr;
-    }
-#endif
-    [[nodiscard]] bool hasHandler() const { return handlerKind != HandlerKind::None; }
-
-    void setRequestHandler(const RequestHandler* ptr) {
-      handlerKind = HandlerKind::Request;
-      handler.request = ptr;
+    [[nodiscard]] ResponseMiddlewareRange postMiddlewareRange() const noexcept {
+      return _pPathEntry == nullptr ? ResponseMiddlewareRange{} : _pPathEntry->postMiddlewareRange();
     }
 
-    void setStreamingHandler(const StreamingHandler* ptr) {
-      handlerKind = HandlerKind::Streaming;
-      handler.streaming = ptr;
+    // Access the effective per-path configuration. Unmatched and redirect results expose
+    // the default sentinel configuration unless the router installed its clamped defaults.
+    [[nodiscard]] const PathEntryConfig& pathConfig() const noexcept {
+      return _pPathConfig == nullptr ? kDefaultPathConfig : *_pPathConfig;
     }
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    void setAsyncRequestHandler(const AsyncRequestHandler* ptr) {
-      handlerKind = HandlerKind::Async;
-      handler.async = ptr;
+    // Access the active CORS policy, if any.
+    [[nodiscard]] const CorsPolicy* corsPolicy() const noexcept { return _pCorsPolicy; }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+    // Access the matched route's WebSocket endpoint, if any.
+    [[nodiscard]] const WebSocketEndpoint* webSocketEndpoint() const noexcept {
+      return _pPathEntry == nullptr ? nullptr : _pPathEntry->webSocketEndpoint();
     }
 #endif
 
-    void resetHandler() {
-      handlerKind = HandlerKind::None;
-      handler.request = nullptr;
+    [[nodiscard]] const RequestHandler* requestHandler() const noexcept {
+      return _handlerKind == HandlerKind::Request ? _handler.request : nullptr;
+    }
+    [[nodiscard]] const StreamingHandler* streamingHandler() const noexcept {
+      return _handlerKind == HandlerKind::Streaming ? _handler.streaming : nullptr;
+    }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    [[nodiscard]] const AsyncRequestHandler* asyncRequestHandler() const noexcept {
+      return _handlerKind == HandlerKind::Async ? _handler.async : nullptr;
+    }
+#endif
+    [[nodiscard]] bool hasHandler() const noexcept { return _handlerKind != HandlerKind::None; }
+    [[nodiscard]] HandlerKind handlerKind() const noexcept { return _handlerKind; }
+    [[nodiscard]] RedirectSlashMode redirectSlashMode() const noexcept { return _redirectSlashMode; }
+    [[nodiscard]] bool methodNotAllowed() const noexcept { return _methodNotAllowed; }
+
+    void resetHandler() noexcept {
+      _handlerKind = HandlerKind::None;
+      _handler.request = nullptr;
     }
 
-    union {
+   private:
+    friend class Router;
+
+    union Handler {
       const RequestHandler* request;
       const StreamingHandler* streaming;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       const AsyncRequestHandler* async;
 #endif
-    } handler{};
+    };
 
-    HandlerKind handlerKind{HandlerKind::None};
+    RoutingResult(Handler handler, HandlerKind handlerKind, RedirectSlashMode redirectSlashMode, bool methodNotAllowed,
+                  const PathHandlerEntry* pPathEntry, const PathEntryConfig* pPathConfig,
+                  std::span<const PathParamCapture> pathParams, const CorsPolicy* pCorsPolicy) noexcept;
 
-    RedirectSlashMode redirectPathIndicator{RedirectSlashMode::None};
+    static constexpr PathEntryConfig kDefaultPathConfig{};
 
-    bool methodNotAllowed{false};
-
-    // Per-path configuration (HTTP/2 enable mode, etc.)
-    PathEntryConfig pathConfig;
-
-    uint32_t nbPathParams{0};
-    uint32_t nbPreMiddleware{0};
-    uint32_t nbPostMiddleware{0};
-
-    const PathParamCapture* pPathParams{nullptr};
-    const RequestMiddleware* pPreMiddleware{nullptr};
-    const ResponseMiddleware* pPostMiddleware{nullptr};
-
-    // If set, points to the per-route CorsPolicy stored in the matched route entry; nullptr if none.
-    const CorsPolicy* pCorsPolicy{nullptr};
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-    // If set, points to the WebSocket endpoint for this route; nullptr if not a WebSocket route.
-    const WebSocketEndpoint* pWebSocketEndpoint{nullptr};
-#endif
+    Handler _handler{};
+    const PathHandlerEntry* _pPathEntry{nullptr};
+    const PathEntryConfig* _pPathConfig{nullptr};
+    const PathParamCapture* _pPathParams{nullptr};
+    const CorsPolicy* _pCorsPolicy{nullptr};
+    uint32_t _nbPathParams{0};
+    HandlerKind _handlerKind{HandlerKind::None};
+    RedirectSlashMode _redirectSlashMode{RedirectSlashMode::None};
+    bool _methodNotAllowed{false};
   };
 
   // Match the provided `path` for `method` and return the matching handlers (or a
@@ -277,6 +279,10 @@ class Router {
   // transient storage. Callers must copy values if they need them to outlive the
   // original request buffer or a subsequent `match()` call which may mutate internal
   // buffers.
+  //
+  // Metadata lifetime: the returned configuration, middleware, CORS policy, and
+  // WebSocket endpoint reference immutable route metadata owned by this Router. They
+  // remain valid until the Router is mutated or destroyed.
   [[nodiscard]] RoutingResult match(http::Method method, std::string_view path);
 
   // Return a bitmap of allowed HTTP methods for `path`.
@@ -349,7 +355,8 @@ class Router {
     bool hasWithSlashRegistered{false};
   };
 
-  using LiteralRouteMap = flat_hash_map<std::string_view, LiteralRouteEntry, CityHash, std::equal_to<>>;
+  using LiteralRouteEntries = vector<LiteralRouteEntry>;
+  using LiteralRouteMap = flat_hash_map<std::string_view, LiteralRouteEntries::size_type, CityHash, std::equal_to<>>;
 
   // A radix tree node using common prefix compression
   struct RadixNode {
@@ -431,7 +438,13 @@ class Router {
   const PathHandlerEntry* computePathHandlerEntry(const RadixNode& matchedNode, bool pathHasTrailingSlash,
                                                   RoutingResult::RedirectSlashMode& redirectSlashMode) const;
 
-  void setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const;
+  [[nodiscard]] RoutingResult makeMatchedResult(http::Method method, const PathHandlerEntry& entry,
+                                                RoutingResult::RedirectSlashMode redirectSlashMode,
+                                                std::span<const PathParamCapture> pathParams = {}) const;
+
+  [[nodiscard]] RoutingResult makeDefaultResult() const;
+
+  AERONET_NOINLINE RoutingResult matchNonLiteral(http::Method method, std::string_view path, bool pathHasTrailingSlash);
 
   void cloneNodesFrom(const Router& other);
 
@@ -464,6 +477,7 @@ class Router {
 
   // Literal-only routes are managed exclusively by this map (no radix insertion).
   // Keys are normalized paths (trailing slash handled according to policy).
+  LiteralRouteEntries _literalRouteEntries;
   LiteralRouteMap _literalOnlyRoutes;
 
   // Temporary buffers used during matching; reused across match() calls to minimize allocations.
