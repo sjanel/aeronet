@@ -1,0 +1,4 @@
+# Material for MkDocs installs MkDocs and its compatible Markdown dependencies.
+# Keep upgrades within the current major release; CI builds the documentation with
+# this same constraint.
+mkdocs-material==9.*

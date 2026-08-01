@@ -348,5 +348,5 @@ kubectl get endpoints aeronet-example-yaml
 
 ## Related Docs
 
-- [README.md](README.md)
+- [README.md](https://github.com/sjanel/aeronet/blob/main/README.md)
 - [FEATURES.md](FEATURES.md#built-in-kubernetes-style-probes)
