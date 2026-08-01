@@ -440,7 +440,10 @@ class SingleHttpServer {
   using ConnectionIt = internal::ConnectionStorage::ConnectionIt;
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
+  void beginStartup();
   void prepareRun();
+  void runStarted();
+  void runUntilStarted(const std::function<bool()>& predicate);
   static PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
 
   // Shared implementation for startDetached / startDetachedAndStopWhen / startDetachedWithStopToken.

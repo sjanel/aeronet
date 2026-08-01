@@ -339,23 +339,18 @@ TEST(MultiHttpServerCopy, CopyConstructWhileStopped) {
 
   auto handle = clone.startDetached();
   auto resp = test::simpleGet(clone.port(), "/copy-construct");
-  EXPECT_TRUE(resp.contains("COPY-CONST"));
+  EXPECT_TRUE(resp.ends_with("COPY-CONST"));
   handle.stop();
   handle.rethrowIfError();
 }
 
 TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
   HttpServerConfig cfg;
-  cfg.withReusePort();
   MultiHttpServer assigned;
   {
     cfg.withNbThreads(2U);
     MultiHttpServer source(cfg);
-    source.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-      HttpResponse resp;
-      resp.body("COPY-ASSIGN");
-      return resp;
-    });
+    source.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("COPY-ASSIGN"); });
     assigned = source;
   }
 
@@ -364,24 +359,23 @@ TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
 
   auto handle = assigned.startDetached();
   auto resp = test::simpleGet(assigned.port(), "/copy-assign");
-  EXPECT_TRUE(resp.contains("COPY-ASSIGN"));
+  EXPECT_TRUE(resp.ends_with("COPY-ASSIGN"));
   handle.stop();
   handle.rethrowIfError();
 }
 
 TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
   HttpServerConfig cfg;
-  cfg.withReusePort();
   cfg.withNbThreads(2U);
   MultiHttpServer original(cfg);
-  original.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("RUN");
-    return resp;
-  });
+  original.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("RUN"); });
 
   auto handle = original.startDetached();
   ASSERT_TRUE(handle.started());
+
+  auto resp = test::simpleGet(original.port(), "/run");
+  EXPECT_TRUE(resp.ends_with("RUN"));
+
   EXPECT_THROW({ (void)MultiHttpServer(original); }, std::logic_error);
   handle.stop();
   handle.rethrowIfError();
@@ -389,18 +383,18 @@ TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
 
 TEST(MultiHttpServerCopy, CopyAssignWhileRunningThrows) {
   HttpServerConfig cfg;
-  cfg.withReusePort();
   cfg.withNbThreads(2U);
   MultiHttpServer target(cfg);
   MultiHttpServer source(cfg);
-  source.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("RUN");
-    return resp;
-  });
+
+  source.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("RUN"); });
 
   auto handle = source.startDetached();
   ASSERT_TRUE(handle.started());
+
+  auto resp = test::simpleGet(source.port(), "/run");
+  EXPECT_TRUE(resp.ends_with("RUN"));
+
   EXPECT_THROW({ target = source; }, std::logic_error);
   handle.stop();
   handle.rethrowIfError();
@@ -412,11 +406,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   cfg.withPollInterval(std::chrono::milliseconds{1});
   cfg.withNbThreads(1U);
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("R1");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("R1"); });
 
   auto port = multi.port();
 
@@ -449,11 +439,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
   MultiHttpServer moved(std::move(multi));
 
   // We can't directly change baseConfig; for this focused test we'll just check that keeping existing port works.
-  moved.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("R2");
-    return resp;
-  });
+  moved.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("R2"); });
   handle = moved.startDetached();
   auto secondPort = moved.port();
 
@@ -470,23 +456,19 @@ TEST(MultiHttpServer, MoveWhileRunning) {
   HttpServerConfig cfg;
   cfg.withReusePort();
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("BeforeMove");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("BeforeMove"); });
   auto handle = multi.startDetached();
   auto port = multi.port();
   ASSERT_GT(port, 0);
   auto resp1 = test::simpleGet(port, "/pre", {});
   ASSERT_EQ(resp1.statusCode, 200);
-  ASSERT_TRUE(resp1.body.contains("BeforeMove"));
+  ASSERT_TRUE(resp1.body.ends_with("BeforeMove"));
 
   // Move the running server
   MultiHttpServer moved(std::move(multi));
   auto resp2 = test::simpleGet(port, "/post", {});
   EXPECT_EQ(resp2.statusCode, 200);
-  EXPECT_TRUE(resp2.body.contains("BeforeMove"));
+  EXPECT_TRUE(resp2.body.ends_with("BeforeMove"));
 
   handle.stop();
   handle.rethrowIfError();
@@ -501,21 +483,13 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   cfgB.withReusePort();
   // Source server
   MultiHttpServer src(cfgA);
-  src.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("SrcBody");
-    return resp;
-  });
+  src.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("SrcBody"); });
   auto srcHandle = src.startDetached();
   auto srcPort = src.port();
   ASSERT_GT(srcPort, 0);
   // Destination server already running with a different body
   MultiHttpServer dst(cfgB);
-  dst.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("DstOriginal");
-    return resp;
-  });
+  dst.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("DstOriginal"); });
   auto dstHandle = dst.startDetached();
   auto dstPort = dst.port();
   ASSERT_GT(dstPort, 0);
@@ -523,8 +497,8 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
   // Sanity: both respond with their respective bodies
   auto preSrc = test::simpleGet(srcPort, "/preSrc", {});
   auto preDst = test::simpleGet(dstPort, "/preDst", {});
-  ASSERT_TRUE(preSrc.body.contains("SrcBody"));
-  ASSERT_TRUE(preDst.body.contains("DstOriginal"));
+  ASSERT_TRUE(preSrc.body.ends_with("SrcBody"));
+  ASSERT_TRUE(preDst.body.ends_with("DstOriginal"));
 
   // Stop both handles before performing any move operations
   // Note: With AsyncHandle pattern, you should stop servers before moving them
@@ -544,11 +518,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   cfgA.withReusePort();
   cfgA.withNbThreads(1U);
   MultiHttpServer multiA(cfgA);
-  multiA.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("MA");
-    return resp;
-  });
+  multiA.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("MA"); });
 
   // start and obtain a handle
   auto hA = multiA.startDetached();
@@ -565,11 +535,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   cfgB.withReusePort();
   cfgB.withNbThreads(1U);
   MultiHttpServer multiB(cfgB);
-  multiB.router().setDefault([](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("MB");
-    return resp;
-  });
+  multiB.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("MB"); });
   auto hC = multiB.startDetached();
   ASSERT_TRUE(hC.started());
   std::this_thread::sleep_for(5ms);
