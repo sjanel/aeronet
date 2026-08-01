@@ -196,7 +196,7 @@ Behavior summary
 - The authority-form target must carry a **numeric** port (RFC 9110 §9.3.6 / RFC 3986 `port = *DIGIT`); a missing
   separator, an empty/non-numeric port, or a value `> 65535` is rejected with `400 Bad Request` before any name
   resolution (service names such as `host:https` are not accepted). Tests:
-  [http-connect_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/http-connect_test.cpp) (`NonNumericConnectPortReturns400`,
+  [http-connect_test.cpp](../tests/http-connect_test.cpp) (`NonNumericConnectPortReturns400`,
   `OutOfRangeConnectPortReturns400`, `EmptyConnectPortReturns400`).
 - The server uses a small `ConnectResult` helper to capture whether the upstream connection completed immediately or is
   still pending (`EINPROGRESS`) on a non-blocking socket. Pending connects are tracked using a `connectPending` flag
@@ -525,7 +525,7 @@ Direct compression only activates when **all** conditions are met:
 **`DirectCompressionMode` enum:**
 
 | Mode | Description |
-|------|-------------|
+| ------ | ------------- |
 | `Auto` | Compress if `Accept-Encoding` present, size ≥ `minBytes`, content-type matches allow‑list |
 | `Off` | Never initiate direct compression; finalization layer handles compression |
 | `On` | Like `Auto` but bypasses `minBytes` and content-type checks (still requires `Accept-Encoding`) |
@@ -567,8 +567,8 @@ router.setPath(http::Method::GET, "/direct-compression", [](const HttpRequestVie
 direct compression (captured bodies are compressed at finalization). Use `body(std::string_view, ...)`
 for inline storage with direct compression eligibility.
 
-Tests: [aeronet/http/test/http-response_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/http-response_test.cpp) (unit),
-[tests/http-compression_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/http-compression_test.cpp) (e2e - `DirectCompression_*` tests).
+Tests: [aeronet/http/test/http-response_test.cpp](../aeronet/http/test/http-response_test.cpp) (unit),
+[tests/http-compression_test.cpp](../tests/http-compression_test.cpp) (e2e - `DirectCompression_*` tests).
 
 #### Per-Response Manual `Content-Encoding` (Automatic Compression Suppression)
 
@@ -581,7 +581,7 @@ response. This applies even if the header value is `identity`.
 Practical implications:
 
 | Scenario | Result |
-|----------|-------|
+| ---------- | ------- |
 | You set `Content-Encoding: gzip` and write pre-compressed bytes | aeronet forwards bytes verbatim; no size threshold buffering; no double compression risk |
 | You set `Content-Encoding: identity` | Automatic compression fully disabled; body sent as-is |
 | You set multiple encodings (e.g. `gzip, br`) | Currently respected verbatim (aeronet does not multi-encode outbound); use only a single encoding value for clarity |
@@ -633,7 +633,7 @@ the latched flag (primarily for future middleware instrumentation / metrics).
 Codec flags enable BOTH outbound compression & inbound decoding. Multi-layer `Content-Encoding` chains decoded last→first with per-layer expansion & absolute size guards; successful decode removes the header before handler.
 
 | Condition | Response |
-|-----------|----------|
+| ----------- | ---------- |
 | Unknown coding | 415 |
 | Empty / malformed token | 400 |
 | Expansion / size limit exceeded | 413 |
@@ -743,7 +743,7 @@ Each `Part` exposes `name`, optional `filename`/`contentType`, the raw `value`, 
 `MultipartFormDataOptions` protects against abusive payloads:
 
 | Option | Default | Effect |
-|--------|---------|--------|
+| -------- | --------- | -------- |
 | `maxParts` | 128 | Rejects payloads containing more than this many parts (0 disables the check). |
 | `maxHeadersPerPart` | 32 | Caps the number of header lines per part. |
 | `maxPartSizeBytes` | 32 MiB | Rejects an individual part when its body would exceed this size (0 disables the check). |
@@ -765,7 +765,7 @@ Current behavior:
 Supported: `gzip`, `deflate`, `zstd`, `br`, `identity` (skip). Order: decode reverse of header list. Safety controls:
 
 | Field | Meaning |
-|-------|---------|
+| ------- | --------- |
 | `maxCompressedBytes` | Cap on original compressed size (0 = unlimited) |
 | `maxDecompressedBytes` | Cap on expanded size (0 = unlimited) |
 | `maxExpansionRatio` | Per-layer `(expanded / originalTotalCompressed)` bound (0 = disabled) |
@@ -788,7 +788,7 @@ cfg.withRequestDecompression(dc);
 Implemented capabilities (independent from outbound compression):
 
 | Aspect | Details |
-|--------|---------|
+| -------- | --------- |
 | Supported codings | `gzip`, `deflate` when `AERONET_ENABLE_ZLIB`; `zstd` when `AERONET_ENABLE_ZSTD`; `br` when `AERONET_ENABLE_BROTLI`; `identity` always recognized |
 | Multi-layer chains | Fully supported (`Content-Encoding: deflate, gzip, zstd`) decoded in reverse order (last token decoded first) |
 | Parsing | Allocation-free reverse split; trims whitespace; rejects empty tokens -> **400** |
@@ -1155,7 +1155,7 @@ Comprehensive test coverage includes:
 ## Connection Close Semantics
 
 | Mode | Meaning | Triggers |
-|------|---------|----------|
+| ------ | --------- | ---------- |
 | None | Connection reusable | Normal success |
 | DrainThenClose | Flush pending then close | Client `Connection: close`, keep-alive limit, explicit handler intent |
 | Immediate | Abort promptly | Parse/protocol error, size breach, transport failure |
@@ -1188,7 +1188,7 @@ Lifecycle: parse request → build response → determine keep-alive eligibility
 `SingleHttpServer` exposes a lifecycle state machine to coordinate shutdown:
 
 | State | Description | Entered via |
-|-------|-------------|-------------|
+| ------- | ------------- | ------------- |
 | Idle | Listener closed, loop inactive | Default / after drain/stop |
 | Running | Event loop servicing connections | `run()` / `runUntil()` |
 | Draining | Listener closed; existing connections finish with `Connection: close` | `beginDrain()` or signal-driven auto-drain |
@@ -1232,7 +1232,7 @@ Key characteristics:
 
 This mechanism is recommended for most deployments where a clean shutdown on `SIGINT`/`SIGTERM` is desired without writing custom signal-handling code. For containerized environments (Kubernetes, Docker), it ensures that `SIGTERM` (sent by orchestrators during pod shutdown) triggers a graceful drain with a bounded timeout, improving availability during rolling updates.
 
-Where to look: [`signal-handler.hpp`](https://github.com/sjanel/aeronet/blob/main/aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](https://github.com/sjanel/aeronet/blob/main/tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
+Where to look: [`signal-handler.hpp`](../aeronet/tech/include/aeronet/signal-handler.hpp), [`http-server-lifecycle_test.cpp`](../tests/http-server-lifecycle_test.cpp) for signal-driven drain tests.
 
 #### stop() vs beginDrain() - intent, semantics and guidance
 
@@ -1281,7 +1281,7 @@ User attempts to override are ignored (release) / asserted (debug) except via sa
 Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on `HttpRequestView`. aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
 
 | Policy Code | Meaning | Examples |
-|-------------|---------|----------|
+| ------------- | --------- | ---------- |
 | `,` | List merge: append a comma and the new non‑empty value | `Accept`, `Accept-Encoding`, `Via`, `Warning`, `TE` |
 | `;` | Cookie merge: append a semicolon (no extra space) | `Cookie` |
 | (space) | Space join: append a single space and the new non‑empty value | `User-Agent` |
@@ -1321,7 +1321,7 @@ Accept: text/html
 Summary table (quick reference):
 
 | Policy | Action | Examples |
-|--------|--------|----------|
+| -------- | -------- | ---------- |
 | `,` | Comma merge non-empty | Accept, Accept-Encoding, Via |
 | `;` | Semicolon merge | Cookie |
 | space | Space join | User-Agent |
@@ -1481,7 +1481,7 @@ router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> Req
 - **Type-safe**: The return type of `deferWork` matches the return type of the work function.
 - **Sequential composition**: You can chain multiple `deferWork` calls:
 
-Runnable demo: [examples/async-handlers.cpp](https://github.com/sjanel/aeronet/blob/main/examples/async-handlers.cpp) (binary `aeronet-async-handlers`) exposes `/async` and `/users/{id}` endpoints showing deferWork with and without request bodies.
+Runnable demo: [examples/async-handlers.cpp](../examples/async-handlers.cpp) (binary `aeronet-async-handlers`) exposes `/async` and `/users/{id}` endpoints showing deferWork with and without request bodies.
 
 ```cpp
 Router router;
@@ -1640,7 +1640,7 @@ Resolution algorithm:
 Behavior summary:
 
 | Policy | `/foo` only | `/foo/` only | Both |
-|--------|-------------|--------------|------|
+| -------- | ------------- | -------------- | ------ |
 | Strict | `/foo/`→404 | `/foo`→404 | each exact served |
 | Normalize | `/foo/`→serve `/foo` | `/foo`→serve `/foo/` | only first one is registered |
 | Redirect | `/foo/`→301 `/foo` | `/foo`→301 `/foo/` | only first one is registered |
@@ -1952,7 +1952,7 @@ SingleHttpServer server(std::move(cfg));
 - The test suite includes `http_probes_test.cpp` which validates startup/readiness transitions and drain-time
   behavior. Tests also cover collision detection for probe paths.
 - The dedicated probe listener is covered by the `MultiHttpServerDedicatedProbes` suite in
-  [tests/multi-http-server_test.cpp](https://github.com/sjanel/aeronet/blob/main/tests/multi-http-server_test.cpp): probes served off the application port,
+  [tests/multi-http-server_test.cpp](../tests/multi-http-server_test.cpp): probes served off the application port,
   a probe staying responsive while a worker is blocked in a handler, the liveness heartbeat tripping on a wedged
   worker and recovering, readiness reporting `503` during drain, and dedicated-port validation.
 
@@ -1961,7 +1961,7 @@ SingleHttpServer server(std::move(cfg));
 Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required mTLS, ALPN (strict mode), handshake timeout, per‑server metrics.
 
 | Capability | Status | Notes |
-|------------|--------|-------|
+| ------------ | -------- | ------- |
 | TLS termination | ✅ | File or in‑memory PEM cert/key |
 | mTLS (request) | ✅ | `withTlsRequestClientCert()` (non-fatal absence) |
 | mTLS (require) | ✅ | `withTlsRequireClientCert()` (fatal if absent / invalid). Implies *request*: enabling *require* always asks for a client certificate, regardless of the *request* flag. |
@@ -2141,7 +2141,7 @@ Configuration lives in `TLSConfig::ktlsMode`, exposed via `HttpServerConfig::wit
 following modes:
 
 | Mode | Behaviour |
-|------|-----------|
+| ------ | ----------- |
 | `Disabled` | Never attempt kTLS. |
 | `Opportunistic` (default) | Attempt once per connection; on failure fall back to user-space TLS. |
 | `Enabled` | Same as `Opportunistic`, but emits a warning log in case of failure to set kTLS during the handshake. |
@@ -2177,7 +2177,7 @@ TLS termination is enabled at build time with `AERONET_ENABLE_OPENSSL=ON` (defau
 Key configuration helpers:
 
 | Method | Purpose |
-|--------|---------|
+| -------- | --------- |
 | `withTlsCertKey(pathCert, pathKey)` | Load certificate & key from filesystem |
 | `withTlsCertKeyMemory(certPem, keyPem)` | Supply in-memory PEM strings (tests / dynamic) |
 | `withTlsCipherList(list)` | Override OpenSSL cipher list (empty => library default) |
@@ -2230,7 +2230,7 @@ Session tickets allow TLS session resumption without server-side session caches,
 #### Configuration Options
 
 | Method | Purpose |
-|--------|---------|
+| -------- | --------- |
 | `withTlsSessionTickets(true)` | Enable session tickets (default: disabled) |
 | `withTlsSessionTicketLifetime(duration)` | Key rotation interval (default: 1 hour) |
 | `withTlsSessionTicketMaxKeys(n)` | Maximum keys in rotation (default: 3) |
@@ -2431,7 +2431,7 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   **least-recently-used** entry so the cache stays bounded while keeping the hot working set resident. Set
   `headerCacheCapacity` to **0** (or use `withHeaderCacheCapacity(0)`) to disable the cache. A
   `contentTypeResolver` callback, when installed, is invoked at most once per (file, stat) rather than on every request.
-  See [tests](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
+  See [tests](../aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
 
 - **Content-Type resolution**: when serving files the handler resolves the `Content-Type` header with the following
   precedence: (1) a user-provided content-type resolver callback (if installed) and returning a non-empty value,
@@ -3007,7 +3007,7 @@ On success, the server responds with 101 Switching Protocols and transitions the
 ### Frame Types
 
 | Opcode | Type | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | 0x0 | Continuation | Continuation of a fragmented message |
 | 0x1 | Text | UTF-8 text message |
 | 0x2 | Binary | Binary message |
@@ -3020,7 +3020,7 @@ On success, the server responds with 101 Switching Protocols and transitions the
 Common WebSocket close status codes:
 
 | Code | Name | Description |
-|------|------|-------------|
+| ------ | ------ | ------------- |
 | 1000 | Normal | Normal closure |
 | 1001 | GoingAway | Endpoint going away (e.g., server shutdown) |
 | 1002 | ProtocolError | Protocol error detected |
@@ -3096,7 +3096,7 @@ router.setWebSocket("/ws",
 #### Negotiation Parameters
 
 | Parameter | Description |
-|-----------|-------------|
+| ----------- | ------------- |
 | `server_max_window_bits` | Maximum LZ77 window size (log2) the server will use |
 | `client_max_window_bits` | Maximum LZ77 window size (log2) the client will use |
 | `server_no_context_takeover` | Server resets compression context after each message |
@@ -3115,7 +3115,7 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 ### Feature Matrix
 
 | Feature | Status | Notes |
-|---------|--------|-------|
+| --------- | -------- | ------- |
 | HPACK header compression | ✔ | Static/dynamic table, Huffman encoding |
 | Stream multiplexing | ✔ | Multiple concurrent streams per connection |
 | Flow control | ✔ | Per-stream and connection-level |
@@ -3475,8 +3475,8 @@ Serialize any Glaze-compatible object directly into the response body, avoiding 
 > the Glaze dependency, which is expensive to compile. To keep that cost out of the widely-included core
 > headers, their definitions live in `<aeronet/http-json.hpp>`. Include it wherever you serialize/parse
 > JSON or YAML (the `<aeronet/aeronet.hpp>` umbrella already does). Tests:
-> [config-loader_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/config-loader_test.cpp) (response side),
-> [http-request_test.cpp](https://github.com/sjanel/aeronet/blob/main/aeronet/http/test/http-request_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
+> [config-loader_test.cpp](../aeronet/http/test/config-loader_test.cpp) (response side),
+> [http-request-view_test.cpp](../aeronet/http/test/http-request-view_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
 
 ```cpp
 #include <unordered_map>
