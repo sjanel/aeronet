@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract and build C/C++ code fences from Markdown documentation definitions."""
+"""Validate internal Markdown links and build C/C++ documentation fences."""
 
 import argparse
 import concurrent.futures
@@ -14,9 +14,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
+from urllib.parse import unquote, urlsplit
 
 
 LANGUAGES = {"c", "cpp", "c++"}
+MARKDOWN_LINK_PATTERN = re.compile(r"(?<![!\\])\[([^]\n]+)\]\(([^)\n]+)\)")
+MARKDOWN_FENCE_PATTERN = re.compile(r"^\s*(`{3,}|~{3,})")
+INLINE_CODE_PATTERN = re.compile(r"(`+).*?\1")
 
 DEPENDENCY_LIBRARY_PATTERNS = [
     # zlib: prefer zlib-ng when available; fallback to classic zlib
@@ -77,17 +81,22 @@ SYSTEM_LINK_FLAGS = [
 
 @dataclass
 class Snippet:
+    index: int
     source: Path
-    path: Path
+    source_line: int
+    lines: List[str]
     needs_std_module: bool = False
     needs_aeronet_module: bool = False
 
 
 @dataclass
-class SnippetTarget:
-    snippet: Snippet
+class SnippetBatch:
+    snippets: List[Snippet]
+    path: Path
     target: str
     rel_source: Path
+    needs_std_module: bool = False
+    needs_aeronet_module: bool = False
 
 
 @dataclass
@@ -97,10 +106,19 @@ class TargetUsage:
     compile_options: List[str]
 
 
+@dataclass
+class InternalLinkFailure:
+    source: Path
+    source_line: int
+    destination: str
+    resolved_path: Path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compile/link C/C++ fences from Markdown files to detect doc bitrot. "
+            "Validate internal Markdown links and compile/link C/C++ fences to detect "
+            "documentation bitrot. "
             "Snippets are built through CMake/Ninja against the existing aeronet "
             "build so they automatically inherit include paths, defines, and "
             "toolchain settings."
@@ -116,7 +134,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--link",
         action="store_true",
-        help="Link each snippet into an executable (default: compile only)",
+        help="Link each snippet batch into an executable (default: compile only)",
     )
     parser.add_argument(
         "--build-dir",
@@ -143,15 +161,96 @@ def parse_args() -> argparse.Namespace:
         "--jobs",
         type=int,
         default=None,
-        help="Number of worker threads used to build snippets in parallel",
+        help="Number of batched snippet targets to build in parallel",
+    )
+    parser.add_argument(
+        "--snippets-per-batch",
+        "--batch-size",
+        type=positive_int,
+        default=8,
+        metavar="COUNT",
+        help=(
+            "Maximum independently-scoped snippets per translation unit "
+            "(default: 8)"
+        ),
     )
     parser.add_argument(
         "files",
         nargs="*",
         default=["README.md", "FEATURES.md"],
-        help="Markdown files to scan for code snippets",
+        help="Markdown files to scan for code snippets and internal links",
     )
     return parser.parse_args()
+
+
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return number
+
+
+def find_internal_link_failures(
+    sources: Sequence[Path],
+) -> Tuple[int, List[InternalLinkFailure]]:
+    checked_links = 0
+    failures: List[InternalLinkFailure] = []
+
+    for source in sources:
+        fence = ""
+        for line_number, line in enumerate(source.read_text().splitlines(), start=1):
+            fence_match = MARKDOWN_FENCE_PATTERN.match(line)
+            if fence_match:
+                delimiter = fence_match.group(1)
+                if fence:
+                    if delimiter[0] == fence[0] and len(delimiter) >= len(fence):
+                        fence = ""
+                else:
+                    fence = delimiter
+                continue
+            if fence:
+                continue
+
+            code_spans: List[str] = []
+
+            def mask_code_span(match: re.Match[str]) -> str:
+                marker = f"\x00{len(code_spans)}\x00"
+                code_spans.append(match.group(0))
+                return marker
+
+            markdown_line = INLINE_CODE_PATTERN.sub(mask_code_span, line)
+            for match in MARKDOWN_LINK_PATTERN.finditer(markdown_line):
+                destination = match.group(2).strip()
+                if destination.startswith("<") and destination.endswith(">"):
+                    destination = destination[1:-1]
+                parsed = urlsplit(destination)
+                if parsed.scheme or parsed.netloc or not parsed.path:
+                    continue
+
+                checked_links += 1
+                resolved_path = source.parent / unquote(parsed.path)
+                if resolved_path.exists():
+                    continue
+                failures.append(
+                    InternalLinkFailure(
+                        source=source,
+                        source_line=line_number,
+                        destination=destination,
+                        resolved_path=resolved_path,
+                    )
+                )
+
+    return checked_links, failures
+
+
+def print_internal_link_failures(failures: Sequence[InternalLinkFailure]) -> None:
+    for failure in failures:
+        print(
+            f"{failure.source}:{failure.source_line}: internal Markdown link "
+            f"target does not exist: {failure.destination} "
+            f"(resolved to {failure.resolved_path})",
+            file=sys.stderr,
+        )
 
 
 def dedupe_preserve(items: Sequence[str]) -> List[str]:
@@ -291,61 +390,166 @@ def read_cache_entry(build_dir: Path, key: str) -> Optional[str]:
     return None
 
 
-def extract_snippets(source: Path, target_dir: Path) -> List[Snippet]:
-    text = source.read_text()
-    blocks: List[List[str]] = []
+MAIN_FUNCTION_PATTERN = re.compile(r"\bint\s+main\s*\(")
+IMPORT_PATTERN = re.compile(r"^\s*import\s+")
+INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*(<[^>]+>|"[^"]+")')
+
+
+def extract_snippets(source: Path, first_index: int) -> List[Snippet]:
+    blocks: List[Tuple[int, List[str]]] = []
     current: List[str] = []
     in_block = False
+    block_start_line = 0
 
-    for line in text.splitlines():
+    for line_number, line in enumerate(source.read_text().splitlines(), start=1):
         if line.startswith("```"):
             tag = line[3:].strip().lower()
             if in_block:
-                blocks.append(current)
+                blocks.append((block_start_line, current))
                 current = []
                 in_block = False
                 continue
             if tag in LANGUAGES:
                 in_block = True
+                block_start_line = line_number + 1
             continue
         if in_block:
             current.append(line)
 
-    sanitized = re.sub(r"[^0-9A-Za-z]+", "_", source.stem)
     snippets: List[Snippet] = []
-    for idx, block in enumerate(blocks, start=1):
-        dest = target_dir / f"{sanitized}_block_{idx:03d}.cpp"
-        has_main = any(re.search(r"\bint\s+main\s*\(", line) for line in block)
-        
-        needs_std_module = any(re.search(r"^\s*import\s+std\s*;", line) for line in block)
-        needs_aeronet_module = any(re.search(r"^\s*import\s+aeronet\s*;", line) for line in block)
-        
-        include_lines = [line for line in block if line.strip().startswith("#include")]
-        import_lines = [line for line in block if re.search(r"^\s*import\s+", line.strip())]
-        body_lines = [line for line in block 
-                     if not line.strip().startswith("#include") 
-                     and not re.search(r"^\s*import\s+", line.strip())]
-        
-        if not has_main:
-            indented = [f"  {line}" if line.strip() else "" for line in body_lines]
-            body_lines = ["int main() {", *indented, "  return 0;", "}"]
-        
-        final_lines = import_lines + include_lines + body_lines
-        
-        if needs_std_module or needs_aeronet_module:
-            dest.write_text(
-                "// extracted from {}\n{}\n".format(
-                    source.name, "\n".join(final_lines)
-                )
+    for index, (source_line, lines) in enumerate(blocks, start=first_index):
+        snippets.append(
+            Snippet(
+                index=index,
+                source=source,
+                source_line=source_line,
+                lines=lines,
+                needs_std_module=any(
+                    re.search(r"^\s*import\s+std\s*;", line) for line in lines
+                ),
+                needs_aeronet_module=any(
+                    re.search(r"^\s*import\s+aeronet\s*;", line)
+                    for line in lines
+                ),
             )
-        else:
-            dest.write_text(
-                "// extracted from {}\n#include <aeronet/aeronet.hpp>\nusing namespace aeronet;\n{}\n".format(
-                    source.name, "\n".join(final_lines)
-                )
-            )
-        snippets.append(Snippet(source=source, path=dest, needs_std_module=needs_std_module, needs_aeronet_module=needs_aeronet_module))
+        )
     return snippets
+
+
+def is_include_line(line: str) -> bool:
+    return line.strip().startswith("#include")
+
+
+def source_line_directive(source: Path, line_number: int) -> str:
+    source_name = source.resolve().as_posix().replace('"', '\\"')
+    return f'#line {line_number} "{source_name}"'
+
+
+def include_key(line: str) -> str:
+    match = INCLUDE_PATTERN.match(line)
+    return match.group(1) if match else line.strip()
+
+
+def write_source_line(
+    destination: List[str], source: Path, line_number: int, line: str
+) -> None:
+    destination.extend([source_line_directive(source, line_number), line])
+
+
+def write_batch_source(batch: SnippetBatch) -> None:
+    """Write one translation unit whose snippets retain independent C++ scopes."""
+    imports: List[Tuple[Snippet, int, str]] = []
+    includes: List[Tuple[Snippet, int, str]] = []
+    include_keys = set()
+    has_umbrella_include = False
+
+    for snippet in batch.snippets:
+        for offset, line in enumerate(snippet.lines):
+            line_number = snippet.source_line + offset
+            if IMPORT_PATTERN.match(line):
+                imports.append((snippet, line_number, line))
+                continue
+            if not is_include_line(line):
+                continue
+            key = include_key(line)
+            if key in include_keys:
+                continue
+            include_keys.add(key)
+            has_umbrella_include |= key == "<aeronet/aeronet.hpp>"
+            includes.append((snippet, line_number, line))
+
+    lines = [
+        "// Generated by scripts/verify-md-code.py. Do not edit.",
+        f"// Batch contains {len(batch.snippets)} independently-scoped snippets.",
+    ]
+    seen_imports = set()
+    for snippet, line_number, line in imports:
+        if line in seen_imports:
+            continue
+        seen_imports.add(line)
+        write_source_line(lines, snippet.source, line_number, line)
+
+    if (
+        not batch.needs_std_module
+        and not batch.needs_aeronet_module
+        and not has_umbrella_include
+    ):
+        lines.append("#include <aeronet/aeronet.hpp>")
+    for snippet, line_number, line in includes:
+        write_source_line(lines, snippet.source, line_number, line)
+
+    for snippet in batch.snippets:
+        body_lines = [
+            (snippet.source_line + offset, line)
+            for offset, line in enumerate(snippet.lines)
+            if not is_include_line(line) and not IMPORT_PATTERN.match(line)
+        ]
+        lines.append(f"namespace aeronet_doc_snippet_{snippet.index} {{")
+        if not snippet.needs_std_module and not snippet.needs_aeronet_module:
+            lines.append("using namespace aeronet;")
+        if MAIN_FUNCTION_PATTERN.search("\n".join(line for _, line in body_lines)):
+            for line_number, line in body_lines:
+                renamed_line = MAIN_FUNCTION_PATTERN.sub(
+                    f"int aeronet_doc_snippet_main_{snippet.index}(", line
+                )
+                write_source_line(lines, snippet.source, line_number, renamed_line)
+        else:
+            lines.append("void Verify() {")
+            for line_number, line in body_lines:
+                indented_line = f"  {line}" if line else ""
+                write_source_line(lines, snippet.source, line_number, indented_line)
+            lines.append("}")
+        lines.extend(["}", ""])
+
+    lines.extend(["int main() {", "  return 0;", "}"])
+    batch.path.write_text("\n".join(lines) + "\n")
+
+
+def make_snippet_batches(
+    snippets: Sequence[Snippet], snippets_per_batch: int, target_dir: Path
+) -> List[SnippetBatch]:
+    grouped: dict[Tuple[bool, bool], List[Snippet]] = {}
+    for snippet in snippets:
+        key = (snippet.needs_std_module, snippet.needs_aeronet_module)
+        grouped.setdefault(key, []).append(snippet)
+
+    batches: List[SnippetBatch] = []
+    for (needs_std_module, needs_aeronet_module), group in grouped.items():
+        for start in range(0, len(group), snippets_per_batch):
+            batch_snippets = group[start : start + snippets_per_batch]
+            batch_index = len(batches) + 1
+            path = target_dir / f"doc_snippet_batch_{batch_index:03d}.cpp"
+            batch = SnippetBatch(
+                snippets=batch_snippets,
+                path=path,
+                target=f"doc_snippet_batch_{batch_index:03d}",
+                rel_source=path.relative_to(target_dir),
+                needs_std_module=needs_std_module,
+                needs_aeronet_module=needs_aeronet_module,
+            )
+            write_batch_source(batch)
+            batches.append(batch)
+    return batches
 
 
 def locate_libraries(build_dir: Path) -> List[str]:
@@ -741,7 +945,7 @@ def cmake_escape(value: str) -> str:
 
 def write_cmake_project(
     project_dir: Path,
-    snippet_targets: List[SnippetTarget],
+    snippet_batches: List[SnippetBatch],
     include_dirs: List[str],
     compile_definitions: List[str],
     compile_options: List[str],
@@ -806,7 +1010,7 @@ def write_cmake_project(
                 lines.append(f"  {flag}")
             lines.append(")")
 
-    for target in snippet_targets:
+    for target in snippet_batches:
         source = cmake_escape(target.rel_source.as_posix())
         if link_mode:
             lines.append(f'add_executable({target.target} "{source}")')
@@ -815,25 +1019,25 @@ def write_cmake_project(
         lines.append(f"target_link_libraries({target.target} PRIVATE {env_target})")
         
         module_flags: List[str] = []
-        if target.snippet.needs_std_module and std_pcm_path:
+        if target.needs_std_module and std_pcm_path:
             std_pcm = cmake_escape(str(std_pcm_path))
             module_flags.append(f'-fmodule-file=std={std_pcm}')
-        if target.snippet.needs_aeronet_module and aeronet_module:
+        if target.needs_aeronet_module and aeronet_module:
             aeronet_pcm = cmake_escape(str(aeronet_module.pcm))
             module_flags.append(f'-fmodule-file=aeronet={aeronet_pcm}')
 
         if module_flags:
             lines.append(f"target_compile_options({target.target} PRIVATE")
-            if libcxx or target.snippet.needs_std_module:
+            if libcxx or target.needs_std_module:
                 lines.append("  -stdlib=libc++")
             for flag in module_flags:
                 lines.append(f'  "{flag}"')
             lines.append(")")
-            if libcxx or target.snippet.needs_std_module:
+            if libcxx or target.needs_std_module:
                 lines.append(f"target_link_options({target.target} PRIVATE -stdlib=libc++ -lc++)")
 
         # Link the compiled module object so the module initializer is defined
-        if link_mode and target.snippet.needs_aeronet_module and aeronet_module:
+        if link_mode and target.needs_aeronet_module and aeronet_module:
             obj_escaped = cmake_escape(str(aeronet_module.obj))
             lines.append(f'target_link_libraries({target.target} PRIVATE "{obj_escaped}")')
 
@@ -880,20 +1084,46 @@ def build_cmake_target(cmake_bin: str, build_dir: Path, target: str) -> bool:
     return False
 
 
-def build_snippet_task(
-    idx: int,
-    snippet_target: SnippetTarget,
+def batch_locations(batch: SnippetBatch) -> str:
+    return ", ".join(
+        f"#{snippet.index} {snippet.source}:{snippet.source_line}"
+        for snippet in batch.snippets
+    )
+
+
+def build_snippet_batch_task(
+    index: int,
+    batch: SnippetBatch,
     cmake_bin: str,
     build_dir: Path,
 ) -> bool:
     print(
-        f"Building snippet #{idx} from {snippet_target.snippet.source.name} -> {snippet_target.rel_source}"
+        f"Building batch #{index} ({len(batch.snippets)} snippets: "
+        f"{batch_locations(batch)})"
     )
-    return build_cmake_target(cmake_bin, build_dir, snippet_target.target)
+    return build_cmake_target(cmake_bin, build_dir, batch.target)
 
 
 def main() -> None:
     args = parse_args()
+    sources: List[Path] = []
+    for file in args.files:
+        source = Path(file)
+        if not source.is_file():
+            print(f"Skipping missing file: {file}", file=sys.stderr)
+            continue
+        sources.append(source)
+
+    checked_links, link_failures = find_internal_link_failures(sources)
+    if link_failures:
+        print_internal_link_failures(link_failures)
+        print(
+            f"Checked {checked_links} internal Markdown links, "
+            f"{len(link_failures)} failures",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     build_dir = Path(args.build_dir).resolve()
     usage = load_target_usage(build_dir)
 
@@ -954,15 +1184,14 @@ def main() -> None:
     snippets: List[Snippet] = []
     with tempfile.TemporaryDirectory(prefix="aeronet-verify-md-") as tmpdir:
         tmp_path = Path(tmpdir)
-        for file in args.files:
-            source = Path(file)
-            if not source.is_file():
-                print(f"Skipping missing file: {file}", file=sys.stderr)
-                continue
-            snippets.extend(extract_snippets(source, tmp_path))
+        for source in sources:
+            snippets.extend(extract_snippets(source, len(snippets) + 1))
 
         if not snippets:
-            print("Checked 0 code snippets, 0 failures")
+            print(
+                f"Checked 0 code snippets and {checked_links} internal Markdown links, "
+                "0 failures"
+            )
             return
 
         cxx = detect_cxx_compiler(build_dir)
@@ -990,20 +1219,17 @@ def main() -> None:
             if not aeronet_module:
                 print("Warning: Some snippets need aeronet module but build failed", file=sys.stderr)
 
-        snippet_targets: List[SnippetTarget] = []
-        for idx, snippet in enumerate(snippets, start=1):
-            rel_source = snippet.path.relative_to(tmp_path)
-            snippet_targets.append(
-                SnippetTarget(
-                    snippet=snippet,
-                    target=f"doc_snippet_{idx:03d}",
-                    rel_source=rel_source,
-                )
-            )
+        snippet_batches = make_snippet_batches(
+            snippets, args.snippets_per_batch, tmp_path
+        )
+        print(
+            f"Building {len(snippets)} snippets in {len(snippet_batches)} batches "
+            f"(up to {args.snippets_per_batch} snippets per batch)"
+        )
 
         write_cmake_project(
             tmp_path,
-            snippet_targets,
+            snippet_batches,
             include_dirs,
             compile_definitions,
             compile_options,
@@ -1042,9 +1268,9 @@ def main() -> None:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=job_limit
             ) as executor:
-                for idx, target in enumerate(snippet_targets, start=1):
+                for idx, target in enumerate(snippet_batches, start=1):
                     future = executor.submit(
-                        build_snippet_task,
+                        build_snippet_batch_task,
                         idx,
                         target,
                         args.cmake,
@@ -1057,7 +1283,7 @@ def main() -> None:
                         success = future.result()
                     except Exception as exc:
                         print(
-                            f"Unexpected error building snippet #{idx}: {exc}",
+                            f"Unexpected error building batch #{idx}: {exc}",
                             file=sys.stderr,
                         )
                         failures += 1
@@ -1065,11 +1291,14 @@ def main() -> None:
                     if not success:
                         failures += 1
         else:
-            for idx, target in enumerate(snippet_targets, start=1):
-                if not build_snippet_task(idx, target, args.cmake, cmake_build_dir):
+            for idx, target in enumerate(snippet_batches, start=1):
+                if not build_snippet_batch_task(idx, target, args.cmake, cmake_build_dir):
                     failures += 1
 
-    print(f"Checked {len(snippet_targets)} code snippets, {failures} failures")
+    print(
+        f"Checked {len(snippets)} code snippets and {checked_links} internal "
+        f"Markdown links in {len(snippet_batches)} batches, {failures} failures"
+    )
     sys.exit(failures)
 
 
