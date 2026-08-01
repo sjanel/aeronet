@@ -65,9 +65,9 @@ class ObjectArrayPool {
   //  - the last write operation called on the pool must be allocateAndDefaultConstruct
   //    that returned arr (In particular, it's undefined behavior to call this method after clear or reset).
   // You can call this method with newSize = 0 to free the entire last allocation.
-  void shrinkLastAllocated(T* arr, size_type newSize) noexcept {
+  void shrinkLastAllocated(const T* arr, size_type newSize) noexcept {
     assert(_currentBlock != nullptr && arr + newSize <= _currentBlock->begin() + _currentBlock->size);
-    std::destroy(arr + newSize, _currentBlock->begin() + _currentBlock->size);
+    std::destroy(const_cast<T*>(arr + newSize), _currentBlock->begin() + _currentBlock->size);
     _currentBlock->size = static_cast<size_type>(arr + newSize - _currentBlock->begin());
   }
 

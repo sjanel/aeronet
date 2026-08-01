@@ -12,6 +12,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
+- **Faster and smaller router dispatch**: literal-route open-addressing slots now store compact side-table indices, and `RoutingResult` references immutable route metadata instead of copying configuration and middleware ranges. The result shrank from 96 to 48 bytes, the hot `Router::match` symbol shrank by 39%, and pinned internal benchmarks show about 45% lower median latency for deterministic literal hits.
 - **Faster HTTP/1.1 client response capture**: completed chunked and decompressed bodies now transfer suitably sized scratch allocations into `HttpResponse` instead of making a final body copy, while oversized scratch remains reusable for small bodies. The 256 KiB chunked parser microbenchmark is about **39% faster**.
 - **Faster, stricter HTTP/1.1 client response parsing**: chunk-size scanning, hexadecimal decoding, OWS/extension handling, overflow checks, and CRLF consumption now run in one forward pass; status/header/trailer lines use SIMD-accelerated `SearchCRLF`, and chunk-data delimiters use direct validation. The client now rejects bare-LF framing and consistently requires CRLF, matching the server parser. Chunked-response benchmarks are about **25% faster** for 1 KiB chunks and **68% faster** for 16-byte chunks.
 - Added a Material for MkDocs documentation site with structured English navigation, local/CI validation, and GitHub Pages deployment alongside the live benchmark dashboards.

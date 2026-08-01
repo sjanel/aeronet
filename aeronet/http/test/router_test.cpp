@@ -66,7 +66,7 @@ TEST_F(RouterTest, RegisterAndMatchNormalHandler) {
   auto res = router.match(http::Method::GET, "/hello");
   ASSERT_NE(res.requestHandler(), nullptr);
   ASSERT_EQ(res.streamingHandler(), nullptr);
-  ASSERT_FALSE(res.methodNotAllowed);
+  ASSERT_FALSE(res.methodNotAllowed());
 
   // Invoke the handler via the pointer to ensure it is callable and behaves correctly
 
@@ -140,7 +140,7 @@ TEST_F(RouterTest, ConflictingParameterNamingThrows) {
   router.setPath(http::Method::GET, "/items/{id}/view", OkHandler);
 
   // Register the same pattern but using an unnamed parameter in the same segment -> should throw
-  EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/items/{}/view"}, CreatedHandler), std::logic_error);
+  EXPECT_THROW(router.setPath(http::Method::GET, "/items/{}/view", CreatedHandler), std::logic_error);
 }
 
 TEST_F(RouterTest, RegisterAndMatchStreamingHandler) {
@@ -152,7 +152,7 @@ TEST_F(RouterTest, RegisterAndMatchStreamingHandler) {
   auto res = router.match(http::Method::POST, "/stream");
   ASSERT_EQ(res.requestHandler(), nullptr);
   ASSERT_NE(res.streamingHandler(), nullptr);
-  ASSERT_FALSE(res.methodNotAllowed);
+  ASSERT_FALSE(res.methodNotAllowed());
 
   // We cannot easily construct an HttpResponseWriter here without a real SingleHttpServer.
   // Verifying non-null streamingHandler is sufficient for the Router::match contract.
@@ -164,19 +164,19 @@ TEST_F(RouterTest, MethodNotAllowedAndFallback) {
 
   // POST should result in methodNotAllowed
   auto resPost = router.match(http::Method::POST, "/onlyget");
-  EXPECT_TRUE(resPost.methodNotAllowed);
+  EXPECT_TRUE(resPost.methodNotAllowed());
   EXPECT_EQ(resPost.requestHandler(), nullptr);
 
   // GET should match
   auto resGet = router.match(http::Method::GET, "/onlyget");
-  EXPECT_FALSE(resGet.methodNotAllowed);
+  EXPECT_FALSE(resGet.methodNotAllowed());
   EXPECT_NE(resGet.requestHandler(), nullptr);
 
   // No path registered -> fallback to no handler (empty)
   auto resMissing = router.match(http::Method::GET, "/missing");
   EXPECT_EQ(resMissing.requestHandler(), nullptr);
   EXPECT_EQ(resMissing.streamingHandler(), nullptr);
-  EXPECT_FALSE(resMissing.methodNotAllowed);
+  EXPECT_FALSE(resMissing.methodNotAllowed());
 }
 
 TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
@@ -185,7 +185,7 @@ TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   auto res = router.match(http::Method::GET, "/nope");
   ASSERT_NE(res.requestHandler(), nullptr);
   ASSERT_EQ(res.streamingHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 
   // streaming default
   Router r2;
@@ -203,7 +203,7 @@ TEST_F(RouterTest, MatchedPathHandlerTakesPrecedenceOverGlobalDefault) {
   auto res = router.match(http::Method::GET, "/exact");
   ASSERT_NE(res.requestHandler(), nullptr);
   EXPECT_EQ((*res.requestHandler())(dummyReq()).status(), http::StatusCodeOK);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, MethodNotAllowedDoesNotFallBackToGlobalDefault) {
@@ -211,7 +211,7 @@ TEST_F(RouterTest, MethodNotAllowedDoesNotFallBackToGlobalDefault) {
   router.setPath(http::Method::GET, "/exact", OkHandler);
 
   auto res = router.match(http::Method::POST, "/exact");
-  EXPECT_TRUE(res.methodNotAllowed);
+  EXPECT_TRUE(res.methodNotAllowed());
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_EQ(res.streamingHandler(), nullptr);
 }
@@ -224,9 +224,9 @@ TEST_F(RouterTest, DefaultCorsPolicyAppliedToMatchedRouteWithoutOverride) {
 
   auto res = corsRouter.match(http::Method::GET, "/cors");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_NE(res.pCorsPolicy, nullptr);
-  EXPECT_EQ(res.pCorsPolicy, &corsRouter.config().defaultCorsPolicy);
-  EXPECT_TRUE(res.pCorsPolicy->active());
+  ASSERT_NE(res.corsPolicy(), nullptr);
+  EXPECT_EQ(res.corsPolicy(), &corsRouter.config().defaultCorsPolicy);
+  EXPECT_TRUE(res.corsPolicy()->active());
 }
 
 TEST_F(RouterTest, PerRouteCorsOverridesDefaultCorsPolicy) {
@@ -238,9 +238,9 @@ TEST_F(RouterTest, PerRouteCorsOverridesDefaultCorsPolicy) {
 
   auto res = corsRouter.match(http::Method::GET, "/cors");
   ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_NE(res.pCorsPolicy, nullptr);
-  EXPECT_NE(res.pCorsPolicy, &corsRouter.config().defaultCorsPolicy);
-  EXPECT_TRUE(res.pCorsPolicy->active());
+  ASSERT_NE(res.corsPolicy(), nullptr);
+  EXPECT_NE(res.corsPolicy(), &corsRouter.config().defaultCorsPolicy);
+  EXPECT_TRUE(res.corsPolicy()->active());
 }
 
 TEST_F(RouterTest, GlobalMiddlewareAccessorsExposeRegistrationOrder) {
@@ -291,12 +291,12 @@ TEST_F(RouterTest, ClearRemovesHandlersDefaultsAndMiddlewareButKeepsConfig) {
 
   auto literal = cleared.match(http::Method::GET, "/literal");
   EXPECT_FALSE(literal.hasHandler());
-  EXPECT_FALSE(literal.methodNotAllowed);
+  EXPECT_FALSE(literal.methodNotAllowed());
   EXPECT_EQ(cleared.allowedMethods("/literal"), 0U);
 
   auto dynamic = cleared.match(http::Method::GET, "/users/42");
   EXPECT_FALSE(dynamic.hasHandler());
-  EXPECT_FALSE(dynamic.methodNotAllowed);
+  EXPECT_FALSE(dynamic.methodNotAllowed());
 
   cleared.setPath(http::Method::GET, "/after-clear", AcceptedHandler);
   auto reused = cleared.match(http::Method::GET, "/after-clear");
@@ -315,12 +315,12 @@ TEST_F(RouterTest, TrailingSlashRedirectAndNormalize) {
   // exact match
   auto resExact = router.match(http::Method::GET, "/can");
   EXPECT_NE(resExact.requestHandler(), nullptr);
-  EXPECT_EQ(resExact.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_EQ(resExact.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 
   // non-exact with trailing slash should request redirect (RemoveSlash)
   auto resSlashed = router.match(http::Method::GET, "/can/");
   EXPECT_EQ(resSlashed.requestHandler(), nullptr);
-  EXPECT_EQ(resSlashed.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
+  EXPECT_EQ(resSlashed.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 }
 
 TEST_F(RouterTest, HeadFallbackToGet) {
@@ -330,7 +330,7 @@ TEST_F(RouterTest, HeadFallbackToGet) {
   auto resHead = router.match(http::Method::HEAD, "/hf");
   EXPECT_NE(resHead.requestHandler(), nullptr);
   EXPECT_EQ(resHead.streamingHandler(), nullptr);
-  EXPECT_FALSE(resHead.methodNotAllowed);
+  EXPECT_FALSE(resHead.methodNotAllowed());
 }
 
 TEST_F(RouterTest, ExplicitHeadHandlerUsed) {
@@ -352,7 +352,7 @@ TEST_F(RouterTest, HeadFallbackToStreamingGet) {
   auto res = router.match(http::Method::HEAD, "/hstream");
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_NE(res.streamingHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -367,7 +367,7 @@ TEST_F(RouterTest, HeadFallbackToAsyncGet) {
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_EQ(res.streamingHandler(), nullptr);
   EXPECT_NE(res.asyncRequestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 #endif
 
@@ -396,7 +396,7 @@ TEST_F(RouterTest, ExplicitHeadStreamingAndAsyncHandlers) {
 TEST_F(RouterTest, HeadMethodNotAllowedWhenNoGetOrHead) {
   router.setPath(http::Method::POST, "/onlypost", OkHandler);
   auto res = router.match(http::Method::HEAD, "/onlypost");
-  EXPECT_TRUE(res.methodNotAllowed);
+  EXPECT_TRUE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, MethodMergingAndOverwrite) {
@@ -406,11 +406,11 @@ TEST_F(RouterTest, MethodMergingAndOverwrite) {
 
   auto rGet = router.match(http::Method::GET, "/merge");
   EXPECT_NE(rGet.requestHandler(), nullptr);
-  EXPECT_FALSE(rGet.methodNotAllowed);
+  EXPECT_FALSE(rGet.methodNotAllowed());
 
   auto rPost = router.match(http::Method::POST, "/merge");
   EXPECT_NE(rPost.requestHandler(), nullptr);
-  EXPECT_FALSE(rPost.methodNotAllowed);
+  EXPECT_FALSE(rPost.methodNotAllowed());
 }
 
 TEST_F(RouterTest, MethodBitmapRegistersMultipleHandlers) {
@@ -419,19 +419,19 @@ TEST_F(RouterTest, MethodBitmapRegistersMultipleHandlers) {
 
   auto getRes = router.match(http::Method::GET, "/combo");
   EXPECT_NE(getRes.requestHandler(), nullptr);
-  EXPECT_FALSE(getRes.methodNotAllowed);
+  EXPECT_FALSE(getRes.methodNotAllowed());
 
   auto postRes = router.match(http::Method::POST, "/combo");
   EXPECT_NE(postRes.requestHandler(), nullptr);
-  EXPECT_FALSE(postRes.methodNotAllowed);
+  EXPECT_FALSE(postRes.methodNotAllowed());
 }
 
 TEST_F(RouterTest, StreamingVsNormalConflictThrows) {
   router.setPath(http::Method::GET, "/conf", [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
   // Attempting to register a streaming handler for the same path+method should throw
-  EXPECT_THROW(router.setPath(http::Method::GET, std::string{"/conf"},
-                              StreamingHandler([](const HttpRequestView&, HttpResponseWriter&) {})),
-               std::logic_error);
+  EXPECT_THROW(
+      router.setPath(http::Method::GET, "/conf", StreamingHandler([](const HttpRequestView&, HttpResponseWriter&) {})),
+      std::logic_error);
 }
 
 TEST_F(RouterTest, NormalizeLiteralEntryWithoutHandlersDoesNotMatch) {
@@ -442,13 +442,13 @@ TEST_F(RouterTest, NormalizeLiteralEntryWithoutHandlersDoesNotMatch) {
 
   auto res = router.match(http::Method::GET, "/norm-empty");
   EXPECT_EQ(res.requestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
-  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_FALSE(res.methodNotAllowed());
+  EXPECT_EQ(res.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 
   auto resSlash = router.match(http::Method::GET, "/norm-empty/");
   EXPECT_EQ(resSlash.requestHandler(), nullptr);
-  EXPECT_FALSE(resSlash.methodNotAllowed);
-  EXPECT_EQ(resSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_FALSE(resSlash.methodNotAllowed());
+  EXPECT_EQ(resSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 }
 
 TEST_F(RouterTest, NormalizePatternRouteWithoutHandlersDoesNotMatch) {
@@ -459,13 +459,13 @@ TEST_F(RouterTest, NormalizePatternRouteWithoutHandlersDoesNotMatch) {
 
   auto res = router.match(http::Method::GET, "/norm-empty/42");
   EXPECT_EQ(res.requestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
-  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_FALSE(res.methodNotAllowed());
+  EXPECT_EQ(res.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 
   auto resSlash = router.match(http::Method::GET, "/norm-empty/42/");
   EXPECT_EQ(resSlash.requestHandler(), nullptr);
-  EXPECT_FALSE(resSlash.methodNotAllowed);
-  EXPECT_EQ(resSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_FALSE(resSlash.methodNotAllowed());
+  EXPECT_EQ(resSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 }
 
 TEST_F(RouterTest, TrailingSlashStrictAndNormalize) {
@@ -747,7 +747,7 @@ TEST_F(RouterTest, CopyHandlesHeadFallbackAndMethodBitmaps) {
   // HEAD should fallback to GET in clone
   auto rh = cHf.match(http::Method::HEAD, "/hfcopy");
   EXPECT_NE(rh.requestHandler(), nullptr);
-  EXPECT_FALSE(rh.methodNotAllowed);
+  EXPECT_FALSE(rh.methodNotAllowed());
 }
 
 TEST_F(RouterTest, CopyPreservesLiteralOnlyFastPath) {
@@ -1108,8 +1108,11 @@ TEST_F(RouterTest, WildcardConflictsWithExistingWildcard) {
 }
 
 TEST_F(RouterTest, WildcardWithPathWithTrailingSlash) {
-  for (auto policy : {RouterConfig::TrailingSlashPolicy::Strict, RouterConfig::TrailingSlashPolicy::Normalize,
-                      RouterConfig::TrailingSlashPolicy::Redirect}) {
+  for (auto policy : {
+           RouterConfig::TrailingSlashPolicy::Strict,
+           RouterConfig::TrailingSlashPolicy::Normalize,
+           RouterConfig::TrailingSlashPolicy::Redirect,
+       }) {
     router = Router(RouterConfig{}.withTrailingSlashPolicy(policy));
     router.setPath(http::Method::GET, "/files/*/something", CreatedHandler);
     router.setPath(http::Method::GET, "/files/*", OkHandler);
@@ -1172,7 +1175,7 @@ TEST_F(RouterTest, ExactMatchWithParamOnlyWildcardTailDoesNotFallbackToParam) {
   auto res = rStrict.match(http::Method::GET, "/users/");
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_EQ(res.streamingHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, ExactMatchWithoutWildcardChildrenReturnsNoHandler) {
@@ -1181,7 +1184,7 @@ TEST_F(RouterTest, ExactMatchWithoutWildcardChildrenReturnsNoHandler) {
   auto res = router.match(http::Method::GET, "/teams/42");
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_EQ(res.streamingHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, ParamsWithLiteralsAndWildcardPriority) {
@@ -1294,7 +1297,7 @@ TEST_F(RouterTest, StaticPrefixWithoutWildcardReturnsNoHandlerOnMismatch) {
 
   auto res = router.match(http::Method::GET, "/files/qux");
   EXPECT_EQ(res.requestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, AsteriskAllowedInParamName) {
@@ -1410,11 +1413,11 @@ TEST_F(RouterTestTrailingPolicy, NormalizeAcceptsBothForms) {
   // both forms should match a handler (prefer the exact-registered variant)
   auto resNoSlash = router.match(http::Method::GET, "/tp");
   EXPECT_NE(resNoSlash.requestHandler(), nullptr);
-  EXPECT_EQ(resNoSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_EQ(resNoSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 
   auto resWithSlash = router.match(http::Method::GET, "/tp/");
   EXPECT_NE(resWithSlash.requestHandler(), nullptr);
-  EXPECT_EQ(resWithSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_EQ(resWithSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 }
 
 TEST_F(RouterTestTrailingPolicy, StrictDistinguishesForms) {
@@ -1428,7 +1431,7 @@ TEST_F(RouterTestTrailingPolicy, StrictDistinguishesForms) {
   EXPECT_NE(resWithSlash.requestHandler(), nullptr);
   // ensure that matching the opposite form does not return the other's handler implicitly
   // The router should not redirect in Strict mode; instead both registered variants coexist
-  EXPECT_EQ(resWithSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_EQ(resWithSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 
   // test with patterns as well
   resNoSlash = router.match(http::Method::GET, "/tp/123");
@@ -1437,7 +1440,7 @@ TEST_F(RouterTestTrailingPolicy, StrictDistinguishesForms) {
   resWithSlash = router.match(http::Method::GET, "/tp/123/");
   EXPECT_NE(resWithSlash.requestHandler(), nullptr);
 
-  EXPECT_EQ(resWithSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::None);
+  EXPECT_EQ(resWithSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::None);
 }
 
 TEST_F(RouterTestTrailingPolicy, RedirectRequestsRedirect1) {
@@ -1467,13 +1470,13 @@ TEST_F(RouterTestTrailingPolicy, RedirectRequestsRedirect2) {
 
   auto rSlashed = router.match(http::Method::GET, "/onlynoslash/");
   EXPECT_EQ(rSlashed.requestHandler(), nullptr);
-  EXPECT_EQ(rSlashed.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
+  EXPECT_EQ(rSlashed.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 
   router.setPath(http::Method::GET, "/onlynoslash/{bar}", OkHandler);
 
   rSlashed = router.match(http::Method::GET, "/onlynoslash/123/");
   EXPECT_EQ(rSlashed.requestHandler(), nullptr);
-  EXPECT_EQ(rSlashed.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
+  EXPECT_EQ(rSlashed.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 }
 
 TEST_F(RouterTestTrailingPolicy, RedirectRequestsRedirect3) {
@@ -1481,12 +1484,12 @@ TEST_F(RouterTestTrailingPolicy, RedirectRequestsRedirect3) {
   router.setPath(http::Method::GET, "/onlywithslash/", OkHandler);
   auto rNoSlash = router.match(http::Method::GET, "/onlywithslash");
   EXPECT_EQ(rNoSlash.requestHandler(), nullptr);
-  EXPECT_EQ(rNoSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::AddSlash);
+  EXPECT_EQ(rNoSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::AddSlash);
 
   router.setPath(http::Method::GET, "/onlywithslash/{bar}/", OkHandler);
   rNoSlash = router.match(http::Method::GET, "/onlywithslash/123");
   EXPECT_EQ(rNoSlash.requestHandler(), nullptr);
-  EXPECT_EQ(rNoSlash.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::AddSlash);
+  EXPECT_EQ(rNoSlash.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::AddSlash);
 }
 
 // The large stress scenario is covered by `LargeNumberOfPatternsAndSegments_WithTrailingPolicies` which
@@ -1619,18 +1622,18 @@ TEST_F(RouterTest, RegisterAndMatchWebSocketEndpoint) {
 
   // Match with GET should succeed and have the endpoint
   auto resGet = router.match(http::Method::GET, "/ws");
-  EXPECT_NE(resGet.pWebSocketEndpoint, nullptr);
-  EXPECT_FALSE(resGet.methodNotAllowed);
+  EXPECT_NE(resGet.webSocketEndpoint(), nullptr);
+  EXPECT_FALSE(resGet.methodNotAllowed());
 
   // Match with POST should not have the endpoint
   auto resPost = router.match(http::Method::POST, "/ws");
-  EXPECT_NE(resPost.pWebSocketEndpoint, nullptr);  // endpoint is still exposed
-  EXPECT_TRUE(resPost.methodNotAllowed);           // but method is not allowed
+  EXPECT_NE(resPost.webSocketEndpoint(), nullptr);  // endpoint is still exposed
+  EXPECT_TRUE(resPost.methodNotAllowed());          // but method is not allowed
 
   // Match with trailing slash should succeed
   auto resSlash = router.match(http::Method::GET, "/path-with-trailing-slash/");
-  EXPECT_NE(resSlash.pWebSocketEndpoint, nullptr);
-  EXPECT_FALSE(resSlash.methodNotAllowed);
+  EXPECT_NE(resSlash.webSocketEndpoint(), nullptr);
+  EXPECT_FALSE(resSlash.methodNotAllowed());
 }
 #endif
 
@@ -1719,12 +1722,12 @@ TEST_F(RouterTest, PatternStringRootAndComplexPattern) {
   // Trigger patternString for the root path by overwriting the handler (invokes logging that calls patternString())
   router.setPath(http::Method::GET, "/", OkHandler);
   // Overwrite to force the logging path that calls patternString()
-  router.setPath(http::Method::GET, std::string{"/"}, CreatedHandler);
+  router.setPath(http::Method::GET, "/", CreatedHandler);
 
   // Complex pattern with literal, unnamed param and wildcard terminal segment
   router.setPath(http::Method::GET, "/p/{}/q/*", OkHandler);
   // Overwrite again to force patternString() on a route with params and wildcard
-  router.setPath(http::Method::GET, std::string{"/p/{}/q/*"}, CreatedHandler);
+  router.setPath(http::Method::GET, "/p/{}/q/*", CreatedHandler);
 
   // Basic asserts to ensure handlers are present
   EXPECT_NE(router.match(http::Method::GET, "/").requestHandler(), nullptr);
@@ -1751,7 +1754,7 @@ TEST_F(RouterTest, ComputePathHandlerEntryReturnsNullOnRedirectSlowPath) {
   // Matching the opposite form (with trailing slash) should produce a redirect indication
   auto res = router.match(http::Method::GET, "/items/42/");
   EXPECT_EQ(res.requestHandler(), nullptr);
-  EXPECT_EQ(res.redirectPathIndicator, Router::RoutingResult::RedirectSlashMode::RemoveSlash);
+  EXPECT_EQ(res.redirectSlashMode(), Router::RoutingResult::RedirectSlashMode::RemoveSlash);
 }
 
 TEST_F(RouterTest, AllowedMethodsFastPathChoosesWithSlash) {
@@ -1946,7 +1949,7 @@ TEST_F(RouterTest, EscapedBracesInParameterPattern) {
 
   auto res = router.match(http::Method::GET, "/api/123{literal");
   ASSERT_NE(res.requestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, CatchAllWithJustStarPath) {
@@ -2052,7 +2055,7 @@ TEST_F(RouterTest, RegisterShorterParamRouteAfterLongerCreatesRouteOnIntermediat
 
   // The shorter route should not match the longer path's method
   auto resWrongMethod = router.match(http::Method::POST, "/api/42/details");
-  EXPECT_TRUE(resWrongMethod.methodNotAllowed);
+  EXPECT_TRUE(resWrongMethod.methodNotAllowed());
 }
 
 TEST_F(RouterTest, RegisterShorterStaticAfterLongerWithSamePrefix) {
@@ -2100,7 +2103,7 @@ TEST_F(RouterTest, CatchAllStrictTrailingSlashReturnsNull) {
 
   auto res = router.match(http::Method::GET, "/files/test/");
   EXPECT_EQ(res.requestHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, CatchAllStrictNoTrailingSlashMatches) {
@@ -2433,7 +2436,7 @@ TEST_F(RouterTest, StaticAndParamSiblingWithoutCatchAllNoFallbackOnStaticDescend
   // Without a catch-all, a deeper mismatch returns no handler (no fallback was stored)
   auto noMatch = router.match(http::Method::GET, "/api/users/extra");
   EXPECT_EQ(noMatch.requestHandler(), nullptr);
-  EXPECT_FALSE(noMatch.methodNotAllowed);
+  EXPECT_FALSE(noMatch.methodNotAllowed());
 }
 
 TEST_F(RouterTest, DynamicPrefixStaticAndParamSiblingWithoutCatchAllHitsFallbackGuard) {
@@ -2452,7 +2455,7 @@ TEST_F(RouterTest, DynamicPrefixStaticAndParamSiblingWithoutCatchAllHitsFallback
 
   auto noMatch = router.match(http::Method::GET, "/api/acme/users/extra");
   EXPECT_EQ(noMatch.requestHandler(), nullptr);
-  EXPECT_FALSE(noMatch.methodNotAllowed);
+  EXPECT_FALSE(noMatch.methodNotAllowed());
 }
 
 TEST_F(RouterTest, StrictRememberedCatchAllFallbackRejectsTrailingSlashRequest) {
@@ -2483,7 +2486,7 @@ TEST_F(RouterTest, StrictRememberedCatchAllFallbackRejectsTrailingSlashRequest) 
   // ended with a trailing slash.
   auto withSlash = router.match(http::Method::GET, "/api/acme/users/");
   EXPECT_EQ(withSlash.requestHandler(), nullptr);
-  EXPECT_FALSE(withSlash.methodNotAllowed);
+  EXPECT_FALSE(withSlash.methodNotAllowed());
 }
 
 TEST_F(RouterTest, StrictExactMatchAtIntermediateStaticNodeWithoutWildcardChildren) {
@@ -2498,7 +2501,7 @@ TEST_F(RouterTest, StrictExactMatchAtIntermediateStaticNodeWithoutWildcardChildr
   auto res = router.match(http::Method::GET, "/users/42/v");
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_EQ(res.streamingHandler(), nullptr);
-  EXPECT_FALSE(res.methodNotAllowed);
+  EXPECT_FALSE(res.methodNotAllowed());
 }
 
 TEST_F(RouterTest, StrictExactMatchCatchAllFallbackRejectsTrailingSlashAfterSplit) {
@@ -2518,7 +2521,7 @@ TEST_F(RouterTest, StrictExactMatchCatchAllFallbackRejectsTrailingSlashAfterSpli
   // trailing slash, so line 1093's RHS evaluates false.
   auto exactWithSlash = router.match(http::Method::GET, "/foo/123/");
   EXPECT_EQ(exactWithSlash.requestHandler(), nullptr);
-  EXPECT_FALSE(exactWithSlash.methodNotAllowed);
+  EXPECT_FALSE(exactWithSlash.methodNotAllowed());
 }
 
 TEST_F(RouterTest, LateFallbackToRememberedCatchAllAfterParamChildMismatch) {
