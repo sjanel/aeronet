@@ -3,6 +3,8 @@
 #include <cassert>
 #include <charconv>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -12,6 +14,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -22,13 +25,102 @@ namespace {
 // True if the last token of a (possibly comma-separated) Transfer-Encoding value is "chunked".
 constexpr bool LastTransferEncodingIsChunked(std::string_view value) {
   const auto comma = value.rfind(',');
-  std::string_view last = comma == std::string_view::npos ? value : value.substr(comma + 1);
+  const std::string_view last = comma == std::string_view::npos ? value : value.substr(comma + 1);
   return CaseInsensitiveEqual(TrimOws(last), http::chunked);
 }
 
 // True when `view` covers exactly the initialized bytes owned by `buffer`.
 constexpr bool IsWholeBufferView(std::string_view view, std::string_view buffer) noexcept {
   return view.size() == buffer.size() && view.data() == buffer.data();
+}
+
+enum class ChunkLineStatus : uint8_t { Complete, NeedMore, Error };
+
+struct ChunkLineResult {
+  std::size_t chunkSize;
+  std::size_t nextPos;
+  ChunkLineStatus status;
+};
+
+// Convert one ASCII hexadecimal digit without a lookup table. Decimal digits are the common path for
+// HTTP chunk sizes; folding alphabetic digits to lowercase keeps the uncommon branch compact.
+constexpr uint32_t HexDigitValue(unsigned char ch) noexcept {
+  const uint32_t decimal = ch - static_cast<unsigned char>('0');
+  if (decimal <= 9U) {
+    return decimal;
+  }
+  const uint32_t alpha = (ch | 0x20U) - static_cast<unsigned char>('a');
+  return alpha <= 5U ? alpha + 10U : 16U;
+}
+
+// Parse a complete chunk-size line in one forward pass. The common path touches each hexadecimal byte once,
+// folds overflow checking into the shift, and consumes CRLF directly. Extensions remain opaque as required
+// by HTTP chunk decoding, but their bytes and line ending are validated while they are skipped.
+constexpr ChunkLineResult ParseChunkSizeLine(std::string_view buffer, std::size_t pos) noexcept {
+  const char* const base = buffer.data();
+  const char* cur = base + pos;
+  const char* const end = base + buffer.size();
+  std::size_t chunkSize = 0;
+  bool hasDigit = false;
+  bool trailingOws = false;
+
+  const auto finish = [&chunkSize, base, &hasDigit](const char* next) {
+    return ChunkLineResult{
+        .chunkSize = chunkSize,
+        .nextPos = static_cast<std::size_t>(next - base),
+        .status = hasDigit ? ChunkLineStatus::Complete : ChunkLineStatus::Error,
+    };
+  };
+
+  while (cur != end) {
+    const unsigned char ch = static_cast<unsigned char>(*cur++);
+    const uint32_t digit = HexDigitValue(ch);
+    if (digit < 16U) {
+      if (trailingOws || chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
+        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+      }
+      chunkSize = (chunkSize << 4U) | digit;
+      hasDigit = true;
+      continue;
+    }
+
+    if (ch == '\r') {
+      if (cur == end) {
+        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
+      }
+      if (*cur != '\n') {
+        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+      }
+      return finish(cur + 1);
+    }
+    if (ch == ';') {
+      if (!hasDigit) {
+        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+      }
+      while (cur != end) {
+        const unsigned char extensionCh = static_cast<unsigned char>(*cur++);
+        if (extensionCh == '\r') {
+          if (cur == end) {
+            return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
+          }
+          if (*cur != '\n') {
+            return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+          }
+          return finish(cur + 1);
+        }
+        if ((extensionCh < 0x20U && extensionCh != '\t') || extensionCh == 0x7FU) {
+          return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+        }
+      }
+      return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
+    }
+    if (ch == ' ' || ch == '\t') {
+      trailingOws = hasDigit;
+      continue;
+    }
+    return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
+  }
+  return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
 }
 
 // Scan a (possibly comma-separated) Connection token list, flagging the close / keep-alive directives.
@@ -219,30 +311,15 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
       assert(_framing == Framing::Chunked);
       for (;;) {
         if (_state == State::BodyChunkSize) {
-          const auto nl = buffer.find('\n', _pos);
-          if (nl == std::string_view::npos) {
-            return eof ? Status::Error : Status::NeedMore;
+          const ChunkLineResult chunkLine = ParseChunkSizeLine(buffer, _pos);
+          if (chunkLine.status != ChunkLineStatus::Complete) {
+            return chunkLine.status == ChunkLineStatus::Error || eof ? Status::Error : Status::NeedMore;
           }
-          std::string_view line = buffer.substr(_pos, nl - _pos);
-          if (!line.empty() && line.back() == '\r') {
-            line.remove_suffix(1);
-          }
-          if (const auto semi = line.find(';'); semi != std::string_view::npos) {
-            line = line.substr(0, semi);  // strip chunk extensions
-          }
-          line = TrimOws(line);
-          std::size_t chunkSize = 0;
-          const auto* begin = line.data();
-          const auto* end = begin + line.size();
-          const auto [ptr, ec] = std::from_chars(begin, end, chunkSize, 16);
-          if (ec != std::errc{} || ptr != end) {
-            return Status::Error;
-          }
-          _pos = nl + 1;
-          if (chunkSize == 0) {
+          _pos = chunkLine.nextPos;
+          if (chunkLine.chunkSize == 0) {
             _state = State::BodyChunkTrailers;
           } else {
-            _bodyRemaining = chunkSize;
+            _bodyRemaining = chunkLine.chunkSize;
             _state = State::BodyChunkData;
           }
           continue;
@@ -251,7 +328,8 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         if (_state == State::BodyChunkData) {
           const std::size_t available = buffer.size() - _pos;
           const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
-          if (_bodyBuf->size() + take > maxResponseBytes) {
+          const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf->size());
+          if (bodySize > maxResponseBytes || take > maxResponseBytes - bodySize) {
             return Status::Error;
           }
           _bodyBuf->append(buffer.data() + _pos, take);
@@ -265,11 +343,20 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         }
 
         if (_state == State::BodyChunkCrlf) {
-          const auto nl = buffer.find('\n', _pos);
-          if (nl == std::string_view::npos) {
+          const std::size_t available = buffer.size() - _pos;
+          if (available == 0) {
             return eof ? Status::Error : Status::NeedMore;
           }
-          _pos = nl + 1;
+          if (buffer[_pos] != '\r') {
+            return Status::Error;
+          }
+          if (available == 1) {
+            return eof ? Status::Error : Status::NeedMore;
+          }
+          if (buffer[_pos + 1] != '\n') {
+            return Status::Error;
+          }
+          _pos += http::CRLF.size();
           _state = State::BodyChunkSize;
           continue;
         }
@@ -277,15 +364,16 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         // The three sub-states above each return or `continue`, so the only state left here is the trailer
         // block. Consume trailer lines until an empty line. Trailers are not surfaced.
         assert(_state == State::BodyChunkTrailers);
+        const char* const base = buffer.data();
+        const char* const end = base + buffer.size();
         for (;;) {
-          const auto nl = buffer.find('\n', _pos);
-          if (nl == std::string_view::npos) {
+          const char* const first = base + _pos;
+          const char* const lineEnd = SearchCRLF(first, end);
+          if (lineEnd == end) {
             return eof ? Status::Error : Status::NeedMore;
           }
-          std::string_view line = buffer.substr(_pos, nl - _pos);
-          const bool emptyLine = line.empty() || line == "\r";
-          _pos = nl + 1;
-          if (emptyLine) {
+          _pos = static_cast<std::size_t>(lineEnd - base) + http::CRLF.size();
+          if (lineEnd == first) {
             _state = State::Done;
             return Status::Complete;
           }
@@ -298,9 +386,12 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
 ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, HttpResponse& resp,
                                              std::size_t maxResponseBytes) {
   // --- Status line + headers ---
+  const char* const bufferBegin = buffer.data();
+  const char* const bufferEnd = bufferBegin + buffer.size();
   while (_state == State::StatusLine || _state == State::Headers) {
-    const auto nl = buffer.find('\n', _pos);
-    if (nl == std::string_view::npos) {
+    const char* const lineBegin = bufferBegin + _pos;
+    const char* const lineEnd = SearchCRLF(lineBegin, bufferEnd);
+    if (lineEnd == bufferEnd) {
       // No complete line yet. Everything buffered so far is head bytes (the body can only begin after the
       // empty line we have not seen), so bound the buffer itself: otherwise a peer streaming an endless
       // header line keeps `_pos` pinned at the line start and grows the receive buffer without limit.
@@ -309,11 +400,8 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
       }
       return eof ? Status::Error : Status::NeedMore;
     }
-    std::string_view line = buffer.substr(_pos, nl - _pos);
-    if (!line.empty() && line.back() == '\r') {
-      line.remove_suffix(1);
-    }
-    _pos = nl + 1;
+    const std::string_view line(lineBegin, static_cast<std::size_t>(lineEnd - lineBegin));
+    _pos = static_cast<std::size_t>(lineEnd - bufferBegin) + http::CRLF.size();
     // Every consumed head line (status line, a header, or the terminating empty line) counts against the
     // total response budget. Checking the post-advance position here -- before the line is acted on -- also
     // rejects a single oversized (but newline-terminated) header, which the per-header check below missed

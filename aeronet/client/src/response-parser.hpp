@@ -22,6 +22,8 @@ struct DecompressionState;
 // HttpResponse as they are parsed; the decoded body (chunked already de-framed) is accumulated and
 // installed via HttpResponse::body() at completion.
 //
+// Status, header, chunk-metadata and trailer lines require CRLF framing, matching the server parser.
+//
 // Only Content-Type, Content-Length and Transfer-Encoding are consumed locally rather than stored
 // verbatim: HttpResponse reconstructs Content-Type and the decoded Content-Length via body(), and
 // chunked framing is de-framed away. Connection is additionally inspected for keep-alive decisions but
