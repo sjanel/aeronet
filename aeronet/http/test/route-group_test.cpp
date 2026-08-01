@@ -59,8 +59,8 @@ TEST_F(RouteGroupTest, GroupAppliesSharedCors) {
   api.setPath(http::Method::GET, "/items", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/api/items");
-  ASSERT_NE(result.pCorsPolicy, nullptr);
-  EXPECT_TRUE(result.pCorsPolicy->active());
+  ASSERT_NE(result.corsPolicy(), nullptr);
+  EXPECT_TRUE(result.corsPolicy()->active());
 }
 
 TEST_F(RouteGroupTest, GroupAppliesSharedMiddleware) {
@@ -89,7 +89,7 @@ TEST_F(RouteGroupTest, GroupAppliesMaxBodyBytes) {
   api.setPath(http::Method::POST, "/file", MakeHandler());
 
   auto result = router.match(http::Method::POST, "/upload/file");
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 1024U);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 1024U);
 }
 
 TEST_F(RouteGroupTest, GroupAppliesTimeout) {
@@ -99,7 +99,7 @@ TEST_F(RouteGroupTest, GroupAppliesTimeout) {
   api.setPath(http::Method::GET, "/report", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/slow/report");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 5000ms);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 5000ms);
 }
 
 TEST_F(RouteGroupTest, GroupAppliesMaxHeaderBytes) {
@@ -108,7 +108,7 @@ TEST_F(RouteGroupTest, GroupAppliesMaxHeaderBytes) {
   api.setPath(http::Method::GET, "/data", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/strict/data");
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 2048U);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 2048U);
 }
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -118,7 +118,7 @@ TEST_F(RouteGroupTest, GroupAppliesHttp2Enable) {
   api.setPath(http::Method::GET, "/legacy", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/h2/legacy");
-  EXPECT_EQ(result.pathConfig.http2Enable, PathEntryConfig::Http2Enable::Disable);
+  EXPECT_EQ(result.pathConfig().http2Enable, PathEntryConfig::Http2Enable::Disable);
 }
 #endif
 
@@ -129,7 +129,7 @@ TEST_F(RouteGroupTest, PerRouteOverrideWinsOverGroup) {
 
   auto result = router.match(http::Method::POST, "/override/large");
   // Per-route setter applied after group default → overrides the group value
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 65536U);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 65536U);
 }
 
 TEST_F(RouteGroupTest, NestedGroupConcatenatesPrefix) {
@@ -149,8 +149,8 @@ TEST_F(RouteGroupTest, NestedGroupInheritsConfig) {
   v2.setPath(http::Method::POST, "/data", MakeHandler());
 
   auto result = router.match(http::Method::POST, "/api/v2/data");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 3000ms);
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 8192U);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 3000ms);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 8192U);
 }
 
 TEST_F(RouteGroupTest, NestedGroupInheritsMiddleware) {
@@ -173,7 +173,7 @@ TEST_F(RouteGroupTest, NestedGroupCanOverrideParentConfig) {
   uploads.setPath(http::Method::POST, "/photo", MakeHandler());
 
   auto result = router.match(http::Method::POST, "/api/uploads/photo");
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 1048576U);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 1048576U);
 }
 
 TEST_F(RouteGroupTest, StreamingHandlerViaBmpGroup) {
@@ -196,7 +196,7 @@ TEST_F(RouteGroupTest, MultipleRoutesInSameGroup) {
   for (auto path : {"/multi/a", "/multi/b", "/multi/c"}) {
     auto result = router.match(http::Method::GET, path);
     if (result.requestHandler() != nullptr) {
-      EXPECT_EQ(result.pathConfig.maxBodyBytes, 2048U) << "Path " << path << " missing maxBodyBytes";
+      EXPECT_EQ(result.pathConfig().maxBodyBytes, 2048U) << "Path " << path << " missing maxBodyBytes";
     }
   }
 }
@@ -208,9 +208,9 @@ TEST_F(RouteGroupTest, ChainableGroupConfiguration) {
   api.setPath(http::Method::GET, "/test", MakeHandler());
 
   auto result = router.match(http::Method::GET, "/chain/test");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 2000ms);
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 1024U);
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 512U);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 2000ms);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 1024U);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 512U);
 }
 
 TEST_F(RouteGroupTest, StreamingHandlerSingleMethod) {
@@ -231,11 +231,11 @@ TEST_F(RouteGroupTest, AsyncHandlerViaBmpGroup) {
 
   auto rGet = router.match(http::Method::GET, "/async/task");
   EXPECT_NE(rGet.asyncRequestHandler(), nullptr);
-  EXPECT_EQ(rGet.pathConfig.maxBodyBytes, 2048U);
+  EXPECT_EQ(rGet.pathConfig().maxBodyBytes, 2048U);
 
   auto rPost = router.match(http::Method::POST, "/async/task");
   EXPECT_NE(rPost.asyncRequestHandler(), nullptr);
-  EXPECT_EQ(rPost.pathConfig.maxBodyBytes, 2048U);
+  EXPECT_EQ(rPost.pathConfig().maxBodyBytes, 2048U);
 }
 
 TEST_F(RouteGroupTest, AsyncHandlerSingleMethod) {
@@ -255,8 +255,8 @@ TEST_F(RouteGroupTest, WebSocketHandlerRegistration) {
   api.setWebSocket("/chat", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{}));
 
   auto result = router.match(http::Method::GET, "/ws-api/chat");
-  EXPECT_NE(result.pWebSocketEndpoint, nullptr);
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 512U);
+  EXPECT_NE(result.webSocketEndpoint(), nullptr);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 512U);
 }
 #endif
 

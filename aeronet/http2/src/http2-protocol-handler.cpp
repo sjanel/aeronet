@@ -687,7 +687,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, uint
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
                                            routingResult.preMiddlewareRange(), *_pTelemetryContext, streaming, {});
   if (globalResult.has_value()) {
-    const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
     if (pCorsPolicy != nullptr) {
       (void)pCorsPolicy->applyToResponse(request, *globalResult);
     }
@@ -741,7 +741,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   const Router::RoutingResult routingResult = _pRouter->match(request.method(), request.path());
 
   // Check path-specific HTTP/2 config
-  if (routingResult.pathConfig.http2Enable == PathEntryConfig::Http2Enable::Disable) {
+  if (routingResult.pathConfig().http2Enable == PathEntryConfig::Http2Enable::Disable) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError && "sendResponse cannot fail for empty 404 response");
@@ -751,7 +751,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Per-route request head size limit (already clamped against global in prepareRun)
-  if (request.headSpanSize() > routingResult.pathConfig.maxHeaderBytes) {
+  if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, HttpResponse(http::StatusCodeRequestHeaderFieldsTooLarge), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError);
@@ -761,7 +761,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Per-route body size limit (already clamped against global in prepareRun)
-  if (request.body().size() > routingResult.pathConfig.maxBodyBytes) {
+  if (request.body().size() > routingResult.pathConfig().maxBodyBytes) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, HttpResponse(http::StatusCodePayloadTooLarge), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError);
@@ -771,8 +771,8 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
-  if (routingResult.pathConfig.requestTimeout != std::chrono::milliseconds::max()) {
-    it->second.requestDeadline = request.reqStart() + routingResult.pathConfig.requestTimeout;
+  if (routingResult.pathConfig().requestTimeout != std::chrono::milliseconds::max()) {
+    it->second.requestDeadline = request.reqStart() + routingResult.pathConfig().requestTimeout;
   }
 
   const bool isHead = (request.method() == http::Method::HEAD);
@@ -791,7 +791,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      if (startAsyncHandler(it, *asyncHandler, routingResult.pCorsPolicy, routingResult.postMiddlewareRange())) {
+      if (startAsyncHandler(it, *asyncHandler, routingResult.corsPolicy(), routingResult.postMiddlewareRange())) {
         // Async handler is running; response will be sent later when it completes.
         return;
       }
@@ -808,7 +808,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      handleStreamingRequest(it, *streamingHandler, routingResult.pCorsPolicy, routingResult.postMiddlewareRange());
+      handleStreamingRequest(it, *streamingHandler, routingResult.corsPolicy(), routingResult.postMiddlewareRange());
       return;
     }
 
@@ -849,7 +849,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult) {
   // Determine active CORS policy for this route (if any)
-  const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+  const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   // CONNECT is handled in dispatchRequest() before reply() is called
@@ -900,7 +900,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router:
     finalizeResponse(resp);
     return resp;
   }
-  HttpResponse resp(routingResult.methodNotAllowed ? http::StatusCodeMethodNotAllowed : http::StatusCodeNotFound);
+  HttpResponse resp(routingResult.methodNotAllowed() ? http::StatusCodeMethodNotAllowed : http::StatusCodeNotFound);
   finalizeResponse(resp);
   return resp;
 }
