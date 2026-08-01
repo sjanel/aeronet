@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+
+site_name: aeronet
+site_description: High-performance, modular C++23 HTTP, HTTP/2, and WebSocket server library.
+site_url: https://sjanel.github.io/aeronet/
+repo_url: https://github.com/sjanel/aeronet
+repo_name: sjanel/aeronet
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  logo: material/rocket-launch-outline
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - search.highlight
+    - search.share
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/overview.md
+      - Your first server: getting-started/first-server.md
+      - Installation and build: INSTALL.md
+  - Guides:
+      - Routing and requests: guides/routing.md
+      - Middleware and responses: guides/middleware-and-responses.md
+      - Bodies, streaming, and static files: guides/bodies-streaming-and-files.md
+  - Protocols:
+      - TLS and HTTP/2: protocols/tls-and-http2.md
+      - WebSocket: protocols/websocket.md
+      - HTTP client and JWT: protocols/client-and-jwt.md
+  - Reference:
+      - Configuration and optional modules: reference/configuration.md
+      - Feature reference: FEATURES.md
+  - Operations:
+      - Observability and logging: operations/observability.md
+      - Kubernetes: kubernetes-examples.md
+      - Benchmarks: BENCHMARKS.md
+  - Project:
+      - Documentation development: development/documentation.md
+      - Changelog: CHANGELOG.md
+      - Roadmap: ROADMAP.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/sjanel/aeronet
+      name: aeronet on GitHub
+
+copyright: Copyright &copy; 2024-2026 aeronet contributors

@@ -207,8 +207,7 @@ For the exhaustive, continually-updated matrix (parsing, transport, bodies, stat
 
 ### Detailed Documentation
 
-The landing page above plus the minimal examples are usually enough to evaluate the library. Everything below is
-expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) - dive in only when you need the specifics.
+The landing page above plus the minimal examples are usually enough to evaluate the library. For guided documentation with search and navigation, visit the [aeronet documentation site](https://sjanel.github.io/aeronet/). Everything below is expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) - dive in only when you need the specifics.
 
 #### Core HTTP semantics
 
