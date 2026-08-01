@@ -473,13 +473,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     // Route matching
     const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
-    const CorsPolicy* pCorsPolicy = routingResult.pCorsPolicy;
+    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
 
     // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
-    if (routingResult.pathConfig.requestTimeout != std::chrono::milliseconds::max()) {
+    if (routingResult.pathConfig().requestTimeout != std::chrono::milliseconds::max()) {
       trackRequestDeadline(state, static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                             state.lastActivity - state.headerStartTp +
-                                                            routingResult.pathConfig.requestTimeout)
+                                                            routingResult.pathConfig().requestTimeout)
                                                             .count()));
     }
 
@@ -521,8 +521,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
 #ifdef AERONET_ENABLE_WEBSOCKET
     // Check for WebSocket upgrade request
-    if (routingResult.pWebSocketEndpoint != nullptr && request.method() == http::Method::GET) {
-      const WebSocketEndpoint& endpoint = *routingResult.pWebSocketEndpoint;
+    if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET) {
+      const WebSocketEndpoint& endpoint = *routingResult.webSocketEndpoint();
 
       // Build upgrade config from endpoint settings
       WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
@@ -575,7 +575,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 #endif
 
     // Per-route request head size limit (already clamped against global in prepareRun)
-    if (request.headSpanSize() > routingResult.pathConfig.maxHeaderBytes) {
+    if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
       emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
       break;
     }
@@ -589,7 +589,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     }
     std::size_t consumedBytes = 0;
     const BodyDecodeStatus decodeStatus =
-        decodeBodyIfReady(cnxIt, isChunked, found100Continue, routingResult.pathConfig.maxBodyBytes, consumedBytes);
+        decodeBodyIfReady(cnxIt, isChunked, found100Continue, routingResult.pathConfig().maxBodyBytes, consumedBytes);
     if (decodeStatus == BodyDecodeStatus::Error) {
       break;
     }
@@ -684,7 +684,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
       const bool handlerActive = dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked,
                                                       found100Continue, consumedBytes, pCorsPolicy,
-                                                      responseMiddlewareRange, routingResult.pathConfig.maxBodyBytes);
+                                                      responseMiddlewareRange, routingResult.pathConfig().maxBodyBytes);
       if (handlerActive) {
         return state.isAnyCloseRequested();
       }
@@ -706,14 +706,14 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         sendResponse(HttpResponse(http::StatusCodeInternalServerError, "Unknown error"));
       }
     } else {
-      if (routingResult.redirectPathIndicator != Router::RoutingResult::RedirectSlashMode::None) {
+      if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
         // Emit 301 redirect to canonical form.
         static constexpr std::string_view kRedirecting = "Redirecting";
         const std::string_view reqPath = request.path();
         HttpResponse resp(
             HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), reqPath.size() + 1U),
             http::StatusCodeMovedPermanently);
-        if (routingResult.redirectPathIndicator == Router::RoutingResult::RedirectSlashMode::AddSlash) {
+        if (routingResult.redirectSlashMode() == Router::RoutingResult::RedirectSlashMode::AddSlash) {
           resp.headerAddLine(http::Location, reqPath);
           resp.headerAppendValue(http::Location, '/', "");
         } else {
@@ -725,7 +725,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         sendResponse(std::move(resp));
 
         consumedBytes = 0;  // already advanced
-      } else if (routingResult.methodNotAllowed) {
+      } else if (routingResult.methodNotAllowed()) {
         sendResponse(HttpResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
       } else {
         sendResponse(HttpResponse(http::StatusCodeNotFound));

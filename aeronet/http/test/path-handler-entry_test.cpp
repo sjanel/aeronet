@@ -193,15 +193,15 @@ TEST_F(PathHandlerEntryTest, CopyAndMoveConstructorsCoverMixedHandlers) {
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
   auto result = router.match(http::Method::GET, "/ctor");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Request);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Request);
   EXPECT_NE(result.requestHandler(), nullptr);
   EXPECT_EQ(result.preMiddlewareRange().size(), 1U);
 
   result.resetHandler();
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::None);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::None);
   EXPECT_FALSE(result.hasHandler());
   result = router.match(http::Method::POST, "/ctor");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Streaming);
   EXPECT_NE(result.streamingHandler(), nullptr);
   EXPECT_EQ(result.postMiddlewareRange().size(), 1U);
 }
@@ -213,7 +213,7 @@ TEST_F(PathHandlerEntryTest, CopyAssignmentTransfersNormalHandlers) {
 
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::GET, "/copy-dst");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Request);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Request);
   EXPECT_NE(result.requestHandler(), nullptr);
   EXPECT_TRUE(result.hasHandler());
 }
@@ -225,7 +225,7 @@ TEST_F(PathHandlerEntryTest, CopyAssignmentReusesExistingStreamingStorage) {
 
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::POST, "/stream-target");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Streaming);
   EXPECT_TRUE(result.hasHandler());
 }
 
@@ -236,7 +236,7 @@ TEST_F(PathHandlerEntryTest, CopyAssignmentConstructsNewStreamingHandler) {
 
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::POST, "/stream-target-2");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Streaming);
   EXPECT_TRUE(result.hasHandler());
 }
 
@@ -247,7 +247,7 @@ TEST_F(PathHandlerEntryTest, MoveAssignmentTransfersStreamingHandlers) {
 
   targetEntry = std::move(sourceEntry);
   auto result = target.match(http::Method::POST, "/move-stream-target");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Streaming);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Streaming);
 }
 
 TEST_F(PathHandlerEntryTest, SeveralStreamingAssignments) {
@@ -276,7 +276,7 @@ TEST_F(PathHandlerEntryTest, CopyAssignmentConstructsAsyncHandler) {
 
   targetEntry = sourceEntry;
   auto result = target.match(http::Method::PUT, "/async-target");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Async);
   EXPECT_TRUE(result.hasHandler());
 }
 
@@ -287,7 +287,7 @@ TEST_F(PathHandlerEntryTest, MoveAssignmentConstructsNewAsyncHandler) {
 
   targetEntry = std::move(sourceEntry);
   auto result = target.match(http::Method::PATCH, "/move-async-target");
-  EXPECT_EQ(result.handlerKind, Router::RoutingResult::HandlerKind::Async);
+  EXPECT_EQ(result.handlerKind(), Router::RoutingResult::HandlerKind::Async);
 }
 
 #endif
@@ -299,8 +299,8 @@ TEST_F(PathHandlerEntryTest, CorsAndMiddlewarePopulatedOnMatch) {
       .after([](const HttpRequestView&, HttpResponse&) {});
 
   auto result = router.match(http::Method::GET, "/middleware");
-  ASSERT_NE(result.pCorsPolicy, nullptr);
-  EXPECT_TRUE(result.pCorsPolicy->active());
+  ASSERT_NE(result.corsPolicy(), nullptr);
+  EXPECT_TRUE(result.corsPolicy()->active());
   EXPECT_EQ(result.preMiddlewareRange().size(), 1U);
   EXPECT_EQ(result.postMiddlewareRange().size(), 1U);
 }
@@ -400,7 +400,7 @@ TEST_F(PathHandlerEntryTest, ChainableTimeoutSetter) {
   using namespace std::chrono_literals;
   auto& ref = router.setPath(http::Method::POST, "/timeout-test", MakeNormalHandler()).timeout(3000ms);
   auto result = router.match(http::Method::POST, "/timeout-test");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 3000ms);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 3000ms);
   static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
 }
 
@@ -419,14 +419,14 @@ TEST_F(PathHandlerEntryTest, MaxMillisecondsTimeoutDoesNotThrow) {
 TEST_F(PathHandlerEntryTest, ChainableMaxBodyBytesSetter) {
   auto& ref = router.setPath(http::Method::PUT, "/body-limit", MakeNormalHandler()).maxBodyBytes(65536);
   auto result = router.match(http::Method::PUT, "/body-limit");
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 65536U);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 65536U);
   static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
 }
 
 TEST_F(PathHandlerEntryTest, ChainableMaxHeaderBytesSetter) {
   auto& ref = router.setPath(http::Method::GET, "/header-limit", MakeNormalHandler()).maxHeaderBytes(2048);
   auto result = router.match(http::Method::GET, "/header-limit");
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 2048U);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 2048U);
   static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
 }
 
@@ -442,24 +442,24 @@ TEST_F(PathHandlerEntryTest, ChainingMultipleSetters) {
       .cors(CorsPolicy(CorsPolicy::Active::On).allowAnyOrigin());
 
   auto result = router.match(http::Method::POST, "/all-config");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 1000ms);
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 4096U);
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 1024U);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 1000ms);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 4096U);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 1024U);
 #ifdef AERONET_ENABLE_HTTP2
-  EXPECT_EQ(result.pathConfig.http2Enable, PathEntryConfig::Http2Enable::Disable);
+  EXPECT_EQ(result.pathConfig().http2Enable, PathEntryConfig::Http2Enable::Disable);
 #endif
-  ASSERT_NE(result.pCorsPolicy, nullptr);
-  EXPECT_TRUE(result.pCorsPolicy->active());
+  ASSERT_NE(result.corsPolicy(), nullptr);
+  EXPECT_TRUE(result.corsPolicy()->active());
 }
 
 TEST_F(PathHandlerEntryTest, RouteWithoutOverridesHasNulloptConfig) {
   router.setPath(http::Method::GET, "/no-config", MakeNormalHandler());
   auto result = router.match(http::Method::GET, "/no-config");
-  EXPECT_EQ(result.pathConfig.requestTimeout, std::chrono::milliseconds::max());
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, static_cast<std::size_t>(-1));
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, static_cast<uint32_t>(-1));
+  EXPECT_EQ(result.pathConfig().requestTimeout, std::chrono::milliseconds::max());
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, static_cast<std::size_t>(-1));
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, static_cast<uint32_t>(-1));
 #ifdef AERONET_ENABLE_HTTP2
-  EXPECT_EQ(result.pathConfig.http2Enable, PathEntryConfig::Http2Enable::Default);
+  EXPECT_EQ(result.pathConfig().http2Enable, PathEntryConfig::Http2Enable::Default);
 #endif
 }
 
@@ -473,8 +473,8 @@ TEST_F(PathHandlerEntryTest, CopyPreservesNewPathConfigFields) {
   targetEntry = sourceEntry;
 
   auto result = target.match(http::Method::GET, "/copy-cfg-dst");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 2000ms);
-  EXPECT_EQ(result.pathConfig.maxBodyBytes, 8192U);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 2000ms);
+  EXPECT_EQ(result.pathConfig().maxBodyBytes, 8192U);
 }
 
 TEST_F(PathHandlerEntryTest, MovePreservesNewPathConfigFields) {
@@ -487,8 +487,8 @@ TEST_F(PathHandlerEntryTest, MovePreservesNewPathConfigFields) {
   targetEntry = std::move(sourceEntry);
 
   auto result = target.match(http::Method::GET, "/move-cfg-dst");
-  EXPECT_EQ(result.pathConfig.requestTimeout, 500ms);
-  EXPECT_EQ(result.pathConfig.maxHeaderBytes, 4096U);
+  EXPECT_EQ(result.pathConfig().requestTimeout, 500ms);
+  EXPECT_EQ(result.pathConfig().maxHeaderBytes, 4096U);
 }
 
 }  // namespace aeronet

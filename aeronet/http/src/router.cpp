@@ -14,6 +14,7 @@
 #include <utility>
 #include <variant>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-method.hpp"
@@ -35,10 +36,13 @@ namespace {
 constexpr std::string_view kEscapedOpenBrace = "{{";
 constexpr std::string_view kEscapedCloseBrace = "}}";
 
-bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy, std::string_view& path) {
+[[noreturn]] void ThrowEmptyPath() { throw std::invalid_argument("Path cannot be empty"); }
+
+AERONET_ALWAYS_INLINE bool MayNormalizeHasTrailingSlash(RouterConfig::TrailingSlashPolicy policy,
+                                                        std::string_view& path) {
   const auto sz = path.size();
-  if (sz == 0) {
-    throw std::invalid_argument("Path cannot be empty");
+  if (sz == 0) [[unlikely]] {
+    ThrowEmptyPath();
   }
   const bool pathHasTrailingSlash = sz > 1U && path.back() == '/';
   if (policy == RouterConfig::TrailingSlashPolicy::Strict) {
@@ -85,6 +89,20 @@ Router& Router::operator=(const Router& other) {
 }
 
 Router::~Router() = default;
+
+Router::RoutingResult::RoutingResult(Handler handler, HandlerKind handlerKind, RedirectSlashMode redirectSlashMode,
+                                     bool methodNotAllowed, const PathHandlerEntry* pPathEntry,
+                                     const PathEntryConfig* pPathConfig, std::span<const PathParamCapture> pathParams,
+                                     const CorsPolicy* pCorsPolicy) noexcept
+    : _handler(handler),
+      _pPathEntry(pPathEntry),
+      _pPathConfig(pPathConfig),
+      _pPathParams(pathParams.data()),
+      _pCorsPolicy(pCorsPolicy),
+      _nbPathParams(static_cast<uint32_t>(pathParams.size())),
+      _handlerKind(handlerKind),
+      _redirectSlashMode(redirectSlashMode),
+      _methodNotAllowed(methodNotAllowed) {}
 
 void Router::addRequestMiddleware(RequestMiddleware middleware) {
   _globalPreMiddleware.emplace_back(std::move(middleware));
@@ -800,11 +818,14 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
   PathHandlerEntry* pEntry;
   if (isLiteralOnly) {
     const std::string_view literalKey = unescapeAndAllocate(path);
-    auto [it, inserted] = _literalOnlyRoutes.try_emplace(literalKey);
-    if (!inserted) {
-      _charStorage.shrinkLastAllocated(const_cast<char*>(literalKey.data()), 0);
+    const auto [it, inserted] = _literalOnlyRoutes.try_emplace(literalKey, _literalRouteEntries.size());
+    if (inserted) {
+      _literalRouteEntries.emplace_back();
+    } else {
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      _charStorage.shrinkLastAllocated(literalKey.data(), 0);
     }
-    LiteralRouteEntry& literalEntry = it->second;
+    LiteralRouteEntry& literalEntry = _literalRouteEntries[it->second];
 
     if (pathHasTrailingSlash) {
       literalEntry.hasWithSlashRegistered = true;
@@ -914,9 +935,7 @@ bool Router::matchParamParts(std::span<const SegmentPart> parts, std::string_vie
 }
 
 const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHasTrailingSlash) {
-  if (_pRootNode == nullptr) {
-    return nullptr;
-  }
+  assert(_pRootNode != nullptr);
 
   _matchStateBuffer.clear();
   const RadixNode* pNode = _pRootNode;
@@ -961,7 +980,7 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
 
     if (path.size() > prefix.size()) {
       if (path.starts_with(prefix)) {
-        path = path.substr(prefix.size());
+        path.remove_prefix(prefix.size());
         const char firstChar = path[0];
 
         // First, try to match a static child by finding one whose path is a prefix of remaining path
@@ -988,7 +1007,8 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
 
           // Find param end (either '/' or path end) - shared by all param children
           const std::size_t segEnd = path.find('/');
-          const std::string_view segment = path.substr(0, segEnd);
+          // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+          const std::string_view segment(path.data(), std::min(segEnd, path.size()));
 
           // Try each wildcard child in order (constrained first, unconstrained last)
           for (auto wildIdx = staticCount; wildIdx < totalChildren; ++wildIdx) {
@@ -1021,7 +1041,7 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
               // Continue to next segment if there's more path
               if (segEnd < path.size()) {
                 if (!pParamNode->children.empty()) {
-                  path = path.substr(segEnd);
+                  path.remove_prefix(segEnd);
                   pNode = pParamNode->children[0];
                   goto continueWalk;
                 }
@@ -1126,11 +1146,11 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
 Router::RoutingResult Router::match(http::Method method, std::string_view path) {
   const bool pathHasTrailingSlash = MayNormalizeHasTrailingSlash(_config.trailingSlashPolicy, path);
 
-  RoutingResult result;
-
-  if (const auto it = _literalOnlyRoutes.find(path); it != _literalOnlyRoutes.end()) {
-    const auto& literalEntry = it->second;
+  const auto literalIt = _literalOnlyRoutes.empty() ? _literalOnlyRoutes.end() : _literalOnlyRoutes.find(path);
+  if (literalIt != _literalOnlyRoutes.end()) {
+    const auto& literalEntry = _literalRouteEntries[literalIt->second];
     const PathHandlerEntry* entryPtr = nullptr;
+    auto redirectSlashMode = RoutingResult::RedirectSlashMode::None;
     switch (_config.trailingSlashPolicy) {
       case RouterConfig::TrailingSlashPolicy::Strict:
         // Strict mode keeps slash and no-slash literals under distinct map keys, so a successful
@@ -1149,72 +1169,62 @@ Router::RoutingResult Router::match(http::Method method, std::string_view path) 
             entryPtr = &literalEntry.handlers;
           } else {
             assert(literalEntry.hasNoSlashRegistered);
-            result.redirectPathIndicator = RoutingResult::RedirectSlashMode::RemoveSlash;
+            redirectSlashMode = RoutingResult::RedirectSlashMode::RemoveSlash;
           }
         } else {
           if (literalEntry.hasNoSlashRegistered) {
             entryPtr = &literalEntry.handlers;
           } else {
             assert(literalEntry.hasWithSlashRegistered);
-            result.redirectPathIndicator = RoutingResult::RedirectSlashMode::AddSlash;
+            redirectSlashMode = RoutingResult::RedirectSlashMode::AddSlash;
           }
         }
         break;
     }
 
     if (entryPtr != nullptr) {
-      setMatchedHandler(method, *entryPtr, result);
+      return makeMatchedResult(method, *entryPtr, redirectSlashMode);
     }
-    return result;
+    return {{}, RoutingResult::HandlerKind::None, redirectSlashMode, false, nullptr, nullptr, {}, nullptr};
   }
 
-  // Radix tree traversal
-  const RadixNode* pMatchedNode = matchImpl(path, pathHasTrailingSlash);
+  return matchNonLiteral(method, path, pathHasTrailingSlash);
+}
+
+Router::RoutingResult Router::matchNonLiteral(http::Method method, std::string_view path, bool pathHasTrailingSlash) {
+  const RadixNode* pMatchedNode = _pRootNode == nullptr ? nullptr : matchImpl(path, pathHasTrailingSlash);
 
   if (pMatchedNode == nullptr) {
-    // Fall back to default handlers
-    if (_streamingHandler) {
-      result.setStreamingHandler(&_streamingHandler);
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    } else if (_asyncHandler) {
-      result.setAsyncRequestHandler(&_asyncHandler);
-#endif
-    } else if (_handler) {
-      result.setRequestHandler(&_handler);
-    }
-    result.pathConfig = _defaultPathConfig;
-    return result;
+    return makeDefaultResult();
   }
 
-  const PathHandlerEntry* entryPtr =
-      computePathHandlerEntry(*pMatchedNode, pathHasTrailingSlash, result.redirectPathIndicator);
+  auto redirectSlashMode = RoutingResult::RedirectSlashMode::None;
+  const PathHandlerEntry* entryPtr = computePathHandlerEntry(*pMatchedNode, pathHasTrailingSlash, redirectSlashMode);
   if (entryPtr == nullptr) {
-    return result;
+    return {{}, RoutingResult::HandlerKind::None, redirectSlashMode, false, nullptr, nullptr, {}, nullptr};
   }
-
-  setMatchedHandler(method, *entryPtr, result);
 
   // Build path params from match state
+  std::span<const PathParamCapture> pathParams;
   const Route* pRoute = pMatchedNode->pRoute;
-  if (pRoute != nullptr) {
-    assert(std::cmp_equal(pRoute->paramNames.nbConcatenatedStrings(), _matchStateBuffer.size()));
+  assert(pRoute != nullptr);
+  assert(std::cmp_equal(pRoute->paramNames.nbConcatenatedStrings(), _matchStateBuffer.size()));
 
-    _pathParamCaptureBuffer.clear();
-    for (auto [paramPos, param] : std::views::enumerate(pRoute->paramNames)) {
-      _pathParamCaptureBuffer.emplace_back(param, _matchStateBuffer[static_cast<uint32_t>(paramPos)]);
-    }
-    result.pPathParams = _pathParamCaptureBuffer.data();
-    result.nbPathParams = _pathParamCaptureBuffer.size();
+  _pathParamCaptureBuffer.clear();
+  for (auto [paramPos, param] : std::views::enumerate(pRoute->paramNames)) {
+    _pathParamCaptureBuffer.emplace_back(param, _matchStateBuffer[static_cast<uint32_t>(paramPos)]);
   }
+  pathParams = _pathParamCaptureBuffer;
 
-  return result;
+  return makeMatchedResult(method, *entryPtr, redirectSlashMode, pathParams);
 }
 
 http::MethodBmp Router::allowedMethods(std::string_view path) {
   const bool pathHasTrailingSlash = MayNormalizeHasTrailingSlash(_config.trailingSlashPolicy, path);
 
-  if (const auto it = _literalOnlyRoutes.find(path); it != _literalOnlyRoutes.end()) {
-    const auto& literalEntry = it->second;
+  const auto literalIt = _literalOnlyRoutes.empty() ? _literalOnlyRoutes.end() : _literalOnlyRoutes.find(path);
+  if (literalIt != _literalOnlyRoutes.end()) {
+    const auto& literalEntry = _literalRouteEntries[literalIt->second];
     if (_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict ||
         _config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Redirect) {
       if (pathHasTrailingSlash ? !literalEntry.hasWithSlashRegistered : !literalEntry.hasNoSlashRegistered) {
@@ -1231,7 +1241,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   }
 
   // Radix tree traversal
-  const RadixNode* pMatchedNode = matchImpl(path, pathHasTrailingSlash);
+  const RadixNode* pMatchedNode = _pRootNode == nullptr ? nullptr : matchImpl(path, pathHasTrailingSlash);
 
   if (pMatchedNode != nullptr) {
     const auto& entry = pMatchedNode->handlers;
@@ -1298,7 +1308,9 @@ const PathHandlerEntry* Router::computePathHandlerEntry(const RadixNode& matched
   return nullptr;
 }
 
-void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entry, RoutingResult& result) const {
+Router::RoutingResult Router::makeMatchedResult(http::Method method, const PathHandlerEntry& entry,
+                                                RoutingResult::RedirectSlashMode redirectSlashMode,
+                                                std::span<const PathParamCapture> pathParams) const {
   auto methodIdx = MethodToIdx(method);
 
   if (method == http::Method::HEAD) {
@@ -1320,44 +1332,59 @@ void Router::setMatchedHandler(http::Method method, const PathHandlerEntry& entr
     }
   }
 
-  if (entry.hasStreamingHandler(methodIdx)) {
-    assert(http::IsMethodSet(entry._streamingMethodBmp, method));
-    result.setStreamingHandler(entry.streamingHandlerPtr(methodIdx));
+  RoutingResult::Handler handler{};
+  auto handlerKind = RoutingResult::HandlerKind::None;
+  bool methodNotAllowed = false;
+  if (entry.hasNormalHandler(methodIdx)) {
+    assert(http::IsMethodSet(entry._normalMethodBmp, method));
+    handler.request = entry.requestHandlerPtr(methodIdx);
+    handlerKind = RoutingResult::HandlerKind::Request;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   } else if (entry.hasAsyncHandler(methodIdx)) {
     assert(http::IsMethodSet(entry._asyncMethodBmp, method));
-    result.setAsyncRequestHandler(entry.asyncHandlerPtr(methodIdx));
+    handler.async = entry.asyncHandlerPtr(methodIdx);
+    handlerKind = RoutingResult::HandlerKind::Async;
 #endif
-  } else if (entry.hasNormalHandler(methodIdx)) {
-    assert(http::IsMethodSet(entry._normalMethodBmp, method));
-    result.setRequestHandler(entry.requestHandlerPtr(methodIdx));
+  } else if (entry.hasStreamingHandler(methodIdx)) {
+    assert(http::IsMethodSet(entry._streamingMethodBmp, method));
+    handler.streaming = entry.streamingHandlerPtr(methodIdx);
+    handlerKind = RoutingResult::HandlerKind::Streaming;
 #ifdef AERONET_ENABLE_WEBSOCKET
   } else if (entry.hasWebSocketEndpoint() && method == http::Method::GET) {
 // WebSocket endpoint on GET - handler will be determined by upgrade validation
 #endif
   } else {
-    result.methodNotAllowed = true;
+    methodNotAllowed = true;
   }
 
+  const CorsPolicy* pCorsPolicy = nullptr;
   if (entry._corsPolicy.active()) {
-    result.pCorsPolicy = &entry._corsPolicy;
+    pCorsPolicy = &entry._corsPolicy;
   } else if (_config.defaultCorsPolicy.active()) {
-    result.pCorsPolicy = &_config.defaultCorsPolicy;
+    pCorsPolicy = &_config.defaultCorsPolicy;
   }
 
-#ifdef AERONET_ENABLE_WEBSOCKET
-  if (entry.hasWebSocketEndpoint()) {
-    result.pWebSocketEndpoint = entry.webSocketEndpointPtr();
-  }
+  return {handler, handlerKind,        redirectSlashMode, methodNotAllowed,
+          &entry,  &entry._pathConfig, pathParams,        pCorsPolicy};
+}
+
+Router::RoutingResult Router::makeDefaultResult() const {
+  RoutingResult::Handler handler{};
+  auto handlerKind = RoutingResult::HandlerKind::None;
+  if (_streamingHandler) {
+    handler.streaming = &_streamingHandler;
+    handlerKind = RoutingResult::HandlerKind::Streaming;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  } else if (_asyncHandler) {
+    handler.async = &_asyncHandler;
+    handlerKind = RoutingResult::HandlerKind::Async;
 #endif
-
-  result.pPreMiddleware = entry._preMiddleware.data();
-  result.nbPreMiddleware = entry._preMiddleware.size();
-
-  result.pPostMiddleware = entry._postMiddleware.data();
-  result.nbPostMiddleware = entry._postMiddleware.size();
-
-  result.pathConfig = entry._pathConfig;
+  } else if (_handler) {
+    handler.request = &_handler;
+    handlerKind = RoutingResult::HandlerKind::Request;
+  }
+  return {handler, handlerKind, RoutingResult::RedirectSlashMode::None, false, nullptr, &_defaultPathConfig,
+          {},      nullptr};
 }
 
 // ============================================================================
@@ -1368,6 +1395,7 @@ void Router::cloneNodesFrom(const Router& other) {
   _nodePool.clear();
   _compiledRoutePool.clear();
   _literalOnlyRoutes.clear();
+  _literalRouteEntries.clear();
   _charStorage.clear();
 
   flat_hash_map<const Route*, Route*> routeMap;
@@ -1438,10 +1466,11 @@ void Router::cloneNodesFrom(const Router& other) {
     }
   }
 
-  // Clone literal-only routes map (stored independently of the radix tree)
+  // Clone literal-only routes, keeping the compact map indices unchanged.
+  _literalRouteEntries = other._literalRouteEntries;
   _literalOnlyRoutes.reserve(other._literalOnlyRoutes.size());
-  for (const auto& [key, entry] : other._literalOnlyRoutes) {
-    _literalOnlyRoutes.emplace(allocatePath(key), entry);
+  for (const auto& [key, entryIdx] : other._literalOnlyRoutes) {
+    _literalOnlyRoutes.emplace(allocatePath(key), entryIdx);
   }
 }
 
@@ -1456,6 +1485,7 @@ void Router::clear() noexcept {
   _nodePool.clear();
   _compiledRoutePool.clear();
   _literalOnlyRoutes.clear();
+  _literalRouteEntries.clear();
   _charStorage.clear();
   _pRootNode = nullptr;
 }
@@ -1466,12 +1496,12 @@ std::string_view Router::unescapeAndAllocate(std::string_view input) {
   }
   char* dst = _charStorage.allocateAndDefaultConstruct(input.size());
   char* pDst = dst;
-  for (std::size_t i = 0; i < input.size(); ++i) {
-    *pDst = input[i];
-    if ((input[i] == '{' || input[i] == '}') && i + 1 < input.size() && input[i + 1] == input[i]) {
-      ++i;
+  for (std::size_t charIdx = 0; charIdx < input.size(); ++charIdx, ++pDst) {
+    const char ch = input[charIdx];
+    *pDst = ch;
+    if ((ch == '{' || ch == '}') && charIdx + 1 < input.size() && input[charIdx + 1] == ch) {
+      ++charIdx;
     }
-    ++pDst;
   }
   const auto finalSize = static_cast<std::size_t>(pDst - dst);
   _charStorage.shrinkLastAllocated(dst, finalSize);
@@ -1503,8 +1533,8 @@ void Router::pushBackIndex(RadixNode& node, char indexChar) {
 }
 
 namespace {
-constexpr uint32_t kSentinelHeaderBytes = static_cast<uint32_t>(-1);
-constexpr std::size_t kSentinelBodyBytes = static_cast<std::size_t>(-1);
+constexpr auto kSentinelHeaderBytes = static_cast<uint32_t>(-1);
+constexpr auto kSentinelBodyBytes = static_cast<std::size_t>(-1);
 
 void CheckRouteConfig(const PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes,
                       std::string_view routePath) {
@@ -1529,8 +1559,7 @@ void ClampConfig(PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_
 void Router::clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes) {
   // Validate and clamp radix tree nodes iteratively.
   if (_pRootNode != nullptr) {
-    vector<RadixNode*> stack(1U, _pRootNode);
-    while (!stack.empty()) {
+    for (vector<RadixNode*> stack(1U, _pRootNode); !stack.empty();) {
       auto* node = stack.back();
       stack.pop_back();
 
@@ -1543,7 +1572,8 @@ void Router::clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBo
   }
 
   // Validate and clamp literal routes.
-  for (auto& [key, entry] : _literalOnlyRoutes) {
+  for (const auto& [key, entryIdx] : _literalOnlyRoutes) {
+    auto& entry = _literalRouteEntries[entryIdx];
     CheckRouteConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes, key);
     ClampConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
   }
