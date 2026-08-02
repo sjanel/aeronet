@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <string>
 #include <string_view>
 
@@ -736,7 +737,9 @@ TEST(HttpCompression, GzipStreamingIdentityForbiddenNoAlternativesReturns406) {
     });
   }
 
-  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+  std::atomic<bool> handlerInvoked{false};
+  ts.router().setDefault([&handlerInvoked](const HttpRequestView&, HttpResponseWriter& writer) {
+    handlerInvoked = true;
     writer.status(http::StatusCodeOK);  // will be overridden to 406 before handler invoked if negotiation rejects
     writer.contentType("text/plain");
     writer.writeBody(std::string(64, 'Q'));
@@ -745,6 +748,7 @@ TEST(HttpCompression, GzipStreamingIdentityForbiddenNoAlternativesReturns406) {
   auto resp = test::simpleGet(ts.port(), "/sbad", {{"Accept-Encoding", "identity;q=0, br;q=0"}});
   EXPECT_TRUE(resp.headersRaw.rfind("HTTP/1.1 406", 0) == 0) << resp.headersRaw;
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
+  EXPECT_FALSE(handlerInvoked.load());
 }
 
 TEST(HttpCompression, ZstdAppliedWhenEligible) {

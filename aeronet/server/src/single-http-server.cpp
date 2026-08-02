@@ -462,6 +462,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     const auto [encoding, reject] =
         _compressionState.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
+
     // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
     // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
     if (reject) {
@@ -771,8 +772,6 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   bool wantClose = request.wantClose();
-  bool isHead = request.method() == http::Method::HEAD;
-  Encoding compressionFormat = Encoding::none;
 
   // Determine active CORS policy (route-specific if provided, otherwise global)
   if (pCorsPolicy != nullptr) {
@@ -785,24 +784,10 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
     }
   }
 
-  if (!isHead) {
-    auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-    auto negotiated = _compressionState.selector.negotiateAcceptEncoding(encHeader);
-    if (negotiated.reject) {
-      // Mirror buffered path semantics: emit a 406 and skip invoking user streaming handler.
-      HttpResponse resp(http::StatusCodeNotAcceptable, "No acceptable content-coding available");
-      ApplyResponseMiddleware(request, resp, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
-                              _callbacks.middlewareMetrics);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
-      return state.isAnyCloseRequested();
-    }
-    compressionFormat = negotiated.encoding;
-  }
-
   // Create the protocol-specific transport backend and the protocol-agnostic writer
   internal::Http1WriterTransport transport(*this, cnxIt->fd(), wantClose, pCorsPolicy, postMiddleware);
-  HttpResponseWriter writer(transport, request, compressionFormat, _config.compression, _compressionState,
-                            _config.globalHeaders.fullStringWithLastSep(), _config.addTrailerHeader);
+  HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
+                            _compressionState, _config.globalHeaders.fullStringWithLastSep(), _config.addTrailerHeader);
   try {
     streamingHandler(request, writer);
   } catch (const std::exception& ex) {
@@ -902,9 +887,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
 void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
+  assert(asyncState != nullptr);
   auto& async = *asyncState;
   if (!async.active || !async.handle) {
     return;
@@ -929,13 +912,9 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
 void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
+  assert(asyncState != nullptr);
   auto& async = *asyncState;
-  if (!async.active) {
-    return;
-  }
+  assert(async.active);
 
   if (async.needsBody) {
     std::size_t consumedBytes = 0;

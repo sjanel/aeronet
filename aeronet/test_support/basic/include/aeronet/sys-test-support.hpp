@@ -540,6 +540,16 @@ class QueueResetGuard {
 
 }  // namespace aeronet::test
 
+namespace aeronet::test {
+inline KeyedActionQueue<std::string, int> g_dup_path_errnos;
+
+inline void ResetDupActions() { g_dup_path_errnos.reset(); }
+
+inline void SetDupPathErrors(std::string_view path, std::initializer_list<int> errors) {
+  g_dup_path_errnos.setActions(std::string(path), errors);
+}
+}  // namespace aeronet::test
+
 // Socket syscall action queues: allow tests to simulate syscall errors.
 // Action type for socket syscalls: return value (-1 for error) and errno.
 using SyscallAction = std::pair<int, int>;  // (return value, errno)
@@ -1006,6 +1016,16 @@ inline void PushSendmsgAction(int fd, IoAction action) { g_sendmsg_actions.push(
 namespace aeronet::test {
 using PreadFn = ssize_t (*)(int, void*, size_t, off_t);
 using SendfileFn = ssize_t (*)(int, int, off_t*, size_t);
+using DupFn = int (*)(int);
+
+inline DupFn ResolveRealDup() {
+  static DupFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<DupFn>("dup");
+  return fn;
+}
 
 inline PreadFn ResolveRealPread() {
   static PreadFn fn = nullptr;
@@ -1090,6 +1110,18 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t sendfile(int out_fd, 
   }
   auto real = aeronet::test::ResolveRealSendfile();
   return real(out_fd, in_fd, offset, count);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int dup(int fd) {
+  if (auto pathOpt = aeronet::test::PathForFd(fd)) {
+    if (auto error = aeronet::test::g_dup_path_errnos.pop(*pathOpt)) {
+      errno = *error;
+      return -1;
+    }
+  }
+  auto real = aeronet::test::ResolveRealDup();
+  return real(fd);
 }
 
 #endif  // AERONET_WANT_SENDFILE_PREAD_OVERRIDES

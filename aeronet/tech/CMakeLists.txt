@@ -115,6 +115,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    nchars_test
+    test/nchars_test.cpp
+)
+
+AeronetAddUnitTest(
     ndigits_test
     test/ndigits_test.cpp
 )
@@ -189,13 +194,6 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     toupperlower_test
     test/toupperlower_test.cpp
-)
-
-AeronetAddUnitTest(
-    https-redirect_test
-    test/https-redirect_test.cpp
-    LIBRARIES
-    aeronet_tech
 )
 
 AeronetAddUnitTest(
