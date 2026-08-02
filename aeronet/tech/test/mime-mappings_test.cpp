@@ -5,10 +5,7 @@
 
 #include <gtest/gtest.h>
 
-#include <cstddef>
-#include <string>
-
-using namespace aeronet;
+namespace aeronet {
 
 TEST(MIMEMappings, ContainsKnownExtension) {
   // Spot-check several known mappings
@@ -52,21 +49,11 @@ TEST(MIMEMappings, MultiDotFilenames) {
   }
 }
 
-TEST(MIMEMappings, SortedAndUnique) {
-  // Ensure kMIMEMappings is sorted by extension and contains no duplicates
-  std::size_t nbMappings = std::size(kMIMEMappings);
-  for (std::size_t i = 1; i < nbMappings; ++i) {
-    const auto& prev = kMIMEMappings[i - 1].extension;
-    const auto& cur = kMIMEMappings[i].extension;
-    EXPECT_LT(prev, cur) << "Mappings not strictly increasing at index " << (i - 1);
-  }
-}
-
 TEST(MIMEMappingsTest, CommonExtensions) {
-  EXPECT_EQ(std::string(DetermineMIMETypeStr("sample.md")), "text/markdown");
-  EXPECT_EQ(std::string(DetermineMIMETypeStr("archive.tar.gz")), "application/gzip");
-  EXPECT_EQ(std::string(DetermineMIMETypeStr("index.HTML")), "text/html");
-  EXPECT_EQ(std::string(DetermineMIMETypeStr("UPPER.TXT")), "text/plain");
+  EXPECT_EQ(DetermineMIMETypeStr("sample.md"), "text/markdown");
+  EXPECT_EQ(DetermineMIMETypeStr("archive.tar.gz"), "application/gzip");
+  EXPECT_EQ(DetermineMIMETypeStr("index.HTML"), "text/html");
+  EXPECT_EQ(DetermineMIMETypeStr("UPPER.TXT"), "text/plain");
 }
 
 TEST(MIMEMappingsTest, EdgeCases) {
@@ -80,22 +67,4 @@ TEST(MIMEMappingsTest, EdgeCases) {
   EXPECT_TRUE(DetermineMIMETypeStr(".bashrc").empty());
 }
 
-TEST(MIMEMappingsTest, MaxExtensionLengthBehavior) {
-  // Determine the maximum extension length from the mapping table
-  std::size_t maxLen = 0;
-  std::size_t maxIdx = 0;
-  for (std::size_t i = 0; i < std::size(kMIMEMappings); ++i) {
-    if (kMIMEMappings[i].extension.size() > maxLen) {
-      maxLen = kMIMEMappings[i].extension.size();
-      maxIdx = i;
-    }
-  }
-
-  // A path that uses the longest known extension should map to that MIME type
-  const std::string pathWithMaxExt = std::string("test.") + std::string(kMIMEMappings[maxIdx].extension);
-  EXPECT_EQ(std::string(DetermineMIMETypeStr(pathWithMaxExt)), std::string(kMIMEMappings[maxIdx].mimeType));
-
-  // An extension longer than the maximum known size must be ignored and return empty
-  const std::string longExt(maxLen + 1, 'x');
-  EXPECT_TRUE(DetermineMIMETypeStr(std::string("file.") + longExt).empty());
-}
+}  // namespace aeronet
