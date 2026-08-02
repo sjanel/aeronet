@@ -289,7 +289,7 @@ TEST(HttpParserChunked, Expect100Continue) {
 TEST(HttpParserChunkedTrailers, ValidTrailer) {
   ts.router().setDefault([](const HttpRequestView& req) {
     auto val = req.trailerValueOrEmpty("X-Checksum");
-    return req.makeResponse(std::string(val));
+    return req.makeResponse(val);
   });
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
@@ -306,7 +306,7 @@ TEST(HttpParserChunkedTrailers, ValidTrailer) {
 TEST(HttpParserChunkedTrailers, NeedMore_PartialTrailerLine) {
   ts.router().setDefault([](const HttpRequestView& req) {
     auto val = req.trailerValueOrEmpty("X-Tag");
-    return req.makeResponse(std::string(val));
+    return req.makeResponse(val);
   });
   std::string head =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
