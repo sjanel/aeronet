@@ -1,13 +1,13 @@
 #include "aeronet/http-request-view.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -41,7 +41,6 @@
 #include "aeronet/template-constants.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
-#include "http-method-parse.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/log-noexcept.hpp"
@@ -204,6 +203,84 @@ void HttpRequestView::init(const HttpServerConfig& config, internal::Compression
   _pCompressionState = &compressionState;
 }
 
+namespace {
+
+constexpr bool kLE = std::endian::native == std::endian::little;
+
+// Byte index (0 == first[0]) of the lowest-memory-address lane whose 0x80
+// marker bit is set in `mask` (must be a non-zero SwarFindByte result).
+constexpr uint8_t LeadingMatchIndex(uint64_t mask) noexcept {
+  if constexpr (kLE) {
+    return static_cast<uint8_t>(std::countr_zero(mask) >> 3);
+  } else {
+    return static_cast<uint8_t>(std::countl_zero(mask) >> 3);
+  }
+}
+
+// Mask keeping only the first `n` memory bytes (first[0..n)) of a
+// memcpy-loaded word, for 0 < n < 8.
+constexpr uint64_t FirstNBytesMask(uint8_t sz) noexcept {
+  assert(sz > 0 && sz < 8);
+  if constexpr (kLE) {
+    return (uint64_t{1} << (sz * 8U)) - 1;
+  } else {
+    return ~uint64_t{0} << ((8U - sz) * 8);
+  }
+}
+
+constexpr uint64_t kLoBits = 0x0101010101010101ULL;
+constexpr uint64_t kHiBits = 0x8080808080808080ULL;
+
+// 0x80 set in every byte lane of `word` that equals `needle`, 0 elsewhere.
+constexpr uint64_t SwarFindByte(uint64_t word, uint8_t needle) {
+  const uint64_t diff = word ^ (kLoBits * needle);
+  return (diff - kLoBits) & ~diff & kHiBits;
+}
+
+struct MethodUpperCodes {
+  uint64_t codes[http::kNbMethods];
+};
+
+constexpr MethodUpperCodes kMethodUpperCodes = [] {
+  MethodUpperCodes codes{};
+
+  // Packs a literal (<= 8 chars) into a little-endian uint64_t, letters forced uppercase.
+  constexpr auto packUpper = [](http::MethodIdx methodIdx) {
+    uint64_t word = 0;
+
+    // Bit-shift for the i-th memory byte (i=0 == first[0]) inside a uint64_t
+    // built via memcpy on this platform's native endianness.
+    constexpr auto byteShift = [](uint8_t idx) {
+      if constexpr (kLE) {
+        return 8U * idx;
+      } else {
+        return 8U * (7U - idx);
+      }
+    };
+
+    for (uint8_t idx = 0; idx < http::MethodIdxToStr(methodIdx).size(); ++idx) {
+      word |= uint64_t{static_cast<uint8_t>(http::MethodIdxToStr(methodIdx)[idx]) & ~0x20U} << byteShift(idx);
+    }
+    return word;
+  };
+
+  for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
+    codes.codes[methodIdx] = packUpper(methodIdx);
+  }
+  return codes;
+}();
+
+static_assert([] {
+  for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
+    if (http::MethodIdxToStr(methodIdx).size() > sizeof(uint64_t) - 1U) {
+      return false;
+    }
+  }
+  return true;
+}());
+
+}  // namespace
+
 http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer,
                                                  uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
                                                  tracing::SpanPtr traceSpan) {
@@ -218,18 +295,26 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     return http::StatusCodeBadRequest;
   }
 
-  char* nextSep = std::find(first, lineLast, ' ');
-  if (nextSep == lineLast) {
-    // we have a new line, but no spaces in the first line. This is definitely a bad request.
-    return http::StatusCodeBadRequest;
+  uint64_t start;
+  std::memcpy(&start, first, sizeof(start));
+
+  const uint64_t spaceMask = SwarFindByte(start, ' ');
+  if (spaceMask == 0) [[unlikely]] {
+    char* realSep = std::find(first + 8, lineLast, ' ');
+    return realSep == lineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
   }
 
-  // Method
-  const auto optMethod = http::MethodStrToOptEnum(std::string_view(first, nextSep));
-  if (!optMethod) {
+  const auto methodLen = LeadingMatchIndex(spaceMask);
+  // Clear bit 5 of the method bytes to compare case-insensitively.
+  const uint64_t candidate = (start & 0xDFDFDFDFDFDFDFDFULL) & FirstNBytesMask(methodLen);
+
+  const auto methodIt = std::ranges::find(kMethodUpperCodes.codes, candidate);
+  if (methodIt == std::end(kMethodUpperCodes.codes)) {
     return http::StatusCodeNotImplemented;
   }
-  _method = *optMethod;
+  _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodUpperCodes.codes)));
+
+  char* nextSep = first + methodLen;
 
   // Path
   first = nextSep + 1;
@@ -278,9 +363,10 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
       return http::StatusCodeBadRequest;
     }
 
+    auto [insertedIt, inserted] = _headers.emplace(nameView, valueView);
     // Store header using in-place merge helper (headers live inside connection buffer).
-    if (!http::AddOrMergeHeaderInPlace(_headers, nameView, valueView, tmpBuffer, inBuffer.data(), first,
-                                       mergeAllowedForUnknownRequestHeaders)) {
+    if (!inserted && !http::MergeHeaderInPlace(_headers, insertedIt, valueView, tmpBuffer, inBuffer.data(), first,
+                                               mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
   }

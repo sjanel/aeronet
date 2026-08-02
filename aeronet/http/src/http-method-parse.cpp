@@ -1,6 +1,5 @@
 #include "http-method-parse.hpp"
 
-#include <optional>
 #include <string_view>
 
 #include "aeronet/http-method.hpp"
@@ -9,52 +8,52 @@
 
 namespace aeronet::http {
 
-std::optional<Method> MethodStrToOptEnum(std::string_view str) {
+Method ParseMethodStr(std::string_view str) {
   switch (str.size()) {
     case 3:  // GET, PUT
       switch (toupper(str[0])) {
         case 'G':
-          return CaseInsensitiveEqual(str, "GET") ? std::optional<Method>(Method::GET) : std::nullopt;
+          return CaseInsensitiveEqual(str, "GET") ? Method::GET : kMethodInvalid;
         case 'P':
-          return CaseInsensitiveEqual(str, "PUT") ? std::optional<Method>(Method::PUT) : std::nullopt;
+          return CaseInsensitiveEqual(str, "PUT") ? Method::PUT : kMethodInvalid;
         default:
-          return std::nullopt;
+          return kMethodInvalid;
       }
 
     case 4:  // HEAD, POST
       switch (toupper(str[0])) {
         case 'H':
-          return CaseInsensitiveEqual(str, "HEAD") ? std::optional<Method>(Method::HEAD) : std::nullopt;
+          return CaseInsensitiveEqual(str, "HEAD") ? Method::HEAD : kMethodInvalid;
         case 'P':
-          return CaseInsensitiveEqual(str, "POST") ? std::optional<Method>(Method::POST) : std::nullopt;
+          return CaseInsensitiveEqual(str, "POST") ? Method::POST : kMethodInvalid;
         default:
-          return std::nullopt;
+          return kMethodInvalid;
       }
 
     case 5:  // TRACE, PATCH
       switch (toupper(str[0])) {
         case 'T':
-          return CaseInsensitiveEqual(str, "TRACE") ? std::optional<Method>(Method::TRACE) : std::nullopt;
+          return CaseInsensitiveEqual(str, "TRACE") ? Method::TRACE : kMethodInvalid;
         case 'P':
-          return CaseInsensitiveEqual(str, "PATCH") ? std::optional<Method>(Method::PATCH) : std::nullopt;
+          return CaseInsensitiveEqual(str, "PATCH") ? Method::PATCH : kMethodInvalid;
         default:
-          return std::nullopt;
+          return kMethodInvalid;
       }
 
     case 6:  // DELETE
-      return CaseInsensitiveEqual(str, "DELETE") ? std::optional<Method>(Method::DELETE) : std::nullopt;
+      return CaseInsensitiveEqual(str, "DELETE") ? Method::DELETE : kMethodInvalid;
 
     case 7:  // CONNECT, OPTIONS
       switch (toupper(str[0])) {
         case 'C':
-          return CaseInsensitiveEqual(str, "CONNECT") ? std::optional<Method>(Method::CONNECT) : std::nullopt;
+          return CaseInsensitiveEqual(str, "CONNECT") ? Method::CONNECT : kMethodInvalid;
         case 'O':
-          return CaseInsensitiveEqual(str, "OPTIONS") ? std::optional<Method>(Method::OPTIONS) : std::nullopt;
+          return CaseInsensitiveEqual(str, "OPTIONS") ? Method::OPTIONS : kMethodInvalid;
         default:
-          return std::nullopt;
+          return kMethodInvalid;
       }
     default:
-      return std::nullopt;
+      return kMethodInvalid;
   }
 }
 
