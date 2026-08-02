@@ -6,7 +6,7 @@
 #include <cstring>
 #include <string_view>
 
-#include "aeronet/tolower-str.hpp"
+#include "aeronet/ascii-lower-mask.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
@@ -137,11 +137,30 @@ constexpr bool CaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
 
 struct CaseInsensitiveHashFunc {
   static constexpr std::size_t operator()(std::string_view str) noexcept {
-    // FNV-1a hash, case insensitive
+    static constexpr std::size_t prime = 1099511628211ULL;
     std::size_t hash = 14695981039346656037ULL;
-    for (char ch : str) {
-      hash ^= tolower(static_cast<unsigned char>(ch));
-      hash *= 1099511628211ULL;
+
+    if consteval {
+      for (char ch : str) {
+        hash ^= tolower(static_cast<unsigned char>(ch));
+        hash *= prime;
+      }
+    } else {
+      const char* ptr = str.data();
+      std::size_t sz = str.size();
+
+      while (sz >= 8) {
+        uint64_t word;
+        std::memcpy(&word, ptr, sizeof(word));
+        hash ^= AsciiLowerMask(word);
+        hash *= prime;
+        ptr += 8;
+        sz -= 8;
+      }
+      for (std::size_t idx = 0; idx < sz; ++idx) {
+        hash ^= tolower(static_cast<unsigned char>(ptr[idx]));
+        hash *= prime;
+      }
     }
     return hash;
   }

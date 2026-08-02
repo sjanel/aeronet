@@ -11,8 +11,8 @@ namespace aeronet::http {
 // 'bufferBase' must point to the beginning of the connection receive buffer (state.inBuffer.data()).
 // 'currentLineStart' is the pointer to the start of the header line being parsed (the 'first' pointer in setHead).
 // 'tmp' is a temporary RawChars used to stage moved data (same tmpBuffer passed into setHead).
-bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::string_view value, RawChars& tmp,
-                             const char* bufferBase, const char* currentLineStart,
-                             bool mergeAllowedForUnknownRequestHeaders);
+bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::string_view value, RawChars& tmp,
+                        const char* bufferBase, const char* currentLineStart,
+                        bool mergeAllowedForUnknownRequestHeaders);
 
 }  // namespace aeronet::http

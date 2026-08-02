@@ -235,8 +235,9 @@ bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp rou
   if (effectiveMask == 0) {
     return false;
   }
-  if (const auto method = http::MethodStrToOptEnum(methodToken); method.has_value()) {
-    return http::IsMethodSet(effectiveMask, *method);
+  const auto method = http::ParseMethodStr(methodToken);
+  if (method != http::kMethodInvalid) {
+    return http::IsMethodSet(effectiveMask, method);
   }
   return false;
 }

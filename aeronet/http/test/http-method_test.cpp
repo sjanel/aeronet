@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cctype>
 #include <cstddef>
 #include <string>
@@ -18,24 +17,20 @@ using aeronet::http::IsMethodIdxSet;
 using aeronet::http::Method;
 using aeronet::http::MethodBmp;
 using aeronet::http::MethodFromIdx;
-using aeronet::http::MethodStrToOptEnum;
 using aeronet::http::MethodToIdx;
 using aeronet::http::MethodToStr;
+using aeronet::http::ParseMethodStr;
 
 struct MethodCase {
   Method method;
   std::string_view token;
 };
 
-constexpr std::array<MethodCase, aeronet::http::kNbMethods> kMethodCases = {{{Method::GET, "GET"},
-                                                                             {Method::HEAD, "HEAD"},
-                                                                             {Method::POST, "POST"},
-                                                                             {Method::PUT, "PUT"},
-                                                                             {Method::DELETE, "DELETE"},
-                                                                             {Method::CONNECT, "CONNECT"},
-                                                                             {Method::OPTIONS, "OPTIONS"},
-                                                                             {Method::TRACE, "TRACE"},
-                                                                             {Method::PATCH, "PATCH"}}};
+constexpr MethodCase kMethodCases[] = {
+    {Method::GET, "GET"},         {Method::HEAD, "HEAD"},     {Method::POST, "POST"},
+    {Method::PUT, "PUT"},         {Method::DELETE, "DELETE"}, {Method::CONNECT, "CONNECT"},
+    {Method::OPTIONS, "OPTIONS"}, {Method::TRACE, "TRACE"},   {Method::PATCH, "PATCH"},
+};
 
 std::string ToLower(std::string_view token) {
   std::string lower;
@@ -113,21 +108,21 @@ TEST(HttpMethod, AllMethodsStringLengthMatchesSum) {
 
 TEST(HttpMethodParse, ParsesTokensCaseInsensitive) {
   for (const auto& methodCase : kMethodCases) {
-    const auto canonical = MethodStrToOptEnum(methodCase.token);
-    EXPECT_EQ(canonical.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
+    const auto canonical = ParseMethodStr(methodCase.token);
+    EXPECT_EQ(canonical, methodCase.method);
 
-    const auto lower = MethodStrToOptEnum(ToLower(methodCase.token));
-    EXPECT_EQ(lower.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
+    const auto lower = ParseMethodStr(ToLower(methodCase.token));
+    EXPECT_EQ(lower, methodCase.method);
 
-    const auto mixed = MethodStrToOptEnum(AlternateCase(methodCase.token));
-    EXPECT_EQ(mixed.value_or(static_cast<aeronet::http::Method>(1 << 15)), methodCase.method);
+    const auto mixed = ParseMethodStr(AlternateCase(methodCase.token));
+    EXPECT_EQ(mixed, methodCase.method);
   }
 }
 
 TEST(HttpMethodParse, RejectsInvalidTokens) {
-  const std::array<std::string_view, 6> invalid = {"", "GE", "POSTS", "OPTIONS ", "tracee", "123"};
+  const std::string_view invalid[]{"", "GE", "POSTS", "OPTIONS ", "tracee", "123"};
   for (auto token : invalid) {
-    EXPECT_FALSE(MethodStrToOptEnum(token).has_value()) << token;
+    EXPECT_EQ(ParseMethodStr(token), aeronet::http::kMethodInvalid) << token;
   }
 }
 
@@ -143,14 +138,14 @@ TEST(HttpMethodParse, RejectsNearMissTokensWithSameLength) {
       "SALUT",    // size 6, invalid method of correct length
       "CONNECX",  // size 7, starts with C but not CONNECT
       "OPTIONX",  // size 7, starts with O but not OPTIONS
-      "APTIONS"   // size 7 does not start with C or O
+      "APTIONS",  // size 7 does not start with C or O
   };
 
   for (auto token : nearMiss) {
-    EXPECT_FALSE(MethodStrToOptEnum(token).has_value()) << token;
+    EXPECT_EQ(ParseMethodStr(token), aeronet::http::kMethodInvalid) << token;
   }
 
-  EXPECT_FALSE(MethodStrToOptEnum("UNKNOWN").has_value());  // length 7 default branch
+  EXPECT_EQ(ParseMethodStr("UNKNOWN"), aeronet::http::kMethodInvalid);  // length 7 default branch
 }
 
 TEST(HttpMethod, IdempotencyMatchesRfc) {

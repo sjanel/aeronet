@@ -30,6 +30,7 @@ All notable changes to aeronet are documented in this file.
 - **Simplify and optimize ParseHeaderLine**: use `std::string_view::find` that decays to `std::memchr` for faster colon search, and added force inline to gain an additional 7 % speedup (and no extra code generation). Total expected speedup are roughly **~40%** for typical browser headers, **~30%** for API proxy headers, and **~0%** for short names headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
 - **Faster HTTP/1 CRLF search**: `SearchCRLF` now scans the first 128 bytes with baseline SSE2 on x86 before falling back to libc `memchr`, improving the realistic request-corpus microbenchmark by about **10%**. Non-SSE2 targets retain the portable `memchr` path. See `benchmarks/internal/search-crlf_bench.cpp` and `aeronet/tech/test/memory-utils_test.cpp`.
 - **Faster mime mappings lookup**: `DetermineMIMETypeStr` now uses a binary search on extension codes on 64 bits instead of comparing std::string_views to lowercase. Function gains around 40% efficiency on average.
+- **Further request head buffer parsing optimizations**: faster CI hashing for headers, faster request method parsing. Measured gains of ~10% for requests with very few headers, and up to ~23% for requests with many headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
 
 ## [1.4.1] - 2026-07-25
 

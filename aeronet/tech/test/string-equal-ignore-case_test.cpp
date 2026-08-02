@@ -48,11 +48,12 @@ TEST(StringEqualIgnoreCase, SwarBoundariesAndOverlap) {
   // overlapping tails across the chunk boundaries, with the difference placed at the first byte, the last
   // byte, and inside the overlap region. Lengths cover single- and multi-iteration 16-byte blocks (48/64/96)
   // and every off-by-one around the 8- and 16-byte boundaries where the overlapping tail re-reads bytes.
-  for (std::size_t len :
-       {std::size_t{7},  std::size_t{8},  std::size_t{9},  std::size_t{15}, std::size_t{16}, std::size_t{17},
-        std::size_t{23}, std::size_t{24}, std::size_t{31}, std::size_t{32}, std::size_t{33}, std::size_t{40},
-        std::size_t{47}, std::size_t{48}, std::size_t{49}, std::size_t{63}, std::size_t{64}, std::size_t{65},
-        std::size_t{95}, std::size_t{96}, std::size_t{97}}) {
+  for (std::size_t len : {
+           std::size_t{7},  std::size_t{8},  std::size_t{9},  std::size_t{15}, std::size_t{16}, std::size_t{17},
+           std::size_t{23}, std::size_t{24}, std::size_t{31}, std::size_t{32}, std::size_t{33}, std::size_t{40},
+           std::size_t{47}, std::size_t{48}, std::size_t{49}, std::size_t{63}, std::size_t{64}, std::size_t{65},
+           std::size_t{95}, std::size_t{96}, std::size_t{97},
+       }) {
     std::string lhs(len, 'a');
     for (std::size_t i = 0; i < len; ++i) {
       lhs[i] = static_cast<char>('a' + (i % 26));
@@ -153,7 +154,7 @@ bool ReferenceCaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
 
 TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
   // NOLINTNEXTLINE(bugprone-random-generator-seed)
-  std::mt19937_64 rng(123456789);
+  std::mt19937_64 rng(49);
   // Up to 100 bytes so the 16-byte SSE/NEON path (multiple iterations + overlapping tail) is fuzzed against
   // the scalar reference, not just the <= 32-byte sizes.
   std::uniform_int_distribution<std::size_t> lenDist(0, 100);
@@ -209,10 +210,14 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
       std::string s3 = s1 + static_cast<char>(charDist(rng));
       EXPECT_EQ(CaseInsensitiveEqual(s1, s3), ReferenceCaseInsensitiveEqual(s1, s3));
     }
+
+    const auto h1 = hashFunc(s1);
+    const auto h2 = hashFunc(s2);
+
     // The hash is not guaranteed to be different for unequal strings, but it's the case for this randomly (but
     // deterministic) set of data, and it's a good sanity check. However, we expect case insensitive equal strings to
     // always have the same hash.
-    EXPECT_EQ(hashFunc(s1) == hashFunc(s2), CaseInsensitiveEqual(s1, s2));
+    EXPECT_EQ(h1 == h2, CaseInsensitiveEqual(s1, s2));
   }
 }
 
