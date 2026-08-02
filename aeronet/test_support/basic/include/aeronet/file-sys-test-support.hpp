@@ -43,6 +43,7 @@ inline void ResetFsHooks() {
   gLseekErrnos.reset();
   gFstatSizes.reset();
   gFcntlErrnos.reset();
+  ResetDupActions();
 }
 
 inline void SetReadActions(std::string_view path, std::initializer_list<ReadAction> actions) {

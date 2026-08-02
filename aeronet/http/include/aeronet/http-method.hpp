@@ -25,7 +25,7 @@ enum class Method : MethodBmp {
   CONNECT = 1 << 5,
   OPTIONS = 1 << 6,
   TRACE = 1 << 7,
-  PATCH = 1 << 8
+  PATCH = 1 << 8,
 };
 
 inline constexpr std::string_view kMethodStrings[] = {"GET",     "HEAD",    "POST",  "PUT",  "DELETE",

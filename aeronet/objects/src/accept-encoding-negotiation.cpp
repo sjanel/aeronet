@@ -183,20 +183,20 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     return ret;
   }
 
-  std::array<double, kNbSupportedEncodings> knownEncodingsQuality;  // per supported encoding, highest q
-  knownEncodingsQuality.fill(-1.0);
+  double knownEncodingsQuality[kNbSupportedEncodings];  // per supported encoding, highest q
+  std::ranges::fill(knownEncodingsQuality, -1.0);
   bool sawWildcard = false;
   double wildcardQ = 0.0;
 
   bool identityExplicit = false;
   for (http::HeaderValueReverseTokensIterator<','> it(acceptEncoding); it.hasNext();) {
-    std::string_view raw = it.next();
+    const std::string_view raw = it.next();
     if (raw.empty()) {
       continue;
     }
-    auto sc = raw.find(';');
-    std::string_view name = TrimOws(sc == std::string_view::npos ? raw : raw.substr(0, sc));
-    double quality = ParseQ(raw);
+    const auto sc = raw.find(';');
+    const std::string_view name = TrimOws(sc == std::string_view::npos ? raw : raw.substr(0, sc));
+    const double quality = ParseQ(raw);
     if (name == "*") {
       sawWildcard = true;
       wildcardQ = quality;

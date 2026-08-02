@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -83,7 +84,7 @@ inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 
 // Stat the descriptor once, filling both size and last-modification time. On failure the descriptor is
 // closed, the size is set to File::kError and the mtime is left at the kInvalidTimePoint sentinel.
-inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, File::Identity& identity) {
+inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, auto& identity) {
 #ifdef AERONET_POSIX
   struct stat st{};
   if (fd && ::fstat(fd.fd(), &st) == 0) {
@@ -173,6 +174,11 @@ File& File::operator=(const File& rhs) {
     _fd = std::move(newFd);  // old fd (if any) closed by BaseFd's move-assignment
   }
   return *this;
+}
+
+char* File::appendIdentityData(char* pData) const noexcept {
+  std::memcpy(pData, reinterpret_cast<const char*>(&_identity), sizeof(_identity));
+  return pData + sizeof(_identity);
 }
 
 std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
