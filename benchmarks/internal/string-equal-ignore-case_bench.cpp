@@ -166,8 +166,8 @@ inline bool Avx2Lower32Equal(const char* a, const char* b) {
   const auto aMinus1 = _mm256_set1_epi8(static_cast<char>('A' - 1));
   const auto zPlus1 = _mm256_set1_epi8(static_cast<char>('Z' + 1));
   const auto lowerMask = _mm256_set1_epi8(0x20);
-  const auto eq = _mm256_cmpeq_epi8(Avx2AsciiLower(va, aMinus1, zPlus1, lowerMask),
-                                    Avx2AsciiLower(vb, aMinus1, zPlus1, lowerMask));
+  const auto eq =
+      _mm256_cmpeq_epi8(Avx2AsciiLower(va, aMinus1, zPlus1, lowerMask), Avx2AsciiLower(vb, aMinus1, zPlus1, lowerMask));
   return static_cast<unsigned>(_mm256_movemask_epi8(eq)) == 0xFFFFFFFFU;
 }
 
@@ -277,7 +277,7 @@ void BuildMap(const std::vector<std::string>& storage, auto& map) {
 // Benchmarks
 // ------------------------------------------------------------
 
-static void BM_Hash_CI_Boost(benchmark::State& state) {
+static void Hash_CI_Boost(benchmark::State& state) {
   CaseInsensitiveHashBoostStyle hasher;
 
   for (auto _ : state) {
@@ -289,7 +289,7 @@ static void BM_Hash_CI_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_Hash_CI_FNV1a(benchmark::State& state) {
+static void Hash_CI_FNV1a(benchmark::State& state) {
   CaseInsensitiveHashFnv1Style hasher;
 
   for (auto _ : state) {
@@ -301,7 +301,19 @@ static void BM_Hash_CI_FNV1a(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_Hash_City(benchmark::State& state) {
+static void Hash_CI_Prod(benchmark::State& state) {
+  CaseInsensitiveHashFunc hasher;
+
+  for (auto _ : state) {
+    for (std::string_view s : kStorage) {
+      benchmark::DoNotOptimize(hasher(s));
+    }
+  }
+
+  state.SetItemsProcessed(state.iterations() * kStorage.size());
+}
+
+static void Hash_City(benchmark::State& state) {
   CityHash hasher;
 
   for (auto _ : state) {
@@ -313,7 +325,7 @@ static void BM_Hash_City(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_UnorderedMap_Find_CI_Boost(benchmark::State& state) {
+static void UnorderedMap_Find_CI_Boost(benchmark::State& state) {
   std::unordered_map<std::string_view, std::string_view, CaseInsensitiveHashBoostStyle, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashBoostStyle>(kStorage, map);
 
@@ -326,7 +338,7 @@ static void BM_UnorderedMap_Find_CI_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_UnorderedMap_Find_CI_FNV1a(benchmark::State& state) {
+static void UnorderedMap_Find_CI_FNV1a(benchmark::State& state) {
   std::unordered_map<std::string_view, std::string_view, CaseInsensitiveHashFnv1Style, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashFnv1Style>(kStorage, map);
 
@@ -338,7 +350,7 @@ static void BM_UnorderedMap_Find_CI_FNV1a(benchmark::State& state) {
 
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
-static void BM_UnorderedMap_Find_City(benchmark::State& state) {
+static void UnorderedMap_Find_City(benchmark::State& state) {
   std::unordered_map<std::string_view, std::string_view, CityHash, CaseInsensitiveEqualFunc> map;
   BuildMap<CityHash>(kStorage, map);
 
@@ -351,7 +363,7 @@ static void BM_UnorderedMap_Find_City(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_CI_Boost(benchmark::State& state) {
+static void FlatHashMap_Find_CI_Boost(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashBoostStyle, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashBoostStyle>(kStorage, map);
 
@@ -364,7 +376,7 @@ static void BM_FlatHashMap_Find_CI_Boost(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_CI_FNV1a(benchmark::State& state) {
+static void FlatHashMap_Find_CI_FNV1a(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashFnv1Style, CaseInsensitiveEqualFunc> map;
   BuildMap<CaseInsensitiveHashFnv1Style>(kStorage, map);
 
@@ -377,7 +389,20 @@ static void BM_FlatHashMap_Find_CI_FNV1a(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_City(benchmark::State& state) {
+static void FlatHashMap_Find_CI_Prod(benchmark::State& state) {
+  flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> map;
+  BuildMap<CaseInsensitiveHashFunc>(kStorage, map);
+
+  for (auto _ : state) {
+    for (std::string_view s : kStorage) {
+      benchmark::DoNotOptimize(map.find(s));
+    }
+  }
+
+  state.SetItemsProcessed(state.iterations() * kStorage.size());
+}
+
+static void FlatHashMap_Find_City(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, CityHash> map;
   BuildMap<CityHash>(kStorage, map);
 
@@ -390,7 +415,7 @@ static void BM_FlatHashMap_Find_City(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * kStorage.size());
 }
 
-static void BM_FlatHashMap_Find_Sv(benchmark::State& state) {
+static void FlatHashMap_Find_Sv(benchmark::State& state) {
   flat_hash_map<std::string_view, std::string_view, std::hash<std::string_view>> map;
   BuildMap<std::hash<std::string_view>>(kStorage, map);
 
@@ -405,18 +430,20 @@ static void BM_FlatHashMap_Find_Sv(benchmark::State& state) {
 
 // ------------------------------------------------------------
 
-BENCHMARK(BM_Hash_CI_Boost);
-BENCHMARK(BM_Hash_CI_FNV1a);
-BENCHMARK(BM_Hash_City);
+BENCHMARK(Hash_CI_Boost);
+BENCHMARK(Hash_CI_FNV1a);
+BENCHMARK(Hash_CI_Prod);
+BENCHMARK(Hash_City);
 
-BENCHMARK(BM_UnorderedMap_Find_CI_Boost);
-BENCHMARK(BM_UnorderedMap_Find_CI_FNV1a);
-BENCHMARK(BM_UnorderedMap_Find_City);
+BENCHMARK(UnorderedMap_Find_CI_Boost);
+BENCHMARK(UnorderedMap_Find_CI_FNV1a);
+BENCHMARK(UnorderedMap_Find_City);
 
-BENCHMARK(BM_FlatHashMap_Find_CI_Boost);
-BENCHMARK(BM_FlatHashMap_Find_CI_FNV1a);
-BENCHMARK(BM_FlatHashMap_Find_City);
-BENCHMARK(BM_FlatHashMap_Find_Sv);
+BENCHMARK(FlatHashMap_Find_CI_Boost);
+BENCHMARK(FlatHashMap_Find_CI_FNV1a);
+BENCHMARK(FlatHashMap_Find_CI_Prod);
+BENCHMARK(FlatHashMap_Find_City);
+BENCHMARK(FlatHashMap_Find_Sv);
 
 // ------------------------------------------------------------
 // CaseInsensitiveEqual: scalar baseline vs SWAR
@@ -438,21 +465,42 @@ std::pair<std::string, std::string> MakeEqualMixedCase(std::size_t len) {
   return {lhs, rhs};
 }
 
-const std::vector<std::string> kHeaderNames = {
-    "Host",          "Date",         "ETag",           "Vary",
-    "Allow",         "Accept",       "Cookie",         "Server",
-    "Expect",        "Origin",       "Connection",     "Content-Type",
-    "User-Agent",    "Content-Length", "Accept-Encoding", "Cache-Control",
-    "Authorization", "Content-Encoding", "Transfer-Encoding", "If-None-Match",
-    "Last-Modified", "Set-Cookie",   "Location",       "Referer",
-    "Upgrade",       "Pragma",       "Age",            "Range",
-    "TE",            "Via"};
+const std::vector<std::string> kHeaderNames = {"Host",
+                                               "Date",
+                                               "ETag",
+                                               "Vary",
+                                               "Allow",
+                                               "Accept",
+                                               "Cookie",
+                                               "Server",
+                                               "Expect",
+                                               "Origin",
+                                               "Connection",
+                                               "Content-Type",
+                                               "User-Agent",
+                                               "Content-Length",
+                                               "Accept-Encoding",
+                                               "Cache-Control",
+                                               "Authorization",
+                                               "Content-Encoding",
+                                               "Transfer-Encoding",
+                                               "If-None-Match",
+                                               "Last-Modified",
+                                               "Set-Cookie",
+                                               "Location",
+                                               "Referer",
+                                               "Upgrade",
+                                               "Pragma",
+                                               "Age",
+                                               "Range",
+                                               "TE",
+                                               "Via"};
 
 }  // namespace
 
 // Best case for SWAR: equal strings (the actual-match path of a header lookup).
 template <auto Fn>
-void BM_CIEqual_Equal(benchmark::State& state) {
+void CIEqual_Equal(benchmark::State& state) {
   auto [lhs, rhs] = MakeEqualMixedCase(static_cast<std::size_t>(state.range(0)));
   std::string_view svl(lhs);
   std::string_view svr(rhs);
@@ -468,7 +516,7 @@ void BM_CIEqual_Equal(benchmark::State& state) {
 
 // Adversarial for SWAR: same length, differ at byte 0 (scalar can bail after one byte).
 template <auto Fn>
-void BM_CIEqual_DiffFirst(benchmark::State& state) {
+void CIEqual_DiffFirst(benchmark::State& state) {
   auto [lhs, rhs] = MakeEqualMixedCase(static_cast<std::size_t>(state.range(0)));
   rhs[0] = static_cast<char>(rhs[0] ^ 0x01);  // not a case-only difference
   std::string_view svl(lhs);
@@ -485,7 +533,7 @@ void BM_CIEqual_DiffFirst(benchmark::State& state) {
 
 // Same length, differ only at the last byte (scalar must scan the whole string).
 template <auto Fn>
-void BM_CIEqual_DiffLast(benchmark::State& state) {
+void CIEqual_DiffLast(benchmark::State& state) {
   auto [lhs, rhs] = MakeEqualMixedCase(static_cast<std::size_t>(state.range(0)));
   rhs[rhs.size() - 1] = static_cast<char>(rhs[rhs.size() - 1] ^ 0x01);
   std::string_view svl(lhs);
@@ -503,7 +551,7 @@ void BM_CIEqual_DiffLast(benchmark::State& state) {
 // Realistic: classify each incoming (case-flipped) header name by linear scan over the known set. Mixes the
 // size fast-reject, same-length early mismatches, and the eventual case-insensitive match.
 template <auto Fn>
-void BM_CIEqual_HeaderClassify(benchmark::State& state) {
+void CIEqual_HeaderClassify(benchmark::State& state) {
   std::vector<std::string> incoming;
   incoming.reserve(kHeaderNames.size());
   for (const auto& name : kHeaderNames) {
@@ -532,34 +580,34 @@ void BM_CIEqual_HeaderClassify(benchmark::State& state) {
 #define AERONET_CIEQ_DIFF_LENS Arg(8)->Arg(16)->Arg(32)->Arg(64)
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#define AERONET_CIEQ_WIDE(MACRO, BM) \
+#define AERONET_CIEQ_WIDE(MACRO, BM)         \
   BENCHMARK_TEMPLATE(BM, CIEqualSse)->MACRO; \
   BENCHMARK_TEMPLATE(BM, CIEqualAvx2)->MACRO;
 #else
 #define AERONET_CIEQ_WIDE(MACRO, BM)
 #endif
 
-BENCHMARK_TEMPLATE(BM_CIEqual_Equal, CIEqualScalar)->AERONET_CIEQ_LENS;
-BENCHMARK_TEMPLATE(BM_CIEqual_Equal, CIEqualSwar)->AERONET_CIEQ_LENS;
-AERONET_CIEQ_WIDE(AERONET_CIEQ_LENS, BM_CIEqual_Equal)
-BENCHMARK_TEMPLATE(BM_CIEqual_Equal, CIEqualLibrary)->AERONET_CIEQ_LENS;
+BENCHMARK_TEMPLATE(CIEqual_Equal, CIEqualScalar)->AERONET_CIEQ_LENS;
+BENCHMARK_TEMPLATE(CIEqual_Equal, CIEqualSwar)->AERONET_CIEQ_LENS;
+AERONET_CIEQ_WIDE(AERONET_CIEQ_LENS, CIEqual_Equal)
+BENCHMARK_TEMPLATE(CIEqual_Equal, CIEqualLibrary)->AERONET_CIEQ_LENS;
 
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffFirst, CIEqualScalar)->AERONET_CIEQ_DIFF_LENS;
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffFirst, CIEqualSwar)->AERONET_CIEQ_DIFF_LENS;
-AERONET_CIEQ_WIDE(AERONET_CIEQ_DIFF_LENS, BM_CIEqual_DiffFirst)
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffFirst, CIEqualLibrary)->AERONET_CIEQ_DIFF_LENS;
+BENCHMARK_TEMPLATE(CIEqual_DiffFirst, CIEqualScalar)->AERONET_CIEQ_DIFF_LENS;
+BENCHMARK_TEMPLATE(CIEqual_DiffFirst, CIEqualSwar)->AERONET_CIEQ_DIFF_LENS;
+AERONET_CIEQ_WIDE(AERONET_CIEQ_DIFF_LENS, CIEqual_DiffFirst)
+BENCHMARK_TEMPLATE(CIEqual_DiffFirst, CIEqualLibrary)->AERONET_CIEQ_DIFF_LENS;
 
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffLast, CIEqualScalar)->AERONET_CIEQ_DIFF_LENS;
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffLast, CIEqualSwar)->AERONET_CIEQ_DIFF_LENS;
-AERONET_CIEQ_WIDE(AERONET_CIEQ_DIFF_LENS, BM_CIEqual_DiffLast)
-BENCHMARK_TEMPLATE(BM_CIEqual_DiffLast, CIEqualLibrary)->AERONET_CIEQ_DIFF_LENS;
+BENCHMARK_TEMPLATE(CIEqual_DiffLast, CIEqualScalar)->AERONET_CIEQ_DIFF_LENS;
+BENCHMARK_TEMPLATE(CIEqual_DiffLast, CIEqualSwar)->AERONET_CIEQ_DIFF_LENS;
+AERONET_CIEQ_WIDE(AERONET_CIEQ_DIFF_LENS, CIEqual_DiffLast)
+BENCHMARK_TEMPLATE(CIEqual_DiffLast, CIEqualLibrary)->AERONET_CIEQ_DIFF_LENS;
 
-BENCHMARK_TEMPLATE(BM_CIEqual_HeaderClassify, CIEqualScalar);
-BENCHMARK_TEMPLATE(BM_CIEqual_HeaderClassify, CIEqualSwar);
+BENCHMARK_TEMPLATE(CIEqual_HeaderClassify, CIEqualScalar);
+BENCHMARK_TEMPLATE(CIEqual_HeaderClassify, CIEqualSwar);
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-BENCHMARK_TEMPLATE(BM_CIEqual_HeaderClassify, CIEqualSse);
-BENCHMARK_TEMPLATE(BM_CIEqual_HeaderClassify, CIEqualAvx2);
+BENCHMARK_TEMPLATE(CIEqual_HeaderClassify, CIEqualSse);
+BENCHMARK_TEMPLATE(CIEqual_HeaderClassify, CIEqualAvx2);
 #endif
-BENCHMARK_TEMPLATE(BM_CIEqual_HeaderClassify, CIEqualLibrary);
+BENCHMARK_TEMPLATE(CIEqual_HeaderClassify, CIEqualLibrary);
 
 BENCHMARK_MAIN();

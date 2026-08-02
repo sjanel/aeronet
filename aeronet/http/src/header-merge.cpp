@@ -11,14 +11,9 @@
 
 namespace aeronet::http {
 
-bool AddOrMergeHeaderInPlace(HeadersViewMap& map, std::string_view name, std::string_view value, RawChars& tmp,
-                             const char* bufferBase, const char* currentLineStart,
-                             bool mergeAllowedForUnknownRequestHeaders) {
-  auto [it, inserted] = map.emplace(name, value);
-  if (inserted) {
-    return true;
-  }
-
+bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::string_view value, RawChars& tmp,
+                        const char* bufferBase, const char* currentLineStart,
+                        bool mergeAllowedForUnknownRequestHeaders) {
   // We have a duplicated header. We will append the duplicated value encountered now to the first key value pair
   // inplace in memory. Plan: use the tmp buffer to copy duplicate value there. In the examples
   // below, \r\n have been replaced by [] for readability (and they keep their true size). * marks 'garbage' memory

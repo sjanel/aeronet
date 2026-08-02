@@ -16,24 +16,29 @@ using MethodBmp = uint16_t;
 #endif
 #endif
 
+// GET/POST dominate real traffic; PATCH/CONNECT/TRACE are rare. Ordering
+// matters here because kMethodUpperCodes.codes is scanned linearly.
 enum class Method : MethodBmp {
   GET = 1 << 0,
-  HEAD = 1 << 1,
-  POST = 1 << 2,
-  PUT = 1 << 3,
-  DELETE = 1 << 4,
-  CONNECT = 1 << 5,
-  OPTIONS = 1 << 6,
-  TRACE = 1 << 7,
-  PATCH = 1 << 8,
+  POST = 1 << 1,
+  PUT = 1 << 2,
+  DELETE = 1 << 3,
+  HEAD = 1 << 4,
+  OPTIONS = 1 << 5,
+  PATCH = 1 << 6,
+  CONNECT = 1 << 7,
+  TRACE = 1 << 8,
 };
 
-inline constexpr std::string_view kMethodStrings[] = {"GET",     "HEAD",    "POST",  "PUT",  "DELETE",
-                                                      "CONNECT", "OPTIONS", "TRACE", "PATCH"};
+inline constexpr Method kMethodInvalid = static_cast<Method>(0U);
+
+inline constexpr std::string_view kMethodStrings[] = {
+    "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE",
+};
 
 using MethodIdx = uint8_t;
 
-inline constexpr MethodIdx kNbMethods = 9;
+inline constexpr MethodIdx kNbMethods = std::size(kMethodStrings);
 
 constexpr MethodBmp operator|(Method lhs, Method rhs) noexcept {
   return static_cast<MethodBmp>(static_cast<MethodBmp>(lhs) | static_cast<MethodBmp>(rhs));
@@ -57,7 +62,7 @@ constexpr bool IsMethodSet(MethodBmp mask, Method method) { return (mask & stati
 // fully-sent request is safe to re-submit. POST and PATCH are not idempotent; CONNECT is neither safe nor
 // idempotent. Used by the client retry policy to decide whether a post-send failure may be retried.
 inline constexpr MethodBmp kIdempotentMethods =
-    Method::GET | Method::HEAD | Method::PUT | Method::DELETE | Method::OPTIONS | Method::TRACE;
+    Method::GET | Method::PUT | Method::DELETE | Method::HEAD | Method::OPTIONS | Method::TRACE;
 
 constexpr bool IsIdempotent(Method method) noexcept { return IsMethodSet(kIdempotentMethods, method); }
 

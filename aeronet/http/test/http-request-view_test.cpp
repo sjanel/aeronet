@@ -876,10 +876,12 @@ TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
                             "Cookie: cookie4\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"},
-                {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
-                {"X-Spaces", "abc"},
-                {http::ContentLength, "0"}});
+  checkHeaders({
+      {"X-Test", "Value"},
+      {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"X-Spaces", "abc"},
+      {http::ContentLength, "0"},
+  });
 }
 
 TEST_F(HttpRequestViewTest, MergeMultipleHeaders) {
@@ -897,10 +899,12 @@ TEST_F(HttpRequestViewTest, MergeMultipleHeaders) {
   auto st = reqSet(raw);
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"},
-                {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
-                {"X-Spaces", "abc,de,fgh"},
-                {http::ContentLength, "0"}});
+  checkHeaders({
+      {"X-Test", "Value"},
+      {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"X-Spaces", "abc,de,fgh"},
+      {http::ContentLength, "0"},
+  });
 
   // merge not allowed for custom header X-Spaces
   st = reqSet(std::move(raw), false);
@@ -1602,11 +1606,12 @@ TEST_F(HttpRequestViewTest, HeaderParsingStress) {
       // Sometimes use known header names
       if (rng.coin()) {
         static constexpr std::string_view kKnownHeaders[] = {
-            http::Host,       http::ContentLength,    http::ContentType,
-            "Accept",         "User-Agent",           "Authorization",
-            "Cookie",         "Set-Cookie",           http::CacheControl,
-            http::Connection, http::TransferEncoding, http::AcceptEncoding,
-            "Accept-Language"};
+            http::Host,        http::ContentLength,    http::ContentType,
+            "Accept",          "User-Agent",           "Authorization",
+            "Cookie",          "Set-Cookie",           http::CacheControl,
+            http::Connection,  http::TransferEncoding, http::AcceptEncoding,
+            "Accept-Language",
+        };
         input.append(kKnownHeaders[rng.range(0, std::size(kKnownHeaders))]);
       } else {
         std::size_t nameLen = rng.range(1, 30);
@@ -1719,8 +1724,9 @@ TEST_F(HttpRequestViewTest, MakeResponseBytesBodyAndDefaultContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  const std::array<std::byte, 5> binaryData = {std::byte{0x48}, std::byte{0x65}, std::byte{0x6c}, std::byte{0x6c},
-                                               std::byte{0x6f}};
+  const std::byte binaryData[]{
+      std::byte{0x48}, std::byte{0x65}, std::byte{0x6c}, std::byte{0x6c}, std::byte{0x6f},
+  };
   auto resp = req.makeResponse(std::span<const std::byte>{binaryData});
 
   EXPECT_EQ(resp.status(), http::StatusCodeOK);
@@ -1733,8 +1739,10 @@ TEST_F(HttpRequestViewTest, MakeResponseBytesBodyAndCustomContentType) {
   auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  const std::array<std::byte, 8> pngHeader = {std::byte{0x89}, std::byte{0x50}, std::byte{0x4e}, std::byte{0x47},
-                                              std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a}};
+  const std::array<std::byte, 8> pngHeader = {
+      std::byte{0x89}, std::byte{0x50}, std::byte{0x4e}, std::byte{0x47},
+      std::byte{0x0d}, std::byte{0x0a}, std::byte{0x1a}, std::byte{0x0a},
+  };
   auto resp = req.makeResponse(std::span<const std::byte>{pngHeader}, "image/png");
 
   EXPECT_EQ(resp.status(), http::StatusCodeOK);

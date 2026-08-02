@@ -282,9 +282,10 @@ bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* b
     // No check is made on header line format here
     const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
 
+    auto [it, inserted] = headersMap.emplace(headerName, headerValue);
     // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-    if (!http::AddOrMergeHeaderInPlace(headersMap, headerName, headerValue, _sharedBuffers.buf, bufferBeg, first,
-                                       _config.mergeUnknownRequestHeaders)) {
+    if (!inserted && !http::MergeHeaderInPlace(headersMap, it, headerValue, _sharedBuffers.buf, bufferBeg, first,
+                                               _config.mergeUnknownRequestHeaders)) {
       return false;
     }
 
