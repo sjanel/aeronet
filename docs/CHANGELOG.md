@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### Breaking changes
+
+- **File::Identity becomes private and File::identity() has been replaced with File::appendIdentityData()**: `File::Identity` is now a private nested type, and the public `File::identity()` method has been removed. The new `File::appendIdentityData(char* pData)` method writes the file's current descriptor identity and metadata to the provided buffer, returning a pointer past the last written byte. The buffer must be at least `File::kIdentitySize` bytes long.
+
 ### Bug Fixes
 
 - **Router updates could race server startup**: a route update submitted while the server was preparing to run could mutate the router directly while startup clamped route configuration, causing intermittent literal-route assertions. Startup now publishes a synchronized `Starting` state before launching its thread, so subsequent updates are queued for the event-loop thread.

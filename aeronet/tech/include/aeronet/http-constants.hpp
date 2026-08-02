@@ -110,9 +110,7 @@ inline constexpr std::string_view EndChunk = "0\r\n\r\n";
 // one-character target and the chosen method token (here we use `GET`).
 // Note: HTTP/1.1 requires a Host header (RFC 7230 §5.4). The bare
 // request-line alone (shown above) is valid syntactically but is NOT a
-// complete HTTP/1.1 request unless a Host header field is present. We
-// therefore expose two compile-time minima:
-//  - kHttpReqLineMinLen: minimal request-line length (HTTP/1.0 or 1.1)
+// complete HTTP/1.1 request unless a Host header field is present.
 inline constexpr std::size_t kHttpReqLineMinLen = GET.size() + 3UL + HTTP11Sv.size() + CRLF.size();
 
 // Compression

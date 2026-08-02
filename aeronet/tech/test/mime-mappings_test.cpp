@@ -11,21 +11,15 @@ TEST(MIMEMappings, ContainsKnownExtension) {
   // Spot-check several known mappings
   auto idx = DetermineMIMETypeIdx("file.html");
   ASSERT_NE(idx, kUnknownMIMEMappingIdx);
-  if (idx != kUnknownMIMEMappingIdx) {
-    EXPECT_EQ(kMIMEMappings[idx].mimeType, "text/html");
-  }
+  EXPECT_EQ(kMIMEMappings[idx].mimeType, "text/html");
 
   idx = DetermineMIMETypeIdx("image.jpeg");
   ASSERT_NE(idx, kUnknownMIMEMappingIdx);
-  if (idx != kUnknownMIMEMappingIdx) {
-    EXPECT_EQ(kMIMEMappings[idx].mimeType, "image/jpeg");
-  }
+  EXPECT_EQ(kMIMEMappings[idx].mimeType, "image/jpeg");
 
   idx = DetermineMIMETypeIdx("script.js");
   ASSERT_NE(idx, kUnknownMIMEMappingIdx);
-  if (idx != kUnknownMIMEMappingIdx) {
-    EXPECT_EQ(kMIMEMappings[idx].mimeType, "text/javascript");
-  }
+  EXPECT_EQ(kMIMEMappings[idx].mimeType, "text/javascript");
 }
 
 TEST(MIMEMappings, UnknownExtension) {
@@ -35,18 +29,13 @@ TEST(MIMEMappings, UnknownExtension) {
 }
 
 TEST(MIMEMappings, CaseInsensitiveExtensions) {
-  // DetermineMIMETypeIdx should handle mixed-case extensions
-  auto idx1 = DetermineMIMETypeIdx("UPPER.HTML");
-  auto idx2 = DetermineMIMETypeIdx("upper.html");
-  EXPECT_EQ(idx1, idx2);
+  EXPECT_EQ(DetermineMIMETypeIdx("UPPER.HTML"), DetermineMIMETypeIdx("upper.html"));
 }
 
 TEST(MIMEMappings, MultiDotFilenames) {
   auto idx = DetermineMIMETypeIdx("archive.tar.gz");
   ASSERT_NE(idx, kUnknownMIMEMappingIdx);
-  if (idx != kUnknownMIMEMappingIdx) {
-    EXPECT_EQ(kMIMEMappings[idx].mimeType, "application/gzip");
-  }
+  EXPECT_EQ(kMIMEMappings[idx].mimeType, "application/gzip");
 }
 
 TEST(MIMEMappingsTest, CommonExtensions) {

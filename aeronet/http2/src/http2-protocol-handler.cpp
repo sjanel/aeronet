@@ -604,37 +604,21 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
   HttpRequestView& request = state.request.request;
-  const bool isHead = (request.method() == http::Method::HEAD);
 
   // CORS preflight rejection
-  if (pCorsPolicy != nullptr) {
-    if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-      HttpResponse corsResp(http::StatusCodeForbidden);
-      corsResp.body("Forbidden by CORS policy");
-      ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
-                              *_pTelemetryContext, false, {});
-      if (pCorsPolicy != nullptr) {
-        (void)pCorsPolicy->applyToResponse(request, corsResp);
-      }
-      request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
-      corsResp.finalizeHeadersAndBody();
-      [[maybe_unused]] const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHead);
-      assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
-      onRequestCompleted(request, http::StatusCodeForbidden);
-      _streams.erase(streamId);
-      return;
-    }
-  }
-
-  // Negotiate compression.
-  // Note: encoding rejection (identity;q=0 with no alternatives) is already handled
-  // in onHeadersDecodedReceived before the request reaches this point.
-  Encoding compressionFormat = Encoding::none;
-  if (!isHead) {
-    auto encHeader = request.headerValueOrEmpty(http::AcceptEncoding);
-    auto negotiated = _pCompressionState->selector.negotiateAcceptEncoding(encHeader);
-    assert(!negotiated.reject && "Encoding rejection should have been handled in onHeadersDecodedReceived");
-    compressionFormat = negotiated.encoding;
+  if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+    HttpResponse corsResp(0ULL, http::StatusCodeForbidden, _pServerConfig->globalHeaders.fullStringWithLastSep(),
+                          "Forbidden by CORS policy", http::ContentTypeTextPlain, HttpMessage::Check::No);
+    ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
+                            *_pTelemetryContext, true, {});
+    request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
+    corsResp.finalizeHeadersAndBody();
+    [[maybe_unused]] const ErrorCode err =
+        sendResponse(streamId, std::move(corsResp), request.method() == http::Method::HEAD);
+    assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
+    onRequestCompleted(request, http::StatusCodeForbidden);
+    _streams.erase(streamId);
+    return;
   }
 
   const ConcatenatedHeaders* pGlobalHeaders =
@@ -642,8 +626,11 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
 
   // Create H2 transport and writer
   Http2WriterTransport transport(_connection, streamId, pGlobalHeaders);
-  HttpResponseWriter writer(transport, request, compressionFormat, _pServerConfig->compression, *_pCompressionState,
-                            _pServerConfig->globalHeaders.fullStringWithLastSep(), _pServerConfig->addTrailerHeader);
+
+  // Negotiate compression has been done in onHeadersDecodedReceived.
+  HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
+                            *_pCompressionState, _pServerConfig->globalHeaders.fullStringWithLastSep(),
+                            _pServerConfig->addTrailerHeader);
 
   // Note: response middleware and CORS are applied above only for the preflight-rejection path.
   // For the normal streaming path, Http2WriterTransport does not run response middleware -

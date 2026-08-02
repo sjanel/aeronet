@@ -42,6 +42,49 @@ if(AERONET_ENABLE_HTTP2)
 endif()
 
 AeronetAddUnitTest(
+    access-log-writer_test
+    src/access-log-writer.cpp
+    test/access-log-writer_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_sys
+    aeronet_tech
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
+    connection-storage_test
+    src/connection-storage.cpp
+    test/connection-storage_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
+    http-parser_test
+    test/http-parser_test.cpp
+    LIBRARIES
+    aeronet_server
+    aeronet_test_support
+)
+
+AeronetAddUnitTest(
+    https-redirect_test
+    src/https-redirect.cpp
+    test/https-redirect_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
+    keep-alive-deadline-queue_test
+    src/keep-alive-deadline-queue.cpp
+    test/keep-alive-deadline-queue_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     lifecycle_test
     test/lifecycle_test.cpp
     LIBRARIES
@@ -57,43 +100,8 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    connection-storage_test
-    src/connection-storage.cpp
-    test/connection-storage_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    keep-alive-deadline-queue_test
-    src/keep-alive-deadline-queue.cpp
-    test/keep-alive-deadline-queue_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
     server-lifecycle-tracker_test
     test/server-lifecycle-tracker_test.cpp
-)
-
-AeronetAddUnitTest(
-    access-log-writer_test
-    src/access-log-writer.cpp
-    test/access-log-writer_test.cpp
-    LIBRARIES
-    aeronet_http
-    aeronet_sys
-    aeronet_tech
-    aeronet_test_support
-)
-
-AeronetAddUnitTest(
-    http-parser_test
-    test/http-parser_test.cpp
-    LIBRARIES
-    aeronet_server
-    aeronet_test_support
 )
 
 if(AERONET_ENABLE_TEST_HOOKS)
