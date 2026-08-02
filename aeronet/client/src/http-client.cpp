@@ -704,13 +704,10 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   }
 
   const File& file = filePayload->file;
-  const File::Identity identity = file.identity();
   const auto fileSz = file.size();
 
   // Path, range, and the descriptor's current identity are enough to distinguish file payloads without walking
   // their contents.
-
-  static constexpr auto kIdentitySize = File::Identity::size();
   const auto lastModifiedCount = file.lastModified().time_since_epoch().count();
 
   const auto appendNumber = [](auto value, char* pData) {
@@ -718,13 +715,12 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
     return pData + sizeof(value);
   };
 
-  _cacheKeyScratch.reserve(kIdentitySize + sizeof(filePayload->offset) + sizeof(filePayload->length) +
+  _cacheKeyScratch.reserve(File::kIdentitySize + sizeof(filePayload->offset) + sizeof(filePayload->length) +
                            sizeof(lastModifiedCount) + sizeof(fileSz) + req._data.size());
 
   char* pData = _cacheKeyScratch.data();
 
-  std::memcpy(pData, identity.data(), kIdentitySize);
-  pData += kIdentitySize;
+  pData = file.appendIdentityData(pData);
 
   pData = appendNumber(filePayload->offset, pData);
   pData = appendNumber(filePayload->length, pData);

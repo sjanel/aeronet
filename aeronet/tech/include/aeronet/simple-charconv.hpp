@@ -27,9 +27,11 @@ constexpr auto write2(auto buf, std::integral auto value) noexcept {
   assert(value >= 0 && static_cast<uint64_t>(value) < (sizeof(kDigitPairs) / sizeof(kDigitPairs[0])));
 
   const char* pCouple = kDigitPairs[static_cast<uint8_t>(value)];
-  *buf++ = pCouple[0];
-  *buf++ = pCouple[1];
-  return buf;
+
+  buf[0] = pCouple[0];
+  buf[1] = pCouple[1];
+
+  return buf + 2;
 }
 
 constexpr auto write4(auto buf, std::integral auto value) noexcept {
@@ -54,14 +56,6 @@ constexpr auto write3(auto buf, std::integral auto value) noexcept {
   return write2(++buf, rhs);
 }
 
-// Copy exactly 3 chars from a string_view known to have size >= 3.
-constexpr auto copy3(auto des, auto src) {
-  *des = src[0];
-  *++des = src[1];
-  *++des = src[2];
-  return ++des;
-}
-
 constexpr uint8_t read2(const char* ptr) { return static_cast<uint8_t>(((ptr[0] - '0') * 10) + (ptr[1] - '0')); }
 
 constexpr uint16_t read3(const char* ptr) {
@@ -70,17 +64,6 @@ constexpr uint16_t read3(const char* ptr) {
 
 constexpr auto read4(const char* ptr) {
   return ((ptr[0] - '0') * 1000) + ((ptr[1] - '0') * 100) + ((ptr[2] - '0') * 10) + (ptr[3] - '0');
-}
-
-constexpr auto read6(const char* ptr) {
-  return ((ptr[0] - '0') * 100000) + ((ptr[1] - '0') * 10000) + ((ptr[2] - '0') * 1000) + ((ptr[3] - '0') * 100) +
-         ((ptr[4] - '0') * 10) + (ptr[5] - '0');
-}
-
-constexpr auto read9(const char* ptr) {
-  return ((ptr[0] - '0') * 100000000) + ((ptr[1] - '0') * 10000000) + ((ptr[2] - '0') * 1000000) +
-         ((ptr[3] - '0') * 100000) + ((ptr[4] - '0') * 10000) + ((ptr[5] - '0') * 1000) + ((ptr[6] - '0') * 100) +
-         ((ptr[7] - '0') * 10) + (ptr[8] - '0');
 }
 
 }  // namespace aeronet

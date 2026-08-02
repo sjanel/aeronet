@@ -92,19 +92,4 @@ TEST(SimpleCharConv, ReadFixedWidth) {
   EXPECT_EQ(read4(digits + 5), 9876);  // 9876
 }
 
-TEST(SimpleCharConv, ReadLargerWidths) {
-  const char* d6 = "123456";     // 6 digits
-  const char* d9 = "987654321";  // 9 digits
-  EXPECT_EQ(read6(d6), 123456);
-  EXPECT_EQ(read9(d9), 987654321);
-}
-
-TEST(SimpleCharConv, Copy3) {
-  char buf[4];
-  char* ptr = buf;
-  ptr = copy3(ptr, std::string_view{"XYZ"});
-  *ptr = '\0';
-  EXPECT_STREQ(buf, "XYZ");
-}
-
 }  // namespace aeronet

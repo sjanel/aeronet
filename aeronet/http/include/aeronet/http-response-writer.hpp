@@ -194,12 +194,12 @@ class HttpResponseWriter {
   /// Construct a writer with a transport backend.
   /// @param transport   Protocol-specific transport (lifetime must exceed writer).
   /// @param request     The originating HTTP request.
-  /// @param compressionFormat  Negotiated compression encoding (Encoding::none if disabled).
+  /// @param encoding    Negotiated compression encoding (Encoding::none if disabled).
   /// @param compressionConfig  Compression configuration (thresholds, etc.).
   /// @param compressionState   Shared compression state (encoder pool).
   /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
   /// @param addTrailerHeader   Whether to auto-add the Trailer header.
-  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request, Encoding compressionFormat,
+  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request, Encoding encoding,
                      const CompressionConfig& compressionConfig, internal::CompressionState& compressionState,
                      std::string_view globalHeadersStr, bool addTrailerHeader);
 
@@ -214,7 +214,7 @@ class HttpResponseWriter {
   const HttpRequestView* _request;
   bool _head;
   State _state{State::Opened};
-  Encoding _compressionFormat;
+  Encoding _encoding;
   bool _compressionActivated{false};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.

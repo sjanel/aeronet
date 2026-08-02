@@ -21,13 +21,14 @@ class File {
 
   static constexpr std::size_t kError = std::numeric_limits<std::size_t>::max();
 
+ private:
   struct Identity {
-    [[nodiscard]] const std::byte* data() const noexcept { return reinterpret_cast<const std::byte*>(&device); }
-    [[nodiscard]] static constexpr std::size_t size() noexcept { return sizeof(device) + sizeof(inode); }
-
     uint64_t device{};
     uint64_t inode{};
   };
+
+ public:
+  static constexpr std::size_t kIdentitySize = sizeof(Identity);
 
   // Default-constructed File is closed / empty.
   File() noexcept = default;
@@ -69,8 +70,10 @@ class File {
   // Returns kInvalidTimePoint if the metadata could not be obtained (in which case the File is also closed).
   [[nodiscard]] SysTimePoint lastModified() const noexcept { return _mtime; }
 
-  // Return the file's current descriptor identity and metadata. An invalid result means fstat failed.
-  [[nodiscard]] Identity identity() const noexcept { return _identity; }
+  // Writes file's current descriptor identity and metadata to pData, returning the pointer past the last written byte.
+  // pData must point to a buffer of at least kIdentitySize bytes.
+  // An invalid result means fstat failed.
+  char* appendIdentityData(char* pData) const noexcept;
 
   // Read up to dst.size() bytes starting at the given absolute offset.
   // Uses pread() so it does not modify the file's current offset.

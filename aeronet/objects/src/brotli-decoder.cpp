@@ -2,6 +2,7 @@
 
 #include <brotli/decode.h>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <new>
@@ -83,7 +84,7 @@ bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChu
     if (res == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
       return !finalChunk;
     }
-    // res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT
+    assert(res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
     if (forceEnd) {
       return false;
     }

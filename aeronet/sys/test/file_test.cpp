@@ -4,7 +4,6 @@
 
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdarg>
@@ -28,7 +27,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 
 using test::ScopedTempDir;
 using test::ScopedTempFile;
@@ -170,9 +169,27 @@ TEST(FileTest, ReadAtRetriesOnEintr) {
   // First pread returns error::kInterrupted, second succeeds with 3 bytes read.
   aeronet::test::SetPreadPathActions(path, {IoAction{-1, error::kInterrupted}, IoAction{3, 0}});
 
-  std::array<std::byte, 4> buf{};
+  std::byte buf[4]{};
   const auto readBytes = fileObj.readAt(buf, 0);
   EXPECT_EQ(readBytes, 3U);
+}
+
+TEST(FileTest, AppendIdentityShouldBeDifferentBetweenTwoFiles) {
+  ScopedTempDir dir("aeronet-file-identity");
+  ScopedTempFile tmp1(dir, "file1");
+  ScopedTempFile tmp2(dir, "file2");
+  File fileObj1(tmp1.filePath().string(), File::OpenMode::ReadOnly);
+  File fileObj2(tmp2.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj1));
+  ASSERT_TRUE(static_cast<bool>(fileObj2));
+
+  std::byte buf1[File::kIdentitySize]{};
+  std::byte buf2[File::kIdentitySize]{};
+  char* pEnd1 = fileObj1.appendIdentityData(reinterpret_cast<char*>(buf1));
+  char* pEnd2 = fileObj2.appendIdentityData(reinterpret_cast<char*>(buf2));
+  EXPECT_EQ(pEnd1 - reinterpret_cast<char*>(buf1), static_cast<ptrdiff_t>(File::kIdentitySize));
+  EXPECT_EQ(pEnd2 - reinterpret_cast<char*>(buf2), static_cast<ptrdiff_t>(File::kIdentitySize));
+  EXPECT_NE(buf1, buf2);
 }
 
 TEST(FileTest, ReadAtReturnsErrorOnFatalPread) {
@@ -186,7 +203,7 @@ TEST(FileTest, ReadAtReturnsErrorOnFatalPread) {
   // Fatal pread error should return kError.
   aeronet::test::SetPreadPathActions(path, {IoAction{-1, EIO}});
 
-  std::array<std::byte, 2> buf{};
+  std::byte buf[2]{};
   const auto readBytes = fileObj.readAt(buf, 1);
   EXPECT_EQ(readBytes, File::kError);
 }
@@ -219,7 +236,15 @@ TEST(FileTest, RestoreToStartLogsWhenLseekFails) {
   EXPECT_EQ(LoadAllContent(fileObj), "abc");
 }
 
-TEST(FileTest, CopyConstructor) {
+TEST(FileTest, CopyConstructorOnDefault) {
+  File fileObj;
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+  File copyObj(fileObj);
+  EXPECT_FALSE(static_cast<bool>(copyObj));
+  EXPECT_EQ(copyObj.size(), File::kError);
+}
+
+TEST(FileTest, CopyConstructorNominal) {
   ScopedTempDir dir("aeronet-file-copy");
   ScopedTempFile tmp(dir, "copy-content");
   File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
@@ -230,6 +255,23 @@ TEST(FileTest, CopyConstructor) {
 
   EXPECT_EQ(LoadAllContent(fileObj), "copy-content");
   EXPECT_EQ(LoadAllContent(copyObj), "copy-content");
+}
+
+TEST(FileTest, CopyConstructorLeavesCopyClosedWhenDupFails) {
+  test::FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-copy-dup-failure");
+  ScopedTempFile tmp(dir, "copy-content");
+  const std::string path = tmp.filePath().string();
+  File fileObj(path, File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  test::SetDupPathErrors(path, {EMFILE});
+  // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+  File copyObj(fileObj);
+
+  EXPECT_FALSE(static_cast<bool>(copyObj));
+  EXPECT_EQ(copyObj.size(), File::kError);
+  EXPECT_EQ(LoadAllContent(fileObj), "copy-content");
 }
 
 TEST(FileTest, CopyAssignment) {
@@ -244,3 +286,36 @@ TEST(FileTest, CopyAssignment) {
   EXPECT_EQ(LoadAllContent(fileObj), "copyassign-content");
   EXPECT_EQ(LoadAllContent(copyAssignObj), "copyassign-content");
 }
+
+TEST(FileTest, SelfCopyAssignmentLeavesObjectUnchanged) {
+  ScopedTempDir dir("aeronet-file-copyassign-self");
+  ScopedTempFile tmp(dir, "self-copy-content");
+  File fileObj(tmp.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  auto& self = fileObj;
+  self = fileObj;
+
+  EXPECT_EQ(LoadAllContent(fileObj), "self-copy-content");
+}
+
+TEST(FileTest, CopyAssignmentLeavesDestinationClosedWhenDupFails) {
+  test::FileSyscallHookGuard guard;
+  ScopedTempDir dir("aeronet-file-copyassign-dup-failure");
+  ScopedTempFile sourceTmp(dir, "source-content");
+  ScopedTempFile destinationTmp(dir, "destination-content");
+  const std::string sourcePath = sourceTmp.filePath().string();
+  File sourceObj(sourcePath, File::OpenMode::ReadOnly);
+  File destinationObj(destinationTmp.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(sourceObj));
+  ASSERT_TRUE(static_cast<bool>(destinationObj));
+
+  test::SetDupPathErrors(sourcePath, {EMFILE});
+  destinationObj = sourceObj;
+
+  EXPECT_FALSE(static_cast<bool>(destinationObj));
+  EXPECT_EQ(destinationObj.size(), File::kError);
+  EXPECT_EQ(LoadAllContent(sourceObj), "source-content");
+}
+
+}  // namespace aeronet
