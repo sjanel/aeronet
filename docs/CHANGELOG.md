@@ -6,6 +6,9 @@ All notable changes to aeronet are documented in this file.
 
 ### Breaking changes
 
+- **HttpRequestView::headerValue, headerValueOrEmpty, trailerValue, trailerValueOrEmpty, hasHeader and hasTrailer** are now all expecting lower ASCII case keys. This is enforced by the new parameter `LowerAsciiKey` that will fail to compile for constant strings (for instance, `headerValue("Host")` does not compile, but `headerValue("host")` does)
+- **HttpRequestView::headers() && trailers() now return a case-sensitive map with lower case keys**: header names are normalized to lower-case when parsed, but the returned map have case sensitive look-ups. For instance, the code `req.headers().find("X-Header")` is now wrong (it can never match) and should be replaced with `req.headers().find("x-header")`. For simple lookups, prefer above methods that are safer and simpler.
+- **http::Connection, http::ContentType, http::Host, etc. are now `LowerAsciiKey` instead of `std::string_view`** (compile-time validated once at their definition instead of at every call site). Fully backward-compatible for typical usage (implicit conversion back to std::string_view is available) -- only generic/template code asserting the exact type `std::string_view` would need adjustment. Pure formatting helpers (`http::ContentTypeHeaderSep` and similar `*Sep` constants, which are not header-name lookup keys) are unaffected and remain `std::string_view`.
 - **File::Identity becomes private and File::identity() has been replaced with File::appendIdentityData()**: `File::Identity` is now a private nested type, and the public `File::identity()` method has been removed. The new `File::appendIdentityData(char* pData)` method writes the file's current descriptor identity and metadata to the provided buffer, returning a pointer past the last written byte. The buffer must be at least `File::kIdentitySize` bytes long.
 
 ### Bug Fixes
@@ -31,6 +34,7 @@ All notable changes to aeronet are documented in this file.
 - **Faster HTTP/1 CRLF search**: `SearchCRLF` now scans the first 128 bytes with baseline SSE2 on x86 before falling back to libc `memchr`, improving the realistic request-corpus microbenchmark by about **10%**. Non-SSE2 targets retain the portable `memchr` path. See `benchmarks/internal/search-crlf_bench.cpp` and `aeronet/tech/test/memory-utils_test.cpp`.
 - **Faster mime mappings lookup**: `DetermineMIMETypeStr` now uses a binary search on extension codes on 64 bits instead of comparing std::string_views to lowercase. Function gains around 40% efficiency on average.
 - **Further request head buffer parsing optimizations**: faster CI hashing for headers, faster request method parsing. Measured gains of ~10% for requests with very few headers, and up to ~23% for requests with many headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
+- **Improved header & trailer lookups** by normalizing keys to lower case in HttpRequestView.
 
 ## [1.4.1] - 2026-07-25
 

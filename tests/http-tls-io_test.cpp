@@ -456,7 +456,7 @@ TEST(HttpLargeFile, ServeLargeFileTls) {
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
   EXPECT_EQ(parsed.body.size(), size);
   const auto headers = parsed.headers;
-  const auto it = headers.find(http::ContentLength);
+  const auto it = headers.find(http::ContentLength.get());
   ASSERT_NE(it, headers.end());
   uint64_t computedSz{};
   EXPECT_EQ(std::from_chars(it->second.data(), it->second.data() + it->second.size(), computedSz).ec, std::errc{});

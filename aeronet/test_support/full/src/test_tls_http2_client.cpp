@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -35,6 +34,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet::test {
@@ -71,7 +71,7 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   }
 
   // Set up callbacks for response handling
-  _http2Connection->setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+  _http2Connection->setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     auto& streamResp = _streamResponses[streamId];
     streamResp.headersReceived = true;
 

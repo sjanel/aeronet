@@ -18,7 +18,7 @@ constexpr void Copy(std::string_view sv, char* pDes) noexcept { Copy(sv.data(), 
 // Unlike Copy/Append, there is no branch table for small runtime sizes here - the whole point is to get out of the
 // compiler's way and let its own memcpy-of-constant-size lowering pick the optimal instruction sequence (verified:
 // identical codegen to a hand-written memcpy call, zero call overhead, no library memcpy() call in the binary).
-template <const std::string_view& Sv>
+template <const auto& Sv>
 inline void CopyFixed(auto* AERONET_RESTRICT pDes) noexcept {
   std::memcpy(pDes, Sv.data(), Sv.size());
 }
@@ -29,7 +29,7 @@ inline void CopyFixed(auto* AERONET_RESTRICT pDes) noexcept {
   return pDes + sv.size();
 }
 
-template <const std::string_view& Sv>
+template <const auto& Sv>
 [[nodiscard]] inline auto* AppendFixed(auto* AERONET_RESTRICT pDes) noexcept {
   CopyFixed<Sv>(pDes);
   return pDes + Sv.size();

@@ -7,10 +7,9 @@
 
 namespace aeronet::http {
 
+// Returns true if the header name is valid according to RFC 7230 §3.2.6 (tchar characters only, no whitespace, not
+// empty).
 constexpr bool IsValidHeaderName(std::string_view name) noexcept {
-  if (name.empty()) {
-    return false;
-  }
   struct AllowedTable {
     bool data[256];
   };
@@ -28,7 +27,7 @@ constexpr bool IsValidHeaderName(std::string_view name) noexcept {
       return false;
     }
   }
-  return true;
+  return !name.empty();
 }
 
 constexpr bool IsValidHeaderValue(std::string_view value) noexcept {

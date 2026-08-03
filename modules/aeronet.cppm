@@ -29,7 +29,6 @@ using aeronet::SingleHttpServer;
 using aeronet::ConcatenatedHeaders;
 using aeronet::ConcatenatedHeaderValues;
 using aeronet::FilePayload;
-using aeronet::HeadersViewMap;
 using aeronet::HttpMessageData;
 using aeronet::HttpPayload;
 using aeronet::HttpRequestView;
@@ -111,9 +110,6 @@ using aeronet::StaticConcatenatedStrings;
 // ── String utilities (used in public type definitions) ─────────────────────
 
 using aeronet::CaseInsensitiveEqual;
-using aeronet::CaseInsensitiveEqualFunc;
-using aeronet::CaseInsensitiveHashFunc;
-using aeronet::CaseInsensitiveLess;
 using aeronet::CharToStringView;
 using aeronet::CharToStringView_v;
 using aeronet::IntToStringView;

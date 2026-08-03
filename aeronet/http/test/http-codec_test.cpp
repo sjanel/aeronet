@@ -27,6 +27,7 @@
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <utility>
@@ -661,7 +662,7 @@ TEST(HttpCodecDecompression, WillDecompress_DisabledReturnsNotModified) {
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -684,7 +685,7 @@ TEST(HttpCodecDecompression, WillDecompress_EmptyHeaderReturnsBadRequest) {
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeBadRequest);
@@ -696,7 +697,7 @@ TEST(HttpCodecDecompression, WillDecompress_OnlyIdentityReturnsNotModified) {
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -708,7 +709,7 @@ TEST(HttpCodecDecompression, WillDecompress_NonIdentityReturnsOK) {
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeOK);
@@ -721,7 +722,7 @@ TEST(HttpCodecDecompression, WillDecompress_MalformedDoubleCommaReturnsBadReques
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // double comma (possibly with spaces) between tokens should be treated as malformed
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeBadRequest);
@@ -733,7 +734,7 @@ TEST(HttpCodecDecompression, WillDecompress_IdentityCaseInsensitive) {
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "IDENTITY");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "IDENTITY");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -745,7 +746,7 @@ TEST(HttpCodecDecompression, WillDecompress_SeveralIdentityValuesReturnsNotModif
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,IDENTITY");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,IDENTITY");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -758,7 +759,7 @@ TEST(HttpCodecDecompression, WillDecompress_OWSAndSpacesAreHandled) {
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // leading/trailing spaces and OWS around commas should be tolerated and parsed
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip ,  deflate");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip ,  deflate");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeOK);  // gzip/deflate are non-identity
@@ -771,7 +772,7 @@ TEST(HttpCodecDecompression, WillDecompress_IdentityMixedWithOtherEncodings) {
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // identity present but not alone; should result in OK because a non-identity is present
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, br");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, br");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeOK);
@@ -784,7 +785,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // malformed double-comma should be treated as malformed by the decoder iterator
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
   std::string_view chunksArr[] = {"dummy"};
   std::span<const std::string_view> chunks(chunksArr, 1);
@@ -811,7 +812,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity,gzip,identity");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity,gzip,identity");
 
   // Prepare a large uncompressed payload that compresses well
   const std::size_t plainSize = 1 << 10;  // 1 KiB
@@ -857,7 +858,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // identity and unknown encoding should return unsupported media type
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, unknown");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, unknown");
 
   std::string_view chunksArr[] = {"dummy"};
   std::span<const std::string_view> chunks(chunksArr, 1);
@@ -1090,7 +1091,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   ConnectionState cs;
   HttpRequestView& req = cs.request;
   // set a supported encoding header so decompression codepath is attempted
-  const_cast<HeadersViewMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   // Prepare a small compressed payload if zlib available, otherwise use placeholder bytes.
   const std::string plain = "small payload";

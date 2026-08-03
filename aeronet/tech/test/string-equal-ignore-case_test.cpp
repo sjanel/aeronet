@@ -26,13 +26,6 @@ TEST(StringEqualIgnoreCase, UnequalStrings) {
   EXPECT_FALSE(CaseInsensitiveEqual("HELLO", "hell"));
 }
 
-TEST(StringLessIgnoreCase, LessStrings) {
-  EXPECT_FALSE(CaseInsensitiveLess("abc", "ABC"));
-  EXPECT_TRUE(CaseInsensitiveLess("abc", "ABcD"));
-  EXPECT_FALSE(CaseInsensitiveLess("abc", "AB"));
-  EXPECT_FALSE(CaseInsensitiveLess("abcd", "abc"));
-}
-
 TEST(StringEqualIgnoreCase, StringViewVariants) {
   std::string_view lhs = "FooBar";
   std::string_view rhs = "foobar";
@@ -117,20 +110,6 @@ TEST(StringEqualIgnoreCase, NonAsciiBytesComparedRaw) {
   EXPECT_FALSE(CaseInsensitiveEqual(hiWide, hiWide2));
 }
 
-TEST(StringEqualIgnoreCase, HashConsistency) {
-  CaseInsensitiveHashFunc hashFunc;
-  const std::string_view str1 = "MiXeDCase";
-  const std::string_view str2 = "mixedcase";
-  EXPECT_EQ(hashFunc(str1), hashFunc(str2));
-  EXPECT_NE(hashFunc(str1), hashFunc("different"));
-}
-
-TEST(StringEqualIgnoreCase, EqualFuncWrapper) {
-  CaseInsensitiveEqualFunc eqFunc;
-  EXPECT_TRUE(eqFunc("Sample", "sample"));
-  EXPECT_FALSE(eqFunc("Sample", "samples"));
-}
-
 namespace {
 
 std::string LowerCase(std::string_view sv) {
@@ -146,10 +125,6 @@ bool ReferenceCaseInsensitiveEqual(std::string_view lhs, std::string_view rhs) {
   return LowerCase(lhs) == LowerCase(rhs);
 }
 
-bool ReferenceCaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
-  return LowerCase(lhs) < LowerCase(rhs);
-}
-
 }  // namespace
 
 TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
@@ -162,8 +137,6 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
   std::uniform_int_distribution<int> caseDist(0, 1);
   std::string s1;
   std::string s2;
-
-  CaseInsensitiveHashFunc hashFunc;
 
   for (int iteration = 0; iteration < 5000; ++iteration) {
     std::size_t sz = lenDist(rng);
@@ -210,53 +183,6 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
       std::string s3 = s1 + static_cast<char>(charDist(rng));
       EXPECT_EQ(CaseInsensitiveEqual(s1, s3), ReferenceCaseInsensitiveEqual(s1, s3));
     }
-
-    const auto h1 = hashFunc(s1);
-    const auto h2 = hashFunc(s2);
-
-    // The hash is not guaranteed to be different for unequal strings, but it's the case for this randomly (but
-    // deterministic) set of data, and it's a good sanity check. However, we expect case insensitive equal strings to
-    // always have the same hash.
-    EXPECT_EQ(h1 == h2, CaseInsensitiveEqual(s1, s2));
-  }
-}
-
-TEST(StringLessIgnoreCase, FuzzRandomAsciiLess) {
-  // NOLINTNEXTLINE(bugprone-random-generator-seed)
-  std::mt19937_64 rng(987654321);
-  std::uniform_int_distribution<std::size_t> lenDist(0, 32);
-  std::uniform_int_distribution<int> charDist(0x20, 0x7E);  // printable ASCII
-  std::string lhs;
-  std::string rhs;
-
-  for (int iteration = 0; iteration < 2000; ++iteration) {
-    std::size_t na = lenDist(rng);
-    std::size_t nb = lenDist(rng);
-    lhs.clear();
-    rhs.clear();
-    for (std::size_t i = 0; i < na; ++i) {
-      char ch = static_cast<char>(charDist(rng));
-      if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
-        if (std::uniform_int_distribution<int>(0, 1)(rng) != 0) {
-          ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        } else {
-          ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-      }
-      lhs.push_back(ch);
-    }
-    for (std::size_t i = 0; i < nb; ++i) {
-      char ch = static_cast<char>(charDist(rng));
-      if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
-        if (std::uniform_int_distribution<int>(0, 1)(rng) != 0) {
-          ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        } else {
-          ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-      }
-      rhs.push_back(ch);
-    }
-    EXPECT_EQ(CaseInsensitiveLess(lhs, rhs), ReferenceCaseInsensitiveLess(lhs, rhs));
   }
 }
 
