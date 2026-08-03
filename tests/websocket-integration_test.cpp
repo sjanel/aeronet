@@ -208,7 +208,7 @@ TEST_F(WebSocketTest, UpgradeSuccessful) {
   EXPECT_TRUE(response.starts_with("HTTP/1.1 101")) << "Response: " << response;
   EXPECT_TRUE(response.contains(MakeHttp1HeaderLine(http::Upgrade, websocket::UpgradeValue)))
       << "Response: " << response;
-  EXPECT_TRUE(response.contains("Sec-WebSocket-Accept:")) << "Response: " << response;
+  EXPECT_TRUE(response.contains("sec-websocket-accept:")) << "Response: " << response;
 }
 
 TEST_F(WebSocketTest, UpgradeWithInvalidKey) {

@@ -22,17 +22,17 @@
 #include "aeronet/async-handler-state.hpp"
 #endif
 
-#include "aeronet/city-hash.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
 namespace aeronet {
@@ -182,7 +182,7 @@ class HttpRequestView {
   // Get the HTTP version of the request.
   [[nodiscard]] http::Version version() const noexcept { return _version; }
 
-  // Returns a map-like, case-insensitive view over the parsed request headers.
+  // Returns a map-like view over the parsed request headers.
   // Characteristics:
   //   * Value semantics reflect the in-place duplicate handling policy (merged / overridden as documented above so
   //     there will be at most one entry per header name).
@@ -191,11 +191,14 @@ class HttpRequestView {
   //   * Trailing & leading horizontal whitespace around each original field-value are removed.
   //   * Empty headers are retained (key maps to empty string_view) allowing explicit empties to be detected via
   //     headerValue().
-  [[nodiscard]] const HeadersViewMap& headers() const noexcept { return _headers; }
+  //   * Header names are normalized to lower-case and look-ups are case-sensitive (so do not look up for a key
+  //     containing an upper case).
+  [[nodiscard]] const SvToSvMap& headers() const noexcept { return _headers; }
 
-  // Returns the (possibly merged) HTTP header value for the given key or an empty string_view if absent.
+  // Returns the (possibly merged) HTTP header value for the given key or std::nullopt if absent.
   // Semantics / behavior:
-  //   * Lookup is case-insensitive (RFC 7230 token rules).
+  //   * Lookup is case-sensitive on normalized (lower-cased) header names (RFC 7230 token rules).
+  //   * Key must be lower-cased (this may be enforced at compile time or via assert() in debug builds).
   //   * Duplicate request headers are canonicalized in-place during parsing according to a constexpr
   //     classification table (see README section "Request Header Duplicate Handling"):
   //       - List-style headers (e.g. Accept, Via, Warning) are comma-joined:  "v1,v2"
@@ -211,24 +214,20 @@ class HttpRequestView {
   //     are preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
   //   * The returned view points into the connection's receive buffer; it is valid only for the lifetime of the
   //     handler invocation (do not persist it beyond the request scope).
-  //   * If you need to distinguish between a missing header and an explicitly present empty header, use headerValue().
-  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view headerKey) const noexcept {
-    return headerValue(headerKey).value_or(std::string_view{});
-  }
-
-  // Like headerValueOrEmpty() but preserves the distinction between absence and an explicitly empty value.
-  //   * std::nullopt  => header not present in the request.
-  //   * engaged empty => header present with zero-length (after trimming) value.
-  //   * engaged non-empty => possibly merged / override-normalized value (see duplicate handling above).
-  // All trimming, merge, override, and lifetime notes from headerValueOrEmpty() apply here.
-  // Use this when protocol logic must differentiate between omitted vs intentionally blank headers.
-  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view headerKey) const noexcept {
-    const auto it = _headers.find(headerKey);
+  [[nodiscard]] std::optional<std::string_view> headerValue(LowerAsciiKey headerNameLowerCase) const noexcept {
+    const auto it = _headers.find(headerNameLowerCase);
     return it != _headers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
   }
 
+  // Like headerValue() but if the header is not present, returns an empty string_view instead of std::nullopt for
+  // convenience. To differentiate between absent and empty headers, use headerValue().
+  [[nodiscard]] std::string_view headerValueOrEmpty(LowerAsciiKey headerKey) const noexcept {
+    return headerValue(headerKey).value_or(std::string_view{});
+  }
+
   // Returns true if the given header is present (regardless of value).
-  [[nodiscard]] bool hasHeader(std::string_view headerKey) const noexcept { return _headers.contains(headerKey); }
+  // Key must be lower-cased (this may be enforced at compile time or via assert() in debug builds).
+  [[nodiscard]] bool hasHeader(LowerAsciiKey headerKey) const noexcept { return _headers.contains(headerKey); }
 
   // Returns a map-like view over the parsed & URL decoded query parameters.
   // - Duplicated keys are collapsed; only the last occurrence is retained.
@@ -396,28 +395,33 @@ class HttpRequestView {
     return _pBodyAccessBridge != nullptr || _bodyAccessMode == BodyAccessMode::Aggregated;
   }
 
-  // Returns a map-like, case-insensitive view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
+  // Returns a map-like view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
   // Characteristics:
   //   * Only populated for chunked requests; empty for fixed Content-Length or bodyless requests.
   //   * Same duplicate-header merge policy as regular headers (comma-join, override, etc.).
   //   * Values are string_view slices into the connection buffer; valid only during the handler call.
   //   * Forbidden trailer fields (transfer-encoding, content-length, host, etc.) are rejected with 400.
   //   * Trailers count toward the maxHeadersBytes limit (combined with initial headers).
-  [[nodiscard]] const HeadersViewMap& trailers() const noexcept { return _trailers; }
-
-  // Like headerValueOrEmpty() but for trailers.
-  [[nodiscard]] std::string_view trailerValueOrEmpty(std::string_view trailerKey) const noexcept {
-    return trailerValue(trailerKey).value_or(std::string_view{});
-  }
+  //   * Trailer names are normalized to lower-case and look-ups are case-sensitive (so do not look up for a key
+  //     containing an upper case).
+  [[nodiscard]] const SvToSvMap& trailers() const noexcept { return _trailers; }
 
   // Like headerValue() but for trailers.
-  [[nodiscard]] std::optional<std::string_view> trailerValue(std::string_view trailerKey) const noexcept {
-    const auto it = _trailers.find(trailerKey);
+  [[nodiscard]] std::optional<std::string_view> trailerValue(LowerAsciiKey trailerNameLowerCase) const noexcept {
+    const auto it = _trailers.find(trailerNameLowerCase);
     return it != _trailers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
   }
 
-  // Returns true if the given trailer is present (regardless of value).
-  [[nodiscard]] bool hasTrailer(std::string_view trailerKey) const noexcept { return _trailers.contains(trailerKey); }
+  // Like headerValueOrEmpty() but for trailers.
+  [[nodiscard]] std::string_view trailerValueOrEmpty(LowerAsciiKey trailerNameLowerCase) const noexcept {
+    return trailerValue(trailerNameLowerCase).value_or(std::string_view{});
+  }
+
+  // Returns true if the given trailer name (in lower-case) is present (regardless of value).
+  // Key must be lower-cased (this may be enforced at compile time or via assert() in debug builds).
+  [[nodiscard]] bool hasTrailer(LowerAsciiKey trailerNameLowerCase) const noexcept {
+    return _trailers.contains(trailerNameLowerCase);
+  }
 
   // Returns a map-like view over path parameters extracted during route matching.
   // Characteristics:
@@ -652,10 +656,10 @@ class HttpRequestView {
   bool* _pH2SuspendedFlag{nullptr};
 #endif
 
-  HeadersViewMap _headers;
-  HeadersViewMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
-  flat_hash_map<std::string_view, std::string_view, CityHash> _pathParams;
-  flat_hash_map<std::string_view, std::string_view, CityHash> _queryParams;
+  SvToSvMap _headers;
+  SvToSvMap _trailers;  // Trailer headers (RFC 7230 §4.1.2) from chunked requests
+  SvToSvMap _pathParams;
+  SvToSvMap _queryParams;
 
   std::string_view _body;
   std::string_view _activeStreamingChunk;

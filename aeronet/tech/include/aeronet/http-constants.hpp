@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 
 namespace aeronet::http {
 
@@ -40,63 +41,63 @@ inline constexpr std::string_view PATCH = "PATCH";
 
 // Standard Header Field Names
 // They are in lowercase to comply with HTTP/2 header field name rules (RFC 9113)
-inline constexpr std::string_view Connection = "connection";
-inline constexpr std::string_view TransferEncoding = "transfer-encoding";
+inline constexpr LowerAsciiKey Connection = "connection";
+inline constexpr LowerAsciiKey TransferEncoding = "transfer-encoding";
 
-inline constexpr std::string_view Date = "date";
+inline constexpr LowerAsciiKey Date = "date";
 inline constexpr std::string_view CRLFDateHeaderSep = "\r\ndate: ";
 
-inline constexpr std::string_view ContentType = "content-type";
+inline constexpr LowerAsciiKey ContentType = "content-type";
 inline constexpr std::string_view ContentTypeHeaderSep = "content-type: ";
 
-inline constexpr std::string_view ContentLength = "content-length";
+inline constexpr LowerAsciiKey ContentLength = "content-length";
 inline constexpr std::string_view CRLFContentLengthHeaderSep = "\r\ncontent-length: ";
 
-inline constexpr std::string_view CacheControl = "cache-control";
-inline constexpr std::string_view ContentDisposition = "content-disposition";
-inline constexpr std::string_view ContentEncoding = "content-encoding";
-inline constexpr std::string_view AcceptEncoding = "accept-encoding";
-inline constexpr std::string_view UserAgent = "user-agent";
-inline constexpr std::string_view RetryAfter = "retry-after";
-inline constexpr std::string_view TE = "te";
-inline constexpr std::string_view Trailer = "trailer";
-inline constexpr std::string_view Upgrade = "upgrade";
-inline constexpr std::string_view Expect = "expect";
-inline constexpr std::string_view Host = "host";
+inline constexpr LowerAsciiKey CacheControl = "cache-control";
+inline constexpr LowerAsciiKey ContentDisposition = "content-disposition";
+inline constexpr LowerAsciiKey ContentEncoding = "content-encoding";
+inline constexpr LowerAsciiKey AcceptEncoding = "accept-encoding";
+inline constexpr LowerAsciiKey UserAgent = "user-agent";
+inline constexpr LowerAsciiKey RetryAfter = "retry-after";
+inline constexpr LowerAsciiKey TE = "te";
+inline constexpr LowerAsciiKey Trailer = "trailer";
+inline constexpr LowerAsciiKey Upgrade = "upgrade";
+inline constexpr LowerAsciiKey Expect = "expect";
+inline constexpr LowerAsciiKey Host = "host";
 
-inline constexpr std::string_view Server = "server";
-inline constexpr std::string_view Location = "location";
-inline constexpr std::string_view Vary = "vary";
-inline constexpr std::string_view Origin = "origin";
-inline constexpr std::string_view Allow = "allow";
-inline constexpr std::string_view AcceptRanges = "accept-ranges";
-inline constexpr std::string_view ContentRange = "content-range";
-inline constexpr std::string_view ETag = "etag";
-inline constexpr std::string_view LastModified = "last-modified";
-inline constexpr std::string_view Range = "range";
-inline constexpr std::string_view AccessControlAllowOrigin = "access-control-allow-origin";
-inline constexpr std::string_view AccessControlAllowCredentials = "access-control-allow-credentials";
-inline constexpr std::string_view AccessControlAllowMethods = "access-control-allow-methods";
-inline constexpr std::string_view AccessControlAllowHeaders = "access-control-allow-headers";
-inline constexpr std::string_view AccessControlExposeHeaders = "access-control-expose-headers";
-inline constexpr std::string_view AccessControlMaxAge = "access-control-max-age";
-inline constexpr std::string_view AccessControlAllowPrivateNetwork = "access-control-allow-private-network";
-inline constexpr std::string_view AccessControlRequestMethod = "access-control-request-method";
-inline constexpr std::string_view AccessControlRequestHeaders = "access-control-request-headers";
+inline constexpr LowerAsciiKey Server = "server";
+inline constexpr LowerAsciiKey Location = "location";
+inline constexpr LowerAsciiKey Vary = "vary";
+inline constexpr LowerAsciiKey Origin = "origin";
+inline constexpr LowerAsciiKey Allow = "allow";
+inline constexpr LowerAsciiKey AcceptRanges = "accept-ranges";
+inline constexpr LowerAsciiKey ContentRange = "content-range";
+inline constexpr LowerAsciiKey ETag = "etag";
+inline constexpr LowerAsciiKey LastModified = "last-modified";
+inline constexpr LowerAsciiKey Range = "range";
+inline constexpr LowerAsciiKey AccessControlAllowOrigin = "access-control-allow-origin";
+inline constexpr LowerAsciiKey AccessControlAllowCredentials = "access-control-allow-credentials";
+inline constexpr LowerAsciiKey AccessControlAllowMethods = "access-control-allow-methods";
+inline constexpr LowerAsciiKey AccessControlAllowHeaders = "access-control-allow-headers";
+inline constexpr LowerAsciiKey AccessControlExposeHeaders = "access-control-expose-headers";
+inline constexpr LowerAsciiKey AccessControlMaxAge = "access-control-max-age";
+inline constexpr LowerAsciiKey AccessControlAllowPrivateNetwork = "access-control-allow-private-network";
+inline constexpr LowerAsciiKey AccessControlRequestMethod = "access-control-request-method";
+inline constexpr LowerAsciiKey AccessControlRequestHeaders = "access-control-request-headers";
 // Custom Headers for Static File Handling
-inline constexpr std::string_view XDirectoryListingTruncated = "x-directory-listing-truncated";
+inline constexpr LowerAsciiKey XDirectoryListingTruncated = "x-directory-listing-truncated";
 
 // Special aeronet headers
-inline constexpr std::string_view OriginalEncodingHeaderName = "x-aeronet-original-encoding";
-inline constexpr std::string_view OriginalEncodedLengthHeaderName = "x-aeronet-original-encoded-length";
+inline constexpr LowerAsciiKey OriginalEncodingHeaderName = "x-aeronet-original-encoding";
+inline constexpr LowerAsciiKey OriginalEncodedLengthHeaderName = "x-aeronet-original-encoded-length";
 
 #ifdef AERONET_ENABLE_HTTP2
 // HTTP2 pseudo-headers
-inline constexpr std::string_view PseudoHeaderMethod = ":method";
-inline constexpr std::string_view PseudoHeaderScheme = ":scheme";
-inline constexpr std::string_view PseudoHeaderAuthority = ":authority";
-inline constexpr std::string_view PseudoHeaderPath = ":path";
-inline constexpr std::string_view PseudoHeaderStatus = ":status";
+inline constexpr LowerAsciiKey PseudoHeaderMethod = ":method";
+inline constexpr LowerAsciiKey PseudoHeaderScheme = ":scheme";
+inline constexpr LowerAsciiKey PseudoHeaderAuthority = ":authority";
+inline constexpr LowerAsciiKey PseudoHeaderPath = ":path";
+inline constexpr LowerAsciiKey PseudoHeaderStatus = ":status";
 #endif
 
 inline constexpr std::string_view HeaderSep = ": ";

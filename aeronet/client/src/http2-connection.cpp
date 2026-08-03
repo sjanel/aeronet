@@ -16,7 +16,6 @@
 #include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -37,6 +36,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 
@@ -78,7 +78,7 @@ class Http2ClientEngine {
   };
 
   explicit Http2ClientEngine(const Http2Config& config) : _conn(config, /*isServer=*/false) {
-    _conn.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    _conn.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       onHeaders(streamId, headers, endStream);
     });
     _conn.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
@@ -246,7 +246,7 @@ class Http2ClientEngine {
     }
   }
 
-  void onHeaders(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+  void onHeaders(uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     if (streamId != _streamId || _resp == nullptr) {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
     }

@@ -816,7 +816,7 @@ auto result = client.get("https://example.com/health");
 if (result) {
   const aeronet::HttpResponse& resp = *result;
   auto body = resp.bodyInMemory();                  // decoded body (chunked already de-framed)
-  auto ctype = resp.headerValueOrEmpty("content-type");
+  auto ctype = resp.headerValueOrEmpty(http::ContentType);
 } else {
   auto reason = aeronet::ErrcToStr(result.error());  // e.g. "connection failed", "operation timed out"
 }

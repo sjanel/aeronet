@@ -16,11 +16,11 @@ inline constexpr std::string_view kGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 inline constexpr std::string_view kWebSocketVersion = "13";
 
 // Header field names specific to WebSocket handshake
-inline constexpr std::string_view SecWebSocketKey = "Sec-WebSocket-Key";
-inline constexpr std::string_view SecWebSocketAccept = "Sec-WebSocket-Accept";
-inline constexpr std::string_view SecWebSocketVersion = "Sec-WebSocket-Version";
-inline constexpr std::string_view SecWebSocketProtocol = "Sec-WebSocket-Protocol";
-inline constexpr std::string_view SecWebSocketExtensions = "Sec-WebSocket-Extensions";
+inline constexpr std::string_view SecWebSocketKey = "sec-websocket-key";
+inline constexpr std::string_view SecWebSocketAccept = "sec-websocket-accept";
+inline constexpr std::string_view SecWebSocketVersion = "sec-websocket-version";
+inline constexpr std::string_view SecWebSocketProtocol = "sec-websocket-protocol";
+inline constexpr std::string_view SecWebSocketExtensions = "sec-websocket-extensions";
 
 // Expected value of Connection header for WebSocket upgrade
 inline constexpr std::string_view UpgradeValue = "websocket";

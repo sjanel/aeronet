@@ -39,6 +39,7 @@
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/template-constants.hpp"
+#include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/url-decode.hpp"
 
@@ -358,10 +359,14 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     if (std::cmp_less(maxHeadersBytes, lineLast + http::CRLF.size() - inBuffer.data())) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
+
     const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
     if (nameView.empty() || std::ranges::any_of(nameView, [](char ch) { return http::IsHeaderWhitespace(ch); })) {
       return http::StatusCodeBadRequest;
     }
+
+    // tolower in place for header name (to avoid having to compare strings case-insensitively later)
+    tolower(first, nameView.size());
 
     auto [insertedIt, inserted] = _headers.emplace(nameView, valueView);
     // Store header using in-place merge helper (headers live inside connection buffer).
@@ -384,7 +389,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     traceSpan->setAttribute("http.target", path());
     traceSpan->setAttribute("http.scheme", "http");
 
-    const auto hostIt = _headers.find("Host");
+    const auto hostIt = _headers.find(http::Host);
     if (hostIt != _headers.end()) {
       traceSpan->setAttribute("http.host", hostIt->second);
     }

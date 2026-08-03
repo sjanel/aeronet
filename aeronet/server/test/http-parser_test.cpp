@@ -288,7 +288,7 @@ TEST(HttpParserChunked, Expect100Continue) {
 // A valid custom trailer header must be accessible via req.trailers().
 TEST(HttpParserChunkedTrailers, ValidTrailer) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto val = req.trailerValueOrEmpty("X-Checksum");
+    auto val = req.trailerValueOrEmpty("x-checksum");
     return req.makeResponse(val);
   });
   std::string req =
@@ -305,7 +305,7 @@ TEST(HttpParserChunkedTrailers, ValidTrailer) {
 // NeedMore in trailer parsing: the trailer line arrives without its CRLF.
 TEST(HttpParserChunkedTrailers, NeedMore_PartialTrailerLine) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto val = req.trailerValueOrEmpty("X-Tag");
+    auto val = req.trailerValueOrEmpty("x-tag");
     return req.makeResponse(val);
   });
   std::string head =

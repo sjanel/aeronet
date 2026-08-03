@@ -173,7 +173,7 @@ set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmark
 AeronetAddProjectBenchmark(aeronet-bench-internal-search-crlf ${AERONET_BENCH_INTERNAL_SEARCH_CRLF} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-search-crlf PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_tech)
+AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS} LIBRARIES aeronet_tech)

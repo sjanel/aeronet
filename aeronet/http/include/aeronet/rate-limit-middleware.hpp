@@ -4,6 +4,7 @@
 #include <functional>
 #include <string_view>
 
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/rate-limit.hpp"
 
@@ -20,7 +21,7 @@ struct RateLimitRequestMiddlewareBuilder {
   RateLimitConfig config;
   RateLimitStorePtr store;
   RateLimitClientKeyStrategy keyStrategy{RateLimitClientKeyStrategy::PeerAddress};
-  std::string_view headerName{"x-forwarded-for"};
+  LowerAsciiKey headerName{"x-forwarded-for"};
   std::function<std::string_view(const HttpRequestView&)> customKeyExtractor;
   std::string_view rejectionBody{"rate limited"};
 };

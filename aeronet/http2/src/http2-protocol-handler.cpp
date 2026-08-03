@@ -18,11 +18,9 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -49,6 +47,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "http2-writer-transport.hpp"
@@ -86,7 +85,7 @@ Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = de
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
 
 void Http2ProtocolHandler::setupCallbacks() {
-  _connection.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+  _connection.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     onHeadersDecodedReceived(streamId, headers, endStream);
   });
 
@@ -194,7 +193,7 @@ http::Method ParseHttpMethod(std::string_view method) {
 
 }  // namespace
 
-void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvToSvMap& headers, bool endStream) {
   auto [it, inserted] = _streams.try_emplace(streamId);
   if (!inserted) {
     // A second HEADERS block on a stream that already has one carries request trailers (RFC 9113 §8.1).
@@ -351,7 +350,7 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
   dispatchRequest(it);
 }
 
-void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const HeadersViewMap& trailers, bool endStream) {
+void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream) {
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
 

@@ -5,7 +5,6 @@
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
 
@@ -26,12 +25,13 @@ namespace aeronet::http {
 // Fallback for unknown headers currently returns ',' (optimistic list assumption)
 // unless caller disables it. 'O' is chosen because it's an ASCII letter not used
 // as a list separator, so it's an unambiguous sentinel.
-constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAllowedForUnknownRequestHeaders) {
+constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
+                                       bool mergeAllowedForUnknownRequestHeaders) {
   struct Entry {
     std::string_view name;
     char sep;
   };
-  // Table sorted case-insensitively (ASCII) to allow binary search with CaseInsensitiveLess.
+  // Table sorted case-sensitively (ASCII) to allow binary search.
   // Separators:
   //   ',' : list headers (ABNF 1#element)
   //   ';' : Cookie concatenation (caller may later insert space after ';')
@@ -39,61 +39,62 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerName, bool mergeAl
   //   'O' : override / keep-last semantics (Authorization, Host, Range, ...)
   //   '\0': duplicate forbidden
   static constexpr Entry kEntries[] = {
-      {"Accept", ','},
-      {"Accept-Charset", ','},
-      {"Accept-Datetime", ','},
+      {"accept", ','},
+      {"accept-charset", ','},
+      {"accept-datetime", ','},
       {http::AcceptEncoding, ','},
-      {"Accept-Language", ','},
-      {"Authorization", 'O'},
+      {"accept-language", ','},
+      {"authorization", 'O'},
       {http::CacheControl, ','},
       {http::Connection, ','},
       {http::ContentLength, '\0'},
-      {"Content-MD5", '\0'},
-      {"Content-Transfer-Encoding", '\0'},
+      {"content-md5", '\0'},
+      {"content-transfer-encoding", '\0'},
       {http::ContentType, 'O'},
-      {"Cookie", ';'},
-      {"DNT", ','},
-      {"Expect", ','},
-      {"Forwarded", ','},
-      {"From", 'O'},
-      {"Host", '\0'},
-      {"If-Match", ','},
-      {"If-Modified-Since", 'O'},
-      {"If-None-Match", ','},
-      {"If-Range", 'O'},
-      {"If-Unmodified-Since", 'O'},
-      {"Max-Forwards", 'O'},
-      {"Origin", ','},
-      {"Pragma", ','},
-      {"Prefer", ','},
-      {"Proxy-Authorization", 'O'},
+      {"cookie", ';'},
+      {"dnt", ','},
+      {"expect", ','},
+      {"forwarded", ','},
+      {"from", 'O'},
+      {http::Host, '\0'},
+      {"http2-settings", '\0'},
+      {"if-match", ','},
+      {"if-modified-since", 'O'},
+      {"if-none-match", ','},
+      {"if-range", 'O'},
+      {"if-unmodified-since", 'O'},
+      {"max-forwards", 'O'},
+      {"origin", ','},
+      {"pragma", ','},
+      {"prefer", ','},
+      {"proxy-authorization", 'O'},
       {http::Range, 'O'},
-      {"Referer", 'O'},
-      {"Save-Data", ','},
-      {"Sec-Fetch-Dest", ','},
-      {"Sec-Fetch-Mode", ','},
-      {"Sec-Fetch-Site", ','},
-      {"Sec-Fetch-User", ','},
-      {"Sec-WebSocket-Extensions", ','},
-      {"Sec-WebSocket-Protocol", ','},
+      {"referer", 'O'},
+      {"save-data", ','},
+      {"sec-fetch-dest", ','},
+      {"sec-fetch-mode", ','},
+      {"sec-fetch-site", ','},
+      {"sec-fetch-user", ','},
+      {"sec-websocket-extensions", ','},
+      {"sec-websocket-protocol", ','},
       {http::TE, ','},
       {http::Trailer, ','},
       {http::TransferEncoding, ','},
       {http::Upgrade, ','},
-      {"Upgrade-Insecure-Requests", '\0'},
+      {"upgrade-insecure-requests", '\0'},
       {http::UserAgent, ' '},
       {http::Vary, ','},
-      {"Via", ','},
-      {"Warning", ','},
+      {"via", ','},
+      {"warning", ','},
   };
 
   // The table must be ordered because we use std::ranges::partition_point
-  static_assert(std::ranges::is_sorted(kEntries, CaseInsensitiveLess, &Entry::name),
-                "mergeable header table must be sorted case-insensitively");
+  static_assert(std::ranges::is_sorted(kEntries, std::less<>{}, &Entry::name),
+                "mergeable header table must be sorted case-sensitively");
 
   const auto it = std::ranges::partition_point(
-      kEntries, [headerName](const Entry& entry) { return CaseInsensitiveLess(entry.name, headerName); });
-  if (it != std::end(kEntries) && CaseInsensitiveEqual(it->name, headerName)) {
+      kEntries, [headerNameLowerCase](const Entry& entry) { return entry.name < headerNameLowerCase; });
+  if (it != std::end(kEntries) && it->name == headerNameLowerCase) {
     return it->sep;
   }
   // Fallback: assume list semantics for unknown headers and allow comma merge.

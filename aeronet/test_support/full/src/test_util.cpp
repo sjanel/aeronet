@@ -447,7 +447,7 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   }
   out.body = raw.substr(hEnd + http::DoubleCRLF.size());
   // Derive plainBody (dechunk if necessary)
-  auto te = out.headers.find(http::TransferEncoding);
+  auto te = out.headers.find(http::TransferEncoding.get());
   if (te != out.headers.end() && te->second == "chunked") {
     out.plainBody = dechunk(out.body);
   } else {
@@ -514,7 +514,7 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
     pr.headers.insert_or_assign(std::string(key), std::string(value));
   }
   pr.chunked = false;
-  auto teIt = pr.headers.find(http::TransferEncoding);
+  auto teIt = pr.headers.find(http::TransferEncoding.get());
   if (teIt != pr.headers.end() && toLower(teIt->second).contains("chunked")) {
     pr.chunked = true;
   }
@@ -573,8 +573,10 @@ void setRecvTimeout(NativeHandle fd, SysDuration timeout) {
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv)) == SOCKET_ERROR) {
 #else
   // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
-  struct timeval tv{static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
-                    static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000)};
+  struct timeval tv{
+      static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
+      static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000),
+  };
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == -1) {
 #endif
@@ -589,8 +591,10 @@ void setSendTimeout(NativeHandle fd, SysDuration timeout) {
   if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv)) == SOCKET_ERROR) {
 #else
   // NOLINTNEXTLINE(misc-include-cleaner) from <sys/time.h>
-  struct timeval tv{static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
-                    static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000)};
+  struct timeval tv{
+      static_cast<decltype(timeval::tv_sec)>(timeoutMs / 1000),
+      static_cast<decltype(timeval::tv_usec)>((timeoutMs % 1000) * 1000),
+  };
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_SNDTIMEO
   if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == -1) {
 #endif

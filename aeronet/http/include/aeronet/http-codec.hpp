@@ -10,12 +10,12 @@
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include "aeronet/brotli-decoder.hpp"
@@ -100,8 +100,7 @@ class HttpCodec {
   /// Returns http::StatusCodeOK if decompression will be applied,
   /// http::StatusCodeNotModified if no decompression is needed,
   /// or http::StatusCodeBadRequest if the request contains invalid encoding.
-  static http::StatusCode WillDecompress(const DecompressionConfig& decompressionConfig,
-                                         const HeadersViewMap& headersMap);
+  static http::StatusCode WillDecompress(const DecompressionConfig& decompressionConfig, const SvToSvMap& headersMap);
 
   /// Decompress chunked body directly from source chunks (avoids intermediate copy).
   /// The chunks span points to non-contiguous compressed data (from chunked transfer).

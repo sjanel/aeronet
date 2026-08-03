@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -116,60 +115,5 @@ constexpr bool CaseInsensitiveEqual(std::string_view lhs, std::string_view rhs) 
 #ifdef AERONET_HAS_ASCII_LOWER_EQUAL16
 #undef AERONET_HAS_ASCII_LOWER_EQUAL16
 #endif
-
-constexpr bool CaseInsensitiveLess(std::string_view lhs, std::string_view rhs) {
-  const auto lhsSize = lhs.size();
-  const auto rhsSize = rhs.size();
-  const auto minSize = lhsSize < rhsSize ? lhsSize : rhsSize;
-
-  const char* pLhs = lhs.data();
-  const char* pRhs = rhs.data();
-
-  for (std::size_t i = 0; i < minSize; ++i) {
-    const auto lc = tolower(pLhs[i]);
-    const auto rc = tolower(pRhs[i]);
-    if (lc != rc) {
-      return lc < rc;
-    }
-  }
-  return lhsSize < rhsSize;
-}
-
-struct CaseInsensitiveHashFunc {
-  static constexpr std::size_t operator()(std::string_view str) noexcept {
-    static constexpr std::size_t prime = 1099511628211ULL;
-    std::size_t hash = 14695981039346656037ULL;
-
-    if consteval {
-      for (char ch : str) {
-        hash ^= tolower(static_cast<unsigned char>(ch));
-        hash *= prime;
-      }
-    } else {
-      const char* ptr = str.data();
-      std::size_t sz = str.size();
-
-      while (sz >= 8) {
-        uint64_t word;
-        std::memcpy(&word, ptr, sizeof(word));
-        hash ^= AsciiLowerMask(word);
-        hash *= prime;
-        ptr += 8;
-        sz -= 8;
-      }
-      for (std::size_t idx = 0; idx < sz; ++idx) {
-        hash ^= tolower(static_cast<unsigned char>(ptr[idx]));
-        hash *= prime;
-      }
-    }
-    return hash;
-  }
-};
-
-struct CaseInsensitiveEqualFunc {
-  static constexpr bool operator()(std::string_view lhs, std::string_view rhs) noexcept {
-    return CaseInsensitiveEqual(lhs, rhs);
-  }
-};
 
 }  // namespace aeronet

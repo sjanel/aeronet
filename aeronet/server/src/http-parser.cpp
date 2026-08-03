@@ -11,7 +11,6 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
@@ -23,6 +22,7 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet {
 
@@ -183,6 +183,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
           return BodyDecodeStatus::Error;
         }
 
+        // Lower-case trailer name in place for case-sensitive lookup later
+        tolower(lineStart, static_cast<std::size_t>(colonPtr - lineStart));
+
         // Check forbidden headers
         if (http::IsForbiddenTrailerHeader(std::string_view(lineStart, colonPtr))) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
@@ -265,14 +268,14 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   } else {
     // Body is everything before trailers
     std::size_t bodyLen = bodyAndTrailers.size() - state.trailerLen;
-    request._body = std::string_view(bodyAndTrailers.data(), bodyLen);
+    request._body = {bodyAndTrailers.data(), bodyLen};
   }
 
   consumedBytes = pos;
   return BodyDecodeStatus::Ready;
 }
 
-bool SingleHttpServer::parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last) {
+bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last) {
   headersMap.clear();
   while (first < last) {
     // Find line end
