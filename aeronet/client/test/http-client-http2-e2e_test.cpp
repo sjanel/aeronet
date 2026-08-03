@@ -36,6 +36,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/timedef.hpp"
@@ -224,7 +225,7 @@ class LoopbackHttp2Transport final : public ITransport {
 
   LoopbackHttp2Transport(const Http2Config& config, ResponseMode responseMode)
       : _server(config, /*isServer=*/true), _responseMode(responseMode) {
-    _server.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap&, bool) {
+    _server.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap&, bool) {
       if (!_responded) {
         _responded = true;
         respond(streamId);

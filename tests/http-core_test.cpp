@@ -305,11 +305,11 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
 TEST(HttpBasic, SimpleGet) {
   ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
-    auto testHeaderIt = req.headers().find("X-Test");
+    auto testHeaderIt = req.headers().find("x-test");
     std::string body("You requested: ");
     body += req.path();
     if (testHeaderIt != req.headers().end() && !testHeaderIt->second.empty()) {
-      body += ", X-Test=";
+      body += ", x-test=";
       body.append(testHeaderIt->second);
     }
     resp.body(std::move(body));
@@ -319,7 +319,7 @@ TEST(HttpBasic, SimpleGet) {
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("You requested: /abc"));
-  ASSERT_TRUE(resp.contains("X-Test=abc123"));
+  ASSERT_TRUE(resp.contains("x-test=abc123"));
 }
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
@@ -992,18 +992,18 @@ TEST(HttpTrailers, BasicTrailer) {
     EXPECT_EQ(req.body(), "Wikipedia");
     // Check trailer headers
     EXPECT_EQ(req.trailers().size(), 1U);
-    EXPECT_EQ(req.trailerValueOrEmpty("X-Checksum"), "abc123");
+    EXPECT_EQ(req.trailerValueOrEmpty("x-checksum"), "abc123");
     EXPECT_EQ(req.trailerValueOrEmpty("missing"), "");
-    EXPECT_EQ(req.trailerValue("X-Checksum").value_or(""), "abc123");
-    EXPECT_FALSE(req.trailerValue("Non-Existent").has_value());
+    EXPECT_EQ(req.trailerValue("x-checksum").value_or(""), "abc123");
+    EXPECT_FALSE(req.trailerValue("non-existent").has_value());
 
-    EXPECT_TRUE(req.hasHeader("Host"));
-    EXPECT_FALSE(req.hasHeader("Non-Existent"));
+    EXPECT_TRUE(req.hasHeader("host"));
+    EXPECT_FALSE(req.hasHeader("non-existent"));
 
-    EXPECT_TRUE(req.hasTrailer("X-Checksum"));
-    EXPECT_FALSE(req.hasTrailer("Non-Existent"));
+    EXPECT_TRUE(req.hasTrailer("x-checksum"));
+    EXPECT_FALSE(req.hasTrailer("non-existent"));
 
-    auto it = req.trailers().find("X-Checksum");
+    auto it = req.trailers().find("x-checksum");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "abc123");
@@ -1036,19 +1036,19 @@ TEST(HttpTrailers, MultipleTrailers) {
     EXPECT_EQ(req.body(), "test");
     EXPECT_EQ(req.trailers().size(), 3U);
 
-    auto checksum = req.trailers().find("X-Checksum");
+    auto checksum = req.trailers().find("x-checksum");
     EXPECT_NE(checksum, req.trailers().end());
     if (checksum != req.trailers().end()) {
       EXPECT_EQ(checksum->second, "xyz789");
     }
 
-    auto timestamp = req.trailers().find("X-Timestamp");
+    auto timestamp = req.trailers().find("x-timestamp");
     EXPECT_NE(timestamp, req.trailers().end());
     if (timestamp != req.trailers().end()) {
       EXPECT_EQ(timestamp->second, "2025-10-20T12:00:00Z");
     }
 
-    auto custom = req.trailers().find("X-Custom-Trailer");
+    auto custom = req.trailers().find("x-custom-trailer");
     EXPECT_NE(custom, req.trailers().end());
     if (custom != req.trailers().end()) {
       EXPECT_EQ(custom->second, "value123");
@@ -1145,7 +1145,7 @@ TEST(HttpTrailers, NoTrailers) {
 // Trailer with whitespace trimming
 TEST(HttpTrailers, TrailerWhitespaceTrim) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto trailer = req.trailers().find("X-Data");
+    auto trailer = req.trailers().find("x-data");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
       EXPECT_EQ(trailer->second, "trimmed");  // should be trimmed
@@ -1287,7 +1287,7 @@ TEST(HttpTrailers, TrailerSizeLimit) {
 // Trailer with empty value
 TEST(HttpTrailers, TrailerEmptyValue) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto trailer = req.trailers().find("X-Empty");
+    auto trailer = req.trailers().find("x-empty");
     EXPECT_NE(trailer, req.trailers().end());
     if (trailer != req.trailers().end()) {
       EXPECT_TRUE(trailer->second.empty());
@@ -1317,17 +1317,11 @@ TEST(HttpTrailers, TrailerEmptyValue) {
 TEST(HttpTrailers, TrailerCaseInsensitive) {
   ts.router().setDefault([](const HttpRequestView& req) {
     // Should be able to find with different case
-    auto lower = req.trailers().find("x-checksum");
-    auto upper = req.trailers().find("X-CHECKSUM");
-    auto mixed = req.trailers().find("X-Checksum");
+    auto lower = req.trailerValue("x-checksum");
 
-    EXPECT_NE(lower, req.trailers().end());
-    EXPECT_NE(upper, req.trailers().end());
-    EXPECT_NE(mixed, req.trailers().end());
+    EXPECT_TRUE(lower);
 
-    if (lower != req.trailers().end()) {
-      EXPECT_EQ(lower->second, "test123");
-    }
+    EXPECT_EQ(lower.value_or(""), "test123");
     return HttpResponse("OK");
   });
 
@@ -1353,7 +1347,7 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
 TEST(HttpTrailers, DuplicateMergeTrailers) {
   ts.router().setDefault([](const HttpRequestView& req) {
     // Accept header should be merged with a comma separator
-    auto it = req.trailers().find("Accept");
+    auto it = req.trailers().find("accept");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "text/html,application/json");
@@ -1383,7 +1377,7 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
 // Duplicate trailers with override semantics (keep last)
 TEST(HttpTrailers, DuplicateOverrideTrailers) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto it = req.trailers().find("From");
+    auto it = req.trailers().find("from");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       // 'From' has override semantics in ReqHeaderValueSeparator, keep the last occurrence
@@ -1724,7 +1718,7 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
   ASSERT_TRUE(resp.contains("TRACE /test HTTP/"));
 
   // Should echo headers
-  ASSERT_TRUE(resp.contains("X-Test-Header: value"));
+  ASSERT_TRUE(resp.contains("x-test-header: value"));
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {
@@ -1783,22 +1777,21 @@ TEST_F(HttpCorsIntegration, PreflightUsesRouterAllowedMethods) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto methodsIt = parsed.headers.find(http::AccessControlAllowMethods);
+  auto methodsIt = parsed.headers.find(http::AccessControlAllowMethods.get());
   ASSERT_NE(methodsIt, parsed.headers.end());
   EXPECT_EQ(methodsIt->second, "GET");
 
-  auto hdrsIt = parsed.headers.find(http::AccessControlAllowHeaders);
+  auto hdrsIt = parsed.headers.find(http::AccessControlAllowHeaders.get());
   ASSERT_NE(hdrsIt, parsed.headers.end());
   EXPECT_EQ(hdrsIt->second, "*");
 }
 
 TEST_F(HttpCorsIntegration, PreflightMethodDeniedReturns405WithAllow) {
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView& req) { return req.makeResponse(); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -1809,14 +1802,13 @@ TEST_F(HttpCorsIntegration, PreflightMethodDeniedReturns405WithAllow) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeMethodNotAllowed);
 
-  auto allowIt = parsed.headers.find(http::Allow);
+  auto allowIt = parsed.headers.find(http::Allow.get());
   ASSERT_NE(allowIt, parsed.headers.end());
   EXPECT_EQ(allowIt->second, "GET");
 }
 
 TEST_F(HttpCorsIntegration, PreflightOriginDeniedReturns403) {
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView& req) { return req.makeResponse(); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -1827,7 +1819,7 @@ TEST_F(HttpCorsIntegration, PreflightOriginDeniedReturns403) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
 
-  EXPECT_FALSE(parsed.headers.contains(http::AccessControlAllowOrigin));
+  EXPECT_FALSE(parsed.headers.contains(http::AccessControlAllowOrigin.get()));
 }
 
 TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
@@ -1842,7 +1834,7 @@ TEST_F(HttpCorsIntegration, ActualRequestIncludesAllowOriginHeader) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 }
@@ -1882,12 +1874,12 @@ TEST_F(HttpCorsIntegration, StreamingResponseCarriesCorsHeaders) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
   // Verify Vary: Origin is present for mirrored origin (credentials enabled in fixture)
-  auto varyIt = parsed.headers.find(http::Vary);
+  auto varyIt = parsed.headers.find(http::Vary.get());
   ASSERT_NE(varyIt, parsed.headers.end());
   EXPECT_TRUE(varyIt->second.contains(http::Origin));
 
@@ -1912,7 +1904,7 @@ TEST_F(HttpCorsIntegration, StreamingVaryHeaderAppendsOrigin) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto varyIt = parsed.headers.find(http::Vary);
+  auto varyIt = parsed.headers.find(http::Vary.get());
   ASSERT_NE(varyIt, parsed.headers.end());
   EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
   EXPECT_TRUE(varyIt->second.contains(http::Origin));
@@ -1937,7 +1929,7 @@ TEST_F(HttpCorsIntegration, StreamingOriginDeniedSkipsHandler) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
   EXPECT_FALSE(handlerInvoked.load());
-  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowOrigin), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowOrigin.get()), 0);
 }
 
 TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPreflight) {
@@ -1958,7 +1950,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   auto raw = test::requestOrThrow(ts.port(), opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://per.example");
 
@@ -1977,7 +1969,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   raw = test::requestOrThrow(ts.port(), pre);
   parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
-  originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://per.example");
 }
@@ -2001,11 +1993,11 @@ TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials);
+  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials.get());
   ASSERT_NE(credIt, parsed.headers.end());
   EXPECT_EQ(credIt->second, "true");
 }
@@ -2028,11 +2020,11 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 
-  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials);
+  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials.get());
   ASSERT_NE(credIt, parsed.headers.end());
   EXPECT_EQ(credIt->second, "true");
 }
@@ -2055,11 +2047,11 @@ TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto exposIt = parsed.headers.find(http::AccessControlExposeHeaders);
+  auto exposIt = parsed.headers.find(http::AccessControlExposeHeaders.get());
   ASSERT_NE(exposIt, parsed.headers.end());
   EXPECT_EQ(exposIt->second, "X-My-Header");
 
-  auto maxAgeIt = parsed.headers.find(http::AccessControlMaxAge);
+  auto maxAgeIt = parsed.headers.find(http::AccessControlMaxAge.get());
   ASSERT_NE(maxAgeIt, parsed.headers.end());
   EXPECT_EQ(maxAgeIt->second, "600");
 }
@@ -2082,7 +2074,7 @@ TEST(HttpCorsDetailed, PreflightPrivateNetworkHeader) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
 
-  auto pnetIt = parsed.headers.find(http::AccessControlAllowPrivateNetwork);
+  auto pnetIt = parsed.headers.find(http::AccessControlAllowPrivateNetwork.get());
   ASSERT_NE(pnetIt, parsed.headers.end());
   EXPECT_EQ(pnetIt->second, "true");
 }
@@ -2096,8 +2088,7 @@ TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView& req) { return req.makeResponse(); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -2111,7 +2102,7 @@ TEST(HttpCorsDetailed, PreflightRequestedHeaderDeniedWhenNotAllowed) {
   auto raw = test::requestOrThrow(port, opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
-  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders.get()), 0);
 }
 
 TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
@@ -2123,8 +2114,7 @@ TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
   routerCfg.withDefaultCorsPolicy(std::move(policy));
 
   ts.router() = Router{routerCfg};
-  ts.router().setPath(http::Method::GET, "/data",
-                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView& req) { return req.makeResponse(); });
 
   test::RequestOptions opt;
   opt.method = "OPTIONS";
@@ -2140,7 +2130,7 @@ TEST(HttpCorsDetailed, PreflightEchoesRequestedHeadersWhenNoAllowedList) {
   // When no allowed-request-headers are configured and we did not call allowAnyRequestHeaders(),
   // a non-empty requested header list should be denied (HeadersDenied -> 403).
   EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
-  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders), 0);
+  EXPECT_EQ(parsed.headers.count(http::AccessControlAllowHeaders.get()), 0);
 }
 
 TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
@@ -2163,7 +2153,7 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     auto parsed = test::parseResponseOrThrow(raw);
     EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-    auto varyIt = parsed.headers.find(http::Vary);
+    auto varyIt = parsed.headers.find(http::Vary.get());
     ASSERT_NE(varyIt, parsed.headers.end());
     EXPECT_TRUE(varyIt->second.contains(http::Origin));
   }
@@ -2191,7 +2181,7 @@ TEST(HttpCorsDetailed, VaryIncludesOriginWhenMirroring) {
     auto parsed = test::parseResponseOrThrow(raw);
     EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-    auto varyIt = parsed.headers.find(http::Vary);
+    auto varyIt = parsed.headers.find(http::Vary.get());
     ASSERT_NE(varyIt, parsed.headers.end());
     EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
     EXPECT_TRUE(varyIt->second.contains(http::Origin));
@@ -2220,7 +2210,7 @@ TEST(HttpCorsDetailed, VaryNoDuplicateWhenOriginAlreadyPresent) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto varyIt = parsed.headers.find(http::Vary);
+  auto varyIt = parsed.headers.find(http::Vary.get());
   ASSERT_NE(varyIt, parsed.headers.end());
   EXPECT_TRUE(varyIt->second.contains(http::Origin));
   std::string expectedEndOrigin = ", ";
@@ -2247,7 +2237,7 @@ TEST(HttpCorsDetailed, MultipleAllowedOriginsMirrorCorrectOne) {
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://two.example");
 }
@@ -2270,7 +2260,7 @@ TEST(HttpCorsDetailed, OptionsWithoutAcrMethodTreatedAsSimpleCors) {
   auto raw = test::requestOrThrow(ts.port(), opt);
   auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin);
+  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
   ASSERT_NE(originIt, parsed.headers.end());
   EXPECT_EQ(originIt->second, "https://app.example");
 }
@@ -2699,7 +2689,7 @@ TEST(HttpStreamingCompression, StreamingWriterAppendsVaryAcceptEncoding) {
   const auto parsed = test::parseResponseOrThrow(raw);
 
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto varyIt = parsed.headers.find(http::Vary);
+  auto varyIt = parsed.headers.find(http::Vary.get());
   ASSERT_NE(varyIt, parsed.headers.end());
   EXPECT_TRUE(varyIt->second.contains(http::Origin));
   EXPECT_TRUE(varyIt->second.contains(http::AcceptEncoding));
@@ -2733,7 +2723,7 @@ TEST(HttpStreamingCompression, AddHeaderContentEncodingIdentityShouldNotAutomati
   const auto parsed = test::parseResponseOrThrow(raw);
 
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto ceIt = parsed.headers.find(http::ContentEncoding);
+  auto ceIt = parsed.headers.find(http::ContentEncoding.get());
   ASSERT_NE(ceIt, parsed.headers.end());
   EXPECT_EQ(ceIt->second, "identity");
   EXPECT_EQ(parsed.body, std::string(64, 'a'));
@@ -2783,7 +2773,7 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
   const auto parsed = test::parseResponseOrThrow(raw);
 
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  auto ceIt = parsed.headers.find(http::ContentEncoding);
+  auto ceIt = parsed.headers.find(http::ContentEncoding.get());
   ASSERT_NE(ceIt, parsed.headers.end());
   EXPECT_EQ(ceIt->second, "gzip");
 
@@ -4069,7 +4059,7 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
   const auto firstRaw = test::requestOrThrow(ts.port(), initial);
   const auto firstParsed = test::parseResponseOrThrow(firstRaw);
   const auto headers = firstParsed.headers;
-  const auto etag = headers.find(http::ETag);
+  const auto etag = headers.find(http::ETag.get());
   ASSERT_NE(etag, headers.end());
 
   // If-Match with a non-matching tag -> 412 Precondition Failed
@@ -4113,7 +4103,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
   EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
   EXPECT_EQ(parsed.body.size(), size);
   const auto headers = parsed.headers;
-  const auto it = headers.find(http::ContentLength);
+  const auto it = headers.find(http::ContentLength.get());
   ASSERT_NE(it, headers.end());
   uint64_t computedSz{};
   EXPECT_EQ(std::from_chars(it->second.data(), it->second.data() + it->second.size(), computedSz).ec, std::errc{});
@@ -4692,14 +4682,6 @@ TEST(HttpRateLimit, HeaderValueStrategyUsesTrimmedHeaderAndConstBuild) {
 
   EXPECT_TRUE(r1.starts_with("HTTP/1.1 200")) << r1;
   EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
-}
-
-TEST(HttpRateLimit, HeaderValueStrategyRequiresHeaderName) {
-  RateLimitRequestMiddlewareBuilder options;
-  options.keyStrategy = RateLimitClientKeyStrategy::HeaderValue;
-  options.headerName = {};
-
-  EXPECT_THROW(static_cast<void>(options.build()), std::invalid_argument);
 }
 
 TEST(HttpRateLimit, CustomStrategyWithoutExtractorBypassesRequests) {

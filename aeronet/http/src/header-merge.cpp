@@ -4,14 +4,13 @@
 #include <cstring>
 #include <string_view>
 
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet::http {
 
-bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::string_view value, RawChars& tmp,
+bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view value, RawChars& tmp,
                         const char* bufferBase, const char* currentLineStart,
                         bool mergeAllowedForUnknownRequestHeaders) {
   // We have a duplicated header. We will append the duplicated value encountered now to the first key value pair
@@ -26,7 +25,6 @@ bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::s
   // Host: example.com[]H: v1[]User-Agent: FooBar[]H: v2[]Other: v1[][]
   // Host: example.com[]H: v1***[]User-Agent: FooBar[]v2[]Other: v1[][]
   // Host: example.com[]H: v1,v2[]User-Agent: FooBar[]v2[]Other: v1[][]
-
   const char mergeSep = ReqHeaderValueSeparator(it->first, mergeAllowedForUnknownRequestHeaders);
   if (mergeSep == '\0') {
     // Merge is forbidden, reject 400 Bad Request
@@ -48,7 +46,7 @@ bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::s
 
   // Compute sizes
   static constexpr std::size_t szSep = sizeof(mergeSep);
-  std::size_t szToMove = static_cast<std::size_t>(value.size()) + szSep;
+  const std::size_t szToMove = static_cast<std::size_t>(value.size()) + szSep;
 
   // Step 1 - use tmp as temp data to keep value
   tmp.assign(value);

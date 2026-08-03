@@ -3,9 +3,9 @@
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <optional>
@@ -70,7 +70,7 @@ namespace upgrade {
 /// @param headers  Map of HTTP request headers
 /// @param config   Optional configuration for subprotocol/extension negotiation
 /// @return         Validation result with computed Sec-WebSocket-Accept if valid
-[[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const HeadersViewMap& headers,
+[[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers,
                                                                const WebSocketUpgradeConfig& config);
 #endif
 
@@ -84,7 +84,7 @@ namespace upgrade {
 ///
 /// @param headers  Map of HTTP request headers
 /// @return         Validation result
-[[nodiscard]] UpgradeValidationResult ValidateHttp2Upgrade(const HeadersViewMap& headers);
+[[nodiscard]] UpgradeValidationResult ValidateHttp2Upgrade(const SvToSvMap& headers);
 #endif
 
 /// Detect the upgrade target from an HTTP request.

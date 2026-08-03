@@ -2,8 +2,8 @@
 
 #include <string_view>
 
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 namespace aeronet::http {
 
@@ -11,7 +11,7 @@ namespace aeronet::http {
 // 'bufferBase' must point to the beginning of the connection receive buffer (state.inBuffer.data()).
 // 'currentLineStart' is the pointer to the start of the header line being parsed (the 'first' pointer in setHead).
 // 'tmp' is a temporary RawChars used to stage moved data (same tmpBuffer passed into setHead).
-bool MergeHeaderInPlace(HeadersViewMap& map, HeadersViewMap::iterator it, std::string_view value, RawChars& tmp,
+bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view value, RawChars& tmp,
                         const char* bufferBase, const char* currentLineStart,
                         bool mergeAllowedForUnknownRequestHeaders);
 

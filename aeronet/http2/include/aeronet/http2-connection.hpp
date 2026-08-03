@@ -9,7 +9,6 @@
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/flat-hash-map.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -18,6 +17,7 @@
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_HTTP_CLIENT
 #include "aeronet/http-method.hpp"
@@ -256,7 +256,7 @@ class Http2Connection {
   // Callbacks
   // ============================
 
-  using OnHeadersCb = std::function<void(uint32_t streamId, const HeadersViewMap& headers, bool endStream)>;
+  using OnHeadersCb = std::function<void(uint32_t streamId, const SvToSvMap& headers, bool endStream)>;
   using GoAwayCb = std::function<void(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData)>;
   using OnStreamCb = std::function<void(uint32_t streamId, ErrorCode errorCode)>;
 

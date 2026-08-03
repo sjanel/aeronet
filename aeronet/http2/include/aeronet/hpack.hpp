@@ -5,10 +5,10 @@
 #include <span>
 #include <string_view>
 
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -103,7 +103,7 @@ class HpackDecoder {
     [[nodiscard]] bool isSuccess() const noexcept { return errorMessage == nullptr; }
 
     const char* errorMessage;
-    const HeadersViewMap& decodedHeaders;
+    const SvToSvMap& decodedHeaders;
   };
 
   /// Decode a complete header block fragment.
@@ -151,7 +151,7 @@ class HpackDecoder {
   HpackDynamicTable _dynamicTable;
 
   // Buffer for storing decoded strings that outlive the input data (Huffman decoded or dynamic table copies)
-  HeadersViewMap _decodedHeadersMap;
+  SvToSvMap _decodedHeadersMap;
   CharStorage _decodedStrings;
   bool _mergeAllowedForUnknownRequestHeaders{true};
 };

@@ -21,7 +21,6 @@
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/header-write.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -34,6 +33,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/encode.h>
@@ -99,7 +99,7 @@ struct VaryResult {
   return res;
 }
 
-inline std::string_view FinalizeDecompressedBody(HeadersViewMap& headersMap, HeadersViewMap::iterator encodingHeaderIt,
+inline std::string_view FinalizeDecompressedBody(SvToSvMap& headersMap, SvToSvMap::iterator encodingHeaderIt,
                                                  std::string_view src, std::size_t additionalCapacity, RawChars& buf) {
   const auto decompressedSizeNbDigits = ndigits(src.size());
 
@@ -195,8 +195,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
   return {.status = decompressStatus, .message = nullptr};
 }
 
-inline bool UseStreamingDecompression(const HeadersViewMap& headersMap,
-                                      std::size_t streamingDecompressionThresholdBytes) {
+inline bool UseStreamingDecompression(const SvToSvMap& headersMap, std::size_t streamingDecompressionThresholdBytes) {
   if (streamingDecompressionThresholdBytes > 0) {
     const auto contentLenIt = headersMap.find(http::ContentLength);
     if (contentLenIt != headersMap.end()) {
@@ -336,9 +335,6 @@ namespace {
 
 constexpr std::string_view kCRLFVaryAcceptEncodingLine =
     JoinStringView_v<http::CRLF, http::Vary, http::HeaderSep, http::AcceptEncoding>;
-
-constexpr std::string_view kCRLFContentLengthHeaderSep =
-    JoinStringView_v<http::CRLF, http::ContentLength, http::HeaderSep>;
 
 std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVaryHeaderLine, bool hasVaryHeader) {
   if (!needVaryAcceptEncoding) {
@@ -610,8 +606,8 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   out -= nDigitsMaxCompressedSize;
 
   // Write '\r\nContent-Length: ' just before the new Content-Length value.
-  CopyFixed<kCRLFContentLengthHeaderSep>(out - kCRLFContentLengthHeaderSep.size());
-  out -= kCRLFContentLengthHeaderSep.size();
+  CopyFixed<http::CRLFContentLengthHeaderSep>(out - http::CRLFContentLengthHeaderSep.size());
+  out -= http::CRLFContentLengthHeaderSep.size();
 
   // Write '\r\nContent-Type: XXXX' just before the Content-Length line.
   std::memmove(out - contentTypeLineLen, msg._data.data() + contentTypeLinePos, contentTypeLineLen);
@@ -698,7 +694,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
 }
 
 http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompressionConfig,
-                                           const HeadersViewMap& headersMap) {
+                                           const SvToSvMap& headersMap) {
   if (!decompressionConfig.enable) {
     return http::StatusCodeNotModified;
   }

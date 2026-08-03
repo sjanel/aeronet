@@ -20,7 +20,6 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -39,6 +38,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
@@ -154,7 +154,7 @@ class Http2Loopback {
         _serverCfg(std::move(serverCfg)),
         client(_clientCfg, false),
         server(_serverCfg, true) {
-    client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    client.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -164,7 +164,7 @@ class Http2Loopback {
       clientHeaders.push_back(std::move(ev));
     });
 
-    server.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    server.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;

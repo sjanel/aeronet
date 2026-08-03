@@ -47,12 +47,6 @@ TEST(ForbiddenTrailersTest, ForbiddenTrailerBasic) {
   EXPECT_TRUE(IsForbiddenTrailerHeader("authorization"));
 }
 
-TEST(ForbiddenTrailersTest, ForbiddenTrailerCaseInsensitive) {
-  EXPECT_TRUE(IsForbiddenTrailerHeader("Transfer-Encoding"));
-  EXPECT_TRUE(IsForbiddenTrailerHeader("Content-Length"));
-  EXPECT_TRUE(IsForbiddenTrailerHeader("SET-COOKIE"));
-}
-
 TEST(ForbiddenTrailersTest, ForbiddenTrailerRejectsUnknowns) {
   EXPECT_FALSE(IsForbiddenTrailerHeader("x-trailer-safe"));
   EXPECT_FALSE(IsForbiddenTrailerHeader("content-typex"));

@@ -502,7 +502,7 @@ TEST(HttpContentLength, GlobalHeaders) {
   ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse respObj;
     // This header should not be overwritten by the global one
-    respObj.header("X-Custom", "original");
+    respObj.header("x-custom", "original");
     respObj.body("R");
     return respObj;
   });
@@ -511,14 +511,9 @@ TEST(HttpContentLength, GlobalHeaders) {
   std::string req = "POST /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-#ifdef AERONET_ENABLE_HTTP2
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
-#else
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Global", "gvalue")));
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Another", "anothervalue")));
-#endif
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Custom", "original")));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-custom", "original")));
   std::string datePrefix(http::Date);
   datePrefix.append(http::HeaderSep);
   EXPECT_TRUE(resp.contains(datePrefix));
@@ -545,15 +540,9 @@ TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
   const std::string resp = test::recvUntilClosed(fd);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 202"));
-#ifdef AERONET_ENABLE_HTTP2
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-custom", "local")));
-#else
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Global", "gvalue")));
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Another", "anothervalue")));
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Custom", "local")));
-#endif
   EXPECT_TRUE(resp.contains("body-from-make"));
 }
 
@@ -580,11 +569,11 @@ TEST(HttpBasic, ManyHeadersRequest) {
   ts.router().setDefault([](const HttpRequestView& req) {
     int headerCount = 0;
     for (const auto& [key, value] : req.headers()) {
-      if (key.starts_with("X-Custom-")) {
+      if (key.starts_with("x-custom-")) {
         ++headerCount;
       }
     }
-    return HttpResponse("Received " + std::to_string(headerCount) + " custom headers");
+    return req.makeResponse("Received " + std::to_string(headerCount) + " custom headers");
   });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -610,8 +599,8 @@ TEST(HttpBasic, ManyHeadersRequest) {
 
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(resp.contains("Received " + std::to_string(kNbHeaders) + " custom headers"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 "));
+  EXPECT_TRUE(resp.ends_with("Received " + std::to_string(kNbHeaders) + " custom headers"));
 }
 
 TEST(HttpBasic, InvalidContentLength) {
@@ -1155,7 +1144,7 @@ TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
   });
   ts.router().setDefault([](const HttpRequestView& req) {
     // Body will still be compressed since decompression is disabled
-    return HttpResponse(req.headerValueOrEmpty(http::ContentEncoding));
+    return req.makeResponse(req.headerValueOrEmpty(http::ContentEncoding));
   });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();

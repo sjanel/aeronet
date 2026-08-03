@@ -13,7 +13,6 @@
 #include <string>
 #include <utility>
 
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -26,6 +25,7 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -388,9 +388,9 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   ASSERT_FALSE(client.hasPendingOutput());
 
   // Capture decoded response headers.
-  HeadersViewMap decoded;
+  SvToSvMap decoded;
   bool gotHeaders = false;
-  client.setOnHeadersDecoded([&](uint32_t /*streamId*/, const HeadersViewMap& headers, bool /*endStream*/) {
+  client.setOnHeadersDecoded([&](uint32_t /*streamId*/, const SvToSvMap& headers, bool /*endStream*/) {
     decoded = headers;
     gotHeaders = true;
   });
@@ -764,7 +764,7 @@ TEST(Http2Connection, SetCallbacks) {
   bool closedCalled = false;
   bool goawayCalled = false;
 
-  conn.setOnHeadersDecoded([&](uint32_t, const HeadersViewMap&, bool) { headersCalled = true; });
+  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
   conn.setOnData([&](uint32_t, std::span<const std::byte>, bool) { dataCalled = true; });
   conn.setOnStreamReset([&](uint32_t, ErrorCode) { resetCalled = true; });
   conn.setOnStreamClosed([&](uint32_t) { closedCalled = true; });

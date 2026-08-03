@@ -20,7 +20,6 @@
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -41,6 +40,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/socket.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -479,7 +479,7 @@ class SingleHttpServer {
                                          std::size_t& consumedBytes);
   BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue, std::size_t maxBodyBytes,
                                      std::size_t& consumedBytes);
-  bool parseHeadersUnchecked(HeadersViewMap& headersMap, char* bufferBeg, char* first, char* last);
+  bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
   void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
                                        const CorsPolicy* pCorsPolicy);

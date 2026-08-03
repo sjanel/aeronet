@@ -11,7 +11,6 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -25,6 +24,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 
@@ -250,13 +250,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   using StreamsMap = flat_hash_map<uint32_t, StreamState>;
 
   void setupCallbacks();
-  void onHeadersDecodedReceived(uint32_t streamId, const HeadersViewMap& headers, bool endStream);
+  void onHeadersDecodedReceived(uint32_t streamId, const SvToSvMap& headers, bool endStream);
   void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
   void onStreamClosed(uint32_t streamId);
   void onStreamReset(uint32_t streamId, ErrorCode errorCode);
 
   /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
-  void onTrailersReceived(StreamsMap::iterator it, const HeadersViewMap& trailers, bool endStream);
+  void onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream);
 
   /// Install the aggregated request body (applying request-body decompression) and dispatch the request.
   /// Shared by the DATA-END_STREAM path and the trailing-HEADERS (trailers) path.
