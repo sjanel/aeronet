@@ -146,7 +146,7 @@ class HpackDecoder {
 
   // Store a decoded header into internal storage.
   // Returns an error message on failure, or nullptr on success.
-  const char* storeHeader(http::HeaderView header);
+  const char* storeHeader(std::string_view name, std::string_view value);
 
   HpackDynamicTable _dynamicTable;
 
