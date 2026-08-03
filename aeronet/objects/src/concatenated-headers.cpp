@@ -9,10 +9,7 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"
-
-#ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/tolower-str.hpp"
-#endif
 
 namespace aeronet {
 
@@ -22,6 +19,10 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
     if (colonPos == std::string_view::npos) {
       throw std::invalid_argument("header missing http::HeaderSep separator in global headers");
     }
+
+    // Normalize header name to lower-case for case-sensitive lookup later (e.g. for reserved headers, forbidden
+    // headers, etc.)
+    tolower(const_cast<char*>(headerNameValue.data()), colonPos);
 
     std::string_view headerName = headerNameValue.substr(0, colonPos);
 
@@ -44,11 +45,6 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
         throw std::invalid_argument(std::format("attempt to set reserved request header: '{}'", headerName));
       }
     }
-
-#ifdef AERONET_ENABLE_HTTP2
-    // forces lower-case header names for HTTP/2
-    tolower(const_cast<char*>(headerName.data()), headerName.size());
-#endif
   }
 }
 

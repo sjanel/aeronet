@@ -27,8 +27,9 @@ constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
 
 // Same as IsReservedResponseHeader but for request headers.
 constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kHeaders[] = {"content-length", "content-type",      "expect", "host", "te",
-                                                  "trailer",        "transfer-encoding", "upgrade"};
+  static constexpr std::string_view kHeaders[] = {
+      "content-length", "content-type", "expect", "host", "te", "trailer", "transfer-encoding", "upgrade",
+  };
   return std::ranges::any_of(kHeaders,
                              [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
 }
@@ -43,30 +44,34 @@ constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcep
 //   - Content-Encoding, Content-Type, Content-Range (content metadata)
 //   - Expect, Range, If-* conditionals, TE (request control headers)
 // This is a conservative list for safety and correctness.
-constexpr bool IsForbiddenTrailerHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kForbiddenOrderedTrailersLowercase[] = {"authorization",
-                                                                            "cache-control",
-                                                                            "content-encoding",
-                                                                            "content-length",
-                                                                            "content-range",
-                                                                            "content-type",
-                                                                            "cookie",
-                                                                            "expect",
-                                                                            "expires",
-                                                                            "host",
-                                                                            "if-match",
-                                                                            "if-modified-since",
-                                                                            "if-none-match",
-                                                                            "if-unmodified-since",
-                                                                            "pragma",
-                                                                            "range",
-                                                                            "set-cookie",
-                                                                            "te",
-                                                                            "trailer",
-                                                                            "transfer-encoding",
-                                                                            "vary"};
-  return std::ranges::any_of(kForbiddenOrderedTrailersLowercase,
-                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
+constexpr bool IsForbiddenTrailerHeader(std::string_view trailerNameLowerCase) noexcept {
+  static constexpr std::string_view kForbiddenOrderedTrailersLowercase[] = {
+      "authorization",
+      "cache-control",
+      "content-encoding",
+      "content-length",
+      "content-range",
+      "content-type",
+      "cookie",
+      "expect",
+      "expires",
+      "host",
+      "if-match",
+      "if-modified-since",
+      "if-none-match",
+      "if-unmodified-since",
+      "pragma",
+      "range",
+      "set-cookie",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "vary",
+  };
+
+  return std::ranges::any_of(kForbiddenOrderedTrailersLowercase, [trailerNameLowerCase](std::string_view candidate) {
+    return trailerNameLowerCase == candidate;
+  });
 }
 
 }  // namespace aeronet::http

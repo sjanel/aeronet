@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/concatenated-headers.hpp"
@@ -3369,7 +3370,7 @@ TEST_F(HttpResponseTest, FinalizeHttp1_DirectCompression_UpdatesContentLength) {
     EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
     // Headers use lowercase names in internal representation
     const auto contentEncodingLine =
-        std::format("{}{}{}{}", http::ContentEncoding, http::HeaderSep, GetEncodingStr(enc), http::CRLF);
+        std::format("{}{}{}{}", http::ContentEncoding.get(), http::HeaderSep, GetEncodingStr(enc), http::CRLF);
     EXPECT_TRUE(full.contains(contentEncodingLine));
     EXPECT_TRUE(full.contains("content-length:"));
     // The compressed body should be much smaller
@@ -3597,7 +3598,7 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
   std::size_t contentLen = 0;
   bool hasContentLen = false;
   for (auto& hdr : pr.headers) {
-    if (hdr.first == http::ContentLength) {
+    if (hdr.first == http::ContentLength.get()) {
       EXPECT_EQ(std::from_chars(hdr.second.data(), hdr.second.data() + hdr.second.size(), contentLen).ec, std::errc());
       hasContentLen = true;
       break;
@@ -3654,7 +3655,7 @@ const std::pair<std::string, std::string>* FindHeaderCaseInsensitive(const Parse
 }
 
 auto ExpectedGlobalHeaderValues(const HttpResponse& resp, const ConcatenatedHeaders& globalHeaders) {
-  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> expected;
+  flat_hash_map<std::string, std::string, CityHash, std::equal_to<>> expected;
   for (std::string_view gh : globalHeaders) {
     std::string_view name = gh.substr(0, gh.find(": "));
     std::string_view value = gh.substr(gh.find(": ") + 2);
@@ -3693,7 +3694,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
     ConcatenatedHeaders globalHeaders;
     const int headerCount = globalCountDist(rng);
     for (int headerIdx = 0; headerIdx < headerCount; ++headerIdx) {
-      std::string name = "X-Global-" + std::to_string(iter) + "-" + std::to_string(headerIdx);
+      std::string name = "x-global-" + std::to_string(iter) + "-" + std::to_string(headerIdx);
       std::string value = makeValue(valueLenDist(rng));
       std::string header = name;
       header += http::HeaderSep;
@@ -3737,7 +3738,7 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
   headerVec.reserve(kGlobalHeaders);
   aeronet::ConcatenatedHeaders globalHeaders;
   for (int headerIdx = 0; headerIdx < kGlobalHeaders; ++headerIdx) {
-    std::string name = "X-Bulk-" + std::to_string(headerIdx);
+    std::string name = "x-bulk-" + std::to_string(headerIdx);
     std::string value = "Value-" + std::to_string(headerIdx);
     headerVec.emplace_back(name, value);
     std::string header;
@@ -3803,7 +3804,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     fuzzHeaderVec.clear();
     operations.clear();
     for (int globalIdx = 0; globalIdx < fuzzGlobalCount; ++globalIdx) {
-      std::string name = "X-Fuzz-Global-" + std::to_string(caseIndex) + "-" + std::to_string(globalIdx);
+      std::string name = "x-fuzz-global-" + std::to_string(caseIndex) + "-" + std::to_string(globalIdx);
       std::string value = makeValue(globalValueLenDist(rng));
       fuzzHeaderVec.emplace_back(name, value);
       std::string hdr;
@@ -3985,11 +3986,11 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
     int clCount = 0;
     std::size_t clVal = 0;
     for (auto& headerPair : pr.headers) {
-      if (headerPair.first == http::Date) {
+      if (headerPair.first == http::Date.get()) {
         ++dateCount;
-      } else if (headerPair.first == http::Connection) {
+      } else if (headerPair.first == http::Connection.get()) {
         ++connCount;
-      } else if (headerPair.first == http::ContentLength) {
+      } else if (headerPair.first == http::ContentLength.get()) {
         ++clCount;
         EXPECT_EQ(
             std::from_chars(headerPair.second.data(), headerPair.second.data() + headerPair.second.size(), clVal).ec,

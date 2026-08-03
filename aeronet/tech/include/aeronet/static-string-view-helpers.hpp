@@ -9,21 +9,36 @@
 
 namespace aeronet {
 
-/// Concatenates variadic template std::string_view arguments at compile time and defines a std::string_view pointing on
-/// a static storage. The storage is guaranteed to be null terminated (but not itself included in the returned value)
+namespace detail {
+// Normalizes a compile-time string-like NTTP argument (std::string_view, LowerAsciiKey, or any other type
+// implicitly/explicitly convertible to std::string_view) into a plain std::string_view. This is what lets
+// JoinStringView / JoinStringViewWithSep accept a mix of such types as template arguments, without this header
+// needing to know about any of them specifically (no #include of lower-ascii-key.hpp or similar needed here).
+// static_cast (rather than a braced/functional conversion) is used deliberately: it works uniformly whether the
+// source type has an implicit conversion operator to std::string_view or, in the future, only an explicit one.
+constexpr std::string_view ToStringView(auto const& value) noexcept { return static_cast<std::string_view>(value); }
+}  // namespace detail
+
+/// Concatenates variadic template compile-time string-like arguments at compile time and defines a std::string_view
+/// pointing on a static storage. The storage is guaranteed to be null terminated (but not itself included in the
+/// returned value).
+/// Each `Strs` argument must be a reference to a static-storage-duration object of a type convertible to
+/// std::string_view (e.g. std::string_view itself, or aeronet::LowerAsciiKey) -- the pack may freely mix such types,
+/// e.g. JoinStringView_v<http::TransferEncoding, http::HeaderSep, http::chunked, http::CRLF> where
+/// http::TransferEncoding is a LowerAsciiKey and the rest are std::string_view.
 /// Adapted from
 /// https://stackoverflow.com/questions/38955940/how-to-concatenate-static-strings-at-compile-time/62823211#62823211
-template <std::string_view const&... Strs>
+template <auto const&... Strs>
 class JoinStringView {
  private:
   // Join all strings into a single std::array of chars
   static constexpr auto impl() noexcept {
-    constexpr std::string_view::size_type len = (Strs.size() + ... + 0);
+    constexpr std::string_view::size_type len = (detail::ToStringView(Strs).size() + ... + 0);
     std::array<char, len + 1U> charsArray;  // +1 for null terminated char
     if constexpr (len > 0) {
       auto append = [it = charsArray.begin()](auto const& chars) mutable {
         // Voluntarily not using std::ranges::copy to avoid including <algorithm> in a header file
-        for (auto ch : chars) {
+        for (auto ch : detail::ToStringView(chars)) {
           *it = ch;
           ++it;
         }
@@ -46,28 +61,30 @@ class JoinStringView {
 };
 
 // Helper to get the value out
-template <std::string_view const&... Strs>
+template <auto const&... Strs>
 inline constexpr auto JoinStringView_v = JoinStringView<Strs...>::value;
 
-/// Same as JoinStringView but with a char separator between each string_view
-template <std::string_view const& Sep, std::string_view const&... Strs>
+/// Same as JoinStringView but with a separator between each string. Sep and each Strs argument follow the same
+/// convertible-to-std::string_view contract described above, and may likewise be a mix of types.
+template <auto const& Sep, auto const&... Strs>
 class JoinStringViewWithSep {
  private:
   // Join all strings into a single std::array of chars
   static constexpr auto impl() noexcept {
-    static constexpr std::string_view::size_type len = (Strs.size() + ... + 0);
+    static constexpr std::string_view::size_type len = (detail::ToStringView(Strs).size() + ... + 0);
     static constexpr auto nbSv = sizeof...(Strs);
-    static constexpr std::size_t kCharsLen = len + 1U + ((nbSv == 0U ? 0U : (nbSv - 1U)) * Sep.size());
+    static constexpr std::size_t kCharsLen =
+        len + 1U + ((nbSv == 0U ? 0U : (nbSv - 1U)) * detail::ToStringView(Sep).size());
     std::array<char, kCharsLen> charsArray;
     if constexpr (len > 0) {
       auto append = [it = charsArray.begin(), &charsArray](auto const& chars) mutable {
         if (it != charsArray.begin()) {
-          for (auto ch : Sep) {
+          for (auto ch : detail::ToStringView(Sep)) {
             *it = ch;
             ++it;
           }
         }
-        for (auto ch : chars) {
+        for (auto ch : detail::ToStringView(chars)) {
           *it = ch;
           ++it;
         }
@@ -89,14 +106,14 @@ class JoinStringViewWithSep {
 };
 
 // Helper to get the value out
-template <std::string_view const& Sep, std::string_view const&... Strs>
+template <auto const& Sep, auto const&... Strs>
 inline constexpr auto JoinStringViewWithSep_v = JoinStringViewWithSep<Sep, Strs...>::value;
 
 namespace details {
-template <std::string_view const& Sep, const auto& a, typename>
+template <auto const& Sep, const auto& a, typename>
 struct make_joined_string_view_impl;
 
-template <std::string_view const& Sep, const auto& a, std::size_t... i>
+template <auto const& Sep, const auto& a, std::size_t... i>
 struct make_joined_string_view_impl<Sep, a, std::index_sequence<i...>> {
   static constexpr auto value = JoinStringViewWithSep<Sep, a[i]...>::value;
 };
@@ -104,7 +121,7 @@ struct make_joined_string_view_impl<Sep, a, std::index_sequence<i...>> {
 }  // namespace details
 
 // make joined string view from array like value
-template <std::string_view const& Sep, const auto& a>
+template <auto const& Sep, const auto& a>
 using make_joined_string_view = details::make_joined_string_view_impl<Sep, a, std::make_index_sequence<std::size(a)>>;
 
 /// Converts an integer value to its string_view representation at compile time.

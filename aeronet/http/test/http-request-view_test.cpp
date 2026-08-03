@@ -32,19 +32,21 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
-#ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/http-json.hpp"  // bodyAs / bodyAsYaml definitions
-#endif
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/http-json.hpp"  // bodyAs / bodyAsYaml definitions
+#endif
 
 namespace aeronet {
 
@@ -107,7 +109,7 @@ class HttpRequestViewTest : public ::testing::Test {
 
   void checkHeaders(std::initializer_list<http::HeaderView> headers) {
     for (const auto& [key, val] : headers) {
-      EXPECT_EQ(req.headerValueOrEmpty(key), val);
+      EXPECT_EQ(req.headerValueOrEmpty(LowerAsciiKey{key}), val);
     }
   }
 
@@ -419,7 +421,7 @@ TEST_F(HttpRequestViewTest, PinHead_NormalCopiesAndRemaps) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   // Before pinning, header views point into cs.inBuffer
-  auto before = req.headerValueOrEmpty("X-Test");
+  auto before = req.headerValueOrEmpty("x-test");
   EXPECT_EQ(before, "v");
 
   // Call pinHeadStorage to copy head into headBuffer and remap views
@@ -427,7 +429,7 @@ TEST_F(HttpRequestViewTest, PinHead_NormalCopiesAndRemaps) {
   EXPECT_GT(req.headSpanSize(), 0);
 
   // Header value should still be accessible and unchanged after pin
-  EXPECT_EQ(req.headerValueOrEmpty("X-Test"), "v");
+  EXPECT_EQ(req.headerValueOrEmpty("x-test"), "v");
 }
 
 TEST_F(HttpRequestViewTest, PinHead_SecondCallIsNoop) {
@@ -439,12 +441,12 @@ TEST_F(HttpRequestViewTest, PinHead_SecondCallIsNoop) {
   EXPECT_GT(req.headSpanSize(), 0);
 
   // Capture header pointer after first pin
-  auto val1 = req.headerValueOrEmpty("X-A");
+  auto val1 = req.headerValueOrEmpty("x-a");
 
   // Second call should be a no-op and not crash/change values
   callPinHeadStorage();
   EXPECT_GT(req.headSpanSize(), 0);
-  auto val2 = req.headerValueOrEmpty("X-A");
+  auto val2 = req.headerValueOrEmpty("x-a");
   EXPECT_EQ(val1, val2);
 }
 
@@ -722,34 +724,33 @@ TEST_F(HttpRequestViewTest, HeaderAccessorsBasicAndEmptyVsMissing) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   // Existing normal header
-  EXPECT_EQ(req.headerValueOrEmpty("X-Test"), "Value");
-  EXPECT_EQ(req.headerValue("X-Test").value_or(""), "Value");
+  EXPECT_EQ(req.headerValueOrEmpty("x-test"), "Value");
+  EXPECT_EQ(req.headerValue("x-test").value_or(""), "Value");
 
   // Case-insensitive lookup
   EXPECT_EQ(req.headerValueOrEmpty("x-test"), "Value");
   EXPECT_TRUE(req.headerValue("x-test").has_value());
 
   // Empty header value vs missing header
-  EXPECT_EQ(req.headerValueOrEmpty("X-Empty"), "");
-  EXPECT_TRUE(req.headerValue("X-Empty").has_value());
+  EXPECT_EQ(req.headerValueOrEmpty("x-empty"), "");
+  EXPECT_TRUE(req.headerValue("x-empty").has_value());
 
   // Trimming behavior (trailing)
-  EXPECT_EQ(req.headerValueOrEmpty("X-Trim"), "value");
   EXPECT_EQ(req.headerValueOrEmpty("x-trim"), "value");
   // Trimming behavior (leading & trailing)
-  EXPECT_EQ(req.headerValueOrEmpty("X-Spaces"), "abc");
-  EXPECT_EQ(req.headerValue("X-Spaces").value_or(""), "abc");
+  EXPECT_EQ(req.headerValueOrEmpty("x-spaces"), "abc");
+  EXPECT_EQ(req.headerValue("x-spaces").value_or(""), "abc");
 
-  EXPECT_EQ(req.headerValueOrEmpty("No-Such"), std::string_view());
-  EXPECT_FALSE(req.headerValue("No-Such").has_value());
+  EXPECT_EQ(req.headerValueOrEmpty("no-such"), std::string_view());
+  EXPECT_FALSE(req.headerValue("no-such").has_value());
 }
 
 TEST_F(HttpRequestViewTest, HeaderAccessorsAbsentHeaders) {
   auto st = reqSet(BuildRaw("GET", "/p"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Host"), "h");  // baseline sanity
-  EXPECT_EQ(req.headerValueOrEmpty("X-Unknown"), std::string_view());
-  EXPECT_FALSE(req.headerValue("X-Unknown").has_value());
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h");  // baseline sanity
+  EXPECT_EQ(req.headerValueOrEmpty("x-unknown"), std::string_view());
+  EXPECT_FALSE(req.headerValue("x-unknown").has_value());
 }
 
 TEST_F(HttpRequestViewTest, MergeConsecutiveHeaders) {
@@ -761,7 +762,7 @@ TEST_F(HttpRequestViewTest, MergeConsecutiveHeaders) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v1,v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, ShrinkToFit) {
@@ -799,7 +800,7 @@ TEST_F(HttpRequestViewTest, MergeConsecutiveHeadersWithSpaces) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v1,v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeaders) {
@@ -811,7 +812,7 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeaders) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v1,v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithSpaces) {
@@ -823,7 +824,7 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithSpaces) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1,v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v1,v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
@@ -835,7 +836,7 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnFirst) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v2"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
@@ -847,7 +848,7 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersWithEmptyOnSecond) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", "v1"}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", "v1"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
 TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersBothEmpty) {
@@ -859,9 +860,9 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersBothEmpty) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"X-Test", "Value"}, {"H", ""}, {"X-Spaces", "abc"}, {http::ContentLength, "0"}});
+  checkHeaders({{"x-test", "Value"}, {"h", ""}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 
-  EXPECT_TRUE(req.headerValue("H").has_value());
+  EXPECT_TRUE(req.headerValue("h").has_value());
 }
 
 TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
@@ -877,9 +878,9 @@ TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({
-      {"X-Test", "Value"},
-      {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
-      {"X-Spaces", "abc"},
+      {"x-test", "Value"},
+      {"cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"x-spaces", "abc"},
       {http::ContentLength, "0"},
   });
 }
@@ -900,9 +901,9 @@ TEST_F(HttpRequestViewTest, MergeMultipleHeaders) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   checkHeaders({
-      {"X-Test", "Value"},
-      {"Cookie", "cookie1;cookie2;cookie3;cookie4"},
-      {"X-Spaces", "abc,de,fgh"},
+      {"x-test", "Value"},
+      {"cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"x-spaces", "abc,de,fgh"},
       {http::ContentLength, "0"},
   });
 
@@ -916,7 +917,9 @@ TEST_F(HttpRequestViewTest, AcceptHeaderCommaMerge) {
                             "Accept: text/plain\r\n"
                             "Accept: text/html\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain,text/html");
+  EXPECT_EQ(req.headerValueOrEmpty("accept"), "text/plain,text/html");
+  EXPECT_TRUE(req.hasHeader("accept"));
+  EXPECT_FALSE(req.hasHeader("bccept"));
 }
 
 TEST_F(HttpRequestViewTest, AcceptHeaderSkipEmptySecond) {
@@ -924,7 +927,7 @@ TEST_F(HttpRequestViewTest, AcceptHeaderSkipEmptySecond) {
                             "Accept: text/plain\r\n"
                             "Accept:   \r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/plain");
+  EXPECT_EQ(req.headerValueOrEmpty("accept"), "text/plain");
 }
 
 TEST_F(HttpRequestViewTest, AcceptHeaderEmptyFirstTakesSecond) {
@@ -932,7 +935,7 @@ TEST_F(HttpRequestViewTest, AcceptHeaderEmptyFirstTakesSecond) {
                             "Accept:    \r\n"
                             "Accept: text/html\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Accept"), "text/html");
+  EXPECT_EQ(req.headerValueOrEmpty("accept"), "text/html");
 }
 
 TEST_F(HttpRequestViewTest, UserAgentSpaceMerge) {
@@ -940,7 +943,7 @@ TEST_F(HttpRequestViewTest, UserAgentSpaceMerge) {
                             "User-Agent: Foo  \r\n"
                             "User-Agent:   Bar   \r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("User-Agent"), "Foo Bar");
+  EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "Foo Bar");
 }
 
 TEST_F(HttpRequestViewTest, AuthorizationOverrideKeepsLast) {
@@ -948,7 +951,7 @@ TEST_F(HttpRequestViewTest, AuthorizationOverrideKeepsLast) {
                             "Authorization: Bearer first\r\n"
                             "Authorization: Bearer second\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer second");
+  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer second");
 }
 
 TEST_F(HttpRequestViewTest, AuthorizationEmptyFirstThenValue) {
@@ -956,7 +959,7 @@ TEST_F(HttpRequestViewTest, AuthorizationEmptyFirstThenValue) {
                             "Authorization:   \r\n"
                             "Authorization: Bearer token\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer token");
+  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer token");
 }
 
 TEST_F(HttpRequestViewTest, AuthorizationOverrideCaseInsensitive) {
@@ -964,7 +967,7 @@ TEST_F(HttpRequestViewTest, AuthorizationOverrideCaseInsensitive) {
                             "aUtHoRiZaTiOn: Bearer First\r\n"
                             "AUTHORIZATION: Bearer Second\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("Authorization"), "Bearer Second");
+  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer Second");
 }
 
 TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenAggregated) {
@@ -1095,14 +1098,14 @@ TEST_F(HttpRequestViewTest, PinHeadStorageRemapsViews) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   // capture original view pointer into connection inBuffer
-  auto hostView = req.headerValueOrEmpty("X-Custom");
+  auto hostView = req.headerValueOrEmpty("x-custom");
   const char* originalPtr = hostView.data();
 
   // now pin head storage which moves data into state.asyncState->headBuffer
   callPinHeadStorage();
 
   // after pinning, header view should point into headBuffer (ownerState.headBuffer)
-  auto pinned = req.headerValueOrEmpty("X-Custom");
+  auto pinned = req.headerValueOrEmpty("x-custom");
   const char* pinnedPtr = pinned.data();
 
   ASSERT_NE(originalPtr, pinnedPtr);
@@ -1126,16 +1129,16 @@ TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   const char* oldBase = cs.inBuffer.data();
   const char* beyond = oldBase + static_cast<std::ptrdiff_t>(req.headSpanSize()) + 2;
   // Use fixture helper to add header view pointing into connection buffer beyond oldLimit
-  setHeaderViewToPtr("X-Outside", beyond, 5);
+  setHeaderViewToPtr("x-outside", beyond, 5);
 
   // Record pointer before pinning
-  auto before = req.headerValueOrEmpty("X-Outside");
+  auto before = req.headerValueOrEmpty("x-outside");
   const char* beforePtr = before.data();
 
   // Call pin which should NOT remap the view (it lies beyond oldLimit)
   callPinHeadStorage();
 
-  auto after = req.headerValueOrEmpty("X-Outside");
+  auto after = req.headerValueOrEmpty("x-outside");
   const char* afterPtr = after.data();
 
   EXPECT_EQ(beforePtr, afterPtr);
@@ -1162,14 +1165,14 @@ TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   const char* before = tmpPtr;  // tmp is separate from inBuffer
 
   // Add header view that points before oldBase
-  setHeaderViewToPtr("X-Before", before, 3);
+  setHeaderViewToPtr("x-before", before, 3);
 
-  auto beforeView = req.headerValueOrEmpty("X-Before");
+  auto beforeView = req.headerValueOrEmpty("x-before");
   const char* beforePtr = beforeView.data();
 
   callPinHeadStorage();
 
-  auto afterView = req.headerValueOrEmpty("X-Before");
+  auto afterView = req.headerValueOrEmpty("x-before");
   const char* afterPtr = afterView.data();
 
   // Pointer should be unchanged (remap skipped)
@@ -1187,23 +1190,23 @@ TEST_F(HttpRequestViewTest, PinHead_RemapsEntriesInsideOldSpan) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   // Capture pointer into the current inBuffer for header value
-  auto hv = req.headerValueOrEmpty("X-Remap");
+  auto hv = req.headerValueOrEmpty("x-remap");
   const char* origPtr = hv.data();
 
   // Also set a trailer and a path param value pointing inside the head span by using the same pointer
-  setTrailerViewToPtr("T-Remap", origPtr, 3);
+  setTrailerViewToPtr("t-remap", origPtr, 3);
   setPathParamToPtr("pp", origPtr, 3);
 
   // Pin head storage which should remap entries that are inside the old span
   callPinHeadStorage();
 
   // After pinning, header value pointer must have changed (moved into headBuffer)
-  auto pinnedHeader = req.headerValueOrEmpty("X-Remap");
+  auto pinnedHeader = req.headerValueOrEmpty("x-remap");
   const char* pinnedPtr = pinnedHeader.data();
   EXPECT_NE(origPtr, pinnedPtr);
 
   // Trailer and path param entries should also have been remapped
-  auto tr = req.trailers().find("T-Remap");
+  auto tr = req.trailers().find("t-remap");
   ASSERT_TRUE(tr != req.trailers().end());
   const char* trPtr = tr->second.data();
   EXPECT_NE(origPtr, trPtr);

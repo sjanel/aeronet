@@ -32,6 +32,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/ndigits.hpp"
@@ -51,11 +52,11 @@ namespace aeronet {
 namespace http {
 
 namespace {
-constexpr std::string_view IfRange = "if-range";
-constexpr std::string_view IfModifiedSince = "if-modified-since";
-constexpr std::string_view IfUnmodifiedSince = "if-unmodified-since";
-constexpr std::string_view IfNoneMatch = "if-none-match";
-constexpr std::string_view IfMatch = "if-match";
+constexpr LowerAsciiKey IfRange = "if-range";
+constexpr LowerAsciiKey IfModifiedSince = "if-modified-since";
+constexpr LowerAsciiKey IfUnmodifiedSince = "if-unmodified-since";
+constexpr LowerAsciiKey IfNoneMatch = "if-none-match";
+constexpr LowerAsciiKey IfMatch = "if-match";
 }  // namespace
 
 }  // namespace http

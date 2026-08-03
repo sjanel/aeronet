@@ -5,13 +5,14 @@
 #include <string_view>
 
 #include "aeronet/header-write.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
@@ -96,7 +97,7 @@ bool ConnectionContainsUpgrade(std::string_view connectionValue) {
 }
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-UpgradeValidationResult ValidateWebSocketUpgrade(const HeadersViewMap& headers, const WebSocketUpgradeConfig& config) {
+UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const WebSocketUpgradeConfig& config) {
   UpgradeValidationResult result;
 
   // Check Upgrade header
@@ -185,7 +186,7 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const HeadersViewMap& headers, 
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
-UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const HeadersViewMap& headers) {
+UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const SvToSvMap& headers) {
   UpgradeValidationResult result;
 
   // Check Upgrade header
@@ -200,7 +201,7 @@ UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const HeadersViewM
     return result;
   }
 
-  // Check Connection header contains "upgrade" and "HTTP2-Settings"
+  // Check Connection header contains "upgrade" and "http2-settings"
   it = headers.find(http::Connection);
   if (it == headers.end()) {
     result.errorMessage = "Missing Connection header";
@@ -212,8 +213,8 @@ UpgradeValidationResult ValidateHttp2Upgrade([[maybe_unused]] const HeadersViewM
     return result;
   }
 
-  // Check for HTTP2-Settings header
-  static constexpr std::string_view kHttp2Settings = "HTTP2-Settings";
+  // Check for http2-settings header
+  static constexpr LowerAsciiKey kHttp2Settings = "http2-settings";
   it = headers.find(kHttp2Settings);
   if (it == headers.end()) {
     result.errorMessage = "Missing HTTP2-Settings header";

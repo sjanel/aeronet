@@ -20,7 +20,6 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/headers-view-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -40,6 +39,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -127,7 +127,7 @@ class Http2ProtocolLoopback {
       : compressionState(serverConfig.compression),
         handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer),
         client(clientCfg, false) {
-    client.setOnHeadersDecoded([this](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+    client.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -1869,7 +1869,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   ::aeronet::ConnectionState state;
 
   vector<HeaderEvent> clientHeaders;
-  client.setOnHeadersDecoded([&clientHeaders](uint32_t streamId, const HeadersViewMap& headers, bool endStream) {
+  client.setOnHeadersDecoded([&clientHeaders](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     HeaderEvent ev;
     ev.streamId = streamId;
     ev.endStream = endStream;

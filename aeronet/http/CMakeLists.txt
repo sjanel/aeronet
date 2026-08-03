@@ -154,6 +154,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    rate-limit-middleware_test
+    test/rate-limit-middleware_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+AeronetAddUnitTest(
     router_test
     test/router_test.cpp
     LIBRARIES

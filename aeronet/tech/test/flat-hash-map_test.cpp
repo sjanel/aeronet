@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/city-hash.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
 
@@ -586,13 +586,14 @@ TEST(flat_hash_map, rehash_and_shrink_to_fit_preserve_entries) {
 // Regression test: ensure flat_hash_map with std::string_view keys that point
 // into a single stable backing buffer remains consistent across rehash.
 TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
-  using KeyMap = flat_hash_map<std::string_view, std::string_view, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc>;
+  using KeyMap = flat_hash_map<std::string_view, std::string_view, CityHash>;
 
   vector<std::pair<std::string_view, std::string_view>> headers = {
       {":status", "200"},       {"content-type", "text/plain"},
       {"x-custom", "original"}, {"x-another", "anothervalue"},
       {"x-global", "gvalue"},   {"date", "Sun, 04 Jan 2026 10:38:25 GMT"},
-      {"content-length", "1"}};
+      {"content-length", "1"},
+  };
 
   KeyMap map;
 
@@ -649,35 +650,6 @@ TEST(flat_hash_map, bracket_operator_default_constructs_values_once) {
   auto& ref = map["new_key"];
   EXPECT_EQ(CountingValue::defaultConstructionCount, 2);
   EXPECT_EQ(ref.payload, 0);
-}
-
-TEST(flat_hash_map, case_insensitive_contains_variants) {
-  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> headers;
-  headers["Content-Type"] = "text/html";
-  headers["ACCEPT"] = "*/*";
-  headers["X-Trace-Request-ID"] = "r-123";
-  headers["X-SUPER-LONG-FLAG-TEST-KEYZZ"] = "1";  // 28 characters to trigger distinct contains instantiation
-  headers["HostName"] = "example.com";
-
-  std::string_view lowerType = "content-type";
-  EXPECT_EQ(headers.find(lowerType)->second, "text/html");
-
-  const char sixLetters[] = "accept";  // length 6 literal
-  EXPECT_TRUE(headers.contains(sixLetters));
-
-  const char eightLetters[] = "hostname";  // length 8 literal
-  EXPECT_TRUE(headers.contains(eightLetters));
-
-  const char eighteenChars[] = "x-trace-request-id";  // length 18 literal
-  EXPECT_TRUE(headers.contains(eighteenChars));
-
-  const char twentyEightChars[] = "x-super-long-flag-test-keyzz";  // length 28 literal
-  EXPECT_TRUE(headers.contains(twentyEightChars));
-
-  EXPECT_FALSE(headers.contains("missing-header"));
-
-  flat_hash_map<std::string, std::string, CaseInsensitiveHashFunc, CaseInsensitiveEqualFunc> copy = headers;
-  EXPECT_EQ(headers, copy);
 }
 
 TEST(flat_hash_map, emplace_default_and_insert_or_assign_hint) {

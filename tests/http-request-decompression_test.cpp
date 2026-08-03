@@ -439,12 +439,12 @@ void ExpectTrailers(vector<Encoding> encodings, bool insertBadTrailer = false, b
     EXPECT_EQ(req.body(), plain);
     // Expect two trailers preserved
     EXPECT_EQ(req.trailers().size(), 2U);
-    auto it = req.trailers().find("X-Checksum");
+    auto it = req.trailers().find("x-checksum");
     EXPECT_NE(it, req.trailers().end());
     if (it != req.trailers().end()) {
       EXPECT_EQ(it->second, "abc123");
     }
-    auto it2 = req.trailers().find("X-Note");
+    auto it2 = req.trailers().find("x-note");
     EXPECT_NE(it2, req.trailers().end());
     if (it2 != req.trailers().end()) {
       EXPECT_EQ(it2->second, "final");
