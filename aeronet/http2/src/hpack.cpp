@@ -19,6 +19,7 @@
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/tchars.hpp"
 
 namespace aeronet::http2 {
 
@@ -26,7 +27,7 @@ namespace {
 
 // HPACK static table (RFC 7541 Appendix A)
 // Index 0 is unused (indices are 1-based in the spec)
-constexpr http::HeaderView kStaticTable[] = {
+constexpr http::HeaderView kStaticTable[]{
     {":authority", ""},
     {":method", "GET"},
     {":method", "POST"},
@@ -595,6 +596,50 @@ constexpr HuffmanCanonicalResult DecodeHuffmanCanonical(uint64_t window) noexcep
 
 constexpr std::size_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
 
+constexpr bool IsValidHTTP2HeaderName(std::string_view name) noexcept {
+  if (name.empty()) {
+    return false;
+  }
+  if (name.front() == ':') {
+    // Pseudo-header (:method, :path, ...). Further validation is done outside this function.
+    return true;
+  }
+  struct AllowedChars {
+    bool res[256]{};
+  };
+  static constexpr auto kAllowed = [] {
+    AllowedChars allowed{};
+    for (std::size_t ch = 0; ch < 256; ++ch) {
+      allowed.res[static_cast<unsigned char>(ch)] =
+          is_tchar(static_cast<char>(ch)) && (static_cast<char>(ch) < 'A' || static_cast<char>(ch) > 'Z');
+    }
+    return allowed;
+  }();
+
+  return std::ranges::all_of(name, [](char ch) { return kAllowed.res[static_cast<unsigned char>(ch)]; });
+}
+
+// RFC 9113 §8.2.1 : A HTTP/2 header field value is invalid only if it contains
+// NUL, CR, or LF. Everything else — including bytes >= 0x80 - is legal opaque data;
+// this is exactly what the HPACK Huffman code (RFC 7541 Appendix B, which has a code
+// for all 256 byte values) is designed to transport. This is intentionally more permissive
+// than aeronet::http::IsValidHeaderValue, which restricts to printable ASCII - a separate
+// and defensible choice for HTTP/1.1, but not required or enforced by HTTP/2.
+constexpr bool IsValidHTTP2HeaderValue(std::string_view value) noexcept {
+  struct AllowedChars {
+    bool res[256]{};
+  };
+  static constexpr auto kAllowed = [] {
+    AllowedChars allowed{};
+    for (std::size_t ch = 0; ch < 256; ++ch) {
+      allowed.res[static_cast<unsigned char>(ch)] = ch != '\0' && ch != '\r' && ch != '\n';
+    }
+    return allowed;
+  }();
+
+  return std::ranges::all_of(value, [](char ch) { return kAllowed.res[static_cast<unsigned char>(ch)]; });
+}
+
 }  // namespace
 
 std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStaticTable; }
@@ -770,7 +815,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         return res;
       }
 
-      res.errorMessage = storeHeader(header);
+      res.errorMessage = storeHeader(header.name, header.value);
       if (res.errorMessage != nullptr) {
         return res;
       }
@@ -825,15 +870,17 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += valueResult.consumed;
 
-      res.errorMessage = storeHeader(http::HeaderView{name, valueResult.str});
-      if (res.errorMessage != nullptr) {
-        return res;
-      }
+      res.errorMessage = storeHeader(name, valueResult.str);
 
       if (withIndexing) {
-        // Note: add() copies name/value before evicting, so this is safe even if
-        // name/value point to data owned by entries that will be evicted
+        // Note: add() copies name/value before evicting, so this is safe even if name/value point to data owned by
+        // entries that will be evicted. Dynamic table must be updated even in case of header validation issue - cf. RFC
+        // 9113 §4.3.
         _dynamicTable.add(name, valueResult.str);
+      }
+
+      if (res.errorMessage != nullptr) {
+        return res;
       }
     }
   }
@@ -972,36 +1019,41 @@ http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
   return ret;
 }
 
-const char* HpackDecoder::storeHeader(http::HeaderView header) {
-  char* pName = _decodedStrings.allocateAndDefaultConstruct(
-      SafeCast<CharStorageSizeType>(header.name.size() + header.value.size()));
-  Copy(header.name, pName);
+const char* HpackDecoder::storeHeader(std::string_view name, std::string_view value) {
+  if (!IsValidHTTP2HeaderName(name)) {
+    return "Malformed field name (uppercase or invalid byte)";
+  }
+  if (!IsValidHTTP2HeaderValue(value)) {
+    return "Malformed field value (invalid byte)";
+  }
 
-  char* pValue = pName + header.name.size();
-  Copy(header.value, pValue);
+  char* pName = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(name.size() + value.size()));
+  Copy(name, pName);
 
-  auto [it, inserted] =
-      _decodedHeadersMap.try_emplace(std::string_view(pName, header.name.size()), pValue, header.value.size());
+  char* pValue = pName + name.size();
+  Copy(value, pValue);
+
+  auto [it, inserted] = _decodedHeadersMap.try_emplace(std::string_view(pName, name.size()), pValue, value.size());
 
   if (!inserted) {
     // Header already exists
     std::string_view existingValue = it->second;
 
     // value not needed anymore
-    _decodedStrings.shrinkLastAllocated(pName, header.name.size());
+    _decodedStrings.shrinkLastAllocated(pName, name.size());
 
     const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
     if (mergeSep == '\0') {
       return "Duplicated header forbidden to merge";
     }
 
-    const std::size_t newValueLen = existingValue.size() + 1U + header.value.size();
+    const std::size_t newValueLen = existingValue.size() + 1U + value.size();
 
     char* pData = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
 
     pData = Append(existingValue, pData);
     *pData++ = mergeSep;
-    pData = Append(header.value, pData);
+    pData = Append(value, pData);
 
     it->second = std::string_view(pData - newValueLen, newValueLen);
   }

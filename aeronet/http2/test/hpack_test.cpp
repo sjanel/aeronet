@@ -232,6 +232,161 @@ TEST(HpackDecoder, DecodeLiteralWithIndexing) {
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
 }
 
+// ============================
+// Field name / value validity (RFC 9113 §8.2.1)
+// ============================
+
+TEST(HpackDecoder, RejectsUppercaseInNewLiteralName) {
+  HpackDecoder decoder(4096);
+
+  // Literal with incremental indexing, new name "Custom-Key" (uppercase C, K)
+  static constexpr uint8_t encoded[]{
+      0x40, 0x0A, 'C', 'u', 's', 't', 'o', 'm', '-', 'K', 'e', 'y', 0x0C,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+
+  // HPACK compression state must stay in sync even though the message is malformed:
+  // the entry must still have been added to the dynamic table.
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+}
+
+TEST(HpackDecoder, RejectsInvalidByteInNewLiteralName) {
+  HpackDecoder decoder(4096);
+
+  // Name "foo:bar" - colon is not a tchar and is not uppercase, checks the
+  // validator isn't just an A-Z check.
+  static constexpr uint8_t encoded[]{
+      0x40, 0x07, 'f', 'o', 'o', ':', 'b', 'a', 'r', 0x01, 'x',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+}
+
+TEST(HpackDecoder, RejectsEmptyNewLiteralName) {
+  HpackDecoder decoder(4096);
+
+  // Literal with incremental indexing, new name of length 0
+  static constexpr uint8_t encoded[]{0x40, 0x00, 0x01, 'x'};
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+}
+
+TEST(HpackDecoder, AcceptsPunctuationTcharInName) {
+  HpackDecoder decoder(4096);
+
+  // Name "x-my_header!" uses only valid tchar punctuation ('-', '_', '!')
+  static constexpr uint8_t encoded[]{
+      0x40, 0x0C, 'x', '-', 'm', 'y', '_', 'h', 'e', 'a', 'd', 'e', 'r', '!', 0x02, 'o', 'k',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.begin()->first, "x-my_header!");
+}
+
+TEST(HpackDecoder, RejectsCrLfInValue) {
+  HpackDecoder decoder(4096);
+
+  // Value "bad\r\nvalue" - CRLF injection attempt
+  static constexpr uint8_t encoded[]{
+      0x40, 0x06, 'x', '-', 't', 'e', 's', 't', 0x0A, 'b', 'a', 'd', 0x0D, 0x0A, 'v', 'a', 'l', 'u', 'e',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)");
+}
+
+TEST(HpackDecoder, RejectsNulInValue) {
+  HpackDecoder decoder(4096);
+
+  // Value contains an embedded NUL byte
+  static constexpr uint8_t encoded[]{
+      0x40, 0x06, 'x', '-', 't', 'e', 's', 't', 0x03, 'a', 0x00, 'b',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)");
+}
+
+TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
+  HpackDecoder decoder(4096);
+
+  // Indexed Header Field, static table index 2 = ":method" / "GET"
+  static constexpr uint8_t encoded[]{0x82};
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.begin()->first, ":method");
+  EXPECT_EQ(result.decodedHeaders.begin()->second, "GET");
+}
+
+TEST(HpackDecoder, WithoutIndexingStillValidatesButDoesNotPollutTable) {
+  HpackDecoder decoder(4096);
+
+  // Literal WITHOUT indexing (0000xxxx), new name "Bad-Name" (uppercase)
+  static constexpr uint8_t encoded[]{
+      0x00, 0x08, 'B', 'a', 'd', '-', 'N', 'a', 'm', 'e', 0x01, 'x',
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+
+  EXPECT_FALSE(result.isSuccess());
+  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+
+  // withIndexing == false here: nothing should have been added to the dynamic table.
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+}
+
+TEST(HpackDecoder, IndexedReferenceToPreviouslyPoisonedDynamicEntryIsRejected) {
+  HpackDecoder decoder(4096);
+
+  // 1st block: literal with indexing, new (invalid) name "Custom-Key" -> rejected,
+  // but per RFC 9113 §4.3 it must still land in the dynamic table at index 62
+  // (61 static entries + 1).
+  static constexpr uint8_t firstBlock[]{
+      0x40, 0x0A, 'C', 'u', 's', 't', 'o', 'm', '-', 'K', 'e', 'y', 0x0C,
+      'c',  'u',  's', 't', 'o', 'm', '-', 'v', 'a', 'l', 'u', 'e',
+  };
+  auto firstResult = decoder.decode(AsBytes(firstBlock));
+  ASSERT_FALSE(firstResult.isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+
+  // 2nd block, same connection/decoder: Indexed Header Field referencing index 62
+  // (0x80 | 62 = 0xBE), i.e. a pure back-reference to the poisoned entry above.
+  // This must be caught too, not just the original literal-new-name path.
+  static constexpr uint8_t secondBlock[]{0xBE};
+  auto secondResult = decoder.decode(AsBytes(secondBlock));
+
+  EXPECT_FALSE(secondResult.isSuccess());
+  ASSERT_NE(secondResult.errorMessage, nullptr);
+  EXPECT_STREQ(secondResult.errorMessage, "Malformed field name (uppercase or invalid byte)");
+}
+
 TEST(HpackDecoder, DecodeLiteralNameIncomplete) {
   HpackDecoder decoder(4096);
 
@@ -688,6 +843,32 @@ TEST(HpackDecoder, ClearDecodedStrings) {
   EXPECT_EQ(res2.decodedHeaders.begin()->first, "custom-key");
 }
 
+TEST(HpackDecoder, IndexedNameSelfEviction) {
+  // Table just large enough for a single small entry: the slightest addition
+  // will force its eviction.
+  HpackDecoder decoder(40);  // kHpackOverhead(32) + "ck"(2) + "v1"(2) = 36 <= 40
+
+  // 1) New literal-with-indexing entry: "ck" -> "v1"
+  static constexpr uint8_t firstBlock[]{0x40, 0x02, 'c', 'k', 0x02, 'v', '1'};
+  auto firstResult = decoder.decode(AsBytes(firstBlock));
+  ASSERT_TRUE(firstResult.isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+
+  // 2) Literal header, INDEXED NAME (index 62 = "ck", the entry we just added),
+  // new value "v2", WITH indexing. The name therefore comes from the entry that will
+  // have to be evicted (only one entry in the table -> it must be it,
+  // and it is reused as a buffer, not just freed) to make room
+  // for the new entry "ck"->"v2". Byte 1: 0x40 | 62 = 0x7E.
+  static constexpr uint8_t secondBlock[]{0x7E, 0x02, 'v', '2'};
+  auto secondResult = decoder.decode(AsBytes(secondBlock));
+
+  EXPECT_TRUE(secondResult.isSuccess());
+  ASSERT_EQ(secondResult.decodedHeaders.size(), 1U);
+  EXPECT_EQ(secondResult.decodedHeaders.begin()->first, "ck");
+  EXPECT_EQ(secondResult.decodedHeaders.begin()->second, "v2");
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+}
+
 // ============================
 // Encoder Tests
 // ============================
@@ -1082,6 +1263,30 @@ TEST(HpackHuffman, RoundTripsEveryByteValue) {
   // Covers all 257 code lengths, including the 9..30 bit codes that bypass the fast table.
   for (int ch = 0; ch < 256; ++ch) {
     const std::string value(4, static_cast<char>(ch));
+
+    if (ch == '\0' || ch == '\n' || ch == '\r') {
+      // NUL, LF and CR are legal Huffman symbols - LF and CR in fact carry the
+      // two longest codes in the whole table (30 bits), and NUL a 13-bit code,
+      // so these three specifically exercise the tier-2 canonical decode path.
+      // But RFC 9113 §8.2.1 makes a field VALUE containing any of them
+      // malformed, so decode() must reject the header. Checking the exact
+      // error message distinguishes "codec decoded fine, semantic check
+      // caught it" (Malformed field value) from "codec itself is broken"
+      // (Failed to decode literal header value) - which is what still lets
+      // this loop assert Huffman correctness for these three without
+      // expecting a successful round trip.
+      HpackEncoder encoder(4096);
+      HpackDecoder decoder(4096);
+      RawBytes encoded;
+      encoder.encode(encoded, "x-rt", value);
+      const auto result = decoder.decode(encoded);
+
+      EXPECT_FALSE(result.isSuccess()) << "byte " << ch;
+      ASSERT_NE(result.errorMessage, nullptr) << "byte " << ch;
+      EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)") << "byte " << ch;
+      continue;
+    }
+
     EXPECT_EQ(HuffmanRoundTrip(value), value) << "byte " << ch;
   }
 }
