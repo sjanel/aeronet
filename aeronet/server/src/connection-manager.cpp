@@ -116,6 +116,28 @@ void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
   _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.keepAliveTimeout);
 }
 
+void SingleHttpServer::restartKeepAliveIdleWindow(NativeHandle fd) {
+  if (!_config.enableKeepAlive) {
+    return;
+  }
+  const auto cnxIt = _connections.iterator(fd);
+  if (!IsValid(_connections, cnxIt)) {
+    return;
+  }
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  // The deadline armed when the request was read is stale as soon as serving it took longer than
+  // keepAliveTimeout - a multi-second database query in a synchronous handler is enough. keepAliveTimeout
+  // bounds idleness *between* requests (see HttpServerConfig::keepAliveTimeout), so restart the idle window
+  // from the instant the work completed. Without this the next maintenance sweep would close the connection
+  // right after the response was produced, before the peer had any chance to read it.
+  const auto workEnd = std::chrono::steady_clock::now();
+  if (state.lastActivity + _config.keepAliveTimeout > workEnd) {
+    return;  // served well within the idle window: the armed deadline is still valid
+  }
+  state.lastActivity = workEnd;
+  refreshKeepAliveDeadline(cnxIt);
+}
+
 bool SingleHttpServer::closeExpiredKeepAliveConnections() {
   bool closedAny = false;
   const auto now = _connections.now;
@@ -137,6 +159,10 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
       continue;
     }
 
+    // File sends are exempt because their progress is driven by this very sweep (flushFilePayload retries
+    // above), which does not refresh lastActivity. Every other outbound path - including an HTTP/2 body
+    // parked behind the peer's flow-control window - advances on epoll events, and the event loop refreshes
+    // lastActivity for each of them, so a response that is actually being delivered never looks idle here.
     if (state.isSendingFile()) {
       _keepAliveDeadlines.upsert(state, expired.fd, now + _config.keepAliveTimeout);
       continue;
@@ -612,6 +638,11 @@ void SingleHttpServer::acceptNewConnections() {
     const bool closeNow = processConnectionInput(cnxIt);
     if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
+    } else {
+      // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
+      // preface + SETTINGS + HEADERS immediately) gets it dispatched right here, so the handler can outlive
+      // keepAliveTimeout on this path too.
+      restartKeepAliveIdleWindow(cnxFd);
     }
 
     ++accepted;

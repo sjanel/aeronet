@@ -108,11 +108,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          NUM_PROC=$(nproc)
-          # Use half the CPUs for parallelism, but at least 1
-          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
-          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
-          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 60 -j
 
       - name: Summary
         run: |
@@ -196,11 +192,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          NUM_PROC=$(nproc)
-          # Use half the CPUs for parallelism, but at least 1
-          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
-          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
-          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 60 -j
 
       - name: Summary
         run: |
@@ -268,12 +260,9 @@ jobs:
 
       - name: Run unit tests (coverage)
         run: |
-          NUM_PROC=$(nproc)
-          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
-          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
           # Use LLVM profile file per-process. Pattern will create one .profraw per test process
           export LLVM_PROFILE_FILE="${{ github.workspace }}/coverage-%p.profraw"
-          ctest --test-dir ${BUILD_DIR} --timeout 100 -j ${JOBS} --output-on-failure
+          ctest --test-dir ${BUILD_DIR} --timeout 60 -j --output-on-failure
 
       - name: Merge profile data and generate coverage reports
         run: |
@@ -602,10 +591,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          NUM_PROC=$(sysctl -n hw.ncpu)
-          JOBS=$(( (NUM_PROC / 2) > 0 ? (NUM_PROC / 2) : 1 ))
-          echo "Running ctest with -j=${JOBS} (NUM_PROC=${NUM_PROC})"
-          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 100 -j ${JOBS}
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 60 -j
 
       - name: Summary
         run: |
@@ -657,7 +643,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          ctest --test-dir build --build-config ${{ matrix.build }} --output-on-failure --timeout 120
+          ctest --test-dir build --build-config ${{ matrix.build }} --output-on-failure --timeout 60 -j
         shell: pwsh
 
       - name: Summary
@@ -716,4 +702,4 @@ jobs:
 
       - name: Run unit tests
         run: |
-          ctest --test-dir build-alpine --output-on-failure --repeat until-fail:3 --timeout 100
+          ctest --test-dir build-alpine --output-on-failure --repeat until-fail:3 --timeout 60 -j

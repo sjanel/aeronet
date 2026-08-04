@@ -44,4 +44,4 @@ WORKDIR /aeronet/build-alpine
 
 RUN ninja
 
-RUN ctest --output-on-failure --repeat until-fail:3 --timeout 100
+RUN ctest --output-on-failure --repeat until-fail:3 --timeout 60 -j
