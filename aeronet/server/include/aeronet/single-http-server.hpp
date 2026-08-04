@@ -511,6 +511,9 @@ class SingleHttpServer {
   void closeConnection(ConnectionIt cnxIt);
 
   void refreshKeepAliveDeadline(ConnectionIt cnxIt);
+  // Restart the keep-alive idle window from now when serving the request outlived keepAliveTimeout,
+  // so a slow handler cannot get its own response swept away as if the connection had been idle.
+  void restartKeepAliveIdleWindow(NativeHandle fd);
   bool closeExpiredKeepAliveConnections();
   void rebuildKeepAliveDeadlines();
   void forgetConnectionMaintenance(ConnectionState& state);
