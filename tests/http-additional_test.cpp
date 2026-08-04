@@ -1456,26 +1456,31 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
 
 TEST(SingleHttpServer, EpollPollFailure) {
   test::EventLoopHookGuard guard;
-  test::SetEpollWaitActions({test::WaitError(error::kInterrupted), test::WaitError(EACCES), test::WaitError(EACCES),
-                             test::WaitError(error::kInterrupted), test::WaitError(EBADF), test::WaitError(EBADF)});
+  test::SetEpollWaitActions({
+      test::WaitError(error::kInterrupted),
+      test::WaitError(EACCES),
+      test::WaitError(EACCES),
+      test::WaitError(error::kInterrupted),
+      test::WaitError(EBADF),
+      test::WaitError(EBADF),
+  });
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
 
   // The server may have already stopped due to injected epoll_wait errors before
   // the client can connect or send. Both outcomes are valid: the test verifies
   // that the server stops and the client receives no complete response.
-  test::ClientConnection clientConnection(ts.port(), 50ms);
-  NativeHandle fd = clientConnection.fd();
-
   try {
+    test::ClientConnection clientConnection(ts.port());
+    NativeHandle fd = clientConnection.fd();
     test::sendAll(fd, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+
+    auto data = test::recvWithTimeout(fd, 50ms);
+
+    EXPECT_TRUE(data.empty());
   } catch (const std::runtime_error&) {
     return;
   }
-
-  auto data = test::recvWithTimeout(fd, 50ms);
-
-  EXPECT_TRUE(data.empty());
 }
 
 TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {

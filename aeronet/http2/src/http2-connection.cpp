@@ -400,7 +400,7 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
       return connectionError(ErrorCode::FrameSizeError, ErrorMsg::FrameExceedsMaximumSize);
     }
 
-    std::size_t totalFrameSize = FrameHeader::kSize + header.length;
+    const std::size_t totalFrameSize = FrameHeader::kSize + header.length;
     if (data.size() < totalFrameSize) {
       // Need more data
       break;
