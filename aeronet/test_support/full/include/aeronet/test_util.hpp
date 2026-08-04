@@ -26,6 +26,8 @@ class ClientConnection {
 
   [[nodiscard]] NativeHandle fd() const noexcept { return _socket.fd(); }
 
+  void close() noexcept { _socket.close(); }
+
  private:
   Socket _socket;
 };

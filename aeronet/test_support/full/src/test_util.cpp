@@ -37,6 +37,7 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/vector.hpp"
 #ifdef AERONET_ENABLE_BROTLI
@@ -298,8 +299,8 @@ Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
 
     log::debug("connect failed for fd # {}: {}", static_cast<int64_t>(fd), LastSystemError());
   }
-  log::error("Error from ::connect for: {}", LastSystemError());
-  return Socket{};
+  const auto timeoutMs = timeout.count();
+  ThrowSystemError("connect to port {} failed after {} ms", port, timeoutMs);
 }
 }  // namespace
 
@@ -457,9 +458,8 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 }
 
 std::string toLower(std::string input) {
-  for (char& ch : input) {
-    ch = tolower(ch);
-  }
+  tolower(input.data(), input.size());
+
   return input;
 }
 
