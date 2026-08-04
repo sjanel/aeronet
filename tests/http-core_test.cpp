@@ -25,7 +25,6 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
@@ -3520,8 +3519,7 @@ TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
   auto fd = sock.fd();
   std::string req = "GET /ensure-headers-sent-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
-  // Close immediately to cause header enqueue to fail
-  aeronet::CloseNativeHandle(fd);
+  sock.close();  // Close immediately to trigger enqueue failure
 }
 
 // Test: emitLastChunk() enqueue failure (line 190)
@@ -3547,8 +3545,7 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
   // Read some data first
   char buf[1024];
   ::recv(fd, buf, sizeof(buf), 0);
-  // Close before last chunk
-  aeronet::CloseNativeHandle(fd);
+  sock.close();  // Close to trigger enqueue failure on last chunk
 }
 
 // Test: writeBody() fixed-length enqueue failure (line 233)
@@ -3572,7 +3569,7 @@ TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
   auto fd = sock.fd();
   std::string req = "HEAD /fixed-body-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
-  aeronet::CloseNativeHandle(fd);
+  sock.close();  // Close to trigger enqueue failure on body write
 }
 
 // Enable compression, close connection to fail final compressed output
@@ -3600,8 +3597,7 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
   // Read headers
   char buf[512];
   ::recv(fd, buf, sizeof(buf), 0);
-  // Close before final encoder output
-  aeronet::CloseNativeHandle(fd);
+  sock.close();  // Close to trigger enqueue failure on compressed end
 }
 
 // Small write below compression threshold, close to fail buffered flush
@@ -3630,8 +3626,7 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
   // Read headers
   char buf[512];
   ::recv(fd, buf, sizeof(buf), 0);
-  // Close before buffered flush
-  aeronet::CloseNativeHandle(fd);
+  sock.close();
 }
 
 // This was covered by the original ContentLengthWhenFailed test
@@ -3658,7 +3653,7 @@ TEST(HttpResponseWriterFailures, EmitChunkFailure) {
   auto fd = sock.fd();
   std::string req = "GET /emit-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
   test::sendAll(fd, req);
-  aeronet::CloseNativeHandle(fd);
+  sock.close();
 }
 
 // Test contentLength called when writer is in Ended state

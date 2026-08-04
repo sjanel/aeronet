@@ -229,10 +229,13 @@ bool EventLoop::add(EventFd event) {
   }
 #elifdef AERONET_MACOS
   // On kqueue, register separate EVFILT_READ and/or EVFILT_WRITE filters.
-  // EV_CLEAR is the kqueue equivalent of edge-triggered mode.
+  // EV_CLEAR is the kqueue equivalent of edge-triggered mode. EV_RECEIPT
+  // returns one result per filter, so an invalid target descriptor is not
+  // confused with a closed kqueue descriptor.
   struct kevent changes[2];
+  struct kevent receipts[2];
   int nchanges = 0;
-  unsigned short flags = EV_ADD | EV_ENABLE;
+  unsigned short flags = EV_ADD | EV_ENABLE | EV_RECEIPT;
   if (event.eventBmp & EventEt) {
     flags |= EV_CLEAR;
   }
@@ -249,11 +252,26 @@ bool EventLoop::add(EventFd event) {
     EV_SET(&changes[nchanges++], static_cast<uintptr_t>(event.fd), EVFILT_READ, flags, 0, 0,
            reinterpret_cast<void*>(static_cast<intptr_t>(event.fd)));
   }
-  if (::kevent(_baseFd.fd(), changes, nchanges, nullptr, 0, nullptr) == -1) [[unlikely]] {
+  const int nbReceipts = ::kevent(_baseFd.fd(), changes, nchanges, receipts, nchanges, nullptr);
+  if (nbReceipts == -1) [[unlikely]] {
     const auto err = LastSystemError();
-    log::error("kevent ADD failed (fd # {}, events=0x{:x}, err={}, msg={})", event.fd, event.eventBmp, err,
-               SystemErrorMessage(err));
+    log::error("kevent ADD syscall failed (kqueue fd # {}, fd # {}, events=0x{:x}, err={}, msg={})", _baseFd.fd(),
+               event.fd, event.eventBmp, err, SystemErrorMessage(err));
     return false;
+  }
+  if (nbReceipts != nchanges) [[unlikely]] {
+    log::error("kevent ADD returned {} receipts for {} filters (kqueue fd # {}, fd # {}, events=0x{:x})", nbReceipts,
+               nchanges, _baseFd.fd(), event.fd, event.eventBmp);
+    return false;
+  }
+  for (int receiptIdx = 0; receiptIdx < nbReceipts; ++receiptIdx) {
+    const auto& receipt = receipts[receiptIdx];
+    if ((receipt.flags & EV_ERROR) != 0 && receipt.data != 0) [[unlikely]] {
+      const auto err = static_cast<int>(receipt.data);
+      log::error("kevent ADD failed (kqueue fd # {}, fd # {}, filter={}, events=0x{:x}, err={}, msg={})", _baseFd.fd(),
+                 event.fd, receipt.filter, event.eventBmp, err, SystemErrorMessage(err));
+      return false;
+    }
   }
 #elifdef AERONET_WINDOWS
   // Grow both buffers if the registration array is full.
