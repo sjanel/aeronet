@@ -4,6 +4,8 @@
 
 #include <cstddef>
 
+#include "aeronet/ascii-lower-mask.hpp"
+
 namespace aeronet {
 
 TEST(ToLowerStrTest, ToLowerInPlace) {

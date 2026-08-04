@@ -7,6 +7,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 
 namespace aeronet::http {
 

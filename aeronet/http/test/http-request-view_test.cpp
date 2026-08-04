@@ -388,7 +388,7 @@ TEST_F(HttpRequestViewTest, TraceSpanNotSetWhenNoHostHeader) {
   // initTrySetHead; the span should receive http.method, http.target, and
   // http.scheme but not http.host.
   RawChars raw;
-  raw.append("GET /nohost HTTP/1.1\r\n");
+  raw.append("GET /nohost HTTP/1.0\r\n");
   raw.append(MakeHttp1HeaderLine(http::Connection, "close"));
   raw.append(http::CRLF);
 
@@ -577,6 +577,10 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
 
 #endif
 
+TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
+
+TEST_F(HttpRequestViewTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
+
 TEST_F(HttpRequestViewTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
 }
@@ -584,6 +588,23 @@ TEST_F(HttpRequestViewTest, NotEnoughDataNoEndOfHeaders) {
 TEST_F(HttpRequestViewTest, InvalidHttpVersion) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /path HTTP1.1\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /path\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /path \r\n\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestViewTest, InvalidMethod) {
+  EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
+}
+
+TEST_F(HttpRequestViewTest, InvalidPath) {
+  EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestViewTest, Http11WithoutHostShouldBeRejected) {
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nX-Header: value\r\n\r\n")), http::StatusCodeOK);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nX-Header: value\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nX-Header: value\r\nhost: test\r\n\r\n")), http::StatusCodeOK);
 }
 
 TEST_F(HttpRequestViewTest, InvalidHeaderKey) {
@@ -607,19 +628,6 @@ TEST_F(HttpRequestViewTest, InvalidHeaderValue) {
 TEST_F(HttpRequestViewTest, InvalidHeaderKeyValueSeparator) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey;Value\r\n")), http::StatusCodeBadRequest);
 }
-
-TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
-
-TEST_F(HttpRequestViewTest, InvalidMethod) {
-  EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
-}
-
-TEST_F(HttpRequestViewTest, InvalidPath) {
-  EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
-}
-
-TEST_F(HttpRequestViewTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
 
 TEST_F(HttpRequestViewTest, ParseBasicPathAndVersion) {
   auto st = reqSet(BuildRaw("GET", "/abc", "HTTP/1.1"));

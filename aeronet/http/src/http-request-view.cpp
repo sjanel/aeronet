@@ -296,6 +296,8 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     return http::StatusCodeBadRequest;
   }
 
+  static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
+
   uint64_t start;
   std::memcpy(&start, first, sizeof(start));
 
@@ -382,6 +384,14 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     return kStatusNeedMoreData;
   }
 
+  const auto hostIt = _headers.find(http::Host);
+  if (_version.minor() == 1 && hostIt == _headers.end()) {
+    // RFC 9112 §3.2 : "A server MUST respond with 400 (Bad Request) to any HTTP/1.1 request message that lacks a Host
+    // header field and to any request message that contains more than one Host header field line or a Host header field
+    // with an invalid field value."
+    return http::StatusCodeBadRequest;
+  }
+
   // At this point, we have a complete request head, and we point to a CRLF.
 
   if (traceSpan) {
@@ -389,7 +399,6 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     traceSpan->setAttribute("http.target", path());
     traceSpan->setAttribute("http.scheme", "http");
 
-    const auto hostIt = _headers.find(http::Host);
     if (hostIt != _headers.end()) {
       traceSpan->setAttribute("http.host", hostIt->second);
     }
