@@ -423,6 +423,108 @@ TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
   EXPECT_EQ(frames[0].header.streamId, 0U);
 }
 
+TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
+  // Regression: keepAliveTimeout bounds idleness *between* requests, but the deadline was armed when the
+  // request was read, so a handler slower than keepAliveTimeout returned with it already expired. The next
+  // maintenance sweep then closed the connection as if it had been idle - while the part of the body that
+  // exceeded the peer's flow-control window was still parked server-side, truncating a successful 200.
+  // The client below is a normal, progressing reader: it just does not happen to consume the very first
+  // bytes within a maintenance tick of the handler returning.
+  static constexpr auto kKeepAlive = std::chrono::milliseconds{200};
+  static constexpr auto kHandlerDelay = kKeepAlive * 3 / 2;  // outlives the idle window
+  static constexpr std::size_t kBodySize = 400000;           // several initial flow-control windows
+
+  test::TestServer slowServer(HttpServerConfig{}
+                                  .withHttp2(Http2Config{}.withEnableH2c(true))
+                                  .withKeepAliveTimeout(kKeepAlive)
+                                  .withPollInterval(std::chrono::milliseconds{5}));
+  slowServer.router().setPath(http::Method::GET, "/slow-big", [](const HttpRequestView& req) {
+    std::this_thread::sleep_for(kHandlerDelay);
+    return req.makeResponse(http::StatusCodeOK, std::string(kBodySize, 'q'), "application/octet-stream");
+  });
+
+  test::ClientConnection cnx(slowServer.port());
+  ASSERT_NE(cnx.fd(), -1);
+  const NativeHandle fd = cnx.fd();
+
+  // Real client-side HTTP/2 connection for framing, HPACK and flow control, but driven over the socket by
+  // hand so the test controls exactly when the client reads - and therefore when WINDOW_UPDATEs go out.
+  Http2Config clientCfg;
+  Http2Connection client(clientCfg, false);
+  std::string receivedBody;
+  bool endStreamSeen = false;
+  client.setOnData([&](uint32_t, std::span<const std::byte> data, bool endStream) {
+    receivedBody.append(reinterpret_cast<const char*>(data.data()), data.size());
+    endStreamSeen = endStreamSeen || endStream;
+  });
+
+  // Returns false once the peer is gone: writing WINDOW_UPDATEs to a closed connection fails, which is
+  // exactly what a swept-away response looks like from the client side.
+  const auto writePending = [&client, fd]() {
+    while (client.hasPendingOutput()) {
+      const auto out = client.getPendingOutput();
+      try {
+        test::sendAll(fd, std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+      } catch (const std::exception&) {
+        return false;
+      }
+      client.onOutputWritten(out.size());
+    }
+    return true;
+  };
+
+  std::string inBuf;
+  const auto feedClient = [&client, &inBuf]() {
+    std::size_t consumed = 0;
+    while (consumed < inBuf.size()) {
+      std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(inBuf.data()) + consumed,
+                                       inBuf.size() - consumed);
+      const auto res = client.processInput(bytes);
+      consumed += res.bytesConsumed;
+      if (res.bytesConsumed == 0 || res.action != Http2Connection::ProcessResult::Action::Continue) {
+        break;
+      }
+    }
+    inBuf.erase(0, consumed);
+  };
+
+  // Handshake first: the server answers the preface with its SETTINGS long before any handler runs.
+  client.sendClientPreface();
+  ASSERT_TRUE(writePending());
+  inBuf += test::recvWithTimeout(fd, std::chrono::milliseconds{1000}, FrameHeader::kSize);
+  feedClient();
+  ASSERT_TRUE(writePending());
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "http"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "localhost"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/slow-big"));
+  ASSERT_EQ(client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs), true), ErrorCode::NoError);
+  ASSERT_TRUE(writePending());
+
+  // Let the handler finish, then start consuming shortly after: late enough that a sweep firing right after
+  // the response was produced would already have closed us, early enough to be well within keepAliveTimeout
+  // of it - a client that reads a bit later than the server writes, not an idle one.
+  std::this_thread::sleep_for(kHandlerDelay + std::chrono::milliseconds{60});
+
+  // Drain in slices, pausing far less than keepAliveTimeout between them: every slice consumed releases a
+  // WINDOW_UPDATE, and each of those refreshes the connection's idle deadline.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while (!endStreamSeen && std::chrono::steady_clock::now() < deadline) {
+    inBuf += test::recvWithTimeout(fd, std::chrono::milliseconds{20}, 1);
+    feedClient();
+    if (!writePending()) {
+      break;
+    }
+  }
+
+  EXPECT_TRUE(endStreamSeen);
+  EXPECT_EQ(receivedBody.size(), kBodySize);
+  // Compare without dumping 400 kB into the test log on failure.
+  EXPECT_EQ(receivedBody.find_first_not_of('q'), std::string::npos);
+}
+
 TEST(Http2Core, LoopbackHandshakeOpensConnection) {
   Http2Config clientCfg;
   Http2Config serverCfg;

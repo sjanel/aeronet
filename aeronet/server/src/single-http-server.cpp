@@ -20,7 +20,6 @@
 #include "aeronet/accept-encoding-negotiation.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
@@ -1153,6 +1152,10 @@ void SingleHttpServer::eventLoop() {
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
         if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
           closeStatus = std::max(handleReadableClient(cnxIt), closeStatus);
+          if (closeStatus != CloseStatus::Close) {
+            // Request handlers run from this path and may have blocked for longer than keepAliveTimeout.
+            restartKeepAliveIdleWindow(fd);
+          }
         }
         if (closeStatus == CloseStatus::Close) {
           // A handler (e.g. shutdownTunnelPeerWrite) may have already recycled
@@ -1194,6 +1197,8 @@ void SingleHttpServer::eventLoop() {
         if (IsValid(_connections, finalIt)) {
           closeConnection(finalIt);
         }
+      } else {
+        restartKeepAliveIdleWindow(pendingFd);
       }
     }
   }
@@ -1621,6 +1626,9 @@ void SingleHttpServer::applyPendingUpdates() {
               if (pH2Handler->drainOutputBuffer(state.outBuffer)) {
                 flushOutbound(it);
               }
+              // Deferred work that outlived keepAliveTimeout leaves a stale idle deadline behind, exactly as
+              // a slow synchronous handler does (HTTP/1 goes through tryFlushPendingAsyncResponse instead).
+              restartKeepAliveIdleWindow(cb.connectionFd);
             }
             continue;
           }
