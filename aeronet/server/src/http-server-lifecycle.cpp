@@ -369,8 +369,12 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
   _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
 }
 
-void SingleHttpServer::prepareRun() {
-  if (!_lifecycle.isStarting()) {
+bool SingleHttpServer::prepareRun() {
+  const internal::Lifecycle::State state = _lifecycle.currentState();
+  if (state == internal::Lifecycle::State::Stopping || state == internal::Lifecycle::State::Idle) {
+    return false;
+  }
+  if (state != internal::Lifecycle::State::Starting) {
     throw std::logic_error("Server is already running");
   }
   if (!_listenSocket) {
@@ -390,6 +394,8 @@ void SingleHttpServer::prepareRun() {
   // Pre-clamp per-route limits against the global server limits so the hot path
   // only needs a single comparison (no runtime std::min).
   _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
+
+  return _lifecycle.tryEnterRunning();
 }
 
 void SingleHttpServer::beginStartup() {
@@ -400,9 +406,11 @@ void SingleHttpServer::beginStartup() {
 }
 
 void SingleHttpServer::runStarted() {
-  prepareRun();
-  _lifecycle.enterRunning();
   LifecycleResetterRAII resetter(_lifecycle);
+  if (!prepareRun()) {
+    closeListener();
+    return;
+  }
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
   while (_lifecycle.isActive()) {
     eventLoop();
@@ -415,17 +423,20 @@ void SingleHttpServer::run() {
 }
 
 void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
+  LifecycleResetterRAII resetter(_lifecycle);
+
   // Check the predicate before initializing resources.  When used inside
   // MultiHttpServer, the stop flag is set before server.stop() calls
   // closeListener().  Without this early check, a late-scheduled thread
   // could be inside initListener() (creating socket / event loop) while
   // the main thread concurrently calls closeListener(), causing a data race.
   if (predicate()) {
-    _lifecycle.reset();
     return;
   }
-  prepareRun();
-  _lifecycle.enterRunning();
+  if (!prepareRun()) {
+    closeListener();
+    return;
+  }
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
   while (_lifecycle.isActive() && !predicate()) {
     eventLoop();
@@ -437,7 +448,6 @@ void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
   if (_lifecycle.isActive()) {
     closeListener();
     closeAllConnections();
-    _lifecycle.reset();
   }
 }
 
