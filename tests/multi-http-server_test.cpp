@@ -229,8 +229,6 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
     multi.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("S"); });
     auto handle = multi.startDetached();
     ASSERT_TRUE(handle.started());
-    // Short dwell to allow threads to enter run loop.
-    std::this_thread::sleep_for(2ms);
     handle.stop();
     EXPECT_FALSE(handle.started());
     handle.rethrowIfError();
