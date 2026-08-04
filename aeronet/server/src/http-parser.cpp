@@ -13,6 +13,7 @@
 #include "aeronet/header-merge.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -176,18 +177,17 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         }
 
         // Parse trailer field: name:value
-        auto* colonPtr =
-            static_cast<char*>(std::memchr(lineStart, ':', static_cast<std::size_t>(lineLast - lineStart)));
-        if (colonPtr == nullptr) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer header");
+        const auto [nameView, valueView] = http::ParseHeaderLine(lineStart, lineLast);
+        if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
           return BodyDecodeStatus::Error;
         }
 
         // Lower-case trailer name in place for case-sensitive lookup later
-        tolower(lineStart, static_cast<std::size_t>(colonPtr - lineStart));
+        tolower(lineStart, nameView.size());
 
         // Check forbidden headers
-        if (http::IsForbiddenTrailerHeader(std::string_view(lineStart, colonPtr))) {
+        if (http::IsForbiddenTrailerHeader(nameView)) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
           return BodyDecodeStatus::Error;
         }

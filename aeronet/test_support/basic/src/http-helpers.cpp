@@ -28,8 +28,10 @@ RawChars BuildRawHttp11(std::string_view method, std::string_view target, std::s
                         std::string_view body) {
   static constexpr std::string_view kHttp11 = " HTTP/1.1\r\n";
   static constexpr std::string_view kHostHeader = "host: test\r\n";
+
   RawChars raw(method.size() + 1 + target.size() + kHttp11.size() + kHostHeader.size() + extraHeaders.size() +
                http::CRLF.size() + body.size());
+
   char* ptr = raw.data();
 
   ptr = Append(method, ptr);
