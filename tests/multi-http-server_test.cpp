@@ -416,7 +416,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
 
   auto bodySzStr = std::to_string(kBodySize);
 
-  std::string req = "POST /p HTTP/1.1\r\nConnection: close\r\n";
+  std::string req = "POST /p HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
   req.append("Content-Length: ").append(bodySzStr).append("\r\n\r\n");
   req.append(kBodySize, 'X');
 

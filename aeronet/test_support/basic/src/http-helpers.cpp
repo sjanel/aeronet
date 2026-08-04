@@ -27,14 +27,16 @@ RawChars MakeHttp1HeaderLine(std::string_view name, std::string_view value, bool
 RawChars BuildRawHttp11(std::string_view method, std::string_view target, std::string_view extraHeaders,
                         std::string_view body) {
   static constexpr std::string_view kHttp11 = " HTTP/1.1\r\n";
-  RawChars raw(method.size() + 1 + target.size() + kHttp11.size() + extraHeaders.size() + http::CRLF.size() +
-               body.size());
+  static constexpr std::string_view kHostHeader = "host: test\r\n";
+  RawChars raw(method.size() + 1 + target.size() + kHttp11.size() + kHostHeader.size() + extraHeaders.size() +
+               http::CRLF.size() + body.size());
   char* ptr = raw.data();
 
   ptr = Append(method, ptr);
   *ptr++ = ' ';
   ptr = Append(target, ptr);
   ptr = AppendFixed<kHttp11>(ptr);
+  ptr = AppendFixed<kHostHeader>(ptr);
   ptr = Append(extraHeaders, ptr);
   ptr = AppendFixed<http::CRLF>(ptr);
   ptr = Append(body, ptr);
