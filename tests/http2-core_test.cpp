@@ -697,6 +697,7 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
   // Valid range is [16384..16777215], so we cannot set it below that via SETTINGS.
   // Instead, we create an oversized header block so it splits even at 16KB, and we keep the test fast.
   serverCfg.maxFrameSize = 16384;
+  serverCfg.maxHeaderListSize = 256U * 1024U;
 
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);

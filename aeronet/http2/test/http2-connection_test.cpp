@@ -1985,6 +1985,38 @@ TEST(Http2Connection, HeadersBlockTooLargeIsEnhanceYourCalm) {
   EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm);
 }
 
+TEST(Http2Connection, DecodedHeaderListOverLocalLimitResetsStream) {
+  Http2Config config;
+  config.maxHeaderListSize = 200;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  bool headersCalled = false;
+  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+
+  HpackEncoder encoder(config.headerTableSize);
+  RawBytes headerBlock;
+  encoder.encode(headerBlock, ":method", "GET");
+  encoder.encode(headerBlock, ":scheme", "https");
+  encoder.encode(headerBlock, ":authority", "example.com");
+  encoder.encode(headerBlock, ":path", "/");
+  encoder.encode(headerBlock, "x-large", "012345678901234567890123456789");
+
+  RawBytes frame;
+  WriteFrame(frame, FrameType::Headers, ComputeHeaderFrameFlags(true, true), 1,
+             static_cast<uint32_t>(headerBlock.size()));
+  frame.unchecked_append(std::span<const std::byte>(headerBlock.data(), headerBlock.size()));
+
+  const auto input = std::span<const std::byte>(frame.data(), frame.size());
+  const auto res = conn.processInput(input);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_FALSE(headersCalled);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+
+  ASSERT_TRUE(conn.hasPendingOutput());
+  EXPECT_EQ(ParseFrameHeader(conn.getPendingOutput()).type, FrameType::RstStream);
+}
+
 TEST(Http2Connection, HeadersHpackDecodingFailedIsCompressionError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -2177,6 +2209,53 @@ TEST(Http2Connection, ContinuationHeaderBlockTooLargeIsEnhanceYourCalm) {
   auto res = conn.processInput(contSpan);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm);
+}
+
+TEST(Http2Connection, ContinuationDecodedHeaderListOverLocalLimitResetsStream) {
+  Http2Config config;
+  config.maxHeaderListSize = 200;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  bool headersCalled = false;
+  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+
+  HpackEncoder encoder(config.headerTableSize);
+  RawBytes headerBlock;
+  encoder.encode(headerBlock, ":method", "GET");
+  encoder.encode(headerBlock, ":scheme", "https");
+  encoder.encode(headerBlock, ":authority", "example.com");
+  encoder.encode(headerBlock, ":path", "/");
+  encoder.encode(headerBlock, "x-large", "012345678901234567890123456789");
+
+  const std::size_t splitPos = headerBlock.size() / 2U;
+  ASSERT_NE(splitPos, 0U);
+  ASSERT_LT(splitPos, headerBlock.size());
+
+  RawBytes headersFrame;
+  WriteFrame(headersFrame, FrameType::Headers, ComputeHeaderFrameFlags(false, false), 1,
+             static_cast<uint32_t>(splitPos));
+  headersFrame.unchecked_append(std::span<const std::byte>(headerBlock.data(), splitPos));
+  const auto headersInput = std::span<const std::byte>(headersFrame.data(), headersFrame.size());
+  EXPECT_EQ(conn.processInput(headersInput).action, Http2Connection::ProcessResult::Action::Continue);
+
+  RawBytes continuationFrame;
+  WriteContinuationFrame(continuationFrame, 1,
+                         std::span<const std::byte>(headerBlock.data() + splitPos, headerBlock.size() - splitPos),
+                         true);
+  const auto continuationInput = std::span<const std::byte>(continuationFrame.data(), continuationFrame.size());
+  EXPECT_EQ(conn.processInput(continuationInput).action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_FALSE(headersCalled);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+
+  ASSERT_TRUE(conn.hasPendingOutput());
+  const auto output = conn.getPendingOutput();
+  const auto outputHeader = ParseFrameHeader(output);
+  ASSERT_EQ(outputHeader.type, FrameType::RstStream);
+  RstStreamFrame reset;
+  const auto payload = output.subspan(FrameHeader::kSize, outputHeader.length);
+  ASSERT_EQ(ParseRstStreamFrame(outputHeader, payload, reset), FrameParseResult::Ok);
+  EXPECT_EQ(reset.errorCode, ErrorCode::EnhanceYourCalm);
 }
 
 TEST(Http2Connection, ContinuationHpackDecodeFailedIsCompressionError) {
