@@ -625,6 +625,33 @@ TEST(HttpClientHttp2E2ETest, LargeResponseBodyReassembledAcrossDataFrames) {
   EXPECT_EQ(resp.bodyInMemory(), MakeLargeBody());
 }
 
+TEST(HttpClientHttp2E2ETest, SlowHandlerLargeResponseSurvivesKeepAliveSweep) {
+  // Regression: a synchronous handler slower than keepAliveTimeout left the connection's keep-alive
+  // deadline already expired by the time its response was produced, so the next maintenance sweep closed
+  // the connection as if it had been idle - while the 1 MiB body was still on its way out (HTTP/2 parks
+  // whatever exceeds the peer's window). The client then saw a truncated body / reset connection instead
+  // of the 200 the handler returned.
+  // The handler must outlive keepAliveTimeout, but keepAliveTimeout must stay comfortable enough that the
+  // 1 MiB transfer itself is never mistaken for an idle connection on a loaded CI machine.
+  static constexpr auto keepAliveTimeout = std::chrono::milliseconds{500};
+  test::TestServer slowServer(HttpServerConfig{}
+                                  .withPort(0)
+                                  .withKeepAliveTimeout(keepAliveTimeout)
+                                  .withPollInterval(std::chrono::milliseconds{5}));
+  slowServer.router().setPath(http::Method::GET, "/slow-big", [](const HttpRequestView& req) {
+    std::this_thread::sleep_for(keepAliveTimeout * 3 / 2);
+    return req.makeResponse(http::StatusCodeOK, MakeLargeBody(), "application/octet-stream");
+  });
+
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  HttpClient client(cfg);
+  auto result = client.get("http://127.0.0.1:" + std::to_string(slowServer.port()) + "/slow-big");
+  ASSERT_TRUE(result.has_value()) << "exchange failed with error " << static_cast<int>(result.error());
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), MakeLargeBody());
+}
+
 TEST(HttpClientHttp2E2ETest, TransparentResponseDecompression) {
   // Default client: Accept-Encoding advertised, the (highly repetitive) 1 MiB body is compressed by the
   // server and transparently decoded by the client, dropping the Content-Encoding header.

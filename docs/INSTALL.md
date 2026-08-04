@@ -66,7 +66,7 @@ Debug with sanitizers + tests:
 cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug \
   -DAERONET_ENABLE_ASAN=ON -DAERONET_BUILD_TESTS=ON
 cmake --build build-debug -j
-ctest --test-dir build-debug --output-on-failure
+ctest --test-dir build-debug --output-on-failure -j
 ```
 
 Plain HTTP only (no TLS / extra codecs):
@@ -96,7 +96,7 @@ cmake --build build-shared -j
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DAERONET_BUILD_TESTS=ON
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure -j
 ```
 
 ### Windows (Visual Studio 2022)
@@ -106,7 +106,7 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_BUILD_TYPE=Release `
   -DAERONET_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
-ctest --test-dir build --build-config Release --output-on-failure
+ctest --test-dir build --build-config Release --output-on-failure -j
 ```
 
 ## Install

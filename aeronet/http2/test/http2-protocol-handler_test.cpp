@@ -441,6 +441,51 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   EXPECT_TRUE(loop.clientData[0].endStream);
 }
 
+TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate) {
+  // A body larger than the peer's 65535-byte initial window cannot be handed over in one go: the tail stays
+  // parked in the stream's pending-send slot and resumes as the peer's WINDOW_UPDATEs arrive.
+  static constexpr std::size_t kBodySize = 200000;
+  const std::string body(kBodySize, 'z');
+
+  Router router;
+  router.setPath(http::Method::GET, "/big", [&body](const HttpRequestView&) { return HttpResponse(200, body); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/big"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  const auto receivedBody = [&loop]() {
+    std::string all;
+    for (const auto& dataEvent : loop.clientData) {
+      all.append(dataEvent.data);
+    }
+    return all;
+  };
+
+  // Only the first window worth of DATA is out; the handler holds the rest.
+  EXPECT_FALSE(loop.handler.hasPendingOutput());
+  EXPECT_LT(receivedBody().size(), kBodySize);
+
+  // Each round trip carries the client's automatic WINDOW_UPDATEs and unblocks the next slice.
+  for (int round = 0; round < 64 && receivedBody().size() < kBodySize; ++round) {
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  }
+
+  EXPECT_EQ(receivedBody(), body);
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData.back().endStream);
+}
+
 TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
