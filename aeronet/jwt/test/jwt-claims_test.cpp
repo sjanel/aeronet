@@ -95,9 +95,9 @@ TEST(JwtClaims, IssuerMismatchAndAbsent) {
   opts.clock = FixedNow();
   opts.issuer = "expected";
   JwtError err = JwtError::None;
-  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"iss":"other"})"), Key(), opts, err).valid());
+  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"iss":"other"})"), Key(), opts, err));
   EXPECT_EQ(err, JwtError::IssuerMismatch);
-  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"sub":"x"})"), Key(), opts, err).valid());
+  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"sub":"x"})"), Key(), opts, err));
   EXPECT_EQ(err, JwtError::IssuerMismatch);
 }
 
@@ -106,9 +106,9 @@ TEST(JwtClaims, SubjectMismatch) {
   opts.clock = FixedNow();
   opts.subject = "user-1";
   JwtError err = JwtError::None;
-  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"sub":"user-2"})"), Key(), opts, err).valid());
+  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"sub":"user-2"})"), Key(), opts, err));
   EXPECT_EQ(err, JwtError::SubjectMismatch);
-  EXPECT_TRUE(Jwt::tryDecode(Sign(R"({"sub":"user-1"})"), Key(), opts, err).valid());
+  EXPECT_TRUE(Jwt::tryDecode(Sign(R"({"sub":"user-1"})"), Key(), opts, err));
 }
 
 TEST(JwtClaims, AudienceAsString) {
@@ -116,8 +116,8 @@ TEST(JwtClaims, AudienceAsString) {
   opts.clock = FixedNow();
   opts.audience = "api://default";
   JwtError err = JwtError::None;
-  EXPECT_TRUE(Jwt::tryDecode(Sign(R"({"aud":"api://default"})"), Key(), opts, err).valid());
-  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"aud":"other"})"), Key(), opts, err).valid());
+  EXPECT_TRUE(Jwt::tryDecode(Sign(R"({"aud":"api://default"})"), Key(), opts, err));
+  EXPECT_FALSE(Jwt::tryDecode(Sign(R"({"aud":"other"})"), Key(), opts, err));
   EXPECT_EQ(err, JwtError::AudienceMismatch);
 }
 

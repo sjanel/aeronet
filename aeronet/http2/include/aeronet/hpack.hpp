@@ -104,6 +104,7 @@ class HpackDecoder {
 
     const char* errorMessage;
     const SvToSvMap& decodedHeaders;
+    uint64_t headerListSize;
   };
 
   /// Decode a complete header block fragment.
