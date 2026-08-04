@@ -591,6 +591,17 @@ TEST_F(HttpRequestViewTest, InvalidHeaderKey) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n  :value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeaderKey :value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n\tHeaderKey:value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeader\x7FKey:value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeader{Key}:value\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nHeader\x01Key:value\r\n")), http::StatusCodeBadRequest);
+}
+
+TEST_F(HttpRequestViewTest, InvalidHeaderValue) {
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Value\x7F\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Value\x01\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Value\r\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Val\nue\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Val\x80ue\r\n")), http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestViewTest, InvalidHeaderKeyValueSeparator) {
