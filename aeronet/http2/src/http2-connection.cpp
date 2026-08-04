@@ -393,7 +393,7 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
   std::size_t totalConsumed = 0;
 
   while (data.size() >= FrameHeader::kSize) {
-    FrameHeader header = ParseFrameHeader(data);
+    const FrameHeader header = ParseFrameHeader(data);
 
     // Check frame size limits
     if (header.length > _localSettings.maxFrameSize) {
@@ -406,7 +406,7 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
       break;
     }
 
-    auto payload = data.subspan(FrameHeader::kSize, header.length);
+    const auto payload = data.subspan(FrameHeader::kSize, header.length);
 
     ProcessResult result = processFrame(header, payload);
 

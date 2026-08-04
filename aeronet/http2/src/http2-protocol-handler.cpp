@@ -24,6 +24,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -50,6 +51,7 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "http2-header-is-valid.hpp"
 #include "http2-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -227,6 +229,9 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
 
     assert(!name.empty());
     req._headSpanSize += storedName.size() + storedValue.size();
+
+    // TODO: check against SETTINGS_MAX_HEADER_LIST_SIZE ?
+
     if (name[0] == ':') {
       if (storedName == ":method") {
         req._method = ParseHttpMethod(storedValue);
@@ -372,7 +377,7 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
   // the decoded views, which are only valid for the duration of this callback.
   std::size_t trailersTotalLen = 0U;
   for (const auto& [name, value] : trailers) {
-    if (name.empty() || name.front() == ':') {
+    if (name.empty() || name.front() == ':' || !IsValidHTTP2HeaderName(name) || !IsValidHTTP2HeaderValue(value)) {
       _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
       _streams.erase(streamId);
       return;
@@ -386,10 +391,13 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
   for (const auto& [name, value] : trailers) {
     std::string_view storedName(buf, name.size());
     buf = Append(name, buf);
+
     std::string_view storedValue(buf, value.size());
     buf = Append(value, buf);
+
     // Trailers count toward the request head-size budget, combined with the initial headers.
     req._headSpanSize += storedName.size() + storedValue.size();
+    // TODO: check against SETTINGS_MAX_HEADER_LIST_SIZE ?
     req._trailers[storedName] = storedValue;
   }
 
