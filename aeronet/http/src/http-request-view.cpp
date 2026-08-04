@@ -26,12 +26,12 @@
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -361,7 +361,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     }
 
     const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
-    if (nameView.empty() || std::ranges::any_of(nameView, [](char ch) { return http::IsHeaderWhitespace(ch); })) {
+    if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
       return http::StatusCodeBadRequest;
     }
 
