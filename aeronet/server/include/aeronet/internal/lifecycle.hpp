@@ -72,6 +72,16 @@ struct Lifecycle {
     drainDeadlineEnabled = false;
   }
 
+  // Transitions from Starting only, preserving a concurrent Stopping request.
+  [[nodiscard]] bool tryEnterRunning() noexcept {
+    State expected = State::Starting;
+    if (!state.compare_exchange_strong(expected, State::Running, std::memory_order_relaxed)) {
+      return false;
+    }
+    drainDeadlineEnabled = false;
+    return true;
+  }
+
   // Atomically set state to Stopping if current state is Starting, Running, or Draining.
   // Returns the previous state.
   State exchangeStopping() noexcept {
@@ -114,6 +124,7 @@ struct Lifecycle {
   [[nodiscard]] bool isStarting() const noexcept { return state.load(std::memory_order_relaxed) == State::Starting; }
   [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_relaxed) == State::Draining; }
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_relaxed) == State::Stopping; }
+  [[nodiscard]] State currentState() const noexcept { return state.load(std::memory_order_relaxed); }
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
   [[nodiscard]] bool cannotBeginDraining() const noexcept {
     const State current = state.load(std::memory_order_relaxed);

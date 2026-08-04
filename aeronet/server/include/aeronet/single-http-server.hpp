@@ -441,7 +441,7 @@ class SingleHttpServer {
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void beginStartup();
-  void prepareRun();
+  [[nodiscard]] bool prepareRun();
   void runStarted();
   void runUntilStarted(const std::function<bool()>& predicate);
   static PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
