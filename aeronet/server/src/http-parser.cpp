@@ -23,6 +23,7 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tolower-str.hpp"
 
 namespace aeronet {

@@ -34,6 +34,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-task.hpp"
