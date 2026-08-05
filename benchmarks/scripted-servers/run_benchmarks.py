@@ -140,22 +140,22 @@ class BenchmarkRunner:
     # H2 scenario definitions for h2load benchmarks.
     # Maps the same scenario names to h2load-friendly parameters.
     H2_SCENARIOS: Dict[str, H2Scenario] = {
-        "headers": H2Scenario("headers", "/headers?count=10&size=64"),
+        "headers": H2Scenario("headers", "/headers?count=50&size=128"),
         "body": H2Scenario(
             "body",
             "/uppercase",
             method="POST",
-            body_file="h2_body_1k.bin",
+            body_file="h2_body.bin",
         ),
         "body-codec": H2Scenario(
             "body-codec",
             "/body-codec",
             method="POST",
-            body_file="h2_body_1k.gz",
+            body_file="h2_body.gz",
             extra_headers=("Content-Encoding: gzip", "Accept-Encoding: gzip"),
         ),
         "static": H2Scenario("static", "/ping"),
-        "cpu": H2Scenario("cpu", "/compute?complexity=30&hash_iters=1000"),
+        "cpu": H2Scenario("cpu", "/compute?complexity=35&hash_iters=5000"),
         "mixed": H2Scenario("mixed", "/ping"),  # multi-URI below
         "files": H2Scenario(
             "files", "/large.bin", requires_restart=True, requires_static=True,
@@ -167,10 +167,10 @@ class BenchmarkRunner:
     # URIs for the 'mixed' h2load scenario - distributed round-robin
     H2_MIXED_ENDPOINTS = [
         "/ping",
-        "/headers?count=5&size=32",
-        "/body?size=512",
-        "/compute?complexity=20&hash_iters=500",
-        "/json?items=5",
+        "/headers?count=50&size=128",
+        "/body?size=4096",
+        "/compute?complexity=25&hash_iters=500",
+        "/json?items=10",
     ]
 
     def __init__(self, args: argparse.Namespace) -> None:
@@ -1067,11 +1067,11 @@ class BenchmarkRunner:
         data_dir = self.script_dir / "h2_data"
         data_dir.mkdir(exist_ok=True)
         # 1KB binary body for /uppercase
-        body_1k = data_dir / "h2_body_1k.bin"
+        body_1k = data_dir / "h2_body.bin"
         if not body_1k.is_file():
             body_1k.write_bytes(os.urandom(1024))
         # 1KB gzipped body for /body-codec
-        body_gz = data_dir / "h2_body_1k.gz"
+        body_gz = data_dir / "h2_body.gz"
         if not body_gz.is_file():
             import gzip as gzip_mod
             body_gz.write_bytes(gzip_mod.compress(os.urandom(1024)))
