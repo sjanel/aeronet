@@ -952,22 +952,19 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   }
 
   if (pGlobalHeaders != nullptr) {
-    for (std::string_view headerKeyVal : *pGlobalHeaders) {
-      const auto colonPos = headerKeyVal.find(http::HeaderSep);
-      assert(colonPos != std::string_view::npos);
-
+    const std::string_view concatenatedGlobalHeaders = pGlobalHeaders->fullStringWithLastSep();
+    for (const auto [headerName, headerValue] : HeadersView(concatenatedGlobalHeaders)) {
+      // Global header names should have been validated in the config.
+      assert(std::ranges::all_of(headerName, [](char ch) { return ch < 'A' || ch > 'Z'; }));
       // Skip if already present in request-specific headers. We can use case sensitive search because global headers
       // are already lower-cased in the config, and request-specific headers are lower-cased above.
-      std::string_view headerNameWithColon = headerKeyVal.substr(0, colonPos + http::HeaderSep.size());
+      std::string_view headerNameWithColon(headerName.data(), headerName.size() + http::HeaderSep.size());
       if (headersView.containsCaseSensitive(headerNameWithColon)) {
         // Skip if already present in request-specific headers
         continue;
       }
 
-      const std::string_view name = headerKeyVal.substr(0, colonPos);
-      // Global header names should have been validated in the config.
-      assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
-      _hpackEncoder.encode(_outputBuffer, name, TrimOws(headerKeyVal.substr(colonPos + http::HeaderSep.size())));
+      _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }
   }
 

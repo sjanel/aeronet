@@ -76,6 +76,8 @@ TEST(HttpHeadersView, ContainsCaseSensitive) {
   EXPECT_FALSE(headers.containsCaseSensitive(std::string("Header-10") + std::string(http::HeaderSep)));
   EXPECT_FALSE(headers.containsCaseSensitive(std::string("X-Custom") + std::string(http::HeaderSep)));
   EXPECT_FALSE(headers.containsCaseSensitive(std::string("eader-1") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("eader-2") + std::string(http::HeaderSep)));
+  EXPECT_FALSE(headers.containsCaseSensitive(std::string("eader-3") + std::string(http::HeaderSep)));
 }
 
 }  // namespace aeronet

@@ -78,6 +78,12 @@ TEST(HttpServerConfigTest, HeaderKey4) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpServerConfigTest, HeaderValueShouldBeTrimmed) {
+  HttpServerConfig config;
+  config.globalHeaders.append("X-Test: value ");
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpServerConfigTest, ReservedGlobalHeaderShouldThrow) {
   HttpServerConfig config;
   config.globalHeaders.append("Content-Length: 10");
