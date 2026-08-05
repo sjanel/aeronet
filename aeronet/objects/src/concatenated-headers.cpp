@@ -30,7 +30,10 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
       throw std::invalid_argument(std::format("header has invalid name: '{}'", headerName));
     }
 
-    std::string_view headerValue = TrimOws(headerNameValue.substr(colonPos + 1));
+    std::string_view headerValue = headerNameValue.substr(colonPos + http::HeaderSep.size());
+    if (TrimOws(headerValue) != headerValue) {
+      throw std::invalid_argument(std::format("header value has leading/trailing OWS: '{}'", headerValue));
+    }
     if (!http::IsValidHeaderValue(headerValue)) {
       throw std::invalid_argument(std::format("header has invalid value: '{}'", headerValue));
     }

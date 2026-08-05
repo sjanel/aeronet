@@ -17,9 +17,9 @@ class HeadersView {
  public:
   HeadersView() noexcept = default;
 
-  explicit HeadersView(std::string_view sv) noexcept : _beg(sv.data()), _end(sv.data() + sv.size()) {}
+  explicit HeadersView(std::string_view sv) noexcept : _sv(sv) {}
 
-  [[nodiscard]] std::size_t size() const noexcept { return static_cast<std::size_t>(_end - _beg); }
+  [[nodiscard]] std::size_t size() const noexcept { return _sv.size(); }
 
   class iterator {
    public:
@@ -37,9 +37,7 @@ class HeadersView {
 
     iterator& operator++() noexcept {
       _cur += _nameLen + http::HeaderSep.size() + _valueLen + http::CRLF.size();
-      if (_cur != _end) {
-        setLen();
-      }
+      setLen();
       return *this;
     }
 
@@ -54,22 +52,20 @@ class HeadersView {
    private:
     friend class HeadersView;
 
-    iterator(const char* beg, const char* end) noexcept : _cur(beg), _end(end) {
-      if (_cur != _end) {
-        setLen();
-      }
-    }
+    iterator(const char* beg, const char* end) noexcept : _cur(beg), _end(end) { setLen(); }
 
     void setLen() {
-      // Use +cur + 1 to avoid issues with HTTP/2 pseudo-headers that start with ':'
-      // It's not possible to have an empty header name, so there must be at least one character before the colon.
-      const char* colonPtr =
-          static_cast<const char*>(std::memchr(_cur + 1, ':', static_cast<std::size_t>(_end - _cur)));
-      assert(colonPtr != nullptr);  // should not happen in well-formed headers
-      const char* begValue = colonPtr + http::HeaderSep.size();
+      if (_cur < _end) {
+        // Use +cur + 1 to avoid issues with HTTP/2 pseudo-headers that start with ':'
+        // It's not possible to have an empty header name, so there must be at least one character before the colon.
+        const char* colonPtr =
+            static_cast<const char*>(std::memchr(_cur + 1, ':', static_cast<std::size_t>(_end - _cur)));
+        assert(colonPtr != nullptr);  // should not happen in well-formed headers
+        const char* begValue = colonPtr + http::HeaderSep.size();
 
-      _nameLen = static_cast<uint32_t>(colonPtr - _cur);
-      _valueLen = static_cast<uint32_t>(SearchCRLF(begValue, _end) - begValue);
+        _nameLen = static_cast<uint32_t>(colonPtr - _cur);
+        _valueLen = static_cast<uint32_t>(SearchCRLF(begValue, _end) - begValue);
+      }
     }
 
     const char* _cur{};
@@ -78,36 +74,32 @@ class HeadersView {
     uint32_t _valueLen;
   };
 
-  [[nodiscard]] iterator begin() const noexcept { return {_beg, _end}; }
-  [[nodiscard]] iterator end() const noexcept { return {_end, _end}; }
+  [[nodiscard]] iterator begin() const noexcept { return {_sv.data(), _sv.data() + _sv.size()}; }
+
+  [[nodiscard]] iterator end() const noexcept { return {_sv.data() + _sv.size(), _sv.data() + _sv.size()}; }
 
   // Optimized search for a header name with colon (case-sensitive) in the flat headers view.
   // Returns true if the header is found, false otherwise.
   [[nodiscard]] bool containsCaseSensitive(std::string_view headerNameWithColon) const noexcept {
-    std::string_view flatHeaders(_beg, _end);
-
     assert(headerNameWithColon.ends_with(http::HeaderSep));  // must include the colon
 
-    std::size_t pos = 0;
-    while (true) {
-      pos = flatHeaders.find(headerNameWithColon, pos);
+    for (std::string_view::size_type pos = 0;; pos += headerNameWithColon.size()) {
+      pos = _sv.find(headerNameWithColon, pos);
       if (pos == std::string_view::npos) {
         break;
       }
       // Check that the match is at the start of a line (after CRLF or at the beginning of the string)
       if (pos == 0 ||
-          (pos >= http::CRLF.size() && flatHeaders.substr(pos - http::CRLF.size(), http::CRLF.size()) == http::CRLF)) {
+          (pos >= http::CRLF.size() && _sv.substr(pos - http::CRLF.size(), http::CRLF.size()) == http::CRLF)) {
         return true;
       }
-      pos += headerNameWithColon.size();
     }
 
     return false;
   }
 
  private:
-  const char* _beg{};
-  const char* _end{};
+  std::string_view _sv;
 };
 
 }  // namespace aeronet
