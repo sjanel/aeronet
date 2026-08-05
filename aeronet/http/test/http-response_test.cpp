@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>

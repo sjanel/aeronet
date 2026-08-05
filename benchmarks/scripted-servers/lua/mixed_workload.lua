@@ -20,10 +20,10 @@ local headers_close = { ["Connection"] = "close" }
 -- Request type definitions
 local request_types = {
   { path = "/ping", weight = 5, name = "ping" },
-  { path = "/json?items=10", weight = 30, name = "json" },
+  { path = "/headers?count=50&size=128", weight = 25, name = "headers" },
   { path = "/body?size=4096", weight = 25, name = "body" },
-  { path = "/headers?count=20&size=64", weight = 25, name = "headers" },
   { path = "/compute?complexity=25&hash_iters=500", weight = 15, name = "compute" }
+  { path = "/json?items=10", weight = 30, name = "json" },
 }
 
 -- Cumulative weights for weighted random selection
