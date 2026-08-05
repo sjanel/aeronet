@@ -923,6 +923,26 @@ void HttpMessage::removeBodyAndItsHeaders() {
   }
 }
 
+char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
+                                                         uint8_t nbDigitsBodySize) {
+  char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
+
+  pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
+
+  pData = Append(contentType, pData);
+
+  pData = AppendFixed<http::CRLFContentLengthHeaderSep>(pData);
+
+  pData = WriteUInt(pData, bodySize, nbDigitsBodySize);
+
+  pData = AppendFixed<http::DoubleCRLF>(pData);
+
+  const auto bodyStart = static_cast<std::uint64_t>(pData - _data.data());
+  setBodyStartPos(bodyStart);
+  _data.setSize(bodyStart);
+  return pData;
+}
+
 namespace {
 
 // Whether an empty-body response with the given status code may carry a synthesized `Content-Length: 0`.
@@ -969,26 +989,6 @@ constexpr char* ReplaceContentLengthWithTransferEncoding(char* pData, std::strin
 constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
 }  // namespace
-
-char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
-                                                         uint8_t nbDigitsBodySize) {
-  char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
-
-  pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
-
-  pData = Append(contentType, pData);
-
-  pData = AppendFixed<http::CRLFContentLengthHeaderSep>(pData);
-
-  pData = WriteUInt(pData, bodySize, nbDigitsBodySize);
-
-  pData = AppendFixed<http::DoubleCRLF>(pData);
-
-  const auto bodyStart = static_cast<std::uint64_t>(pData - _data.data());
-  setBodyStartPos(bodyStart);
-  _data.setSize(bodyStart);
-  return pData;
-}
 
 bool HttpMessage::hasChunkedTransferEncoding() const noexcept {
   return kEndChunkedBody.size() < _opts._trailerLen &&
