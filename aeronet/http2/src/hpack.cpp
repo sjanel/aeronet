@@ -746,7 +746,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
   std::size_t pos = 0;
 
-  DecodeResult res{{}, _decodedHeadersMap};
+  DecodeResult res{nullptr, _decodedHeadersMap, 0UL};
 
   while (pos < data.size()) {
     const uint8_t firstByte = static_cast<uint8_t>(data[pos]);
@@ -771,6 +771,8 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         return res;
       }
 
+      res.headerListSize +=
+          static_cast<uint64_t>(header.name.size()) + static_cast<uint64_t>(header.value.size()) + 32U;
       res.errorMessage = storeHeader(header.name, header.value);
       if (res.errorMessage != nullptr) {
         return res;
@@ -826,6 +828,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += valueResult.consumed;
 
+      res.headerListSize += static_cast<uint64_t>(name.size()) + static_cast<uint64_t>(valueResult.str.size()) + 32U;
       res.errorMessage = storeHeader(name, valueResult.str);
 
       if (withIndexing) {

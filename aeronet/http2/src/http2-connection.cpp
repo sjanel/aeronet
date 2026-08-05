@@ -608,6 +608,9 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   // Decode and emit headers via helper
   ErrorCode decodeErr = decodeAndEmitHeaders(header.streamId, headerSpan, frame.endStream);
   if (decodeErr != ErrorCode::NoError) [[unlikely]] {
+    if (decodeErr == ErrorCode::EnhanceYourCalm) {
+      return streamError(header.streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
+    }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
@@ -898,6 +901,9 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
   // Decode and emit headers via helper
   ErrorCode decodeErr = decodeAndEmitHeaders(_headerBlockStreamId, headerSpan, _headerBlockEndStream);
   if (decodeErr != ErrorCode::NoError) [[unlikely]] {
+    if (decodeErr == ErrorCode::EnhanceYourCalm) {
+      return streamError(_headerBlockStreamId, decodeErr, ErrorMsg::HeaderListTooLarge);
+    }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
@@ -1042,6 +1048,10 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 
   if (!decodeResult.isSuccess()) {
     return ErrorCode::CompressionError;
+  }
+
+  if (decodeResult.headerListSize > _localSettings.maxHeaderListSize) {
+    return ErrorCode::EnhanceYourCalm;
   }
 
   // Call the decoded-headers callback if set (owned strings)

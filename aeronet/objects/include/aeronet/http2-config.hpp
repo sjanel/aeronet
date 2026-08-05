@@ -67,8 +67,9 @@ struct Http2Config {
   /// Default: 16384 bytes (RFC 9113 minimum/default).
   uint32_t maxFrameSize{16384};
 
-  /// SETTINGS_MAX_HEADER_LIST_SIZE (0x6): Maximum size of uncompressed header block.
-  /// This is an advisory limit. Default: 8192 bytes (reasonable for most use cases).
+  /// SETTINGS_MAX_HEADER_LIST_SIZE (0x6): Maximum decoded header-list size this endpoint accepts.
+  /// Each field contributes its name, value, and 32 bytes of overhead. This is advertised as an advisory limit.
+  /// Default: 8192 bytes (reasonable for most use cases).
   uint32_t maxHeaderListSize{8192};
 
   // ============================

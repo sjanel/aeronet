@@ -230,8 +230,6 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     assert(!name.empty());
     req._headSpanSize += storedName.size() + storedValue.size();
 
-    // TODO: check against SETTINGS_MAX_HEADER_LIST_SIZE ?
-
     if (name[0] == ':') {
       if (storedName == ":method") {
         req._method = ParseHttpMethod(storedValue);
@@ -397,7 +395,6 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
 
     // Trailers count toward the request head-size budget, combined with the initial headers.
     req._headSpanSize += storedName.size() + storedValue.size();
-    // TODO: check against SETTINGS_MAX_HEADER_LIST_SIZE ?
     req._trailers[storedName] = storedValue;
   }
 
