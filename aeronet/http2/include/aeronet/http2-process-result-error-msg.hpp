@@ -24,6 +24,7 @@ enum class ErrorMsg : uint8_t {
   StreamDependsOnItself,
   MaxConcurrentStreamsExceeded,
   HeaderBlockTooLarge,
+  HeaderListTooLarge,
   InvalidStreamStateForHEADERS,
   HPACKDecodingFailed,
   PRIORITYFrameOnStreamZero,

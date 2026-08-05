@@ -46,6 +46,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Max Concurrent Streams Exceeded";
     case ErrorMsg::HeaderBlockTooLarge:
       return "Header Block Too Large";
+    case ErrorMsg::HeaderListTooLarge:
+      return "Header List Too Large";
     case ErrorMsg::InvalidStreamStateForHEADERS:
       return "Invalid Stream State For HEADERS";
     case ErrorMsg::HPACKDecodingFailed:
