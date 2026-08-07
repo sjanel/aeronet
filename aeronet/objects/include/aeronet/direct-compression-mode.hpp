@@ -11,7 +11,6 @@ namespace aeronet {
 //
 // This avoids a second compression pass and temporary buffers for eligible responses.
 enum class DirectCompressionMode : std::uint8_t {
-
   // Enable direct compression when:
   //  • The request contains a supported Accept-Encoding
   //  • No user-supplied Content-Encoding header is present
@@ -30,7 +29,7 @@ enum class DirectCompressionMode : std::uint8_t {
   // Force direct compression whenever Accept-Encoding permits, bypassing minBytes and content-type checks.
   //
   // Still requires a supported Accept-Encoding header.
-  On
+  On,
 };
 
 }  // namespace aeronet

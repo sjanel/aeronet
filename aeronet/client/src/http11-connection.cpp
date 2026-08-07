@@ -196,6 +196,26 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
   static constexpr std::size_t kReadChunk = 16384;
 
   for (;;) {
+    responseBuffer.ensureAvailableCapacityExponential(kReadChunk);
+    const ITransport::TransportResult transportRes =
+        transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
+    if (transportRes.bytesProcessed > 0) {
+      responseBuffer.addSize(transportRes.bytesProcessed);
+    } else if (transportRes.want == TransportHint::ReadReady) {
+      if (!client.waitIo(fd, EventIn, ioDeadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+      continue;
+    } else if (transportRes.want == TransportHint::WriteReady) {
+      if (!client.waitIo(fd, EventOut, ioDeadline)) {
+        return std::unexpected(HttpClientErrc::timeout);
+      }
+      continue;
+    } else {
+      // 0 bytes, no want => orderly close.
+      eof = true;
+    }
+
     const ResponseParser::Status st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
     if (st == ResponseParser::Status::Complete) {
       break;
@@ -203,31 +223,9 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
     if (st == ResponseParser::Status::Error) {
       return std::unexpected(HttpClientErrc::malformedResponse);
     }
-    // NeedMore: read straight into the buffer's tail (no bounce buffer, no extra copy). The parser resolves
-    // every framing to Complete/Error once eof is set (each NeedMore return is guarded by !eof), so reaching
-    // NeedMore here always means the connection is still open and more bytes can arrive.
+    // Guaranteed by the parser: once eof is set, it always resolves to Complete/Error here,
+    // never NeedMore, so this assert still holds under the new ordering.
     assert(!eof);
-    responseBuffer.ensureAvailableCapacityExponential(kReadChunk);
-    const ITransport::TransportResult transportRes =
-        transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
-    if (transportRes.bytesProcessed > 0) {
-      responseBuffer.addSize(transportRes.bytesProcessed);
-      continue;
-    }
-    if (transportRes.want == TransportHint::ReadReady) {
-      if (!client.waitIo(fd, EventIn, ioDeadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
-      }
-      continue;
-    }
-    if (transportRes.want == TransportHint::WriteReady) {
-      if (!client.waitIo(fd, EventOut, ioDeadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
-      }
-      continue;
-    }
-    // 0 bytes, no want => orderly close.
-    eof = true;
   }
 
   _keepAlive = parser.keepAlive();

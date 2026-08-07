@@ -401,7 +401,7 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
       }
       return eof ? Status::Error : Status::NeedMore;
     }
-    const std::string_view line(lineBegin, static_cast<std::size_t>(lineEnd - lineBegin));
+    const std::string_view line(lineBegin, lineEnd);
     _pos = static_cast<std::size_t>(lineEnd - bufferBegin) + http::CRLF.size();
     // Every consumed head line (status line, a header, or the terminating empty line) counts against the
     // total response budget. Checking the post-advance position here -- before the line is acted on -- also

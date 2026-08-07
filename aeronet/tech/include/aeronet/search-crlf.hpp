@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <cstddef>
 #include <cstring>
 
@@ -8,6 +7,8 @@
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #include <emmintrin.h>
+
+#include <bit>
 #define AERONET_HAS_SEARCH_CRLF_SSE2 1
 #endif
 
@@ -16,7 +17,7 @@ namespace aeronet {
 namespace detail {
 
 AERONET_ALWAYS_INLINE auto* SearchCRLFMemchr(auto* first, auto* last) noexcept {
-  for (; first != last; ++first) {
+  for (;; ++first) {
     first = static_cast<decltype(first)>(std::memchr(first, '\r', static_cast<std::size_t>(last - first)));
     if (first == nullptr) {
       return last;
@@ -33,21 +34,25 @@ AERONET_ALWAYS_INLINE auto* SearchCRLFSse2Prefix(auto* first, auto* last) noexce
   // Observed scripted HTTP/1 benchmark traffic terminates every line inside this prefix (maximum 124 bytes).
   // Keep libc's vectorized memchr for the uncommon remainder. See benchmarks/internal/search-crlf_bench.cpp.
   static constexpr std::ptrdiff_t kPrefixBytes = 128;
+  static_assert(kPrefixBytes != 0 && kPrefixBytes % 16 == 0);
   auto* const sseEnd = last - first < kPrefixBytes ? last : first + kPrefixBytes;
-  const __m128i cr = _mm_set1_epi8('\r');
-  while (sseEnd - first >= 16) {
-    const __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(first));
-    auto mask = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(chunk, cr)));
-    while (mask != 0U) {
-      const auto offset = std::countr_zero(mask);
-      auto* const position = first + offset;
-      if (position + 1 < last && position[1] == '\n') {
-        return position;
+  if (sseEnd - first >= 16) {
+    const __m128i cr = _mm_set1_epi8('\r');
+    do {
+      const __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(first));
+      auto mask = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(chunk, cr)));
+      while (mask != 0U) {
+        const auto offset = std::countr_zero(mask);
+        auto* const position = first + offset;
+        if (position + 1 < last && position[1] == '\n') {
+          return position;
+        }
+        mask &= mask - 1U;
       }
-      mask &= mask - 1U;
-    }
-    first += 16;
+      first += 16;
+    } while (sseEnd - first >= 16);
   }
+
   return SearchCRLFMemchr(first, last);
 }
 #endif

@@ -864,10 +864,11 @@ class HttpMessage {
     _posBitmap += static_cast<std::uint64_t>(diff) << kHeaderPosNbBits;
   }
 
-  char* getContentLengthValueEndPtr() { return _data.data() + bodyStartPos() - http::DoubleCRLF.size(); }
   [[nodiscard]] const char* getContentLengthValueEndPtr() const {
     return _data.data() + bodyStartPos() - http::DoubleCRLF.size();
   }
+
+  char* getContentLengthValueEndPtr() { return const_cast<char*>(std::as_const(*this).getContentLengthValueEndPtr()); }
 
   char* getContentLengthValuePtr() {
     char* ptr = getContentLengthValueEndPtr() - http::HeaderSep.size() - 1U;
@@ -877,13 +878,6 @@ class HttpMessage {
   }
 
   // Returns a pointer to the beginning of the Content-Length header line (starting on CRLF before the header name).
-  char* getContentLengthHeaderLinePtr() {
-    char* ptr =
-        getContentLengthValueEndPtr() - http::HeaderSep.size() - http::ContentLength.size() - http::CRLF.size() - 1U;
-    for (; *ptr != '\r'; --ptr) {
-    }
-    return ptr;
-  }
   [[nodiscard]] const char* getContentLengthHeaderLinePtr() const {
     const char* ptr =
         getContentLengthValueEndPtr() - http::HeaderSep.size() - http::ContentLength.size() - http::CRLF.size() - 1U;
@@ -892,14 +886,11 @@ class HttpMessage {
     return ptr;
   }
 
-  // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
-  char* getContentTypeHeaderLinePtr() {
-    char* ptr = getContentLengthHeaderLinePtr() - http::HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
-    for (; *ptr != '\r'; --ptr) {
-    }
-    return ptr;
+  char* getContentLengthHeaderLinePtr() {
+    return const_cast<char*>(std::as_const(*this).getContentLengthHeaderLinePtr());
   }
 
+  // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
   [[nodiscard]] const char* getContentTypeHeaderLinePtr() const {
     const char* ptr =
         getContentLengthHeaderLinePtr() - http::HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
@@ -908,12 +899,7 @@ class HttpMessage {
     return ptr;
   }
 
-  char* getContentTypeValuePtr() {
-    char* ptr = getContentLengthHeaderLinePtr() - http::HeaderSep.size() - http::ContentTypeMinLen;
-    for (; *ptr != ':'; --ptr) {
-    }
-    return ptr + http::HeaderSep.size();
-  }
+  char* getContentTypeHeaderLinePtr() { return const_cast<char*>(std::as_const(*this).getContentTypeHeaderLinePtr()); }
 
   void bodyPrecheckContentType(std::string_view& contentType) const {
     if (trailersSize() != 0) [[unlikely]] {
