@@ -33,7 +33,7 @@ class TLSConfig {
     Disabled,       // Never use kTLS
     Opportunistic,  // Use kTLS if available (DEFAULT)
     Enabled,        // Same as Opportunistic, but log a warning if kTLS not active
-    Required        // Fail connection if kTLS not active
+    Required,       // Fail connection if kTLS not active
   };
   enum class CipherPolicy : std::uint8_t { Default, Modern, Compatibility, Legacy };
 

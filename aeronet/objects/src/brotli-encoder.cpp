@@ -103,20 +103,27 @@ EncoderResult BrotliEncoderContext::end(std::size_t availableCapacity, char* buf
   return EncoderResult(writtenNow);
 }
 
-BrotliEncoder::BrotliEncoder(BrotliEncoder&& rhs) noexcept
-    : _quality(rhs._quality), _window(rhs._window), _scratch(std::move(rhs._scratch)), _ctx(std::move(rhs._ctx)) {
+BrotliEncoder::BrotliEncoder(BrotliEncoder&& rhs) noexcept : _quality(rhs._quality), _window(rhs._window) {
+  // The Brotli state is allocated inside rhs._scratch and retains its allocator pointer.
+  // Destroy it before moving the pool, then lazily recreate it on the next encode.
+  rhs._ctx._state.reset();
+  _scratch = std::move(rhs._scratch);
   _ctx._scratch = &_scratch;
-  _ctx._state.reset();
+  rhs._ctx._scratch = nullptr;
 }
 
 BrotliEncoder& BrotliEncoder::operator=(BrotliEncoder&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
+    // Both states must be destroyed while their original scratch pools are still alive.
+    // Moving _scratch first would free this encoder's pool before Brotli cleanup reads it.
+    _ctx._state.reset();
+    rhs._ctx._state.reset();
+
     _quality = rhs._quality;
     _window = rhs._window;
-    _ctx = std::move(rhs._ctx);
     _scratch = std::move(rhs._scratch);
     _ctx._scratch = &_scratch;
-    _ctx._state.reset();
+    rhs._ctx._scratch = nullptr;
   }
   return *this;
 }

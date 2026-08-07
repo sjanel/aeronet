@@ -25,7 +25,7 @@ constexpr uint32_t hex_digits(std::unsigned_integral auto value) noexcept {
 ///  '?' -> "3f"
 ///  "hello" -> "68656c6c6f"
 constexpr char* to_lower_hex(std::integral auto value, char* buf) {
-  static constexpr char kHexits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+  static constexpr char kHexits[]{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
   if constexpr (std::is_same_v<decltype(value), char> || std::is_same_v<decltype(value), signed char> ||
                 std::is_same_v<decltype(value), unsigned char>) {
@@ -50,7 +50,7 @@ constexpr char* to_lower_hex(std::integral auto value, char* buf) {
 }
 
 constexpr char* to_upper_hex(std::integral auto value, char* buf) {
-  static constexpr char kHexits[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+  static constexpr char kHexits[]{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 
   if constexpr (std::is_same_v<decltype(value), char> || std::is_same_v<decltype(value), signed char> ||
                 std::is_same_v<decltype(value), unsigned char>) {

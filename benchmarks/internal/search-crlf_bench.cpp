@@ -125,8 +125,8 @@ void AddRequestStats(Corpus& corpus, const std::string& request) {
 }
 
 Corpus BuildTypicalCorpus() {
-  static constexpr std::string_view kMethods[] = {"GET", "GET", "GET", "POST", "PUT", "DELETE"};
-  static constexpr std::string_view kPaths[] = {
+  static constexpr std::string_view kMethods[]{"GET", "GET", "GET", "POST", "PUT", "DELETE"};
+  static constexpr std::string_view kPaths[]{
       "/",
       "/index.html",
       "/api/v1/users",
@@ -143,13 +143,13 @@ Corpus BuildTypicalCorpus() {
       "/account/settings",
       "/blog/2026/07/some-post-title",
   };
-  static constexpr std::string_view kHosts[] = {
+  static constexpr std::string_view kHosts[]{
       "www.example.com",
       "api.example.com",
       "cdn.example.net",
       "shop.example.org",
   };
-  static constexpr std::string_view kUserAgents[] = {
+  static constexpr std::string_view kUserAgents[]{
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/128.0.0.0 Safari/537.36",
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -302,7 +302,7 @@ void RunBenchmark(benchmark::State& state, const Corpus& corpus) {
 template <auto SearchFn>
 void RunFixedLineLengthBenchmark(benchmark::State& state) {
   const auto lineLength = static_cast<std::size_t>(state.range(0));
-  std::string line(lineLength, 'x');
+  std::string line(lineLength - 2U, 'x');
   line.append("\r\n");
   const char* const begin = line.data();
   const char* const end = begin + line.size();
@@ -322,26 +322,7 @@ void RunFixedLineLengthBenchmark(benchmark::State& state) {
 }
 
 #define AERONET_FIXED_LINE_LENGTHS \
-  Arg(15)                          \
-      ->Arg(16)                    \
-      ->Arg(31)                    \
-      ->Arg(32)                    \
-      ->Arg(47)                    \
-      ->Arg(48)                    \
-      ->Arg(63)                    \
-      ->Arg(64)                    \
-      ->Arg(95)                    \
-      ->Arg(96)                    \
-      ->Arg(127)                   \
-      ->Arg(128)                   \
-      ->Arg(191)                   \
-      ->Arg(192)                   \
-      ->Arg(255)                   \
-      ->Arg(256)                   \
-      ->Arg(511)                   \
-      ->Arg(512)                   \
-      ->Arg(1023)                  \
-      ->Arg(1024)
+  Arg(16)->Arg(32)->Arg(48)->Arg(64)->Arg(96)->Arg(128)->Arg(192)->Arg(256)->Arg(512)->Arg(1024)
 
 void BM_SearchCRLF_MemchrRestart_FixedLineLength(benchmark::State& state) {
   RunFixedLineLengthBenchmark<SearchCRLFMemchrRestart>(state);

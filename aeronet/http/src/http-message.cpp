@@ -173,6 +173,13 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
   return {};
 }
 
+constexpr char* GetContentTypeValuePtr(char* pContentLengthHeaderLine) {
+  char* ptr = pContentLengthHeaderLine - http::HeaderSep.size() - http::ContentTypeMinLen;
+  for (; *ptr != ':'; --ptr) {
+  }
+  return ptr + http::HeaderSep.size();
+}
+
 }  // namespace
 
 void HttpMessage::header(std::string_view key, std::string_view value) {
@@ -298,7 +305,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       _data.setSize(bodyStart);
       adjustEncodingHeaders();
 #endif
-      pData = Append(contentTypeValue, getContentTypeValuePtr());
+      pData = Append(contentTypeValue, GetContentTypeValuePtr(getContentLengthHeaderLinePtr()));
     }
     pData = WriteCRLFHeader(http::ContentLength, newBodySize, pData);
     pData = AppendFixed<http::DoubleCRLF>(pData);
@@ -380,7 +387,7 @@ void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType
 #endif
     }
     if (!contentType.empty()) {
-      char* pContentTypeValuePtr = getContentTypeValuePtr();
+      char* pContentTypeValuePtr = GetContentTypeValuePtr(getContentLengthHeaderLinePtr());
       const auto it = SearchCRLF(pContentTypeValuePtr, _data.end());
       assert(it != _data.end());
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
@@ -391,7 +398,7 @@ void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType
     _data.ensureAvailableCapacityExponential(neededCapacity);
 
     if (!contentType.empty()) {
-      replaceHeaderValueNoRealloc(getContentTypeValuePtr(), contentType);
+      replaceHeaderValueNoRealloc(GetContentTypeValuePtr(getContentLengthHeaderLinePtr()), contentType);
     }
     replaceHeaderValueNoRealloc(getContentLengthValuePtr(), newBodyLen);
 
@@ -828,21 +835,21 @@ void HttpMessage::bodyAppendUpdateHeaders(std::string_view givenContentType, std
     addContentTypeAndContentLengthHeaders(givenContentType, totalBodyLen, ndigits(totalBodyLen));
   } else {
     if (!givenContentType.empty()) {
-      replaceHeaderValueNoRealloc(getContentTypeValuePtr(), givenContentType);
+      replaceHeaderValueNoRealloc(GetContentTypeValuePtr(getContentLengthHeaderLinePtr()), givenContentType);
     }
     replaceHeaderValueNoRealloc(getContentLengthValuePtr(), totalBodyLen);
   }
 }
 
 char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
-  char* last = first;
-  while (*last != '\r') {
-    ++last;
-  }
+  assert(first > _data.data() && first < _data.end());
+  char* end = _data.end();
+  char* last = static_cast<char*>(std::memchr(first, '\r', static_cast<std::size_t>(end - first)));
+  assert(last != nullptr);
   const auto oldValueLen = static_cast<std::size_t>(last - first);
   if (newValueLen != oldValueLen) {
     const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
-    std::memmove(last + diff, last, static_cast<std::size_t>(_data.end() - last));
+    std::memmove(last + diff, last, static_cast<std::size_t>(end - last));
     _data.adjustSize(diff);
     adjustBodyStart(diff);
   }

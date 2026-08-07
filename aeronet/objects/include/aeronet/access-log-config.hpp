@@ -13,12 +13,12 @@ struct AccessLogConfig {
   enum class Sink : uint8_t {
     None,    // Disabled (default) — zero cost
     Stdout,  // Write to stdout
-    File     // Append to file at filePath
+    File,    // Append to file at filePath
   };
 
   enum class Format : uint8_t {
-    CLF,  // Combined Log Format (always available)
-    JSON  // JSON format (requires AERONET_ENABLE_GLAZE at build time)
+    CLF,   // Combined Log Format (always available)
+    JSON,  // JSON format (requires AERONET_ENABLE_GLAZE at build time)
   };
 
   // Output sink. Default: None (disabled).

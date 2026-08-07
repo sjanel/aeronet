@@ -27,8 +27,8 @@ class BufferCache {
 
  private:
   struct BufSize {
-    void* pBuf = nullptr;
-    std::size_t size = 0;
+    void* pBuf{};
+    std::size_t size{};
   };
 
   BufSize _ownedBuf;

@@ -59,7 +59,7 @@ class HeadersView {
         // Use +cur + 1 to avoid issues with HTTP/2 pseudo-headers that start with ':'
         // It's not possible to have an empty header name, so there must be at least one character before the colon.
         const char* colonPtr =
-            static_cast<const char*>(std::memchr(_cur + 1, ':', static_cast<std::size_t>(_end - _cur)));
+            static_cast<const char*>(std::memchr(_cur + 1, ':', static_cast<std::size_t>(_end - _cur - 1)));
         assert(colonPtr != nullptr);  // should not happen in well-formed headers
         const char* begValue = colonPtr + http::HeaderSep.size();
 
