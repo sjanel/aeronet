@@ -90,6 +90,13 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
     return _connection.getPendingOutput();
   }
+  [[nodiscard]] std::size_t getPendingOutputFragments(
+      std::span<std::string_view> fragments) const noexcept override {
+    return _connection.getPendingOutputFragments(fragments);
+  }
+
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept override { return _connection.pendingOutputSize(); }
+
 
   void onOutputWritten(std::size_t bytesWritten) override {
     _connection.onOutputWritten(bytesWritten);
@@ -98,6 +105,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
       flushPendingStreamingSends();
     }
   }
+
+  void discardPendingOutput() override { _connection.discardPendingOutput(); }
 
   void initiateClose() override { _connection.initiateGoAway(ErrorCode::NoError); }
 

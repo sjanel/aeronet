@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -121,17 +122,27 @@ class Http2Connection {
   [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data);
 
   /// Check if there's pending output to write.
-  [[nodiscard]] bool hasPendingOutput() const noexcept { return _outputWritePos < _outputBuffer.size(); }
-
-  /// Get pending output data to be written to the transport.
-  /// @return View of the output buffer (valid until next processInput or write operation)
-  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept {
-    return {_outputBuffer.begin() + _outputWritePos, _outputBuffer.end()};
+  [[nodiscard]] bool hasPendingOutput() const noexcept {
+    return !_outputBlocks.empty() || _outputWritePos < _outputBuffer.size();
   }
+
+  /// Get the first contiguous pending output fragment.
+  /// @return View valid until the next operation that mutates output state
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept;
+
+  /// Fill `fragments` with ordered pending output views for gather writes.
+  /// @return Number of entries populated in `fragments`
+  [[nodiscard]] std::size_t getPendingOutputFragments(std::span<std::string_view> fragments) const noexcept;
+
+  /// Get the total number of pending output bytes across all fragments.
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept;
 
   /// Notify that output was successfully written to the transport.
   /// @param bytesWritten Number of bytes written
   void onOutputWritten(std::size_t bytesWritten);
+
+  /// Discard all queued output without changing protocol or flow-control state.
+  void discardPendingOutput() noexcept;
 
   /// Initiate graceful shutdown by sending GOAWAY.
   /// @param errorCode Error code to include in GOAWAY (default: NO_ERROR)
@@ -200,6 +211,13 @@ class Http2Connection {
   /// @param endStream True to set END_STREAM flag
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream);
+
+  /// Send DATA while transferring ownership of its backing allocation to the connection.
+  [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& data, bool endStream);
+
+  /// Send a subrange of an owned allocation without copying it.
+  [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset,
+                                   std::size_t dataSize, bool endStream);
 
   /// Send RST_STREAM frame.
   /// @param streamId Stream ID
@@ -284,6 +302,40 @@ class Http2Connection {
  private:
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
 
+  class OutputBlock {
+   public:
+    OutputBlock(RawBytes&& data, std::size_t offset) noexcept;
+
+    [[nodiscard]] static OutputBlock Data(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+                                          uint32_t maxFrameSize, uint32_t streamId, bool endStream);
+    [[nodiscard]] static OutputBlock Headers(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+                                             uint32_t maxFrameSize, uint32_t streamId, bool endStream);
+
+    [[nodiscard]] bool empty() const noexcept { return _remainingSize == 0; }
+    [[nodiscard]] std::size_t remainingSize() const noexcept { return _remainingSize; }
+    [[nodiscard]] std::size_t getFragments(std::span<std::string_view> fragments) const noexcept;
+    void consume(std::size_t bytesWritten) noexcept;
+
+   private:
+    OutputBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t maxFrameSize,
+                uint32_t streamId, bool endStream, bool headers);
+
+    [[nodiscard]] std::size_t framePayloadSize(uint32_t frameIndex) const noexcept;
+    [[nodiscard]] const std::byte* frameHeader(uint32_t frameIndex) const noexcept;
+
+    RawBytes _payload;
+    RawBytes _continuationHeaders;
+    std::size_t _payloadOffset{0};
+    std::size_t _payloadSize{0};
+    std::size_t _remainingSize{0};
+    uint32_t _maxFrameSize{0};
+    uint32_t _frameIndex{0};
+    uint32_t _framePayloadOffset{0};
+    std::array<std::byte, FrameHeader::kSize> _firstHeader{};
+    uint8_t _headerOffset{0};
+    bool _framed{false};
+  };
+
   // ============================
   // Frame processing
   // ============================
@@ -326,6 +378,11 @@ class Http2Connection {
 
   void sendSettings();
   void sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); }
+  [[nodiscard]] ErrorCode prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream);
+  void queueDataBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t streamId,
+                      bool endStream);
+  void queueOutputBlock(OutputBlock block);
+  void sealOutputBuffer();
 
   // ============================
   // Error handling
@@ -365,6 +422,7 @@ class Http2Connection {
   RawBytes _headerBlockBuffer;
 
   // Output buffer
+  std::deque<OutputBlock> _outputBlocks;
   RawBytes _outputBuffer;
   std::size_t _outputWritePos{0};
 

@@ -7,8 +7,10 @@
 #include <ws2tcpip.h>
 #endif
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/file.hpp"
@@ -20,6 +22,22 @@
 #include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
+
+ITransport::TransportResult ITransport::write(std::span<const std::string_view> buffers) {
+  TransportResult result{0, TransportHint::None};
+  for (const std::string_view buffer : buffers) {
+    if (buffer.empty()) {
+      continue;
+    }
+    const auto [bytesWritten, want] = write(buffer);
+    result.bytesProcessed += bytesWritten;
+    result.want = want;
+    if (want != TransportHint::None || bytesWritten < buffer.size()) {
+      break;
+    }
+  }
+  return result;
+}
 
 PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
     : ITransport(fd, minBytesForZerocopy) {
@@ -212,6 +230,80 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
   }
 
   return ret;
+}
+
+ITransport::TransportResult PlainTransport::write(std::span<const std::string_view> buffers) {
+  const std::size_t bufferCount = std::min(buffers.size(), kMaxGatherBuffers);
+#ifdef AERONET_POSIX
+  std::array<iovec, kMaxGatherBuffers> ioVectors;
+#elifdef AERONET_WINDOWS
+  std::array<WSABUF, kMaxGatherBuffers> ioVectors;
+#endif
+
+  std::size_t ioVectorCount = 0;
+  for (const std::string_view buffer : buffers.first(bufferCount)) {
+    if (buffer.empty()) {
+      continue;
+    }
+#ifdef AERONET_POSIX
+    ioVectors[ioVectorCount++] = {const_cast<char*>(buffer.data()), buffer.size()};
+#elifdef AERONET_WINDOWS
+    ioVectors[ioVectorCount++] = {static_cast<ULONG>(buffer.size()), const_cast<char*>(buffer.data())};
+#endif
+  }
+
+  TransportResult result{0, TransportHint::None};
+  std::size_t ioVectorIndex = 0;
+  while (ioVectorIndex < ioVectorCount) {
+#ifdef AERONET_POSIX
+    const auto nbWritten =
+        ::writev(_fd, ioVectors.data() + ioVectorIndex, static_cast<int>(ioVectorCount - ioVectorIndex));
+#elifdef AERONET_WINDOWS
+    DWORD bytesSent = 0;
+    const int wsaResult =
+        ::WSASend(_fd, ioVectors.data() + ioVectorIndex, static_cast<DWORD>(ioVectorCount - ioVectorIndex),
+                  &bytesSent, 0, nullptr, nullptr);
+    const auto nbWritten = wsaResult == 0 ? static_cast<int64_t>(bytesSent) : static_cast<int64_t>(-1);
+#endif
+    if (nbWritten == -1) {
+      const int err = LastSystemError();
+      if (err == error::kInterrupted) {
+        continue;
+      }
+      result.want = err == error::kWouldBlock ? TransportHint::WriteReady : TransportHint::Error;
+      break;
+    }
+
+    const auto written = static_cast<std::size_t>(nbWritten);
+    result.bytesProcessed += written;
+    std::size_t remaining = written;
+    while (remaining != 0 && ioVectorIndex < ioVectorCount) {
+#ifdef AERONET_POSIX
+      const std::size_t vectorSize = ioVectors[ioVectorIndex].iov_len;
+#elifdef AERONET_WINDOWS
+      const std::size_t vectorSize = ioVectors[ioVectorIndex].len;
+#endif
+      if (remaining < vectorSize) {
+#ifdef AERONET_POSIX
+        auto* data = static_cast<char*>(ioVectors[ioVectorIndex].iov_base);
+        ioVectors[ioVectorIndex].iov_base = data + remaining;
+        ioVectors[ioVectorIndex].iov_len -= remaining;
+#elifdef AERONET_WINDOWS
+        ioVectors[ioVectorIndex].buf += remaining;
+        ioVectors[ioVectorIndex].len -= static_cast<ULONG>(remaining);
+#endif
+        remaining = 0;
+      } else {
+        remaining -= vectorSize;
+        ++ioVectorIndex;
+      }
+    }
+    if (written == 0) {
+      break;
+    }
+  }
+
+  return result;
 }
 
 ITransport::TransportResult PlainTransport::sendFile(const File& file, std::size_t& offset, std::size_t count) {

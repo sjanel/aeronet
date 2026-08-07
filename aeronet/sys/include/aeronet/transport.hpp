@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/native-handle.hpp"
@@ -34,6 +35,8 @@ class ITransport {
     std::size_t bytesProcessed;  // bytes read for read operations, or written for write operations
     TransportHint want;          // indicates whether socket needs to be readable or writable for operation to proceed.
   };
+
+  static constexpr std::size_t kMaxGatherBuffers = 64;
 
   // Non-blocking read. Returns bytes read (>0), 0 on orderly close, -1 on EAGAIN/WANT (caller inspects want).
   // want: indicates whether socket needs to be readable or writable for operation to proceed.
@@ -72,6 +75,11 @@ class ITransport {
     }
     return result;
   }
+
+  // Non-blocking ordered write across an arbitrary number of buffers.
+  // The default implementation preserves TLS semantics by calling write() in order.
+  // PlainTransport overrides this with one writev / WSASend operation per attempt.
+  virtual TransportResult write(std::span<const std::string_view> buffers);
 
   // Whether this transport can transfer a file region straight to the socket with a single zero-copy
   // syscall (sendfile / TransmitFile), bypassing a user-space read + write. True only for plain
@@ -129,6 +137,9 @@ class PlainTransport final : public ITransport {
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
 
+
+  /// Gather write using writev / WSASend.
+  TransportResult write(std::span<const std::string_view> buffers) override;
   /// A plain socket can transfer a file region with the zero-copy sendfile(2) path.
   [[nodiscard]] bool supportsSendfile() const noexcept override { return true; }
 

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 
 #include "aeronet/http-message-data.hpp"
 
@@ -70,6 +71,23 @@ class IProtocolHandler {
 
   /// Get pending output data to be written to the transport.
   [[nodiscard]] virtual std::span<const std::byte> getPendingOutput() const noexcept = 0;
+  /// Fill `fragments` with ordered pending output views for gather writes.
+  [[nodiscard]] virtual std::size_t getPendingOutputFragments(
+      std::span<std::string_view> fragments) const noexcept {
+    if (fragments.empty()) {
+      return 0;
+    }
+    const auto pending = getPendingOutput();
+    if (pending.empty()) {
+      return 0;
+    }
+    fragments[0] = {reinterpret_cast<const char*>(pending.data()), pending.size()};
+    return 1;
+  }
+
+  /// Get the total number of queued output bytes.
+  [[nodiscard]] virtual std::size_t pendingOutputSize() const noexcept { return getPendingOutput().size(); }
+
 
   /// Check if the handler has pending outbound data to write.
   [[nodiscard]] bool hasPendingOutput() const noexcept { return !getPendingOutput().empty(); }
@@ -77,6 +95,13 @@ class IProtocolHandler {
   /// Notify the handler that output was successfully written.
   /// @param bytesWritten Number of bytes successfully written to transport
   virtual void onOutputWritten(std::size_t bytesWritten) = 0;
+  /// Discard queued output when the transport can no longer be flushed.
+  virtual void discardPendingOutput() {
+    while (const auto pending = getPendingOutput(); !pending.empty()) {
+      onOutputWritten(pending.size());
+    }
+  }
+
 
   /// Request graceful shutdown of the protocol (e.g., send close frame for WebSocket).
   virtual void initiateClose() = 0;
