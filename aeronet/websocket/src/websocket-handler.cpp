@@ -496,12 +496,6 @@ void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
   }
 }
 
-void WebSocketHandler::initiateClose() {
-  if (_closeState == CloseState::Open) {
-    sendClose(CloseCode::GoingAway, "Server shutting down");
-  }
-}
-
 void WebSocketHandler::onTransportClosing() {
   _closeState = CloseState::Closed;
   _message.inProgress = false;
