@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -11,6 +12,7 @@
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/temp-const-char-string.hpp"
 
 namespace aeronet {
 
@@ -688,41 +690,17 @@ class HttpRequest final : public HttpMessage {
 
   bool resolveRedirect(std::string_view location);
 
-  // RAII helper returned by hostCStr(): guarantees a null-terminated host C-string for its lifetime
-  // by temporarily overwriting the ':' separator that follows the host with '\0', restoring it on
-  // destruction (the same trick as CharReplacer in tcp-connector.cpp). While alive, the backing
-  // buffer is transiently mutated, so originKey()/port-string must not be read concurrently.
-  class HostCStr {
-   public:
-    HostCStr(char* host, std::size_t hostLen) : _sep(host + hostLen), _saved(*_sep), _host(host) { *_sep = '\0'; }
-
-    HostCStr(const HostCStr&) = delete;
-    HostCStr(HostCStr&&) = delete;
-    HostCStr& operator=(const HostCStr&) = delete;
-    HostCStr& operator=(HostCStr&&) = delete;
-
-    ~HostCStr() { *_sep = _saved; }
-
-    // Returns a null-terminated host C-string, valid for the lifetime of the guard.
-    [[nodiscard]] const char* c_str() const noexcept { return _host; }
-
-   private:
-    char* _sep;
-    char _saved;
-    const char* _host;
-  };
-
   // Get a null-terminated host C-string for the lifetime of the returned RAII object, without port.
-  [[nodiscard]] HostCStr hostCStr() const noexcept { return {const_cast<char*>(host().data()), _hostLen}; }
+  [[nodiscard]] TempCStr hostCStr() const noexcept { return {const_cast<char*>(host().data()), _hostLen}; }
 
   [[nodiscard]] HttpRequest finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
                                                    const DecompressionConfig& decompressionConfig) const;
 
   [[nodiscard]] HttpRequest finalizeTrailersForHttp11(std::size_t minCapturedBodySize) const {
     HttpRequest copy = clone();
-    if (!copy.hasChunkedTransferEncoding()) {
-      copy.HttpMessage::finalizeForHttp1(http::HTTP_1_1, copy._opts, nullptr, minCapturedBodySize);
-    }
+    // req is never mutated by finalizeForHttp1 (only its clone is), so a fresh clone can't already be chunked.
+    assert(!std::string_view(copy._data).ends_with("\r\n0\r\n"));
+    copy.finalizeForHttp1(http::HTTP_1_1, copy._opts, nullptr, minCapturedBodySize);
     return copy;
   }
 

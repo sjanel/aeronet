@@ -940,8 +940,6 @@ class HttpMessage {
   char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
                                               uint8_t nbDigitsBodySize);
 
-  [[nodiscard]] bool hasChunkedTransferEncoding() const noexcept;
-
   void finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                         std::size_t minCapturedBodySize);
 
