@@ -2,6 +2,9 @@
 
 #include <type_traits>
 
+#include "aeronet/safe-cast.hpp"
+#include "aeronet/temp-const-char-string.hpp"
+
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
@@ -73,21 +76,6 @@ ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock:
   }
 }
 
-class CharReplacer {
- public:
-  explicit CharReplacer(char* pos) : ch(*pos), pos(pos) { *pos = '\0'; }
-
-  CharReplacer(const CharReplacer&) = delete;
-  CharReplacer(CharReplacer&&) = delete;
-  CharReplacer& operator=(const CharReplacer&) = delete;
-  CharReplacer& operator=(CharReplacer&&) = delete;
-
-  ~CharReplacer() { *pos = ch; }
-
- private:
-  char ch;
-  char* pos;
-};
 }  // namespace
 
 ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs) {
@@ -99,17 +87,13 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
   char portStr[std::numeric_limits<uint16_t>::digits10 + 2];
   *WriteUInt(portStr, port, ndigits(port)) = '\0';
 
-  int gai;
-  {
-    CharReplacer hostReplacer(host.data() + host.size());
+  addrinfo hints{};
+  hints.ai_family = family;
+  hints.ai_socktype = SOCK_STREAM;
 
-    addrinfo hints{};
-    hints.ai_family = family;
-    hints.ai_socktype = SOCK_STREAM;
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const int gai = ::getaddrinfo(TempCStr(host.data(), SafeCast<uint32_t>(host.size())).c_str(), portStr, &hints, &res);
 
-    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-    gai = ::getaddrinfo(host.data(), portStr, &hints, &res);
-  }
   std::unique_ptr<addrinfo, void (*)(addrinfo*)> resRAII(res, &::freeaddrinfo);
   ConnectResult connectResult;
 

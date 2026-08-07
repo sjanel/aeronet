@@ -997,11 +997,6 @@ constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 
 }  // namespace
 
-bool HttpMessage::hasChunkedTransferEncoding() const noexcept {
-  return kEndChunkedBody.size() < _opts._trailerLen &&
-         std::memcmp(_data.end() - _opts._trailerLen, kEndChunkedBody.data(), kEndChunkedBody.size()) == 0;
-}
-
 void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                                    std::size_t minCapturedBodySize) {
   std::size_t bodySz = bodyLength();
