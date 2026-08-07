@@ -78,9 +78,6 @@ class IProtocolHandler {
   /// @param bytesWritten Number of bytes successfully written to transport
   virtual void onOutputWritten(std::size_t bytesWritten) = 0;
 
-  /// Request graceful shutdown of the protocol (e.g., send close frame for WebSocket).
-  virtual void initiateClose() = 0;
-
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
   virtual void onTransportClosing() = 0;
