@@ -117,6 +117,30 @@ TEST(BrotliEncoderContext, MoveOperations) {
   ctx3 = std::move(selfCtx);  // self move should do nothing
 }
 
+TEST(BrotliEncoderTest, MoveConstructInitializedEncoder) {
+  CompressionConfig cfg;
+  BrotliEncoder initialized(cfg.brotli);
+  RawChars compressed;
+  EncodeFull(initialized, "prime the source allocator", compressed);
+
+  BrotliEncoder moved(std::move(initialized));
+
+  ExpectOneShotRoundTrip(moved, "works after move construction");
+}
+
+TEST(BrotliEncoderTest, MoveAssignOverInitializedEncoder) {
+  CompressionConfig cfg;
+  BrotliEncoder initialized(cfg.brotli);
+  RawChars compressed;
+  EncodeFull(initialized, "prime the destination allocator", compressed);
+
+  BrotliEncoder replacement(cfg.brotli);
+  EncodeFull(replacement, "prime the source allocator", compressed);
+  initialized = std::move(replacement);
+
+  ExpectOneShotRoundTrip(initialized, "works after move assignment");
+}
+
 TEST(BrotliEncoderDecoderTest, MoveConstructor) {
   BrotliScratch scratch;
   BrotliEncoderContext ctx1(scratch);
