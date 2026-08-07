@@ -90,10 +90,10 @@ async fn headers(Query(params): Query<HeadersParams>) -> Response {
     (StatusCode::OK, headers, body).into_response()
 }
 
-/// POST /uppercase - Echo request body back with each byte incremented
+/// POST /uppercase - Echo request body back uppercased (ASCII)
 async fn uppercase(body: Bytes) -> Vec<u8> {
-    // Process raw bytes to avoid UTF-8 rejection for binary payloads.
-    body.iter().map(|b| b.wrapping_add(1)).collect()
+    // Bytes (not String) avoids UTF-8 rejection for binary payloads; to_ascii_uppercase matches other servers' toupper().
+    body.iter().map(|b| b.to_ascii_uppercase()).collect()
 }
 
 #[derive(Deserialize)]
