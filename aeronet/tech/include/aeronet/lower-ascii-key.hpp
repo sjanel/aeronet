@@ -77,8 +77,6 @@ class LowerAsciiKey {
   constexpr operator std::string_view() const noexcept { return _sv; }  // NOLINT(*-explicit-constructor)
 
  private:
-  // Debug-only helper backing the assert() above. Deliberately a hand-rolled loop rather than
-  // std::ranges::none_of/std::any_of, to avoid pulling in <algorithm> for a single debug-only check.
   static constexpr bool ContainsUpperAscii(std::string_view sv) noexcept {
     // Use raw loop to avoid <algorithm> include
     // NOLINTNEXTLINE(readability-use-anyofallof)
