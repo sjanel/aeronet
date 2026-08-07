@@ -19,7 +19,7 @@ AERONET_ALWAYS_INLINE constexpr std::string_view TrimOws(std::string_view sv) no
     --end;
   }
 
-  return {begin, static_cast<size_t>(end - begin)};
+  return {begin, end};
 }
 
 }  // namespace aeronet
