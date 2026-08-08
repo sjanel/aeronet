@@ -99,8 +99,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     }
   }
 
-  void initiateClose() override { _connection.initiateGoAway(ErrorCode::NoError); }
-
   void onTransportClosing() override {
     // Close all active tunnel upstream connections before clearing state.
     for (const auto& [streamId, state] : _streams) {

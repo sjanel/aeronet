@@ -181,7 +181,7 @@ class PathHandlerEntry {
 #ifdef AERONET_ENABLE_WEBSOCKET
   void assignWebSocketEndpoint(WebSocketEndpoint endpoint);
 
-  [[nodiscard]] bool hasWebSocketEndpoint() const { return _websocketEndpoint != nullptr; }
+  [[nodiscard]] bool hasWebSocketEndpoint() const { return webSocketEndpointPtr() != nullptr; }
 
   [[nodiscard]] const WebSocketEndpoint* webSocketEndpointPtr() const { return _websocketEndpoint.get(); }
 #endif

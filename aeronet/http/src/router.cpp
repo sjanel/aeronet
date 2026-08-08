@@ -1365,8 +1365,8 @@ Router::RoutingResult Router::makeMatchedResult(http::Method method, const PathH
     pCorsPolicy = &_config.defaultCorsPolicy;
   }
 
-  return {handler, handlerKind,        redirectSlashMode, methodNotAllowed,
-          &entry,  &entry._pathConfig, pathParams,        pCorsPolicy};
+  return {handler, handlerKind,         redirectSlashMode, methodNotAllowed,
+          &entry,  &entry.pathConfig(), pathParams,        pCorsPolicy};
 }
 
 Router::RoutingResult Router::makeDefaultResult() const {

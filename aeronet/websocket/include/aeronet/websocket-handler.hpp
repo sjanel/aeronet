@@ -112,8 +112,6 @@ class WebSocketHandler final : public IProtocolHandler {
 
   void onOutputWritten(std::size_t bytesWritten) override;
 
-  void initiateClose() override;
-
   void onTransportClosing() override;
 
   bool drainOutputBuffer(HttpMessageData& dest) override;
