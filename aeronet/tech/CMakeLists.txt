@@ -86,6 +86,15 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        glaze-adapters_test
+        test/glaze-adapters_test.cpp
+        LIBRARIES
+        aeronet_tech
+    )
+endif()
+
 AeronetAddUnitTest(
     http-constants_test
     test/http-constants_test.cpp
@@ -94,6 +103,20 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     ipow_test
     test/ipow_test.cpp
+)
+
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        json-serializer_test
+        test/json-serializer_test.cpp
+        LIBRARIES
+        aeronet_tech
+    )
+endif()
+
+AeronetAddUnitTest(
+    lower-ascii-key_test
+    test/lower-ascii-key_test.cpp
 )
 
 AeronetAddUnitTest(
@@ -210,18 +233,3 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
-if(AERONET_ENABLE_GLAZE)
-    AeronetAddUnitTest(
-        json-serializer_test
-        test/json-serializer_test.cpp
-        LIBRARIES
-        aeronet_tech
-    )
-
-    AeronetAddUnitTest(
-        glaze-adapters_test
-        test/glaze-adapters_test.cpp
-        LIBRARIES
-        aeronet_tech
-    )
-endif()
