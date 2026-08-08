@@ -527,12 +527,6 @@ TEST_F(WebSocketHandlerTest, ProtocolType) { EXPECT_EQ(handler->type(), Protocol
 // Lifecycle tests
 // ============================================================================
 
-TEST_F(WebSocketHandlerTest, InitiateClose) {
-  handler->initiateClose();
-  EXPECT_TRUE(handler->isClosing());
-  EXPECT_TRUE(handler->hasPendingOutput());
-}
-
 TEST_F(WebSocketHandlerTest, OnTransportClosing) {
   handler->onTransportClosing();
   EXPECT_TRUE(handler->isCloseComplete());

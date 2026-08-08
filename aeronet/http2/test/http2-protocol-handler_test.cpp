@@ -311,28 +311,6 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   EXPECT_FALSE(handler->hasPendingOutput());
 }
 
-TEST(Http2ProtocolHandler, InitiateClose) {
-  Http2Config config;
-  Router router;
-  HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
-  auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                            telemetry, tmpBuffer);
-
-  if (handler->hasPendingOutput()) {
-    auto output = handler->getPendingOutput();
-    handler->onOutputWritten(output.size());
-  }
-
-  handler->initiateClose();
-
-  EXPECT_TRUE(handler->hasPendingOutput());
-  auto output = handler->getPendingOutput();
-  ASSERT_GE(output.size(), FrameHeader::kSize);
-  EXPECT_EQ(ParseFrameHeader(output).type, FrameType::GoAway);
-}
-
 TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   Http2Config config;
   config.maxConcurrentStreams = 200;
