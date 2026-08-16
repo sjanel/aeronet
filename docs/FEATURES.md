@@ -209,8 +209,10 @@ Behavior summary
 
 Configuration
 
-- `HttpServerConfig::connectAllowlist` - optional list of allowed target hosts (exact string match). When empty, any
-  resolved host is allowed. To populate conveniently use `withConnectAllowlist()` builder helper.
+- `HttpServerConfig::connectAllowlist` - list of allowed target hosts (exact, case-insensitive string match). CONNECT is
+  disabled when the list is empty, which is the default. Explicitly opt in trusted targets with the
+  `withConnectAllowlist()` builder helper. Ports are not part of the allowlist entry, so an allowed host can be reached
+  on any valid numeric port.
 
 Notes and implementation details
 
@@ -220,8 +222,9 @@ Notes and implementation details
 - The tunneling path prioritizes a dedicated `tunnelOutBuffer` to avoid mixing HTTP response buffering semantics with
   raw tunneled bytes. This keeps the HTTP response life-cycle and the TCP proxying semantics independent and easier to
   reason about.
-- Tests: Basic coverage added for successful echo tunneling and failure cases (DNS resolution failures and allowlist
-  rejections). See `tests/http_connect_test.cpp`.
+- Tests: Basic coverage includes successful echo tunneling, DNS resolution failures, explicit allowlisting, and
+  fail-closed default behavior. See [http-connect_test.cpp](../tests/http-connect_test.cpp) and
+  [http2-connect_test.cpp](../tests/http2-connect_test.cpp).
 
 #### HTTP/2 CONNECT tunneling (RFC 7540 §8.3)
 
