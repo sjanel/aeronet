@@ -19,8 +19,20 @@
 using namespace std::chrono_literals;
 using namespace aeronet;
 
+namespace {
+
+void AllowConnectHost(test::TlsHttp2TestServer& testServer, std::string_view host) {
+  testServer.server.postConfigUpdate([host](HttpServerConfig& cfg) {
+    const std::array allowlist{host};
+    cfg.withConnectAllowlist(allowlist.begin(), allowlist.end());
+  });
+}
+
+}  // namespace
+
 TEST(Http2ConnectTest, BasicTunneling) {
   test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "127.0.0.1");
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
@@ -42,11 +54,21 @@ TEST(Http2ConnectTest, BasicTunneling) {
 
 TEST(Http2ConnectTest, DnsFailureReturns502) {
   test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "no-such-host.example.invalid");
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
   uint32_t streamId = client.connect("no-such-host.example.invalid:80");
   EXPECT_EQ(streamId, 0);  // connect() returns 0 on failure (non-200 status)
+}
+
+TEST(Http2ConnectTest, DefaultConfigRejectsTarget) {
+  test::TlsHttp2TestServer ts;
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  uint32_t streamId = client.connect("127.0.0.1:80");
+  EXPECT_EQ(streamId, 0);
 }
 
 TEST(Http2ConnectTest, AllowlistRejectsTarget) {
@@ -72,6 +94,7 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
   static constexpr uint32_t kLargeWindow = 1U << 20;  // 1 MB
 
   test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "127.0.0.1");
 
   ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.http2.initialWindowSize = kLargeWindow;

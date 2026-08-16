@@ -341,15 +341,13 @@ struct HttpServerConfig {
  private:
   TLSConfig& ensureTls();
 
-  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
-  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
-  // case-insensitive for hostnames.
+  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. Otherwise, the target host
+  // must exactly match one of these entries. The matching is case-insensitive for hostnames.
   ConcatenatedStrings32 _connectAllowlist;
 
  public:
-  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
-  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries. The matching is
-  // case-insensitive for hostnames.
+  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. Otherwise, the target host
+  // must exactly match one of these entries. The matching is case-insensitive for hostnames.
   [[nodiscard]] const ConcatenatedStrings32& connectAllowlist() const { return _connectAllowlist; }
 
   // Set number of threads to use for the server event loops.
@@ -419,10 +417,8 @@ struct HttpServerConfig {
   // Set blocking body read timeout (0=off)
   HttpServerConfig& withBodyReadTimeout(std::chrono::milliseconds timeout);
 
-  // Optional allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT to any
-  // resolved host is allowed. When non-empty, the target host must exactly match one of these entries.
-  // The matching is case-insensitive for hostnames.
-  // Set CONNECT allowlist (replaces any existing entries). An empty list allows all targets.
+  // Set the CONNECT target allowlist (hostnames or IP strings), replacing any existing entries. An empty list disables
+  // CONNECT. Otherwise, the target host must exactly match an entry (case-insensitive for hostnames).
   template <class InputIt>
   HttpServerConfig& withConnectAllowlist(InputIt first, InputIt last) {
     _connectAllowlist.clear();
