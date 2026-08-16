@@ -127,6 +127,10 @@ class Http2ProtocolLoopback {
       : compressionState(serverConfig.compression),
         handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer),
         client(clientCfg, false) {
+    // Most tests exercise tunnel lifecycle, so explicitly authorize their common target.
+    static constexpr std::array<std::string_view, 1> kConnectAllowlist = {"example.com"};
+    serverConfig.withConnectAllowlist(kConnectAllowlist.begin(), kConnectAllowlist.end());
+
     client.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
@@ -606,6 +610,37 @@ TEST(Http2ProtocolHandler, ConnectOutOfRangePortReturns400) {
   EXPECT_FALSE(setupCalled);
 }
 
+TEST(Http2ProtocolHandler, ConnectEmptyAllowlistBlocksTarget) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  const std::array<std::string_view, 0> noAllowedHosts{};
+  loop.serverConfig.withConnectAllowlist(noAllowedHosts.begin(), noAllowedHosts.end());
+  loop.connect();
+
+  bool setupCalled = false;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
+    setupCalled = true;
+    return 42;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "403");
+  EXPECT_FALSE(setupCalled);
+}
+
 TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
@@ -1034,6 +1069,8 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
+  static constexpr std::array<std::string_view, 2> kAllowedHosts = {"example.com", "other.com"};
+  loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
   loop.connect();
 
   vector<NativeHandle> closedFds;
@@ -1083,6 +1120,8 @@ TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
+  static constexpr std::array<std::string_view, 2> kAllowedHosts = {"a.com", "b.com"};
+  loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd1 = 42;
