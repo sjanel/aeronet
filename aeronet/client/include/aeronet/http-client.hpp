@@ -313,6 +313,9 @@ class HttpClient {
   // requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
   RawChars _reqBodyScratch;
   RawChars _responseBuffer;  // reused across requests: raw bytes are read straight into its tail
+#ifdef AERONET_ENABLE_HTTP2
+  vector<std::string_view> _outputFragmentsScratch;  // reused by HTTP/2 gather writes across flushes
+#endif
   // Forward-proxy host, empty when no proxy is configured (parsed once from HttpClientConfig::proxyUrl at
   // construction). Valid as long as HttpClientConfig does not change (the client owns the config copy)
   std::string_view _proxyHost;

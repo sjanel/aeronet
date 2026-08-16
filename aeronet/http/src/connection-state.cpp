@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -89,6 +90,13 @@ ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize
 
 ITransport::TransportResult ConnectionState::transportWrite(std::string_view data) {
   const auto res = transport->write(data);
+  if (!tlsEstablished && transport->handshakeDone()) {
+    tlsEstablished = true;
+  }
+  return res;
+}
+ITransport::TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
+  const auto res = transport->write(buffers);
   if (!tlsEstablished && transport->handshakeDone()) {
     tlsEstablished = true;
   }

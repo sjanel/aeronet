@@ -101,12 +101,8 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
 
   // Send client connection preface (magic string + SETTINGS)
   _http2Connection->sendClientPreface();
-  if (_http2Connection->hasPendingOutput()) {
-    auto output = _http2Connection->getPendingOutput();
-    if (!writeAll(output)) {
-      return;
-    }
-    _http2Connection->onOutputWritten(output.size());
+  if (!flushConnectionOutput()) {
+    return;
   }
 
   // Process server's SETTINGS frame
@@ -115,12 +111,8 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   }
 
   // Send SETTINGS ACK if needed
-  if (_http2Connection->hasPendingOutput()) {
-    auto output = _http2Connection->getPendingOutput();
-    if (!writeAll(output)) {
-      return;
-    }
-    _http2Connection->onOutputWritten(output.size());
+  if (!flushConnectionOutput()) {
+    return;
   }
 
   _connected = _http2Connection->isOpen();
@@ -212,6 +204,18 @@ bool TlsHttp2Client::writeAll(std::span<const std::byte> data) {
     drained.clear();
   }
   return ok;
+}
+
+bool TlsHttp2Client::flushConnectionOutput() {
+  while (_http2Connection->hasPendingOutput()) {
+    const auto output = _http2Connection->getPendingOutput();
+    assert(!output.empty());
+    if (!writeAll(output)) {
+      return false;
+    }
+    _http2Connection->onOutputWritten(output.size());
+  }
+  return true;
 }
 
 bool TlsHttp2Client::processFrames(std::chrono::milliseconds timeout) {
@@ -454,12 +458,8 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
   }
 
   // Send pending output
-  if (_http2Connection->hasPendingOutput()) {
-    auto output = _http2Connection->getPendingOutput();
-    if (!writeAll(output)) {
-      return 0;
-    }
-    _http2Connection->onOutputWritten(output.size());
+  if (!flushConnectionOutput()) {
+    return 0;
   }
 
   // Send DATA frame if there's a body
@@ -471,12 +471,8 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
       return 0;
     }
 
-    if (_http2Connection->hasPendingOutput()) {
-      auto output = _http2Connection->getPendingOutput();
-      if (!writeAll(output)) {
-        return 0;
-      }
-      _http2Connection->onOutputWritten(output.size());
+    if (!flushConnectionOutput()) {
+      return 0;
     }
   }
 
@@ -512,12 +508,8 @@ uint32_t TlsHttp2Client::connect(std::string_view authority,
     return 0;
   }
 
-  if (_http2Connection->hasPendingOutput()) {
-    auto output = _http2Connection->getPendingOutput();
-    if (!writeAll(output)) {
-      return 0;
-    }
-    _http2Connection->onOutputWritten(output.size());
+  if (!flushConnectionOutput()) {
+    return 0;
   }
 
   _streamResponses[streamId] = StreamResponse{};
@@ -557,12 +549,8 @@ void TlsHttp2Client::processPendingInput() {
       }
     }
 
-    if (_http2Connection->hasPendingOutput()) {
-      auto output = _http2Connection->getPendingOutput();
-      if (!writeAll(output)) {
-        return;
-      }
-      _http2Connection->onOutputWritten(output.size());
+    if (!flushConnectionOutput()) {
+      return;
     }
 
     if (result.action == http2::Http2Connection::ProcessResult::Action::Error ||
@@ -588,12 +576,8 @@ bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte
     return false;
   }
 
-  if (_http2Connection->hasPendingOutput()) {
-    auto output = _http2Connection->getPendingOutput();
-    if (!writeAll(output)) {
-      return false;
-    }
-    _http2Connection->onOutputWritten(output.size());
+  if (!flushConnectionOutput()) {
+    return false;
   }
 
   // Process any data that TlsClient::writeAll drained from the socket while

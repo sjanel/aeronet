@@ -4,11 +4,9 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -26,6 +24,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "aeronet/vector.hpp"
 #include "http2-read-write.hpp"
 
 namespace aeronet::http2 {
@@ -49,6 +48,172 @@ constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX
 constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
 
 }  // namespace
+
+// ============================
+// Queued output
+// ============================
+
+Http2Connection::OutputBlock::OutputBlock(RawBytes&& data, std::size_t offset) noexcept
+    : _payload(std::move(data)), _payloadOffset(offset) {
+  assert(offset <= _payload.size());
+  _payloadSize = _payload.size() - offset;
+  _remainingSize = _payloadSize;
+}
+
+Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+                                          uint32_t maxFrameSize, uint32_t streamId, bool endStream, bool headers)
+    : _payload(std::move(owner)),
+      _payloadOffset(dataOffset),
+      _payloadSize(dataSize),
+      _maxFrameSize(maxFrameSize),
+      _framed(true) {
+  assert(dataOffset <= _payload.size());
+  assert(dataSize <= _payload.size() - dataOffset);
+  assert(maxFrameSize != 0);
+
+  const auto frameCount = static_cast<uint32_t>(dataSize == 0 ? 1 : ((dataSize + maxFrameSize - 1U) / maxFrameSize));
+  _remainingSize = dataSize + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
+  if (frameCount > 1U) {
+    const std::size_t continuationHeadersSize = (static_cast<std::size_t>(frameCount) - 1U) * FrameHeader::kSize;
+    _continuationHeaders = RawBytes(continuationHeadersSize);
+    _continuationHeaders.setSize(continuationHeadersSize);
+  }
+
+  for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+    const bool first = frameIndex == 0;
+    const bool last = frameIndex + 1U == frameCount;
+    FrameType frameType = FrameType::Data;
+    uint8_t flags = FrameFlags::None;
+    if (headers) {
+      if (first) {
+        frameType = FrameType::Headers;
+        flags = ComputeHeaderFrameFlags(endStream, last);
+      } else {
+        frameType = FrameType::Continuation;
+        flags = last ? FrameFlags::ContinuationEndHeaders : FrameFlags::None;
+      }
+    } else if (last && endStream) {
+      flags = FrameFlags::DataEndStream;
+    }
+
+    std::byte* pHeaderData =
+        first ? _firstHeader.data() : _continuationHeaders.data() + ((frameIndex - 1U) * FrameHeader::kSize);
+    WriteFrameHeader(pHeaderData, {static_cast<uint32_t>(framePayloadSize(frameIndex)), frameType, flags, streamId});
+  }
+}
+
+std::size_t Http2Connection::OutputBlock::framePayloadSize(uint32_t frameIndex) const noexcept {
+  const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
+  return std::min(_payloadSize - frameOffset, static_cast<std::size_t>(_maxFrameSize));
+}
+
+const std::byte* Http2Connection::OutputBlock::frameHeader(uint32_t frameIndex) const noexcept {
+  return frameIndex == 0 ? _firstHeader.data() : _continuationHeaders.data() + ((frameIndex - 1U) * FrameHeader::kSize);
+}
+
+std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
+  assert(!empty());
+  if (!_framed) {
+    return {reinterpret_cast<const char*>(_payload.data() + _payloadOffset + _framePayloadOffset),
+            _payloadSize - _framePayloadOffset};
+  }
+  if (_headerOffset < FrameHeader::kSize) {
+    return {reinterpret_cast<const char*>(frameHeader(_frameIndex) + _headerOffset),
+            FrameHeader::kSize - _headerOffset};
+  }
+
+  const std::size_t payloadSize = framePayloadSize(_frameIndex);
+  assert(_framePayloadOffset < payloadSize);
+  const std::size_t frameOffset = static_cast<std::size_t>(_frameIndex) * _maxFrameSize;
+  return {reinterpret_cast<const char*>(_payload.data() + _payloadOffset + frameOffset + _framePayloadOffset),
+          payloadSize - _framePayloadOffset};
+}
+
+vector<std::string_view>::size_type Http2Connection::OutputBlock::pendingFragmentCount() const noexcept {
+  assert(!empty());
+  if (!_framed) {
+    return 1;
+  }
+
+  const uint32_t frameCount =
+      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
+  auto fragmentCount = static_cast<vector<std::string_view>::size_type>((frameCount - _frameIndex) * 2U);
+  fragmentCount -= static_cast<vector<std::string_view>::size_type>(_headerOffset == FrameHeader::kSize);
+  fragmentCount -= static_cast<vector<std::string_view>::size_type>(_payloadSize == 0);
+  return fragmentCount;
+}
+
+void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fragments) const {
+  assert(!empty());
+  if (!_framed) {
+    fragments.emplace_back(reinterpret_cast<const char*>(_payload.data() + _payloadOffset + _framePayloadOffset),
+                           _payloadSize - _framePayloadOffset);
+    return;
+  }
+
+  const uint32_t frameCount =
+      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
+  uint32_t frameIndex = _frameIndex;
+  uint32_t framePayloadOffset = _framePayloadOffset;
+  uint8_t headerOffset = _headerOffset;
+
+  while (frameIndex < frameCount) {
+    if (headerOffset < FrameHeader::kSize) {
+      fragments.emplace_back(reinterpret_cast<const char*>(frameHeader(frameIndex) + headerOffset),
+                             FrameHeader::kSize - headerOffset);
+      headerOffset = FrameHeader::kSize;
+    }
+
+    const std::size_t payloadSize = framePayloadSize(frameIndex);
+    if (framePayloadOffset < payloadSize) {
+      const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
+      fragments.emplace_back(
+          reinterpret_cast<const char*>(_payload.data() + _payloadOffset + frameOffset + framePayloadOffset),
+          payloadSize - framePayloadOffset);
+    }
+    ++frameIndex;
+    framePayloadOffset = 0;
+    headerOffset = 0;
+  }
+}
+
+void Http2Connection::OutputBlock::consume(std::size_t bytesWritten) noexcept {
+  assert(bytesWritten <= _remainingSize);
+  _remainingSize -= bytesWritten;
+
+  if (!_framed) {
+    _framePayloadOffset += static_cast<uint32_t>(bytesWritten);
+    return;
+  }
+
+  const uint32_t frameCount =
+      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
+  while (bytesWritten != 0 && _frameIndex < frameCount) {
+    if (_headerOffset < FrameHeader::kSize) {
+      const std::size_t consumed = std::min(bytesWritten, FrameHeader::kSize - _headerOffset);
+      _headerOffset += static_cast<uint8_t>(consumed);
+      bytesWritten -= consumed;
+      if (bytesWritten == 0) {
+        break;
+      }
+    }
+
+    const std::size_t payloadRemaining = framePayloadSize(_frameIndex) - _framePayloadOffset;
+    const std::size_t consumed = std::min(bytesWritten, payloadRemaining);
+    _framePayloadOffset += static_cast<uint32_t>(consumed);
+    bytesWritten -= consumed;
+    if (_framePayloadOffset == framePayloadSize(_frameIndex)) {
+      ++_frameIndex;
+      _framePayloadOffset = 0;
+      _headerOffset = 0;
+    }
+  }
+}
+
+void Http2Connection::OutputBlock::release() noexcept {
+  _payload = {};
+  _continuationHeaders = {};
+}
 
 // ============================
 // Constructor / Destructor
@@ -92,14 +257,95 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
   }
 }
 
-void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
-  _outputWritePos += bytesWritten;
+std::span<const std::byte> Http2Connection::getPendingOutput() const noexcept {
+  if (_outputBlockReadPos < _outputBlocks.size()) {
+    const std::string_view fragment = _outputBlocks[_outputBlockReadPos].firstFragment();
+    return {reinterpret_cast<const std::byte*>(fragment.data()), fragment.size()};
+  }
+  if (_outputWritePos < _outputBuffer.size()) {
+    return {_outputBuffer.data() + _outputWritePos, _outputBuffer.size() - _outputWritePos};
+  }
+  return {};
+}
 
-  // Reset buffer when fully consumed
-  if (_outputWritePos >= _outputBuffer.size()) {
+void Http2Connection::getPendingOutputFragments(vector<std::string_view>& fragments) const {
+  fragments.clear();
+  auto fragmentCount = static_cast<vector<std::string_view>::size_type>(_outputWritePos < _outputBuffer.size());
+  for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
+    fragmentCount += _outputBlocks[blockIndex].pendingFragmentCount();
+  }
+  fragments.reserve(fragmentCount);
+
+  for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
+    _outputBlocks[blockIndex].appendFragments(fragments);
+  }
+  if (_outputWritePos < _outputBuffer.size()) {
+    fragments.emplace_back(reinterpret_cast<const char*>(_outputBuffer.data() + _outputWritePos),
+                           _outputBuffer.size() - _outputWritePos);
+  }
+  assert(fragments.size() == fragmentCount);
+}
+
+std::size_t Http2Connection::pendingOutputSize() const noexcept {
+  std::size_t size = _outputBuffer.size() - _outputWritePos;
+  for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
+    const OutputBlock& block = _outputBlocks[blockIndex];
+    size += block.remainingSize();
+  }
+  return size;
+}
+
+void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
+  assert(bytesWritten <= pendingOutputSize());
+
+  while (bytesWritten != 0 && _outputBlockReadPos < _outputBlocks.size()) {
+    OutputBlock& block = _outputBlocks[_outputBlockReadPos];
+    const std::size_t consumed = std::min(bytesWritten, block.remainingSize());
+    block.consume(consumed);
+    bytesWritten -= consumed;
+    if (block.empty()) {
+      block.release();
+      ++_outputBlockReadPos;
+    }
+  }
+  if (_outputBlockReadPos == _outputBlocks.size()) {
+    _outputBlocks.clear();
+    _outputBlockReadPos = 0;
+  }
+
+  if (bytesWritten != 0) {
+    _outputWritePos += bytesWritten;
+    assert(_outputWritePos <= _outputBuffer.size());
+    if (_outputWritePos == _outputBuffer.size()) {
+      _outputBuffer.clear();
+      _outputWritePos = 0;
+    }
+  }
+}
+
+void Http2Connection::discardPendingOutput() noexcept {
+  _outputBlocks.clear();
+  _outputBlockReadPos = 0;
+  _outputBuffer.clear();
+  _outputWritePos = 0;
+}
+
+void Http2Connection::sealOutputBuffer() {
+  if (_outputWritePos == _outputBuffer.size()) {
     _outputBuffer.clear();
     _outputWritePos = 0;
+    return;
   }
+  if (!_outputBuffer.empty()) {
+    _outputBlocks.emplace_back(std::move(_outputBuffer), _outputWritePos);
+    _outputBuffer = {};
+    _outputWritePos = 0;
+  }
+}
+
+void Http2Connection::queueOutputBlock(OutputBlock block) {
+  sealOutputBuffer();
+  _outputBlocks.emplace_back(std::move(block));
 }
 
 void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
@@ -231,6 +477,7 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
     return err;
   }
 
+  sealOutputBuffer();
   _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 24UL));
 
   // Make the header block be written after the frame header
@@ -259,6 +506,7 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
     return err;
   }
 
+  sealOutputBuffer();
   _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4UL));
 
   // Make the header block be written after the frame header
@@ -271,50 +519,82 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
   return err;
 }
 
-ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+ErrorCode Http2Connection::prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream) {
   Http2Stream* pStream = getStream(streamId);
   if (pStream == nullptr) [[unlikely]] {
     return ErrorCode::ProtocolError;
   }
-
   if (!pStream->canSend()) {
     return ErrorCode::StreamClosed;
   }
-
-  // Check flow control
-  auto dataSize = static_cast<uint32_t>(data.size());
-  if (!pStream->consumeSendWindow(dataSize)) {
+  if (dataSize > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
     return ErrorCode::FlowControlError;
   }
 
-  if (std::cmp_less(_connectionSendWindow, dataSize)) {
-    // Restore stream window
-    (void)pStream->increaseSendWindow(dataSize);
+  const auto flowControlledSize = static_cast<uint32_t>(dataSize);
+  if (!pStream->consumeSendWindow(flowControlledSize)) {
     return ErrorCode::FlowControlError;
   }
-  _connectionSendWindow -= static_cast<int32_t>(dataSize);
+  if (std::cmp_less(_connectionSendWindow, flowControlledSize)) {
+    (void)pStream->increaseSendWindow(flowControlledSize);
+    return ErrorCode::FlowControlError;
+  }
+  _connectionSendWindow -= static_cast<int32_t>(flowControlledSize);
 
-  // canSend() above already ensures the stream is Open or HalfClosedRemote,
-  // which are exactly the states onSendData() handles — so this cannot fail.
-  [[maybe_unused]] ErrorCode err = pStream->onSendData(endStream);
+  // canSend() above ensures the stream is Open or HalfClosedRemote, which are exactly
+  // the states onSendData() handles.
+  [[maybe_unused]] const ErrorCode err = pStream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
+  return ErrorCode::NoError;
+}
 
-  // Write frame (may need to split if larger than max frame size)
+void Http2Connection::queueDataBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t streamId,
+                                     bool endStream) {
+  queueOutputBlock(
+      OutputBlock::Data(std::move(owner), dataOffset, dataSize, _peerSettings.maxFrameSize, streamId, endStream));
+}
+
+ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+  const ErrorCode err = prepareSendData(streamId, data.size(), endStream);
+  if (err != ErrorCode::NoError) {
+    return err;
+  }
   if (data.empty()) {
-    // Empty DATA frame (valid in HTTP/2), used e.g. to signal END_STREAM without payload.
     if (endStream) {
       WriteDataFrame(_outputBuffer, streamId, {}, true);
     }
-  } else {
-    for (std::size_t offset = 0; offset < data.size();) {
-      const std::size_t chunkSize =
-          std::min(data.size() - offset, static_cast<std::size_t>(_peerSettings.maxFrameSize));
-      const bool isLast = (offset + chunkSize >= data.size());
-      WriteDataFrame(_outputBuffer, streamId, data.subspan(offset, chunkSize), isLast && endStream);
-      offset += chunkSize;
-    }
+    return ErrorCode::NoError;
   }
 
+  RawBytes owner(data.size());
+  owner.unchecked_append(data);
+  queueDataBlock(std::move(owner), 0, data.size(), streamId, endStream);
+  return ErrorCode::NoError;
+}
+
+ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& data, bool endStream) {
+  const std::size_t dataSize = data.size();
+  return sendData(streamId, std::move(data), 0, dataSize, endStream);
+}
+
+ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+                                    bool endStream) {
+  if (dataOffset > owner.size() || dataSize > owner.size() - dataOffset) [[unlikely]] {
+    return ErrorCode::ProtocolError;
+  }
+
+  const ErrorCode err = prepareSendData(streamId, dataSize, endStream);
+  if (err != ErrorCode::NoError) {
+    return err;
+  }
+  if (dataSize == 0) {
+    if (endStream) {
+      WriteDataFrame(_outputBuffer, streamId, {}, true);
+    }
+    return ErrorCode::NoError;
+  }
+
+  queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
   return ErrorCode::NoError;
 }
 
@@ -991,55 +1271,15 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
                      {headerBlockSize, FrameType::Headers, flags, streamId});
     return;
   }
-  // We will have at least one CONTINUATION frame.
-  // Let's start by computing the exact total size needed.
-  std::size_t totalSize = 0;
-  for (uint32_t offset = 0; offset < headerBlockSize;) {
-    const auto chunkSize = std::min(headerBlockSize - offset, _peerSettings.maxFrameSize);
-
-    totalSize += FrameHeader::kSize + chunkSize;
-    offset += chunkSize;
-  }
-
-  // reserve enough capacity in output buffer (no more reallocations)
-  const auto remainingHeaderBlockSize = headerBlockSize - _peerSettings.maxFrameSize;
-  // IMPORTANT:
-  // - The HPACK-encoded header block bytes currently live at [oldSize, oldSize + headerBlockSize).
-  // - With AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS, both reallocUp() (in reserve/ensureCapacity)
-  //   and setSize() (when shrinking) poison bytes that become logically unused with 0xFF.
-  // - We must reserve capacity first (to prevent reallocUp from poisoning within [_size, _capacity)),
-  //   then move the ENTIRE header block to the end of the reserved space BEFORE shrinking the size,
-  //   so the memmove reads the data before setSize poisons it.
-  _outputBuffer.reserve(outputSizeBeforeHeaders + totalSize + headerBlockSize);
-
-  // Move the ENTIRE header block data to the end of the reserved space BEFORE shrinking.
-  const auto savedHeaderBlock = _outputBuffer.data() + _outputBuffer.capacity() - headerBlockSize;
-  std::memmove(savedHeaderBlock, _outputBuffer.data() + oldSize, headerBlockSize);
-
-  // Now it's safe to rewind the buffer size — the HPACK data is safe at the end of capacity.
-  _outputBuffer.setSize(outputSizeBeforeHeaders);
-
-  // Write the HEADERS frame WITHOUT END_HEADERS (it will be on the last CONTINUATION)
-  const auto headersFlags = ComputeHeaderFrameFlags(endStream, false);
-  WriteFrame(_outputBuffer, FrameType::Headers, headersFlags, streamId, _peerSettings.maxFrameSize);
-  // Copy the first chunk of the header block data right after the HEADERS frame header
-  std::memcpy(_outputBuffer.end(), savedHeaderBlock, _peerSettings.maxFrameSize);
-  _outputBuffer.addSize(_peerSettings.maxFrameSize);
-
-  // Capture the remaining header block span (past the first chunk)
-  std::span<const std::byte> remainingHeaderBlock(savedHeaderBlock + _peerSettings.maxFrameSize,
-                                                  remainingHeaderBlockSize);
-
-  // Write continuation frames
-  for (std::remove_const_t<decltype(remainingHeaderBlockSize)> offset = 0; offset < remainingHeaderBlockSize;) {
-    const auto chunkSize = std::min(remainingHeaderBlockSize - offset, _peerSettings.maxFrameSize);
-    const bool isLast = (offset + chunkSize >= remainingHeaderBlockSize);
-    const auto chunkSpan = remainingHeaderBlock.subspan(offset, chunkSize);
-
-    WriteContinuationFrame(_outputBuffer, streamId, chunkSpan, isLast);
-
-    offset += chunkSize;
-  }
+  // sendHeaders seals older output first, so this allocation contains only the reserved
+  // frame-header gap followed by the HPACK block. Transfer it intact and interleave frame
+  // headers with views over the original HPACK bytes.
+  assert(outputSizeBeforeHeaders == 0);
+  RawBytes owner(std::move(_outputBuffer));
+  _outputBuffer = {};
+  _outputWritePos = 0;
+  queueOutputBlock(OutputBlock::Headers(std::move(owner), oldSize, headerBlockSize, _peerSettings.maxFrameSize,
+                                        streamId, endStream));
 }
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,

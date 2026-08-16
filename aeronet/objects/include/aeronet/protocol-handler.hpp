@@ -5,8 +5,10 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -71,12 +73,37 @@ class IProtocolHandler {
   /// Get pending output data to be written to the transport.
   [[nodiscard]] virtual std::span<const std::byte> getPendingOutput() const noexcept = 0;
 
+  /// Replace `fragments` with all ordered pending output views for gather writes.
+  virtual void getPendingOutputFragments(vector<std::string_view>& fragments) const {
+    fragments.clear();
+    const auto pending = getPendingOutput();
+    if (pending.empty()) {
+      return;
+    }
+    fragments.reserve(1);
+    fragments.emplace_back(reinterpret_cast<const char*>(pending.data()), pending.size());
+  }
+
+  /// Return the total pending output size.
+  [[nodiscard]] virtual std::size_t pendingOutputSize() const noexcept { return getPendingOutput().size(); }
   /// Check if the handler has pending outbound data to write.
-  [[nodiscard]] bool hasPendingOutput() const noexcept { return !getPendingOutput().empty(); }
+
+  [[nodiscard]] bool hasPendingOutput() const noexcept { return pendingOutputSize() != 0; }
 
   /// Notify the handler that output was successfully written.
   /// @param bytesWritten Number of bytes successfully written to transport
   virtual void onOutputWritten(std::size_t bytesWritten) = 0;
+
+  /// Discard queued output when the transport can no longer make progress.
+  virtual void discardPendingOutput() noexcept {
+    for (;;) {
+      const auto pending = getPendingOutput();
+      if (pending.empty()) {
+        return;
+      }
+      onOutputWritten(pending.size());
+    }
+  }
 
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
@@ -87,13 +114,16 @@ class IProtocolHandler {
   /// The default implementation copies pending output via getPendingOutput() + onOutputWritten().
   /// Protocol handlers may override this to perform a zero-copy move of their internal buffer.
   virtual bool drainOutputBuffer(HttpMessageData& dest) {
-    auto pending = getPendingOutput();
-    if (pending.empty()) {
-      return false;
+    bool drained = false;
+    for (;;) {
+      const auto pending = getPendingOutput();
+      if (pending.empty()) {
+        return drained;
+      }
+      dest.append(reinterpret_cast<const char*>(pending.data()), pending.size());
+      onOutputWritten(pending.size());
+      drained = true;
     }
-    dest.append(reinterpret_cast<const char*>(pending.data()), pending.size());
-    onOutputWritten(pending.size());
-    return true;
   }
 };
 

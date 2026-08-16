@@ -309,6 +309,34 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
         break;
     }
   }
+  if (state.protocolHandler != nullptr) {
+    auto& fragments = _sharedBuffers.sv;
+    while (state.protocolHandler->hasPendingOutput()) {
+      state.protocolHandler->getPendingOutputFragments(fragments);
+      assert(!fragments.empty());
+
+      const auto [written, stepWant] = state.transportWrite(fragments);
+      want = stepWant;
+      _stats.totalBytesWrittenFlush += written;
+      if (written != 0) {
+        state.protocolHandler->onOutputWritten(written);
+      }
+      if (want == TransportHint::Error) [[unlikely]] {
+        const auto savedErr = LastSystemError();
+        log::error("gather transportWrite failed fd # {} err={}", fd, savedErr);
+        state.protocolHandler->discardPendingOutput();
+        state.requestDrainAndClose();
+        break;
+      }
+      if (want != TransportHint::None || written == 0) {
+        break;
+      }
+    }
+  }
+
+  if (state.hasPendingOutput() && !state.waitingWritable && !enableWritableInterest(cnxIt)) {
+    return;
+  }
 
   if (state.outBuffer.empty() && state.fileSendHeadersPending) {
     state.fileSendHeadersPending = false;
@@ -317,7 +345,7 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   if (state.isSendingFile()) {
     flushFilePayload(cnxIt);
-  } else if (state.outBuffer.empty() && state.waitingWritable &&
+  } else if (!state.hasPendingOutput() && state.waitingWritable &&
              (state.tlsEstablished || state.transport->handshakeDone()) &&
              (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
              state.isAnyCloseRequested()) {
@@ -325,8 +353,9 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
-  if (state.outBuffer.empty() && !state.isSendingFile() && (!state.isTunneling() || state.tunnelOrFileBuffer.empty())) {
-    bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
+  if (!state.hasPendingOutput() && !state.isSendingFile() &&
+      (!state.isTunneling() || state.tunnelOrFileBuffer.empty())) {
+    const bool transportNeedsWrite = !state.tlsEstablished && want == TransportHint::WriteReady;
     if (transportNeedsWrite) {
       if (!state.waitingWritable && !enableWritableInterest(cnxIt)) {
         return;  // failure logged

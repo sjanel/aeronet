@@ -45,6 +45,7 @@
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -627,25 +628,29 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
       }
 
       const std::size_t remaining = pending.buffer.size() - pending.offset;
-      const auto maxFrame = static_cast<std::size_t>(_connection.peerSettings().maxFrameSize);
       const auto chunkSize =
-          std::min({remaining, static_cast<std::size_t>(streamWin), static_cast<std::size_t>(connWin), maxFrame});
+          std::min({remaining, static_cast<std::size_t>(streamWin), static_cast<std::size_t>(connWin)});
 
-      // All min() inputs are > 0: remaining (loop condition), streamWin/connWin (checked > 0),
-      // maxFrame (>= 16384 per HTTP/2).
+      // All min() inputs are positive: remaining is non-zero and both windows were checked above.
       assert(chunkSize != 0 && "chunkSize cannot be 0 when all inputs are positive");
 
-      const bool lastBodyChunk = (pending.offset + chunkSize >= pending.buffer.size());
+      const bool lastBodyChunk = chunkSize == remaining;
       const bool endStream = lastBodyChunk && pending.trailersData.empty();
 
-      const auto bytes = std::span<const std::byte>(
-          reinterpret_cast<const std::byte*>(pending.buffer.data() + pending.offset), chunkSize);
-      // sendData cannot fail: stream is valid (asserted), flow control windows are sufficient
-      // (chunkSize bounded by both), and stream state allows sending.
-      [[maybe_unused]] const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+      [[maybe_unused]] ErrorCode err;
+      if (lastBodyChunk) {
+        const std::size_t bufferSize = pending.buffer.size();
+        RawBytes owner(std::move(pending.buffer));
+        err = _connection.sendData(streamId, std::move(owner), pending.offset, chunkSize, endStream);
+        pending.offset = bufferSize;
+      } else {
+        const auto bytes = std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(pending.buffer.data() + pending.offset), chunkSize);
+        err = _connection.sendData(streamId, bytes, endStream);
+        pending.offset += chunkSize;
+      }
+      // sendData cannot fail: stream is valid and chunkSize is bounded by both flow-control windows.
       assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
-
-      pending.offset += chunkSize;
     }
 
     // Check if all body data has been sent.
@@ -1053,7 +1058,7 @@ void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
   _tunnelUpstreams.erase(it);
 
   // Send empty DATA with END_STREAM to gracefully close the tunnel stream.
-  (void)_connection.sendData(streamId, {}, /*endStream=*/true);
+  (void)_connection.sendData(streamId, std::span<const std::byte>{}, /*endStream=*/true);
   _connection.finalizeSendClosedStream(streamId);
 }
 
@@ -1142,9 +1147,17 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
           static_cast<std::size_t>(std::max(std::min(pStream->sendWindow(), _connection.connectionSendWindow()), 0));
       const std::size_t immediateSize = std::min(bodyView.size(), windowLimit);
       if (immediateSize != 0) {
-        const std::string_view immediateView = bodyView.substr(0, immediateSize);
-        const auto bytes = std::as_bytes(std::span<const char>(immediateView.data(), immediateView.size()));
-        err = _connection.sendData(streamId, bytes, endStreamOnData && immediateSize == bodyView.size());
+        const bool entireBody = immediateSize == bodyView.size();
+        const std::size_t bodyOffset = response.bodyStartPos();
+        const bool bodyIsInline = bodyView.data() == response._data.data() + bodyOffset;
+        if (entireBody && bodyIsInline) {
+          RawBytes owner(std::move(response._data));
+          err = _connection.sendData(streamId, std::move(owner), bodyOffset, immediateSize, endStreamOnData);
+        } else {
+          const std::string_view immediateView = bodyView.substr(0, immediateSize);
+          const auto bytes = std::as_bytes(std::span<const char>(immediateView.data(), immediateView.size()));
+          err = _connection.sendData(streamId, bytes, entireBody && endStreamOnData);
+        }
         if (err != ErrorCode::NoError) {
           return err;
         }
