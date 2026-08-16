@@ -120,6 +120,35 @@ class MockTunnelBridge final : public ITunnelBridge {
     }
   }
 };
+template <class OutputSource>
+[[nodiscard]] vector<std::byte> DrainPendingOutput(OutputSource& source, std::size_t maxChunks) {
+  vector<std::byte> output;
+  output.reserve(static_cast<decltype(output)::size_type>(source.pendingOutputSize()));
+
+  std::size_t chunks = 0;
+  vector<std::string_view> fragments;
+  while (source.hasPendingOutput()) {
+    if (++chunks > maxChunks) {
+      ADD_FAILURE() << "Draining pending output exceeded maxChunks";
+      break;
+    }
+
+    source.getPendingOutputFragments(fragments);
+    if (fragments.empty()) {
+      ADD_FAILURE() << "Pending output exposed no fragments";
+      break;
+    }
+
+    std::size_t bytesWritten = 0;
+    for (const std::string_view fragment : fragments) {
+      const auto bytes = std::as_bytes(std::span<const char>(fragment.data(), fragment.size()));
+      std::ranges::copy(bytes, std::back_inserter(output));
+      bytesWritten += fragment.size();
+    }
+    source.onOutputWritten(bytesWritten);
+  }
+  return output;
+}
 
 class Http2ProtocolLoopback {
  public:
@@ -165,36 +194,16 @@ class Http2ProtocolLoopback {
   }
 
   void pumpClientToServer(std::size_t maxChunks = 128) {
-    std::size_t chunks = 0;
-    while (client.hasPendingOutput()) {
-      ++chunks;
-      if (chunks > maxChunks) {
-        ADD_FAILURE() << "pumpClientToServer exceeded maxChunks";
-        return;
-      }
-      auto out = client.getPendingOutput();
-      vector<std::byte> outCopy;
-      outCopy.reserve(static_cast<decltype(outCopy)::size_type>(out.size()));
-      std::ranges::copy(out, std::back_inserter(outCopy));
-      feedHandler(outCopy);
-      client.onOutputWritten(out.size());
+    const auto output = DrainPendingOutput(client, maxChunks);
+    if (!output.empty()) {
+      feedHandler(output);
     }
   }
 
   void pumpServerToClient(std::size_t maxChunks = 128) {
-    std::size_t chunks = 0;
-    while (handler.hasPendingOutput()) {
-      ++chunks;
-      if (chunks > maxChunks) {
-        ADD_FAILURE() << "pumpServerToClient exceeded maxChunks";
-        return;
-      }
-      auto out = handler.getPendingOutput();
-      vector<std::byte> outCopy;
-      outCopy.reserve(static_cast<decltype(outCopy)::size_type>(out.size()));
-      std::ranges::copy(out, std::back_inserter(outCopy));
-      feedConn(client, outCopy);
-      handler.onOutputWritten(out.size());
+    const auto output = DrainPendingOutput(handler, maxChunks);
+    if (!output.empty()) {
+      feedConn(client, output);
     }
   }
 
@@ -892,7 +901,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   EXPECT_TRUE(loop.handler.isTunnelStream(1));
 
   // Send DATA with END_STREAM → client closes their end of the tunnel.
-  ASSERT_EQ(loop.client.sendData(1, {}, true), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendData(1, std::span<const std::byte>{}, true), ErrorCode::NoError);
 
   loop.pumpClientToServer();
 
@@ -2134,7 +2143,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   // Establish connection: send client preface
   client.sendClientPreface();
   {
-    auto out = client.getPendingOutput();
+    auto out = DrainPendingOutput(client, 128);
     std::span<const std::byte> bytes = out;
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
@@ -2150,12 +2159,11 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
       }
       bytes = bytes.subspan(res.bytesConsumed);
     }
-    client.onOutputWritten(client.getPendingOutput().size());
   }
 
   // Pump server response
-  while (handler.hasPendingOutput()) {
-    auto out = handler.getPendingOutput();
+  {
+    auto out = DrainPendingOutput(handler, 128);
     std::span<const std::byte> bytes = out;
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
@@ -2183,7 +2191,6 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
       }
       break;
     }
-    handler.onOutputWritten(out.size());
   }
 
   // Send request with Accept-Encoding that explicitly forbids identity with q=0
@@ -2200,7 +2207,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
 
   // Pump client request to server
   {
-    auto out = client.getPendingOutput();
+    auto out = DrainPendingOutput(client, 128);
     std::span<const std::byte> bytes = out;
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
@@ -2216,12 +2223,11 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
       }
       bytes = bytes.subspan(res.bytesConsumed);
     }
-    client.onOutputWritten(client.getPendingOutput().size());
   }
 
   // Pump server response back to client
-  while (handler.hasPendingOutput()) {
-    auto out = handler.getPendingOutput();
+  {
+    auto out = DrainPendingOutput(handler, 128);
     std::span<const std::byte> bytes = out;
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
@@ -2249,7 +2255,6 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
       }
       break;
     }
-    handler.onOutputWritten(out.size());
   }
 
   // Verify that server responded with 406 Not Acceptable

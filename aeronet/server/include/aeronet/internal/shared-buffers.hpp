@@ -19,7 +19,7 @@ struct SharedBuffers {
   RawChars buf;                 // can be used for any kind of temporary buffer
   RawChars decompressedBody;    // shared body buffer for non-async request decompression
   RawChars32 trailers;          // scratch buffer to preserve request trailers during decompression
-  vector<std::string_view> sv;  // scratch vector for chunked decoding
+  vector<std::string_view> sv;  // scratch views for chunked decoding and protocol gather writes
 };
 
 }  // namespace aeronet::internal

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 
 #include "aeronet/file-payload.hpp"
@@ -50,8 +51,12 @@ struct ConnectionState {
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
 
+  [[nodiscard]] bool hasPendingOutput() const noexcept {
+    return !outBuffer.empty() || (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
+  }
+
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
-    return isDrainCloseRequested() && outBuffer.empty() && tunnelOrFileBuffer.empty() && !isSendingFile();
+    return isDrainCloseRequested() && !hasPendingOutput() && tunnelOrFileBuffer.empty() && !isSendingFile();
   }
 
   // Request to close after draining currently buffered writes (graceful half-close semantics).
@@ -66,6 +71,7 @@ struct ConnectionState {
   ITransport::TransportResult transportWrite(std::string_view data);
   ITransport::TransportResult transportWrite(const HttpMessageData& httpResponseData);
 
+  ITransport::TransportResult transportWrite(std::span<const std::string_view> buffers);
   // Return true if success, false if fatal error.
   bool tunnelTransportWrite(NativeHandle fd);
 

@@ -111,7 +111,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     // All data was sent inline - emit the stream end now.
     if (_isHead) {
       // HEAD: send empty DATA frame with END_STREAM
-      const ErrorCode err = _pConnection->sendData(_streamId, {}, /*endStream=*/true);
+      const ErrorCode err = _pConnection->sendData(_streamId, std::span<const std::byte>{}, /*endStream=*/true);
       if (err != ErrorCode::NoError) {
         log::error("HTTP/2 streaming: failed to send END_STREAM on stream {}: {}", _streamId, ErrorCodeName(err));
         return false;
@@ -131,7 +131,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     }
 
     // No trailers - send empty DATA frame with END_STREAM
-    const ErrorCode err = _pConnection->sendData(_streamId, {}, /*endStream=*/true);
+    const ErrorCode err = _pConnection->sendData(_streamId, std::span<const std::byte>{}, /*endStream=*/true);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send END_STREAM on stream {}: {}", _streamId, ErrorCodeName(err));
       return false;

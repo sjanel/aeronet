@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/native-handle.hpp"
@@ -17,7 +18,7 @@ enum class TransportHint : uint8_t {
   None,        // No special action needed (operation completed or fatal error)
   ReadReady,   // Need socket readable before operation can proceed (SSL_ERROR_WANT_READ)
   WriteReady,  // Need socket writable before operation can proceed (SSL_ERROR_WANT_WRITE)
-  Error
+  Error,
 };
 
 // Base transport abstraction; allows transparent TLS or plain socket IO.
@@ -72,6 +73,12 @@ class ITransport {
     }
     return result;
   }
+
+  // Non-blocking ordered write across an arbitrary number of buffers.
+  // The default implementation preserves TLS semantics by calling write() in order.
+  // PlainTransport overrides this with one writev / WSASend operation per attempt.
+  // No zero copy for this version.
+  virtual TransportResult write(std::span<const std::string_view> buffers);
 
   // Whether this transport can transfer a file region straight to the socket with a single zero-copy
   // syscall (sendfile / TransmitFile), bypassing a user-space read + write. True only for plain
@@ -128,6 +135,9 @@ class PlainTransport final : public ITransport {
 
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf) override;
+
+  /// Gather write using writev / WSASend.
+  TransportResult write(std::span<const std::string_view> buffers) override;
 
   /// A plain socket can transfer a file region with the zero-copy sendfile(2) path.
   [[nodiscard]] bool supportsSendfile() const noexcept override { return true; }

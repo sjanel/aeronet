@@ -53,10 +53,14 @@ NativeHandle CreateSocket(Socket::Type type, int protocol) {
   return sock;
 #else
   NativeHandle sock = ::socket(AF_INET, SOCK_STREAM, protocol);
-  if (sock != kInvalidHandle && type == Socket::Type::StreamNonBlock) {
-    SetNonBlocking(sock);
-    SetCloseOnExec(sock);
+  if (sock != kInvalidHandle) {
+    // SO_NOSIGPIPE is orthogonal to blocking mode: without it, writing to a peer that already closed the
+    // connection raises an unblockable SIGPIPE that kills the process instead of send() returning EPIPE.
     SetNoSigPipe(sock);
+    if (type == Socket::Type::StreamNonBlock) {
+      SetNonBlocking(sock);
+      SetCloseOnExec(sock);
+    }
   }
   return sock;
 #endif

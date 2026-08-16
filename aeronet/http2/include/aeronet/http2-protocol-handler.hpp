@@ -91,6 +91,12 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     return _connection.getPendingOutput();
   }
 
+  void getPendingOutputFragments(vector<std::string_view>& fragments) const override {
+    _connection.getPendingOutputFragments(fragments);
+  }
+
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept override { return _connection.pendingOutputSize(); }
+
   void onOutputWritten(std::size_t bytesWritten) override {
     _connection.onOutputWritten(bytesWritten);
     if (!_connection.hasPendingOutput()) {
@@ -98,6 +104,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
       flushPendingStreamingSends();
     }
   }
+
+  void discardPendingOutput() noexcept override { _connection.discardPendingOutput(); }
 
   void onTransportClosing() override {
     // Close all active tunnel upstream connections before clearing state.

@@ -3145,6 +3145,10 @@ Additional notes
 - Request trailers (a trailing `HEADERS` block after the request body, RFC 9113 §8.1) are decoded and exposed through `HttpRequestView::trailers()` / `trailerValueOrEmpty()`, identically to HTTP/1.1 chunked trailers. Pseudo-header fields in a trailer block, and a trailing block that does not end the stream, are rejected with `RST_STREAM(PROTOCOL_ERROR)`; trailer bytes count toward the request header-size budget. Tests: `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RequestTrailers*`).
 - Static file responses created via `HttpResponse::file(...)` (used by `StaticFileHandler`) are serialized as HTTP/2 DATA frames by reading the file in bounded chunks.
 - The implementation is flow-control aware: it sends up to the available connection/stream window and continues after receiving `WINDOW_UPDATE` frames (no full in-memory file load).
+- Outbound DATA and oversized HEADERS/CONTINUATION blocks retain their backing allocations in an ordered fragment queue
+  across flow-control stalls and partial writes. Cleartext transports gather fragments with `writev` / `WSASend`; TLS
+  writes the same owned fragments in order. Tests: `aeronet/http2/test/http2-connection_test.cpp`
+  (`OwnedDataUsesGatherFragmentsAcrossPartialWrites`, `OversizedHeaderBlockGathersContinuationWithoutRecopy`) and
 - Tests: see `tests/http-tls-io_test.cpp` (`HttpRangeStatic_H2Tls.LargeFileStreaming_H2Tls`).
 
 ### Enabling HTTP/2
