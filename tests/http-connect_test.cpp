@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -23,6 +24,13 @@ using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
+
+void AllowConnectHost(test::TestServer& server, std::string_view host) {
+  server.postConfigUpdate([host](HttpServerConfig& cfg) {
+    const std::array allowlist{host};
+    cfg.withConnectAllowlist(allowlist.begin(), allowlist.end());
+  });
+}
 
 class HttpConnectDefaultConfig : public ::testing::Test {
  protected:
@@ -53,6 +61,8 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
   auto echoSrv = test::startEchoServer();
+  AllowConnectHost(ts, "127.0.0.1");
+
   // Build CONNECT request to our upstream
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
@@ -100,13 +110,21 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
 }
 
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
+  AllowConnectHost(ts, "no-such-host.example.invalid");
+
   test::sendAll(fd, "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n");
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   // Expect 502 Bad Gateway or connection close
   ASSERT_TRUE(resp.contains("502") || resp.empty());
 }
 
-TEST_F(HttpConnectDefaultConfig, AllowlistRejectsTarget) {
+TEST_F(HttpConnectDefaultConfig, EmptyAllowlistRejectsTarget) {
+  test::sendAll(fd, "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 403") || resp.contains("CONNECT target not allowed"));
+}
+
+TEST_F(HttpConnectDefaultConfig, ExplicitAllowlistRejectsTarget) {
   // only allow example.com
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     static constexpr std::string_view list[] = {"example.com"};
@@ -157,6 +175,7 @@ TEST_F(HttpConnectDefaultConfig, EmptyConnectPortReturns400) {
 // where peerFd != -1 triggers peer lookup and cleanup.
 TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   test::TestServer ts;
+  AllowConnectHost(ts, "127.0.0.1");
 
   // Start an echo server to act as upstream
   auto echoSrv = test::startEchoServer();
@@ -203,6 +222,7 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
   test::TestServer ts;
+  AllowConnectHost(ts, "127.0.0.1");
 
   // Start an echo server to act as upstream
   auto echoSrv = test::startEchoServer();
