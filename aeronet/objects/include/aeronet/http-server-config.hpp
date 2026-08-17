@@ -86,7 +86,7 @@ struct HttpServerConfig {
     // Allow on both plaintext and TLS
     EnabledPlainAndTLS,
     // Allow only on plaintext connections (disable on TLS)
-    EnabledPlainOnly
+    EnabledPlainOnly,
   };
 
   // Enable TRACE method handling (echo) on the server. Disabled by default for safety.
@@ -341,14 +341,18 @@ struct HttpServerConfig {
  private:
   TLSConfig& ensureTls();
 
-  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. Otherwise, the target host
-  // must exactly match one of these entries. The matching is case-insensitive for hostnames.
+  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. {"*"} allows every target;
+  // otherwise, the target host must exactly match one of these entries. Matching is case-insensitive for hostnames.
   ConcatenatedStrings32 _connectAllowlist;
 
  public:
-  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. Otherwise, the target host
-  // must exactly match one of these entries. The matching is case-insensitive for hostnames.
+  // Allowlist for CONNECT targets. Empty disables CONNECT; "*" allows every target; other entries match exact hosts.
   [[nodiscard]] const ConcatenatedStrings32& connectAllowlist() const { return _connectAllowlist; }
+
+  // Check whether a CONNECT target host is allowed by the configured allowlist.
+  [[nodiscard]] bool connectTargetAllowed(std::string_view host) const {
+    return _connectAllowlist.fullString() == "*" || _connectAllowlist.containsCI(host);
+  }
 
   // Set number of threads to use for the server event loops.
   // This setting is only meaningful for HttpServer (aka MultiHttpServer);
@@ -417,8 +421,8 @@ struct HttpServerConfig {
   // Set blocking body read timeout (0=off)
   HttpServerConfig& withBodyReadTimeout(std::chrono::milliseconds timeout);
 
-  // Set the CONNECT target allowlist (hostnames or IP strings), replacing any existing entries. An empty list disables
-  // CONNECT. Otherwise, the target host must exactly match an entry (case-insensitive for hostnames).
+  // Set the CONNECT target allowlist (hostnames or IP strings), replacing existing entries. Empty disables CONNECT;
+  // "*" allows every host and port; otherwise, the target host must exactly match an entry (case-insensitive).
   template <class InputIt>
   HttpServerConfig& withConnectAllowlist(InputIt first, InputIt last) {
     _connectAllowlist.clear();
