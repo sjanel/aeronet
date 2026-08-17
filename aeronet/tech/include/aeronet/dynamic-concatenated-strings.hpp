@@ -171,13 +171,14 @@ class DynamicConcatenatedStrings {
 
   // Range helpers
   [[nodiscard]] iterator begin() const noexcept { return {_buf.data(), _buf.data() + _buf.size()}; }
+
   [[nodiscard]] iterator end() const noexcept { return {}; }
 
-  // Get the full concatenated string
+  // Get the full concatenated string, without the last separator.
   // So if there are N elements, it will be size of all elements plus (N-1) * sep.size()
   [[nodiscard]] std::string_view fullString() const noexcept { return {_buf.data(), fullSize()}; }
 
-  // Get the full concatenated string
+  // Get the full concatenated string with the last separator.
   // Includes the last separator (so N elements + N separators)
   [[nodiscard]] std::string_view fullStringWithLastSep() const noexcept { return {_buf.data(), fullSizeWithLastSep()}; }
 

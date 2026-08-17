@@ -641,6 +641,40 @@ TEST(Http2ProtocolHandler, ConnectEmptyAllowlistBlocksTarget) {
   EXPECT_FALSE(setupCalled);
 }
 
+TEST(Http2ProtocolHandler, ConnectWildcardAllowlistAllowsTarget) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  static constexpr std::array<std::string_view, 1> kAllowedHosts = {"*"};
+  loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
+  loop.connect();
+
+  std::string capturedHost;
+  uint16_t capturedPort{};
+  MockTunnelBridge bridge;
+  bridge.onSetup = [&](uint32_t, std::string_view host, uint16_t port) -> NativeHandle {
+    capturedHost = host;
+    capturedPort = port;
+    return 42;
+  };
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "internal.example.com:8443"));
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+  ASSERT_EQ(ok, ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_EQ(capturedHost, "internal.example.com");
+  EXPECT_EQ(capturedPort, 8443);
+}
+
 TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
