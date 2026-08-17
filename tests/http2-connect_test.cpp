@@ -71,6 +71,26 @@ TEST(Http2ConnectTest, DefaultConfigRejectsTarget) {
   EXPECT_EQ(streamId, 0);
 }
 
+TEST(Http2ConnectTest, WildcardAllowlistAllowsTarget) {
+  test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "*");
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto echoSrv = test::startEchoServer();
+  const std::string authority = "127.0.0.1:" + std::to_string(echoSrv.port);
+  const uint32_t streamId = client.connect(authority);
+  ASSERT_GT(streamId, 0);
+
+  constexpr std::string_view payload = "wildcard-http2-connect";
+  const std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
+  ASSERT_TRUE(client.sendTunnelData(streamId, data));
+
+  RawChars received;
+  client.receiveTunnelData(received, streamId);
+  EXPECT_EQ(std::string_view(received.data(), received.size()), payload);
+}
+
 TEST(Http2ConnectTest, AllowlistRejectsTarget) {
   test::TlsHttp2TestServer ts;
 

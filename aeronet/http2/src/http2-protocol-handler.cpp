@@ -931,9 +931,8 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
     return;
   }
 
-  // CONNECT is disabled unless the target is explicitly allowlisted.
-  const auto& allowList = _pServerConfig->connectAllowlist();
-  if (!allowList.containsCI(host)) {
+  // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
+  if (!_pServerConfig->connectTargetAllowed(host)) {
     log::info("HTTP/2 CONNECT stream {} target {} not in allowlist", streamId, target);
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeForbidden, "CONNECT target not allowed"),
                        /*isHeadMethod=*/false);

@@ -124,6 +124,20 @@ TEST_F(HttpConnectDefaultConfig, EmptyAllowlistRejectsTarget) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 403") || resp.contains("CONNECT target not allowed"));
 }
 
+TEST_F(HttpConnectDefaultConfig, WildcardAllowlistAllowsTarget) {
+  AllowConnectHost(ts, "*");
+  auto echoSrv = test::startEchoServer();
+
+  const std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  test::sendAll(fd, req, 5000ms);
+  const auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+
+  constexpr std::string_view payload = "wildcard-connect";
+  test::sendAll(fd, payload, 2000ms);
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, payload.size()), payload);
+}
+
 TEST_F(HttpConnectDefaultConfig, ExplicitAllowlistRejectsTarget) {
   // only allow example.com
   ts.postConfigUpdate([](HttpServerConfig& cfg) {

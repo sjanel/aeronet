@@ -427,15 +427,6 @@ TEST(HttpServerConfigTest, HttpsRedirectDefaultsDisabled) {
   EXPECT_NO_THROW(config.validate());
 }
 
-TEST(HttpServerConfigTest, WithHttpsRedirectBuilder) {
-  HttpServerConfig config;
-  config.withHttpsRedirect(8443, http::StatusCodePermanentRedirect);
-  EXPECT_TRUE(config.httpsRedirect.enabled());
-  EXPECT_EQ(config.httpsRedirect.targetPort, 8443);
-  EXPECT_EQ(config.httpsRedirect.statusCode, http::StatusCodePermanentRedirect);
-  EXPECT_NO_THROW(config.validate());
-}
-
 TEST(HttpServerConfigTest, WithHttpsRedirectDefaultArgs) {
   HttpServerConfig config;
   config.withHttpsRedirect();
@@ -443,6 +434,23 @@ TEST(HttpServerConfigTest, WithHttpsRedirectDefaultArgs) {
   EXPECT_EQ(config.httpsRedirect.targetPort, 443);
   EXPECT_EQ(config.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
   EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, WithHttpsRedirectBuilder) {
+  HttpServerConfig config;
+
+  for (http::StatusCode statusCode : {
+           http::StatusCodeMovedPermanently,
+           http::StatusCodeFound,
+           http::StatusCodeTemporaryRedirect,
+           http::StatusCodePermanentRedirect,
+       }) {
+    config.withHttpsRedirect(8443, statusCode);
+    EXPECT_TRUE(config.httpsRedirect.enabled());
+    EXPECT_EQ(config.httpsRedirect.targetPort, 8443);
+    EXPECT_EQ(config.httpsRedirect.statusCode, statusCode);
+    EXPECT_NO_THROW(config.validate());
+  }
 }
 
 TEST(HttpServerConfigTest, HttpsRedirectZeroPortDisablesAndValidates) {
@@ -462,6 +470,33 @@ TEST(HttpServerConfigTest, HttpsRedirectRejectsCombinationWithTls) {
   HttpServerConfig config;
   config.withHttpsRedirect();
   config.tls.enabled = true;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+#ifdef AERONET_ENABLE_OPENSSL
+TEST(HttpServerConfigTest, InvalidCipherListThrows) {
+  HttpServerConfig cfg;
+  cfg.withTlsCipherList("THIS-IS-NOT-A-REAL-CIPHER");  // matches no cipher -> SSL_CTX_set_cipher_list fails
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+#endif
+
+TEST(HttpServerConfigTest, ConnectAllowListCannotContainStarWithOtherHosts) {
+  HttpServerConfig config;
+
+  std::array<std::string_view, 2> allowedHosts = {"www.example.com", "www.example2.com"};
+  config.withConnectAllowlist(allowedHosts.begin(), allowedHosts.end());
+
+  EXPECT_NO_THROW(config.validate());
+
+  std::array<std::string_view, 1> allowedHostsUnrestricted = {"*"};
+  config.withConnectAllowlist(allowedHostsUnrestricted.begin(), allowedHostsUnrestricted.end());
+
+  EXPECT_NO_THROW(config.validate());
+
+  std::array<std::string_view, 2> allowedHostsUnrestrictedWithOthers = {"*", "www.example.com"};
+  config.withConnectAllowlist(allowedHostsUnrestrictedWithOthers.begin(), allowedHostsUnrestrictedWithOthers.end());
+
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
