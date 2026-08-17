@@ -93,9 +93,8 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
     return LoopAction::Break;
   }
 
-  // CONNECT is disabled unless the target is explicitly allowlisted.
-  const auto& connectAllowList = _config.connectAllowlist();
-  if (!connectAllowList.containsCI(host)) {
+  // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
+  if (!_config.connectTargetAllowed(host)) {
     emitSimpleError(cnxIt, http::StatusCodeForbidden, "CONNECT target not allowed");
     return LoopAction::Break;
   }

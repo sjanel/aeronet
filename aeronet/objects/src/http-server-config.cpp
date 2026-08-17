@@ -360,6 +360,11 @@ void HttpServerConfig::validate() {
 
   builtinProbes.validate();
   accessLog.validate();
+
+  if (_connectAllowlist.size() > 1U && _connectAllowlist.contains("*")) {
+    throw std::invalid_argument("CONNECT allow list cannot contain \"*\" with other hosts");
+  }
+
 #ifdef AERONET_ENABLE_HTTP2
   http2.validate();
 #endif

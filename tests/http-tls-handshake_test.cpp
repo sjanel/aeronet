@@ -920,6 +920,20 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
   }
 }
 
+TEST(HttpTlsSniCertificates, HttpsRedirectWithTlsThrows) {
+  auto defaultPair = CertKeyCache::Get().localhost;
+  auto wildcardPair = CertKeyCache::Get().server;
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(defaultPair.first, defaultPair.second);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  cfg.tls.withTlsSniCertificateMemory("*.svc.test", wildcardPair.first, wildcardPair.second);
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.withHttpsRedirect(8443, http::StatusCodePermanentRedirect);
+  EXPECT_TRUE(cfg.httpsRedirect.enabled());
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
 TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   auto defaultPair = CertKeyCache::Get().localhost;
   auto wildcardPair = CertKeyCache::Get().server;
