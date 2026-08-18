@@ -412,6 +412,7 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
@@ -443,6 +444,7 @@ TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate)
   ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs), true), ErrorCode::NoError);
 
   loop.pumpClientToServer();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
   loop.pumpServerToClient();
 
   const auto receivedBody = [&loop]() {
@@ -464,6 +466,7 @@ TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate)
   }
 
   EXPECT_EQ(receivedBody(), body);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
   ASSERT_FALSE(loop.clientData.empty());
   EXPECT_TRUE(loop.clientData.back().endStream);
 }
@@ -897,6 +900,10 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   EXPECT_TRUE(loop.handler.isTunnelStream(1));
   EXPECT_TRUE(shutdownWriteCalled);
   EXPECT_EQ(shutdownWriteFd, kFakeUpstreamFd);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  loop.handler.closeTunnelByUpstreamFd(kFakeUpstreamFd);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
 }
 
 TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
@@ -1380,7 +1387,7 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
 
   for (const auto& tc : cases) {
     RawChars mhdrs;
-    mhdrs.append(MakeHttp1HeaderLine(":method", std::string(tc.method)));
+    mhdrs.append(MakeHttp1HeaderLine(":method", tc.method));
     mhdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
     mhdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
     // CONNECT omits :path per RFC 7540 §8.3, but other methods require it
@@ -1596,6 +1603,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerSendsDataOverHttp2) {
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
@@ -1653,6 +1661,7 @@ TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
 
 TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
   Router router;
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   router.setPath(http::Method::GET, "/boom2", [](const HttpRequestView&) -> HttpResponse { throw 42; });
 
   Http2ProtocolLoopback loop(router);
@@ -1910,6 +1919,7 @@ TEST(Http2ProtocolHandler, RequestMiddlewareCanShortCircuit) {
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
   loop.pumpServerToClient();
 
   EXPECT_FALSE(handlerCalled);  // Handler should NOT be called
@@ -2880,6 +2890,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerExceptionReturns500) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerUnknownExceptionReturns500) {
   Router router;
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   router.setPath(http::Method::GET, "/async-boom2", [](HttpRequestView&) -> RequestTask<HttpResponse> { throw 42; });
 
   Http2ProtocolLoopback loop(router);
@@ -3933,7 +3944,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
 
   router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([]() { return 1; });
-    throw 42;
+    throw 42;  // NOLINT(bugprone-std-exception-baseclass)
     co_return HttpResponse(200);
   });
 

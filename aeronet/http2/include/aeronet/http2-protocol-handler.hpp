@@ -265,6 +265,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   void flushPendingStreamingSends();
 
+  /// Release request state after a response, retaining it only while deferred output remains.
+  void releaseStreamAfterResponse(StreamsMap::iterator it);
+
   /// Dispatch a streaming handler request on an HTTP/2 stream.
   void handleStreamingRequest(StreamsMap::iterator it, const StreamingHandler& handler, const CorsPolicy* pCorsPolicy,
                               std::span<const ResponseMiddleware> responseMiddleware);
@@ -303,7 +306,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onAsyncTaskCompleted(uint32_t streamId);
 #endif
 
-  bool applyRequestMiddleware(HttpRequestView& request, uint32_t streamId, bool isHead, bool streaming,
+  bool applyRequestMiddleware(HttpRequestView& request, StreamsMap::iterator it, bool isHead, bool streaming,
                               const Router::RoutingResult& routingResult);
 
   Http2Connection _connection;
