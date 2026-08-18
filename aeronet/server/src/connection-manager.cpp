@@ -159,10 +159,20 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
       continue;
     }
 
+#ifdef AERONET_ENABLE_HTTP2
+    // keepAliveTimeout applies between requests, after the previous response has completed. An active HTTP/2
+    // stream may be waiting for peer flow-control credit and therefore produce no socket events at all; reaping
+    // it here would truncate a response at the current window boundary. Recheck periodically until all streams
+    // complete, at which point the last event-refreshed deadline resumes normal idle expiry.
+    if (state.protocolHandler && state.protocolHandler->type() == ProtocolType::Http2 &&
+        static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get())->connection().activeStreamCount() != 0) {
+      _keepAliveDeadlines.upsert(state, expired.fd, now + _config.keepAliveTimeout);
+      continue;
+    }
+#endif
+
     // File sends are exempt because their progress is driven by this very sweep (flushFilePayload retries
-    // above), which does not refresh lastActivity. Every other outbound path - including an HTTP/2 body
-    // parked behind the peer's flow-control window - advances on epoll events, and the event loop refreshes
-    // lastActivity for each of them, so a response that is actually being delivered never looks idle here.
+    // above), which does not refresh lastActivity.
     if (state.isSendingFile()) {
       _keepAliveDeadlines.upsert(state, expired.fd, now + _config.keepAliveTimeout);
       continue;

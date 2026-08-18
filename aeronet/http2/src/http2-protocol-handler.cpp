@@ -252,7 +252,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
                   http::StatusCodeBadRequest,
                   "Invalid :path header - unable to decode percent-encoded characters or path is not valid UTF-8"),
               /*isHeadMethod=*/false);
-          _streams.erase(streamId);
+          releaseStreamAfterResponse(it);
           return;
         }
       }
@@ -261,6 +261,8 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     }
   }
 
+  // TODO: checks on scheme, method, path and authority here? They are all mandatory.
+
   const auto [encoding, reject] =
       _pCompressionState->selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
@@ -268,7 +270,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
   if (reject) {
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"),
                        /*isHeadMethod=*/false);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -345,7 +347,7 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
         *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
     if (res.message != nullptr) {
       (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
-      _streams.erase(streamId);
+      releaseStreamAfterResponse(it);
       return;
     }
   }
@@ -418,6 +420,20 @@ void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode)
   }
   cleanupTunnel(it);
   _streams.erase(it);
+}
+
+void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {
+  assert(it != _streams.end());
+  if (it->second.pending) {
+    it->second.request = {};
+  } else {
+    _streams.erase(it);
+
+    // Sending END_STREAM transitions a half-closed-remote stream to Closed, but send-path closure is finalized
+    // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. At this point our state has
+    // already been released, so close accounting and the callback are safe.
+    _connection.finalizeSendClosedStream(it->first);
+  }
 }
 
 ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody) {
@@ -621,7 +637,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
         sendResponse(streamId, std::move(corsResp), request.method() == http::Method::HEAD);
     assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
     onRequestCompleted(request, http::StatusCodeForbidden);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -669,11 +685,10 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     });
   }
 
-  // Clean up stream request (keep stream entry for pending sends)
-  state.request = {};
+  releaseStreamAfterResponse(it);
 }
 
-bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, uint32_t streamId, bool isHead,
+bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, StreamsMap::iterator it, bool isHead,
                                                   bool streaming, const Router::RoutingResult& routingResult) {
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
                                            routingResult.preMiddlewareRange(), *_pTelemetryContext, streaming, {});
@@ -685,21 +700,13 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, uint
     request.prefinalizeHttpResponse(*globalResult, *_pTelemetryContext);
     globalResult->finalizeHeadersAndBody();
     const auto middlewareStatus = globalResult->status();
+    const auto streamId = it->first;
     ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
     onRequestCompleted(request, middlewareStatus);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
     }
-    // sendResponse may have deferred part of the body behind flow control: keep the stream entry alive
-    // so the pending send can complete (mirrors dispatchRequest's cleanup).
-    const auto streamIt = _streams.find(streamId);
-    if (streamIt != _streams.end()) {
-      if (streamIt->second.pending) {
-        streamIt->second.request = {};
-      } else {
-        _streams.erase(streamIt);
-      }
-    }
+    releaseStreamAfterResponse(it);
     return true;
   }
 
@@ -716,8 +723,12 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   // Handle separately from normal request/response dispatch.
   if (request.method() == http::Method::CONNECT) {
     handleConnectRequest(streamId, request);
-    // handleConnectRequest sets up tunnel state in-place; clear only the request.
-    it->second.request = {};
+    if (it->second.tunnelUpstreamFd != kInvalidHandle) {
+      // A successful CONNECT remains active until both sides of the tunnel close.
+      it->second.request = {};
+    } else {
+      releaseStreamAfterResponse(it);
+    }
     return;
   }
 
@@ -737,7 +748,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         sendResponse(streamId, HttpResponse(http::StatusCodeNotFound), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError && "sendResponse cannot fail for empty 404 response");
     onRequestCompleted(request, http::StatusCodeNotFound);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -747,7 +758,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         sendResponse(streamId, HttpResponse(http::StatusCodeRequestHeaderFieldsTooLarge), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError);
     onRequestCompleted(request, http::StatusCodeRequestHeaderFieldsTooLarge);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -757,7 +768,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         sendResponse(streamId, HttpResponse(http::StatusCodePayloadTooLarge), /*isHeadMethod=*/false);
     assert(err == ErrorCode::NoError);
     onRequestCompleted(request, http::StatusCodePayloadTooLarge);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -778,7 +789,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     // If an async handler is found and suspends, we defer the response.
     if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
       // Run request middleware before the async handler
-      if (applyRequestMiddleware(request, streamId, isHead, false, routingResult)) {
+      if (applyRequestMiddleware(request, it, isHead, false, routingResult)) {
         return;
       }
 
@@ -795,7 +806,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     // Streaming handlers run synchronously via HttpResponseWriter + Http2WriterTransport.
     if (const auto* streamingHandler = routingResult.streamingHandler(); streamingHandler != nullptr) {
       // Run request middleware
-      if (applyRequestMiddleware(request, streamId, isHead, true, routingResult)) {
+      if (applyRequestMiddleware(request, it, isHead, true, routingResult)) {
         return;
       }
 
@@ -828,14 +839,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   onRequestCompleted(request, respStatusCode);
 
-  // Clean up stream state. If sendResponse() deferred a file payload (flow-controlled),
-  // the pending send lives inside the StreamState - only clear the request, don't erase.
-  auto& state = it->second;
-  if (state.pending) {
-    state.request = {};
-  } else {
-    _streams.erase(streamId);
-  }
+  releaseStreamAfterResponse(it);
 }
 
 HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult) {
@@ -989,6 +993,7 @@ void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
 
   // Send empty DATA with END_STREAM to gracefully close the tunnel stream.
   (void)_connection.sendData(streamId, {}, /*endStream=*/true);
+  _connection.finalizeSendClosedStream(streamId);
 }
 
 void Http2ProtocolHandler::tunnelConnectFailed(uint32_t streamId) {
@@ -1140,7 +1145,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
     (void)sendResponse(streamId, HttpResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
                        /*isHeadMethod=*/false);
     onRequestCompleted(state.request.request, http::StatusCodeInternalServerError);
-    _streams.erase(streamId);
+    releaseStreamAfterResponse(it);
     return false;
   }
 
@@ -1192,6 +1197,7 @@ void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
 
 void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   auto it = _streams.find(streamId);
+  assert(it != _streams.end());
   // Called from startAsyncHandler (just inserted) or resumeAsyncTask (just found) - cannot be absent.
   auto* pAsync = it->second.asyncTask();
   assert(pAsync != nullptr);
@@ -1243,17 +1249,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
 
   onRequestCompleted(it->second.request.request, respStatusCode);
 
-  // If sendResponse() deferred a file payload, keep the stream entry alive.
-  auto& state = it->second;
-  if (state.pending) {
-    state.request = {};
-  } else {
-    _streams.erase(it);
-    // The async completion runs outside frame processing, so a response that closed the stream through
-    // the send path must be finalized explicitly (active-stream accounting + retention). Our per-stream
-    // state is already erased, so the stream-closed callback finds nothing to re-enter.
-    _connection.finalizeSendClosedStream(streamId);
-  }
+  releaseStreamAfterResponse(it);
 }
 
 bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handle) {

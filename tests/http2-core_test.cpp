@@ -429,8 +429,8 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   // request was read, so a handler slower than keepAliveTimeout returned with it already expired. The next
   // maintenance sweep then closed the connection as if it had been idle - while the part of the body that
   // exceeded the peer's flow-control window was still parked server-side, truncating a successful 200.
-  // The client below is a normal, progressing reader: it just does not happen to consume the very first
-  // bytes within a maintenance tick of the handler returning.
+  // The client below also withholds its first WINDOW_UPDATE beyond keepAliveTimeout to prove that an active,
+  // flow-control-blocked response is not mistaken for a reusable connection waiting for its next request.
   static constexpr auto kKeepAlive = std::chrono::milliseconds{200};
   static constexpr auto kHandlerDelay = kKeepAlive * 3 / 2;  // outlives the idle window
   static constexpr std::size_t kBodySize = 400000;           // several initial flow-control windows
@@ -504,10 +504,12 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   ASSERT_EQ(client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs), true), ErrorCode::NoError);
   ASSERT_TRUE(writePending());
 
-  // Let the handler finish, then start consuming shortly after: late enough that a sweep firing right after
-  // the response was produced would already have closed us, early enough to be well within keepAliveTimeout
-  // of it - a client that reads a bit later than the server writes, not an idle one.
-  std::this_thread::sleep_for(kHandlerDelay + std::chrono::milliseconds{60});
+  // Anchor the pause to actual response delivery instead of estimating when the handler finished. The first
+  // read is smaller than a DATA frame, so it cannot release flow-control credit. Keep the response stalled for
+  // longer than keepAliveTimeout: an active response is not an idle keep-alive connection and must survive.
+  inBuf += test::recvWithTimeout(fd, std::chrono::seconds{2}, 1);
+  ASSERT_FALSE(inBuf.empty());
+  std::this_thread::sleep_for(kKeepAlive + std::chrono::milliseconds{50});
 
   // Drain in slices, pausing far less than keepAliveTimeout between them: every slice consumed releases a
   // WINDOW_UPDATE, and each of those refreshes the connection's idle deadline.
@@ -524,6 +526,10 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   EXPECT_EQ(receivedBody.size(), kBodySize);
   // Compare without dumping 400 kB into the test log on failure.
   EXPECT_EQ(receivedBody.find_first_not_of('q'), std::string::npos);
+
+  // Once END_STREAM has completed the only stream, the connection is idle again and normal keep-alive
+  // expiry must resume. This also guards against leaking active-stream accounting on the send path.
+  EXPECT_TRUE(test::WaitForPeerClose(fd, kKeepAlive * 3));
 }
 
 TEST(Http2Core, LoopbackHandshakeOpensConnection) {

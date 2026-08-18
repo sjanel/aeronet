@@ -913,9 +913,7 @@ TEST(Http2Connection, SettingsFrameInvalidLengthIsFrameSizeError) {
   Http2Connection conn(config, true);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array payload = {
-      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x10},
-  };
+  std::array payload{std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x10}};
 
   FrameHeader header{};
   header.length = static_cast<uint32_t>(payload.size());
@@ -936,9 +934,9 @@ TEST(Http2Connection, SettingsFrameInvalidEnablePushIsProtocolError) {
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // ENABLE_PUSH must be 0 or 1.
-  std::array<std::byte, 6> entry = {
-      std::byte{0x00}, std::byte{0x02},                                   // SETTINGS_ENABLE_PUSH
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02}  // value=2
+  std::array entry{
+      std::byte{0x00}, std::byte{0x02},                                    // SETTINGS_ENABLE_PUSH
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02},  // value=2
   };
 
   FrameHeader header;
@@ -959,9 +957,9 @@ TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // MAX_FRAME_SIZE must be in [16384, 16777215]. Provide 16383.
-  std::array<std::byte, 6> entry = {
-      std::byte{0x00}, std::byte{0x05},                                   // SETTINGS_MAX_FRAME_SIZE
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x3F}, std::byte{0xFF}  // 16383
+  std::array entry{
+      std::byte{0x00}, std::byte{0x05},                                    // SETTINGS_MAX_FRAME_SIZE
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x3F}, std::byte{0xFF},  // 16383
   };
 
   FrameHeader header;
@@ -982,8 +980,10 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooLargeIsFlowControlError) {
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // SETTINGS_INITIAL_WINDOW_SIZE (0x04) with value 0x80000000 (> 0x7FFFFFFF)
-  std::array<std::byte, 6> entry = {std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
-                                    std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  std::array entry{
+      std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+      std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+  };
 
   FrameHeader header;
   header.length = static_cast<uint32_t>(entry.size());
@@ -1017,8 +1017,10 @@ TEST(Http2Connection, UnknownSettingsParameterIsIgnored) {
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // Use an unknown SETTINGS parameter ID (0xFFFF) with an arbitrary value=1
-  std::array<std::byte, 6> entry = {std::byte{0xFF}, std::byte{0xFF},  // unknown ID 0xFFFF
-                                    std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
+  std::array entry{
+      std::byte{0xFF}, std::byte{0xFF},  // unknown ID 0xFFFF
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01},
+  };
 
   FrameHeader header;
   header.length = static_cast<uint32_t>(entry.size());
@@ -1076,8 +1078,9 @@ TEST(Http2Connection, SettingsAckFrameWithPayloadIsFrameSizeError) {
   Http2Connection conn(config, true);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array<std::byte, 6> payload = {std::byte{0x00}, std::byte{0x01}, std::byte{0x00},
-                                      std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
+  std::array payload{
+      std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01},
+  };
 
   FrameHeader header{};
   header.length = static_cast<uint32_t>(payload.size());
@@ -1328,8 +1331,10 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
 
   // Now send SETTINGS_INITIAL_WINDOW_SIZE = 0 which should cause updateInitialWindowSize
   // to compute newWindow < 0 for the existing stream and return FlowControlError.
-  std::array<std::byte, 6> entry = {std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
-                                    std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
+  std::array entry{
+      std::byte{0x00}, std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+  };
 
   FrameHeader header;
   header.length = static_cast<uint32_t>(entry.size());
@@ -1380,12 +1385,14 @@ TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
   // Now apply SETTINGS_INITIAL_WINDOW_SIZE = initialWindow + 1 which will
   // cause newWindow = kMaxWindow + 1 -> overflow and should return FlowControlError
   const uint32_t newInitial = initialWindow + 1U;
-  std::array<std::byte, 6> entry = {std::byte{0x00},
-                                    std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
-                                    std::byte{static_cast<uint8_t>((newInitial >> 24) & 0xFF)},
-                                    std::byte{static_cast<uint8_t>((newInitial >> 16) & 0xFF)},
-                                    std::byte{static_cast<uint8_t>((newInitial >> 8) & 0xFF)},
-                                    std::byte{static_cast<uint8_t>(newInitial & 0xFF)}};
+  std::array entry{
+      std::byte{0x00},
+      std::byte{0x04},  // SETTINGS_INITIAL_WINDOW_SIZE
+      std::byte{static_cast<uint8_t>((newInitial >> 24) & 0xFF)},
+      std::byte{static_cast<uint8_t>((newInitial >> 16) & 0xFF)},
+      std::byte{static_cast<uint8_t>((newInitial >> 8) & 0xFF)},
+      std::byte{static_cast<uint8_t>(newInitial & 0xFF)},
+  };
 
   FrameHeader header;
   header.length = static_cast<uint32_t>(entry.size());
@@ -1468,9 +1475,12 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
 
   // Now send a WINDOW_UPDATE for the stream with increment 1 which will overflow
   const uint32_t winInc = 1U;
-  std::array payload = {
-      std::byte{static_cast<uint8_t>((winInc >> 24) & 0xFF)}, std::byte{static_cast<uint8_t>((winInc >> 16) & 0xFF)},
-      std::byte{static_cast<uint8_t>((winInc >> 8) & 0xFF)}, std::byte{static_cast<uint8_t>(winInc & 0xFF)}};
+  std::array payload{
+      std::byte{static_cast<uint8_t>((winInc >> 24) & 0xFF)},
+      std::byte{static_cast<uint8_t>((winInc >> 16) & 0xFF)},
+      std::byte{static_cast<uint8_t>((winInc >> 8) & 0xFF)},
+      std::byte{static_cast<uint8_t>(winInc & 0xFF)},
+  };
 
   FrameHeader header;
   header.length = static_cast<uint32_t>(payload.size());
@@ -2341,9 +2351,8 @@ TEST(Http2Connection, ProcessInputInGoAwaySentState) {
   }
 
   // Send a valid frame while in GoAwaySent state — should still process frames
-  std::array pingPayload{
-      std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8},
-  };
+  std::array pingPayload{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
+                         std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
   FrameHeader header;
   header.length = static_cast<uint32_t>(pingPayload.size());
   header.type = FrameType::Ping;
