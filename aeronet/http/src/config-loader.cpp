@@ -57,6 +57,7 @@ TopLevelConfig ParseConfigString(std::string_view content, ConfigFormat format) 
   if (format == ConfigFormat::json) {
     ec = glz::read<glz::opts{.null_terminated = false}>(config, content);
   } else {
+    assert(format == ConfigFormat::yaml);
     ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(config, content);
   }
   if (ec) {

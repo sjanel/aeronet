@@ -126,8 +126,11 @@ class StaticFileConfig {
   std::size_t maxEntriesToList = 10000;
 
  private:
-  StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{"index.html", http::ContentTypeApplicationOctetStream,
-                                                            std::string_view()};
+  StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{
+      "index.html",
+      http::ContentTypeApplicationOctetStream,
+      std::string_view(),
+  };
 };
 
 }  // namespace aeronet
