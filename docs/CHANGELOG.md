@@ -50,6 +50,10 @@ All notable changes to aeronet are documented in this file.
 - **Further request head buffer parsing optimizations**: faster CI hashing for headers, faster request method parsing. Measured gains of ~10% for requests with very few headers, and up to ~23% for requests with many headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
 - **Improved header & trailer lookups** by normalizing keys to lower case in HttpRequestView.
 
+### Others
+
+- Bumped `glaze` version to `8.1.0`.
+
 ## [1.4.1] - 2026-07-25
 
 ### 1.4.1 Bug Fixes
