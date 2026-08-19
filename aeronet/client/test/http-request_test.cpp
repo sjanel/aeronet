@@ -54,6 +54,17 @@ class HttpRequestTest : public ::testing::Test {
   HttpRequest makeRequestWithoutTrailerHeader(http::Method method, std::string_view url) {
     return {0, method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions(false)};
   }
+  // Overloads reserving extra room for headers the caller adds afterwards, as HttpClient::makeRequest does.
+  HttpRequest makeRequestWithAdditionalCapacity(std::size_t additionalCapacity, http::Method method,
+                                                std::string_view url) {
+    return {additionalCapacity, method, url, globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
+  }
+  HttpRequest makeRequestWithAdditionalCapacity(std::size_t additionalCapacity, http::Method method,
+                                                std::string_view url, std::string_view body,
+                                                std::string_view contentType) {
+    return {additionalCapacity,   method, url,        globalHeaders.fullStringWithLastSep(),
+            makeRequestOptions(), body,   contentType};
+  }
 
   static internal::CompressionState CreateResponseCompressionState(CompressionConfig* config) {
     internal::CompressionState ret{*config};
@@ -271,6 +282,89 @@ TEST_F(HttpRequestTest, Headers) {
 
   EXPECT_EQ(req.headersFlatView(), kExpectedHeadersFlatView);
   EXPECT_EQ(req.headersSize(), kExpectedHeadersFlatView.size());
+}
+
+// Regression test: body-less request built with a non-zero additionalCapacity, then mutated with headerAddLine().
+//
+// The constructor used to derive bodyStartPos from neededCapacity, which also covers additionalCapacity - reserved but
+// deliberately left unwritten for the caller's own headers. bodyStartPos therefore sat additionalCapacity bytes past
+// the head, and everything downstream read from it went wrong:
+//   - headersFlatView() exposed the reserved, uninitialized tail;
+//   - bodyLength() computes _data.size() - bodyStartPos(), so it underflowed and the message claimed a huge body;
+//   - headerAddLineUnchecked() derived its insertion pointer from bodyStartPos and, seeing a non-zero body length, took
+//     the has-a-body branch to scan backwards for a Content-Type header that a body-less request never has, then
+//     memmove'd a length computed from (_data.end() - insertPtr), which can go negative and wrap.
+// In a release build that was heap corruption and a SIGSEGV; under ASan it reports a heap-buffer-overflow. The
+// assertions here fail deterministically without the fix, before any out-of-bounds access is even reached.
+TEST_F(HttpRequestTest, BodylessRequestWithAdditionalCapacityKeepsBodyStartAtHeadEnd) {
+  static constexpr std::string_view kAuthorization = "authorization";
+  // Realistically sized bearer token: big enough that the old overshoot was unmistakable.
+  const std::string tokenValue = "Bearer " + std::string(1024, 'x');
+  const std::size_t additionalCapacity = http::HeaderSize(kAuthorization.size(), tokenValue.size());
+
+  auto req =
+      makeRequestWithAdditionalCapacity(additionalCapacity, http::Method::GET, "http://example.com/path?query=1");
+
+  static constexpr std::string_view kHeadersBeforeAdd =
+      "host: example.com\r\n"
+      "user-agent: aeronet\r\n";
+
+  // Reserved-but-unwritten capacity must count as neither head nor body.
+  EXPECT_EQ(req.headSize(), req.sizeInlined());
+  EXPECT_EQ(req.bodyLength(), 0U);
+  EXPECT_FALSE(req.hasBodyInlined());
+  EXPECT_GE(req.capacityInlined(), req.sizeInlined() + additionalCapacity);
+  EXPECT_EQ(req.headersFlatView(), kHeadersBeforeAdd);
+
+  // The point of additionalCapacity: this header fits without reallocating. It must land at the end of the head, not in
+  // the reserved tail.
+  req.headerAddLine(kAuthorization, tokenValue);
+
+  EXPECT_EQ(req.headerValueOrEmpty(kAuthorization), tokenValue);
+  EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "aeronet");
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "example.com");
+  EXPECT_EQ(req.headSize(), req.sizeInlined());
+  EXPECT_EQ(req.bodyLength(), 0U);
+  EXPECT_FALSE(req.hasBodyInlined());
+
+  const std::string expectedHeadersAfterAdd =
+      std::string(kHeadersBeforeAdd) + std::string(kAuthorization) + ": " + tokenValue + "\r\n";
+  EXPECT_EQ(req.headersFlatView(), expectedHeadersAfterAdd);
+  EXPECT_EQ(req.headersSize(), expectedHeadersAfterAdd.size());
+
+  // A second header no longer fits in the reserved capacity, exercising the grow path of headerAddLineUnchecked.
+  req.headerAddLine("x-trace-id", "abc123");
+
+  EXPECT_EQ(req.headerValueOrEmpty("x-trace-id"), "abc123");
+  EXPECT_EQ(req.headerValueOrEmpty(kAuthorization), tokenValue);
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "example.com");
+  EXPECT_EQ(req.headSize(), req.sizeInlined());
+  EXPECT_EQ(req.bodyLength(), 0U);
+}
+
+// Same shape as above, but with a body: this path was already correct (the constructor taking a body fixes bodyStartPos
+// up after writing the head), so it guards against the fix regressing it.
+TEST_F(HttpRequestTest, BodyRequestWithAdditionalCapacityKeepsBodyStartBeforeBody) {
+  static constexpr std::string_view kAuthorization = "authorization";
+  static constexpr std::string_view kBody = "payload";
+  const std::string tokenValue = "Bearer " + std::string(512, 'y');
+  const std::size_t additionalCapacity = http::HeaderSize(kAuthorization.size(), tokenValue.size());
+
+  auto req = makeRequestWithAdditionalCapacity(additionalCapacity, http::Method::POST, "http://example.com/path", kBody,
+                                               http::ContentTypeApplicationJson);
+
+  EXPECT_EQ(req.bodyLength(), kBody.size());
+  EXPECT_EQ(req.bodyInMemory(), kBody);
+  EXPECT_EQ(req.headSize(), req.sizeInlined() - kBody.size());
+
+  req.headerAddLine(kAuthorization, tokenValue);
+
+  EXPECT_EQ(req.headerValueOrEmpty(kAuthorization), tokenValue);
+  EXPECT_EQ(req.bodyInMemory(), kBody);
+  EXPECT_EQ(req.bodyLength(), kBody.size());
+  EXPECT_EQ(req.headSize(), req.sizeInlined() - kBody.size());
+  // Content-Type and Content-Length must stay adjacent to the body, after the freshly inserted header.
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationJson);
 }
 
 TEST_F(HttpRequestTest, HostHeaderShouldBeReserved) {

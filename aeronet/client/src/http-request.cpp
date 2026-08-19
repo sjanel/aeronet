@@ -208,8 +208,6 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
       hostHeaderSize + concatenatedHeaders.size() + additionalCapacity + _originKeyLen;
 
-  setBodyStartPos(neededCapacity);
-
   _data.reserve(neededCapacity);
 
   char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
@@ -223,6 +221,12 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   }
 
   _data.setEnd(pData);
+
+  // Derive the body start from the head actually written, not from neededCapacity: the latter also covers
+  // additionalCapacity, which is reserved but deliberately left unwritten for the caller's own headers. Setting it from
+  // the capacity would leave bodyStartPos additionalCapacity bytes past the data, and every later header mutation
+  // derives its insertion pointer from it (see HttpMessage::headerAddLineUnchecked).
+  setBodyStartPos(_data.size());
 
   assert(_data.size() + additionalCapacity == _data.capacity());
 }
