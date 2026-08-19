@@ -44,7 +44,7 @@ struct WireDecodedHeadersDebug {
 };
 
 [[nodiscard]] WireDecodedHeadersDebug DecodeFirstHeadersFromOutput(std::span<const std::byte> output) {
-  HpackDecoder decoder(4096);
+  HpackDecoder decoder(4096, true);
 
   RawBytes headerBlock;
   std::size_t pos = 0;
@@ -1137,8 +1137,9 @@ TEST(Http2Connection, SettingsFrameInitialWindowSizeTooLargeIsFlowControlError) 
   Http2Connection conn(config, true);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array<std::byte, 6> payload = {std::byte{0x00}, std::byte{0x04}, std::byte{0x80},
-                                      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};  // 0x80000000 > 0x7FFFFFFF
+  std::array payload{
+      std::byte{0x00}, std::byte{0x04}, std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+  };  // 0x80000000 > 0x7FFFFFFF
 
   FrameHeader header{};
   header.length = static_cast<uint32_t>(payload.size());
@@ -1158,8 +1159,8 @@ TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
   Http2Connection conn(config, true);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array<std::byte, 8> payload = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
-                                      std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
+  std::array payload{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
+                     std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
   FrameHeader header;
   header.length = static_cast<uint32_t>(payload.size());
   header.type = FrameType::Ping;
@@ -2045,6 +2046,76 @@ TEST(Http2Connection, HeadersHpackDecodingFailedIsCompressionError) {
   auto res = conn.processInput(span);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::CompressionError);
+}
+
+TEST(Http2Connection, MalformedFieldSectionResetsStreamWithoutClosingConnection) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  bool headersCalled = false;
+  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+
+  HpackEncoder encoder(config.headerTableSize);
+  RawBytes headerBlock;
+  encoder.encode(headerBlock, ":method", "GET");
+  encoder.encode(headerBlock, ":method", "GET");
+
+  RawBytes frame;
+  WriteFrame(frame, FrameType::Headers, ComputeHeaderFrameFlags(true, true), 1,
+             static_cast<uint32_t>(headerBlock.size()));
+  frame.unchecked_append(headerBlock);
+
+  const auto res = conn.processInput(frame);
+
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+  EXPECT_FALSE(headersCalled);
+  ASSERT_TRUE(conn.hasPendingOutput());
+
+  const auto output = conn.getPendingOutput();
+  const auto outputHeader = ParseFrameHeader(output);
+  EXPECT_EQ(outputHeader.type, FrameType::RstStream);
+  RstStreamFrame reset;
+  ASSERT_EQ(ParseRstStreamFrame(outputHeader, output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
+  EXPECT_EQ(reset.errorCode, ErrorCode::ProtocolError);
+}
+
+TEST(Http2Connection, MalformedContinuationFieldSectionResetsStreamWithoutClosingConnection) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  bool headersCalled = false;
+  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+
+  HpackEncoder encoder(config.headerTableSize);
+  RawBytes headerBlock;
+  encoder.encode(headerBlock, ":method", "GET");
+  encoder.encode(headerBlock, ":method", "GET");
+  ASSERT_GT(headerBlock.size(), 1U);
+
+  RawBytes headersFrame;
+  WriteFrame(headersFrame, FrameType::Headers, ComputeHeaderFrameFlags(true, false), 1, 1U);
+  headersFrame.unchecked_append(std::span<const std::byte>(headerBlock.data(), 1U));
+  EXPECT_EQ(conn.processInput(headersFrame).action, Http2Connection::ProcessResult::Action::Continue);
+
+  RawBytes continuationFrame;
+  WriteContinuationFrame(continuationFrame, 1,
+                         std::span<const std::byte>(headerBlock.data() + 1U, headerBlock.size() - 1U), true);
+  const auto res = conn.processInput(continuationFrame);
+
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+  EXPECT_FALSE(headersCalled);
+  ASSERT_TRUE(conn.hasPendingOutput());
+
+  const auto output = conn.getPendingOutput();
+  const auto outputHeader = ParseFrameHeader(output);
+  EXPECT_EQ(outputHeader.type, FrameType::RstStream);
+  RstStreamFrame reset;
+  ASSERT_EQ(ParseRstStreamFrame(outputHeader, output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
+  EXPECT_EQ(reset.errorCode, ErrorCode::ProtocolError);
 }
 
 // ============================

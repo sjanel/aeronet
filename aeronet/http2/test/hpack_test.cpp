@@ -179,8 +179,14 @@ TEST(HpackDynamicTable, AddEntryTooLarge) {
 // Decoder Tests
 // ============================
 
+namespace {
+
+HpackDecoder CreateHpackDecoder() { return {4096, true}; }
+
+}  // namespace
+
 TEST(HpackDecoder, DecodeIndexedHeader) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // 0x82 = indexed header field, index 2 (:method: GET)
   static constexpr uint8_t encoded[]{0x82};
@@ -194,7 +200,7 @@ TEST(HpackDecoder, DecodeIndexedHeader) {
 }
 
 TEST(HpackDecoder, DuplicateIndexedHeaderForbidden) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Indexed Header Field (1xxxxxxx) with 7-bit prefix. Static table index 28
   // corresponds to "content-length" in our static table (1-based index).
@@ -204,12 +210,11 @@ TEST(HpackDecoder, DuplicateIndexedHeaderForbidden) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Duplicated header forbidden to merge");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
 }
 
 TEST(HpackDecoder, DecodeLiteralWithIndexing) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal header with incremental indexing, new name
   // 0x40 = literal with indexing, index 0 (new name)
@@ -237,7 +242,7 @@ TEST(HpackDecoder, DecodeLiteralWithIndexing) {
 // ============================
 
 TEST(HpackDecoder, RejectsUppercaseInNewLiteralName) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with incremental indexing, new name "Custom-Key" (uppercase C, K)
   static constexpr uint8_t encoded[]{
@@ -248,8 +253,7 @@ TEST(HpackDecoder, RejectsUppercaseInNewLiteralName) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldName);
 
   // HPACK compression state must stay in sync even though the message is malformed:
   // the entry must still have been added to the dynamic table.
@@ -257,7 +261,7 @@ TEST(HpackDecoder, RejectsUppercaseInNewLiteralName) {
 }
 
 TEST(HpackDecoder, RejectsInvalidByteInNewLiteralName) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Name "foo:bar" - colon is not a tchar and is not uppercase, checks the
   // validator isn't just an A-Z check.
@@ -268,12 +272,11 @@ TEST(HpackDecoder, RejectsInvalidByteInNewLiteralName) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldName);
 }
 
 TEST(HpackDecoder, RejectsEmptyNewLiteralName) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with incremental indexing, new name of length 0
   static constexpr uint8_t encoded[]{0x40, 0x00, 0x01, 'x'};
@@ -281,12 +284,11 @@ TEST(HpackDecoder, RejectsEmptyNewLiteralName) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldName);
 }
 
 TEST(HpackDecoder, AcceptsPunctuationTcharInName) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Name "x-my_header!" uses only valid tchar punctuation ('-', '_', '!')
   static constexpr uint8_t encoded[]{
@@ -301,7 +303,7 @@ TEST(HpackDecoder, AcceptsPunctuationTcharInName) {
 }
 
 TEST(HpackDecoder, RejectsCrLfInValue) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Value "bad\r\nvalue" - CRLF injection attempt
   static constexpr uint8_t encoded[]{
@@ -311,12 +313,11 @@ TEST(HpackDecoder, RejectsCrLfInValue) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
 }
 
 TEST(HpackDecoder, RejectsNulInValue) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Value contains an embedded NUL byte
   static constexpr uint8_t encoded[]{
@@ -326,12 +327,11 @@ TEST(HpackDecoder, RejectsNulInValue) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
 }
 
 TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Indexed Header Field, static table index 2 = ":method" / "GET"
   static constexpr uint8_t encoded[]{0x82};
@@ -344,8 +344,66 @@ TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
   EXPECT_EQ(result.decodedHeaders.begin()->second, "GET");
 }
 
+TEST(HpackDecoder, RejectsDuplicatePseudoHeader) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  RawBytes encoded;
+  encoder.encode(encoded, ":method", "GET");
+  encoder.encode(encoded, ":method", "GET");
+
+  const auto result = decoder.decode(encoded);
+
+  EXPECT_FALSE(result.isSuccess());
+  EXPECT_FALSE(result.isCompressionError());
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicatePseudoHeaderField);
+}
+
+TEST(HpackDecoder, RejectsPseudoHeaderAfterRegularField) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  RawBytes encoded;
+  encoder.encode(encoded, "x-first", "value");
+  encoder.encode(encoded, ":method", "GET");
+
+  const auto result = decoder.decode(encoded);
+
+  EXPECT_FALSE(result.isSuccess());
+  EXPECT_FALSE(result.isCompressionError());
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::PseudoHeaderFieldAfterRegularField);
+}
+
+TEST(HpackDecoder, RejectsUndefinedPseudoHeaderAndFinishesDecodingBlock) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  RawBytes encoded;
+  encoder.encode(encoded, ":extension", "value");
+  encoder.encode(encoded, "x-after", "value");
+
+  const auto result = decoder.decode(encoded);
+
+  EXPECT_FALSE(result.isSuccess());
+  EXPECT_FALSE(result.isCompressionError());
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::UndefinedPseudoHeaderField);
+  // Even a malformed field section has to be decoded in full so incremental-indexing updates keep the HPACK
+  // dynamic table synchronized with the peer (RFC 9113 §4.3).
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 2U);
+}
+
+TEST(HpackDecoder, AcceptsDefinedProtocolPseudoHeaderForContextValidation) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  RawBytes encoded;
+  encoder.encode(encoded, ":protocol", "websocket");
+
+  const auto result = decoder.decode(encoded);
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_TRUE(result.decodedHeaders.contains(":protocol"));
+  EXPECT_EQ(result.decodedHeaders.at(":protocol"), "websocket");
+}
+
 TEST(HpackDecoder, WithoutIndexingStillValidatesButDoesNotPollutTable) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal WITHOUT indexing (0000xxxx), new name "Bad-Name" (uppercase)
   static constexpr uint8_t encoded[]{
@@ -355,15 +413,14 @@ TEST(HpackDecoder, WithoutIndexingStillValidatesButDoesNotPollutTable) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Malformed field name (uppercase or invalid byte)");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldName);
 
   // withIndexing == false here: nothing should have been added to the dynamic table.
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
 }
 
 TEST(HpackDecoder, IndexedReferenceToPreviouslyPoisonedDynamicEntryIsRejected) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // 1st block: literal with indexing, new (invalid) name "Custom-Key" -> rejected,
   // but per RFC 9113 §4.3 it must still land in the dynamic table at index 62
@@ -383,12 +440,11 @@ TEST(HpackDecoder, IndexedReferenceToPreviouslyPoisonedDynamicEntryIsRejected) {
   auto secondResult = decoder.decode(AsBytes(secondBlock));
 
   EXPECT_FALSE(secondResult.isSuccess());
-  ASSERT_NE(secondResult.errorMessage, nullptr);
-  EXPECT_STREQ(secondResult.errorMessage, "Malformed field name (uppercase or invalid byte)");
+  EXPECT_EQ(secondResult.error, HpackDecoder::DecodeResult::Error::MalformedFieldName);
 }
 
 TEST(HpackDecoder, DecodeLiteralNameIncomplete) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0) but name length integer is incomplete
   // 0x40 = literal with indexing, index 0
@@ -398,12 +454,11 @@ TEST(HpackDecoder, DecodeLiteralNameIncomplete) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameInsufficientBytes) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name length 5, but only provide 2 bytes -> should detect insufficient data
@@ -411,12 +466,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInsufficientBytes) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidHuffman) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: Huffman-flag set, length 1, but provide a single byte that makes Huffman decoding fail
@@ -426,12 +480,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidHuffman) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameHuffmanEos) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: Huffman-flag set, length 4, payload all 0xFF (sequence of ones)
@@ -441,12 +494,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameHuffmanEos) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderValueHuffmanEos) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: raw string length 3 "k","e","y"
@@ -456,12 +508,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderValueHuffmanEos) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header value");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidEncoding) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: Huffman-flag set, length 4, payload 0x00 0x00 0x00 0x00
@@ -472,12 +523,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameInvalidEncoding) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameTooManyLeftoverBits) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: Huffman-flag set, length 2, payload 0xFF 0xFF
@@ -487,12 +537,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameTooManyLeftoverBits) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderName);
 }
 
 TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // We'll search for a 4-byte Huffman payload that causes the decoder to
   // fail decoding the Huffman-encoded name. This attempts a bounded search
@@ -502,7 +551,7 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
   bool found = false;
   vector<uint8_t> encoded;
 
-  const std::array<std::pair<uint8_t, uint8_t>, 4> prefixes = {
+  const std::array<std::pair<uint8_t, uint8_t>, 4> prefixes{
       {
           {0x12, 0x34},
           {0xAA, 0x55},
@@ -536,7 +585,7 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
 }
 
 TEST(HpackDecoder, DecodeLiteralValueIncomplete) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal with indexing, new name (index 0)
   // Name: length 3, "k","e","y"
@@ -545,12 +594,11 @@ TEST(HpackDecoder, DecodeLiteralValueIncomplete) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header value");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue);
 }
 
 TEST(HpackDecoder, DecodeLiteralWithoutIndexing) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal header without indexing, new name
   // 0x00 = literal without indexing, index 0 (new name)
@@ -571,7 +619,7 @@ TEST(HpackDecoder, DecodeLiteralWithoutIndexing) {
 }
 
 TEST(HpackDecoder, DecodeMultipleHeaders) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // :method: GET (0x82) + :path: / (0x84) + :scheme: https (0x87)
   static constexpr uint8_t encoded[]{0x82, 0x84, 0x87};
@@ -597,7 +645,7 @@ TEST(HpackDecoder, DecodeMultipleHeaders) {
 }
 
 TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Two literal headers with the same name "accept" -> should be merged with ','
   // Format: literal with indexing (0x40), name length, name, value length, value
@@ -616,7 +664,7 @@ TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
 }
 
 TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Two Cookie headers should be merged with ';'
   static constexpr uint8_t encoded[]{
@@ -634,7 +682,7 @@ TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
 }
 
 TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Content-Length duplicated should be rejected by storeHeader
   static constexpr uint8_t encoded[]{
@@ -645,12 +693,11 @@ TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Duplicated header forbidden to merge");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
 }
 
 TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Dynamic table size update to 1024: 0x3f 0xe1 0x07
   // (0x20 | 31) = 0x3f, then 1024 - 31 = 993 = 0x07e1 in varint
@@ -663,7 +710,7 @@ TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
 }
 
 TEST(HpackDecoder, InvalidIndexedHeader) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Index 0 is invalid
   static constexpr uint8_t encoded[]{0x80};
@@ -674,7 +721,7 @@ TEST(HpackDecoder, InvalidIndexedHeader) {
 }
 
 TEST(HpackDecoder, DecodeIndexedHeaderIntegerIncomplete) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Indexed header field prefix 1xxxxxxx, but integer continuation bytes are missing
   // Use first byte with prefix bits all ones (0xFF) so decodeInteger requires continuation bytes
@@ -682,12 +729,11 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerIncomplete) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode indexed header field index");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeIndexedHeaderFieldIndex);
 }
 
 TEST(HpackDecoder, DecodeIndexedHeaderIntegerOverflow) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Construct an indexed header field (1xxxxxxx). Use prefix 7 bits with
   // all ones to indicate continuation, then provide many continuation bytes
@@ -706,13 +752,11 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerOverflow) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  // decodeInteger returns empty ret on overflow, which propagates to this error
-  EXPECT_STREQ(result.errorMessage, "Failed to decode indexed header field index");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeIndexedHeaderFieldIndex);
 }
 
 TEST(HpackDecoder, DecodeIndexedHeaderInvalidZero) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Indexed header with explicit zero (invalid): encode varint 0 using prefix bits
   // To get indexResult.index == 0 after decodeInteger, craft a prefix < prefixMask with value 0
@@ -722,11 +766,11 @@ TEST(HpackDecoder, DecodeIndexedHeaderInvalidZero) {
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
   // Either 'Failed to decode indexed header field index' or 'Invalid index 0 in indexed header field'
-  ASSERT_NE(result.errorMessage, nullptr);
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::InvalidIndexZeroInIndexedHeaderField);
 }
 
 TEST(HpackDecoder, DecodeIndexedHeaderOutOfBounds) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Indexed header with an index larger than static + dynamic table
   // Use a small decoder with no dynamic entries and index value 1000 encoded as varint
@@ -743,24 +787,22 @@ TEST(HpackDecoder, DecodeIndexedHeaderOutOfBounds) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Index out of bounds in indexed header field");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::IndexOutOfBoundsInIndexedHeaderField);
 }
 
 TEST(HpackDecoder, DecodeDynamicTableSizeUpdateIncomplete) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Dynamic table size update prefix 001xxxxx (0x20). Use 0x3f (prefix all ones) and no continuation
   static constexpr uint8_t encoded[]{0x3f};
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode dynamic table size update");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeDynamicTableSizeUpdate);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderIndexIncomplete) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal header field without indexing (prefix 0000) uses 4-bit prefix for index.
   // Provide a byte where the lower 4 bits are all ones -> requires continuation, but none provided
@@ -768,12 +810,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderIndexIncomplete) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Failed to decode literal header index");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderIndex);
 }
 
 TEST(HpackDecoder, DecodeLiteralHeaderNameOutOfBounds) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Literal header field with incremental indexing (01xxxxxx). Use the
   // 6-bit prefix with all ones to force varint continuation for the name index.
@@ -793,12 +834,11 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameOutOfBounds) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_FALSE(result.isSuccess());
-  ASSERT_NE(result.errorMessage, nullptr);
-  EXPECT_STREQ(result.errorMessage, "Index out of bounds for header name");
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::IndexOutOfBoundsForHeaderName);
 }
 
 TEST(HpackDecoder, SetMaxDynamicTableSize) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Add two entries via literal-with-indexing encoded blocks
   vector<uint8_t> encoded1 = {
@@ -824,7 +864,7 @@ TEST(HpackDecoder, SetMaxDynamicTableSize) {
 }
 
 TEST(HpackDecoder, ClearDecodedStrings) {
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Use an encoded literal-with-indexing block to populate decoded strings
   static constexpr uint8_t encoded[]{
@@ -846,7 +886,7 @@ TEST(HpackDecoder, ClearDecodedStrings) {
 TEST(HpackDecoder, IndexedNameSelfEviction) {
   // Table just large enough for a single small entry: the slightest addition
   // will force its eviction.
-  HpackDecoder decoder(40);  // kHpackOverhead(32) + "ck"(2) + "v1"(2) = 36 <= 40
+  HpackDecoder decoder(40, true);  // kHpackOverhead(32) + "ck"(2) + "v1"(2) = 36 <= 40
 
   // 1) New literal-with-indexing entry: "ck" -> "v1"
   static constexpr uint8_t firstBlock[]{0x40, 0x02, 'c', 'k', 0x02, 'v', '1'};
@@ -1035,7 +1075,7 @@ TEST(HpackEncoder, EncodeWithoutIndexing_NewName) {
 
 TEST(HpackRoundTrip, SimpleHeaders) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   RawBytes encoded;
   encoder.encode(encoded, ":method", "GET");
@@ -1069,7 +1109,7 @@ TEST(HpackRoundTrip, SimpleHeaders) {
 
 TEST(HpackRoundTrip, RepeatedHeaders) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // Encode same header multiple times
   RawBytes encoded1;
@@ -1105,7 +1145,7 @@ TEST(HpackRoundTrip, RepeatedHeaders) {
 
 TEST(HpackRoundTrip, DateHeaderValue) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   static constexpr std::string_view kDate = "Thu, 01 Jan 1970 00:00:00 GMT";
   static_assert(kDate.size() == RFC7231DateStrLen);
@@ -1125,7 +1165,7 @@ TEST(HpackRoundTrip, DateHeaderValue) {
 
 TEST(HpackRoundTrip, CurrentDateHeaderValue) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   const std::array<char, RFC7231DateStrLen> dateBuf = [] {
     std::array<char, RFC7231DateStrLen> buf{};
@@ -1163,7 +1203,7 @@ TEST(HpackRoundTrip, CurrentDateHeaderValue) {
 
 TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   const std::array<char, RFC7231DateStrLen> dateBuf = [] {
     std::array<char, RFC7231DateStrLen> buf;
@@ -1194,7 +1234,7 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
 TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
   using namespace aeronet::http2;
 
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
 
   // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 rng(123456789);  // deterministic seed for reproducibility
@@ -1217,7 +1257,7 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
     // Any decode error is acceptable but must provide a non-null, non-empty error message.
     auto res = decoder.decode(AsBytes(buf));
 
-    ASSERT_TRUE(res.isSuccess() || (res.errorMessage != nullptr && res.errorMessage[0] != '\0'));
+    ASSERT_TRUE(res.isSuccess() || (res.error != HpackDecoder::DecodeResult::Error::None));
   }
 }
 
@@ -1234,7 +1274,7 @@ namespace {
 // Round-trip 'value' as a header value through the encoder and decoder and return what came back.
 std::string HuffmanRoundTrip(std::string_view value) {
   HpackEncoder encoder(4096);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
   RawBytes encoded;
   encoder.encode(encoded, "x-rt", value);
   const auto result = decoder.decode(encoded);
@@ -1276,14 +1316,13 @@ TEST(HpackHuffman, RoundTripsEveryByteValue) {
       // this loop assert Huffman correctness for these three without
       // expecting a successful round trip.
       HpackEncoder encoder(4096);
-      HpackDecoder decoder(4096);
+      auto decoder = CreateHpackDecoder();
       RawBytes encoded;
       encoder.encode(encoded, "x-rt", value);
       const auto result = decoder.decode(encoded);
 
       EXPECT_FALSE(result.isSuccess()) << "byte " << ch;
-      ASSERT_NE(result.errorMessage, nullptr) << "byte " << ch;
-      EXPECT_STREQ(result.errorMessage, "Malformed field value (invalid byte)") << "byte " << ch;
+      EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue) << "byte " << ch;
       continue;
     }
 
