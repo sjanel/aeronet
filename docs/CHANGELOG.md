@@ -20,6 +20,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Bug Fixes
 
+- **Client: heap-buffer-overflow when adding a header to a body-less request built with reserved header capacity**: `HttpClient::makeRequest(additionalCapacity, method, url)` (the overload without a body) was incorrectly computing indexes to its internal buffer.
 - **HTTP/1.1 request is now rejected if it does not contain a Host header**: the server now returns `400 Bad Request` for HTTP/1.1 requests that do not include a `Host` header, per RFC 9112 §3.2.
 - **Router updates could race server startup**: a route update submitted while the server was preparing to run could mutate the router directly while startup clamped route configuration, causing intermittent literal-route assertions. Startup now publishes a synchronized `Starting` state before launching its thread, so subsequent updates are queued for the event-loop thread.
 - **Predicate and stop-token shutdown could leave a listener open without an event loop**: when cancellation arrived between event-loop iterations, `runUntil()` could reset its lifecycle without closing the listener or active connections. New TCP connections then succeeded but were never serviced, most visibly as intermittent 10-second Windows CI stalls. Predicate-driven exits now perform teardown on the event-loop thread, and lifecycle tests use a bounded listener-closure check. Tests: `tests/http-server-lifecycle_test.cpp` (`StartAndStopWhen`, `StartWithStopToken`), `tests/multi-http-server_test.cpp` (`StartDetachedWithStopTokenStopsOnRequest`).
