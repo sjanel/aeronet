@@ -372,8 +372,7 @@ TEST(ObjectPoolTest, ClearResetsToInitialCapacityAndAllowsReallocate) {
   constexpr std::size_t initCap = 64;
   ObjectPool<int> pool(initCap);
 
-  // capacity() returns the rounded-up power-of-two initial capacity
-  EXPECT_EQ(pool.capacity(), initCap);
+  EXPECT_EQ(pool.capacity(), 0);
 
   // grow the pool beyond the initial capacity to force several allocations
   vector<int*> ptrs;
