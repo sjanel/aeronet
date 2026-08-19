@@ -48,7 +48,9 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "http2-header-is-valid.hpp"
@@ -188,9 +190,9 @@ http::Method ParseHttpMethod(std::string_view method) {
   if (method == "TRACE") {
     return http::Method::TRACE;
   }
-  // Fallback to GET for unknown methods
+  // Unknown extension methods are syntactically valid but unsupported by aeronet.
   log::debug("Unknown HTTP method received: {}", method);
-  return http::Method::GET;
+  return http::kMethodInvalid;
 }
 
 }  // namespace
@@ -209,10 +211,72 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
   req.init(*_pServerConfig, *_pCompressionState);
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
+  const auto rejectMalformedRequest = [this, streamId](std::string_view reason) {
+    log::warn("Malformed HTTP/2 request on stream {}: {}", streamId, reason);
+    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
+  };
+
   // Pass 1 : compute total headers storage
   std::size_t headersTotalLen = 0U;
+  std::string_view methodValue;
+  std::string_view schemeValue;
+  std::string_view authorityValue;
+  std::string_view pathValue;
   for (const auto& [name, value] : headers) {
     headersTotalLen += name.size() + value.size();
+    assert(!name.empty());
+    if (name.front() != ':') {
+      continue;
+    }
+    if (value.empty()) {
+      // There is no possible valid HTTP/2 request with an empty pseudo-header field value, so this is a protocol error.
+      rejectMalformedRequest("empty pseudo-header field value");
+      return;
+    }
+    if (name == http::PseudoHeaderAuthority) {
+      authorityValue = value;
+    } else if (name == http::PseudoHeaderMethod) {
+      if (!std::ranges::all_of(value, [](char ch) { return is_tchar(ch); })) {
+        rejectMalformedRequest("invalid :method pseudo-header field");
+        return;
+      }
+      methodValue = value;
+    } else if (name == http::PseudoHeaderScheme) {
+      schemeValue = value;
+    } else if (name == http::PseudoHeaderPath) {
+      pathValue = value;
+    } else {
+      // RFC 9113 §8.3: request pseudo-headers are context-specific, unique (enforced while decoding), and
+      // mandatory according to the request form. :authority is optional for ordinary requests because a target URI
+      // can legitimately have no authority component; CONNECT is the exception and requires it instead of
+      // :scheme/:path.
+      rejectMalformedRequest("unexpected or unsupported pseudo-header field");
+      return;
+    }
+  }
+
+  if (methodValue.empty()) {
+    rejectMalformedRequest("missing :method pseudo-header field");
+    return;
+  }
+
+  const bool isConnect = methodValue == "CONNECT";
+  if (isConnect) {
+    if (authorityValue.empty() || !schemeValue.empty() || !pathValue.empty()) {
+      rejectMalformedRequest("CONNECT requires :authority and forbids :scheme and :path");
+      return;
+    }
+  } else if (schemeValue.empty() || pathValue.empty()) {
+    rejectMalformedRequest("missing or invalid :scheme or :path pseudo-header field");
+    return;
+  }
+
+  const http::Method parsedMethod = ParseHttpMethod(methodValue);
+  if (parsedMethod == http::kMethodInvalid) {
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotImplemented, "Unsupported HTTP method"),
+                       /*isHeadMethod=*/false);
+    releaseStreamAfterResponse(it);
+    return;
   }
 
   streamReq.headerStorage = std::make_unique_for_overwrite<char[]>(headersTotalLen);
@@ -231,14 +295,14 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     req._headSpanSize += storedName.size() + storedValue.size();
 
     if (name[0] == ':') {
-      if (storedName == ":method") {
-        req._method = ParseHttpMethod(storedValue);
-      } else if (storedName == ":scheme") {
-        req._pScheme = storedValue.data();
-        req._schemeLength = SafeCast<decltype(req._schemeLength)>(storedValue.size());
-      } else if (storedName == ":authority") {
+      if (storedName == http::PseudoHeaderAuthority) {
         req._pAuthority = storedValue.data();
         req._authorityLength = SafeCast<decltype(req._authorityLength)>(storedValue.size());
+      } else if (storedName == http::PseudoHeaderMethod) {
+        req._method = parsedMethod;
+      } else if (storedName == http::PseudoHeaderScheme) {
+        req._pScheme = storedValue.data();
+        req._schemeLength = SafeCast<decltype(req._schemeLength)>(storedValue.size());
       } else if (storedName == ":path") {
         // Split :path at '?' to separate path from query string, mirroring HTTP/1.1 parsing.
         // The stored value lives in headerStorage which we own, so in-place decoding is safe.
@@ -260,8 +324,6 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
       req._headers[storedName] = storedValue;
     }
   }
-
-  // TODO: checks on scheme, method, path and authority here? They are all mandatory.
 
   const auto [encoding, reject] =
       _pCompressionState->selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));

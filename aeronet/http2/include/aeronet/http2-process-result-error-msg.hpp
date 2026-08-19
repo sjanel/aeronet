@@ -26,6 +26,7 @@ enum class ErrorMsg : uint8_t {
   HeaderBlockTooLarge,
   HeaderListTooLarge,
   InvalidStreamStateForHEADERS,
+  MalformedFieldSection,
   HPACKDecodingFailed,
   PRIORITYFrameOnStreamZero,
   InvalidPRIORITYFrame,

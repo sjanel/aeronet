@@ -106,10 +106,16 @@ std::span<const std::byte> AsBytes(const RawBytes& rb) { return {rb.begin(), rb.
 // Decode benchmarks
 // ---------------------------------------------------------------------------
 
+namespace {
+
+HpackDecoder CreateHpackDecoder() { return {4096, true}; }
+
+}  // namespace
+
 void BM_HpackDecodeSmall(benchmark::State& state) {
   auto block = AsBytes(kSmallBlock);
   for ([[maybe_unused]] auto iter : state) {
-    HpackDecoder decoder(4096);
+    auto decoder = CreateHpackDecoder();
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
   }
@@ -119,7 +125,7 @@ BENCHMARK(BM_HpackDecodeSmall);
 void BM_HpackDecodeMedium(benchmark::State& state) {
   auto block = AsBytes(kMediumBlock);
   for ([[maybe_unused]] auto iter : state) {
-    HpackDecoder decoder(4096);
+    auto decoder = CreateHpackDecoder();
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
   }
@@ -129,7 +135,7 @@ BENCHMARK(BM_HpackDecodeMedium);
 void BM_HpackDecodeLarge(benchmark::State& state) {
   auto block = AsBytes(kLargeBlock);
   for ([[maybe_unused]] auto iter : state) {
-    HpackDecoder decoder(4096);
+    auto decoder = CreateHpackDecoder();
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
   }
@@ -139,7 +145,7 @@ BENCHMARK(BM_HpackDecodeLarge);
 // Stateful decode: decoder persists across iterations (dynamic table builds up)
 void BM_HpackDecodeSmallStateful(benchmark::State& state) {
   auto block = AsBytes(kSmallBlock);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
   for ([[maybe_unused]] auto iter : state) {
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
@@ -149,7 +155,7 @@ BENCHMARK(BM_HpackDecodeSmallStateful);
 
 void BM_HpackDecodeMediumStateful(benchmark::State& state) {
   auto block = AsBytes(kMediumBlock);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
   for ([[maybe_unused]] auto iter : state) {
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
@@ -159,7 +165,7 @@ BENCHMARK(BM_HpackDecodeMediumStateful);
 
 void BM_HpackDecodeLargeStateful(benchmark::State& state) {
   auto block = AsBytes(kLargeBlock);
-  HpackDecoder decoder(4096);
+  auto decoder = CreateHpackDecoder();
   for ([[maybe_unused]] auto iter : state) {
     auto result = decoder.decode(block);
     benchmark::DoNotOptimize(result);
@@ -297,7 +303,7 @@ void BM_HpackRoundTrip(benchmark::State& state) {
     for (const auto& hv : headers) {
       encoder.encode(encoded, hv.name, hv.value);
     }
-    HpackDecoder decoder(4096);
+    auto decoder = CreateHpackDecoder();
     auto result = decoder.decode(AsBytes(encoded));
     benchmark::DoNotOptimize(result);
   }

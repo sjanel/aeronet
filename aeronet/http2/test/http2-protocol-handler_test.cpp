@@ -408,7 +408,7 @@ TEST(Http2ProtocolHandler, SimpleGetWithBodyProducesHeadersAndData) {
   hdrs1.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs1.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs1.append(MakeHttp1HeaderLine(":path", "/hello"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs1), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs1), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -441,7 +441,7 @@ TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate)
   hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs.append(MakeHttp1HeaderLine(":path", "/big"));
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs), true), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
 
   loop.pumpClientToServer();
   EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
@@ -1233,7 +1233,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
   getHdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
   getHdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
   getHdrs.append(MakeHttp1HeaderLine(":path", "/hello"));
-  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCodeOK, HeadersView(getHdrs), true), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(getHdrs), true), ErrorCode::NoError);
   loop.pumpClientToServer();
   loop.pumpServerToClient();
 
@@ -1279,7 +1279,7 @@ TEST(Http2ProtocolHandler, HttpRequestHttp2FieldsSetCorrectly) {
   hdrs2.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs2.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs2.append(MakeHttp1HeaderLine(":path", "/hello"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs2), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs2), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1308,7 +1308,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersEndsOnTrailerHeaders) {
   hdrs5.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs5.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs5.append(MakeHttp1HeaderLine(":path", "/trailers"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs5), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs5), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1340,7 +1340,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWith
   hdrs6.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs6.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs6.append(MakeHttp1HeaderLine(":path", "/trailers-nobody"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs6), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs6), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1355,7 +1355,7 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWith
   EXPECT_TRUE(loop.clientData.back().endStream);
 }
 
-TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
+TEST(Http2ProtocolHandler, ParsesSupportedMethodsAndReturns501ForUnknown) {
   Router router;
   vector<http::Method> seen;
 
@@ -1376,25 +1376,24 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
 
   // TRACE in HTTP/2 returns 405 since there's no wire format to echo (per RFC 9113).
   // It gets handled by ProcessSpecialMethods and never reaches the default handler.
-  // CONNECT also does not reach the handler; it returns 405 since tunneling is not yet implemented.
+  // CONNECT also does not reach the handler; this loopback has no tunnel bridge and returns 405.
   const std::array<MethodCase, 9> cases = {
       MethodCase{1, "PUT", http::Method::PUT, true},       MethodCase{3, "DELETE", http::Method::DELETE, true},
       MethodCase{5, "HEAD", http::Method::HEAD, true},     MethodCase{7, "OPTIONS", http::Method::OPTIONS, true},
       MethodCase{9, "PATCH", http::Method::PATCH, true},   MethodCase{11, "CONNECT", http::Method::CONNECT, false},
       MethodCase{13, "TRACE", http::Method::TRACE, false},  // HTTP/2 TRACE -> 405 before handler
-      MethodCase{15, "POST", http::Method::POST, true},    MethodCase{17, "BREW", http::Method::GET, true},
+      MethodCase{15, "POST", http::Method::POST, true},    MethodCase{17, "BREW", http::kMethodInvalid, false},
   };
 
   for (const auto& tc : cases) {
     RawChars mhdrs;
     mhdrs.append(MakeHttp1HeaderLine(":method", tc.method));
-    mhdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
     mhdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-    // CONNECT omits :path per RFC 7540 §8.3, but other methods require it
+    // CONNECT omits :scheme and :path per RFC 9113 §8.5, but other methods require both.
     if (tc.method != "CONNECT") {
+      mhdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
       mhdrs.append(MakeHttp1HeaderLine(":path", "/m"));
     }
-    mhdrs.append(MakeHttp1HeaderLine(":unknown", "ignored"));
     const auto ok = loop.client.sendHeaders(tc.streamId, http::StatusCode{}, HeadersView(mhdrs), true);
     ASSERT_EQ(ok, ErrorCode::NoError);
     loop.pumpClientToServer();
@@ -1413,6 +1412,10 @@ TEST(Http2ProtocolHandler, ParsesManyHttpMethodsAndFallsBackToGetForUnknown) {
       ++seenIdx;
     }
   }
+
+  const auto unknownMethodResponse = std::ranges::find(loop.clientHeaders, 17U, &HeaderEvent::streamId);
+  ASSERT_NE(unknownMethodResponse, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*unknownMethodResponse, ":status"), "501");
 }
 
 TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
@@ -1432,7 +1435,7 @@ TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
   hdrs7.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs7.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs7.append(MakeHttp1HeaderLine(":path", "/items/42/view"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs7), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs7), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1455,7 +1458,7 @@ TEST(Http2ProtocolHandler, PerRouteHttp2DisableReturns404) {
   hdrs8.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs8.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs8.append(MakeHttp1HeaderLine(":path", "/h1only"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs8), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs8), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1475,7 +1478,7 @@ TEST(Http2ProtocolHandler, UnknownPathReturns404) {
   hdrs9.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs9.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs9.append(MakeHttp1HeaderLine(":path", "/nope"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs9), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs9), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1497,7 +1500,7 @@ TEST(Http2ProtocolHandler, TransportClosingClearsPendingStreamRequests) {
   hdrs3.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs3.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs3.append(MakeHttp1HeaderLine(":path", "/body"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs3), false);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs3), false);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1522,7 +1525,7 @@ TEST(Http2ProtocolHandler, StreamResetAndClosedCallbacksEraseStreamState) {
   hdrs10.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs10.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs10.append(MakeHttp1HeaderLine(":path", "/reset"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs10), false);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs10), false);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1545,7 +1548,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerRunsToCompletion) {
   hdrs11.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs11.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs11.append(MakeHttp1HeaderLine(":path", "/async"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs11), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs11), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1569,7 +1572,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
   hdrs12.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs12.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs12.append(MakeHttp1HeaderLine(":path", "/async-invalid"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs12), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs12), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1647,7 +1650,7 @@ TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
   hdrs14.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs14.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs14.append(MakeHttp1HeaderLine(":path", "/boom"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs14), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs14), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1672,7 +1675,7 @@ TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
   hdrs15.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs15.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs15.append(MakeHttp1HeaderLine(":path", "/boom2"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs15), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs15), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1697,7 +1700,7 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
   hdrs16.append(MakeHttp1HeaderLine(":method", "GET"));
   hdrs16.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs16.append(MakeHttp1HeaderLine(":authority", "example.com"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCodeOK, HeadersView(hdrs16), true);
+  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs16), true);
   ASSERT_EQ(ok, ErrorCode::NoError);
 
   loop.pumpClientToServer();
@@ -1711,6 +1714,149 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
   const auto [sid, code] = loop.streamResets.back();
   EXPECT_EQ(sid, 1U);
   EXPECT_EQ(code, ErrorCode::ProtocolError);
+}
+
+TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  struct MalformedCase {
+    uint32_t streamId;
+    RawChars headers;
+  };
+
+  vector<MalformedCase> cases;
+  cases.reserve(10);
+
+  RawChars missingMethod;
+  missingMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
+  missingMethod.append(MakeHttp1HeaderLine(":path", "/"));
+  cases.push_back({1, std::move(missingMethod)});
+
+  RawChars missingScheme;
+  missingScheme.append(MakeHttp1HeaderLine(":method", "GET"));
+  missingScheme.append(MakeHttp1HeaderLine(":path", "/"));
+  cases.push_back({3, std::move(missingScheme)});
+
+  RawChars invalidMethod;
+  invalidMethod.append(MakeHttp1HeaderLine(":method", "GE T"));
+  invalidMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
+  invalidMethod.append(MakeHttp1HeaderLine(":path", "/"));
+  cases.push_back({5, std::move(invalidMethod)});
+
+  RawChars emptyScheme;
+  emptyScheme.append(MakeHttp1HeaderLine(":method", "GET"));
+  emptyScheme.append(MakeHttp1HeaderLine(":scheme", ""));
+  emptyScheme.append(MakeHttp1HeaderLine(":path", "/"));
+  cases.push_back({7, std::move(emptyScheme)});
+
+  RawChars emptyHttpPath;
+  emptyHttpPath.append(MakeHttp1HeaderLine(":method", "GET"));
+  emptyHttpPath.append(MakeHttp1HeaderLine(":scheme", "https"));
+  emptyHttpPath.append(MakeHttp1HeaderLine(":path", ""));
+  cases.push_back({9, std::move(emptyHttpPath)});
+
+  RawChars missingConnectAuthority;
+  missingConnectAuthority.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  cases.push_back({11, std::move(missingConnectAuthority)});
+
+  RawChars connectWithScheme;
+  connectWithScheme.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  connectWithScheme.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  connectWithScheme.append(MakeHttp1HeaderLine(":scheme", "https"));
+  cases.push_back({13, std::move(connectWithScheme)});
+
+  RawChars connectWithEmptyPath;
+  connectWithEmptyPath.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  connectWithEmptyPath.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  connectWithEmptyPath.append(MakeHttp1HeaderLine(":path", ""));
+  cases.push_back({15, std::move(connectWithEmptyPath)});
+
+  RawChars responsePseudoHeader;
+  responsePseudoHeader.append(MakeHttp1HeaderLine(":method", "GET"));
+  responsePseudoHeader.append(MakeHttp1HeaderLine(":scheme", "https"));
+  responsePseudoHeader.append(MakeHttp1HeaderLine(":path", "/"));
+  responsePseudoHeader.append(MakeHttp1HeaderLine(":status", "200"));
+  cases.push_back({17, std::move(responsePseudoHeader)});
+
+  RawChars unsupportedExtendedConnect;
+  unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":protocol", "websocket"));
+  unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":scheme", "https"));
+  unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":path", "/chat"));
+  cases.push_back({19, std::move(unsupportedExtendedConnect)});
+
+  for (const auto& malformedCase : cases) {
+    ASSERT_EQ(
+        loop.client.sendHeaders(malformedCase.streamId, http::StatusCode{}, HeadersView(malformedCase.headers), true),
+        ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  }
+
+  EXPECT_FALSE(handlerCalled);
+  ASSERT_EQ(loop.streamResets.size(), cases.size());
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].first, cases[static_cast<uint32_t>(i)].streamId);
+    EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].second, ErrorCode::ProtocolError);
+  }
+}
+
+TEST(Http2ProtocolHandler, AuthorityIsOptionalForOrdinaryRequest) {
+  Router router;
+  router.setPath(http::Method::GET, "/without-authority",
+                 [](const HttpRequestView& req) { return HttpResponse(200, req.authority()); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":path", "/without-authority"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+TEST(Http2ProtocolHandler, UndefinedRequestPseudoHeaderResetsStream) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":path", "/"));
+  headers.append(MakeHttp1HeaderLine(":unknown", "value"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(handlerCalled);
+  ASSERT_EQ(loop.streamResets.size(), 1U);
+  EXPECT_EQ(loop.streamResets.front().first, 1U);
+  EXPECT_EQ(loop.streamResets.front().second, ErrorCode::ProtocolError);
 }
 
 // ============== HTTP/2 Special Methods Tests ==============
