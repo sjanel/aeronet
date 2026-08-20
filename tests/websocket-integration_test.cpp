@@ -83,7 +83,7 @@ vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
 // Helper to create a close frame
 vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal, std::string_view reason = "") {
   vector<std::byte> payload;
-  payload.push_back(static_cast<std::byte>((static_cast<uint16_t>(code) >> 8U) & 0xFFU));
+  payload.push_back(static_cast<std::byte>(static_cast<uint8_t>(static_cast<uint16_t>(code) >> 8U) & 0xFFU));
   payload.push_back(static_cast<std::byte>(static_cast<uint16_t>(code) & 0xFFU));
   for (char ch : reason) {
     payload.push_back(static_cast<std::byte>(ch));
@@ -135,7 +135,7 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
     if (data.size() < 4) {
       return std::nullopt;
     }
-    payloadLen = (std::to_integer<std::size_t>(data[2]) << 8) | std::to_integer<std::size_t>(data[3]);
+    payloadLen = (std::to_integer<std::size_t>(data[2]) << 8U) | std::to_integer<std::size_t>(data[3]);
     headerSize = 4;
   } else if (payloadLen == 127) {
     if (data.size() < 10) {

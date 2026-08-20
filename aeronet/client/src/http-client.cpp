@@ -558,10 +558,10 @@ internal::HttpClientTlsContext& HttpClient::tlsContext() {
 double HttpClient::nextJitterUnit() noexcept {
   // xorshift64* step; map the top 53 bits to a double in [0, 1). Quality is irrelevant here -- this only
   // spreads backoff delays so a fleet of clients does not retry in lockstep.
-  _jitterState ^= _jitterState << 13;
-  _jitterState ^= _jitterState >> 7;
-  _jitterState ^= _jitterState << 17;
-  return static_cast<double>(_jitterState >> 11) * (1.0 / 9007199254740992.0);  // 1 / 2^53
+  _jitterState ^= _jitterState << 13U;
+  _jitterState ^= _jitterState >> 7U;
+  _jitterState ^= _jitterState << 17U;
+  return static_cast<double>(_jitterState >> 11U) * (1.0 / 9007199254740992.0);  // 1 / 2^53
 }
 
 HttpRequest::Options HttpClient::makeRequestOptions() noexcept {

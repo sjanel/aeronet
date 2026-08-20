@@ -63,7 +63,7 @@ struct RequestOptions {
   std::string body;
   vector<std::pair<std::string_view, std::string_view>> headers;  // additional headers
   std::chrono::milliseconds recvTimeout{1000ms};                  // socket receive timeout
-  std::size_t maxResponseBytes{1 << 20};                          // 1 MiB safety cap
+  std::size_t maxResponseBytes{1UL << 20U};                       // 1 MiB safety cap
 };
 
 void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);

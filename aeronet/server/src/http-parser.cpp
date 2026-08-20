@@ -124,7 +124,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
         return BodyDecodeStatus::Error;
       }
-      chunkSize = (chunkSize << 4) | static_cast<std::size_t>(digit);
+      chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digit);
       if (maxBodyBytes < chunkSize) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
         return BodyDecodeStatus::Error;

@@ -1384,7 +1384,7 @@ TEST(HttpRouting, DeferWorkMultipleSequential) {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return 10;
                                    });
-                                   int second = co_await req.deferWork([first]() {
+                                   int second = co_await req.deferWork([first] {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return first * 2;
                                    });

@@ -100,7 +100,7 @@ struct ClientBenchConfig {
   std::string baseUrl{"http://127.0.0.1:8080"};  // "scheme://host:port"
   std::string clientName;                        // filled in by the driver
   std::string scenario{"small-get"};
-  std::size_t bodySize{1UL << 20};  // bytes, used by large-get (response) and post (request)
+  std::size_t bodySize{1UL << 20U};  // bytes, used by large-get (response) and post (request)
   std::uint32_t threads{1};
   std::chrono::milliseconds duration{std::chrono::seconds{10}};
   std::chrono::milliseconds warmup{std::chrono::seconds{2}};
@@ -425,7 +425,7 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
   std::vector<std::thread> workers;
   workers.reserve(cfg.threads);
   for (std::uint32_t t = 0; t < cfg.threads; ++t) {
-    workers.emplace_back([&, t]() {
+    workers.emplace_back([&, t] {
       ThreadOut& out = outs[t];
       try {
         Session session(cfg, spec);

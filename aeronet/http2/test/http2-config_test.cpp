@@ -26,7 +26,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.maxHeaderListSize, 8192U);
 
   // Connection-level defaults
-  EXPECT_EQ(config.connectionWindowSize, 1U << 20);  // 1MB
+  EXPECT_EQ(config.connectionWindowSize, 1U << 20U);  // 1MB
 
   // Timeout defaults
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{5000});
@@ -66,13 +66,13 @@ TEST(Http2Config, BuilderPatternSettings) {
 
 TEST(Http2Config, BuilderPatternConnection) {
   Http2Config config = Http2Config{}
-                           .withConnectionWindowSize(2 << 20)
+                           .withConnectionWindowSize(2UL << 20U)
                            .withSettingsTimeout(std::chrono::milliseconds{10000})
                            .withPingInterval(std::chrono::milliseconds{30000})
                            .withPingTimeout(std::chrono::milliseconds{5000})
                            .withMaxStreamsPerConnection(1000);
 
-  EXPECT_EQ(config.connectionWindowSize, 2U << 20);
+  EXPECT_EQ(config.connectionWindowSize, 2UL << 20U);
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{10000});
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{5000});

@@ -461,7 +461,7 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
 
   // Returns false once the peer is gone: writing WINDOW_UPDATEs to a closed connection fails, which is
   // exactly what a swept-away response looks like from the client side.
-  const auto writePending = [&client, fd]() {
+  const auto writePending = [&client, fd] {
     while (client.hasPendingOutput()) {
       const auto out = client.getPendingOutput();
       try {
@@ -475,7 +475,7 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   };
 
   std::string inBuf;
-  const auto feedClient = [&client, &inBuf]() {
+  const auto feedClient = [&client, &inBuf] {
     std::size_t consumed = 0;
     while (consumed < inBuf.size()) {
       std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(inBuf.data()) + consumed,
@@ -1619,7 +1619,7 @@ TEST(Http2Async, DeferWorkMultipleSequential) {
           return 10;
         });
 
-        int second = co_await req.deferWork([first]() {
+        int second = co_await req.deferWork([first] {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return first * 2;
         });

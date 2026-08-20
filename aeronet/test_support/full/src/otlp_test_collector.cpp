@@ -145,6 +145,7 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
 #else
   int flags = ::fcntl(_listen.fd(), F_GETFL, 0);
   if (flags >= 0) {
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     ::fcntl(_listen.fd(), F_SETFL, flags | O_NONBLOCK);
   }
 #endif

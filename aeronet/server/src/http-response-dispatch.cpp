@@ -314,16 +314,14 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
     state.fileSendHeadersPending = false;
   }
 
+  // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   if (state.isSendingFile()) {
     flushFilePayload(cnxIt);
-  }
-  // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  else if (state.outBuffer.empty() && state.waitingWritable &&
-           (state.tlsEstablished || state.transport->handshakeDone())) {
-    if ((!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
-        state.isAnyCloseRequested()) {
-      return;
-    }
+  } else if (state.outBuffer.empty() && state.waitingWritable &&
+             (state.tlsEstablished || state.transport->handshakeDone()) &&
+             (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
+             state.isAnyCloseRequested()) {
+    return;
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)

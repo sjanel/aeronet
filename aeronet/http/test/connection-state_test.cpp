@@ -113,6 +113,8 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   // send buffer fills quickly and sendfile returns EAGAIN.
   int flags = ::fcntl(sv[0], F_GETFL, 0);
   ASSERT_GE(flags, 0);
+
+  // NOLINTNEXTLINE(bugprone-signed-bitwise)
   ASSERT_EQ(::fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), 0);
 
   int sndbuf = 1024;  // small
@@ -246,7 +248,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   // Create a large file to force multiple chunks in the TLS path
-  const std::size_t totalSize = (1 << 20);  // 1 MiB
+  const std::size_t totalSize = 1UL << 20U;  // 1 MiB
   const std::string content(totalSize, 'T');
   test::ScopedTempDir tmpDir;
   ScopedTempFile tmp(tmpDir, content);

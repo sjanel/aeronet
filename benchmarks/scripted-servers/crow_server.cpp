@@ -225,7 +225,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 8: /status - Health check
   // ============================================================
   CROW_ROUTE(app, "/status")
-  ([numThreads = benchCfg.numThreads]() {
+  ([numThreads = benchCfg.numThreads] {
     crow::response res(200);
     res.add_header("Content-Type", "application/json");
     res.body = std::format(R"({{"server":"crow","threads":{},"status":"ok"}})", numThreads);
