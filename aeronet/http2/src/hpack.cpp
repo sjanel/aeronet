@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
@@ -28,20 +29,20 @@ namespace {
 // HPACK static table (RFC 7541 Appendix A)
 // Index 0 is unused (indices are 1-based in the spec)
 constexpr http::HeaderView kStaticTable[]{
-    {":authority", ""},
-    {":method", "GET"},
-    {":method", "POST"},
-    {":path", "/"},
-    {":path", "/index.html"},
-    {":scheme", "http"},
-    {":scheme", "https"},
-    {":status", "200"},
-    {":status", "204"},
-    {":status", "206"},
-    {":status", "304"},
-    {":status", "400"},
-    {":status", "404"},
-    {":status", "500"},
+    {http::PseudoHeaderAuthority, ""},
+    {http::PseudoHeaderMethod, "GET"},
+    {http::PseudoHeaderMethod, "POST"},
+    {http::PseudoHeaderPath, "/"},
+    {http::PseudoHeaderPath, "/index.html"},
+    {http::PseudoHeaderScheme, "http"},
+    {http::PseudoHeaderScheme, "https"},
+    {http::PseudoHeaderStatus, "200"},
+    {http::PseudoHeaderStatus, "204"},
+    {http::PseudoHeaderStatus, "206"},
+    {http::PseudoHeaderStatus, "304"},
+    {http::PseudoHeaderStatus, "400"},
+    {http::PseudoHeaderStatus, "404"},
+    {http::PseudoHeaderStatus, "500"},
     {"accept-charset", ""},
     {"accept-encoding", "gzip, deflate"},
     {"accept-language", ""},
@@ -146,10 +147,11 @@ constexpr uint32_t StaticNameKey(std::string_view name) noexcept {
 constexpr uint32_t kStaticNameHashBits = 7;
 constexpr uint32_t kStaticNameHashSize = 1UL << kStaticNameHashBits;
 constexpr uint32_t kStaticNameHashMultiplier = 0x8FEBA71BU;
+constexpr uint32_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
 
 /// Slot of 'name' in kStaticNameHashTable. Only valid for a non-empty name.
 constexpr uint32_t StaticNameSlot(std::string_view name) noexcept {
-  return (StaticNameKey(name) * kStaticNameHashMultiplier) >> (32U - kStaticNameHashBits);
+  return (StaticNameKey(name) * kStaticNameHashMultiplier) >> (kHpackOverhead - kStaticNameHashBits);
 }
 
 /// Entry in the static table name hash map.
@@ -594,8 +596,6 @@ constexpr HuffmanCanonicalResult DecodeHuffmanCanonical(uint64_t window) noexcep
   }
 }
 
-constexpr std::size_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
-
 }  // namespace
 
 std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStaticTable; }
@@ -740,13 +740,26 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
 
 }  // namespace
 
+HpackDecoder::HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders)
+    : _dynamicTable(maxDynamicTableSize),
+      _decodedStrings(128U),
+      _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+
 HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data) {
   _decodedStrings.clear();
   _decodedHeadersMap.clear();
 
   std::size_t pos = 0;
 
-  DecodeResult res{nullptr, _decodedHeadersMap, 0UL};
+  DecodeResult res{_decodedHeadersMap, 0UL};
+
+  auto recordFieldError = [&res](DecodeResult::Error err) {
+    if (res.error == DecodeResult::Error::None) {
+      res.error = err;
+    }
+  };
+
+  bool seenRegularHeader = false;
 
   while (pos < data.size()) {
     const uint8_t firstByte = static_cast<uint8_t>(data[pos]);
@@ -755,34 +768,30 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       // Indexed Header Field (RFC 7541 §6.1) - Format: 1xxxxxxx
       const auto indexResult = DecodeInteger(data.subspan(pos), 7);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
-        res.errorMessage = "Failed to decode indexed header field index";
+        res.error = DecodeResult::Error::FailedToDecodeIndexedHeaderFieldIndex;
         return res;
       }
       pos += indexResult.consumed;
 
       if (indexResult.index == 0) {
-        res.errorMessage = "Invalid index 0 in indexed header field";
+        res.error = DecodeResult::Error::InvalidIndexZeroInIndexedHeaderField;
         return res;
       }
 
       http::HeaderView header = lookupIndex(indexResult.index);
       if (header.name.empty()) {
-        res.errorMessage = "Index out of bounds in indexed header field";
+        res.error = DecodeResult::Error::IndexOutOfBoundsInIndexedHeaderField;
         return res;
       }
 
-      res.headerListSize +=
-          static_cast<uint64_t>(header.name.size()) + static_cast<uint64_t>(header.value.size()) + 32U;
-      res.errorMessage = storeHeader(header.name, header.value);
-      if (res.errorMessage != nullptr) {
-        return res;
-      }
+      res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
+      recordFieldError(storeHeader(header.name, header.value, seenRegularHeader));
 
     } else if ((firstByte & 0xE0) == 0x20) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
       const auto sizeResult = DecodeInteger(data.subspan(pos), 5);
       if (sizeResult.index == DecodedIndex::kInvalidIndex) {
-        res.errorMessage = "Failed to decode dynamic table size update";
+        res.error = DecodeResult::Error::FailedToDecodeDynamicTableSizeUpdate;
         return res;
       }
       pos += sizeResult.consumed;
@@ -796,7 +805,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
       auto indexResult = DecodeInteger(data.subspan(pos), prefixBits);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
-        res.errorMessage = "Failed to decode literal header index";
+        res.error = DecodeResult::Error::FailedToDecodeLiteralHeaderIndex;
         return res;
       }
       pos += indexResult.consumed;
@@ -806,7 +815,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         // New literal name
         const auto nameResult = decodeString(data.subspan(pos));
         if (nameResult.consumed == DecodedString::kInvalidConsumed) {
-          res.errorMessage = "Failed to decode literal header name";
+          res.error = DecodeResult::Error::FailedToDecodeLiteralHeaderName;
           return res;
         }
         pos += nameResult.consumed;
@@ -815,7 +824,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         // Indexed name
         const auto header = lookupIndex(indexResult.index);
         if (header.name.empty()) {
-          res.errorMessage = "Index out of bounds for header name";
+          res.error = DecodeResult::Error::IndexOutOfBoundsForHeaderName;
           return res;
         }
         name = header.name;
@@ -823,23 +832,19 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
       const auto valueResult = decodeString(data.subspan(pos));
       if (valueResult.consumed == DecodedString::kInvalidConsumed) {
-        res.errorMessage = "Failed to decode literal header value";
+        res.error = DecodeResult::Error::FailedToDecodeLiteralHeaderValue;
         return res;
       }
       pos += valueResult.consumed;
 
-      res.headerListSize += static_cast<uint64_t>(name.size()) + static_cast<uint64_t>(valueResult.str.size()) + 32U;
-      res.errorMessage = storeHeader(name, valueResult.str);
+      res.headerListSize += name.size() + valueResult.str.size() + kHpackOverhead;
+      recordFieldError(storeHeader(name, valueResult.str, seenRegularHeader));
 
       if (withIndexing) {
         // Note: add() copies name/value before evicting, so this is safe even if name/value point to data owned by
         // entries that will be evicted. Dynamic table must be updated even in case of header validation issue - cf. RFC
         // 9113 §4.3.
         _dynamicTable.add(name, valueResult.str);
-      }
-
-      if (res.errorMessage != nullptr) {
-        return res;
       }
     }
   }
@@ -978,12 +983,29 @@ http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
   return ret;
 }
 
-const char* HpackDecoder::storeHeader(std::string_view name, std::string_view value) {
+HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view name, std::string_view value,
+                                                            bool& seenRegularHeader) {
   if (!IsValidHTTP2HeaderName(name)) {
-    return "Malformed field name (uppercase or invalid byte)";
+    return DecodeResult::Error::MalformedFieldName;
   }
+
+  if (name.front() == ':') {  // pseudo header
+    if (seenRegularHeader) {
+      return DecodeResult::Error::PseudoHeaderFieldAfterRegularField;
+    }
+    if (name != http::PseudoHeaderMethod && name != http::PseudoHeaderScheme && name != http::PseudoHeaderAuthority &&
+        name != http::PseudoHeaderPath && name != http::PseudoHeaderStatus && name != http::PseudoHeaderProtocol) {
+      return DecodeResult::Error::UndefinedPseudoHeaderField;
+    }
+    if (_decodedHeadersMap.contains(name)) {
+      return DecodeResult::Error::DuplicatePseudoHeaderField;
+    }
+  } else {
+    seenRegularHeader = true;
+  }
+
   if (!IsValidHTTP2HeaderValue(value)) {
-    return "Malformed field value (invalid byte)";
+    return DecodeResult::Error::MalformedFieldValue;
   }
 
   char* pName = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(name.size() + value.size()));
@@ -1003,7 +1025,7 @@ const char* HpackDecoder::storeHeader(std::string_view name, std::string_view va
 
     const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
     if (mergeSep == '\0') {
-      return "Duplicated header forbidden to merge";
+      return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
     }
 
     const std::size_t newValueLen = existingValue.size() + 1U + value.size();
@@ -1017,7 +1039,7 @@ const char* HpackDecoder::storeHeader(std::string_view name, std::string_view va
     it->second = std::string_view(pData - newValueLen, newValueLen);
   }
 
-  return nullptr;
+  return DecodeResult::Error::None;
 }
 
 // ============================

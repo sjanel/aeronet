@@ -160,7 +160,9 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
     return;
   }
 
-  log::debug("Stream {} is now closed with error code {}", it->first, static_cast<uint32_t>(errorCode));
+  const auto streamId = it->first;
+
+  log::debug("Stream {} is now closed with error code {}", streamId, static_cast<uint32_t>(errorCode));
   if (errorCode != ErrorCode::NoError) {
     it->second.setErrorCode(errorCode);
   }
@@ -168,11 +170,11 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
   --_activeStreamCount;
 
   if (_onStreamClosed) {
-    _onStreamClosed(it->first);
+    _onStreamClosed(streamId);
   }
 
   // Don't remove immediately - keep for a short time for late frames.
-  _closedStreamsFifo.push_back(it->first);
+  _closedStreamsFifo.push_back(streamId);
   pruneClosedStreams();
 }
 
@@ -611,6 +613,9 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     if (decodeErr == ErrorCode::EnhanceYourCalm) {
       return streamError(header.streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
     }
+    if (decodeErr == ErrorCode::ProtocolError) {
+      return streamError(header.streamId, decodeErr, ErrorMsg::MalformedFieldSection);
+    }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
@@ -904,6 +909,9 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
     if (decodeErr == ErrorCode::EnhanceYourCalm) {
       return streamError(_headerBlockStreamId, decodeErr, ErrorMsg::HeaderListTooLarge);
     }
+    if (decodeErr == ErrorCode::ProtocolError) {
+      return streamError(_headerBlockStreamId, decodeErr, ErrorMsg::MalformedFieldSection);
+    }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
@@ -1044,7 +1052,7 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   const auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
-    return ErrorCode::CompressionError;
+    return decodeResult.isCompressionError() ? ErrorCode::CompressionError : ErrorCode::ProtocolError;
   }
 
   if (decodeResult.headerListSize > _localSettings.maxHeaderListSize) {

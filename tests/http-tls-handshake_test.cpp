@@ -962,17 +962,7 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   test::TlsClient missingClient(server.port(), missingOpts);
   ASSERT_FALSE(missingClient.handshakeOk());
 }
-
-namespace {
-// Large response GET using TlsClient (simplified replacement).
-std::string tlsGetLarge(auto port) {
-  test::TlsClient client(port);
-  if (!client.handshakeOk()) {
-    return {};
-  }
-  return client.get("/large");
-}
-}  // namespace
+ 
 
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   // perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.
