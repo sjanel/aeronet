@@ -447,7 +447,7 @@ Router::RadixNode* Router::insertChild(RadixNode& node, std::string_view path, c
       std::size_t currentLiteralSize = 0;
       std::size_t currentLiteralCapacity = 0;
 
-      auto flushLiteral = [&]() {
+      auto flushLiteral = [&] {
         if (currentLiteral == nullptr) {
           return;
         }
@@ -548,7 +548,7 @@ Router::RadixNode* Router::insertChild(RadixNode& node, std::string_view path, c
       }
 
       const auto firstWildcardChild = pNode->children.begin() + static_cast<ptrdiff_t>(pNode->indices.size());
-      const auto insertPos = [&]() {
+      const auto insertPos = [&] {
         if (!pChild->constraint.empty()) {
           // Constrained params stay before unconstrained params and before any catch-all.
           return std::ranges::find_if(firstWildcardChild, pNode->children.end(), [](const RadixNode* pChild) {
@@ -959,7 +959,7 @@ const Router::RadixNode* Router::matchImpl(std::string_view path, bool requestHa
     catchAllFallbackMatchStateSize = _matchStateBuffer.size();
   };
 
-  auto fallbackToCatchAll = [&]() -> const RadixNode* {
+  auto fallbackToCatchAll = [&] -> const RadixNode* {
     if (pCatchAllFallback == nullptr) {
       return nullptr;
     }

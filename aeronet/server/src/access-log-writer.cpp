@@ -60,14 +60,11 @@ AccessLogWriter::AccessLogWriter(const AccessLogConfig& config) : _format(config
 void AccessLogWriter::log(const RequestMetrics& metrics) {
   assert(_sink != AccessLogConfig::Sink::None);
 
-  switch (_format) {
-    case AccessLogConfig::Format::CLF:
-      formatCLF(metrics);
-      break;
-    default:
-      assert(_format == AccessLogConfig::Format::JSON);
-      formatJSON(metrics);
-      break;
+  if (_format == AccessLogConfig::Format::CLF) {
+    formatCLF(metrics);
+  } else {
+    assert(_format == AccessLogConfig::Format::JSON);
+    formatJSON(metrics);
   }
 
   static constexpr decltype(_buffer)::size_type kFlushThreshold = 8192;
@@ -193,14 +190,11 @@ void AccessLogWriter::flush() noexcept {
   }
 
   int fd;
-  switch (_sink) {
-    case AccessLogConfig::Sink::Stdout:
-      fd = 1;
-      break;
-    default:
-      assert(_sink == AccessLogConfig::Sink::File);
-      fd = static_cast<int>(_fileFd.fd());
-      break;
+  if (_sink == AccessLogConfig::Sink::Stdout) {
+    fd = 1;
+  } else {
+    assert(_sink == AccessLogConfig::Sink::File);
+    fd = static_cast<int>(_fileFd.fd());
   }
 
   const char* const start = _buffer.data();

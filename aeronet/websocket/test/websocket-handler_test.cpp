@@ -85,8 +85,8 @@ class WebSocketHandlerTest : public ::testing::Test {
   // Helper to construct a MaskingKey from four bytes (matching previous
   // {std::byte, std::byte, std::byte, std::byte} ordering).
   static MaskingKey MakeMask(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3) noexcept {
-    return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8) | (static_cast<MaskingKey>(b2) << 16) |
-           (static_cast<MaskingKey>(b3) << 24);
+    return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8U) | (static_cast<MaskingKey>(b2) << 16U) |
+           (static_cast<MaskingKey>(b3) << 24U);
   }
 
   // Helper to build an unmasked frame (simulating server->client)
@@ -1348,7 +1348,7 @@ TEST_F(WebSocketHandlerTest, CompressionFallbackWhenNotBeneficial) {
 
   auto output = compressHandler->getPendingOutput();
   // First byte should NOT have RSV1 set (fell back to uncompressed)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x00);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40U, 0x00U);
 }
 
 TEST_F(WebSocketHandlerTest, RSV1AcceptedWithCompression) {
@@ -1414,7 +1414,7 @@ TEST_F(WebSocketHandlerTest, SendTextWithCompression) {
   EXPECT_LT(output.size(), largeText.size() + 2);
 
   // First byte should have RSV1 set (0x41 = FIN + RSV1 + Text)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x40);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40U, 0x40U);
 }
 
 TEST_F(WebSocketHandlerTest, SendBinaryWithCompression) {
@@ -1458,7 +1458,7 @@ TEST_F(WebSocketHandlerTest, CompressionSkipsSmallPayloads) {
   auto output = compressHandler->getPendingOutput();
 
   // First byte should NOT have RSV1 set (not compressed)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x00);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40U, 0x00U);
 }
 
 TEST_F(WebSocketHandlerTest, DecompressionFailure) {
@@ -2005,9 +2005,9 @@ TEST_F(WebSocketHandlerTest, ClientSideSendWithCompression) {
   auto output = compressHandler->getPendingOutput();
   ASSERT_GE(output.size(), 2);
   // Client-side: mask bit should be set
-  EXPECT_TRUE((static_cast<uint8_t>(output[1]) & 0x80) != 0);
+  EXPECT_TRUE((static_cast<uint8_t>(output[1]) & 0x80U) != 0);
   // RSV1 should be set (compressed)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40, 0x40);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0x40U, 0x40U);
 }
 
 TEST_F(WebSocketHandlerTest, DecompressionFailureWithoutOnErrorCallback) {

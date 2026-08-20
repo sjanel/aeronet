@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
   // Endpoint 1: /ping - Minimal latency test
   // ============================================================
   CROW_ROUTE(app, "/ping")
-  ([]() { return "pong"; });
+  ([] { return "pong"; });
 
   // ============================================================
   // Endpoint 2: /headers - Header stress test

@@ -40,8 +40,8 @@ inline std::span<const std::byte> container_bytes(const Container& cont) noexcep
 
 // Helper to construct a MaskingKey from four bytes (LSB = first byte)
 inline MaskingKey MakeMask(uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3) noexcept {
-  return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8) | (static_cast<MaskingKey>(b2) << 16) |
-         (static_cast<MaskingKey>(b3) << 24);
+  return static_cast<MaskingKey>(b0) | (static_cast<MaskingKey>(b1) << 8U) | (static_cast<MaskingKey>(b2) << 16U) |
+         (static_cast<MaskingKey>(b3) << 24U);
 }
 
 class WebSocketFrameTest : public ::testing::Test {
@@ -134,12 +134,12 @@ TEST_F(WebSocketFrameTest, BuildMaskedTextFrame) {
   EXPECT_EQ(ptr[4], 0x56);
   EXPECT_EQ(ptr[5], 0x78);
   // Payload is masked: 'H' ^ 0x12, 'i' ^ 0x34
-  EXPECT_EQ(ptr[6], static_cast<uint8_t>('H') ^ 0x12);
-  EXPECT_EQ(ptr[7], static_cast<uint8_t>('i') ^ 0x34);
+  EXPECT_EQ(ptr[6], static_cast<uint8_t>('H') ^ 0x12U);
+  EXPECT_EQ(ptr[7], static_cast<uint8_t>('i') ^ 0x34U);
 }
 
 TEST_F(WebSocketFrameTest, BuildBinaryFrame) {
-  std::array<uint8_t, 3> payload = {0xDE, 0xAD, 0xBE};
+  std::array payload{uint8_t{0xDE}, uint8_t{0xAD}, uint8_t{0xBE}};
   BuildFrame(buffer, Opcode::Binary, container_bytes(payload));
 
   ASSERT_GE(buffer.size(), 5);
@@ -158,8 +158,8 @@ TEST_F(WebSocketFrameTest, BuildFragmentedFrame) {
 
   auto ptr = reinterpret_cast<const uint8_t*>(buffer.data());
   // FIN=0
-  EXPECT_EQ(ptr[0] & 0x80, 0x00);
-  EXPECT_EQ(ptr[0] & 0x0F, static_cast<uint8_t>(Opcode::Text));
+  EXPECT_EQ(ptr[0] & 0x80U, 0x00U);
+  EXPECT_EQ(ptr[0] & 0x0FU, static_cast<uint8_t>(Opcode::Text));
 }
 
 TEST_F(WebSocketFrameTest, BuildContinuationFrame) {
@@ -256,7 +256,7 @@ TEST_F(WebSocketFrameTest, ParseIncompleteHeader) {
 TEST_F(WebSocketFrameTest, ParseIncompleteExtendedLength) {
   // 16-bit length marker but only 1 extra byte
   // Use client-side parsing (isServerSide=false) to avoid mask validation
-  std::array<std::byte, 3> data = {std::byte{0x81}, std::byte{126}, std::byte{0x00}};
+  std::array data{std::byte{0x81}, std::byte{126}, std::byte{0x00}};
   auto result = ParseFrame(data, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::Incomplete);
 }
@@ -427,7 +427,7 @@ TEST_F(WebSocketFrameTest, ApplyMaskLargeDataNonMultipleVectorWidth) {
   // Covers SIMD path plus scalar tail processing.
   vector<std::byte> data(4099);
   for (uint32_t idx = 0; idx < data.size(); ++idx) {
-    data[idx] = static_cast<std::byte>(idx & 0xFF);
+    data[idx] = static_cast<std::byte>(idx & 0xFFU);
   }
 
   const auto original = data;

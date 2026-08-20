@@ -325,8 +325,10 @@ TEST(HttpExpect, UnknownExpectTokenReturns417) {
 TEST(HttpServer, PostConfigUpdateExceptionDoesNotCrash) {
   ts.postConfigUpdate(
       [](HttpServerConfig& /*cfg*/) { throw std::runtime_error("Intentional exception in config update"); });
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.postConfigUpdate([](HttpServerConfig& /*cfg*/) { throw 42; });
   ts.postRouterUpdate([](Router& /*cfg*/) { throw std::runtime_error("Intentional exception in router update"); });
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.postRouterUpdate([](Router& /*cfg*/) { throw 42; });
 }
 
@@ -547,7 +549,7 @@ TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
 }
 
 TEST(HttpBasic, LargePayload) {
-  const std::string largeBody(1 << 24, 'a');
+  const std::string largeBody(1UL << 24U, 'a');
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
@@ -786,6 +788,7 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
       throw std::runtime_error("boom");
     }
     if (token == "throwsCustomException") {
+      // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
       throw 42;
     }
     SingleHttpServer::ExpectationResult res;
@@ -1063,6 +1066,7 @@ TEST(SingleHttpServer, RequestHandlerStdException) {
 
 // Test request handler non-std exception
 TEST(SingleHttpServer, RequestHandlerNonStdException) {
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.router().setDefault([](const HttpRequestView&) -> HttpResponse { throw 42; });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1161,6 +1165,7 @@ TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
 TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   // Exception that doesn't inherit from std::exception
   ts.postRouterUpdate([](Router&) {
+    // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
     throw 999;  // Triggers catch(...) path
   });
 
@@ -1265,6 +1270,7 @@ TEST(SingleHttpServer, MiddlewareExceptionHandling) {
 
   ts.router().addRequestMiddleware([](HttpRequestView&) {
     // Test just that adding a middleware that throws doesn't crash
+    // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
     throw 42;
     return MiddlewareResult::Continue();
   });
@@ -1297,6 +1303,7 @@ TEST(SingleHttpServer, RequestMiddlewareStdExceptionInGlobalMiddleware) {
 }
 
 TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInGlobalMiddleware) {
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.resetRouterAndGet().addRequestMiddleware([](const HttpRequestView&) -> MiddlewareResult { throw 42; });
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
@@ -1326,6 +1333,7 @@ TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInGlobalMiddleware) {
 }
 
 TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInGlobalMiddleware) {
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.resetRouterAndGet().addResponseMiddleware([](const HttpRequestView&, HttpResponse&) { throw 42; });
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
@@ -1357,6 +1365,7 @@ TEST(SingleHttpServer, RequestMiddlewareStdExceptionInPathMiddleware) {
 TEST(SingleHttpServer, RequestMiddlewareCustomExceptionInPathMiddleware) {
   auto entry = ts.resetRouterAndGet().setPath(
       http::Method::GET, "/test", [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("test"); });
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   entry.before([](const HttpRequestView&) -> MiddlewareResult { throw 42; });
 
   test::ClientConnection clientConnection(ts.port());
@@ -1383,6 +1392,7 @@ TEST(SingleHttpServer, ResponseMiddlewareStdExceptionInPathMiddleware) {
 TEST(SingleHttpServer, ResponseMiddlewareCustomExceptionInPathMiddleware) {
   auto entry = ts.resetRouterAndGet().setPath(http::Method::GET, "/test",
                                               [](const HttpRequestView&) { return HttpResponse("OK"); });
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   entry.after([](const HttpRequestView&, HttpResponse&) { throw 42; });
 
   test::ClientConnection clientConnection(ts.port());

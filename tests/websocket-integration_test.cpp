@@ -48,26 +48,26 @@ vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
   vector<std::byte> frame;
   uint8_t firstByte = static_cast<uint8_t>(Opcode::Text);
   if (fin) {
-    firstByte |= 0x80;
+    firstByte |= 0x80U;
   }
   frame.push_back(static_cast<std::byte>(firstByte));
 
   // Mask bit set + length
   if (text.size() < 126) {
-    frame.push_back(static_cast<std::byte>(0x80 | text.size()));
+    frame.push_back(static_cast<std::byte>(0x80U | text.size()));
   } else if (text.size() < 65536) {
-    frame.push_back(static_cast<std::byte>(0x80 | 126));
-    frame.push_back(static_cast<std::byte>((text.size() >> 8) & 0xFF));
-    frame.push_back(static_cast<std::byte>(text.size() & 0xFF));
+    frame.push_back(static_cast<std::byte>(0x80U | 126U));
+    frame.push_back(static_cast<std::byte>((text.size() >> 8U) & 0xFFU));
+    frame.push_back(static_cast<std::byte>(text.size() & 0xFFU));
   } else {
-    frame.push_back(static_cast<std::byte>(0x80 | 127));
+    frame.push_back(static_cast<std::byte>(0x80U | 127U));
     for (int idx = 7; idx >= 0; --idx) {
-      frame.push_back(static_cast<std::byte>((text.size() >> (idx * 8)) & 0xFF));
+      frame.push_back(static_cast<std::byte>((text.size() >> (static_cast<uint32_t>(idx) * 8U)) & 0xFFU));
     }
   }
 
   // Masking key (simple key for testing)
-  std::array<std::byte, 4> maskKey = {std::byte{0x37}, std::byte{0xfa}, std::byte{0x21}, std::byte{0x3d}};
+  constexpr std::array maskKey{std::byte{0x37}, std::byte{0xfa}, std::byte{0x21}, std::byte{0x3d}};
   for (auto keyByte : maskKey) {
     frame.push_back(keyByte);
   }
@@ -83,18 +83,18 @@ vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
 // Helper to create a close frame
 vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal, std::string_view reason = "") {
   vector<std::byte> payload;
-  payload.push_back(static_cast<std::byte>((static_cast<uint16_t>(code) >> 8) & 0xFF));
-  payload.push_back(static_cast<std::byte>(static_cast<uint16_t>(code) & 0xFF));
+  payload.push_back(static_cast<std::byte>((static_cast<uint16_t>(code) >> 8U) & 0xFFU));
+  payload.push_back(static_cast<std::byte>(static_cast<uint16_t>(code) & 0xFFU));
   for (char ch : reason) {
     payload.push_back(static_cast<std::byte>(ch));
   }
 
   vector<std::byte> frame;
-  frame.push_back(static_cast<std::byte>(0x80 | static_cast<uint8_t>(Opcode::Close)));
-  frame.push_back(static_cast<std::byte>(0x80 | payload.size()));
+  frame.push_back(static_cast<std::byte>(0x80U | static_cast<uint8_t>(Opcode::Close)));
+  frame.push_back(static_cast<std::byte>(0x80U | payload.size()));
 
   // Masking key
-  std::array<std::byte, 4> maskKey = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  constexpr std::array maskKey{std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
   for (auto keyByte : maskKey) {
     frame.push_back(keyByte);
   }
@@ -120,15 +120,15 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
   }
 
   ServerFrame frame;
-  frame.fin = (std::to_integer<uint8_t>(data[0]) & 0x80) != 0;
-  frame.opcode = static_cast<Opcode>(std::to_integer<uint8_t>(data[0]) & 0x0F);
+  frame.fin = (std::to_integer<uint8_t>(data[0]) & 0x80U) != 0;
+  frame.opcode = static_cast<Opcode>(std::to_integer<uint8_t>(data[0]) & 0x0FU);
 
-  bool masked = (std::to_integer<uint8_t>(data[1]) & 0x80) != 0;
+  bool masked = (std::to_integer<uint8_t>(data[1]) & 0x80U) != 0;
   if (masked) {
     return std::nullopt;  // Server frames should not be masked
   }
 
-  std::size_t payloadLen = std::to_integer<std::size_t>(data[1]) & 0x7F;
+  std::size_t payloadLen = std::to_integer<std::size_t>(data[1]) & 0x7FU;
   std::size_t headerSize = 2;
 
   if (payloadLen == 126) {
@@ -143,7 +143,7 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
     }
     payloadLen = 0;
     for (std::size_t idx = 0; idx < 8; ++idx) {
-      payloadLen = (payloadLen << 8) | std::to_integer<std::size_t>(data[2 + idx]);
+      payloadLen = (payloadLen << 8U) | std::to_integer<std::size_t>(data[2 + idx]);
     }
     headerSize = 10;
   }

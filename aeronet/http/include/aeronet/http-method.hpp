@@ -30,9 +30,9 @@ enum class Method : MethodBmp {
   TRACE = 1 << 8,
 };
 
-inline constexpr Method kMethodInvalid = static_cast<Method>(0U);
+inline constexpr Method kMethodInvalid = static_cast<Method>(0);
 
-inline constexpr std::string_view kMethodStrings[] = {
+inline constexpr std::string_view kMethodStrings[]{
     "GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE",
 };
 
@@ -79,7 +79,7 @@ constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) { return kMethodS
 
 constexpr std::string_view MethodToStr(Method method) { return MethodIdxToStr(MethodToIdx(method)); }
 
-inline constexpr std::size_t kAllMethodsStrLen = []() {
+inline constexpr std::size_t kAllMethodsStrLen = [] {
   std::size_t len = 0;
   for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
     len += MethodIdxToStr(methodIdx).size();

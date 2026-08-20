@@ -52,7 +52,8 @@ namespace {
 bool InitMacContext(EVP_MAC_CTX* mctx, const unsigned char* hmacKey, std::size_t hmacKeyLen) {
   static const OSSL_PARAM params[]{
       ::OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>("SHA256"), 0),
-      ::OSSL_PARAM_construct_end()};
+      ::OSSL_PARAM_construct_end(),
+  };
   if (::EVP_MAC_CTX_set_params(mctx, params) != 1) {
     return false;
   }
@@ -107,12 +108,11 @@ TlsTicketKeyStore::KeyMaterial TlsTicketKeyStore::GenerateRandomKeyUnlocked() {
 }
 
 void TlsTicketKeyStore::rotateIfNeededUnlocked() {
-  if (_autoRotate && _lifetime.count() > 0) {
-    if (_keys.empty() || std::chrono::steady_clock::now() - _keys.front().created >= _lifetime) {
-      _keys.emplace(_keys.begin(), GenerateRandomKeyUnlocked());
-      if (_keys.size() > _maxKeys) {
-        _keys.pop_back();
-      }
+  if (_autoRotate && _lifetime.count() > 0 &&
+      (_keys.empty() || std::chrono::steady_clock::now() - _keys.front().created >= _lifetime)) {
+    _keys.emplace(_keys.begin(), GenerateRandomKeyUnlocked());
+    if (_keys.size() > _maxKeys) {
+      _keys.pop_back();
     }
   }
 }

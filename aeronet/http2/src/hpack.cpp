@@ -101,19 +101,21 @@ static_assert(std::size(kStaticTable) <= std::numeric_limits<decltype(StaticTabl
               "Static table header names must be representable in uint8_t for efficient indexing");
 
 // Sorted by name, then by index (to get lowest index first for name-only matches)
-constexpr auto kStaticTableByName = []() {
-  std::array<StaticTableEntry, std::size(kStaticTable)> entries{};
-  for (std::uint8_t idx = 0; idx < static_cast<std::uint8_t>(std::size(kStaticTable)); ++idx) {
-    entries[idx] = {kStaticTable[idx].name, idx};
-  }
-  std::ranges::sort(entries, [](const StaticTableEntry& lhs, const StaticTableEntry& rhs) {
-    if (lhs.name != rhs.name) {
-      return lhs.name < rhs.name;
-    }
-    return lhs.index < rhs.index;  // stable: lowest index first
-  });
-  return entries;
-}();
+constexpr auto kStaticTableByName =
+    [] {
+      std::array<StaticTableEntry, std::size(kStaticTable)> entries{};
+      for (std::uint8_t idx = 0; idx < static_cast<std::uint8_t>(std::size(kStaticTable)); ++idx) {
+        entries[idx] = {kStaticTable[idx].name, idx};
+      }
+      std::ranges::sort(entries, [](const StaticTableEntry& lhs, const StaticTableEntry& rhs) {
+        if (lhs.name != rhs.name) {
+          return lhs.name < rhs.name;
+        }
+        return lhs.index < rhs.index;  // stable: lowest index first
+      });
+      return entries;
+    }  // namespace
+();
 
 constexpr std::size_t kStaticHeaderNameMinLen =
     std::ranges::min_element(
@@ -162,7 +164,7 @@ struct StaticNameHashEntry {
   uint8_t count;        ///< Number of consecutive entries with this name
 };
 
-constexpr auto kStaticNameHashTable = []() {
+constexpr auto kStaticNameHashTable = [] {
   struct Table {
     StaticNameHashEntry slots[kStaticNameHashSize]{};
     bool perfect{true};
@@ -488,7 +490,7 @@ struct HuffmanDecodeEntry {
 constexpr std::size_t kHuffmanLevel1Bits = 8;
 constexpr std::size_t kHuffmanLevel1Size = 1ULL << kHuffmanLevel1Bits;
 
-constexpr auto kHuffmanDecodeTable = []() {
+constexpr auto kHuffmanDecodeTable = [] {
   std::array<HuffmanDecodeEntry, kHuffmanLevel1Size> table;
 
   // Entries left at bitsUsed == 0 mean "code is longer than the window, fall through to tier 2".
