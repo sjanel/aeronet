@@ -436,7 +436,7 @@ TEST(flat_hash_map, fuzz_against_unordered_map) {
   std::uniform_int_distribution<int> actionDist(0, 50);
   std::uniform_real_distribution<float> loadFactorDist(0.3F, 1.2F);
 
-  auto assertEqualMaps = [&]() {
+  auto assertEqualMaps = [&] {
     ASSERT_EQ(map1.size(), reference.size());
     for (const auto& entry : reference) {
       auto it = map1.find(entry.first);

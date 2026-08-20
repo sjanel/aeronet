@@ -97,7 +97,7 @@ class HttpRequestView {
   // This enables true async operations (database queries, API calls, file I/O) without blocking the event loop.
   //
   // Usage:
-  //   auto result = co_await req.deferWork([&]() -> MyResult {
+  //   auto result = co_await req.deferWork([&] -> MyResult {
   //     // This lambda runs on a background thread
   //     return slowDatabaseQuery();  // blocking I/O is fine here
   //   });
@@ -128,7 +128,7 @@ class HttpRequestView {
       auto postCallback = std::move(_postCallback);
 
       std::thread([handle, work = std::move(work), state = std::move(state),
-                   postCallback = std::move(postCallback)]() mutable {
+                   postCallback = std::move(postCallback)] mutable {
         try {
           state->result = work();
         } catch (...) {

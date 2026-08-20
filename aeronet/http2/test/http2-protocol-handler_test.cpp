@@ -3935,7 +3935,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-    const int result = co_await req.deferWork([]() { return 42; });
+    const int result = co_await req.deferWork([] { return 42; });
     co_return HttpResponse(200, std::to_string(result));
   });
 
@@ -3993,7 +3993,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   router
       .setPath(http::Method::GET, "/async-defer-cors",
                [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                 const int result = co_await req.deferWork([]() { return 99; });
+                 const int result = co_await req.deferWork([] { return 99; });
                  co_return HttpResponse(200, std::to_string(result));
                })
       .cors(std::move(cors))
@@ -4046,7 +4046,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-    (void)co_await req.deferWork([]() { return 1; });
+    (void)co_await req.deferWork([] { return 1; });
     throw std::runtime_error("post-defer explosion");
     co_return HttpResponse(200);
   });
@@ -4089,7 +4089,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-    (void)co_await req.deferWork([]() { return 1; });
+    (void)co_await req.deferWork([] { return 1; });
     throw 42;  // NOLINT(bugprone-std-exception-baseclass)
     co_return HttpResponse(200);
   });
@@ -4136,8 +4136,8 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
   std::atomic<int> callbackCount{0};
 
   router.setPath(http::Method::GET, "/async-double-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-    const int r1 = co_await req.deferWork([]() { return 10; });
-    const int r2 = co_await req.deferWork([]() { return 20; });
+    const int r1 = co_await req.deferWork([] { return 10; });
+    const int r2 = co_await req.deferWork([] { return 20; });
     co_return HttpResponse(200, std::to_string(r1 + r2));
   });
 
@@ -4645,7 +4645,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
   router
       .setPath(http::Method::GET, "/async-slow",
                [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                 const int result = co_await req.deferWork([]() { return 1; });
+                 const int result = co_await req.deferWork([] { return 1; });
                  co_return HttpResponse(200, std::to_string(result));
                })
       .timeout(1ms);
@@ -4698,7 +4698,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   router
       .setPath(http::Method::GET, "/async-ok",
                [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                 const int result = co_await req.deferWork([]() { return 1; });
+                 const int result = co_await req.deferWork([] { return 1; });
                  co_return HttpResponse(200, std::to_string(result));
                })
       .timeout(1h);  // Very long timeout

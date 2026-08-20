@@ -320,12 +320,9 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
   else if (state.outBuffer.empty() && state.waitingWritable &&
            (state.tlsEstablished || state.transport->handshakeDone())) {
-    if (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) {
-      if (disableWritableInterest(cnxIt)) {
-        if (state.isAnyCloseRequested()) {
-          return;
-        }
-      }
+    if ((!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
+        state.isAnyCloseRequested()) {
+      return;
     }
   }
   // Clear writable interest if no buffered data and transport no longer needs write progress.
@@ -333,10 +330,8 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   if (state.outBuffer.empty() && !state.isSendingFile() && (!state.isTunneling() || state.tunnelOrFileBuffer.empty())) {
     bool transportNeedsWrite = (!state.tlsEstablished && want == TransportHint::WriteReady);
     if (transportNeedsWrite) {
-      if (!state.waitingWritable) {
-        if (!enableWritableInterest(cnxIt)) {
-          return;  // failure logged
-        }
+      if (!state.waitingWritable && !enableWritableInterest(cnxIt)) {
+        return;  // failure logged
       }
     } else if (state.waitingWritable) {
       disableWritableInterest(cnxIt);
@@ -441,13 +436,11 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
     switch (res.code) {
       case ConnectionState::FileResult::Code::Read:
         // Read case: data read from file into buffer; now try to write it immediately.
-        if (userSpaceTls) {
+        if (userSpaceTls && flushUserSpaceTlsBuffer(cnxIt)) {
           // Attempt to flush immediately; if it blocks/fails, we'll resume on next writable.
-          if (flushUserSpaceTlsBuffer(cnxIt)) {
-            return;  // Would block, wait for next writable event
-          }
-          // Successfully flushed, continue loop to read more
+          return;  // Would block, wait for next writable event
         }
+        // Successfully flushed, continue loop to read more
         break;
       case ConnectionState::FileResult::Code::Sent:
         _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);

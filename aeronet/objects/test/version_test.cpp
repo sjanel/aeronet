@@ -18,18 +18,18 @@ TEST(AeronetVersion, Version) {
   EXPECT_FALSE(kVersion.empty());
   auto view = aeronet::fullVersionStringView();
   EXPECT_TRUE(view.contains("aeronet"));
-  EXPECT_TRUE(view.contains(std::string(kVersion)));
+  EXPECT_TRUE(view.contains(kVersion));
   // Expect multiline format now including glaze and compression sections
   // (exactly 5 lines, no trailing newline)
   auto first_nl = view.find('\n');
-  ASSERT_NE(first_nl, std::string::npos);
+  ASSERT_NE(first_nl, std::string_view::npos);
   auto second_nl = view.find('\n', first_nl + 1);
-  ASSERT_NE(second_nl, std::string::npos);
+  ASSERT_NE(second_nl, std::string_view::npos);
   auto third_nl = view.find('\n', second_nl + 1);
-  ASSERT_NE(third_nl, std::string::npos);
+  ASSERT_NE(third_nl, std::string_view::npos);
   auto fourth_nl = view.find('\n', third_nl + 1);
-  ASSERT_NE(fourth_nl, std::string::npos);
-  EXPECT_EQ(view.find('\n', fourth_nl + 1), std::string::npos);  // no 6th line
+  ASSERT_NE(fourth_nl, std::string_view::npos);
+  EXPECT_EQ(view.find('\n', fourth_nl + 1), std::string_view::npos);  // no 6th line
   // Extract lines
   auto line1 = view.substr(0, first_nl);
   auto line2 = view.substr(first_nl + 1, second_nl - first_nl - 1);

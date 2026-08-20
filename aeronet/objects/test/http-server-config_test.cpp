@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -484,18 +485,19 @@ TEST(HttpServerConfigTest, InvalidCipherListThrows) {
 TEST(HttpServerConfigTest, ConnectAllowListCannotContainStarWithOtherHosts) {
   HttpServerConfig config;
 
-  std::array<std::string_view, 2> allowedHosts = {"www.example.com", "www.example2.com"};
-  config.withConnectAllowlist(allowedHosts.begin(), allowedHosts.end());
+  static constexpr std::string_view allowedHosts[]{"www.example.com", "www.example2.com"};
+  config.withConnectAllowlist(std::begin(allowedHosts), std::end(allowedHosts));
 
   EXPECT_NO_THROW(config.validate());
 
-  std::array<std::string_view, 1> allowedHostsUnrestricted = {"*"};
-  config.withConnectAllowlist(allowedHostsUnrestricted.begin(), allowedHostsUnrestricted.end());
+  static constexpr std::string_view allowedHostsUnrestricted[]{"*"};
+  config.withConnectAllowlist(std::begin(allowedHostsUnrestricted), std::end(allowedHostsUnrestricted));
 
   EXPECT_NO_THROW(config.validate());
 
-  std::array<std::string_view, 2> allowedHostsUnrestrictedWithOthers = {"*", "www.example.com"};
-  config.withConnectAllowlist(allowedHostsUnrestrictedWithOthers.begin(), allowedHostsUnrestrictedWithOthers.end());
+  static constexpr std::string_view allowedHostsUnrestrictedWithOthers[]{"*", "www.example.com"};
+  config.withConnectAllowlist(std::begin(allowedHostsUnrestrictedWithOthers),
+                              std::end(allowedHostsUnrestrictedWithOthers));
 
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }

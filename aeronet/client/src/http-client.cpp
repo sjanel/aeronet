@@ -260,11 +260,9 @@ bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_po
       return false;  // unrecoverable poll failure (already logged)
     }
     for (const auto& ev : events) {
-      if (ev.fd == fd) {
+      if (ev.fd == fd && (ev.eventBmp & (interest | EventErr | EventHup | EventRdHup)) != 0U) {
         // Surface error/hup to the next I/O attempt, and report interest readiness.
-        if ((ev.eventBmp & (interest | EventErr | EventHup | EventRdHup)) != 0U) {
-          return true;
-        }
+        return true;
       }
     }
     // Empty span => poll timeout; loop and re-check the deadline.

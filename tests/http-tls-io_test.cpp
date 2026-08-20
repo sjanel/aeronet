@@ -303,7 +303,7 @@ TEST(HttpTlsSessionTickets, AutoRotationRefreshesPrimaryKeyAndRejectsUnknown) {
 }
 
 TEST(HttpTlsBasic, LargePayload) {
-  std::string largeBody(1 << 25, 'a');
+  std::string largeBody(1UL << 25U, 'a');
   // Prepare config with in-memory self-signed cert/key
   ts.server.postConfigUpdate([&](HttpServerConfig& cfg) {
     cfg.withMaxOutboundBufferBytes(largeBody.size() + 64);  // +64 for headers
@@ -436,7 +436,7 @@ TEST(HttpRangeStatic_H2Tls, LargeFileStreaming_H2Tls) {
 TEST(HttpLargeFile, ServeLargeFileTls) {
   static constexpr std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
   test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp([&]() {
+  test::ScopedTempFile tmp([&] {
     std::string data;
     data.assign(static_cast<std::size_t>(size), '\0');
     for (std::uint64_t i = 0; i < size; ++i) {

@@ -834,7 +834,7 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
   });
 
   // 1 MB payload with deterministic pattern to verify data integrity
-  constexpr std::size_t kPayloadSize = 1UL << 20;
+  constexpr std::size_t kPayloadSize = 1UL << 20U;
   std::string largePayload;
   largePayload.reserve(kPayloadSize);
   for (std::size_t idx = 0; idx < kPayloadSize; ++idx) {
@@ -888,7 +888,7 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
 
   threads.reserve(kThreads);
   for (int th = 0; th < kThreads; ++th) {
-    threads.emplace_back([&]() {
+    threads.emplace_back([&] {
       test::RequestOptions opt;
       opt.method = "GET";
       opt.target = "/concurrent-stress";
@@ -2766,7 +2766,7 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
   opt.method = "GET";
   opt.target = "/multi-chunk-compress";
   opt.headers = {{"Accept-Encoding", "gzip"}};
-  opt.maxResponseBytes = 2 << 20;
+  opt.maxResponseBytes = 2U << 20;
 
   const auto raw = test::requestOrThrow(port, opt);
   const auto parsed = test::parseResponseOrThrow(raw);
@@ -4071,7 +4071,7 @@ TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
 TEST(HttpLargeFile, ServeLargeFile) {
   const std::uint64_t size = 16ULL * 1024ULL * 1024ULL;
   test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp([&]() {
+  test::ScopedTempFile tmp([&] {
     std::string data;
     data.assign(static_cast<std::size_t>(size), '\0');
     for (std::uint64_t i = 0; i < size; ++i) {
