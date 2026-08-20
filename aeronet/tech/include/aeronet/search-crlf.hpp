@@ -26,7 +26,6 @@ AERONET_ALWAYS_INLINE auto* SearchCRLFMemchr(auto* first, auto* last) noexcept {
       return first;
     }
   }
-  return last;
 }
 
 #ifdef AERONET_HAS_SEARCH_CRLF_SSE2

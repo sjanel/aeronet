@@ -552,7 +552,7 @@ TEST(HttpBasic, LargePayload) {
   const std::string largeBody(1UL << 24U, 'a');
 
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withMaxOutboundBufferBytes(1 << 25);  // 32 MiB
+    cfg.withMaxOutboundBufferBytes(1UL << 25U);  // 32 MiB
   });
   ts.router().setDefault([&largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
   test::ClientConnection clientConnection(ts.port());
@@ -1080,7 +1080,7 @@ TEST(SingleHttpServer, RequestHandlerNonStdException) {
 // Test body read timeout is set when configured and body not ready
 TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s);  // NOLINT(misc-include-cleaner)
+    cfg.withMaxBodyBytes(256UL << 20U).withBodyReadTimeout(1s);  // NOLINT(misc-include-cleaner)
   });
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
@@ -1097,7 +1097,7 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
 
 // Test body read timeout cleared when body is ready
 TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256 << 20).withBodyReadTimeout(1s); });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256UL << 20U).withBodyReadTimeout(1s); });
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
