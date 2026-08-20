@@ -773,14 +773,12 @@ bool SingleHttpServer::callStreamingHandler(const StreamingHandler& streamingHan
   bool wantClose = request.wantClose();
 
   // Determine active CORS policy (route-specific if provided, otherwise global)
-  if (pCorsPolicy != nullptr) {
-    if (pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-      HttpResponse corsProbe(http::StatusCodeForbidden, "Forbidden by CORS policy");
-      ApplyResponseMiddleware(request, corsProbe, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
-                              _callbacks.middlewareMetrics);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
-      return state.isAnyCloseRequested();
-    }
+  if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+    HttpResponse corsProbe(http::StatusCodeForbidden, "Forbidden by CORS policy");
+    ApplyResponseMiddleware(request, corsProbe, postMiddleware, _router.globalResponseMiddleware(), _telemetry, true,
+                            _callbacks.middlewareMetrics);
+    finalizeAndSendResponseForHttp1(cnxIt, std::move(corsProbe), consumedBytes, pCorsPolicy);
+    return state.isAnyCloseRequested();
   }
 
   // Create the protocol-specific transport backend and the protocol-agnostic writer

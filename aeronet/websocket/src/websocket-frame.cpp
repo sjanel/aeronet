@@ -135,7 +135,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
       return result;
     }
     // Network byte order (big-endian)
-    result.header.payloadLength = (static_cast<uint64_t>(ptr[offset]) << 8) | static_cast<uint64_t>(ptr[offset + 1]);
+    result.header.payloadLength = (static_cast<uint64_t>(ptr[offset]) << 8U) | static_cast<uint64_t>(ptr[offset + 1]);
     offset += 2;
 
     // RFC 6455 §5.2: the minimal number of bytes MUST be used to encode the length
@@ -154,12 +154,12 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
     // Network byte order (big-endian)
     result.header.payloadLength = 0;
     for (std::size_t idx = 0; idx < 8; ++idx) {
-      result.header.payloadLength = (result.header.payloadLength << 8) | static_cast<uint64_t>(ptr[offset + idx]);
+      result.header.payloadLength = (result.header.payloadLength << 8U) | static_cast<uint64_t>(ptr[offset + idx]);
     }
     offset += 8;
 
     // RFC 6455 §5.2: MSB must be 0 (payload length is unsigned)
-    if ((result.header.payloadLength >> 63) != 0) {
+    if ((result.header.payloadLength >> 63U) != 0) {
       result.status = FrameParseResult::Status::ProtocolError;
       result.errorMessage = "Invalid payload length (MSB set)";
       return result;
@@ -312,7 +312,7 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
 
   // Trailing bytes (at most 31 for AVX2, 15 for SSE2/NEON, 7 for scalar)
   for (; idx < sz; ++idx) {
-    bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3) * 8)) & 0xFF);
+    bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3) * 8)) & 0xFFU);
   }
 }
 

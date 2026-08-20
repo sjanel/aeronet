@@ -205,14 +205,12 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router) {
   _servers.reserve(static_cast<decltype(_servers)::size_type>(threadCount));
 
   if (threadCount > 1U && !cfg.reusePort) {
-    if (cfg.port != 0) {
+    if (cfg.port != 0 && !Socket{Socket::Type::StreamNonBlock}.tryBind(cfg.reusePort, cfg.port)) {
       // User wants to ensure that the given port will be exclusively used by this MultiHttpServer.
       // We need reusePort to be enabled for multiple threads to bind to the same port, but we can
       // verify that no other process is using the port by attempting to bind once here.
       // If the port is already in use, this will throw.
-      if (!Socket{Socket::Type::StreamNonBlock}.tryBind(cfg.reusePort, cfg.port)) {
-        ThrowSystemError("bind failed on this port - already in use");
-      }
+      ThrowSystemError("bind failed on this port - already in use");
       // immediately close the socket again to free the port for the actual servers below.
     }
 
@@ -319,7 +317,7 @@ MultiHttpServer::~MultiHttpServer() {
   stop();
 
   if (auto state = _lastHandleState.lock()) {
-    state->onStop = []() {};
+    state->onStop = [] {};
   }
 
   if (_serversAlive) {

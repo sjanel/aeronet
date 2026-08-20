@@ -150,7 +150,7 @@ inline ClientBenchConfig ParseArgs(int argc, char** argv) {
   ClientBenchConfig cfg;
   for (int i = 1; i < argc; ++i) {
     std::string_view arg(argv[i]);
-    auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : nullptr; };
+    auto next = [&] -> const char* { return (i + 1 < argc) ? argv[++i] : nullptr; };
     if ((arg == "--url" || arg == "--base-url")) {
       if (const char* v = next()) {
         cfg.baseUrl = v;

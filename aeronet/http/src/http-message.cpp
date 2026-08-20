@@ -247,7 +247,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     // uncompressed response
 
     const auto adjustEncodingHeaders = [this, addEncodingHeaders, removeEncodingHeaders, addVaryHeader,
-                                        appendVaryValue]() {
+                                        appendVaryValue] {
       if (addEncodingHeaders) {
         if (addVaryHeader) {
           headerAddLineUnchecked(http::Vary, http::AcceptEncoding);

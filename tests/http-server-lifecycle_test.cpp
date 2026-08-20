@@ -338,6 +338,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 
     launchSomeQueries(source, "source");
 
+    // NOLINTNEXTLINE(performance-use-std-move)
     destination = source;
 
     launchSomeQueries(destination, "source");
@@ -456,7 +457,7 @@ TEST(HttpConfigUpdate, CoalesceWhileRunning) {
   auto& server = ts.server;
 
   // register a handler that returns current config value
-  server.router().setPath(aeronet::http::Method::GET, std::string("/cfg"), [&server](const HttpRequestView&) {
+  server.router().setPath(aeronet::http::Method::GET, "/cfg", [&server](const HttpRequestView&) {
     return HttpResponse(std::to_string(server.config().maxRequestsPerConnection));
   });
 
@@ -478,8 +479,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   test::TestServer ts;
 
   // initial handler returns v1
-  ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"),
-                      [](const HttpRequestView&) { return HttpResponse("v1"); });
+  ts.router().setPath(aeronet::http::Method::GET, "/dyn", [](const HttpRequestView&) { return HttpResponse("v1"); });
 
   // verify baseline response
   auto raw1 = test::simpleGet(ts.port(), "/dyn");
@@ -488,8 +488,7 @@ TEST(HttpRouterUpdate, RuntimeChangeObserved) {
   // From another thread, post an update to change the handler to v2 after a small delay
   std::jthread updater([&ts] {
     std::this_thread::sleep_for(25ms);
-    ts.router().setPath(aeronet::http::Method::GET, std::string("/dyn"),
-                        [](const HttpRequestView&) { return HttpResponse("v2"); });
+    ts.router().setPath(aeronet::http::Method::GET, "/dyn", [](const HttpRequestView&) { return HttpResponse("v2"); });
   });
 
   // Poll for the updated behavior for a short while

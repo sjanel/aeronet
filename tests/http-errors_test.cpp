@@ -598,7 +598,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairnessBudgetExhausted) {
   // Send a request that exceeds the budget - this should still work since
   // we parse what we have and yield, but it exercises the fairness cap path
   std::string largeRequest = "POST /budget HTTP/1.1\r\nHost: x\r\nContent-Length: 256\r\n\r\n";
-  largeRequest += std::string(256, 'X');
+  largeRequest += std::string(256UL, 'X');
   test::sendAll(client.fd(), largeRequest);
 
   const auto resp = test::recvWithTimeout(client.fd(), 2000ms);
@@ -609,7 +609,7 @@ TEST(ConnectionManagerErrors, MaxPerEventReadBytesFairnessBudgetExhausted) {
 // This exercises the body activity tracking used for bodyReadTimeout enforcement.
 TEST(ConnectionManagerErrors, WaitingForBodyActivityTracking) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withMaxBodyBytes(1 << 20);
+    cfg.withMaxBodyBytes(1U << 20U);
     cfg.withBodyReadTimeout(5s);  // Enable body timeout which activates waitingForBody
   });
 

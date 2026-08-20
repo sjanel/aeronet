@@ -42,7 +42,7 @@ class NetworkFaultTest : public ::testing::Test {
     ts.router().setPath(http::Method::GET, "/hello",
                         [](const HttpRequestView&) { return HttpResponse("Hello, World!"); });
     ts.router().setPath(http::Method::POST, "/echo",
-                        [](const HttpRequestView& req) { return HttpResponse(std::string{req.body()}); });
+                        [](const HttpRequestView& req) { return HttpResponse(req.body()); });
     ts.router().setPath(http::Method::GET, "/large",
                         [](const HttpRequestView&) { return HttpResponse(std::string(8192, 'X')); });
   }

@@ -173,11 +173,9 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
   if (const auto requestedHeadersOpt = request.headerValue(http::AccessControlRequestHeaders); requestedHeadersOpt) {
     requestedHeadersPresent = true;
     requestedHeaders = TrimOws(*requestedHeadersOpt);
-    if (!requestedHeaders.empty()) {
-      if (!requestHeadersAllowed(requestedHeaders)) {
-        result.status = PreflightResult::Status::HeadersDenied;
-        return result;
-      }
+    if (!requestedHeaders.empty() && !requestHeadersAllowed(requestedHeaders)) {
+      result.status = PreflightResult::Status::HeadersDenied;
+      return result;
     }
   }
 

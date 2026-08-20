@@ -315,8 +315,11 @@ TEST(TlsContextTest, InvalidMaxVersionThrows) {
 TEST(TlsContextTest, CipherPolicyAppliesPredefinedSuites) {
   auto certKey = CertKeyCache::Get().localhost;
 
-  const std::array<TLSConfig::CipherPolicy, 3> policies = {
-      TLSConfig::CipherPolicy::Modern, TLSConfig::CipherPolicy::Compatibility, TLSConfig::CipherPolicy::Legacy};
+  constexpr std::array policies{
+      TLSConfig::CipherPolicy::Modern,
+      TLSConfig::CipherPolicy::Compatibility,
+      TLSConfig::CipherPolicy::Legacy,
+  };
 
   for (auto policy : policies) {
     TLSConfig cfg;
@@ -410,8 +413,8 @@ TEST(TlsContextTest, RequireClientCertEnforcesVerificationWithoutRequestFlag) {
   TlsContext ctx(cfg);
   auto* raw = reinterpret_cast<SSL_CTX*>(ctx.raw());
   const int mode = ::SSL_CTX_get_verify_mode(raw);
-  EXPECT_NE(mode & SSL_VERIFY_PEER, 0);
-  EXPECT_NE(mode & SSL_VERIFY_FAIL_IF_NO_PEER_CERT, 0);
+  EXPECT_NE(static_cast<uint32_t>(mode) & SSL_VERIFY_PEER, 0);
+  EXPECT_NE(static_cast<uint32_t>(mode) & SSL_VERIFY_FAIL_IF_NO_PEER_CERT, 0);
 }
 
 TEST(TlsContextTest, DisableCompressionFalseConfiguresSslCtx) {
@@ -705,8 +708,9 @@ TEST(TlsTransportTest, FatalReadErrorDrainsSharedErrorQueue) {
   // server socket (bypassing the client SSL). The AEAD tag check fails, so SSL_read_ex returns
   // SSL_ERROR_SSL and queues a "bad record mac" error. 17-byte payload = the TLS 1.3 minimum
   // (1 content-type byte + 16-byte tag).
-  static constexpr unsigned char kBadRecord[] = {0x17, 0x03, 0x03, 0x00, 0x11, 0,  1,  2,  3,  4,  5,
-                                                 6,    7,    8,    9,    10,   11, 12, 13, 14, 15, 16};
+  static constexpr unsigned char kBadRecord[]{
+      0x17, 0x03, 0x03, 0x00, 0x11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  };
   ASSERT_EQ(::send(pair.clientFd.fd(), kBadRecord, sizeof(kBadRecord), 0), static_cast<ssize_t>(sizeof(kBadRecord)));
   SetNonBlocking(pair.serverFd.fd());
 
@@ -1072,7 +1076,7 @@ TEST(TlsContextTest, SessionTicketsWithTlsHandshake) {
   ::SSL_set_connect_state(clientSsl.get());
 
   // Perform handshake in threads
-  std::thread clientThread([&clientSsl]() {
+  std::thread clientThread([&clientSsl] {
     while (true) {
       int ret = ::SSL_connect(clientSsl.get());
       if (ret == 1) {

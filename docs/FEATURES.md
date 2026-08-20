@@ -1544,7 +1544,7 @@ router.addResponseMiddleware([](const HttpRequestView&, HttpResponse& resp) {
   resp.header("X-Powered-By", "aeronet");
 });
 
-auto renderMetrics = []() { return std::string{}; };  // user-defined
+auto renderMetrics = [] { return std::string{}; };  // user-defined
 
 auto& entry = router.setPath(http::Method::GET, "/metrics", [renderMetrics](const HttpRequestView&) {
   HttpResponse resp;

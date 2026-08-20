@@ -116,7 +116,7 @@ TEST(ResponseParserTest, ChunkMetadataCanArriveOneCrlfByteAtATime) {
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
   raw += "1;foo";
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
-  raw += "\r";
+  raw.push_back('\r');
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
   raw += "\nx\r";
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
@@ -250,7 +250,7 @@ TEST(ResponseParserTest, HeadersNeedMoreWhenIncomplete) {
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
   raw += "\n\r";
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
-  raw += "\n";
+  raw.push_back('\n');
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::Complete);
 }
 
@@ -504,9 +504,11 @@ TEST(ResponseParserTest, ChunkSizeScannerRejectsMalformedSyntax) {
 // Status codes that parse to a value but leave trailing junk, or fall outside the valid 100..599 range,
 // are all rejected.
 TEST(ResponseParserTest, RejectsStatusCodeTrailingJunkOrOutOfRange) {
-  for (const std::string_view raw : {std::string_view("HTTP/1.1 20x OK\r\n\r\n"),     // trailing junk after digits
-                                     std::string_view("HTTP/1.1 600 X\r\n\r\n"),      // above 599
-                                     std::string_view("HTTP/1.1 abc OK\r\n\r\n")}) {  // non-numeric
+  for (const std::string_view raw : {
+           std::string_view("HTTP/1.1 20x OK\r\n\r\n"),  // trailing junk after digits
+           std::string_view("HTTP/1.1 600 X\r\n\r\n"),   // above 599
+           std::string_view("HTTP/1.1 abc OK\r\n\r\n"),
+       }) {  // non-numeric
     HttpResponse resp;
     EXPECT_EQ(parseAll(raw, resp, /*head=*/false, /*eof=*/true), ResponseParser::Status::Error) << raw;
   }

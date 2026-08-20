@@ -63,7 +63,7 @@ struct AeronetServerRunner {
   SingleHttpServer server;
 
   AeronetServerRunner()
-      : server([]() {
+      : server([] {
           HttpServerConfig cfg{};
           cfg.maxRequestsPerConnection = 1000000;  // allow plenty of persistent reuse for benchmarks
           cfg.maxHeaderBytes = 256U * 1024;        // allow large headers for benchmarks

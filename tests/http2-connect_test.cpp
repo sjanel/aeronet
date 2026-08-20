@@ -95,7 +95,7 @@ TEST(Http2ConnectTest, AllowlistRejectsTarget) {
   test::TlsHttp2TestServer ts;
 
   ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
-    std::array<std::string_view, 1> allowlist = {"example.com"};
+    std::array allowlist{"example.com"};
     cfg.withConnectAllowlist(allowlist.begin(), allowlist.end());
   });
 
@@ -111,7 +111,7 @@ TEST(Http2ConnectTest, AllowlistRejectsTarget) {
 
 TEST(Http2ConnectTest, LargePayloadTunneling) {
   // Use large flow-control windows to minimise WINDOW_UPDATE round-trips.
-  static constexpr uint32_t kLargeWindow = 1U << 20;  // 1 MB
+  static constexpr uint32_t kLargeWindow = 1U << 20U;  // 1 MB
 
   test::TlsHttp2TestServer ts;
   AllowConnectHost(ts, "127.0.0.1");
@@ -137,7 +137,7 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     std::string payload(1024UL * 1024, 'a');
 #else
-    std::string payload(16UL << 20, 'a');
+    std::string payload(16UL << 20U, 'a');
 #endif
 
     std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
@@ -159,8 +159,8 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
     // fill faster than the round-trip can drain them and it trips its send timeout,
     // tearing the tunnel down. Keeping the backlog small (well under a socket buffer)
     // prevents that regardless of how heavily loaded the runner is.
-    static constexpr std::size_t kMaxInFlight = 128UL << 10;  // 128 KB
-    static constexpr int32_t kMaxSendChunk = 16 << 10;        // 16 KB
+    static constexpr std::size_t kMaxInFlight = 128UL << 10U;                   // 128 KB
+    static constexpr int32_t kMaxSendChunk = static_cast<int32_t>(16U << 10U);  // 16 KB
 
     while (offset < data.size()) {
       ASSERT_LT(std::chrono::steady_clock::now(), sendDeadline) << "tunnel send loop stalled";

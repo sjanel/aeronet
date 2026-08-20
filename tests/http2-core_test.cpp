@@ -1554,7 +1554,7 @@ TEST(Http2Async, DeferWorkBasicReturnValue) {
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-basic", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Run blocking work on background thread
-        int result = co_await req.deferWork([]() {
+        int result = co_await req.deferWork([] {
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
           return 42;
         });
@@ -1573,7 +1573,7 @@ TEST(Http2Async, DeferWorkBasicReturnValue) {
 TEST(Http2Async, DeferWorkReturnsString) {
   ts.server.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
                                         [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                                          std::string result = co_await req.deferWork([]() -> std::string {
+                                          std::string result = co_await req.deferWork([] -> std::string {
                                             std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                             return "computed-value";
                                           });
@@ -1592,7 +1592,7 @@ TEST(Http2Async, DeferWorkReturnsString) {
 TEST(Http2Async, DeferWorkReturnsOptional) {
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-optional", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-        std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
+        std::optional<int> result = co_await req.deferWork([] -> std::optional<int> {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 123;
         });
@@ -1614,7 +1614,7 @@ TEST(Http2Async, DeferWorkReturnsOptional) {
 TEST(Http2Async, DeferWorkMultipleSequential) {
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-multi", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-        int first = co_await req.deferWork([]() {
+        int first = co_await req.deferWork([] {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 10;
         });
@@ -1640,7 +1640,7 @@ TEST(Http2Async, DeferWorkConcurrentRequestsOnSingleConnection) {
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-concurrent", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Sleep to ensure requests stack up before completing
-        int result = co_await req.deferWork([]() {
+        int result = co_await req.deferWork([] {
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
           return 1;
         });
@@ -1682,7 +1682,7 @@ TEST(Http2Async, DeferWorkThrowsStdException) {
   ts.server.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         try {
-          (void)co_await req.deferWork([]() -> int { throw std::runtime_error("test exception"); });
+          (void)co_await req.deferWork([] -> int { throw std::runtime_error("test exception"); });
           co_return HttpResponse(http::StatusCodeOK).body("should not be reached");
         } catch (const std::exception& e) {
           co_return HttpResponse(http::StatusCodeInternalServerError).body(std::string("caught: ") + e.what());

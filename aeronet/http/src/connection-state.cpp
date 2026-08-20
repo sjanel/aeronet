@@ -130,14 +130,14 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
   // directly from page-cache to socket buffer, so a large value just means fewer
   // transitions to/from kernel mode. A too small value would cause excessive syscalls and reduce throughput, especially
   // for large files.
-  static constexpr std::size_t kSendfileChunk = 2UL << 20;  // 2 MiB
+  static constexpr std::size_t kSendfileChunk = 2UL << 20U;  // 2 MiB
 
   // TLS (pread) path: we read into a user-space buffer that then gets encrypted and
   // written via the transport. A much smaller chunk avoids allocating a huge buffer
   // and prevents deadlocks when the peer socket buffer is smaller than the chunk
   // (common in unit tests with blocking socketpairs, but also in real deployments
   // where TCP send-buffer may be ~128-256 KB).
-  static constexpr std::size_t kTlsReadChunk = 128UL << 10;  // 128 KiB
+  static constexpr std::size_t kTlsReadChunk = 128UL << 10U;  // 128 KiB
 
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
   const std::size_t maxBytes = std::min(fileSend.filePayload.length, chunkLimit);
@@ -262,8 +262,11 @@ void ConnectionState::installAggregatedBodyBridge() {
   if (request._pBodyAccessBridge != nullptr) {
     return;
   }
-  static constexpr HttpRequestView::BodyAccessBridge kAggregatedBodyBridge{&AggregateBufferedBody, &ReadBufferedBody,
-                                                                           &HasMoreBufferedBody};
+  static constexpr HttpRequestView::BodyAccessBridge kAggregatedBodyBridge{
+      &AggregateBufferedBody,
+      &ReadBufferedBody,
+      &HasMoreBufferedBody,
+  };
   bodyStreamContext.body = request._body;
   bodyStreamContext.offset = 0;
   request._pBodyAccessBridge = &kAggregatedBodyBridge;
@@ -381,15 +384,10 @@ bool ConnectionState::attachFilePayload(FilePayload filePayload) {
   fileSend.filePayload = std::move(filePayload);
   fileSendActive = fileSend.filePayload.length > 0;
   fileSendHeadersPending = !outBuffer.empty();
-  if (isSendingFile()) {
-    // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
-    // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
-    // in edge-triggered epoll mode.
-    if (!fileSendHeadersPending) {
-      return true;
-    }
-  }
-  return false;
+  // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
+  // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
+  // in edge-triggered epoll mode.
+  return isSendingFile() && !fileSendHeadersPending;
 }
 
 void ConnectionState::reclaimMemoryFromOversizedBuffers() {

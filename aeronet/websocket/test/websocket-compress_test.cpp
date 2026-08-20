@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {
@@ -457,8 +456,13 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripRandomBinary) {
 }
 
 TEST_F(WebSocketCompressRoundTripTest, RoundTripMultipleMessages) {
-  vector<std::string> messages = {"First message", "Second message with more content", "Third",
-                                  "Fourth message that is quite a bit longer than the others", ""};
+  static constexpr std::string_view messages[]{
+      "First message",
+      "Second message with more content",
+      "Third",
+      "Fourth message that is quite a bit longer than the others",
+      "",
+  };
 
   for (const auto& msg : messages) {
     auto [compressOk, compressed] = CompressData(msg, true);

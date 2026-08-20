@@ -702,7 +702,7 @@ TEST(HttpRouting, AsyncBodyReadTimeout) {
 
 namespace {
 
-constexpr std::size_t kAsyncLargePayload = 16 << 20;
+constexpr std::size_t kAsyncLargePayload = 16U << 20U;
 
 }
 
@@ -923,7 +923,7 @@ TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
 
   ts.resetRouterAndGet().setPath(
       http::Method::POST, "/async-delayed-compressed", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
-        (void)co_await req.deferWork([&]() {
+        (void)co_await req.deferWork([&] {
           callbackStarted.store(true, std::memory_order_release);
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
           while (!allowResume.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
@@ -932,11 +932,11 @@ TEST(HttpRouting, AsyncDelayedCompressedBodyIsPinnedBeforeSharedBufferReuse) {
           return 0;
         });
 
-        co_return req.makeResponse(std::string(req.body()));
+        co_return req.makeResponse(req.body());
       });
 
   ts.router().setPath(http::Method::POST, "/overwrite-shared-decompressed",
-                      [](const HttpRequestView& req) { return req.makeResponse(std::string(req.body())); });
+                      [](const HttpRequestView& req) { return req.makeResponse(req.body()); });
 
   const std::string payloadA(256UL * 1024, 'A');
   const std::string payloadB(256UL * 1024, 'B');
@@ -1002,7 +1002,7 @@ TEST(RouterUpdateProxy, SetPathWithMethodBitmapAndStreamingHandler) {
   router.setPath(http::Method::GET | http::Method::POST, "/stream-multi",
                  [](const HttpRequestView& req, HttpResponseWriter& writer) {
                    writer.status(http::StatusCodeOK);
-                   writer.writeBody(std::string(http::MethodToStr(req.method())));
+                   writer.writeBody(http::MethodToStr(req.method()));
                    writer.end();
                  });
 
@@ -1168,6 +1168,7 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-throw-nonstd",
                                  [](HttpRequestView&) -> RequestTask<HttpResponse> {
                                    // Throw BEFORE entering coroutine body - caught by dispatchAsyncHandler
+                                   // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
                                    throw 42;  // Non-std exception
                                    co_return HttpResponse(http::StatusCodeOK);
                                  });
@@ -1198,7 +1199,7 @@ TEST(HttpRouting, AsyncHandlerReturnsInvalidTask) {
 TEST(HttpRouting, AsyncHandlerReturnsNullHandle) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async-null-handle",
                                  [](HttpRequestView&) -> RequestTask<HttpResponse> {
-                                   RequestTask<HttpResponse> task = []() -> RequestTask<HttpResponse> {
+                                   RequestTask<HttpResponse> task = [] -> RequestTask<HttpResponse> {
                                      co_return HttpResponse(http::StatusCodeOK);
                                    }();
                                    auto handle = task.release();  // Release the handle, making task invalid
@@ -1267,7 +1268,7 @@ TEST(HttpRouting, AsyncHandlerInvalidTaskWithBodyNotReady) {
 TEST(HttpRouting, AsyncHandlerNullHandleWithBodyNotReady) {
   ts.resetRouterAndGet().setPath(http::Method::POST, "/async-null-no-body",
                                  [](HttpRequestView&) -> RequestTask<HttpResponse> {
-                                   RequestTask<HttpResponse> task = []() -> RequestTask<HttpResponse> {
+                                   RequestTask<HttpResponse> task = [] -> RequestTask<HttpResponse> {
                                      co_return HttpResponse(http::StatusCodeOK);
                                    }();
                                    auto handle = task.release();
@@ -1297,6 +1298,7 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
                                    if (std::chrono::steady_clock::now().time_since_epoch().count() < 0) {
                                      co_return HttpResponse(http::StatusCodeOK);
                                    }
+                                   // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
                                    throw 999;  // Non-std exception
                                  });
 
@@ -1327,7 +1329,7 @@ TEST(HttpRouting, DeferWorkBasicReturnValue) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-basic",
                                  [](HttpRequestView& req) -> RequestTask<HttpResponse> {
                                    // Run blocking work on background thread
-                                   int result = co_await req.deferWork([]() {
+                                   int result = co_await req.deferWork([] {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(10));
                                      return 42;
                                    });
@@ -1343,7 +1345,7 @@ TEST(HttpRouting, DeferWorkBasicReturnValue) {
 TEST(HttpRouting, DeferWorkReturnsString) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-string",
                                  [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                                   std::string result = co_await req.deferWork([]() -> std::string {
+                                   std::string result = co_await req.deferWork([] -> std::string {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return "computed-value";
                                    });
@@ -1359,7 +1361,7 @@ TEST(HttpRouting, DeferWorkReturnsString) {
 TEST(HttpRouting, DeferWorkReturnsOptional) {
   ts.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-optional", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-        std::optional<int> result = co_await req.deferWork([]() -> std::optional<int> {
+        std::optional<int> result = co_await req.deferWork([] -> std::optional<int> {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return 123;
         });
@@ -1378,7 +1380,7 @@ TEST(HttpRouting, DeferWorkReturnsOptional) {
 TEST(HttpRouting, DeferWorkMultipleSequential) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-sequential",
                                  [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                                   int first = co_await req.deferWork([]() {
+                                   int first = co_await req.deferWork([] {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return 10;
                                    });
@@ -1404,7 +1406,7 @@ TEST(HttpRouting, DeferWorkCombinedWithBody) {
         std::string bodyCopy(body);
 
         // Then, process body on background thread
-        int result = co_await req.deferWork([bodyCopy]() {
+        int result = co_await req.deferWork([bodyCopy] {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
           return static_cast<int>(bodyCopy.size());
         });
@@ -1440,7 +1442,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
         while (current > expected && !maxConcurrent.compare_exchange_weak(expected, current)) {
         }
 
-        (void)co_await req.deferWork([&]() {
+        (void)co_await req.deferWork([&] {
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
           return 0;
         });
@@ -1456,7 +1458,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
 
   threads.reserve(kNumRequests);
   for (int idx = 0; idx < kNumRequests; ++idx) {
-    threads.emplace_back([&]() {
+    threads.emplace_back([&] {
       const std::string response = test::simpleGet(ts.port(), "/defer-concurrent");
       if (response.starts_with("HTTP/1.1 200") && response.ends_with("done")) {
         ++successCount;
@@ -1480,7 +1482,7 @@ TEST(HttpRouting, DeferWorkEventLoopContinues) {
 TEST(HttpRouting, DeferWorkReturnsBool) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/defer-bool",
                                  [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-                                   bool result = co_await req.deferWork([]() {
+                                   bool result = co_await req.deferWork([] {
                                      std::this_thread::sleep_for(std::chrono::milliseconds(5));
                                      return true;
                                    });
@@ -1498,7 +1500,7 @@ TEST(HttpRouting, DeferWorkThrowsStdException) {
       http::Method::GET, "/defer-throw-std", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // The work function throws - exception is captured and rethrown in await_resume
         try {
-          (void)co_await req.deferWork([]() -> int { throw std::runtime_error("work failed"); });
+          (void)co_await req.deferWork([] -> int { throw std::runtime_error("work failed"); });
           co_return HttpResponse(http::StatusCodeOK).body("should not reach");
         } catch (const std::runtime_error& ex) {
           co_return HttpResponse(http::StatusCodeInternalServerError).body(std::string("caught: ") + ex.what());
@@ -1516,7 +1518,8 @@ TEST(HttpRouting, DeferWorkThrowsNonStdException) {
       http::Method::GET, "/defer-throw-nonstd", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // The work function throws a non-std exception
         try {
-          (void)co_await req.deferWork([]() -> int {
+          (void)co_await req.deferWork([] -> int {
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
             throw 42;  // non-std exception
           });
           co_return HttpResponse(http::StatusCodeOK).body("should not reach");
@@ -1535,7 +1538,7 @@ TEST(HttpRouting, DeferWorkUnhandledException) {
   ts.resetRouterAndGet().setPath(
       http::Method::GET, "/defer-unhandled", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
         // Exception not caught in coroutine - propagates to promise
-        (void)co_await req.deferWork([]() -> int { throw std::runtime_error("unhandled in work"); });
+        (void)co_await req.deferWork([] -> int { throw std::runtime_error("unhandled in work"); });
         co_return HttpResponse(http::StatusCodeOK).body("should not reach");
       });
 
@@ -1587,7 +1590,7 @@ TEST(HttpRoutingCoverageImprovements, SimpleParameter) {
     if (params.empty()) {
       return HttpResponse("empty");
     }
-    return HttpResponse(std::string(params.begin()->second));
+    return HttpResponse(params.begin()->second);
   });
 
   auto resp = test::simpleGet(ts.port(), "/users/123");
@@ -1599,7 +1602,7 @@ TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralPrefix) {
   // Tests parameter with literal prefix like "id-{value}"
   ts.resetRouterAndGet().setPath(http::Method::GET, "/data/id-{identifier}", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
-    return HttpResponse(std::string(params.begin()->second));
+    return HttpResponse(params.begin()->second);
   });
 
   auto resp = test::simpleGet(ts.port(), "/data/id-abc123");
@@ -1611,7 +1614,7 @@ TEST(HttpRoutingCoverageImprovements, ParameterWithLiteralSuffix) {
   // Tests parameter with literal suffix like "{value}.html"
   ts.resetRouterAndGet().setPath(http::Method::GET, "/pages/{name}.html", [](const HttpRequestView& req) {
     const auto& params = req.pathParams();
-    return HttpResponse(std::string(params.begin()->second));
+    return HttpResponse(params.begin()->second);
   });
 
   auto resp = test::simpleGet(ts.port(), "/pages/index.html");
@@ -1626,7 +1629,7 @@ TEST(HttpRoutingCoverageImprovements, MultipleParametersWithSeparators) {
     std::string result;
     for (const auto& [key, value] : params) {
       if (!result.empty()) {
-        result += ":";
+        result.push_back(':');
       }
       result += std::string(value);
     }
@@ -1666,7 +1669,7 @@ TEST(HttpRoutingCoverageImprovements, DeepNestedParameters) {
                                    std::string result;
                                    for (const auto& [key, value] : params) {
                                      if (!result.empty()) {
-                                       result += "-";
+                                       result.push_back('-');
                                      }
                                      result += std::string(value);
                                    }
