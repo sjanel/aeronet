@@ -20,16 +20,33 @@ if(POLICY CMP0179)
   cmake_policy(SET CMP0179 NEW)
 endif()
 
-# Centralize version: read from VERSION file at repo root (fallback to 0.0.0 if missing)
+# Centralize version: read from VERSION file at repo root (fallback to 0.0.0 if missing).
+# The VERSION file may include an optional pre-release suffix, e.g. "1.6.0-dev".
+# CMake's project() only accepts a strictly numeric dot-separated version, so we
+# split the suffix off before calling project() and keep the full string separately.
 set(AERONET_PROJECT_VERSION "0.0.0")
+set(AERONET_PROJECT_VERSION_SUFFIX "")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AERONET_VERSION_FILE)
-  string(STRIP "${AERONET_VERSION_FILE}" AERONET_PROJECT_VERSION)
+  string(STRIP "${AERONET_VERSION_FILE}" AERONET_VERSION_FILE)
+  if(AERONET_VERSION_FILE MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)(-([0-9A-Za-z.-]+))?$")
+    set(AERONET_PROJECT_VERSION "${CMAKE_MATCH_1}")
+    set(AERONET_PROJECT_VERSION_SUFFIX "${CMAKE_MATCH_3}")
+  else()
+    message(WARNING "VERSION file content '${AERONET_VERSION_FILE}' doesn't match 'X.Y.Z[-suffix]'; using ${AERONET_PROJECT_VERSION}")
+  endif()
 else()
   message(WARNING "VERSION file not found; defaulting to version ${AERONET_PROJECT_VERSION}")
 endif()
+
 project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
-set(AERONET_PROJECT_VERSION ${PROJECT_VERSION} CACHE INTERNAL "aeronet project version")
+
+# Reconstruct the full, human-facing version (numeric part + optional suffix).
+if(AERONET_PROJECT_VERSION_SUFFIX)
+  set(AERONET_PROJECT_VERSION "${PROJECT_VERSION}-${AERONET_PROJECT_VERSION_SUFFIX}")
+else()
+  set(AERONET_PROJECT_VERSION "${PROJECT_VERSION}")
+endif()
 
 # ---------------------------------------------------------------------------
 # MSVC system path injection (Ninja + MSVC without VS Developer Command Prompt)
