@@ -731,14 +731,17 @@ void HttplibResponseBuild(benchmark::State& state) {
 #endif
 
 #define REGISTER_BODY_MIN_MAX(name) \
-  BENCHMARK(name)->Args({4, 32, (1 << 17)})->Args({32, 512, (1 << 16)})->Args({4096, 8388608, (1 << 10)})
-#define REGISTER_HEADERS_MIN_MAX(name) \
-  BENCHMARK(name)->Args({2, 8, 4, 8, (1 << 17)})->Args({16, 64, 4, 32, (1 << 16)})->Args({128, 1024, 4, 128, (1 << 10)})
-#define REGISTER_RESPONSE_BUILD(name)   \
-  BENCHMARK(name)                       \
-      ->Args({1, 2, 4, 8, (1 << 17)})   \
-      ->Args({4, 8, 16, 64, (1 << 16)}) \
-      ->Args({16, 64, 32, (1 << 16), (1 << 10)})
+  BENCHMARK(name)->Args({4, 32, (1U << 17U)})->Args({32, 512, (1U << 16U)})->Args({4096, 8388608, (1U << 10U)})
+#define REGISTER_HEADERS_MIN_MAX(name)     \
+  BENCHMARK(name)                          \
+      ->Args({2, 8, 4, 8, (1U << 17U)})    \
+      ->Args({16, 64, 4, 32, (1U << 16U)}) \
+      ->Args({128, 1024, 4, 128, (1U << 10U)})
+#define REGISTER_RESPONSE_BUILD(name)     \
+  BENCHMARK(name)                         \
+      ->Args({1, 2, 4, 8, (1U << 17U)})   \
+      ->Args({4, 8, 16, 64, (1U << 16U)}) \
+      ->Args({16, 64, 32, (1U << 16U), (1U << 10U)})
 #define REGISTER_BODY_MIN_MAX_NOREUSE(name) REGISTER_BODY_MIN_MAX(name)
 
 // Body min/max across frameworks

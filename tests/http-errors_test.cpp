@@ -105,6 +105,7 @@ TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
     ASSERT_TRUE(resp.contains("400")) << resp;
   }
 
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.server.setParserErrorCallback([&]([[maybe_unused]] http::StatusCode err) { throw 42; });
   std::this_thread::sleep_for(2 * ts.server.config().pollInterval);
   {
@@ -336,7 +337,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 1 << 20; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 1UL << 20U; });
 
   // Generate a large response to ensure buffering
   std::string largeBody(64UL * 1024, 'L');

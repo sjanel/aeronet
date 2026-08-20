@@ -35,7 +35,7 @@ namespace {
 constexpr std::string_view kSchemeSep = "://";
 
 constexpr bool IsHex(unsigned char ch) noexcept {
-  return (ch >= '0' && ch <= '9') || ((ch | 0x20) >= 'a' && (ch | 0x20) <= 'f');
+  return (ch >= '0' && ch <= '9') || ((ch | 0x20U) >= 'a' && (ch | 0x20U) <= 'f');
 }
 
 bool IsValidRequestTarget(std::string_view target) noexcept {

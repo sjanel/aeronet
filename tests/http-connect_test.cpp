@@ -81,7 +81,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // We need a much smaller payload here otherwise the tests takes too long with additional memory checks
   std::string payload(1024UL * 1024, 'a');
 #else
-  std::string payload(16UL << 20, 'a');
+  std::string payload(16UL << 20U, 'a');
 #endif
   test::sendAll(fd, payload, std::chrono::milliseconds{10000});
 

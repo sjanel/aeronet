@@ -447,7 +447,7 @@ TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate)
   EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
   loop.pumpServerToClient();
 
-  const auto receivedBody = [&loop]() {
+  const auto receivedBody = [&loop] {
     std::string all;
     for (const auto& dataEvent : loop.clientData) {
       all.append(dataEvent.data);

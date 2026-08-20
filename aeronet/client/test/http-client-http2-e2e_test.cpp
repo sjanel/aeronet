@@ -59,7 +59,7 @@ class HttpRequestTest {
 
 namespace {
 
-constexpr std::size_t kLargeBodySize = 1UL << 20;  // 1 MiB: many DATA frames, several flow-control windows
+constexpr std::size_t kLargeBodySize = 1UL << 20U;  // 1 MiB: many DATA frames, several flow-control windows
 
 std::string MakeLargeBody() {
   std::string body(kLargeBodySize, '\0');
@@ -453,7 +453,7 @@ TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
   config.withHttpVersion(HttpVersionMode::Http2);
   HttpClient client(config);
   auto req = client.makeRequest(http::Method::POST, "http://example.test/upload");
-  req.body(std::string(1UL << 20, 'x'), "application/octet-stream");
+  req.body(std::string(1UL << 20U, 'x'), "application/octet-stream");
   HttpRequestTest::Finalize(req);
   LoopbackHttp2Transport transport(config.http2, LoopbackHttp2Transport::ResponseMode::EarlyResponse);
   internal::ClientConnection connection(config.http2);

@@ -2766,7 +2766,7 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
   opt.method = "GET";
   opt.target = "/multi-chunk-compress";
   opt.headers = {{"Accept-Encoding", "gzip"}};
-  opt.maxResponseBytes = 2U << 20;
+  opt.maxResponseBytes = 2U << 20U;
 
   const auto raw = test::requestOrThrow(port, opt);
   const auto parsed = test::parseResponseOrThrow(raw);

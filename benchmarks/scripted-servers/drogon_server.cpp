@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
 
         // Use Drogon's async delay mechanism
         auto loop = drogon::app().getLoop();
-        loop->runAfter(static_cast<double>(delayMs) / 1000.0, [callback = std::move(callback), delayMs]() {
+        loop->runAfter(static_cast<double>(delayMs) / 1000.0, [callback = std::move(callback), delayMs] {
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k200OK);
           resp->setBody(std::format("Delayed {} ms", delayMs));

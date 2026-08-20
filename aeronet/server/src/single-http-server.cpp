@@ -138,7 +138,7 @@ RouterUpdateProxy SingleHttpServer::router() {
               std::rethrow_exception(ex);
             }
           },
-          [this]() -> Router& { return _router; }};
+          [this] -> Router& { return _router; }};
 }
 
 void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _callbacks.parserErr = std::move(cb); }
@@ -650,7 +650,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
     };
 
-    auto corsRejected = [pCorsPolicy, &request, &sendResponse]() {
+    auto corsRejected = [pCorsPolicy, &request, &sendResponse] {
       if (pCorsPolicy == nullptr) {
         return false;
       }

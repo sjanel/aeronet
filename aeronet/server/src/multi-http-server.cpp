@@ -330,7 +330,7 @@ RouterUpdateProxy MultiHttpServer::router() {
     throw std::logic_error("Cannot access router proxy on an empty HttpServer");
   }
   return {[this](std::function<void(Router&)> fn) { this->postRouterUpdate(std::move(fn)); },
-          [this]() -> Router& { return this->_servers.front()._router; }};
+          [this] -> Router& { return this->_servers.front()._router; }};
 }
 
 std::string MultiHttpServer::AggregatedStats::json_str() const {
@@ -421,7 +421,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedWithStopToken(const s
   if (!token.stop_possible()) {
     return startDetachedInternal([] { return false; }, {});
   }
-  return startDetachedInternal([tokenCopy = token]() { return tokenCopy.stop_requested(); }, token);
+  return startDetachedInternal([tokenCopy = token] { return tokenCopy.stop_requested(); }, token);
 }
 
 void MultiHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
@@ -663,7 +663,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   // The warning refers to copying `serverPtrs` into the lambda's captures during
   // closure construction. The callback itself is noexcept and does not throw.
   // NOLINTNEXTLINE(bugprone-exception-escape)
-  state->onStop = [serverPtrs, serversAlive]() noexcept {
+  state->onStop = [serverPtrs, serversAlive] noexcept {
     if (serversAlive && serversAlive->load(std::memory_order_acquire)) {
       std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
     }
@@ -672,7 +672,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   std::shared_ptr<void> externalStopBinding;
   if (externalStopToken.stop_possible()) {
-    auto stopAction = [control, state]() {
+    auto stopAction = [control, state] {
       const bool alreadySet = control->stopRequested.exchange(true, std::memory_order_acq_rel);
       if (!alreadySet && state->onStop) {
         state->onStop();
@@ -685,10 +685,10 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   // Each worker/probe thread stops when the shared flag is set, or when the caller's extra stop condition fires
   // (in which case it also latches the shared flag and triggers the shared stop callback for the whole group).
-  auto makeStopPredicate = [this, &extraStopCondition, &state, &control]() {
+  auto makeStopPredicate = [this, &extraStopCondition, &state, &control] {
     std::atomic<bool>* stopRequested = &_control->stopRequested;
     auto threadExtraStop = extraStopCondition;
-    return [stopRequested, threadExtraStop, state, control]() {
+    return [stopRequested, threadExtraStop, state, control] {
       if (stopRequested->load(std::memory_order_relaxed)) {
         return true;
       }

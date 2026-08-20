@@ -4492,7 +4492,7 @@ TEST_F(HttpResponseTest, HeadLargeBodyDoesNotGrowInlineCapacity) {
   HttpResponse resp = makePrepared(PreparedOptions{.head = true});
 
   const auto initialCapacity = resp.capacityInlined();
-  const std::string bigBody(1U << 20, 'x');
+  const std::string bigBody(1UL << 20U, 'x');
 
   resp.body(bigBody, http::ContentTypeTextPlain);
 
@@ -4505,12 +4505,12 @@ TEST_F(HttpResponseTest, HeadLargeCapturedBodyDoesNotGrowInlineCapacity) {
   HttpResponse resp = makePrepared(PreparedOptions{.head = true});
 
   const auto initialCapacity = resp.capacityInlined();
-  std::vector<char> bigBody(1U << 20, 'y');
+  std::vector<char> bigBody(1UL << 20U, 'y');
 
   resp.body(std::move(bigBody), http::ContentTypeTextPlain);
 
-  EXPECT_EQ(resp.bodyLength(), 1U << 20);
-  EXPECT_LT(resp.capacityInlined(), 1U << 20);
+  EXPECT_EQ(resp.bodyLength(), 1U << 20U);
+  EXPECT_LT(resp.capacityInlined(), 1U << 20U);
   EXPECT_LE(resp.capacityInlined(), initialCapacity + 512U);
 }
 

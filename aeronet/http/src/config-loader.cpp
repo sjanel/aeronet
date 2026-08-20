@@ -1,5 +1,6 @@
 #include "aeronet/config-loader.hpp"
 
+#include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <glaze/glaze.hpp>

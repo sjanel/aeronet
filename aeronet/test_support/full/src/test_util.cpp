@@ -55,7 +55,7 @@ namespace aeronet::test {
 using namespace std::chrono_literals;
 
 namespace {
-constexpr std::size_t kChunkSize = 1 << 13;
+constexpr std::size_t kChunkSize = 1UL << 13U;
 }
 
 void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
@@ -203,10 +203,8 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
             std::string_view lengthStr = headers.substr(valueStart, lineEnd - valueStart);
             std::size_t contentLength = 0;
             auto [ptr, ec] = std::from_chars(lengthStr.data(), lengthStr.data() + lengthStr.size(), contentLength);
-            if (ec == std::errc{}) {
-              if (out.size() >= bodyStart + contentLength) {
-                return out;
-              }
+            if (ec == std::errc{} && out.size() >= bodyStart + contentLength) {
+              return out;
             }
           }
         }
@@ -705,7 +703,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
       RawChars tmp;
       ZlibDecoder decoder(encLower.contains("gzip") ? ZStreamRAII::Variant::gzip : ZStreamRAII::Variant::deflate);
       if (decoder.decompressFull(out.body,
-                                 /*maxDecompressedBytes=*/(1 << 20),
+                                 /*maxDecompressedBytes=*/1UL << 20U,
                                  /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
@@ -717,7 +715,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
     if (encLower.contains("zstd")) {
       RawChars tmp;
       ZstdDecoder decoder;
-      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/1UL << 20U,
                                  /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
@@ -729,7 +727,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
     if (encLower.contains("br")) {
       RawChars tmp;
       BrotliDecoder decoder;
-      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/(1 << 20),
+      if (decoder.decompressFull(out.body, /*maxDecompressedBytes=*/1UL << 20U,
                                  /*decoderChunkSize=*/65536, tmp)) {
         out.body.assign(tmp.data(), tmp.data() + tmp.size());
         return out;
@@ -763,7 +761,7 @@ bool AttemptConnect(uint16_t port) {
 
 bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout) {
   // Use recvUntilClosed via an async future so we can time out waiting for remote close.
-  auto fut = std::async(std::launch::async, [fd]() { return recvUntilClosed(fd); });
+  auto fut = std::async(std::launch::async, [fd] { return recvUntilClosed(fd); });
   if (fut.wait_for(timeout) == std::future_status::ready) {
     // peer closed and we received final data
     fut.get();
