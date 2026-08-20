@@ -3,11 +3,15 @@
 #include <gtest/gtest.h>
 
 #include <map>
-#include <random>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+
+#ifndef NDEBUG
+#include <cstdint>
+#include <random>
+#endif
 
 namespace aeronet {
 // ---------------------------------------------------------------------------
@@ -146,7 +150,7 @@ TEST(LowerAsciiKeyDeathTest, ConstructFromDynamicUppercaseStringViewAssertsInDeb
   // Now inject an upper-case letter and verify that the assert() fires.
   str.back() = static_cast<char>(upperCase(gen));
 
-  EXPECT_DEATH({ [[maybe_unused]] LowerAsciiKey key(str); }, "lower-case already");
+  EXPECT_DEATH({ LowerAsciiKey{str}; }, "lower-case already");
 }
 
 #endif  // NDEBUG

@@ -4,7 +4,9 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
-### Breaking changes
+## [1.5.0] - 2026-08-20
+
+### 1.5.0 Breaking changes
 
 - **HTTP CONNECT tunneling is now disabled by default**: an empty `HttpServerConfig::connectAllowlist` now rejects every
   CONNECT target with `403 Forbidden` instead of allowing every resolved host. This closes an unauthenticated SSRF/open
@@ -18,7 +20,7 @@ All notable changes to aeronet are documented in this file.
 - **File::Identity becomes private and File::identity() has been replaced with File::appendIdentityData()**: `File::Identity` is now a private nested type, and the public `File::identity()` method has been removed. The new `File::appendIdentityData(char* pData)` method writes the file's current descriptor identity and metadata to the provided buffer, returning a pointer past the last written byte. The buffer must be at least `File::kIdentitySize` bytes long.
 - **Global header values should be trimmed of OWS**. This is to save some work on the http message finalization path.
 
-### Bug Fixes
+### 1.5.0 Bug Fixes
 
 - **Client: heap-buffer-overflow when adding a header to a body-less request built with reserved header capacity**: `HttpClient::makeRequest(additionalCapacity, method, url)` (the overload without a body) was incorrectly computing indexes to its internal buffer.
 - **HTTP/1.1 request is now rejected if it does not contain a Host header**: the server now returns `400 Bad Request` for HTTP/1.1 requests that do not include a `Host` header, per RFC 9112 §3.2.
@@ -38,7 +40,7 @@ All notable changes to aeronet are documented in this file.
 - **A handler slower than `keepAliveTimeout` could get its own response swept away as idle**: the keep-alive deadline is armed when the request is read, so a handler that took longer than `keepAliveTimeout` (a multi-second database query, say) returned with the deadline already expired and the next maintenance sweep closed the connection as if it had been idle - while the response it had just produced was still going out. HTTP/1.1 hands its whole response to the kernel in one go and rarely noticed, but HTTP/2 parks whatever exceeds the peer's flow-control window until a WINDOW_UPDATE arrives: that tail was dropped, and since a downloading HTTP/2 peer keeps sending frames the kernel answered `close()` with RST rather than FIN, so clients got a successful 200 with fewer bytes than `content-length` (`unexpected EOF`) instead of the response the handler returned. `keepAliveTimeout` bounds idleness *between* requests (see `HttpServerConfig::keepAliveTimeout`), so the idle window now restarts when the work completes. Active HTTP/2 streams are excluded from keep-alive reaping until their responses complete, including while waiting for peer flow-control credit; normal idle expiry resumes once no streams remain active. Tests: `tests/http2-core_test.cpp` (`SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle`), `aeronet/client/test/http-client-http2-e2e_test.cpp` (`SlowHandlerLargeResponseSurvivesKeepAliveSweep`).
 - Fixed macOS `EventLoop::add()` potentially masking a failed filter registration when adding both `EVFILT_READ` and `EVFILT_WRITE` in one call; each filter's result is now checked individually via `EV_RECEIPT`.
 
-### Improvements
+### 1.5.0 Improvements
 
 - **Faster and smaller router dispatch**: literal-route open-addressing slots now store compact side-table indices, and `RoutingResult` references immutable route metadata instead of copying configuration and middleware ranges. The result shrank from 96 to 48 bytes, the hot `Router::match` symbol shrank by 39%, and pinned internal benchmarks show about 45% lower median latency for deterministic literal hits.
 - **Faster HTTP/1.1 client response capture**: completed chunked and decompressed bodies now transfer suitably sized scratch allocations into `HttpResponse` instead of making a final body copy, while oversized scratch remains reusable for small bodies. The 256 KiB chunked parser microbenchmark is about **39% faster**.
@@ -57,7 +59,7 @@ All notable changes to aeronet are documented in this file.
 - **Further request head buffer parsing optimizations**: faster CI hashing for headers, faster request method parsing. Measured gains of ~10% for requests with very few headers, and up to ~23% for requests with many headers. See `benchmarks/internal/init-try-set-head_bench.cpp` for the new benchmark coverage.
 - **Improved header & trailer lookups** by normalizing keys to lower case in HttpRequestView.
 
-### Others
+### 1.5.0 Others
 
 - Bumped `glaze` version to `8.1.0`.
 
@@ -246,7 +248,7 @@ All notable changes to aeronet are documented in this file.
 
 - Minor validation enforcement: `HttpServerConfig::globalHeaders` now MUST be key value separated by `http::HeaderSep`.
 - Removed `telemetryContext()` methods from `HttpServer` and `SingleHttpServer`. You can construct a custom `TelemetryContext` instead if needed.
-- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified (see why in [improvements](#improvements) section).
+- Telemetry metric methods (including `DogStatsD` ones) are no more `const` qualified (see why in [improvements](#110-improvements) section).
 - Check at runtime if header name and value about to be inserted in a response are valid, otherwise throws `std::invalid_argument`
 - HttpResponse constructor with concatenated headers throws `std::invalid_argument` if expected format is not respected.
 - `HttpRequestView` query parameter API changed: `queryParams()` no longer returns the non-alloc iterable range - it now exposes a map-like view over parsed query parameters where duplicate keys are collapsed (last-value wins). The previous iteration semantics (preserve duplicate order) are available via the new `queryParamsRange()` method. If you used `queryParams()` with **structured bindings** and that there were no **duplicate** keys in your URLs, **no code change is needed**.
