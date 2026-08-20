@@ -50,6 +50,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Header List Too Large";
     case ErrorMsg::InvalidStreamStateForHEADERS:
       return "Invalid Stream State For HEADERS";
+    case ErrorMsg::MalformedFieldSection:
+      return "Malformed Field Section";
     case ErrorMsg::HPACKDecodingFailed:
       return "HPACK Decoding Failed";
     case ErrorMsg::PRIORITYFrameOnStreamZero:

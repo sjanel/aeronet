@@ -71,7 +71,7 @@ class HpackDynamicTable {
   vector<http::Header> _entries;
   std::size_t _currentSizeBytes{0};
   std::size_t _maxSizeBytes;
-  uint32_t _firstLive{0};
+  decltype(_entries)::size_type _firstLive{0};
 };
 
 /// Result of looking up a header in the HPACK tables.
@@ -93,18 +93,41 @@ struct HpackLookupResult {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  explicit HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders = true)
-      : _dynamicTable(maxDynamicTableSize),
-        _decodedStrings(128U),
-        _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+  HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders);
 
   /// Decode result for a single header block.
   struct DecodeResult {
-    [[nodiscard]] bool isSuccess() const noexcept { return errorMessage == nullptr; }
+    enum class Error : uint8_t {
+      None,
 
-    const char* errorMessage;
+      // Malformed field section errors (RFC 7540 §)
+      PseudoHeaderFieldAfterRegularField,
+      UndefinedPseudoHeaderField,
+      DuplicatePseudoHeaderField,
+      MalformedFieldName,
+      MalformedFieldValue,
+      DuplicateHeaderForbiddenToMerge,
+
+      // Compression errors (RFC 7541 §6.1, §6.2, §6.3)
+      FailedToDecodeIndexedHeaderFieldIndex,
+      InvalidIndexZeroInIndexedHeaderField,
+      IndexOutOfBoundsInIndexedHeaderField,
+      FailedToDecodeDynamicTableSizeUpdate,
+      FailedToDecodeLiteralHeaderIndex,
+      FailedToDecodeLiteralHeaderName,
+      IndexOutOfBoundsForHeaderName,
+      FailedToDecodeLiteralHeaderValue,
+
+    };
+
+    [[nodiscard]] bool isSuccess() const noexcept { return error == Error::None; }
+    [[nodiscard]] bool isCompressionError() const noexcept {
+      return error >= Error::FailedToDecodeIndexedHeaderFieldIndex;
+    }
+
     const SvToSvMap& decodedHeaders;
     uint64_t headerListSize;
+    Error error{Error::None};
   };
 
   /// Decode a complete header block fragment.
@@ -147,7 +170,7 @@ class HpackDecoder {
 
   // Store a decoded header into internal storage.
   // Returns an error message on failure, or nullptr on success.
-  const char* storeHeader(std::string_view name, std::string_view value);
+  DecodeResult::Error storeHeader(std::string_view name, std::string_view value, bool& seenRegularHeader);
 
   HpackDynamicTable _dynamicTable;
 

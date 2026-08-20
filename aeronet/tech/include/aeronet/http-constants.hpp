@@ -93,11 +93,12 @@ inline constexpr LowerAsciiKey OriginalEncodedLengthHeaderName = "x-aeronet-orig
 
 #ifdef AERONET_ENABLE_HTTP2
 // HTTP2 pseudo-headers
-inline constexpr LowerAsciiKey PseudoHeaderMethod = ":method";
-inline constexpr LowerAsciiKey PseudoHeaderScheme = ":scheme";
 inline constexpr LowerAsciiKey PseudoHeaderAuthority = ":authority";
+inline constexpr LowerAsciiKey PseudoHeaderMethod = ":method";
 inline constexpr LowerAsciiKey PseudoHeaderPath = ":path";
+inline constexpr LowerAsciiKey PseudoHeaderScheme = ":scheme";
 inline constexpr LowerAsciiKey PseudoHeaderStatus = ":status";
+inline constexpr LowerAsciiKey PseudoHeaderProtocol = ":protocol";
 #endif
 
 inline constexpr std::string_view HeaderSep = ": ";

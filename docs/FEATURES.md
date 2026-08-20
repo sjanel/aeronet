@@ -3134,6 +3134,14 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 
 Additional notes
 
+- Incoming request field sections enforce RFC 9113 pseudo-header rules: pseudo-headers precede regular fields and
+  cannot be repeated, undefined or context-invalid pseudo-headers are rejected, ordinary requests require exactly one
+  `:method`, `:scheme`, and `:path`, and CONNECT requires `:authority` while forbidding `:scheme` and `:path`. Extended
+  CONNECT's `:protocol` is recognized but rejected because `SETTINGS_ENABLE_CONNECT_PROTOCOL` is not supported.
+  Malformed field sections reset only their stream with `PROTOCOL_ERROR`; invalid HPACK encoding remains a connection
+  `COMPRESSION_ERROR`. Tests: `aeronet/http2/test/hpack_test.cpp` (`Rejects*PseudoHeader*`),
+  `aeronet/http2/test/http2-connection_test.cpp` (`MalformedFieldSectionResetsStreamWithoutClosingConnection`), and
+  `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RejectsMalformedRequestPseudoHeaderSets`).
 - Request trailers (a trailing `HEADERS` block after the request body, RFC 9113 §8.1) are decoded and exposed through `HttpRequestView::trailers()` / `trailerValueOrEmpty()`, identically to HTTP/1.1 chunked trailers. Pseudo-header fields in a trailer block, and a trailing block that does not end the stream, are rejected with `RST_STREAM(PROTOCOL_ERROR)`; trailer bytes count toward the request header-size budget. Tests: `aeronet/http2/test/http2-protocol-handler_test.cpp` (`RequestTrailers*`).
 - Static file responses created via `HttpResponse::file(...)` (used by `StaticFileHandler`) are serialized as HTTP/2 DATA frames by reading the file in bounded chunks.
 - The implementation is flow-control aware: it sends up to the available connection/stream window and continues after receiving `WINDOW_UPDATE` frames (no full in-memory file load).

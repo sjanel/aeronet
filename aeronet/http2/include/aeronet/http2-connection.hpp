@@ -317,7 +317,7 @@ class Http2Connection {
                      std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
-  /// Returns `CompressionError` if decoding fails, `NoError` otherwise.
+  /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.
   ErrorCode decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock, bool endStream);
 
   // ============================
