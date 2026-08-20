@@ -163,6 +163,7 @@ TEST(HttpTlsHandshakeCallback, UnknownExceptionRaisedInCallbackIsLoggedAndIgnore
     cfg.withTlsHandshakeLogging(true);
   });
 
+  // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.server.server.setTlsHandshakeCallback([&]([[maybe_unused]] const TlsHandshakeEvent& ev) { throw 42; });
 
   ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
@@ -962,7 +963,6 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   test::TlsClient missingClient(server.port(), missingOpts);
   ASSERT_FALSE(missingClient.handshakeOk());
 }
- 
 
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   // perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.

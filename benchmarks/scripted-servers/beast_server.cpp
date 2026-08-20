@@ -589,7 +589,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::thread> workers;
     workers.reserve(static_cast<std::size_t>(threadCount > 0 ? threadCount - 1 : 0));
     for (uint32_t threadIdx = 1; threadIdx < threadCount; ++threadIdx) {
-      workers.emplace_back([&ioContext]() { ioContext.run(); });
+      workers.emplace_back([&ioContext] { ioContext.run(); });
     }
 
     ioContext.run();

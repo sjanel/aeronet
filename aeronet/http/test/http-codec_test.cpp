@@ -167,7 +167,7 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
 }
 
 TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
-  static constexpr std::uint32_t bodySz = 48 << 10;
+  static constexpr std::uint32_t bodySz = 48UL << 10U;
 
   const std::string body = test::MakePatternedPayload(bodySz);
 
@@ -307,7 +307,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
 
   RawChars out;
   ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
-  ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
+  ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }
 
@@ -347,7 +347,7 @@ TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
 
   RawChars out;
   ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
-  ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
+  ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32UL * 1024UL, out));
   EXPECT_EQ(std::string_view(out), std::string_view(expectedBody));
 }
 
@@ -367,7 +367,7 @@ TEST(HttpCodecCompression, GzipNearOverlapTrailerMove_AllCombinationsRoundTrip) 
     uint32_t se = seed;
     for (std::size_t idx = 0; idx < len; ++idx) {
       se = (se * 1664525U) + 1013904223U;
-      out[idx] = static_cast<char>(se >> 24);
+      out[idx] = static_cast<char>(se >> 24U);
       if ((idx % 37U) == 0U) {
         out[idx] = 'A';
       }
@@ -460,7 +460,7 @@ TEST(HttpCodecCompression, GzipNearOverlapTrailerMove_AllCombinationsRoundTrip) 
 
       RawChars out;
       ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
-      ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/(1UL << 20), 32UL * 1024UL, out));
+      ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32UL * 1024UL, out));
       EXPECT_EQ(std::string_view(out), std::string_view(body));
     }
   }
@@ -527,7 +527,7 @@ TEST(HttpCodecCompression, ImpossibleCompressionZstd) {
 #endif
 
 TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
-  static constexpr std::uint32_t bodySz = 96 << 10;
+  static constexpr std::uint32_t bodySz = 96UL << 10U;
 
   const auto body = test::MakeRandomPayload(bodySz);
 
@@ -535,7 +535,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
   cfg.minBytes = 16U;
   cfg.addVaryAcceptEncodingHeader = true;
   cfg.maxCompressRatio = 0.6F;
-  cfg.initialCompressionBufferLimit = 12 << 10;
+  cfg.initialCompressionBufferLimit = 12UL << 10U;
 
   for (Encoding enc : test::SupportedEncodings()) {
     cfg.preferredFormats.assign(1U, enc);
@@ -559,7 +559,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
 }
 
 TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
-  static constexpr std::uint32_t bodySz = 24 << 10;
+  static constexpr std::uint32_t bodySz = 24U << 10U;
 
   const std::string compressibleBody = test::MakePatternedPayload(bodySz);
   const auto incompressibleBody = test::MakeRandomPayload(bodySz);
@@ -579,7 +579,7 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
 
   for (bool addTrailer : {false, true}) {
     for (std::string_view body : {compressibleBodyView, incompressibleBodyView, mixedBodyView}) {
-      for (std::uint32_t initialCompressionBufferLimit : {bodySz << 1, bodySz >> 3}) {
+      for (std::uint32_t initialCompressionBufferLimit : {bodySz << 1U, bodySz >> 3U}) {
         cfg.initialCompressionBufferLimit = initialCompressionBufferLimit;
 
         for (Encoding enc : test::SupportedEncodings()) {
@@ -815,7 +815,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity,gzip,identity");
 
   // Prepare a large uncompressed payload that compresses well
-  const std::size_t plainSize = 1 << 10;  // 1 KiB
+  const std::size_t plainSize = 1UL << 10U;  // 1 KiB
   std::string plain(plainSize, 'A');
 
   CompressionConfig encCfg;  // default encoder config is fine for generating compressed bytes

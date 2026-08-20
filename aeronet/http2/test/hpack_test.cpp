@@ -562,8 +562,8 @@ TEST(HpackDecoder, FindInvalidHuffmanEncoding) {
 
   for (const auto& [b0, b1] : prefixes) {
     for (uint32_t tail = 0; tail <= 0xFFFF; ++tail) {
-      const uint8_t b2 = static_cast<uint8_t>(tail >> 8);
-      const uint8_t b3 = static_cast<uint8_t>(tail & 0xFF);
+      const uint8_t b2 = static_cast<uint8_t>(tail >> 8U);
+      const uint8_t b3 = static_cast<uint8_t>(tail & 0xFFU);
 
       // Literal with indexing, Huffman-flag set, length 4
       encoded = {0x40, 0x84, b0, b1, b2, b3};
@@ -739,7 +739,7 @@ TEST(HpackDecoder, DecodeIndexedHeaderIntegerOverflow) {
   // all ones to indicate continuation, then provide many continuation bytes
   // that keep the multiplier growing until it overflows to 0.
   vector<uint8_t> encoded;
-  encoded.push_back(0x80 | 0x7F);
+  encoded.push_back(0x80U | 0x7FU);
 
   // Provide a large number of continuation bytes with MSB set to 1 to force
   // many iterations in decodeInteger. Each continuation byte has low 7 bits
@@ -776,12 +776,12 @@ TEST(HpackDecoder, DecodeIndexedHeaderOutOfBounds) {
   // Use a small decoder with no dynamic entries and index value 1000 encoded as varint
   vector<uint8_t> encoded;
   // First byte: 0x80 | prefix (7 bits) set to max to indicate continuation
-  encoded.push_back(0x80 | 0x7F);
+  encoded.push_back(0x80U | 0x7FU);
   // continuation bytes for 1000 - 127 = 873 in base-128 varint
   uint32_t rem = 1000 - 127;
   while (rem >= 128) {
-    encoded.push_back(static_cast<uint8_t>((rem & 0x7F) | 0x80));
-    rem >>= 7;
+    encoded.push_back(static_cast<uint8_t>((rem & 0x7FU) | 0x80U));
+    rem >>= 7U;
   }
   encoded.push_back(static_cast<uint8_t>(rem));
 
@@ -819,14 +819,14 @@ TEST(HpackDecoder, DecodeLiteralHeaderNameOutOfBounds) {
   // Literal header field with incremental indexing (01xxxxxx). Use the
   // 6-bit prefix with all ones to force varint continuation for the name index.
   vector<uint8_t> encoded;
-  encoded.push_back(0x40 | 0x3F);
+  encoded.push_back(0x40U | 0x3FU);
 
   // Choose an index far beyond static + dynamic table sizes (e.g., 1000).
   // For prefix max 63, varint encodes (1000 - 63).
   uint32_t rem = 1000 - 63;
   while (rem >= 128) {
-    encoded.push_back(static_cast<uint8_t>((rem & 0x7F) | 0x80));
-    rem >>= 7;
+    encoded.push_back(static_cast<uint8_t>((rem & 0x7FU) | 0x80U));
+    rem >>= 7U;
   }
   encoded.push_back(static_cast<uint8_t>(rem));
 
@@ -1024,7 +1024,7 @@ TEST(HpackEncoder, EncodeDynamicTableSizeUpdate) {
   // Should encode as dynamic table size update
   EXPECT_GT(output.size(), 0);
   // First byte should have 001xxxxx pattern
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xE0, 0x20);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xE0U, 0x20);
 }
 
 TEST(HpackEncoder, EncodeNeverIndexed_WithStaticName) {
@@ -1035,7 +1035,7 @@ TEST(HpackEncoder, EncodeNeverIndexed_WithStaticName) {
   encoder.encode(output, ":method", "PUT", HpackEncoder::IndexingMode::NeverIndexed);
 
   // First byte should have 0001xxxx pattern (0x10)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0, 0x10);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0U, 0x10U);
 }
 
 TEST(HpackEncoder, EncodeNeverIndexed_NewName) {
@@ -1045,7 +1045,7 @@ TEST(HpackEncoder, EncodeNeverIndexed_NewName) {
   encoder.encode(output, "x-new-name", "v", HpackEncoder::IndexingMode::NeverIndexed);
 
   // First byte should be 0x10 when name is new (literal name encoded)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0, 0x10);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0U, 0x10);
 }
 
 TEST(HpackEncoder, EncodeWithoutIndexing_WithStaticName) {
@@ -1056,7 +1056,7 @@ TEST(HpackEncoder, EncodeWithoutIndexing_WithStaticName) {
   encoder.encode(output, ":method", "PUT", HpackEncoder::IndexingMode::WithoutIndexing);
 
   // First byte should have 0000xxxx pattern (0x00)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0, 0x00);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0U, 0x00);
 }
 
 TEST(HpackEncoder, EncodeWithoutIndexing_NewName) {
@@ -1066,7 +1066,7 @@ TEST(HpackEncoder, EncodeWithoutIndexing_NewName) {
   encoder.encode(output, "x-new-name", "v", HpackEncoder::IndexingMode::WithoutIndexing);
 
   // First byte should be 0x00 when name is new (literal name encoded)
-  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0, 0x00);
+  EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0U, 0x00);
 }
 
 // ============================
@@ -1241,7 +1241,7 @@ TEST(HpackDecoderFuzz, RandomizedReserveFuzz) {
   std::uniform_int_distribution<int> byteDist(0, 255);
 
   static constexpr int iterations = 59;
-  static constexpr std::size_t kMaxLen = 1 << 20;  // 1 MiB
+  static constexpr std::size_t kMaxLen = 1UL << 20U;  // 1 MiB
 
   static constexpr int kStep = kMaxLen / iterations;
 

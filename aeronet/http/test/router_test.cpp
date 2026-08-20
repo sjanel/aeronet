@@ -1556,7 +1556,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     };
 
     // matching lambda
-    auto matchAndInvoke = [this, policy]() {
+    auto matchAndInvoke = [this, policy] {
       alignas(HttpRequestView) std::byte dummyStorage[sizeof(HttpRequestView)];
       const HttpRequestView& dummyReq = *reinterpret_cast<const HttpRequestView*>(&dummyStorage);
 

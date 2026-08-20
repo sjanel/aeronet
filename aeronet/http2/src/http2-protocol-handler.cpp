@@ -48,7 +48,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"

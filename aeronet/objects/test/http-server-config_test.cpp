@@ -176,14 +176,14 @@ TEST(HttpServerConfigTest, MaxPerEventReadBytesMustBePositive) {
   cfg.withMaxPerEventReadBytes(1024);
   EXPECT_NO_THROW(cfg.validate());
 
-  EXPECT_THROW(cfg.withMaxPerEventReadBytes(1ULL << 34), std::invalid_argument);
+  EXPECT_THROW(cfg.withMaxPerEventReadBytes(1ULL << 34U), std::invalid_argument);
 }
 
 TEST(HttpServerConfig, MinReadChunkBytes) {
   HttpServerConfig cfg;
   cfg.withMinReadChunkBytes(0);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
-  EXPECT_THROW(cfg.withMinReadChunkBytes(1ULL << 34), std::invalid_argument);
+  EXPECT_THROW(cfg.withMinReadChunkBytes(1ULL << 34U), std::invalid_argument);
 }
 
 TEST(HttpServerConfig, MinReadChunkBytesGreaterThanMaxPerEventReadBytes) {

@@ -74,7 +74,7 @@ EchoServer startEchoServer() {
 
   auto stopFlag = std::make_shared<std::atomic<bool>>(false);
 
-  std::thread echoThread([fd = listenSock.fd(), stopFlag]() {
+  std::thread echoThread([fd = listenSock.fd(), stopFlag] {
     try {
       BaseFd clientFd;
       while (true) {

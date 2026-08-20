@@ -554,7 +554,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     // Validate stream ID
     if (_isServer) {
       // Client-initiated streams must be odd and increasing
-      if ((header.streamId & 1) == 0) [[unlikely]] {
+      if ((header.streamId & 1U) == 0) [[unlikely]] {
         _streams.erase(it);
         return connectionError(ErrorCode::ProtocolError, ErrorMsg::ServerInitiatedStreamIdFromClient);
       }

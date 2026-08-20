@@ -1468,7 +1468,7 @@ router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> Req
 
   // Run blocking database query on background thread
   // Event loop continues handling other requests while we wait
-  std::optional<User> user = co_await req.deferWork([userId]() {
+  std::optional<User> user = co_await req.deferWork([userId] {
     // databaseLookup(userId);
     return User{userId};  // Simulated DB result
   });
@@ -1496,13 +1496,13 @@ router.setPath(http::Method::POST, "/process", [](HttpRequestView& req) -> Reque
   std::string bodyCopy(body);
 
   // Then, process on background thread
-  auto result = co_await req.deferWork([data = std::move(bodyCopy)]() {
+  auto result = co_await req.deferWork([data = std::move(bodyCopy)] {
     // expensiveProcessing(data);
     return data;
   });
 
   // Finally, save result on background thread
-  bool saved = co_await req.deferWork([result]() {
+  bool saved = co_await req.deferWork([result] {
     // saveToDatabase(result);
     return true;
   });
