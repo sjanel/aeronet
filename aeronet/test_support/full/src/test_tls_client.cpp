@@ -10,9 +10,13 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+
 #ifdef AERONET_POSIX
 #include <fcntl.h>
 #include <poll.h>
+
+#include <type_traits>
+
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -179,6 +183,7 @@ bool TlsClient::writeAll(std::string_view data) {
         return false;
       }
       if (wret > 0) {
+        // NOLINTNEXTLINE(bugprone-signed-bitwise)
         readable = (wpfd.revents & POLLIN) != 0;  // NOLINT(misc-include-cleaner)
       }
 #endif
@@ -344,11 +349,10 @@ std::string TlsClient::readAll() {
           }
         }
 
-        if (++syscallRetries <= kMaxSyscallRetries) {
-          if (waitForSocketReady(POLLIN, std::chrono::milliseconds{100})) {
-            continue;
-          }
+        if (++syscallRetries <= kMaxSyscallRetries && waitForSocketReady(POLLIN, std::chrono::milliseconds{100})) {
+          continue;
         }
+
         // Timed out or exceeded retries — treat as graceful EOF.
         break;
       }
@@ -458,7 +462,8 @@ bool TlsClient::waitForSocketReady(short events, Duration timeout) {
   if (ret == 0) {
     return false;
   }
-  return (pfd.revents & events) != 0;
+  return (static_cast<std::make_unsigned_t<decltype(pfd.revents)> >(pfd.revents) &
+          static_cast<std::make_unsigned_t<decltype(events)> >(events)) != 0;
 #endif
 }
 
@@ -524,6 +529,7 @@ void TlsClient::init() {
 #else
   int flags = ::fcntl(fd, F_GETFL, 0);
   if (flags >= 0) {
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   }
 #endif

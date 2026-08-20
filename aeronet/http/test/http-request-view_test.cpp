@@ -276,7 +276,7 @@ TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetri
     setResponsePossibleEncoding(encoding);
 
     HttpResponse resp(http::StatusCodeOK);
-    auto body = test::MakeRandomPayload(2 << 10);
+    auto body = test::MakeRandomPayload(2UL << 10U);
     resp.body(body, http::ContentTypeTextPlain);
 
     prefinalizeResponse(resp, telemetryContext);
@@ -1319,7 +1319,7 @@ class FuzzRng {
 
   uint8_t byte() { return static_cast<uint8_t>(_dist(_gen)); }
 
-  uint32_t u32() { return static_cast<uint32_t>(_dist(_gen)) | (static_cast<uint32_t>(_dist(_gen)) << 8); }
+  uint32_t u32() { return static_cast<uint32_t>(_dist(_gen)) | (static_cast<uint32_t>(_dist(_gen)) << 8U); }
 
   std::size_t range(std::size_t lo, std::size_t hi) {
     if (lo >= hi) {
@@ -1328,7 +1328,7 @@ class FuzzRng {
     return lo + (u32() % (hi - lo));
   }
 
-  bool coin() { return (byte() & 1) != 0; }
+  bool coin() { return (byte() & 1U) != 0; }
 
  private:
   std::mt19937_64 _gen;
@@ -1346,8 +1346,8 @@ RawChars RandomBuffer(FuzzRng& rng, std::size_t size) {
 
 // Generate semi-valid HTTP request-like data
 RawChars SemiValidRequest(FuzzRng& rng) {
-  static constexpr std::array kMethods = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"};
-  static constexpr std::array kVersions = {"HTTP/1.0", "HTTP/1.1", "HTTP/2.0", "HTTP/0.9", "HTXP/1.1"};
+  static constexpr std::array kMethods{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"};
+  static constexpr std::array kVersions{"HTTP/1.0", "HTTP/1.1", "HTTP/2.0", "HTTP/0.9", "HTXP/1.1"};
 
   RawChars buf;
 
@@ -1511,7 +1511,7 @@ TEST_F(HttpRequestViewTest, MutatedValidRequests) {
 
       switch (mutationType) {
         case 0:  // Flip a byte
-          input[pos] = static_cast<char>(input[pos] ^ static_cast<char>(rng.byte()));
+          input[pos] = static_cast<char>(static_cast<uint8_t>(input[pos]) ^ rng.byte());
           break;
         case 1:  // Insert random byte
           input.insert(pos, 1, static_cast<char>(rng.byte()));

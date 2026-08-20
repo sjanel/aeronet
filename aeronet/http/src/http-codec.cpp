@@ -364,7 +364,7 @@ std::size_t MinEncodeChunkAllocSize(Encoding encoding) {
 #endif
   assert(encoding == Encoding::deflate || encoding == Encoding::gzip);
   static constexpr std::size_t kMinSize = 1U;
-  return kMinSize + (kMinSize >> 12) + (kMinSize >> 14) + (kMinSize >> 25) + 13;
+  return kMinSize + (kMinSize >> 12U) + (kMinSize >> 14U) + (kMinSize >> 25U) + 13;
 }
 
 }  // namespace

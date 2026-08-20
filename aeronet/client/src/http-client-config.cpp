@@ -59,7 +59,7 @@ void HttpClientConfig::validate() const {
     }
     // Only safe methods may be cached: caching an unsafe / non-idempotent method's response is nonsensical.
     static constexpr http::MethodBmp kCacheableMethods = http::Method::GET | http::Method::HEAD | http::Method::OPTIONS;
-    if ((cache.methods & ~kCacheableMethods) != 0 || cache.methods == 0) {
+    if ((cache.methods & static_cast<http::MethodBmp>(~kCacheableMethods)) != 0 || cache.methods == 0) {
       throw std::invalid_argument("cache.methods must be a non-empty subset of GET / HEAD / OPTIONS");
     }
   }

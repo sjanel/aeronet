@@ -147,7 +147,7 @@ struct HttpServerConfig {
   //   guidance recommends not expecting guaranteed wins below ~1 MB.
   //
   // Linux kernel docs suggest ~10KB as a minimum; we use 128KB as a reasonable default with expected gains.
-  std::uint32_t zerocopyMinBytes{128U << 10};
+  std::uint32_t zerocopyMinBytes{128U << 10U};
 
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
   // A high value improves connection reuse at the cost of potential resource exhaustion from slow clients.
@@ -178,7 +178,7 @@ struct HttpServerConfig {
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
   // this limit result in a 413 (Payload Too Large) HTTP error and closure.
   // Default: 256 MiB.
-  std::size_t maxBodyBytes{1 << 28};  // 256 MiB
+  std::size_t maxBodyBytes{1UL << 28U};  // 256 MiB
 
   // For responses with captured bodies smaller than this threshold, HttpResponse will concatenate the captured body
   // contents with the head in the same buffer. This can be efficient for small
@@ -192,7 +192,7 @@ struct HttpServerConfig {
   // Upper bound (bytes) for data queued but not yet written to the client socket for a single connection.
   // Includes headers + body (streaming or aggregated). When exceeded further writes are rejected and the
   // connection marked for closure after flushing what is already queued. Default: 4 MiB per connection.
-  std::size_t maxOutboundBufferBytes{4 << 20};  // 4 MiB
+  std::size_t maxOutboundBufferBytes{4UL << 20U};  // 4 MiB
 
   // ===========================================
   // Event loop polling / responsiveness tuning
@@ -296,7 +296,7 @@ struct HttpServerConfig {
   // favor high values to improve throughput. For workloads with many concurrent connections, lower values can improve
   // fairness and latency at the cost of throughput. To approximate unlimited behavior, set this to
   // std::numeric_limits<uint32_t>::max().
-  std::uint32_t maxPerEventReadBytes{128U << 10};
+  std::uint32_t maxPerEventReadBytes{128U << 10U};
 
   // Check whether the per-event fairness cap has been reached after reading.
   [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesReadThisEvent) const {

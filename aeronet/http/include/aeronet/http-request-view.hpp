@@ -360,7 +360,7 @@ class HttpRequestView {
   // is notified and the coroutine resumes with the result.
   //
   // Usage:
-  //   auto user = co_await req.deferWork([userId = std::string(userId)]() {
+  //   auto user = co_await req.deferWork([userId = std::string(userId)] {
   //     return database.query("SELECT * FROM users WHERE id = ?", userId);
   //   });
   //

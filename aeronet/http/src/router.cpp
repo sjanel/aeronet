@@ -1226,15 +1226,14 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
   const auto literalIt = _literalOnlyRoutes.empty() ? _literalOnlyRoutes.end() : _literalOnlyRoutes.find(path);
   if (literalIt != _literalOnlyRoutes.end()) {
     const auto& literalEntry = _literalRouteEntries[literalIt->second];
-    if (_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict ||
-        _config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Redirect) {
-      if (pathHasTrailingSlash ? !literalEntry.hasWithSlashRegistered : !literalEntry.hasNoSlashRegistered) {
-        return 0U;
-      }
+    if ((_config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Strict ||
+         _config.trailingSlashPolicy == RouterConfig::TrailingSlashPolicy::Redirect) &&
+        (pathHasTrailingSlash ? !literalEntry.hasWithSlashRegistered : !literalEntry.hasNoSlashRegistered)) {
+      return 0U;
     }
 
     const auto& entry = literalEntry.handlers;
-    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp
+    return static_cast<http::MethodBmp>(static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp)
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
                                         | entry._asyncMethodBmp
 #endif
@@ -1246,7 +1245,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
 
   if (pMatchedNode != nullptr) {
     const auto& entry = pMatchedNode->handlers;
-    return static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp
+    return static_cast<http::MethodBmp>(static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp)
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
                                         | entry._asyncMethodBmp
 #endif

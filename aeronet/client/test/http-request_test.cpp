@@ -135,11 +135,11 @@ TEST_F(HttpRequestTest, InvalidUrl) {
 }
 
 TEST_F(HttpRequestTest, TooBigTarget) {
-  std::string bigTarget(1UL << 24, 'a');
+  std::string bigTarget(1UL << 24U, 'a');
   EXPECT_THROW(makeRequest(http::Method::GET, "http://host/" + bigTarget), std::invalid_argument);
-  auto req = makeRequest(http::Method::GET, "http://host/" + bigTarget.substr(0, 1UL << 22));
+  auto req = makeRequest(http::Method::GET, "http://host/" + bigTarget.substr(0, 1UL << 22U));
   EXPECT_THROW(req.target(bigTarget), std::invalid_argument);
-  EXPECT_TRUE(ResolveRedirect(req, "http://host/" + bigTarget.substr(0, 1UL << 22)));
+  EXPECT_TRUE(ResolveRedirect(req, "http://host/" + bigTarget.substr(0, 1UL << 22U)));
   EXPECT_FALSE(ResolveRedirect(req, "http://host/" + bigTarget));
 }
 
@@ -218,7 +218,7 @@ TEST_F(HttpRequestTest, ConstructorRejectsDeleteControlCharacter) {
 }
 
 TEST_F(HttpRequestTest, ConstructorRejectsTooLongTarget) {
-  std::string target(1UL << 24, 'a');
+  std::string target(1UL << 24U, 'a');
 
   EXPECT_THROW(makeRequest(http::Method::GET, "https://example.com/" + target), std::invalid_argument);
 }
@@ -757,7 +757,7 @@ TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
 }
 
 TEST_F(HttpRequestTest, ChunkedRequestSerializationKeepsLargeCapturedSourceProtocolNeutral) {
-  const std::string payload(1UL << 20, 'x');
+  const std::string payload(1UL << 20U, 'x');
   auto req = makeRequest(http::Method::POST, "http://h/p").body(std::string(payload));
   req.trailerAddLine("X-Checksum", "abc123");
 

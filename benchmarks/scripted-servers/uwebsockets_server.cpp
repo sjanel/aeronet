@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
   std::vector<std::thread> threads;
   threads.reserve(cfg.numThreads - 1);
   for (uint32_t i = 1; i < cfg.numThreads; ++i) {
-    threads.emplace_back([&cfg]() { RunWorker(cfg.port, cfg.numThreads, /*printBanner=*/false); });
+    threads.emplace_back([&cfg] { RunWorker(cfg.port, cfg.numThreads, /*printBanner=*/false); });
   }
 
   RunWorker(cfg.port, cfg.numThreads, /*printBanner=*/true);

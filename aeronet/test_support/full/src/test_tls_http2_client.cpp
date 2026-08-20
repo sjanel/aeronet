@@ -610,7 +610,7 @@ bool TlsHttp2Client::sendTunnelData(uint32_t streamId, std::span<const std::byte
 void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::chrono::milliseconds timeout) {
   auto deadline = std::chrono::steady_clock::now() + timeout;
 
-  std::array<char, 32U << 10> buffer{};
+  std::array<char, 32UL << 10U> buffer{};
   bool firstIteration = true;
 
   while (true) {

@@ -74,7 +74,7 @@ class LifecycleTrackerGuard {
 
 class LifecycleResetterRAII {
  public:
-  LifecycleResetterRAII(internal::Lifecycle& lifecycle) : _lifecycle(lifecycle) {}
+  explicit LifecycleResetterRAII(internal::Lifecycle& lifecycle) : _lifecycle(lifecycle) {}
 
   LifecycleResetterRAII(const LifecycleResetterRAII&) = delete;
   LifecycleResetterRAII(LifecycleResetterRAII&&) noexcept = delete;
@@ -487,7 +487,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::fu
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::stop_token token) {
-  return launchDetached([token = std::move(token)]() { return token.stop_requested(); });
+  return launchDetached([token = std::move(token)] { return token.stop_requested(); });
 }
 
 void SingleHttpServer::stop() noexcept {

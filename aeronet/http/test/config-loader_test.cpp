@@ -607,8 +607,7 @@ TEST(ConfigLoaderTest, RouterCorsPolicyRoundTrip) {
   cors.allowOrigin("https://one.example").allowOrigin("https://two.example");
   cors.allowCredentials(true);
   cors.allowPrivateNetwork(true);
-  cors.allowMethods(static_cast<http::MethodBmp>(http::Method::GET) | static_cast<http::MethodBmp>(http::Method::POST) |
-                    static_cast<http::MethodBmp>(http::Method::PUT));
+  cors.allowMethods(http::Method::GET | http::Method::POST | http::Method::PUT);
   cors.allowRequestHeader("Content-Type").allowRequestHeader("Authorization");
   cors.exposeHeader("X-Request-Id").exposeHeader("X-Trace-Id");
   cors.maxAge(std::chrono::seconds{7200});

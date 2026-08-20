@@ -387,10 +387,10 @@ TEST_F(WebSocketFrameTest, ApplyMaskBasic) {
 
   ApplyMask(data, mask);
 
-  EXPECT_EQ(data[0], std::byte{static_cast<uint8_t>('A') ^ 0x12});
-  EXPECT_EQ(data[1], std::byte{static_cast<uint8_t>('B') ^ 0x34});
-  EXPECT_EQ(data[2], std::byte{static_cast<uint8_t>('C') ^ 0x56});
-  EXPECT_EQ(data[3], std::byte{static_cast<uint8_t>('D') ^ 0x78});
+  EXPECT_EQ(data[0], std::byte{static_cast<uint8_t>('A') ^ 0x12U});
+  EXPECT_EQ(data[1], std::byte{static_cast<uint8_t>('B') ^ 0x34U});
+  EXPECT_EQ(data[2], std::byte{static_cast<uint8_t>('C') ^ 0x56U});
+  EXPECT_EQ(data[3], std::byte{static_cast<uint8_t>('D') ^ 0x78U});
 }
 
 TEST_F(WebSocketFrameTest, ApplyMaskReversible) {
@@ -486,7 +486,7 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadEmpty) {
 
 TEST_F(WebSocketFrameTest, ParseClosePayloadOnlyCode) {
   // Manually create payload with just code
-  std::array<std::byte, 2> payload = {std::byte{0x03}, std::byte{0xE8}};  // 1000
+  std::array payload{std::byte{0x03}, std::byte{0xE8}};  // 1000
   auto closePayload = ParseClosePayload(payload);
   EXPECT_EQ(closePayload.code, CloseCode::Normal);
   EXPECT_TRUE(closePayload.reason.empty());
@@ -628,7 +628,7 @@ TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
   // Create a payload of 126 bytes to trigger 16-bit length encoding
   vector<std::byte> mediumPayload(126);
   for (uint32_t idx = 0; idx < mediumPayload.size(); ++idx) {
-    mediumPayload[idx] = static_cast<std::byte>(idx & 0xFF);
+    mediumPayload[idx] = static_cast<std::byte>(idx & 0xFFU);
   }
 
   BuildFrame(buffer, Opcode::Binary, mediumPayload);
@@ -646,7 +646,7 @@ TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
   // Create a large payload that requires 64-bit length encoding
   vector<std::byte> largePayload(70000);
   for (uint32_t idx = 0; idx < largePayload.size(); ++idx) {
-    largePayload[idx] = static_cast<std::byte>(idx & 0xFF);
+    largePayload[idx] = static_cast<std::byte>(idx & 0xFFU);
   }
 
   BuildFrame(buffer, Opcode::Binary, largePayload);
@@ -814,7 +814,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
   vector<std::byte> frame;
   frame.push_back(std::byte{0x81});  // FIN=1, RSV1=0 (will set below), opcode=Text
   // Set RSV1 bit
-  frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40);
+  frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40U);
   frame.push_back(std::byte{0x05});  // MASK=0, length=5
   frame.push_back(std::byte{'H'});
   frame.push_back(std::byte{'e'});
@@ -833,7 +833,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   vector<std::byte> frame;
   frame.push_back(std::byte{0x89});  // FIN=1, opcode=Ping (0x09)
   // Set RSV1 bit
-  frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40);
+  frame[0] = static_cast<std::byte>(static_cast<uint8_t>(frame[0]) | 0x40U);
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
   // allowRsv1 == true but RSV1 must not be set on control frames
@@ -1006,18 +1006,18 @@ TEST_F(WebSocketFrameTest, ParseIncomplete64BitLength) {
 
 TEST_F(WebSocketFrameTest, ApplyMaskSmallData) {
   // Test with data < 8 bytes (uses byte-by-byte path)
-  std::array<std::byte, 5> data = {std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
+  std::array data{std::byte{'H'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
   MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
 
-  std::array<std::byte, 5> expected;
-  for (std::size_t idx = 0; idx < 5; ++idx) {
-    const uint8_t mk = static_cast<uint8_t>((mask >> ((idx % 4) * 8)) & 0xFF);
+  decltype(data) expected;
+  for (std::size_t idx = 0; idx < data.size(); ++idx) {
+    const uint8_t mk = static_cast<uint8_t>((mask >> ((idx % 4) * 8)) & 0xFFU);
     expected[idx] = std::byte{static_cast<uint8_t>(static_cast<uint8_t>(data[idx]) ^ mk)};
   }
 
   ApplyMask(data, mask);
 
-  for (std::size_t idx = 0; idx < 5; ++idx) {
+  for (std::size_t idx = 0; idx < data.size(); ++idx) {
     EXPECT_EQ(data[idx], expected[idx]);
   }
 }

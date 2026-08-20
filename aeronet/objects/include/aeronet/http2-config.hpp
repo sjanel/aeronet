@@ -79,7 +79,7 @@ struct Http2Config {
   /// Initial connection-level flow control window size.
   /// The server will send WINDOW_UPDATE to adjust this upon connection establishment.
   /// Default: 1MB (good for high-throughput scenarios).
-  uint32_t connectionWindowSize{1 << 20};
+  uint32_t connectionWindowSize{1U << 20U};
 
   // ============================
   // Timeouts and limits

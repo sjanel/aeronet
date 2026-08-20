@@ -959,7 +959,7 @@ TEST_F(HttpClientE2ETest, AlternatingOriginsSwapLoopRegistration) {
 // across the partial-write / event-loop pump.
 TEST_F(HttpClientE2ETest, LargePostBlocksWriteThenReadsBack) {
   HttpClient client;
-  const std::string body(16U << 20, 'x');  // 16 MiB: far exceeds socket buffers, so the write must block
+  const std::string body(16UL << 20U, 'x');  // 16 MiB: far exceeds socket buffers, so the write must block
   auto resp = client.post(Url("/echo"), body, "application/test").value();
   EXPECT_EQ(resp.status(), 200);
   ASSERT_EQ(resp.bodyInMemory().size(), body.size());
@@ -1548,7 +1548,7 @@ TEST_F(HttpClientTrailerE2ETest, SendsLargeCapturedBodyWithTrailer) {
   HttpClientConfig cfg;
   cfg.minCapturedBodySize = 0;
   HttpClient client(cfg);
-  const std::string payload(1UL << 20, 'x');
+  const std::string payload(1UL << 20U, 'x');
   auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
   req.body(std::string(payload), "text/plain").trailerAddLine("x-checksum", "large-body");
 

@@ -212,9 +212,9 @@ constexpr bool kLE = std::endian::native == std::endian::little;
 // marker bit is set in `mask` (must be a non-zero SwarFindByte result).
 constexpr uint8_t LeadingMatchIndex(uint64_t mask) noexcept {
   if constexpr (kLE) {
-    return static_cast<uint8_t>(std::countr_zero(mask) >> 3);
+    return static_cast<uint8_t>(static_cast<uint8_t>(std::countr_zero(mask)) >> 3U);
   } else {
-    return static_cast<uint8_t>(std::countl_zero(mask) >> 3);
+    return static_cast<uint8_t>(static_cast<uint8_t>(std::countl_zero(mask)) >> 3U);
   }
 }
 

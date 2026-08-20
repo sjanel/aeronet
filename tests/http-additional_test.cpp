@@ -1143,7 +1143,7 @@ TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
 // Test request decompression disabled (passthrough mode)
 TEST(SingleHttpServer, RequestBodyDecompressionDisabledPassthrough) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withMaxBodyBytes(256 << 20);
+    cfg.withMaxBodyBytes(256UL << 20U);
     cfg.decompression.enable = false;
   });
   ts.router().setDefault([](const HttpRequestView& req) {
@@ -1214,7 +1214,7 @@ TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {
 TEST(SingleHttpServer, DecompressionConfigurable) {
   // Update decompression limit
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.withMaxBodyBytes(256 << 20);
+    cfg.withMaxBodyBytes(256UL << 20U);
     cfg.decompression.maxDecompressedBytes = 1024;
   });
 

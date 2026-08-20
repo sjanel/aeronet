@@ -577,7 +577,7 @@ TEST_F(WebSocketHandlerTest, ClientSideMasksOutgoingFrames) {
 
   // Second byte should have mask bit set
   auto byte1 = static_cast<uint8_t>(output[1]);
-  EXPECT_TRUE((byte1 & 0x80) != 0);  // MASK bit should be set
+  EXPECT_TRUE((byte1 & 0x80U) != 0);  // MASK bit should be set
 }
 
 TEST_F(WebSocketHandlerTest, ServerSideDoesNotMaskOutgoing) {
@@ -594,7 +594,7 @@ TEST_F(WebSocketHandlerTest, ServerSideDoesNotMaskOutgoing) {
 
   // Second byte should NOT have mask bit set
   auto byte1 = static_cast<uint8_t>(output[1]);
-  EXPECT_FALSE((byte1 & 0x80) != 0);  // MASK bit should NOT be set
+  EXPECT_FALSE((byte1 & 0x80U) != 0);  // MASK bit should NOT be set
 }
 
 // ============================================================================
