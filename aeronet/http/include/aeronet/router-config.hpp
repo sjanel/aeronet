@@ -47,3 +47,14 @@ struct RouterConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+template <>
+struct glz::meta<aeronet::RouterConfig::TrailingSlashPolicy> {
+  using enum aeronet::RouterConfig::TrailingSlashPolicy;
+  static constexpr auto value = enumerate("strict", Strict, "normalize", Normalize, "redirect", Redirect);
+};
+
+#endif

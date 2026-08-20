@@ -23,18 +23,31 @@ inline constexpr std::underlying_type_t<Encoding> kNbContentEncodings =
 
 // Get string representation of encoding for use in HTTP headers.
 constexpr std::string_view GetEncodingStr(Encoding enc) {
-  static constexpr std::string_view kEncodingStrs[kNbContentEncodings] = {
+  static constexpr std::string_view kEncodingStrs[]{
       http::zstd, http::br, http::gzip, http::deflate, http::identity,
   };
+  static_assert(std::size(kEncodingStrs) == kNbContentEncodings);
   return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
 // Check if encoding is enabled in this build.
 constexpr bool IsEncodingEnabled(Encoding enc) {
-  static constexpr bool kEncodingEnabled[kNbContentEncodings] = {
+  static constexpr bool kEncodingEnabled[]{
       zstdEnabled(), brotliEnabled(), zlibEnabled(), zlibEnabled(), true,
   };
+  static_assert(std::size(kEncodingEnabled) == kNbContentEncodings);
   return kEncodingEnabled[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+template <>
+struct glz::meta<aeronet::Encoding> {
+  using enum aeronet::Encoding;
+  static constexpr auto value = enumerate(zstd, br, gzip, deflate, none);
+};
+
+#endif

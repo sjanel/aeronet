@@ -9,7 +9,7 @@
 namespace aeronet {
 
 constexpr auto write2(auto buf, std::integral auto value) noexcept {
-  static constexpr char kDigitPairs[][2] = {
+  static constexpr char kDigitPairs[][2]{
       {'0', '0'}, {'0', '1'}, {'0', '2'}, {'0', '3'}, {'0', '4'}, {'0', '5'}, {'0', '6'}, {'0', '7'}, {'0', '8'},
       {'0', '9'}, {'1', '0'}, {'1', '1'}, {'1', '2'}, {'1', '3'}, {'1', '4'}, {'1', '5'}, {'1', '6'}, {'1', '7'},
       {'1', '8'}, {'1', '9'}, {'2', '0'}, {'2', '1'}, {'2', '2'}, {'2', '3'}, {'2', '4'}, {'2', '5'}, {'2', '6'},
@@ -28,10 +28,10 @@ constexpr auto write2(auto buf, std::integral auto value) noexcept {
 
   const char* pCouple = kDigitPairs[static_cast<uint8_t>(value)];
 
-  buf[0] = pCouple[0];
-  buf[1] = pCouple[1];
+  *buf = pCouple[0];
+  *++buf = pCouple[1];
 
-  return buf + 2;
+  return ++buf;
 }
 
 constexpr auto write4(auto buf, std::integral auto value) noexcept {
