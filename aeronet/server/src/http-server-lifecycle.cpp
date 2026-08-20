@@ -468,7 +468,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<boo
 
   return {std::jthread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
             try {
-              runUntilStarted([&st, &pred]() { return st.stop_requested() || (pred && pred()); });
+              runUntilStarted([&st, &pred] { return st.stop_requested() || (pred && pred()); });
             } catch (const std::exception& ex) {
               _lifecycle.reset();
               log::error("Event loop thread exiting due to exception: {}", ex.what());

@@ -20,7 +20,7 @@ constexpr auto kPollInterval = 3ms;
 
 aeronet::SingleHttpServer server{aeronet::HttpServerConfig{}.withPollInterval(kPollInterval)};
 
-const int kInitOnce = []() {
+const int kInitOnce = [] {
   server.start();
   return 0;
 }();

@@ -324,15 +324,13 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
       /// Deliver a single complete non-fragmented non-compressed frame directly to the callback
       /// without copying the payload through the message buffer (zero-copy fast path).
       /// The payload must already be unmasked when this is called.
-      if (header.opcode == Opcode::Text) {
-        if (!ValidateUtf8(payload)) {
-          if (_callbacks.onError) {
-            _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-          }
-          sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-          result.action = ProtocolProcessResult::Action::Close;
-          return result;
+      if (header.opcode == Opcode::Text && !ValidateUtf8(payload)) {
+        if (_callbacks.onError) {
+          _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
         }
+        sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+        result.action = ProtocolProcessResult::Action::Close;
+        return result;
       }
 
       if (_callbacks.onMessage) {
@@ -458,18 +456,16 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
   }
 
   // For text messages, validate UTF-8
-  if (_message.opcode == Opcode::Text) {
-    if (!ValidateUtf8(messageData)) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-      }
-      sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-      result.action = ProtocolProcessResult::Action::Close;
-      _message.inProgress = false;
-      _message.buffer.clear();
-      _messageCompressed = false;
-      return result;
+  if (_message.opcode == Opcode::Text && !ValidateUtf8(messageData)) {
+    if (_callbacks.onError) {
+      _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     }
+    sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+    result.action = ProtocolProcessResult::Action::Close;
+    _message.inProgress = false;
+    _message.buffer.clear();
+    _messageCompressed = false;
+    return result;
   }
 
   // Invoke callback

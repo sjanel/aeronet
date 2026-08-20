@@ -617,25 +617,20 @@ void SingleHttpServer::acceptNewConnections() {
       if (want != TransportHint::None) {
         // Transport indicates we should wait for readability or writability before continuing.
         // Adjust epoll interest if TLS handshake needs write readiness
-        if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-          if (!enableWritableInterest(cnxIt)) [[unlikely]] {
-            closeConnection(cnxIt);
-            pCnx = nullptr;
-          }
+        if (want == TransportHint::WriteReady && !pCnx->waitingWritable && !enableWritableInterest(cnxIt)) {
+          closeConnection(cnxIt);
+          pCnx = nullptr;
         }
         break;
       }
       bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
       _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-      if (bytesRead < chunkSize) {
-        // For TLS transports: OpenSSL may hold already-decrypted data in its
-        // internal buffer that the kernel socket no longer signals via epoll
-        // (critical with EPOLLET).  Continue reading if the transport reports
-        // pending data — otherwise the server would stall until the peer sends
-        // more, causing severe throughput degradation with few connections.
-        if (!pCnx->transport->hasPendingReadData()) {
-          break;
-        }
+      if (bytesRead < chunkSize && !pCnx->transport->hasPendingReadData()) {
+        // For TLS transports: OpenSSL may hold already-decrypted data in its internal buffer that the kernel socket no
+        // longer signals via epoll (critical with EPOLLET).  Continue reading if the transport reports pending data —
+        // otherwise the server would stall until the peer sends more, causing severe throughput degradation with few
+        // connections.
+        break;
       }
       if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
         break;
@@ -859,10 +854,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     }
     if (want != TransportHint::None) {
       // Non-fatal: transport needs the socket to be readable or writable before proceeding.
-      if (want == TransportHint::WriteReady && !pCnx->waitingWritable) {
-        if (!enableWritableInterest(cnxIt)) [[unlikely]] {
-          return CloseStatus::Close;
-        }
+      if (want == TransportHint::WriteReady && !pCnx->waitingWritable && !enableWritableInterest(cnxIt)) {
+        return CloseStatus::Close;
       }
       break;
     }
@@ -899,11 +892,10 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 
     // Header read timeout enforcement: if headers of current pending request are not complete yet
     // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
-    if (_config.headerReadTimeout.count() > 0 && pCnx->parsingHeaders) {
-      if (_connections.now - pCnx->headerStartTp > _config.headerReadTimeout) {
-        emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
-        return CloseStatus::Close;
-      }
+    if (_config.headerReadTimeout.count() > 0 && pCnx->parsingHeaders &&
+        _connections.now - pCnx->headerStartTp > _config.headerReadTimeout) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
+      return CloseStatus::Close;
     }
   }
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write
@@ -1080,10 +1072,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt c
   if (state.inBuffer.empty()) {
     if (state.eofReceived) {
       auto peerIt = _connections.iterator(state.peerFd);
-      if (IsValid(_connections, peerIt)) {
-        if (shutdownTunnelPeerWrite(peerIt)) {
-          return CloseStatus::Keep;  // peer closed and cleaned up
-        }
+      if (IsValid(_connections, peerIt) && shutdownTunnelPeerWrite(peerIt)) {
+        return CloseStatus::Keep;  // peer closed and cleaned up
       }
       // Stop reading from this side — wait for the peer to close or drain.
       if (!_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {

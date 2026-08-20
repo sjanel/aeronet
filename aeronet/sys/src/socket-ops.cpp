@@ -49,6 +49,7 @@ bool SetNonBlocking(NativeHandle fd) noexcept {
   if (flags == -1) {
     return false;
   }
+  // NOLINTNEXTLINE(bugprone-signed-bitwise)
   return ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 #endif
 }
@@ -63,6 +64,7 @@ bool SetCloseOnExec(NativeHandle fd) noexcept {
   if (flags == -1) {
     return false;
   }
+  // NOLINTNEXTLINE(bugprone-signed-bitwise)
   return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
 #endif
 }
@@ -84,11 +86,13 @@ void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcep
   for (NativeHandle pfd : sockets) {
     int flags = ::fcntl(pfd, F_GETFL, 0);
     assert(flags != -1);
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     flags = ::fcntl(pfd, F_SETFL, flags | O_NONBLOCK);
     assert(flags != -1);
 
     flags = ::fcntl(pfd, F_GETFD, 0);
     assert(flags != -1);
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     flags = ::fcntl(pfd, F_SETFD, flags | FD_CLOEXEC);
     assert(flags != -1);
   }

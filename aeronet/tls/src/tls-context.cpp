@@ -120,22 +120,20 @@ void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
   if (cfg.cipherPolicy != TLSConfig::CipherPolicy::Default) {
     ApplyCipherPolicy(ctx, cfg);
-  } else if (!cfg.cipherList().empty()) {
-    if (::SSL_CTX_set_cipher_list(ctx, cfg.cipherListCstr()) != 1) {
-      throw std::runtime_error("Failed to set cipher list");
-    }
+  } else if (!cfg.cipherList().empty() && ::SSL_CTX_set_cipher_list(ctx, cfg.cipherListCstr()) != 1) {
+    throw std::runtime_error("Failed to set cipher list");
   }
 }
 
 void ConfigureProtocolBounds(SSL_CTX* ctx, const TLSConfig& cfg) {
   if (cfg.minVersion != TLSConfig::Version{}) {
-    int mv = ParseTlsVersion(cfg.minVersion);
+    const int mv = ParseTlsVersion(cfg.minVersion);
     if (mv == 0 || ::SSL_CTX_set_min_proto_version(ctx, mv) != 1) {
       throw std::runtime_error("Failed to set minimum TLS version");
     }
   }
   if (cfg.maxVersion != TLSConfig::Version{}) {
-    int Mv = ParseTlsVersion(cfg.maxVersion);
+    const int Mv = ParseTlsVersion(cfg.maxVersion);
     if (Mv == 0 || ::SSL_CTX_set_max_proto_version(ctx, Mv) != 1) {
       throw std::runtime_error("Failed to set maximum TLS version");
     }

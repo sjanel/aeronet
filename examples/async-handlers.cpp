@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     // GET /async — minimal deferWork demonstration for CI smoke test
     router.setPath(http::Method::GET, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       std::string pathCopy{req.path()};
-      std::string body = co_await req.deferWork([path = std::move(pathCopy)]() {
+      std::string body = co_await req.deferWork([path = std::move(pathCopy)] {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         return std::string{"hello from deferWork on "} + path + "\n";
       });
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
 
       // co_await deferWork(): runs the lambda on a background thread, returns the result.
       // The event loop is free to handle other requests while waiting.
-      std::optional<User> user = co_await req.deferWork([id]() { return SimulateDatabaseLookup(id); });
+      std::optional<User> user = co_await req.deferWork([id] { return SimulateDatabaseLookup(id); });
 
       if (!user) {
         co_return HttpResponse(404, "User not found\n");
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
 
       // co_await deferWork(): run the blocking DB update on a background thread
       bool updated =
-          co_await req.deferWork([id, email = std::string(newEmail)]() { return SimulateDatabaseUpdate(id, email); });
+          co_await req.deferWork([id, email = std::string(newEmail)] { return SimulateDatabaseUpdate(id, email); });
 
       if (!updated) {
         co_return HttpResponse(404, "User not found\n");

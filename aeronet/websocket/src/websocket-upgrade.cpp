@@ -12,7 +12,7 @@
 namespace aeronet {
 
 namespace {
-constexpr auto kIsBase64CharTable = []() {
+constexpr auto kIsBase64CharTable = [] {
   std::array<bool, std::numeric_limits<char>::max()> table{};
   for (unsigned char ch = 'A'; ch <= 'Z'; ++ch) {
     table[ch] = true;

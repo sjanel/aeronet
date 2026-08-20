@@ -240,11 +240,7 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
   cfg.withReusePort();
   cfg.withNbThreads(1U);
   MultiHttpServer multi(cfg);
-  multi.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("Predicate");
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Predicate"); });
 
   struct PredicateState {
     std::atomic<bool> stop{false};
@@ -253,7 +249,7 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
   };
 
   auto state = std::make_shared<PredicateState>();
-  auto handle = multi.startDetachedAndStopWhen([state]() {
+  auto handle = multi.startDetachedAndStopWhen([state] {
     state->invocations.fetch_add(1, std::memory_order_relaxed);
     if (!state->stop.load(std::memory_order_relaxed)) {
       return false;
@@ -736,7 +732,7 @@ TEST(MultiHttpServer, BlockingRunMethod) {
   ASSERT_GT(port, 0);
 
   // Launch run() in a background thread since it blocks
-  std::jthread serverThread([&multi]() {
+  std::jthread serverThread([&multi] {
     multi.run();  // This will block until servers complete
   });
 
@@ -819,7 +815,7 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
 
   std::atomic<bool> done = false;
   std::jthread runner([&multi, &done](std::stop_token st) {
-    multi.runUntil([&done, &st]() { return done.load(std::memory_order_relaxed) || st.stop_requested(); });
+    multi.runUntil([&done, &st] { return done.load(std::memory_order_relaxed) || st.stop_requested(); });
   });
 
   // Wait for the server to be running to avoid race condition where rebuildServers destroys the listener
@@ -969,7 +965,7 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
   auto handle = multi.startDetached();
 
   // Occupy the single worker with a slow request in the background.
-  std::thread slow([appPort = appPort]() { (void)test::simpleGet(appPort, "/slow"); });
+  std::thread slow([appPort = appPort] { (void)test::simpleGet(appPort, "/slow"); });
   std::this_thread::sleep_for(100ms);  // let the slow handler start blocking the worker
 
   // The dedicated probe listener must answer promptly, far below the slow handler's runtime.
@@ -1004,7 +1000,7 @@ TEST(MultiHttpServerDedicatedProbes, LivenessTripsWhenWorkerWedgedBeyondThreshol
 
   EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
 
-  std::thread wedger([appPort = appPort]() { (void)test::simpleGet(appPort, "/wedge"); });
+  std::thread wedger([appPort = appPort] { (void)test::simpleGet(appPort, "/wedge"); });
 
   bool saw503 = false;
   bool readyStayed200 = true;

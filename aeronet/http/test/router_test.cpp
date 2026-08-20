@@ -1515,7 +1515,7 @@ TEST_F(RouterTest, LargeNumberOfPatternsAndSegments_WithTrailingPolicies) {
     vector<int> called(routeCount, 0);
 
     // registration lambda so we reuse logic
-    auto registerRoutes = [this, &called]() {
+    auto registerRoutes = [this, &called] {
       for (uint32_t idx = 0; idx < routeCount; ++idx) {
         http::MethodBmp registerMethod{};
         switch (idx % 4) {

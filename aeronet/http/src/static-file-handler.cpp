@@ -627,13 +627,11 @@ ConditionalOutcome EvaluateConditionals(const HttpRequestView& request, std::str
     return outcome;
   }
 
-  if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value()) {
-    if (!EtagListMatches(*ifMatch, etag)) {
-      outcome.kind = ConditionalOutcome::Kind::PreconditionFailed;
-      outcome.status = http::StatusCodePreconditionFailed;
-      outcome.rangeAllowed = false;
-      return outcome;
-    }
+  if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value() && !EtagListMatches(*ifMatch, etag)) {
+    outcome.kind = ConditionalOutcome::Kind::PreconditionFailed;
+    outcome.status = http::StatusCodePreconditionFailed;
+    outcome.rangeAllowed = false;
+    return outcome;
   }
 
   if (auto ifUnmodified = request.headerValue(http::IfUnmodifiedSince); ifUnmodified.has_value()) {
@@ -1187,13 +1185,12 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
           resp.file(std::move(file), sel.offset, sel.length, contentTypeForFile);
           return resp;
         }
-        if (rangeResult.kind == MultiRangeResult::Kind::MultiValid) {
-          if (BuildMultipartBody(file, rangeResult.ranges, fileSize, contentTypeForFile, _config.maxMultipartBodySize,
-                                 resp)) {
-            return resp;
-          }
-          // Body exceeds maxMultipartBodySize or read error — fall through to full 200 response
+        if (rangeResult.kind == MultiRangeResult::Kind::MultiValid &&
+            BuildMultipartBody(file, rangeResult.ranges, fileSize, contentTypeForFile, _config.maxMultipartBodySize,
+                               resp)) {
+          return resp;
         }
+        // Body exceeds maxMultipartBodySize or read error - fall through to full 200 response
       }
     }
   }

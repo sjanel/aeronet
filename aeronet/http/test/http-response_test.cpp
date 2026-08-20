@@ -227,7 +227,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
 
 TEST_F(HttpResponseTest, TooLongReasonShouldBeTruncated) {
   HttpResponse resp(http::StatusCodeOK);
-  std::string longReason((1UL << 24) - 20, 'A');
+  std::string longReason((1UL << 24U) - 20U, 'A');
 
   std::size_t truncatedReasonSize = 0;
 
@@ -3567,13 +3567,9 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
   // Expected patterns:
   //   "HTTP/1.1 200"            (no reason)
   //   "HTTP/1.1 200 Reason..."  (reason present)
-  if (statusLine.size() > 12) {
-    // Find first space after status code digits
-    if (statusLine.size() > 12 && statusLine[12] == ' ') {
-      if (statusLine.size() > 13) {
-        pr.reason.assign(statusLine.substr(13));
-      }
-    }
+  // Find first space after status code digits
+  if (statusLine.size() > 13 && statusLine[12] == ' ') {
+    pr.reason.assign(statusLine.substr(13));
   }
   // Find end of headers (CRLF CRLF) to robustly locate header-body boundary
   std::size_t headerEnd = full.find(http::DoubleCRLF, firstCRLF + 2);
