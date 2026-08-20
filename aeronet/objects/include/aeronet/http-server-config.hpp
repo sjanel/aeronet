@@ -538,3 +538,54 @@ struct HttpServerConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+
+#include <glaze/glaze.hpp>
+#include <string>
+
+#include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+
+template <>
+struct glz::meta<aeronet::HttpServerConfig::TraceMethodPolicy> {
+  using enum aeronet::HttpServerConfig::TraceMethodPolicy;
+  static constexpr auto value =
+      enumerate("disabled", Disabled, "enabledPlainAndTLS", EnabledPlainAndTLS, "enabledPlainOnly", EnabledPlainOnly);
+};
+
+// ============================================================================
+// HttpServerConfig - private _connectAllowlist needs custom lambda
+// ============================================================================
+template <>
+struct glz::meta<aeronet::HttpServerConfig> {
+  using T = aeronet::HttpServerConfig;
+  static constexpr auto value = object(
+      "nbThreads", &T::nbThreads, "port", &T::port, "reusePort", &T::reusePort, "tcpNoDelay", &T::tcpNoDelay,
+      "enableKeepAlive", &T::enableKeepAlive, "mergeUnknownRequestHeaders", &T::mergeUnknownRequestHeaders,
+      "traceMethodPolicy", &T::traceMethodPolicy, "addTrailerHeader", &T::addTrailerHeader, "zerocopyMode",
+      &T::zerocopyMode, "zerocopyMinBytes", &T::zerocopyMinBytes, "maxRequestsPerConnection",
+      &T::maxRequestsPerConnection, "maxCachedConnections", &T::maxCachedConnections, "maxAcceptBatchSize",
+      &T::maxAcceptBatchSize, "keepAliveTimeout", &T::keepAliveTimeout, "maxHeaderBytes", &T::maxHeaderBytes,
+      "maxBodyBytes", &T::maxBodyBytes, "minCapturedBodySize", &T::minCapturedBodySize, "maxOutboundBufferBytes",
+      &T::maxOutboundBufferBytes, "pollInterval", &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor,
+      "pollIntervalMaxFactor", &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout",
+      &T::bodyReadTimeout, "tls", &T::tls, "httpsRedirect", &T::httpsRedirect,
+#ifdef AERONET_ENABLE_HTTP2
+      "http2", &T::http2,
+#endif
+      "telemetry", &T::telemetry, "compression", &T::compression, "decompression", &T::decompression,
+      "minReadChunkBytes", &T::minReadChunkBytes, "maxPerEventReadBytes", &T::maxPerEventReadBytes, "globalHeaders",
+      &T::globalHeaders, "builtinProbes", &T::builtinProbes, "accessLog", &T::accessLog, "connectAllowlist",
+      custom<[](T& self, const aeronet::vector<std::string>& hosts) {
+        self.withConnectAllowlist(hosts.begin(), hosts.end());
+      },
+             [](const T& self) {
+               aeronet::vector<std::string_view> result;
+               for (auto sv : self.connectAllowlist()) {
+                 result.push_back(sv);
+               }
+               return result;
+             }>);
+};
+
+#endif

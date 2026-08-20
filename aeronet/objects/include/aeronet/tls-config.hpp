@@ -275,3 +275,105 @@ class TLSConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+
+#include <glaze/glaze.hpp>
+#include <string>
+
+#include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+
+template <>
+struct glz::meta<aeronet::TLSConfig::KtlsMode> {
+  using enum aeronet::TLSConfig::KtlsMode;
+  static constexpr auto value =
+      enumerate("disabled", Disabled, "opportunistic", Opportunistic, "enabled", Enabled, "required", Required);
+};
+
+template <>
+struct glz::meta<aeronet::TLSConfig::CipherPolicy> {
+  using enum aeronet::TLSConfig::CipherPolicy;
+  static constexpr auto value =
+      enumerate("default", Default, "modern", Modern, "compatibility", Compatibility, "legacy", Legacy);
+};
+
+template <>
+struct glz::meta<aeronet::TLSConfig::SniCertificate> {
+  using T = aeronet::TLSConfig::SniCertificate;
+  static constexpr auto value = object(
+      "pattern",
+      custom<[](T& self, const std::string& sv) { self.setPattern(sv); }, [](const T& self) { return self.pattern(); }>,
+      "certFile",
+      custom<[](T& self, const std::string& sv) { self.setCertFile(sv); },
+             [](const T& self) { return self.certFile(); }>,
+      "keyFile",
+      custom<[](T& self, const std::string& sv) { self.setKeyFile(sv); }, [](const T& self) { return self.keyFile(); }>,
+      "certPem",
+      custom<[](T& self, const std::string& sv) { self.setCertPem(sv); }, [](const T& self) { return self.certPem(); }>,
+      "keyPem",
+      custom<[](T& self, const std::string& sv) { self.setKeyPem(sv); }, [](const T& self) { return self.keyPem(); }>,
+      "isWildcard", &T::isWildcard);
+};
+
+template <>
+struct glz::meta<aeronet::TLSConfig> {
+  using T = aeronet::TLSConfig;
+  static constexpr auto value =
+      object("enabled", &T::enabled, "requestClientCert", &T::requestClientCert, "requireClientCert",
+             &T::requireClientCert, "alpnMustMatch", &T::alpnMustMatch, "logHandshake", &T::logHandshake,
+             "disableCompression", &T::disableCompression, "cipherPolicy", &T::cipherPolicy, "ktlsMode", &T::ktlsMode,
+             "minVersion", &T::minVersion, "maxVersion", &T::maxVersion, "maxConcurrentHandshakes",
+             &T::maxConcurrentHandshakes, "handshakeRateLimitPerSecond", &T::handshakeRateLimitPerSecond,
+             "handshakeRateLimitBurst", &T::handshakeRateLimitBurst, "handshakeTimeout", &T::handshakeTimeout,
+             "sessionTickets", &T::sessionTickets, "certFile",
+             custom<[](T& self, const std::string& str) { self.withCertFile(str); },
+                    [](const T& self) { return self.certFile(); }>,
+             "keyFile",
+             custom<[](T& self, const std::string& str) { self.withKeyFile(str); },
+                    [](const T& self) { return self.keyFile(); }>,
+             "certPem",
+             custom<[](T& self, const std::string& str) { self.withCertPem(str); },
+                    [](const T& self) { return self.certPem(); }>,
+             "keyPem",
+             custom<[](T& self, const std::string& str) { self.withKeyPem(str); },
+                    [](const T& self) { return self.keyPem(); }>,
+             "cipherList",
+             custom<[](T& self, const std::string& str) { self.withCipherList(str); },
+                    [](const T& self) { return self.cipherList(); }>,
+             "alpnProtocols",
+             custom<[](T& self, const ::aeronet::vector<std::string>& protos) { self.withTlsAlpnProtocols(protos); },
+                    [](const T& self) {
+                      ::aeronet::vector<std::string_view> result;
+                      for (auto sv : self.alpnProtocols()) {
+                        result.push_back(sv);
+                      }
+                      return result;
+                    }>,
+             "trustedClientCertsPem",
+             custom<[](T& self, const ::aeronet::vector<std::string>& certs) {
+               self.withoutTlsTrustedClientCert();
+               for (const auto& cert : certs) {
+                 self.withTlsTrustedClientCert(cert);
+               }
+             },
+                    [](const T& self) {
+                      ::aeronet::vector<std::string_view> result;
+                      for (auto sv : self.trustedClientCertsPem()) {
+                        result.push_back(sv);
+                      }
+                      return result;
+                    }>,
+             "sniCertificates",
+             custom<[](T& self, const ::aeronet::vector<aeronet::TLSConfig::SniCertificate>& certs) {
+               self.clearTlsSniCertificates();
+               for (const auto& cert : certs) {
+                 if (cert.hasFiles()) {
+                   self.withTlsSniCertificateFiles(cert.pattern(), cert.certFile(), cert.keyFile());
+                 } else if (cert.hasPem()) {
+                   self.withTlsSniCertificateMemory(cert.pattern(), cert.certPem(), cert.keyPem());
+                 }
+               }
+             },
+                    [](const T& self) { return self.sniCertificates(); }>);
+};
+#endif

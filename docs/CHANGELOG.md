@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+## Others
+
+- **Clean-up glaze adapters**: instead of centralizing all glaze adapters in one file far from the objects definitions, move each object glaze adapter code into its own object header file.
+
 ## [1.5.0] - 2026-08-20
 
 ### 1.5.0 Breaking changes
