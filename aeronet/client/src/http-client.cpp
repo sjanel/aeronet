@@ -261,8 +261,10 @@ bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_po
     }
     for (const auto& ev : events) {
       if (ev.fd == fd && (ev.eventBmp & (interest | EventErr | EventHup | EventRdHup)) != 0U) {
-        // Surface error/hup to the next I/O attempt, and report interest readiness.
-        return true;
+        // Poll may return an event after the deadline (notably when this thread was descheduled). The
+        // request timeout is a hard upper bound, so a late error/hup must not replace it with an I/O error.
+        // Otherwise surface error/hup to the next I/O attempt, and report interest readiness.
+        return SteadyClock::now() < deadline;
       }
     }
     // Empty span => poll timeout; loop and re-check the deadline.
