@@ -76,6 +76,9 @@ class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 clie
 // friend so those resources stay private to HttpClient's public API.
 class HttpClient {
  public:
+  // Create a HttpClient with the given config. The config is copied and can be modified after construction without
+  // affecting the client. The config is used to pre-configure every request (global headers, decompression, redirect
+  // following, retry, ...).
   explicit HttpClient(HttpClientConfig config = {});
 
   // Build a request with the given method and url. The returned HttpRequest is mutable and
