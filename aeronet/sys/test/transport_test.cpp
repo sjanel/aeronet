@@ -2,11 +2,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
+#include <string>
 #include <string_view>
 
 #include "aeronet/file.hpp"
@@ -193,6 +196,60 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
+TEST(PlainTransport, GatherWriteUsesWritevForAllFragments) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  const std::array<std::string_view, 4> fragments{"HEAD", "", "BODY", "TAIL"};
+
+  const auto result = transport.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(result.bytesProcessed, 12U);
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  std::array<char, 16> received{};
+  const auto bytesRead = ::read(fds[0], received.data(), received.size());
+  ASSERT_EQ(bytesRead, 12);
+  EXPECT_EQ(std::string_view(received.data(), 12), "HEADBODYTAIL");
+}
+
+TEST(PlainTransport, GatherWriteProcessesMoreThanOneSystemBatch) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  std::array<std::string_view, 70> fragments;
+  fragments.fill("x");
+
+  const auto result = transport.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(result.bytesProcessed, fragments.size());
+  EXPECT_EQ(result.want, TransportHint::None);
+
+  std::array<char, 70> received{};
+  const auto bytesRead = ::read(fds[0], received.data(), received.size());
+  ASSERT_EQ(bytesRead, static_cast<int64_t>(received.size()));
+  EXPECT_TRUE(std::ranges::all_of(received, [](char ch) { return ch == 'x'; }));
+}
+
+TEST(PlainTransport, GatherWriteTracksPartialProgressAcrossFragments) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  test::SetWritevActions(fds[1], {IoAction{6, 0}, IoAction{-1, error::kWouldBlock}});
+
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
+
+  const auto result = transport.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(result.bytesProcessed, 6U);
+  EXPECT_EQ(result.want, TransportHint::WriteReady);
+}
 namespace {
 
 // A minimal transport that overrides nothing beyond the two pure-virtual I/O methods, so it inherits the
@@ -203,6 +260,28 @@ class BaseDefaultsTransport final : public ITransport {
   TransportResult write(std::string_view /*data*/) override { return {0, TransportHint::None}; }
 };
 
+class OrderedDefaultsTransport final : public ITransport {
+ public:
+  explicit OrderedDefaultsTransport(bool shortFirstWrite) : _shortFirstWrite(shortFirstWrite) {}
+
+  TransportResult read(char* /*buf*/, std::size_t /*len*/) override { return {0, TransportHint::None}; }
+
+  TransportResult write(std::string_view data) override {
+    const std::size_t written =
+        _shortFirstWrite && _writeCalls == 0 ? std::min<std::size_t>(2, data.size()) : data.size();
+    _written.append(data.substr(0, written));
+    ++_writeCalls;
+    return {written, TransportHint::None};
+  }
+
+  [[nodiscard]] std::string_view written() const noexcept { return _written; }
+  [[nodiscard]] std::size_t writeCalls() const noexcept { return _writeCalls; }
+
+ private:
+  std::string _written;
+  std::size_t _writeCalls{0};
+  bool _shortFirstWrite;
+};
 }  // namespace
 
 TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
@@ -215,6 +294,25 @@ TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
   EXPECT_EQ(res.want, TransportHint::Error);
 }
 
+TEST(TransportTest, GatherFallbackPreservesOrderingAndStopsOnShortWrite) {
+  const std::array<std::string_view, 2> fragments{"HEAD", "BODY"};
+
+  OrderedDefaultsTransport complete(false);
+  ITransport& completeBase = complete;
+  const auto completeResult = completeBase.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(completeResult.bytesProcessed, 8U);
+  EXPECT_EQ(completeResult.want, TransportHint::None);
+  EXPECT_EQ(complete.written(), "HEADBODY");
+  EXPECT_EQ(complete.writeCalls(), 2U);
+
+  OrderedDefaultsTransport partial(true);
+  ITransport& partialBase = partial;
+  const auto partialResult = partialBase.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(partialResult.bytesProcessed, 2U);
+  EXPECT_EQ(partialResult.want, TransportHint::None);
+  EXPECT_EQ(partial.written(), "HE");
+  EXPECT_EQ(partial.writeCalls(), 1U);
+}
 TEST(PlainTransport, SupportsSendfile) {
   PlainTransport transport(-1, ZerocopyMode::Disabled, 0U);
   EXPECT_TRUE(transport.supportsSendfile());

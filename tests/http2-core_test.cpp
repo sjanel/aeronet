@@ -77,6 +77,29 @@ namespace {
   return out;
 }
 
+[[nodiscard]] vector<std::byte> DrainPendingOutput(Http2Connection& connection) {
+  vector<std::byte> output;
+  output.reserve(static_cast<decltype(output)::size_type>(connection.pendingOutputSize()));
+
+  vector<std::string_view> fragments;
+  while (connection.hasPendingOutput()) {
+    connection.getPendingOutputFragments(fragments);
+    if (fragments.empty()) {
+      ADD_FAILURE() << "Pending output exposed no fragments";
+      break;
+    }
+
+    std::size_t bytesWritten = 0;
+    for (const std::string_view fragment : fragments) {
+      const auto bytes = std::as_bytes(std::span<const char>(fragment.data(), fragment.size()));
+      std::ranges::copy(bytes, std::back_inserter(output));
+      bytesWritten += fragment.size();
+    }
+    connection.onOutputWritten(bytesWritten);
+  }
+  return output;
+}
+
 [[nodiscard]] vector<std::byte> MakePreface() {
   vector<std::byte> preface;
   preface.reserve(static_cast<decltype(preface)::size_type>(kConnectionPreface.size()));
@@ -235,11 +258,9 @@ class Http2Loopback {
   static void pump(Http2Connection& from, Http2Connection& to) {
     // One pump can generate more output on the receiver (e.g. SETTINGS ACK). We intentionally
     // only drain `from` here; tests can call pump in the needed direction explicitly.
-    while (from.hasPendingOutput()) {
-      auto out = from.getPendingOutput();
-      auto outCopy = CopyBytes(out);
-      feed(to, outCopy);
-      from.onOutputWritten(out.size());
+    const auto output = DrainPendingOutput(from);
+    if (!output.empty()) {
+      feed(to, output);
     }
   }
 
@@ -723,7 +744,8 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
 
   ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs4), false), ErrorCode::NoError);
 
-  auto out = h2.client.getPendingOutput();
+  const auto output = DrainPendingOutput(h2.client);
+  const auto out = std::span<const std::byte>(output);
   ASSERT_FALSE(out.empty());
 
   const auto frames = ParseFrames(out);
@@ -747,7 +769,7 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
   EXPECT_TRUE(last.hasFlag(FrameFlags::ContinuationEndHeaders) || last.hasFlag(FrameFlags::HeadersEndHeaders));
 
   // Deliver and validate decoding succeeded.
-  Http2Loopback::pump(h2.client, h2.server);
+  Http2Loopback::feed(h2.server, out);
   ASSERT_EQ(h2.serverHeaders.size(), 1U);
   const auto& ev = h2.serverHeaders[0];
   EXPECT_EQ(ev.streamId, streamId);

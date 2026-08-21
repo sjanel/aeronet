@@ -126,6 +126,9 @@ class TlsHttp2Client {
   /// Write data to TLS connection.
   bool writeAll(std::span<const std::byte> data);
 
+  /// Write and consume every queued HTTP/2 output fragment.
+  bool flushConnectionOutput();
+
  public:
   /// Read and process HTTP/2 frames.
   /// @param timeout Maximum time to wait for response
