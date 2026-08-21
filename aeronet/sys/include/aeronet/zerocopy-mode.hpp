@@ -31,7 +31,17 @@ enum class ZerocopyMode : std::uint8_t {
 
   // Enables zerocopy even if connection is on loopback - logs a warning if zerocopy cannot be activated.
   // It will still not be used for payloads below the threshold.
-  Enabled
+  Enabled,
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+template <>
+struct glz::meta<aeronet::ZerocopyMode> {
+  using enum aeronet::ZerocopyMode;
+  static constexpr auto value = enumerate("disabled", Disabled, "opportunistic", Opportunistic, "enabled", Enabled);
+};
+#endif

@@ -33,3 +33,14 @@ enum class DirectCompressionMode : std::uint8_t {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+template <>
+struct glz::meta<aeronet::DirectCompressionMode> {
+  using enum aeronet::DirectCompressionMode;
+  static constexpr auto value = enumerate("auto", Auto, "off", Off, "on", On);
+};
+
+#endif

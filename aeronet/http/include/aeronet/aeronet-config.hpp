@@ -5,8 +5,6 @@
 #include <string_view>
 
 #include "aeronet/config-loader.hpp"
-#include "aeronet/glaze-config-meta.hpp"
-#include "aeronet/glaze-router-meta.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router-config.hpp"
 

@@ -134,3 +134,31 @@ class StaticFileConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+
+#include <glaze/glaze.hpp>
+
+// ============================================================================
+// StaticFileConfig - private StaticConcatenatedStrings, skip non-serializable std::function fields
+// ============================================================================
+template <>
+struct glz::meta<aeronet::StaticFileConfig> {
+  using T = aeronet::StaticFileConfig;
+  static constexpr auto value = object(
+      "enableRange", &T::enableRange, "maxMultipartRanges", &T::maxMultipartRanges, "maxMultipartBodySize",
+      &T::maxMultipartBodySize, "headerCacheCapacity", &T::headerCacheCapacity, "enableConditional",
+      &T::enableConditional, "addLastModified", &T::addLastModified, "addEtag", &T::addEtag, "enableDirectoryIndex",
+      &T::enableDirectoryIndex, "showHiddenFiles", &T::showHiddenFiles, "inlineFileThresholdBytes",
+      &T::inlineFileThresholdBytes, "maxEntriesToList", &T::maxEntriesToList, "defaultIndex",
+      custom<[](T& self, const std::string& sv) { self.withDefaultIndex(sv); },
+             [](const T& self) { return self.defaultIndex(); }>,
+      "defaultContentType",
+      custom<[](T& self, const std::string& sv) { self.withDefaultContentType(sv); },
+             [](const T& self) { return self.defaultContentType(); }>,
+      "directoryListingCss",
+      custom<[](T& self, const std::string& sv) { self.withDirectoryListingCss(sv); },
+             [](const T& self) { return self.directoryListingCss(); }>);
+};
+
+#endif

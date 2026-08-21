@@ -12,6 +12,10 @@
 #include <string_view>
 #include <type_traits>
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <string>
+#endif
+
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/internal/raw-bytes-base.hpp"
@@ -34,7 +38,11 @@ class DynamicConcatenatedStrings {
   static_assert(!kSep.empty());
 
   using size_type = SizeType;
+#ifdef AERONET_ENABLE_GLAZE
+  using value_type = std::string;
+#else
   using value_type = std::string_view;
+#endif
   using BufferType = RawBytesBase<char, std::string_view, SizeType>;
 
   DynamicConcatenatedStrings() noexcept = default;
@@ -96,8 +104,7 @@ class DynamicConcatenatedStrings {
 
   // Check whether a given part is already contained.
   [[nodiscard]] bool contains(std::string_view part) const noexcept {
-    std::string_view remaining = _buf;
-    while (!remaining.empty()) {
+    for (std::string_view remaining = _buf; !remaining.empty();) {
       const auto nextSep = remaining.find(kSep);
       if (nextSep == part.size() && std::memcmp(remaining.data(), part.data(), nextSep) == 0) {
         return true;
@@ -109,8 +116,7 @@ class DynamicConcatenatedStrings {
 
   // Check whether a given part is already contained (case-insensitive).
   [[nodiscard]] bool containsCI(std::string_view part) const noexcept {
-    std::string_view remaining = _buf;
-    while (!remaining.empty()) {
+    for (std::string_view remaining = _buf; !remaining.empty();) {
       const auto nextSep = remaining.find(kSep);
       // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
       if (CaseInsensitiveEqual(std::string_view{remaining.data(), nextSep}, part)) {
@@ -124,7 +130,11 @@ class DynamicConcatenatedStrings {
   // Non-allocating forward iterator over the concatenated parts. Yields std::string_view for each part.
   class iterator {
    public:
+#ifdef AERONET_ENABLE_GLAZE
+    using value_type = std::string;
+#else
     using value_type = std::string_view;
+#endif
     using reference = std::string_view;
     using pointer = const std::string_view*;
     using difference_type = std::ptrdiff_t;

@@ -116,3 +116,77 @@ class TelemetryConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+
+#include <glaze/glaze.hpp>
+#include <map>
+#include <string>
+
+#include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+
+template <>
+struct glz::meta<aeronet::TelemetryConfig> {
+  using T = aeronet::TelemetryConfig;
+  static constexpr auto value =
+      object("otelEnabled", &T::otelEnabled, "dogStatsDEnabled", &T::dogStatsDEnabled, "sampleRate", &T::sampleRate,
+             "exportInterval", &T::exportInterval, "exportTimeout", &T::exportTimeout, "endpoint",
+             custom<[](T& self, const std::string& sv) { self.withEndpoint(sv); },
+                    [](const T& self) { return self.endpoint(); }>,
+             "serviceName",
+             custom<[](T& self, const std::string& sv) { self.withServiceName(sv); },
+                    [](const T& self) { return self.serviceName(); }>,
+             "dogstatsdSocketPath",
+             custom<[](T& self, const std::string& sv) { self.withDogStatsdSocketPath(sv); },
+                    [](const T& self) { return self.dogstatsdSocketPath(); }>,
+             "dogstatsdNamespace",
+             custom<[](T& self, const std::string& sv) { self.withDogStatsdNamespace(sv); },
+                    [](const T& self) { return self.dogstatsdNamespace(); }>,
+             // Tags as array of "key:value" strings
+             "dogstatsdTags",
+             custom<[](T& self, const ::aeronet::vector<std::string>& tags) {
+               for (const auto& tag : tags) {
+                 self.addDogStatsdTag(tag);
+               }
+             },
+                    [](const T& self) {
+                      ::aeronet::vector<std::string_view> result;
+                      for (auto sv : self.dogstatsdTags()) {
+                        result.push_back(sv);
+                      }
+                      return result;
+                    }>,
+             // HTTP headers as array of "name:value" strings
+             "httpHeaders",
+             custom<[](T& self, const ::aeronet::vector<std::string>& headers) {
+               for (const auto& hdr : headers) {
+                 if (auto sep = hdr.find(':'); sep != std::string::npos) {
+                   self.addHttpHeader(hdr.substr(0, sep), hdr.substr(sep + 1));
+                 }
+               }
+             },
+                    [](const T& self) {
+                      ::aeronet::vector<std::string_view> result;
+                      for (auto sv : self.httpHeadersRange()) {
+                        result.push_back(sv);
+                      }
+                      return result;
+                    }>,
+             // Histogram buckets as JSON object {"metric_name": [1.0, 5.0, 10.0]}
+             "histogramBuckets",
+             custom<[](T& self, std::map<std::string, ::aeronet::vector<double>> buckets) {
+               for (auto& [name, boundaries] : buckets) {
+                 self.addHistogramBuckets(name, boundaries);
+               }
+             },
+                    [](const T& self) {
+                      std::map<std::string, ::aeronet::vector<double>> result;
+                      for (const auto& [key, boundaries] : self.histogramBuckets()) {
+                        result[std::string(std::string_view(key))] =
+                            ::aeronet::vector<double>(boundaries.begin(), boundaries.end());
+                      }
+                      return result;
+                    }>);
+};
+
+#endif

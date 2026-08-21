@@ -74,3 +74,37 @@ class BuiltinProbesConfig {
 };
 
 }  // namespace aeronet
+
+#ifdef AERONET_ENABLE_GLAZE
+
+#include <glaze/glaze.hpp>
+#include <string>
+
+#include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+
+template <>
+struct glz::meta<aeronet::BuiltinProbesConfig::ContentType> {
+  using enum aeronet::BuiltinProbesConfig::ContentType;
+  static constexpr auto value = enumerate("text/plain; charset=utf-8", TextPlainUtf8);
+};
+
+// ============================================================================
+// BuiltinProbesConfig - private StaticConcatenatedStrings, exposed as named fields
+// ============================================================================
+template <>
+struct glz::meta<aeronet::BuiltinProbesConfig> {
+  using T = aeronet::BuiltinProbesConfig;
+  static constexpr auto value =
+      object("enabled", &T::enabled, "contentType", &T::contentType, "dedicatedPort", &T::dedicatedPort,
+             "livenessStaleThreshold", &T::livenessStaleThreshold, "livenessPath",
+             custom<[](T& self, const std::string& path) { self.withLivenessPath(path); },
+                    [](const T& self) { return self.livenessPath(); }>,
+             "readinessPath",
+             custom<[](T& self, const std::string& path) { self.withReadinessPath(path); },
+                    [](const T& self) { return self.readinessPath(); }>,
+             "startupPath",
+             custom<[](T& self, const std::string& path) { self.withStartupPath(path); },
+                    [](const T& self) { return self.startupPath(); }>);
+};
+
+#endif
