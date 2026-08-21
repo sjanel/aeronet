@@ -41,7 +41,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_ZLIBNG` | ON | Use `zlib-ng` implementation instead of classic `zlib` |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
 | `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
-| `AERONET_ENABLE_ASAN` | ON (Debug) | Address/UB sanitizers in debug builds |
+| `AERONET_ENABLE_ASAN` | OFF | Address/UB sanitizers in debug builds |
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |

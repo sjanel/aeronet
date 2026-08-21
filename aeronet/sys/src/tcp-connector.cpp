@@ -111,7 +111,8 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
 
   for (addrinfo* rp = res; rp != nullptr; rp = rp->ai_next) {
 #ifdef AERONET_LINUX
-    const int socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
+    const auto socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;
     connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, socktype, rp->ai_protocol)));
 #else
     connectResult.cnx = Connection(BaseFd(::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol)));

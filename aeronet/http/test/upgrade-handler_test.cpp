@@ -621,10 +621,12 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   validationResult.valid = true;
   validationResult.targetProtocol = ProtocolType::WebSocket;
   std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
-  validationResult.deflateParams = websocket::DeflateNegotiatedParams{.serverMaxWindowBits = 12,
-                                                                      .clientMaxWindowBits = 15,
-                                                                      .serverNoContextTakeover = true,
-                                                                      .clientNoContextTakeover = false};
+  validationResult.deflateParams = websocket::DeflateNegotiatedParams{
+      .serverMaxWindowBits = 12,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = false,
+  };
 
   const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response.data(), response.size());
@@ -843,10 +845,12 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
   validationResult.targetProtocol = ProtocolType::WebSocket;
   std::copy_n("testaccept", std::min<size_t>(std::strlen("testaccept"), validationResult.secWebSocketAccept.size()),
               validationResult.secWebSocketAccept.data());
-  validationResult.deflateParams = websocket::DeflateNegotiatedParams{.serverMaxWindowBits = 15,
-                                                                      .clientMaxWindowBits = 15,
-                                                                      .serverNoContextTakeover = true,
-                                                                      .clientNoContextTakeover = true};
+  validationResult.deflateParams = websocket::DeflateNegotiatedParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = true,
+  };
 
   const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response);

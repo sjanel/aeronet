@@ -18,12 +18,12 @@ namespace {
 // Splitmix64 for seeding xoshiro256** state from a single seed.
 uint64_t Splitmix64(uint64_t& state) {
   uint64_t result = (state += 0x9e3779b97f4a7c15ULL);
-  result = (result ^ (result >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  result = (result ^ (result >> 27)) * 0x94d049bb133111ebULL;
-  return result ^ (result >> 31);
+  result = (result ^ (result >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  result = (result ^ (result >> 27U)) * 0x94d049bb133111ebULL;
+  return result ^ (result >> 31U);
 }
 
-uint64_t Rotl(uint64_t val, int shift) { return (val << shift) | (val >> (64 - shift)); }
+uint64_t Rotl(uint64_t val, uint8_t shift) { return (val << shift) | (val >> static_cast<uint8_t>(64 - shift)); }
 
 }  // namespace
 
@@ -40,7 +40,7 @@ TestTransport::TestTransport(TestPipe& pipe, FaultPolicy policy) : _pipe(pipe), 
 uint64_t TestTransport::nextRandom() {
   // xoshiro256**
   const uint64_t result = Rotl(_rngState[1] * 5, 7) * 9;
-  const uint64_t tmp = _rngState[1] << 17;
+  const uint64_t tmp = _rngState[1] << 17U;
   _rngState[2] ^= _rngState[0];
   _rngState[3] ^= _rngState[1];
   _rngState[1] ^= _rngState[2];
@@ -168,9 +168,9 @@ std::size_t TestTransport::computeReadLimit(std::size_t available) const {
     // Use a const_cast-free approach: compute from read call count as deterministic variation
     // We can't call nextRandom() in a const method, so use a simple hash of state
     uint64_t hash = _readCallCount;
-    hash = (hash ^ (hash >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    hash = (hash ^ (hash >> 27)) * 0x94d049bb133111ebULL;
-    hash ^= (hash >> 31);
+    hash = (hash ^ (hash >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    hash = (hash ^ (hash >> 27U)) * 0x94d049bb133111ebULL;
+    hash ^= (hash >> 31U);
     std::size_t limit = static_cast<std::size_t>((hash % _policy.maxBytesPerRead) + 1);
     return std::min(available, limit);
   }

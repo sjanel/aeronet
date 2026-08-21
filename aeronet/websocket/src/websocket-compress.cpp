@@ -15,8 +15,12 @@ namespace aeronet {
 
 namespace {
 // The 4 trailing bytes (0x00 0x00 0xff 0xff) are removed per RFC 7692 §7.2.1
-constexpr std::array<std::byte, 4> kDeflateTrailer = {std::byte{0x00}, std::byte{0x00}, std::byte{0xFF},
-                                                      std::byte{0xFF}};
+constexpr std::array kDeflateTrailer{
+    std::byte{0x00},
+    std::byte{0x00},
+    std::byte{0xFF},
+    std::byte{0xFF},
+};
 // Chunk size for streaming decompression with size limit control
 constexpr std::size_t kDecompressChunkSize = 16UL * 1024;  // 16 KB
 }  // namespace

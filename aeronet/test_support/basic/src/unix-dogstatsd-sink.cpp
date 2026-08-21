@@ -80,7 +80,7 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
 #else
   const int ready = ::poll(&pfd, 1, timeoutMs);  // NOLINT(misc-include-cleaner) poll.h should be the correct header
 #endif
-  if (ready <= 0 || (pfd.revents & POLLIN) == 0) {
+  if (ready <= 0 || (pfd.revents & POLLIN) == 0) {  // NOLINT(bugprone-signed-bitwise)
     return {};
   }
   std::array<char, 512> buf;

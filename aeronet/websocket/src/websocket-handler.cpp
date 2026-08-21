@@ -40,17 +40,17 @@ constexpr bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end
   uint32_t codepoint;
   uint32_t minCodepoint;
 
-  if ((lead & 0xE0) == 0xC0) {
+  if ((lead & 0xE0U) == 0xC0) {
     remaining = 1;
-    codepoint = lead & 0x1F;
+    codepoint = lead & 0x1FU;
     minCodepoint = 0x80;
-  } else if ((lead & 0xF0) == 0xE0) {
+  } else if ((lead & 0xF0U) == 0xE0) {
     remaining = 2;
-    codepoint = lead & 0x0F;
+    codepoint = lead & 0x0FU;
     minCodepoint = 0x800;
-  } else if ((lead & 0xF8) == 0xF0) {
+  } else if ((lead & 0xF8U) == 0xF0) {
     remaining = 3;
-    codepoint = lead & 0x07;
+    codepoint = lead & 0x07U;
     minCodepoint = 0x10000;
   } else {
     return false;
@@ -62,10 +62,10 @@ constexpr bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end
 
   for (decltype(remaining) idx = 0; idx < remaining; ++idx) {
     const uint8_t byte = *ptr++;
-    if ((byte & 0xC0) != 0x80) {
+    if ((byte & 0xC0U) != 0x80) {
       return false;
     }
-    codepoint = (codepoint << 6) | (byte & 0x3F);
+    codepoint = (codepoint << 6U) | (byte & 0x3FU);
   }
 
   if (codepoint < minCodepoint) {
@@ -525,9 +525,9 @@ constexpr MaskingKey GenerateMaskingKey(uint64_t& rngState) noexcept {
   // splitmix64: 8-byte state, adequate for non-cryptographic masking keys (RFC 6455 §10.3)
   rngState += 0x9e3779b97f4a7c15ULL;
   uint64_t val = rngState;
-  val = (val ^ (val >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  val = (val ^ (val >> 27)) * 0x94d049bb133111ebULL;
-  val ^= (val >> 31);
+  val = (val ^ (val >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  val = (val ^ (val >> 27U)) * 0x94d049bb133111ebULL;
+  val ^= (val >> 31U);
   return static_cast<MaskingKey>(val);
 }
 

@@ -1137,9 +1137,8 @@ TEST(Http2Connection, SettingsFrameInitialWindowSizeTooLargeIsFlowControlError) 
   Http2Connection conn(config, true);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array payload{
-      std::byte{0x00}, std::byte{0x04}, std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
-  };  // 0x80000000 > 0x7FFFFFFF
+  std::array payload{std::byte{0x00}, std::byte{0x04}, std::byte{0x80},
+                     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};  // 0x80000000 > 0x7FFFFFFF
 
   FrameHeader header{};
   header.length = static_cast<uint32_t>(payload.size());

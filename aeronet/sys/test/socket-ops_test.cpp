@@ -97,8 +97,8 @@ TEST_F(SocketOpsTest, SetPipeNonBlockingCloExec) {
   const auto flags1 = ::fcntl(fds[1], F_GETFL, 0);
   EXPECT_NE(flags0, -1);
   EXPECT_NE(flags1, -1);
-  EXPECT_TRUE(flags0 & O_NONBLOCK);
-  EXPECT_TRUE(flags1 & O_NONBLOCK);
+  EXPECT_TRUE(flags0 & O_NONBLOCK);  // NOLINT(bugprone-signed-bitwise)
+  EXPECT_TRUE(flags1 & O_NONBLOCK);  // NOLINT(bugprone-signed-bitwise)
 
   CloseSocket(fds[0]);
   CloseSocket(fds[1]);

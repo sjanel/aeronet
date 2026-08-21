@@ -497,7 +497,7 @@ TYPED_TEST(RawBaseTest, MallocFails) {
 }
 
 TYPED_TEST(RawBaseTest, ShrinkToFit) {
-  static constexpr std::size_t kCapacities[]{0, 1UL << 4, 1UL << 8, 1UL << 12, 1UL << 16};
+  static constexpr std::size_t kCapacities[]{0, 1UL << 4U, 1UL << 8U, 1UL << 12U, 1UL << 16U};
 
   using RawT = TypeParam;
   using Type = RawT::value_type;
