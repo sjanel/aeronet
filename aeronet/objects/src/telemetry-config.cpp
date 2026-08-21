@@ -50,8 +50,8 @@ void TelemetryConfig::validate() {
     RawChars serviceTag(kServiceTagPrefix.size() + svcName.size());
     serviceTag.unchecked_append(kServiceTagPrefix);
     serviceTag.unchecked_append(svcName);
-    auto tags = dogstatsdTagsRange();
-    if (std::ranges::find(tags, serviceTag) == tags.end()) {
+
+    if (!dogstatsdTags().contains(serviceTag)) {
       _dogstatsdTags.append(serviceTag);
     }
   }

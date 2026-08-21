@@ -1,5 +1,3 @@
-#include "aeronet/glaze-adapters.hpp"
-
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -10,6 +8,7 @@
 #include <vector>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/glaze-chrono-durations-adapters.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 
