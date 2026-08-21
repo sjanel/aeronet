@@ -22,24 +22,8 @@
 
 namespace aeronet {
 
-ITransport::TransportResult ITransport::write(std::span<const std::string_view> buffers) {
-  TransportResult result{0, TransportHint::None};
-  for (const std::string_view buffer : buffers) {
-    if (buffer.empty()) {
-      continue;
-    }
-    const auto [bytesWritten, want] = write(buffer);
-    result.bytesProcessed += bytesWritten;
-    result.want = want;
-    if (want != TransportHint::None || bytesWritten < buffer.size()) {
-      break;
-    }
-  }
-  return result;
-}
-
 PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
-    : ITransport(fd, minBytesForZerocopy) {
+    : SocketTransportState(fd, minBytesForZerocopy) {
   if (zerocopyMode != ZerocopyMode::Disabled) {
     const auto result = EnableZeroCopy(_fd);
     _zerocopyState.setEnabled(result == ZeroCopyEnableResult::Enabled);
@@ -49,7 +33,7 @@ PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint3
   }
 }
 
-ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
+TransportResult PlainTransport::read(char* buf, std::size_t len) {
 #ifdef AERONET_POSIX
   const auto nbRead = ::read(_fd, buf, len);
 #elifdef AERONET_WINDOWS
@@ -69,7 +53,7 @@ ITransport::TransportResult PlainTransport::read(char* buf, std::size_t len) {
   return ret;
 }
 
-ITransport::TransportResult PlainTransport::write(std::string_view data) {
+TransportResult PlainTransport::write(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
   // Try zerocopy for large payloads if enabled
@@ -132,7 +116,7 @@ ITransport::TransportResult PlainTransport::write(std::string_view data) {
   return ret;
 }
 
-ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
+TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Use writev / WSASend for scatter-gather I/O - single syscall for both buffers.
   // This avoids extra memcpy and allows optimal TCP segmentation.
 #ifdef AERONET_POSIX
@@ -230,7 +214,8 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
 
   return ret;
 }
-ITransport::TransportResult PlainTransport::write(std::span<const std::string_view> buffers) {
+
+TransportResult PlainTransport::write(std::span<const std::string_view> buffers) {
   static constexpr uint8_t kMaxGatherBuffers = 64;
 
 #ifdef AERONET_POSIX
@@ -279,7 +264,7 @@ ITransport::TransportResult PlainTransport::write(std::span<const std::string_vi
         result.want = err == error::kWouldBlock ? TransportHint::WriteReady : TransportHint::Error;
         return result;  // we cannot continue to the next batch in case of error.
       }
-      if (nbWritten == 0) {
+      if (nbWritten == 0) [[unlikely]] {
         return result;
       }
 
@@ -312,7 +297,7 @@ ITransport::TransportResult PlainTransport::write(std::span<const std::string_vi
   return result;
 }
 
-ITransport::TransportResult PlainTransport::sendFile(const File& file, std::size_t& offset, std::size_t count) {
+TransportResult PlainTransport::sendFile(const File& file, std::size_t& offset, std::size_t count) {
   TransportResult ret{0, TransportHint::None};
   for (;;) {
     // Sendfile advances `offset` by the number of bytes sent (0 on error / would-block).
@@ -337,6 +322,16 @@ ITransport::TransportResult PlainTransport::sendFile(const File& file, std::size
     break;
   }
   return ret;
+}
+
+TransportKind Transport::kind() const noexcept {
+  if (_storage.index() == kEmptyIndex) {
+    return TransportKind::Empty;
+  }
+  if (_storage.index() == kPlainIndex) {
+    return TransportKind::Plain;
+  }
+  return operations().kind;
 }
 
 }  // namespace aeronet

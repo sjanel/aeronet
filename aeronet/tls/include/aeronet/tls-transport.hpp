@@ -14,25 +14,25 @@
 namespace aeronet {
 
 // TLS transport (OpenSSL). Implementation will live in tls-transport.cpp.
-class TlsTransport final : public ITransport {
+class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::Tls>, public SocketTransportState {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
   TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
-      : ITransport(kInvalidHandle, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
+      : SocketTransportState(kInvalidHandle, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
 
-  TransportResult read(char* buf, std::size_t len) override;
+  TransportResult read(char* buf, std::size_t len);
 
-  TransportResult write(std::string_view data) override;
+  TransportResult write(std::string_view data);
 
-  [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
+  [[nodiscard]] bool handshakeDone() const noexcept { return _handshakeDone; }
 
   /// Check if OpenSSL has buffered decrypted data ready to deliver.
   /// Critical for edge-triggered epoll: after SSL_read_ex, OpenSSL may have
   /// read more ciphertext from the kernel than it returned as plaintext.
   /// The kernel won't re-trigger EPOLLIN for data already consumed from the
   /// socket buffer, so callers must poll this before returning to epoll_wait.
-  [[nodiscard]] bool hasPendingReadData() const noexcept override;
+  [[nodiscard]] bool hasPendingReadData() const noexcept;
 
   // Perform best-effort bidirectional TLS shutdown (non-blocking). Safe to call multiple times.
   void shutdown() noexcept;

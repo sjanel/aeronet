@@ -169,7 +169,7 @@ class HttpClient {
     using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<internal::ClientConnection> &&
                                                      amc::is_trivially_relocatable_v<Connection>>::type;
 
-    std::unique_ptr<ITransport> transport;
+    Transport transport;
     SteadyClock::time_point idleSince;  // when this connection was returned to the idle pool
     internal::ClientConnection proto;
     // Wire-protocol engine for this connection (HTTP/1.1 or HTTP/2). Created lazily once the protocol is
@@ -219,7 +219,7 @@ class HttpClient {
   // Open an HTTP CONNECT tunnel to `url`'s origin through the configured proxy, on the already-connected raw
   // socket `fd` (wrapped by the throwaway plain `transport`). Drives the request/response on the event loop
   // up to `deadline`; returns an empty result once the proxy answers 2xx, or an HttpClientErrc otherwise.
-  std::expected<void, HttpClientErrc> establishProxyTunnel(ITransport& transport, NativeHandle fd,
+  std::expected<void, HttpClientErrc> establishProxyTunnel(Transport& transport, NativeHandle fd,
                                                            const HttpRequest& req);
 
   void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);

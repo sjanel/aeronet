@@ -114,6 +114,7 @@ set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-ut
 set(AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK ${AERONET_BENCH_ROOT}/internal/reserved-header-check_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
 set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
+set(AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH ${AERONET_BENCH_ROOT}/internal/transport-dispatch_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -184,6 +185,13 @@ set_target_properties(aeronet-bench-internal-reserved-header-check PROPERTIES FO
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
 set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-transport-dispatch ${AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH}
+                           LIBRARIES aeronet_sys)
+if(AERONET_ENABLE_OPENSSL)
+  target_link_libraries(aeronet-bench-internal-transport-dispatch PRIVATE aeronet_tls)
+endif()
+set_target_properties(aeronet-bench-internal-transport-dispatch PROPERTIES FOLDER "benchmarks/internal")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   AeronetAddProjectBenchmark(aeronet-bench-internal-event-loop-poll-timeout ${AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT})

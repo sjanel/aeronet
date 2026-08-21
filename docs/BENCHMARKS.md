@@ -77,12 +77,94 @@ In CI (environment variable `CI` defined) they are skipped unless you override:
 | Target | Description |
 | ------ | ----------- |
 | `aeronet-bench-internal` | Google Benchmark based micro / roundtrip benchmarks (contains `BENCHMARK_MAIN`). |
+| `aeronet-bench-internal-transport-dispatch` | Isolated virtual-versus-inline/erased transport benchmark for plain and TLS paths. |
 | `aeronet-bench-throughput` | Simple standalone executable printing JSON-ish timing for a trivial loopback workload. |
 | `run-aeronet-bench` | Convenience target: runs internal benchmarks (aggregates only). |
 | `run-aeronet-bench-json` | Emits Google Benchmark JSON (`aeronet-benchmarks.json`). |
 | `run-aeronet-bench-throughput` | Runs the throughput skeleton. |
 | `aeronet-bench-frameworks` | Comparative simple GET size= handler (aeronet + optional drogon/oatpp). |
 | `run-aeronet-bench-frameworks` | Runs comparative benchmark with default args. |
+
+## Transport Dispatch Benchmark
+
+`aeronet-bench-internal-transport-dispatch` compares the former virtual, heap-owned shape with the final `Transport`
+layout: inline plain storage and an erased out-of-line TLS/custom backend. The capability cases issue three queries per
+iteration. The write cases use an empty payload so no socket or TLS work obscures dispatch cost. The lifetime cases
+include construction and destruction, exposing the allocation removed from the plain path. These cases measure the
+transport layer itself, not end-to-end encrypted throughput.
+
+A representative decision run on an AMD Ryzen AI 9 HX PRO 370 performance core with GCC 13.3 and Release + IPO used
+seven randomly interleaved, fixed-iteration repetitions and produced these medians:
+
+| Case | Virtual / heap-owned | Inline / erased | Change |
+| --- | ---: | ---: | ---: |
+| Plain, three capability queries | 3.12 ns | 0.979 ns | -68.6% |
+| Plain, empty write | 1.42 ns | 1.25 ns | -12.0% |
+| Plain, construct and destroy | 6.62 ns | 1.00 ns | -84.9% |
+| TLS, three capability queries | 3.12 ns | 3.35 ns | +7.4% |
+| TLS-shaped cached-table empty write | 0.978 ns | 1.00 ns | +2.2% |
+
+The TLS write case uses a synthetic backend with the same erased operation-table dispatch, avoiding handshake and
+encryption work. It isolates the added predictable plain/backend branch; it is not a TLS throughput result. The real
+`TlsTransport` is used by the TLS capability case. Generated Release assembly contains one discriminator branch and one
+cached indirect call on this path.
+
+Before adopting inline storage, long fixed runs of five billion empty writes measured the one-word tagged-owner
+prototype. These hardware-counter values per dispatch established the cost of the shared non-virtual dispatch shape:
+
+| Write dispatch | Cycles | Instructions | Branches | Branch misses per billion dispatches |
+| --- | ---: | ---: | ---: | ---: |
+| Virtual plain | 7.13 | 38.02 | 8.003 | 72,934 |
+| Tagged-owner plain | 6.22 | 38.02 | 8.003 | 40,289 |
+| Virtual TLS-shaped | 5.06 | 15.01 | 4.002 | 48,842 |
+| Tagged-owner TLS-shaped | 5.21 | 20.01 | 5.002 | 49,096 |
+
+That plain path used 12.7% fewer cycles without adding retired instructions or branches. The TLS-shaped path used 2.9%
+more cycles because it added five instructions and one correctly predicted branch before its cached indirect call.
+Branch-miss rates remained below 0.0013% in every case and were low enough for process and harness noise to affect their
+relative ordering. The final inline layout retains the same single-branch TLS dispatch shape; rerun the commands below
+when comparing a compiler or storage-layout change.
+
+On the final build, `PlainTransport` is 16 bytes, `Transport` is 24 bytes, and `TlsTransport` remains 48 bytes.
+`ConnectionState` grows from 792 to 808 bytes, but a plain connection no longer has a separate backend allocation (16
+bytes in the tagged prototype, 24 bytes in the former virtual implementation) or allocator metadata. Compared with the
+former virtual implementation, the Release `size` totals for `transport.cpp.o` and `tls-transport.cpp.o` fell from
+162,987 to 161,968 bytes and from 168,817 to 167,760 bytes, respectively. The erased backend operation tables are
+included in that result.
+
+Build and run stable timing samples in Release mode:
+
+```bash
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=ON
+cmake --build build-release --target aeronet-bench-internal-transport-dispatch
+./build-release/aeronet-bench-internal-transport-dispatch \
+  --benchmark_repetitions=7 --benchmark_min_time=1s --benchmark_report_aggregates_only=true
+```
+
+On Linux hosts that permit hardware performance counters, run each case separately with a fixed iteration count. This
+keeps the virtual and non-virtual counter totals independent and makes the raw totals directly comparable:
+
+```bash
+taskset -c 0 perf stat -e cycles,instructions,branches,branch-misses -- \
+  setarch x86_64 -R ./build-release/aeronet-bench-internal-transport-dispatch \
+  --benchmark_filter='^BM_VirtualPlainWrite$' --benchmark_min_time=5000000000x
+taskset -c 0 perf stat -e cycles,instructions,branches,branch-misses -- \
+  setarch x86_64 -R ./build-release/aeronet-bench-internal-transport-dispatch \
+  --benchmark_filter='^BM_InlinePlainWrite$' --benchmark_min_time=5000000000x
+taskset -c 0 perf stat -e cycles,instructions,branches,branch-misses -- \
+  setarch x86_64 -R ./build-release/aeronet-bench-internal-transport-dispatch \
+  --benchmark_filter='^BM_VirtualTlsWrite$' --benchmark_min_time=5000000000x
+taskset -c 0 perf stat -e cycles,instructions,branches,branch-misses -- \
+  setarch x86_64 -R ./build-release/aeronet-bench-internal-transport-dispatch \
+  --benchmark_filter='^BM_ErasedTlsWrite$' --benchmark_min_time=5000000000x
+```
+
+Use `size` on the same compiler/configuration before and after a dispatch change to track the library object impact:
+
+```bash
+size build-release/aeronet/sys/CMakeFiles/aeronet_sys.dir/src/transport.cpp.o \
+     build-release/aeronet/tls/CMakeFiles/aeronet_tls.dir/src/tls-transport.cpp.o
+```
 
 ## JSON Output
 

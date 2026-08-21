@@ -167,14 +167,14 @@ class Http2ClientEngine {
 
   // Flush the connection's pending output to the transport, pumping the event loop on would-block. Sets
   // `requestSent` as soon as any byte reaches the transport.
-  [[nodiscard]] std::expected<void, HttpClientErrc> flushOutput(HttpClient& client, ITransport& transport,
+  [[nodiscard]] std::expected<void, HttpClientErrc> flushOutput(HttpClient& client, Transport& transport,
                                                                 NativeHandle fd, SteadyClock::time_point deadline,
                                                                 bool& requestSent) {
     auto& fragments = client._outputFragmentsScratch;
     while (_conn.hasPendingOutput()) {
       _conn.getPendingOutputFragments(fragments);
       assert(!fragments.empty());
-      const ITransport::TransportResult res = transport.write(fragments);
+      const TransportResult res = transport.write(fragments);
       if (res.bytesProcessed != 0) {
         _conn.onOutputWritten(res.bytesProcessed);
         requestSent = true;
@@ -198,7 +198,7 @@ class Http2ClientEngine {
   // partial frame) stay in the engine's input buffer so nothing is lost across calls -- or exchanges, on
   // a pooled connection. Bytes already buffered are re-processed before reading: processInput stops
   // early at a GOAWAY frame, so complete frames may still be waiting behind it from a previous call.
-  [[nodiscard]] std::expected<void, HttpClientErrc> readAndProcess(HttpClient& client, ITransport& transport,
+  [[nodiscard]] std::expected<void, HttpClientErrc> readAndProcess(HttpClient& client, Transport& transport,
                                                                    NativeHandle fd, SteadyClock::time_point deadline) {
     for (;;) {
       if (!_inBuf.empty()) {
@@ -220,7 +220,7 @@ class Http2ClientEngine {
         // Only a partial frame is buffered: fall through and read more.
       }
       _inBuf.ensureAvailableCapacityExponential(kReadChunk);
-      const ITransport::TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), kReadChunk);
+      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), kReadChunk);
       if (res.bytesProcessed > 0) {
         _inBuf.addSize(res.bytesProcessed);
         continue;  // process what we just buffered
@@ -344,7 +344,7 @@ void ClientConnection::reset() noexcept {
 
 bool ClientConnection::canTakeAnotherStream() const noexcept { return _type != Type::Http2 || _h2->reusable(); }
 
-HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
+HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transport& transport, NativeHandle fd,
                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
   assert(_h2 != nullptr);

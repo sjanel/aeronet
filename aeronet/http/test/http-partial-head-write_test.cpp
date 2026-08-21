@@ -13,17 +13,15 @@ namespace aeronet {
 
 namespace {
 // Fake transport that simulates a partial head write first, then completes remaining head and body.
-class PartialWriteTransport final : public ITransport {
+class PartialWriteTransport final : public TransportBackend<PartialWriteTransport> {
  public:
-  using ITransport::write;  // bring base overloads into scope
-
   PartialWriteTransport() = default;
 
-  TransportResult read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len) override {
+  TransportResult read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len) {
     return {0, TransportHint::Error};
   }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     // On the very first call we simulate a partial write: write only the first N bytes
     TransportResult ret{data.size(), TransportHint::None};
     if (_firstWriteDone) {  // Subsequent calls write everything
@@ -48,11 +46,12 @@ class PartialWriteTransport final : public ITransport {
 
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   PartialWriteTransport plainWriteTransport;
+  Transport transport = Transport::Borrow(plainWriteTransport);
   HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
                                    HttpPayload(std::string("hello world")));
 
   // First write will write partial head only
-  const auto [w1, want1] = plainWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
+  const auto [w1, want1] = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w1, 0U);
   // After first partial write, transport must not have body bytes in output
   std::string_view s1 = plainWriteTransport.out();
@@ -61,7 +60,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   // Simulate caller retrying: write remaining head then body
   // We expect the remaining head + body to be appended on further writes
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto [w2, want2] = plainWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
+  const auto [w2, want2] = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w2, 0U);
   std::string_view s2 = plainWriteTransport.out();
   // Body must now be present
@@ -71,16 +70,17 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
 // Reuse the same fake transport semantics to simulate TLS partial write behavior.
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   PartialWriteTransport partialWriteTransport;
+  Transport transport = Transport::Borrow(partialWriteTransport);
   HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
                                    HttpPayload(std::string("hello world")));
 
-  const auto [w1, want1] = partialWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
+  const auto [w1, want1] = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w1, 0U);
   std::string_view s1 = partialWriteTransport.out();
   EXPECT_FALSE(s1.contains("hello world"));
 
   httpResponseData.addOffset(static_cast<std::size_t>(w1));
-  const auto [w2, want2] = partialWriteTransport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
+  const auto [w2, want2] = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
   EXPECT_GT(w2, 0U);
   std::string_view s2 = partialWriteTransport.out();
   EXPECT_TRUE(s2.contains("hello world"));

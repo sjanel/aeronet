@@ -70,21 +70,25 @@ ZStreamRAII& ZStreamRAII::operator=(ZStreamRAII&& rhs) noexcept {
   return *this;
 }
 
+namespace {
+
+constexpr auto CheckError = [](auto ret, const char* pMsg) {
+  if (ret != Z_OK) [[unlikely]] {
+    throw std::runtime_error(pMsg);
+  }
+};
+
+}  // namespace
+
 void ZStreamRAII::initCompress(Variant variant, int8_t level) {
   if (_variant == variant) {
     assert(_mode == Mode::compress);
     // Reuse existing deflate state by resetting it
-    const auto ret = ZDeflateReset(stream);
-    if (ret != Z_OK) [[unlikely]] {
-      throw std::runtime_error("Error from deflateReset");
-    }
+    CheckError(ZDeflateReset(stream), "Error from ZDeflateReset");
 
     if (level != _level) {
       // Update compression level if different
-      const auto retLevel = ZDeflateParams(stream, level, Z_DEFAULT_STRATEGY);
-      if (retLevel != Z_OK) [[unlikely]] {
-        throw std::runtime_error("Error from deflateParams");
-      }
+      CheckError(ZDeflateParams(stream, level, Z_DEFAULT_STRATEGY), "Error from ZDeflateParams");
       _level = level;
     }
   } else {
@@ -92,10 +96,8 @@ void ZStreamRAII::initCompress(Variant variant, int8_t level) {
 
     initZcache();
 
-    const auto ret = ZDeflateInit2(stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY);
-    if (ret != Z_OK) [[unlikely]] {
-      throw std::runtime_error("Error from deflateInit2");
-    }
+    CheckError(ZDeflateInit2(stream, level, Z_DEFLATED, ComputeWindowBits(variant), 8, Z_DEFAULT_STRATEGY),
+               "Error from ZDeflateInit2");
 
     _variant = variant;
     _mode = Mode::compress;
@@ -106,27 +108,16 @@ void ZStreamRAII::initCompress(Variant variant, int8_t level) {
 void ZStreamRAII::initDecompress(Variant variant) {
   if (_variant == Variant::uninitialized) {
     initZcache();
-
-    const auto ret = ZInflateInit2(stream, ComputeWindowBits(variant));
-    if (ret != Z_OK) [[unlikely]] {
-      throw std::runtime_error("Error from inflateInit2");
-    }
+    CheckError(ZInflateInit2(stream, ComputeWindowBits(variant)), "Error from ZInflateInit2");
     _variant = variant;
     _mode = Mode::decompress;
   } else if (_variant == variant) {
     assert(_mode == Mode::decompress);
     // Reuse existing inflate state by resetting it
-    const auto ret = ZInflateReset(stream);
-    if (ret != Z_OK) [[unlikely]] {
-      throw std::runtime_error("Error from inflateReset");
-    }
+    CheckError(ZInflateReset(stream), "Error from ZInflateReset");
   } else {
     assert(_mode == Mode::decompress);
-    const auto ret = ZInflateReset2(stream, ComputeWindowBits(variant));
-    if (ret != Z_OK) [[unlikely]] {
-      throw std::runtime_error("Error from inflateReset2");
-    }
-
+    CheckError(ZInflateReset2(stream, ComputeWindowBits(variant)), "Error from ZInflateReset2");
     _variant = variant;
   }
 }
@@ -145,7 +136,7 @@ void ZStreamRAII::end() noexcept {
       return;  // nothing to clean up
   }
   if (ret != Z_OK) [[unlikely]] {
-    log_noexcept::debug("zlib: end returned {} (ignored)", ret);
+    log_noexcept::warn("zlib: end returned {} (ignored)", ret);
   }
   _variant = Variant::uninitialized;
   _mode = Mode::uninitialized;
