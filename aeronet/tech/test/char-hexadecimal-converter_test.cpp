@@ -83,7 +83,7 @@ TEST(CharHexConverter, RoundTrip) {
     auto lo = from_hex_digit(buf[1]);
     EXPECT_GE(hi, 0);
     EXPECT_GE(lo, 0);
-    int value = (hi << 4) | lo;
+    int value = static_cast<uint8_t>(static_cast<uint8_t>(hi) << 4U) | static_cast<uint8_t>(lo);
     EXPECT_EQ(value, i);
   }
 }
@@ -97,8 +97,9 @@ constexpr uint32_t kMaxHexDigitsSizeT = hex_digits(std::numeric_limits<std::size
 TEST(CharHexConverterSizeT, HexDigitsAndToLower) {
   EXPECT_EQ(kMaxHexDigitsSizeT, 2UL * sizeof(size_t));
 
-  static constexpr std::size_t vals[]{0U,   1U,    15U,   16U,     255U,
-                                      256U, 4095U, 4096U, 0x1234U, static_cast<std::size_t>(-1)};
+  static constexpr std::size_t vals[]{
+      0U, 1U, 15U, 16U, 255U, 256U, 4095U, 4096U, 0x1234U, static_cast<std::size_t>(-1),
+  };
   for (std::size_t val : vals) {
     std::ostringstream oss;
     oss << std::hex << std::nouppercase << val;
@@ -127,7 +128,7 @@ TEST(CharHexConverterSizeT, ToLowerHexAndRoundTrip) {
     for (char* ptr = buf; ptr < end; ++ptr) {
       auto dec = from_hex_digit(*ptr);
       EXPECT_GE(dec, 0);
-      reconstructed = (reconstructed << 4) | static_cast<std::size_t>(dec);
+      reconstructed = (reconstructed << 4U) | static_cast<std::size_t>(dec);
     }
     EXPECT_EQ(reconstructed, val);
   }

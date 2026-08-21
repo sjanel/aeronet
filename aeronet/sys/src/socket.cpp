@@ -39,6 +39,7 @@ NativeHandle CreateSocket(Socket::Type type, int protocol) {
 #ifdef AERONET_LINUX
   int sockType = SOCK_STREAM;
   if (type == Socket::Type::StreamNonBlock) {
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     sockType |= SOCK_NONBLOCK | SOCK_CLOEXEC;
   }
   return ::socket(AF_INET, sockType, protocol);

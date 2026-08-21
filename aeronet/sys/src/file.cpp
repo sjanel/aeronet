@@ -36,15 +36,14 @@ namespace aeronet {
 namespace {
 
 inline int Flags(File::OpenMode mode) {
-  switch (mode) {
-    case File::OpenMode::ReadOnly:
+  if (mode == File::OpenMode::ReadOnly) {
 #ifdef AERONET_POSIX
-      return O_RDONLY | O_CLOEXEC;
+    return O_RDONLY | O_CLOEXEC;
 #elifdef AERONET_WINDOWS
-      return _O_RDONLY | _O_BINARY;
+    return _O_RDONLY | _O_BINARY;
 #endif
-    default:
-      throw std::invalid_argument("Unsupported File::OpenMode");
+  } else {
+    throw std::invalid_argument("Unsupported File::OpenMode");
   }
 }
 

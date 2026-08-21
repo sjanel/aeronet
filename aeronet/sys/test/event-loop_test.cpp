@@ -367,8 +367,13 @@ TEST(EventLoopTest, AdaptivePollTimeoutResetsOnNormalLoad) {
                  4);
   vector<epoll_event> readyEvents;
   readyEvents.push_back(test::MakeEvent(42, EventIn));
-  test::SetEpollWaitActions({test::WaitReturn(0, {}), test::WaitReturn(0, {}), test::WaitReturn(0, {}),
-                             test::WaitReturn(0, {}), test::WaitReturn(1, std::move(readyEvents))});
+  test::SetEpollWaitActions({
+      test::WaitReturn(0, {}),
+      test::WaitReturn(0, {}),
+      test::WaitReturn(0, {}),
+      test::WaitReturn(0, {}),
+      test::WaitReturn(1, std::move(readyEvents)),
+  });
 
   // Idle polls 1-3: timeout stays at base.
   EXPECT_TRUE(loop.poll().empty());

@@ -8,10 +8,11 @@
 namespace aeronet {
 
 namespace {
-constexpr JwtAlgorithm kAll[] = {JwtAlgorithm::HS256, JwtAlgorithm::HS384, JwtAlgorithm::HS512, JwtAlgorithm::RS256,
-                                 JwtAlgorithm::RS384, JwtAlgorithm::RS512, JwtAlgorithm::ES256, JwtAlgorithm::ES384,
-                                 JwtAlgorithm::ES512, JwtAlgorithm::PS256, JwtAlgorithm::PS384, JwtAlgorithm::PS512,
-                                 JwtAlgorithm::EdDSA};
+constexpr JwtAlgorithm kAll[]{
+    JwtAlgorithm::HS256, JwtAlgorithm::HS384, JwtAlgorithm::HS512, JwtAlgorithm::RS256, JwtAlgorithm::RS384,
+    JwtAlgorithm::RS512, JwtAlgorithm::ES256, JwtAlgorithm::ES384, JwtAlgorithm::ES512, JwtAlgorithm::PS256,
+    JwtAlgorithm::PS384, JwtAlgorithm::PS512, JwtAlgorithm::EdDSA,
+};
 }  // namespace
 
 TEST(JwtAlgorithm, StringRoundTrip) {
@@ -67,10 +68,19 @@ TEST(JwtAlgorithmSet, InitializerList) {
 
 TEST(JwtError, AllMessagesNonEmpty) {
   EXPECT_EQ(ToString(JwtError::None), "ok");
-  for (JwtError err :
-       {JwtError::Malformed, JwtError::UnsupportedAlg, JwtError::AlgNotAllowed, JwtError::KeyMismatch,
-        JwtError::InvalidSignature, JwtError::Expired, JwtError::NotYetValid, JwtError::MissingExpiration,
-        JwtError::IssuerMismatch, JwtError::AudienceMismatch, JwtError::SubjectMismatch}) {
+  for (JwtError err : {
+           JwtError::Malformed,
+           JwtError::UnsupportedAlg,
+           JwtError::AlgNotAllowed,
+           JwtError::KeyMismatch,
+           JwtError::InvalidSignature,
+           JwtError::Expired,
+           JwtError::NotYetValid,
+           JwtError::MissingExpiration,
+           JwtError::IssuerMismatch,
+           JwtError::AudienceMismatch,
+           JwtError::SubjectMismatch,
+       }) {
     EXPECT_FALSE(ToString(err).empty());
   }
 }

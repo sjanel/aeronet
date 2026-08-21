@@ -158,7 +158,7 @@ TEST(Http2Frame, WriteDataFrame) {
 
 TEST(Http2Frame, InvalidLength) {
   FrameHeader header{};
-  header.length = 1 << 26;
+  header.length = 1U << 26U;
 
   EXPECT_FALSE(header.isValid());
 }

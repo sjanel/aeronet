@@ -88,8 +88,8 @@ jobs:
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -DAERONET_ENABLE_ASAN=ON \
+            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \

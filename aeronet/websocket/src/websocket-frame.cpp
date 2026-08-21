@@ -312,7 +312,7 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
 
   // Trailing bytes (at most 31 for AVX2, 15 for SSE2/NEON, 7 for scalar)
   for (; idx < sz; ++idx) {
-    bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3) * 8)) & 0xFFU);
+    bytes[idx] ^= static_cast<std::byte>((maskingKey >> ((idx & 3U) * 8)) & 0xFFU);
   }
 }
 
@@ -362,14 +362,14 @@ inline void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloa
     byte1 |= kPayloadLen16;
     output.unchecked_push_back(byte1);
     // 16-bit big-endian length
-    output.unchecked_push_back(static_cast<std::byte>((payloadSize >> 8) & 0xFF));
-    output.unchecked_push_back(static_cast<std::byte>(payloadSize & 0xFF));
+    output.unchecked_push_back(static_cast<std::byte>((payloadSize >> 8U) & 0xFFU));
+    output.unchecked_push_back(static_cast<std::byte>(payloadSize & 0xFFU));
   } else {
     byte1 |= kPayloadLen64;
     output.unchecked_push_back(byte1);
     // 64-bit big-endian length
     for (int idx = 7; idx >= 0; --idx) {
-      output.unchecked_push_back(static_cast<std::byte>((payloadSize >> (idx * 8)) & 0xFF));
+      output.unchecked_push_back(static_cast<std::byte>((payloadSize >> static_cast<uint8_t>(idx * 8)) & 0xFFU));
     }
   }
 
@@ -422,8 +422,8 @@ void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, 
   if (payloadSize != 0) {
     const auto codeVal = static_cast<uint16_t>(code);
 
-    output.unchecked_push_back(static_cast<std::byte>((codeVal >> 8) & 0xFF));
-    output.unchecked_push_back(static_cast<std::byte>(codeVal & 0xFF));
+    output.unchecked_push_back(static_cast<std::byte>(static_cast<uint8_t>(codeVal >> 8U) & 0xFFU));
+    output.unchecked_push_back(static_cast<std::byte>(codeVal & 0xFFU));
 
     output.unchecked_append(reinterpret_cast<const std::byte*>(reason.data()), reasonLen);
     if (shouldMask) {
@@ -437,7 +437,8 @@ ClosePayload ParseClosePayload(std::span<const std::byte> payload) {
 
   if (payload.size() >= 2) {
     const auto* bytes = reinterpret_cast<const uint8_t*>(payload.data());
-    result.code = static_cast<CloseCode>((static_cast<uint16_t>(bytes[0]) << 8) | static_cast<uint16_t>(bytes[1]));
+    result.code = static_cast<CloseCode>(static_cast<uint16_t>(static_cast<uint16_t>(bytes[0]) << 8U) |
+                                         static_cast<uint16_t>(bytes[1]));
 
     if (payload.size() > 2) {
       result.reason = std::string_view(reinterpret_cast<const char*>(payload.data() + 2), payload.size() - 2);

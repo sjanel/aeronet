@@ -68,9 +68,9 @@ TEST(AeronetVersion, FullVersionWithRuntime) {
   // When brotli is enabled at compile time, runtime string must append
   // the runtime brotli version in the exact format: " [brotli X.Y.Z]"
   const uint32_t fullVersion = BrotliDecoderVersion();
-  const uint32_t major = fullVersion >> 24;
-  const uint32_t minor = (fullVersion >> 12) & 0xFFF;
-  const uint32_t patch = fullVersion & 0xFFF;
+  const uint32_t major = fullVersion >> 24U;
+  const uint32_t minor = (fullVersion >> 12U) & 0xFFFU;
+  const uint32_t patch = fullVersion & 0xFFFU;
 
   const std::string brotliWithVersion =
       "brotli " + std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);

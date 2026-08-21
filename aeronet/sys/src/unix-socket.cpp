@@ -52,6 +52,7 @@ constexpr int ToNativeType(UnixSocket::Type type) {
 UnixSocket::UnixSocket(Type type) {
   const int nativeType = ToNativeType(type);
 #ifdef AERONET_LINUX
+  // NOLINTNEXTLINE(bugprone-signed-bitwise)
   _baseFd = BaseFd(::socket(AF_UNIX, nativeType | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
 #else
   _baseFd = BaseFd(::socket(AF_UNIX, nativeType, 0));

@@ -72,8 +72,14 @@ TEST(JwtRoundTrip, Rsa) {
   test::TestKey rsa = test::GenerateRsa();
   JwtKey priv = JwtKey::FromPem(rsa.privatePem);
   JwtKey pub = JwtKey::FromPem(rsa.publicPem);
-  for (JwtAlgorithm alg : {JwtAlgorithm::RS256, JwtAlgorithm::RS384, JwtAlgorithm::RS512, JwtAlgorithm::PS256,
-                           JwtAlgorithm::PS384, JwtAlgorithm::PS512}) {
+  for (JwtAlgorithm alg : {
+           JwtAlgorithm::RS256,
+           JwtAlgorithm::RS384,
+           JwtAlgorithm::RS512,
+           JwtAlgorithm::PS256,
+           JwtAlgorithm::PS384,
+           JwtAlgorithm::PS512,
+       }) {
     std::string token = Jwt::encode(kClaims, priv, alg);
     JwtError err = JwtError::None;
     auto decoded = Jwt::tryDecode(token, pub, NoTemporal(), err);
