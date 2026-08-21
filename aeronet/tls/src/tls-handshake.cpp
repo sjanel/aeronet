@@ -111,19 +111,19 @@ TLSInfo FinalizeTlsHandshake(const SSL* ssl, NativeHandle fd, bool logHandshake,
   if (!tlsInfo.selectedAlpn().empty()) {
     auto [it, inserted] = metrics.alpnDistribution.emplace(tlsInfo.selectedAlpn(), 1);
     if (!inserted) {
-      ++(it->second);
+      ++it->second;
     }
   }
   if (!tlsInfo.negotiatedCipher().empty()) {
     auto [it, inserted] = metrics.cipherCounts.emplace(tlsInfo.negotiatedCipher(), 1);
     if (!inserted) {
-      ++(it->second);
+      ++it->second;
     }
   }
   if (!tlsInfo.negotiatedVersion().empty()) {
     auto [it, inserted] = metrics.versionCounts.emplace(tlsInfo.negotiatedVersion(), 1);
     if (!inserted) {
-      ++(it->second);
+      ++it->second;
     }
   }
   if (hs.durationNs > 0) {

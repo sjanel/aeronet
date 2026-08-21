@@ -149,11 +149,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 message(STATUS "[aeronet] version: ${AERONET_PROJECT_VERSION}")
 
 set(AERONET_BUILD_BENCHMARKS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
-set(ASAN_DEFAULT OFF)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  if(NOT WIN32)
-    set(ASAN_DEFAULT ON)
-  endif()
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF)
 endif()
 
@@ -217,7 +213,7 @@ option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB 
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 
 # Linting
-option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" ${ASAN_DEFAULT})
+option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" OFF)
 option(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS "Enable miscellaneous additional memory checks to complement ASAN" OFF)
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})

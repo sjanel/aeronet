@@ -149,6 +149,7 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
   int verifyMode = SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
   if (cfg.requireClientCert) {
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
     verifyMode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
   }
   ::SSL_CTX_set_verify(ctx, verifyMode, nullptr);

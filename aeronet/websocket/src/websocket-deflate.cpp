@@ -141,16 +141,14 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
         // Server can accept client's request if it's <= our configured value
         params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
       }
-    } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits)) {
-      if (value.has_value()) {
-        const auto bits = ParseWindowBits(*value);
-        if (bits == 0) {
-          return std::nullopt;  // Invalid parameter value
-        }
-        params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
+    } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits) && value.has_value()) {
+      const auto bits = ParseWindowBits(*value);
+      if (bits == 0) {
+        return std::nullopt;  // Invalid parameter value
       }
-      // If no value, client is advertising capability; server can set the value
+      params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
     }
+    // If no value, client is advertising capability; server can set the value
     // Unknown parameters are ignored per RFC 7692
 
     pos = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi + 1;

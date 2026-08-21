@@ -85,7 +85,7 @@ TEST_F(UnixSocketTest, StreamSocketIsNonBlocking) {
   // Verify socket is non-blocking by checking the flag directly
   int flags = ::fcntl(sock.fd(), F_GETFL, 0);
   EXPECT_GE(flags, 0);
-  EXPECT_NE(0, flags & O_NONBLOCK);
+  EXPECT_NE(0, flags & O_NONBLOCK);  // NOLINT(bugprone-signed-bitwise)
 }
 
 TEST_F(UnixSocketTest, DatagramSocketIsCloexec) {
@@ -94,7 +94,7 @@ TEST_F(UnixSocketTest, DatagramSocketIsCloexec) {
   // Verify close-on-exec flag is set
   int flags = ::fcntl(sock.fd(), F_GETFD, 0);
   EXPECT_GE(flags, 0);
-  EXPECT_NE(0, flags & FD_CLOEXEC);
+  EXPECT_NE(0, flags & FD_CLOEXEC);  // NOLINT(bugprone-signed-bitwise)
 }
 
 TEST_F(UnixSocketTest, StreamSocketIsCloexec) {
@@ -103,7 +103,7 @@ TEST_F(UnixSocketTest, StreamSocketIsCloexec) {
   // Verify close-on-exec flag is set
   int flags = ::fcntl(sock.fd(), F_GETFD, 0);
   EXPECT_GE(flags, 0);
-  EXPECT_NE(0, flags & FD_CLOEXEC);
+  EXPECT_NE(0, flags & FD_CLOEXEC);  // NOLINT(bugprone-signed-bitwise)
 }
 
 TEST_F(UnixSocketTest, ConnectDatagramSucceeds) {

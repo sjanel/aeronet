@@ -125,13 +125,13 @@ char* AppendJsonString(std::string_view str, char* pInsertPtr) {
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
           static constexpr char kHex[] = "0123456789abcdef";
-          const char esc[] = {
+          const char esc[]{
               '\\',
               'u',
               '0',
               '0',
-              kHex[(static_cast<unsigned char>(ch) >> 4) & 0xF],
-              kHex[static_cast<unsigned char>(ch) & 0xF],
+              kHex[static_cast<uint8_t>(static_cast<uint8_t>(ch) >> 4U) & 0xFU],
+              kHex[static_cast<uint8_t>(ch) & 0xFU],
           };
           pInsertPtr = Append(esc, sizeof(esc), pInsertPtr);
         } else {

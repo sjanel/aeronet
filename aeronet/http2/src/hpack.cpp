@@ -721,7 +721,7 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
     }
 
     const uint8_t currByte = static_cast<uint8_t>(data[pos]);
-    value += (currByte & 0x7F) * multiplier;
+    value += (currByte & 0x7FU) * multiplier;
 
     // Overflow cannot happen, we can only multiply by 128 (2⁷) kMaxContinuationBytes times.
     static_assert(kMaxContinuationBytes * 7 < static_cast<uint8_t>(sizeof(uint64_t) * 8),
@@ -730,7 +730,7 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
     multiplier *= 128;
     ++pos;
 
-    if ((currByte & 0x80) == 0) {
+    if ((currByte & 0x80U) == 0) {
       ret.index = value;
       ret.consumed = pos;
       break;
@@ -766,7 +766,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
   while (pos < data.size()) {
     const uint8_t firstByte = static_cast<uint8_t>(data[pos]);
 
-    if ((firstByte & 0x80) != 0) {
+    if ((firstByte & 0x80U) != 0) {
       // Indexed Header Field (RFC 7541 §6.1) - Format: 1xxxxxxx
       const auto indexResult = DecodeInteger(data.subspan(pos), 7);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {
@@ -789,7 +789,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
       recordFieldError(storeHeader(header.name, header.value, seenRegularHeader));
 
-    } else if ((firstByte & 0xE0) == 0x20) {
+    } else if ((firstByte & 0xE0U) == 0x20) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
       const auto sizeResult = DecodeInteger(data.subspan(pos), 5);
       if (sizeResult.index == DecodedIndex::kInvalidIndex) {
@@ -802,7 +802,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
     } else {
       // Literal Header Field - determine indexing mode and prefix bits
-      const bool withIndexing = (firstByte & 0xC0) == 0x40;  // Format: 01xxxxxx
+      const bool withIndexing = (firstByte & 0xC0U) == 0x40;  // Format: 01xxxxxx
       const uint8_t prefixBits = withIndexing ? 6 : 4;
 
       auto indexResult = DecodeInteger(data.subspan(pos), prefixBits);
@@ -870,7 +870,7 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
 
   const auto stringData = data.subspan(consumed, length);
 
-  const bool isHuffman = (static_cast<uint8_t>(data[0]) & 0x80) != 0;
+  const bool isHuffman = (static_cast<uint8_t>(data[0]) & 0x80U) != 0;
   if (isHuffman) {
     ret.str = decodeHuffman(stringData);
     if (ret.str.data() == nullptr) {  // error
@@ -893,23 +893,22 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Bit buffer: accumulates bits for decoding (MSB-aligned)
   // Bits are stored left-aligned: new bytes go at position (64 - 8 - bitsInBuffer)
   uint64_t bitBuffer = 0;
-  int32_t bitsInBuffer = 0;
+  uint32_t bitsInBuffer = 0;
   std::size_t byteIdx = 0;
 
   while (true) {
     // Refill bit buffer - pack bytes from MSB side.
     // Stopping at 55 caps bitsInBuffer at 63, which keeps the padding shift below the width of the type while still
     // guaranteeing the 30 bits the longest code needs.
-    while (bitsInBuffer <= 55 && byteIdx < data.size()) {
-      bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(data[byteIdx])) << (56 - bitsInBuffer);
-      bitsInBuffer += 8;
+    while (bitsInBuffer <= 55U && byteIdx < data.size()) {
+      bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(data[byteIdx])) << (56U - bitsInBuffer);
+      bitsInBuffer += 8U;
       ++byteIdx;
     }
 
     if (bitsInBuffer == 0) {
       break;
     }
-    assert(bitsInBuffer > 0 && bitsInBuffer < 64);
 
     // Set every bit past the real ones, so a lookup never depends on how many bits are left. A valid stream is padded
     // with the EOS prefix (all 1s), so this reproduces exactly what the encoder wrote and lets the tier-1 table serve
@@ -918,7 +917,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
 
     const auto& entry = kHuffmanDecodeTable[static_cast<std::size_t>(window >> (64U - kHuffmanLevel1Bits))];
     uint16_t symbol = entry.symbol;
-    int32_t bitLength = entry.bitsUsed;
+    uint8_t bitLength = entry.bitsUsed;
 
     if (bitLength == 0) {
       // Code is longer than the tier-1 window: decode canonically.
@@ -929,7 +928,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
 
     // Must come before the EOS test: trailing padding is all 1s, which is the EOS prefix, so a tail of padding always
     // "decodes" to EOS. Only a code that fits in the bits actually present is a real symbol.
-    if (bitLength > bitsInBuffer) {
+    if (bitsInBuffer < bitLength) {
       break;  // What is left is padding; validated below.
     }
 
@@ -947,13 +946,13 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   }
 
   // Validate remaining bits are EOS padding (all 1s, less than 8 bits)
-  if (bitsInBuffer > 0) {
+  if (bitsInBuffer != 0) {
     if (bitsInBuffer > 7) {
       _decodedStrings.shrinkLastAllocated(buf, 0);
       return {};  // Too many leftover bits
     }
     // Check that remaining bits are all 1s (EOS prefix)
-    const auto remainingBits = static_cast<uint8_t>(bitBuffer >> (64 - bitsInBuffer));
+    const auto remainingBits = static_cast<uint8_t>(bitBuffer >> (64U - bitsInBuffer));
     const uint8_t expectedPadding = static_cast<uint8_t>((1U << bitsInBuffer) - 1);
     if (remainingBits != expectedPadding) {
       _decodedStrings.shrinkLastAllocated(buf, 0);
@@ -1070,8 +1069,8 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
   *pData++ = static_cast<std::byte>(prefixMask | maxPrefix);
 
   while (value >= 128) {
-    *pData++ = static_cast<std::byte>((value & 0x7F) | 0x80);
-    value >>= 7;
+    *pData++ = static_cast<std::byte>((value & 0x7FU) | 0x80U);
+    value >>= 7U;
   }
   *pData++ = static_cast<std::byte>(value);
 
@@ -1102,14 +1101,14 @@ void EncodeHuffman(RawBytes& output, std::string_view str, std::size_t encodedLe
     currentBits += code.bitLength;
     while (currentBits >= 8) {
       currentBits -= 8;
-      *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFF);
+      *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFFU);
     }
   }
 
   // Pad with EOS prefix (all 1s)
   if (currentBits > 0) {
-    const uint8_t padding = static_cast<uint8_t>((1U << (8 - currentBits)) - 1);
-    *pData++ = static_cast<std::byte>((currentCode << (8 - currentBits)) | padding);
+    const uint8_t padding = static_cast<uint8_t>((1U << static_cast<uint8_t>(8U - currentBits)) - 1);
+    *pData++ = static_cast<std::byte>((currentCode << static_cast<uint8_t>(8U - currentBits)) | padding);
   }
   output.setEnd(pData);
 }
