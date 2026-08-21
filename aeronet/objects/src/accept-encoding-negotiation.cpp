@@ -13,7 +13,6 @@
 #include <string_view>
 #include <system_error>
 #include <type_traits>
-#include <version>
 
 // std::from_chars for floating-point types is standard since C++17, but libc++ (Apple's default
 // standard library) ships to_chars(double) yet still lacks from_chars(double). Detect the real

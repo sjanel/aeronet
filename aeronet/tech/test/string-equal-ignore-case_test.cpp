@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <random>
 #include <string>
@@ -61,7 +62,8 @@ TEST(StringEqualIgnoreCase, SwarBoundariesAndOverlap) {
     // A real (non-case) difference at first / last / overlap-region positions must be detected.
     for (std::size_t pos : {std::size_t{0}, len - 1, len / 2}) {
       std::string diff = upper;
-      diff[pos] = static_cast<char>(diff[pos] ^ 0x01);  // perturb without staying a case-only change
+      // perturb without staying a case-only change
+      diff[pos] = static_cast<char>(static_cast<uint8_t>(diff[pos]) ^ 0x01U);
       EXPECT_FALSE(CaseInsensitiveEqual(lhs, diff)) << "len=" << len << " pos=" << pos;
     }
   }
@@ -93,7 +95,8 @@ TEST(StringEqualIgnoreCase, NonAsciiBytesComparedRaw) {
   std::string wideB = wideA;
   for (char& ch : wideB) {
     if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
-      ch = static_cast<char>(ch ^ 0x20);  // flip case of ASCII letters only; high bytes untouched
+      // flip case of ASCII letters only; high bytes untouched
+      ch = static_cast<char>(static_cast<uint8_t>(ch) ^ 0x20U);
     }
   }
   EXPECT_TRUE(CaseInsensitiveEqual(wideA, wideB));
@@ -173,7 +176,8 @@ TEST(StringEqualIgnoreCase, FuzzRandomAsciiEqual) {
       std::size_t nbChanges = nbCharsToChange(rng);
       for (std::size_t changeIdx = 0; changeIdx < nbChanges; ++changeIdx) {
         std::size_t pos = changePos(rng);
-        s2[pos] = static_cast<char>(s2[pos] ^ 0x20);  // flip case
+        // flip case
+        s2[pos] = static_cast<char>(static_cast<uint8_t>(s2[pos]) ^ 0x20U);
       }
     }
 

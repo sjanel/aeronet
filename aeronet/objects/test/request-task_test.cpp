@@ -16,7 +16,14 @@ namespace {
 RequestTask<int> make_guarded_int(std::shared_ptr<std::atomic<int>> alive) {
   struct Guard {
     std::shared_ptr<std::atomic<int>> a;
-    Guard(std::shared_ptr<std::atomic<int>> value) : a(std::move(value)) {}
+
+    explicit Guard(std::shared_ptr<std::atomic<int>> value) : a(std::move(value)) {}
+
+    Guard(const Guard&) = delete;
+    Guard(Guard&&) = delete;
+    Guard& operator=(const Guard&) = delete;
+    Guard& operator=(Guard&&) = delete;
+
     ~Guard() { a->store(0, std::memory_order_relaxed); }  // NOLINT(modernize-use-equals-default)
   };
 
@@ -28,7 +35,14 @@ RequestTask<int> make_guarded_int(std::shared_ptr<std::atomic<int>> alive) {
 RequestTask<void> make_guarded_void(std::shared_ptr<std::atomic<int>> alive) {
   struct Guard {
     std::shared_ptr<std::atomic<int>> a;
-    Guard(std::shared_ptr<std::atomic<int>> value) : a(std::move(value)) {}
+
+    explicit Guard(std::shared_ptr<std::atomic<int>> value) : a(std::move(value)) {}
+
+    Guard(const Guard&) = delete;
+    Guard(Guard&&) = delete;
+    Guard& operator=(const Guard&) = delete;
+    Guard& operator=(Guard&&) = delete;
+
     ~Guard() { a->store(0, std::memory_order_relaxed); }  // NOLINT(modernize-use-equals-default)
   };
 

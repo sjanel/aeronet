@@ -46,7 +46,7 @@ std::string toHex(uint64_t value) {
   std::string out;
   out.reserve(16);
   for (int i = 15; i >= 0; --i) {
-    out.push_back(kHex[(value >> (i * 4)) & 0xF]);
+    out.push_back(kHex[(value >> static_cast<uint8_t>(i * 4)) & 0xFU]);
   }
   return out;
 }

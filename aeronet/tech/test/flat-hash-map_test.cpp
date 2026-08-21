@@ -63,7 +63,7 @@ struct TestAlloc {
   explicit TestAlloc(int id = 0) noexcept : id(id) {}
 
   template <typename U>
-  TestAlloc(const TestAlloc<U>& other) noexcept : id(other.id) {}
+  explicit TestAlloc(const TestAlloc<U>& other) noexcept : id(other.id) {}
 
   T* allocate(std::size_t sz) { return std::allocator<T>{}.allocate(sz); }
   void deallocate(T* ptr, std::size_t sz) noexcept { std::allocator<T>{}.deallocate(ptr, sz); }
