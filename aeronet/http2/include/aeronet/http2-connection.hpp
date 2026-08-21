@@ -396,11 +396,19 @@ class Http2Connection {
   // ============================
 
   void sendSettings();
+
   void sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); }
+
   [[nodiscard]] ErrorCode prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream);
+
   void queueDataBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t streamId,
-                      bool endStream);
+                      bool endStream) {
+    queueOutputBlock(
+        OutputBlock::Data(std::move(owner), dataOffset, dataSize, _peerSettings.maxFrameSize, streamId, endStream));
+  }
+
   void queueOutputBlock(OutputBlock block);
+
   void sealOutputBuffer();
 
   // ============================
@@ -444,7 +452,7 @@ class Http2Connection {
   vector<OutputBlock> _outputBlocks;
   RawBytes _outputBuffer;
   vector<OutputBlock>::size_type _outputBlockReadPos{0};
-  vector<OutputBlock>::size_type _outputWritePos{0};
+  std::size_t _outputWritePos{0};
 
   // Callbacks
   OnHeadersCb _onHeadersDecoded;

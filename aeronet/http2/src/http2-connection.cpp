@@ -287,12 +287,12 @@ void Http2Connection::getPendingOutputFragments(vector<std::string_view>& fragme
 }
 
 std::size_t Http2Connection::pendingOutputSize() const noexcept {
-  std::size_t size = _outputBuffer.size() - _outputWritePos;
+  std::size_t sz = _outputBuffer.size() - _outputWritePos;
   for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
     const OutputBlock& block = _outputBlocks[blockIndex];
-    size += block.remainingSize();
+    sz += block.remainingSize();
   }
-  return size;
+  return sz;
 }
 
 void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
@@ -345,7 +345,7 @@ void Http2Connection::sealOutputBuffer() {
 
 void Http2Connection::queueOutputBlock(OutputBlock block) {
   sealOutputBuffer();
-  _outputBlocks.emplace_back(std::move(block));
+  _outputBlocks.push_back(std::move(block));
 }
 
 void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
@@ -546,12 +546,6 @@ ErrorCode Http2Connection::prepareSendData(uint32_t streamId, std::size_t dataSi
   [[maybe_unused]] const ErrorCode err = pStream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
   return ErrorCode::NoError;
-}
-
-void Http2Connection::queueDataBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t streamId,
-                                     bool endStream) {
-  queueOutputBlock(
-      OutputBlock::Data(std::move(owner), dataOffset, dataSize, _peerSettings.maxFrameSize, streamId, endStream));
 }
 
 ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {

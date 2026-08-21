@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+## Bug Fixes
+
+- **HTTP client request deadlines now win over late socket readiness**: if a client thread was descheduled across its request deadline and resumed with a peer close or other socket event already pending, the event could be reported instead of `HttpClientErrc::timeout`. The synchronous I/O driver now rechecks the deadline after polling before accepting readiness. Tests: `aeronet/client/test/http-client-core_test.cpp` (`ReadTimeoutReturnsError`, `Http2ReadTimeoutReturnsError`).
+
 ## Improvements
 
 - **Lower-copy HTTP/2 outbound I/O**: DATA payloads and oversized HPACK blocks now retain their backing allocations in a partial-write-safe fragment queue instead of being recopied behind frame headers. The shared client/server path uses `writev` / `WSASend` for cleartext scatter I/O and ordered owned-fragment writes for TLS, including flow-control-deferred streaming responses and uploads. Tests: `aeronet/http2/test/http2-connection_test.cpp` (`OwnedDataUsesGatherFragmentsAcrossPartialWrites`, `OversizedHeaderBlockGathersContinuationWithoutRecopy`), `aeronet/sys/test/transport_test.cpp` (`*Gather*`), and `aeronet/client/test/http-client-http2-e2e_test.cpp` (`LargeUploadAndResponseUseH2GatherPath`). Benchmark: `benchmarks/internal/http2-flow-control_bench.cpp` (`BM_ConnectionQueueOwnedDataFragments`).

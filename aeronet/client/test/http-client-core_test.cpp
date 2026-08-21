@@ -2205,7 +2205,8 @@ TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
 }
 
-// The server reads the request but never answers; the client must give up at its request deadline.
+// The server reads the request but never answers, then closes after the deadline. The deadline must win even
+// if a descheduled client observes the late close as soon as its poll resumes.
 TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
@@ -2582,7 +2583,8 @@ TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
   EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
 }
 
-// The server reads the request but never answers; the client must give up at its request deadline.
+// The server reads the request but never answers, then closes after the deadline. The deadline must win even
+// if a descheduled client observes the late close as soon as its poll resumes.
 TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
