@@ -76,10 +76,10 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
   }
 }
 
-ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
+TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
   inBuffer.ensureAvailableCapacityExponential(chunkSize);
 
-  const auto result = transport->read(inBuffer.data() + inBuffer.size(), chunkSize);
+  const auto result = transport.read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
   if (headerStartTp.time_since_epoch().count() == 0) {
     headerStartTp = lastActivity;
@@ -88,24 +88,24 @@ ITransport::TransportResult ConnectionState::transportRead(std::size_t chunkSize
   return result;
 }
 
-ITransport::TransportResult ConnectionState::transportWrite(std::string_view data) {
-  const auto res = transport->write(data);
-  if (!tlsEstablished && transport->handshakeDone()) {
+TransportResult ConnectionState::transportWrite(std::string_view data) {
+  const auto res = transport.write(data);
+  if (!tlsEstablished && transport.handshakeDone()) {
     tlsEstablished = true;
   }
   return res;
 }
-ITransport::TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
-  const auto res = transport->write(buffers);
-  if (!tlsEstablished && transport->handshakeDone()) {
+TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
+  const auto res = transport.write(buffers);
+  if (!tlsEstablished && transport.handshakeDone()) {
     tlsEstablished = true;
   }
   return res;
 }
 
-ITransport::TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
-  const auto res = transport->write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
-  if (!tlsEstablished && transport->handshakeDone()) {
+TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
+  const auto res = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
+  if (!tlsEstablished && transport.handshakeDone()) {
     tlsEstablished = true;
   }
   return res;
@@ -284,7 +284,7 @@ void ConnectionState::installAggregatedBodyBridge() {
 #ifdef AERONET_ENABLE_OPENSSL
 bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb,
                                                           TlsMetricsInternal& metrics, const TLSConfig& cfg) {
-  auto* tlsTr = dynamic_cast<TlsTransport*>(transport.get());
+  auto* tlsTr = transport.get<TlsTransport>();
   if (tlsTr == nullptr) {
     return false;
   }
@@ -430,8 +430,8 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
 }
 
 void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf) {
-  assert(transport != nullptr);
-  if (transport->hasZerocopyPending()) {
+  assert(transport);
+  if (transport.hasZerocopyPending()) {
     zerocopyPendingBuffers.push_back(std::move(buf));
   }
 }
@@ -440,9 +440,9 @@ void ConnectionState::releaseCompletedZerocopyBuffers() {
   if (zerocopyPendingBuffers.empty()) {
     return;
   }
-  assert(transport != nullptr);
-  transport->pollZerocopyCompletions();
-  if (!transport->hasZerocopyPending()) {
+  assert(transport);
+  transport.pollZerocopyCompletions();
+  if (!transport.hasZerocopyPending()) {
     zerocopyPendingBuffers.clear();
   }
 }

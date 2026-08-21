@@ -100,9 +100,6 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
     const auto ret = ::recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
     if (ret == -1) {
       // EAGAIN/EWOULDBLOCK means no more completions available
-      if (errno == error::kWouldBlock) {
-        break;
-      }
       // Other errors: stop polling but don't treat as fatal
       break;
     }

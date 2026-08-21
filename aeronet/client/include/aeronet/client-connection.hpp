@@ -13,12 +13,12 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport.hpp"
 
 namespace aeronet {
 
 class HttpClient;
 class HttpRequest;
-class ITransport;
 struct FilePayload;
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -82,7 +82,7 @@ class ClientConnection {
   // is set to true (even when the call later returns an error) as soon as any request byte reaches the
   // transport, so the caller can tell a pre-send failure (safe to retry) from a post-send one (never retried,
   // to avoid re-submitting a non-idempotent request).
-  [[nodiscard]] HttpClientResult exchange(HttpClient& client, ITransport& transport, NativeHandle fd, HttpRequest& req,
+  [[nodiscard]] HttpClientResult exchange(HttpClient& client, Transport& transport, NativeHandle fd, HttpRequest& req,
                                           SteadyClock::time_point ioDeadline, bool& requestSent) {
 #ifdef AERONET_ENABLE_HTTP2
     if (_type == Type::Http2) {
@@ -90,6 +90,14 @@ class ClientConnection {
     }
 #endif
     return exchangeForHttp11(client, transport, fd, req, ioDeadline, requestSent);
+  }
+
+  template <typename Backend>
+    requires std::derived_from<Backend, ErasedTransportBackend>
+  [[nodiscard]] HttpClientResult exchange(HttpClient& client, Backend& backend, NativeHandle fd, HttpRequest& req,
+                                          SteadyClock::time_point ioDeadline, bool& requestSent) {
+    Transport transport = Transport::Borrow(backend);
+    return exchange(client, transport, fd, req, ioDeadline, requestSent);
   }
 
   // Whether the connection may be returned to the idle pool for a later exchange (verdict of the most
@@ -115,7 +123,7 @@ class ClientConnection {
 #endif
 
  private:
-  [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
+  [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                    HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                    bool& requestSent);
 
@@ -124,7 +132,7 @@ class ClientConnection {
   // never copied into the head buffer. Resumes correctly across partial writes spanning the two. Sets
   // `requestSent` to true as soon as any byte reaches the transport (the request can no longer be retried).
   // Returns an empty result on success or an HttpClientErrc on write failure / timeout.
-  [[nodiscard]] static std::expected<void, HttpClientErrc> writeAllForHttp11(HttpClient& client, ITransport& transport,
+  [[nodiscard]] static std::expected<void, HttpClientErrc> writeAllForHttp11(HttpClient& client, Transport& transport,
                                                                              NativeHandle fd, std::string_view head,
                                                                              std::string_view body,
                                                                              SteadyClock::time_point deadline,
@@ -134,12 +142,14 @@ class ClientConnection {
   // bounded chunks (into HttpClient's reusable scratch buffer) so it is never fully materialized in memory.
   // Pumps the event loop on would-block and sets `requestSent` as soon as any byte reaches the transport.
   // Returns an empty result on success or an HttpClientErrc on read / write failure / timeout.
-  [[nodiscard]] static std::expected<void, HttpClientErrc> writeFileBodyForHttp11(
-      HttpClient& client, ITransport& transport, NativeHandle fd, const FilePayload& filePayload,
-      SteadyClock::time_point deadline, bool& requestSent);
+  [[nodiscard]] static std::expected<void, HttpClientErrc> writeFileBodyForHttp11(HttpClient& client,
+                                                                                  Transport& transport, NativeHandle fd,
+                                                                                  const FilePayload& filePayload,
+                                                                                  SteadyClock::time_point deadline,
+                                                                                  bool& requestSent);
 
 #ifdef AERONET_ENABLE_HTTP2
-  [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, ITransport& transport, NativeHandle fd,
+  [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, Transport& transport, NativeHandle fd,
                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                   bool& requestSent);
 

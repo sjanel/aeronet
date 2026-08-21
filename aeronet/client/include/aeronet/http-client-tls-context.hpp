@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <span>
 
 #include "aeronet/http-client-config.hpp"
@@ -32,7 +31,7 @@ class HttpClientTlsContext {
   [[nodiscard]] bool empty() const noexcept { return pCtx == nullptr; }
 
   // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification.
-  [[nodiscard]] std::unique_ptr<ITransport> makeTransport(NativeHandle fd, const char* pHost, bool verify) const;
+  [[nodiscard]] Transport makeTransport(NativeHandle fd, const char* pHost, bool verify) const;
 
  private:
   void* pCtx{};

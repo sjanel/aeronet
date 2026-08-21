@@ -11,7 +11,7 @@
 namespace aeronet::test {
 
 /// Deterministic fault-injecting transport for protocol-level testing.
-/// Implements ITransport backed by an in-memory TestPipe, with configurable
+/// Implements Transport backed by an in-memory TestPipe, with configurable
 /// fault injection (partial reads/writes, EAGAIN simulation, connection resets).
 ///
 /// Usage:
@@ -20,17 +20,17 @@ namespace aeronet::test {
 ///   pipe.pushToServer("GET / HTTP/1.1\r\n...");
 ///   // drive protocol processing...
 ///   auto response = pipe.pullFromServer();
-class TestTransport final : public ITransport {
+class TestTransport final : public TransportBackend<TestTransport> {
  public:
   explicit TestTransport(TestPipe& pipe, FaultPolicy policy = {});
 
-  TransportResult read(char* buf, std::size_t len) override;
+  TransportResult read(char* buf, std::size_t len);
 
-  TransportResult write(std::string_view data) override;
+  TransportResult write(std::string_view data);
 
-  [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
+  [[nodiscard]] bool handshakeDone() const noexcept { return _handshakeDone; }
 
-  [[nodiscard]] bool hasPendingReadData() const noexcept override;
+  [[nodiscard]] bool hasPendingReadData() const noexcept;
 
   /// Mutable access to fault policy for mid-test reconfiguration.
   FaultPolicy& faultPolicy() { return _policy; }

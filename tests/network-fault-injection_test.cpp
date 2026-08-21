@@ -25,8 +25,8 @@ namespace {
 // Must be set before the server accepts connections.
 test::FaultPolicy g_faultPolicy;  // NOLINT(misc-use-internal-linkage)
 
-std::unique_ptr<ITransport> ApplyTestFaultPolicy(std::unique_ptr<ITransport> transport) {
-  return std::make_unique<test::FaultInjectingTransport>(std::move(transport), g_faultPolicy);
+Transport ApplyTestFaultPolicy(Transport transport) {
+  return Transport(std::make_unique<test::FaultInjectingTransport>(std::move(transport), g_faultPolicy));
 }
 
 // --- Test fixture ---

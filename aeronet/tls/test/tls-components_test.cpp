@@ -899,6 +899,24 @@ TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
   transport.shutdown();
 }
 
+TEST(TlsTransportTest, ErasedTransportCachesTlsKindAndBackend) {
+  TlsTransport::SslPtr nullSsl{nullptr, &::SSL_free};
+  auto backend = std::make_unique<TlsTransport>(std::move(nullSsl), kMinBytesForZerocopy);
+  TlsTransport* rawBackend = backend.get();
+  Transport transport(std::move(backend));
+
+  EXPECT_EQ(transport.kind(), TransportKind::Tls);
+  EXPECT_TRUE(transport.isTls());
+  EXPECT_FALSE(transport.isPlain());
+  EXPECT_EQ(transport.get<TlsTransport>(), rawBackend);
+  EXPECT_FALSE(transport.handshakeDone());
+  EXPECT_FALSE(transport.hasPendingReadData());
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  EXPECT_FALSE(transport.hasZerocopyPending());
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+  transport.disableZerocopy();
+}
+
 TEST(TlsTransportTest, HandshakeDoneFalseInitially) {
   // Verify handshakeDone() returns false before handshake is complete
   SslTestPair pair({"http/1.1"}, {"http/1.1"});

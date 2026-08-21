@@ -218,8 +218,7 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
 }
 
 // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification.
-[[nodiscard]] std::unique_ptr<ITransport> HttpClientTlsContext::makeTransport(NativeHandle fd, const char* pHost,
-                                                                              bool verify) const {
+[[nodiscard]] Transport HttpClientTlsContext::makeTransport(NativeHandle fd, const char* pHost, bool verify) const {
   TlsTransport::SslPtr ssl(::SSL_new(static_cast<SSL_CTX*>(pCtx)), &::SSL_free);
   if (!ssl) {
     throw HttpClientException("SSL_new failed");
@@ -237,9 +236,9 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
     }
   }
   ::SSL_set_connect_state(ssl.get());
-  auto transport = std::make_unique<TlsTransport>(std::move(ssl), ~0U);
-  transport->setUnderlyingFd(fd);
-  return transport;
+  auto backend = std::make_unique<TlsTransport>(std::move(ssl), ~0U);
+  backend->setUnderlyingFd(fd);
+  return Transport(std::move(backend));
 }
 
 HttpClientTlsContext::HttpClientTlsContext(HttpClientTlsContext&& rhs) noexcept
