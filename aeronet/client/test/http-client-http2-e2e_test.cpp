@@ -240,15 +240,10 @@ class LoopbackHttp2Transport final : public ITransport {
       return {0, TransportHint::Error};
     }
     const std::span<const std::byte> output = _server.getPendingOutput();
-    const http2::FrameHeader header = http2::ParseFrameHeader(output);
-    const std::size_t frameSize = http2::FrameHeader::kSize + header.length;
-    if (frameSize > len) {
-      ADD_FAILURE() << "loopback HTTP/2 frame exceeds the client read buffer";
-      return {0, TransportHint::Error};
-    }
-    std::memcpy(buf, output.data(), frameSize);
-    _server.onOutputWritten(frameSize);
-    return {frameSize, TransportHint::None};
+    const std::size_t readSize = std::min(output.size(), len);
+    std::memcpy(buf, output.data(), readSize);
+    _server.onOutputWritten(readSize);
+    return {readSize, TransportHint::None};
   }
 
   TransportResult write(std::string_view data) override {
@@ -292,7 +287,7 @@ class LoopbackHttp2Transport final : public ITransport {
         headers.append("content-type: text/plain\r\n");
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false),
                   http2::ErrorCode::NoError);
-        EXPECT_EQ(_server.sendData(streamId, {}, true), http2::ErrorCode::NoError);
+        EXPECT_EQ(_server.sendData(streamId, std::span<const std::byte>{}, true), http2::ErrorCode::NoError);
         break;
       }
       case ResponseMode::NoContentType: {
@@ -917,6 +912,10 @@ void ConfigureTlsTs(auto& testServer, bool enableHttp2 = true) {
       sawHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
       return req.makeResponse(http::StatusCodeOK, "tls-world", "text/plain");
     });
+    router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
+      sawHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
+      return req.makeResponse(http::StatusCodeOK, req.body(), "application/octet-stream");
+    });
   });
 }
 
@@ -928,6 +927,10 @@ HttpClientConfig TlsClientConfig(HttpVersionMode mode) {
 }
 
 std::string TlsUrl(uint16_t po) { return "https://localhost:" + std::to_string(po) + "/hello"; }
+
+std::string TlsUrl(uint16_t po, std::string_view path) {
+  return "https://localhost:" + std::to_string(po) + std::string(path);
+}
 
 }  // namespace
 
@@ -947,6 +950,18 @@ TEST(HttpClientHttp2TlsE2ETest, Http2ModeNegotiatesH2ViaAlpn) {
   HttpClient client(TlsClientConfig(HttpVersionMode::Http2));
   auto resp = client.get(TlsUrl(tlsPort)).value();
   EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(sawHttp2.load(std::memory_order_relaxed));
+}
+
+TEST(HttpClientHttp2TlsE2ETest, LargeUploadAndResponseUseH2GatherPath) {
+  ConfigureTlsTs(tlsTs);
+  sawHttp2.store(false, std::memory_order_relaxed);
+  const std::string payload = MakeLargeBody();
+
+  HttpClient client(TlsClientConfig(HttpVersionMode::Http2));
+  auto resp = client.post(TlsUrl(tlsPort, "/echo"), payload, "application/octet-stream").value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), payload);
   EXPECT_TRUE(sawHttp2.load(std::memory_order_relaxed));
 }
 

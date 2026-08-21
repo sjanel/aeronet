@@ -131,6 +131,47 @@ vector<std::byte> MakePreface() {
   std::ranges::copy(payload, out.begin() + static_cast<std::ptrdiff_t>(FrameHeader::kSize));
   return out;
 }
+[[nodiscard]] vector<std::byte> DrainPendingOutput(Http2Connection& connection) {
+  vector<std::byte> output;
+  output.reserve(static_cast<decltype(output)::size_type>(connection.pendingOutputSize()));
+
+  vector<std::string_view> fragments;
+  while (connection.hasPendingOutput()) {
+    connection.getPendingOutputFragments(fragments);
+    if (fragments.empty()) {
+      ADD_FAILURE() << "Pending output exposed no fragments";
+      break;
+    }
+
+    std::size_t bytesWritten = 0;
+    for (const std::string_view fragment : fragments) {
+      const auto bytes = std::as_bytes(std::span<const char>(fragment.data(), fragment.size()));
+      std::ranges::copy(bytes, std::back_inserter(output));
+      bytesWritten += fragment.size();
+    }
+    connection.onOutputWritten(bytesWritten);
+  }
+  return output;
+}
+
+void FeedConnection(Http2Connection& connection, std::span<const std::byte> input) {
+  while (!input.empty()) {
+    const auto result = connection.processInput(input);
+    ASSERT_NE(result.action, Http2Connection::ProcessResult::Action::Error);
+    if (result.bytesConsumed == 0) {
+      ADD_FAILURE() << "No progress feeding HTTP/2 connection";
+      return;
+    }
+    input = input.subspan(result.bytesConsumed);
+  }
+}
+
+void PumpOutput(Http2Connection& source, Http2Connection& destination) {
+  const auto output = DrainPendingOutput(source);
+  if (!output.empty()) {
+    FeedConnection(destination, output);
+  }
+}
 
 void AdvanceToAwaitingSettingsAndDrainSettings(Http2Connection& conn) {
   auto preface = MakePreface();
@@ -278,14 +319,10 @@ TEST(Http2Connection, SequentialExchangesReleaseActiveStreamsOnBothSides) {
   const auto pump = [&] {
     for (int iter = 0; iter < 8 && (client.hasPendingOutput() || server.hasPendingOutput()); ++iter) {
       if (client.hasPendingOutput()) {
-        const auto out = client.getPendingOutput();
-        ASSERT_NE(server.processInput(out).action, Http2Connection::ProcessResult::Action::Error);
-        client.onOutputWritten(out.size());
+        PumpOutput(client, server);
       }
       if (server.hasPendingOutput()) {
-        const auto out = server.getPendingOutput();
-        ASSERT_NE(client.processInput(out).action, Http2Connection::ProcessResult::Action::Error);
-        server.onOutputWritten(out.size());
+        PumpOutput(server, client);
       }
     }
   };
@@ -341,6 +378,117 @@ TEST(Http2Connection, OnOutputWritten) {
   EXPECT_FALSE(conn.hasPendingOutput());
 }
 
+TEST(Http2Connection, OwnedDataUsesGatherFragmentsAcrossPartialWrites) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(connection);
+
+  constexpr std::size_t kPayloadSize = 20000;
+  RawBytes owner(kPayloadSize);
+  owner.setSize(kPayloadSize);
+  std::ranges::fill(owner, std::byte{0x5A});
+  const char* payloadData = reinterpret_cast<const char*>(owner.data());
+  const std::size_t maxFrameSize = connection.peerSettings().maxFrameSize;
+
+  ASSERT_EQ(connection.sendData(1, std::move(owner), true), ErrorCode::NoError);
+  EXPECT_EQ(connection.pendingOutputSize(), kPayloadSize + (2 * FrameHeader::kSize));
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 4U);
+  EXPECT_EQ(fragments[1].data(), payloadData);
+  EXPECT_EQ(fragments[1].size(), maxFrameSize);
+  EXPECT_EQ(fragments[3].data(), payloadData + maxFrameSize);
+  EXPECT_EQ(fragments[3].size(), kPayloadSize - maxFrameSize);
+
+  const auto firstHeader = ParseFrameHeader(std::as_bytes(std::span(fragments[0])));
+  const auto secondHeader = ParseFrameHeader(std::as_bytes(std::span(fragments[2])));
+  EXPECT_EQ(firstHeader.type, FrameType::Data);
+  EXPECT_EQ(firstHeader.length, maxFrameSize);
+  EXPECT_EQ(firstHeader.flags, FrameFlags::None);
+  EXPECT_EQ(secondHeader.type, FrameType::Data);
+  EXPECT_EQ(secondHeader.flags, FrameFlags::DataEndStream);
+
+  connection.onOutputWritten(5);
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 4U);
+  EXPECT_EQ(fragments[0].size(), FrameHeader::kSize - 5U);
+
+  constexpr std::size_t kSecondFramePartialPayload = 17;
+  connection.onOutputWritten((FrameHeader::kSize - 5U) + maxFrameSize + FrameHeader::kSize +
+                             kSecondFramePartialPayload);
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 1U);
+  EXPECT_EQ(fragments[0].data(), payloadData + maxFrameSize + kSecondFramePartialPayload);
+  EXPECT_EQ(fragments[0].size(), kPayloadSize - maxFrameSize - kSecondFramePartialPayload);
+
+  connection.onOutputWritten(connection.pendingOutputSize());
+  EXPECT_FALSE(connection.hasPendingOutput());
+}
+
+TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(connection);
+
+  constexpr std::size_t kBlockCount = 40;
+  for (std::size_t blockIndex = 0; blockIndex < kBlockCount; ++blockIndex) {
+    RawBytes owner(1);
+    owner.setSize(1);
+    owner[0] = static_cast<std::byte>(blockIndex);
+    ASSERT_EQ(connection.sendData(1, std::move(owner), false), ErrorCode::NoError);
+  }
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), kBlockCount * 2U);
+
+  std::size_t pendingSize = 0;
+  for (const std::string_view fragment : fragments) {
+    pendingSize += fragment.size();
+  }
+  EXPECT_EQ(pendingSize, kBlockCount * (FrameHeader::kSize + 1U));
+
+  connection.onOutputWritten(pendingSize);
+  EXPECT_FALSE(connection.hasPendingOutput());
+}
+
+TEST(Http2Connection, OversizedHeaderBlockGathersContinuationWithoutRecopy) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  const std::string largeValue(30000, 'Q');
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine("x-large", largeValue));
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView(headers), true), ErrorCode::NoError);
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_GE(fragments.size(), 4U);
+
+  const auto firstHeader = ParseFrameHeader(std::as_bytes(std::span(fragments[0])));
+  const auto continuationHeader = ParseFrameHeader(std::as_bytes(std::span(fragments[2])));
+  EXPECT_EQ(firstHeader.type, FrameType::Headers);
+  EXPECT_EQ(firstHeader.length, connection.peerSettings().maxFrameSize);
+  EXPECT_EQ(continuationHeader.type, FrameType::Continuation);
+  EXPECT_EQ(continuationHeader.streamId, 1U);
+  EXPECT_EQ(fragments[1].data() + fragments[1].size(), fragments[3].data());
+
+  const auto wire = DrainPendingOutput(connection);
+  const auto decoded = DecodeFirstHeadersFromOutput(wire);
+  ASSERT_TRUE(decoded.foundHeaders);
+  ASSERT_TRUE(decoded.decodeSuccess);
+  EXPECT_TRUE(std::ranges::any_of(
+      decoded.headers, [&](const auto& header) { return header.first == "x-large" && header.second == largeValue; }));
+}
 TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   Http2Config config;
   Http2Connection server(config, true);
@@ -1353,7 +1501,8 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
   EXPECT_TRUE(conn.hasPendingOutput());
-  const auto out = conn.getPendingOutput();
+  const auto output = DrainPendingOutput(conn);
+  const auto out = std::span<const std::byte>(output);
   ASSERT_GE(out.size(), FrameHeader::kSize);
   bool foundGoAway = false;
   std::size_t pos = 0;
@@ -1581,7 +1730,8 @@ TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
   EXPECT_TRUE(conn.hasPendingOutput());
 
   // Pending output should contain GOAWAY
-  const auto out = conn.getPendingOutput();
+  const auto output = DrainPendingOutput(conn);
+  const auto out = std::span<const std::byte>(output);
   bool foundGoAway = false;
   std::size_t pos = 0;
   while (pos + FrameHeader::kSize <= out.size()) {

@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/file.hpp"
@@ -20,6 +21,22 @@
 #include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
+
+ITransport::TransportResult ITransport::write(std::span<const std::string_view> buffers) {
+  TransportResult result{0, TransportHint::None};
+  for (const std::string_view buffer : buffers) {
+    if (buffer.empty()) {
+      continue;
+    }
+    const auto [bytesWritten, want] = write(buffer);
+    result.bytesProcessed += bytesWritten;
+    result.want = want;
+    if (want != TransportHint::None || bytesWritten < buffer.size()) {
+      break;
+    }
+  }
+  return result;
+}
 
 PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
     : ITransport(fd, minBytesForZerocopy) {
@@ -212,6 +229,87 @@ ITransport::TransportResult PlainTransport::write(std::string_view firstBuf, std
   }
 
   return ret;
+}
+ITransport::TransportResult PlainTransport::write(std::span<const std::string_view> buffers) {
+  static constexpr uint8_t kMaxGatherBuffers = 64;
+
+#ifdef AERONET_POSIX
+  iovec ioVectors[kMaxGatherBuffers];
+#elifdef AERONET_WINDOWS
+  WSABUF ioVectors[kMaxGatherBuffers];
+#endif
+
+  TransportResult result{0, TransportHint::None};
+  std::size_t bufIdx = 0;  // next buffer to consider
+
+  // This path intentionally uses kernel-copy scatter I/O. HTTP/2 releases accepted
+  // fragments immediately, which is earlier than a MSG_ZEROCOPY completion.
+  while (bufIdx < buffers.size()) {
+    // Build a batch of at most kMaxGatherBuffers non empty iovecs.
+    std::size_t ioVectorCount = 0;
+    for (; bufIdx < buffers.size() && ioVectorCount < kMaxGatherBuffers; ++bufIdx) {
+      const std::string_view buffer = buffers[bufIdx];
+      if (buffer.empty()) {
+        continue;
+      }
+#ifdef AERONET_POSIX
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      ioVectors[ioVectorCount] = {const_cast<char*>(buffer.data()), buffer.size()};
+#elifdef AERONET_WINDOWS
+      ioVectors[ioVectorCount] = {static_cast<ULONG>(buffer.size()), const_cast<char*>(buffer.data())};
+#endif
+      ++ioVectorCount;
+    }
+
+    std::size_t ioVectorIndex = 0;
+    while (ioVectorIndex < ioVectorCount) {
+#ifdef AERONET_POSIX
+      const auto nbWritten = ::writev(_fd, ioVectors + ioVectorIndex, static_cast<int>(ioVectorCount - ioVectorIndex));
+#elifdef AERONET_WINDOWS
+      DWORD bytesSent = 0;
+      const int wsaResult = ::WSASend(_fd, ioVectors + ioVectorIndex, static_cast<DWORD>(ioVectorCount - ioVectorIndex),
+                                      &bytesSent, 0, nullptr, nullptr);
+      const auto nbWritten = wsaResult == 0 ? static_cast<int64_t>(bytesSent) : static_cast<int64_t>(-1);
+#endif
+      if (nbWritten == -1) {
+        const int err = LastSystemError();
+        if (err == error::kInterrupted) {
+          continue;
+        }
+        result.want = err == error::kWouldBlock ? TransportHint::WriteReady : TransportHint::Error;
+        return result;  // we cannot continue to the next batch in case of error.
+      }
+      if (nbWritten == 0) {
+        return result;
+      }
+
+      const auto written = static_cast<std::size_t>(nbWritten);
+      result.bytesProcessed += written;
+      std::size_t remaining = written;
+      while (ioVectorIndex < ioVectorCount) {
+#ifdef AERONET_POSIX
+        const std::size_t ioVectorSize = ioVectors[ioVectorIndex].iov_len;
+#elifdef AERONET_WINDOWS
+        const std::size_t ioVectorSize = ioVectors[ioVectorIndex].len;
+#endif
+        if (remaining < ioVectorSize) {
+#ifdef AERONET_POSIX
+          ioVectors[ioVectorIndex].iov_base = static_cast<char*>(ioVectors[ioVectorIndex].iov_base) + remaining;
+          ioVectors[ioVectorIndex].iov_len -= remaining;
+#elifdef AERONET_WINDOWS
+          ioVectors[ioVectorIndex].buf += remaining;
+          ioVectors[ioVectorIndex].len -= static_cast<ULONG>(remaining);
+#endif
+          break;
+        }
+        remaining -= ioVectorSize;
+        ++ioVectorIndex;
+      }
+    }
+    // Batch completely written. We can proceed to next buffers, if any.
+  }
+
+  return result;
 }
 
 ITransport::TransportResult PlainTransport::sendFile(const File& file, std::size_t& offset, std::size_t count) {

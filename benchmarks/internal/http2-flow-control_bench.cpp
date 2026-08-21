@@ -6,8 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
+#include <utility>
 
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -132,6 +136,65 @@ void BM_ConnectionSettingsExchange(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_ConnectionSettingsExchange);
+
+// ---------------------------------------------------------------------------
+// Connection: queue owned DATA and expose its frame fragments
+// ---------------------------------------------------------------------------
+
+void BM_ConnectionQueueOwnedDataFragments(benchmark::State& state) {
+  const auto payloadSize = static_cast<std::size_t>(state.range(0));
+
+  RawBytes clientInput;
+  clientInput.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+  WriteSettingsFrame(clientInput, {});
+  WriteSettingsAckFrame(clientInput);
+
+  HpackEncoder encoder;
+  RawBytes hpackBlock;
+  encoder.encode(hpackBlock, ":method", "GET");
+  encoder.encode(hpackBlock, ":path", "/benchmark");
+  encoder.encode(hpackBlock, ":scheme", "http");
+  encoder.encode(hpackBlock, ":authority", "localhost");
+  WriteHeadersFrameWithPriority(clientInput, /*streamId=*/1,
+                                std::span<const std::byte>(hpackBlock.begin(), hpackBlock.size()),
+                                /*streamDependency=*/0, /*weight=*/16, /*exclusive=*/false,
+                                /*endStream=*/true, /*endHeaders=*/true);
+
+  vector<std::string_view> fragments;
+  for ([[maybe_unused]] auto iter : state) {
+    state.PauseTiming();
+    {
+      Http2Connection connection(Http2Config{}, /*isServer=*/true);
+      auto input = std::span<const std::byte>(clientInput.begin(), clientInput.size());
+      while (!input.empty()) {
+        const auto result = connection.processInput(input);
+        input = input.subspan(result.bytesConsumed);
+      }
+      connection.onOutputWritten(connection.pendingOutputSize());
+
+      auto headerError = connection.sendHeaders(/*streamId=*/1, http::StatusCodeOK, HeadersView{}, /*endStream=*/false);
+      benchmark::DoNotOptimize(headerError);
+      connection.onOutputWritten(connection.pendingOutputSize());
+
+      RawBytes payload(payloadSize);
+      payload.setSize(payloadSize);
+      state.ResumeTiming();
+
+      auto dataError = connection.sendData(/*streamId=*/1, std::move(payload), /*endStream=*/true);
+      connection.getPendingOutputFragments(fragments);
+      benchmark::DoNotOptimize(dataError);
+      benchmark::DoNotOptimize(fragments.size());
+      benchmark::DoNotOptimize(fragments.data());
+      connection.onOutputWritten(connection.pendingOutputSize());
+      benchmark::ClobberMemory();
+
+      state.PauseTiming();
+    }
+    state.ResumeTiming();
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(payloadSize));
+}
+BENCHMARK(BM_ConnectionQueueOwnedDataFragments)->Arg(1024)->Arg(16384)->Arg(65535);
 
 // ---------------------------------------------------------------------------
 // Connection: process N DATA frames (simulated fast path)

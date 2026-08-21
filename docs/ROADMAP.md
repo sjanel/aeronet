@@ -29,11 +29,6 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
 
 #### P1 - copies, allocations and asymptotic hot paths
 
-- **HTTP/2 outbound frame representation** - `Http2Connection::sendData()` currently copies every payload behind a
-  9-byte frame header in `_outputBuffer`, and `encodeHeaders()` moves then recopies oversized HPACK blocks when emitting
-  CONTINUATION frames. Design a queued-fragment / gather-write representation that can retain payload ownership across
-  partial writes and flow-control stalls, then use scatter I/O where the transport supports it. This shared HTTP/2 core
-  serves both client and server, so validate response streaming, client uploads, plain TCP, TLS and short-write paths.
 - **HPACK dynamic table churn and lookup** - `HpackDynamicTable::add()` front-inserts into a `vector` (O(n) relocation),
   while `HpackEncoder::findHeader()` linearly scans dynamic entries for every encoded header. Benchmark a circular
   contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test
@@ -105,7 +100,6 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 | Benchmark gap | Decision it must support |
 | --- | --- |
 | HPACK insert/evict churn plus hit/miss lookup at multiple table sizes | Dynamic-table container and optional index |
-| HTTP/2 DATA + large HEADERS/CONTINUATION output with partial writes | Fragment queue / scatter-write representation |
 | Stream randomized lookup, frame processing and prune churn through 10 K streams | Stream map/cache and hot/cold split |
 | Client identity/chunked/compressed responses from 0 B through 100 MiB | Response-buffer ownership transfer |
 | Static-file cache hit/miss/thrash at capacities 64 through 4,096 | O(1) or amortized eviction policy |

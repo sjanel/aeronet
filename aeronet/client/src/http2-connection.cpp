@@ -170,19 +170,22 @@ class Http2ClientEngine {
   [[nodiscard]] std::expected<void, HttpClientErrc> flushOutput(HttpClient& client, ITransport& transport,
                                                                 NativeHandle fd, SteadyClock::time_point deadline,
                                                                 bool& requestSent) {
+    auto& fragments = client._outputFragmentsScratch;
     while (_conn.hasPendingOutput()) {
-      const std::span<const std::byte> out = _conn.getPendingOutput();
-      const ITransport::TransportResult res =
-          transport.write(std::string_view{reinterpret_cast<const char*>(out.data()), out.size()});
-      if (res.bytesProcessed > 0) {
+      _conn.getPendingOutputFragments(fragments);
+      assert(!fragments.empty());
+      const ITransport::TransportResult res = transport.write(fragments);
+      if (res.bytesProcessed != 0) {
         _conn.onOutputWritten(res.bytesProcessed);
         requestSent = true;
-        continue;
       }
       if (res.want == TransportHint::Error) {
         return std::unexpected(HttpClientErrc::writeError);
       }
-      const EventBmp interest = (res.want == TransportHint::ReadReady) ? EventIn : EventOut;
+      if (!_conn.hasPendingOutput() || (res.bytesProcessed != 0 && res.want == TransportHint::None)) {
+        continue;
+      }
+      const EventBmp interest = res.want == TransportHint::ReadReady ? EventIn : EventOut;
       if (!client.waitIo(fd, interest, deadline)) {
         return std::unexpected(HttpClientErrc::timeout);
       }
@@ -412,9 +415,9 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, ITranspo
     std::span<const std::byte> chunk;
     std::size_t chunkSize = attempt;
     if (isFileBody) {
-      // sendData copies the payload into the connection's output buffer, so the scratch buffer can be
-      // reused for the next chunk. A short read (< attempt) is fine; only a 0-length read / error before
-      // the whole payload was sent breaks the declared Content-Length.
+      // The span overload gives the connection an owned payload allocation, so this scratch buffer
+      // remains reusable. A short read (< attempt) is fine; only a 0-length read / error before the whole
+      // payload was sent breaks the declared Content-Length.
       fileChunkBuf.ensureAvailableCapacityExponential(attempt);
       const std::size_t nread = filePayload->file.readAt(
           std::as_writable_bytes(std::span<char>(fileChunkBuf.data(), attempt)), filePayload->offset + bodyOff);

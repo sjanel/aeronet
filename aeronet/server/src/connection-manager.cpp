@@ -321,7 +321,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // On Windows, WSAPoll can fail to report writability on loopback sockets, leaving
     // buffered response data (including HTTP/2 DATA frames) stuck in outBuffer indefinitely.
     // Periodic retry here ensures forward progress regardless of missed poll events.
-    if (!state.outBuffer.empty() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
+    if (state.hasPendingOutput() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
       flushOutbound(cnxIt);
       ++flushRetries;
     }
@@ -641,7 +641,7 @@ void SingleHttpServer::acceptNewConnections() {
     }
 
     const bool closeNow = processConnectionInput(cnxIt);
-    if (closeNow && pCnx->outBuffer.empty() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
+    if (closeNow && !pCnx->hasPendingOutput() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     } else {
       // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
@@ -804,13 +804,13 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   ConnectionState* pCnx = _connections.pConnectionState(cnxIt);
   assert(pCnx != nullptr);
 
-  // NOTE: cnx.outBuffer can legitimately be non-empty when we get EPOLLIN.
+  // Pending output can legitimately be non-empty when we get EPOLLIN.
   // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
   // can generate outbound records that must be written before further progress).
   // Opportunistically flush here; if still blocked on write, yield and wait for EPOLLOUT.
-  if (!pCnx->outBuffer.empty()) {
+  if (pCnx->hasPendingOutput()) {
     flushOutbound(cnxIt);
-    if (!pCnx->outBuffer.empty()) {
+    if (pCnx->hasPendingOutput()) {
       if (!pCnx->waitingWritable) {
         enableWritableInterest(cnxIt);
       }
@@ -899,7 +899,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     }
   }
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write
-  if (!pCnx->outBuffer.empty()) {
+  if (pCnx->hasPendingOutput()) {
     flushOutbound(cnxIt);
   }
   return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
