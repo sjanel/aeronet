@@ -277,7 +277,7 @@ TEST_F(HttpResponseTest, ConstructorFromBytesSpan) {
 }
 
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
-  static constexpr std::string_view kBadConcatenatedHeaders[] = {
+  static constexpr std::string_view kBadConcatenatedHeaders[]{
       "HeaderWithoutSep\r\n",
       "HeaderWithNoValue: \r\nAnotherHeaderWithoutSep\r\n",
       "HeaderWithNoCRLF: Value",
@@ -336,19 +336,19 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
 }
 
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
-  static constexpr std::string_view kConcatenatedHeaders[] = {
+  static constexpr std::string_view kConcatenatedHeaders[]{
       "",
       "X-Custom-Header: CustomValue\r\n",
       "X-1: Salut\r\nX-2: Bonjour\r\nX-3: Hola\r\n",
   };
 
-  static constexpr std::string_view kBodies[] = {
+  static constexpr std::string_view kBodies[]{
       "",
       "Hello!",
       "This is a longer body to test the HttpResponse constructor with concatenated headers.",
   };
 
-  static constexpr std::size_t kAdditionalCapacities[] = {
+  static constexpr std::size_t kAdditionalCapacities[]{
       0U,
       16U,
       64U,
@@ -735,6 +735,24 @@ TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
   auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("X-Missing", "v1");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, SetSameReason) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.reason("OK");
+  EXPECT_EQ(resp.reason(), "OK");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n")) << full;
+
+  resp = HttpResponse(http::StatusCodeOK);
+  resp.reason("");
+  EXPECT_EQ(resp.reason(), "");
+  resp.reason("");
+  EXPECT_EQ(resp.reason(), "");
+
+  full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
@@ -2237,7 +2255,7 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
 // -----------------------------------------------------------------------------
 
 TEST_F(HttpResponseTest, EmptyBodySynthesizesContentLengthZero) {
-  static constexpr http::StatusCode kStatuses[] = {200, 201, 301, 302, 303, 307, 308, 400, 404, 418, 500, 503};
+  static constexpr http::StatusCode kStatuses[]{200, 201, 301, 302, 303, 307, 308, 400, 404, 418, 500, 503};
   for (http::StatusCode status : kStatuses) {
     HttpResponse resp(status);
     const auto full = concatenated(std::move(resp));
@@ -2262,7 +2280,7 @@ TEST_F(HttpResponseTest, EmptyBodyRedirectWithLocationGetsContentLengthZero) {
 TEST_F(HttpResponseTest, EmptyBodyBodylessStatusesGetNoContentLength) {
   // 1xx / 204 / 304 are always terminated by the first empty line and either MUST NOT (1xx, 204) or cannot
   // reliably (304) carry a synthesized Content-Length (RFC 7230 §3.3.2 / §3.3.3).
-  static constexpr http::StatusCode kStatuses[] = {100, 101, 102, 103, 199, 204, 304};
+  static constexpr http::StatusCode kStatuses[]{100, 101, 102, 103, 199, 204, 304};
   for (http::StatusCode status : kStatuses) {
     HttpResponse resp(status);
     const auto full = concatenated(std::move(resp));
@@ -2610,7 +2628,7 @@ TEST_F(HttpResponseTest, Body_NoEncodingNegotiated_NoCompression) {
 
 // Test successful compression with compressed body
 TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
-  static constexpr std::string_view kVaryContents[] = {
+  static constexpr std::string_view kVaryContents[]{
       "", http::AcceptEncoding, "User-Agent", "Accept-Encoding, User-Agent", "*",
   };
 
@@ -3890,7 +3908,7 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
           }
           break;
         case 4: {
-          static constexpr http::StatusCode opts[] = {200, 204, 404, 418};
+          static constexpr http::StatusCode opts[]{200, 204, 404, 418};
           lastStatus = opts[static_cast<std::size_t>(step) % std::size(opts)];
           resp.status(lastStatus);
           break;
@@ -4371,8 +4389,8 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoDirectCompressionNoTrailers_Id
 // =============================================================================
 
 TEST_F(HttpResponseTest, FinalizationCombinations) {
-  static constexpr std::size_t kMinCapturedBodySz[] = {1UL, 4096UL};
-  static constexpr std::string_view kConcatenatedGlobalHeaders[] = {
+  static constexpr std::size_t kMinCapturedBodySz[]{1UL, 4096UL};
+  static constexpr std::string_view kConcatenatedGlobalHeaders[]{
       "",
       "server: aeronet\r\n",
       "x-custom: value\r\nx-another: another-value\r\n",
@@ -4699,7 +4717,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedEmptyTrailerValue) {
 }
 
 TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
-  static constexpr bool kConnection[] = {true, false};
+  static constexpr bool kConnection[]{true, false};
 
   for (bool keepAlive : kConnection) {
     // Verify that responses without trailers still use Content-Length
@@ -4717,9 +4735,9 @@ TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
 }
 
 TEST_F(HttpResponseTest, NoTrailersNoChunkedConversionCapturedBody) {
-  static constexpr bool kConnection[] = {true, false};
+  static constexpr bool kConnection[]{true, false};
 
-  static constexpr std::size_t kMinCapturedBodySz[] = {1UL};
+  static constexpr std::size_t kMinCapturedBodySz[]{1UL};
 
   for (std::size_t minCapturedBodySz : kMinCapturedBodySz) {
     for (bool keepAlive : kConnection) {

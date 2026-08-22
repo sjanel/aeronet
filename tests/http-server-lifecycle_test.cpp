@@ -446,6 +446,15 @@ TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   std::atomic_bool stop{false};
   std::jthread th([&] { server.runUntil([&] { return stop.load(); }); });
   test::WaitForServer(server);
+
+  // isRunning() flips true in prepareRun(), before the event loop's first tick applies the posted
+  // update: stopping right after WaitForServer races the very first eventLoop() call. Poll for the
+  // observable effect instead of assuming one tick has already happened.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+  while (server.config().maxRequestsPerConnection != 12345U && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+
   stop.store(true);
   th.join();
 

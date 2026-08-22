@@ -42,7 +42,7 @@ using test::ScopedTempFile;
 TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(64UL * 1024, 'A');
   test::ScopedTempDir tmpDir;
@@ -99,7 +99,7 @@ TEST(ConnectionStateSendfileTest, TransportFileInvalidFd) {
 TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(128UL * 1024, 'B');
   test::ScopedTempDir tmpDir;
@@ -148,7 +148,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
 TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEnableWritable) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(4096, 'C');
   test::ScopedTempDir tmpDir;
@@ -172,7 +172,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEna
 TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositive) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(1024, 'D');
   test::ScopedTempDir tmpDir;
@@ -196,7 +196,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositi
 TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlock) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   // Empty file => remaining == 0
   test::ScopedTempDir tmpDir;
@@ -220,7 +220,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlo
 TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(1024, 'Z');
   test::ScopedTempDir tmpDir;
@@ -245,7 +245,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) 
 TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   // Create a large file to force multiple chunks in the TLS path
   const std::size_t totalSize = 1UL << 20U;  // 1 MiB
@@ -301,7 +301,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
 TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
   // Create an empty file to ensure sendfile has nothing to send
@@ -318,7 +318,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
 TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
   // Empty file to ensure pread returns 0 and no tunnel buffer is filled
@@ -518,7 +518,7 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
 TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
   // attach a plain transport that writes to sv[0]
@@ -660,7 +660,7 @@ TEST(ConnectionStateTransportTest, TransportWriteStringSkipsHandshakeWhenAlready
 TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenAlreadyEstablished) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
   state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
@@ -675,7 +675,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
 TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
+  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   const std::string content(16, 'E');
   test::ScopedTempDir tmpDir;

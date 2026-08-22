@@ -6,11 +6,10 @@
 #include <openssl/types.h>
 
 #include <cstddef>
-#include <span>
 #include <string>
 #include <string_view>
 
-#include "aeronet/base64url.hpp"
+#include "aeronet/base64.hpp"
 #include "aeronet/jwt-algorithm-set.hpp"
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"
@@ -23,7 +22,7 @@ namespace aeronet {
 namespace {
 std::string B64Url(std::string_view in) {
   std::string out(B64UrlEncodedLen(in.size()), '\0');
-  B64UrlEncode(std::span<const char>(in.data(), in.size()), out.data());
+  B64UrlEncode(in, out.data());
   return out;
 }
 

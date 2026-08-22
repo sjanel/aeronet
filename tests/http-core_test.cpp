@@ -582,7 +582,7 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
   });
 
   // Representative variants for common methods.
-  static constexpr std::pair<std::string_view, std::string_view> cases[] = {
+  static constexpr std::pair<std::string_view, std::string_view> cases[]{
       {"GET /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
       {"get /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
       {"GeT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
@@ -923,7 +923,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   });
 
   // Payloads of different sizes to exercise edge cases
-  static constexpr std::size_t sizes[] = {100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
+  static constexpr std::size_t sizes[]{100, 1024, 8UL * 1024, 16UL * 1024, 64UL * 1024, 256UL * 1024, 1024UL * 1024};
 
   for (std::size_t sz : sizes) {
     std::string payload(sz, static_cast<char>('a' + (sz % 26)));
@@ -3209,7 +3209,7 @@ TEST(HttpStreamingAdaptive, CoalescedAndLargePaths) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMinCapturedBodySize(kLargeSize - 1U); });
 
   std::string large(kLargeSize, 'x');
-  static constexpr std::byte kSmall[] = {
+  static constexpr std::byte kSmall[]{
       std::byte{'s'}, std::byte{'m'}, std::byte{'a'}, std::byte{'l'}, std::byte{'l'},
   };
   ts.router().setDefault([&](const HttpRequestView&, HttpResponseWriter& writer) {

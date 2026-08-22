@@ -63,10 +63,21 @@ enum class JwtAlgorithm : std::uint8_t {
 // Parse a JOSE "alg" header value into `out`. Returns false for unknown algorithms and for the
 // unsecured "none" value (which aeronet refuses by design).
 [[nodiscard]] constexpr bool FromString(std::string_view str, JwtAlgorithm& out) noexcept {
-  for (auto candidate :
-       {JwtAlgorithm::HS256, JwtAlgorithm::HS384, JwtAlgorithm::HS512, JwtAlgorithm::RS256, JwtAlgorithm::RS384,
-        JwtAlgorithm::RS512, JwtAlgorithm::ES256, JwtAlgorithm::ES384, JwtAlgorithm::ES512, JwtAlgorithm::PS256,
-        JwtAlgorithm::PS384, JwtAlgorithm::PS512, JwtAlgorithm::EdDSA}) {
+  for (auto candidate : {
+           JwtAlgorithm::HS256,
+           JwtAlgorithm::HS384,
+           JwtAlgorithm::HS512,
+           JwtAlgorithm::RS256,
+           JwtAlgorithm::RS384,
+           JwtAlgorithm::RS512,
+           JwtAlgorithm::ES256,
+           JwtAlgorithm::ES384,
+           JwtAlgorithm::ES512,
+           JwtAlgorithm::PS256,
+           JwtAlgorithm::PS384,
+           JwtAlgorithm::PS512,
+           JwtAlgorithm::EdDSA,
+       }) {
     if (ToString(candidate) == str) {
       out = candidate;
       return true;

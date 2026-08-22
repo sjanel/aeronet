@@ -544,12 +544,13 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
     return {size, TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
-  TransportResult write(std::string_view head, std::string_view body) {
+  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+
+  static TransportResult write(std::string_view head, std::string_view body) {
     return {head.size() + body.size(), TransportHint::None};
   }
 
-  [[nodiscard]] bool supportsSendfile() const noexcept { return true; }
+  static bool supportsSendfile() noexcept { return true; }
 
   TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) {
     ++_sendFileCalls;
@@ -608,7 +609,7 @@ class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallback
   }
 
   // Head write (scatter): always accepted verbatim so the body phase is reached.
-  TransportResult write(std::string_view head, std::string_view body) {
+  static TransportResult write(std::string_view head, std::string_view body) {
     return {head.size() + body.size(), TransportHint::None};
   }
 

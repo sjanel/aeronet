@@ -134,7 +134,7 @@ struct BoundsU64 {
   uint64_t hi;
 };
 
-constexpr BoundsU64 kU64Bounds[] = {
+constexpr BoundsU64 kU64Bounds[]{
     {1, 0ULL, 9ULL},
     {2, 10ULL, 99ULL},
     {4, 1000ULL, 9999ULL},
@@ -150,7 +150,7 @@ struct BoundsU32 {
   uint32_t hi;
 };
 
-constexpr BoundsU32 kU32Bounds[] = {
+constexpr BoundsU32 kU32Bounds[]{
     {1, 0u, 9u}, {3, 100u, 999u}, {5, 10000u, 99999u}, {7, 1000000u, 9999999u}, {10, 1000000000u, 4294967295u},
 };
 

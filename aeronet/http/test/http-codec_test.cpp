@@ -81,7 +81,7 @@ namespace {
   return false;
 }
 
-constexpr std::string_view kVaryHeaderContent[] = {
+constexpr std::string_view kVaryHeaderContent[]{
     std::string_view(),  // to test no vary header at all
     "",                  // tests an empty Vary header value
     "Something, Anything",
@@ -787,7 +787,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
   // malformed double-comma should be treated as malformed by the decoder iterator
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
-  std::string_view chunksArr[] = {"dummy"};
+  constexpr std::string_view chunksArr[]{"dummy"};
   std::span<const std::string_view> chunks(chunksArr, 1);
 
   RawChars bodyBuf;
@@ -860,7 +860,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
   // identity and unknown encoding should return unsupported media type
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, unknown");
 
-  std::string_view chunksArr[] = {"dummy"};
+  constexpr std::string_view chunksArr[]{"dummy"};
   std::span<const std::string_view> chunks(chunksArr, 1);
 
   RawChars bodyBuf;

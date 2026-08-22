@@ -35,13 +35,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    base64url_test
-    test/base64url_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-AeronetAddUnitTest(
     bytes-string_test
     test/bytes-string_test.cpp
     LIBRARIES
@@ -98,11 +91,6 @@ endif()
 AeronetAddUnitTest(
     http-constants_test
     test/http-constants_test.cpp
-)
-
-AeronetAddUnitTest(
-    ipow_test
-    test/ipow_test.cpp
 )
 
 if(AERONET_ENABLE_GLAZE)

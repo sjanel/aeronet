@@ -12,7 +12,7 @@
 namespace aeronet {
 
 TEST(MergeableHeaders, KnownListStyleHeadersReturnComma) {
-  static constexpr std::string_view kHeaders[] = {
+  static constexpr std::string_view kHeaders[]{
       "accept",
       "accept-charset",
       http::AcceptEncoding,

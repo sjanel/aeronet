@@ -6,6 +6,7 @@
 
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "amc/type_traits.hpp"
 
 namespace aeronet {
 
@@ -67,7 +68,7 @@ class JwtKey {
   // The "kid" carried by a JWK, or empty for HMAC/PEM keys (or a JWK without one).
   [[nodiscard]] std::string_view keyId() const noexcept { return kid; }
 
-  using trivially_relocatable = std::true_type;
+  using trivially_relocatable = amc::is_trivially_relocatable<RawChars>::type;
 
  private:
   friend class Jwt;

@@ -319,7 +319,7 @@ TEST(Http2Frame, WritePriorityFrame) {
 // ============================
 
 TEST(Http2Frame, ParseRstStreamFrame) {
-  const std::byte payload[] = {
+  const std::byte payload[]{
       std::byte{0x00},
       std::byte{0x00},
       std::byte{0x00},
@@ -413,7 +413,7 @@ TEST(Http2Frame, WritePingFrame) {
   RawBytes buffer;
   PingFrame pingFrame;
   pingFrame.isAck = true;
-  static constexpr std::byte opaqueData[] = {
+  static constexpr std::byte opaqueData[]{
       std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
       std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
   };
@@ -472,7 +472,7 @@ TEST(Http2Frame, WriteGoAwayFrame) {
 // ============================
 
 TEST(Http2Frame, ParseWindowUpdateFrame) {
-  const std::byte payload[] = {
+  const std::byte payload[]{
       std::byte{0x00},
       std::byte{0x00},
       std::byte{0x10},
@@ -503,7 +503,7 @@ TEST(Http2Frame, WriteWindowUpdateFrame) {
 // ============================
 
 TEST(Http2Frame, ParseContinuationFrame) {
-  const std::byte payload[] = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
+  const std::byte payload[]{std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
 
   FrameHeader header{};
   header.length = 3;

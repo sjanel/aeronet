@@ -83,7 +83,7 @@ void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
 // (often /usr/lib/ssl) plus the SSL_CERT_FILE / SSL_CERT_DIR env vars, and that directory is frequently
 // absent from minimal container images that ship just /etc/ssl/certs/ca-certificates.crt -- leaving the
 // store empty and every verification failing with "certificate verify failed".
-constexpr const char* const kDefaultCaBundleFiles[] = {
+constexpr const char* const kDefaultCaBundleFiles[]{
     "/etc/ssl/certs/ca-certificates.crt",  // Debian, Ubuntu, Gentoo, Arch, Alpine
     "/etc/pki/tls/certs/ca-bundle.crt",    // Fedora, RHEL, CentOS
     "/etc/ssl/ca-bundle.pem",              // openSUSE
@@ -92,7 +92,7 @@ constexpr const char* const kDefaultCaBundleFiles[] = {
 };
 
 // Well-known hashed-cert directories probed as a fallback in the same situation.
-constexpr const char* const kDefaultCaBundleDirs[] = {
+constexpr const char* const kDefaultCaBundleDirs[]{
     "/etc/ssl/certs",                // Debian, Ubuntu, SUSE
     "/etc/pki/tls/certs",            // Fedora, RHEL
     "/system/etc/security/cacerts",  // Android
@@ -103,7 +103,7 @@ constexpr const char* const kDefaultCaBundleDirs[] = {
 // honours it, so aeronet must not widen that (possibly deliberately restricted) trust set by loading the
 // well-known system bundles on top of it.
 bool SystemTrustStoreConfiguredViaEnv() {
-  const char* envNames[] = {::X509_get_default_cert_file_env(), ::X509_get_default_cert_dir_env()};
+  const char* envNames[]{::X509_get_default_cert_file_env(), ::X509_get_default_cert_dir_env()};
   return std::ranges::any_of(envNames, [](const char* envName) {
     const char* pEnv = std::getenv(envName);
     return pEnv != nullptr && *pEnv != '\0';

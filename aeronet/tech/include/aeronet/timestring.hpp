@@ -76,7 +76,7 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
       {'J', 'u', 'l'}, {'A', 'u', 'g'}, {'S', 'e', 'p'}, {'O', 'c', 't'}, {'N', 'o', 'v'}, {'D', 'e', 'c'},
   };
 
-  static constexpr char kSkeleton[] = {
+  static constexpr char kSkeleton[]{
       '?', '?', '?', ',', ' ', '?', '?', ' ', '?', '?', '?', ' ', '?', '?', '?',
       '?', ' ', '?', '?', ':', '?', '?', ':', '?', '?', ' ', 'G', 'M', 'T',
   };

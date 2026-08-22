@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "aeronet/file.hpp"
 #include "aeronet/system-error.hpp"
@@ -355,8 +356,8 @@ TEST(TransportTest, SelfOperatorEqualDoesNothing) {
   Transport transport;
   auto& self = transport;
   self = std::move(transport);
-  EXPECT_FALSE(transport);
-  EXPECT_EQ(transport.kind(), TransportKind::Empty);
+  EXPECT_FALSE(self);
+  EXPECT_EQ(self.kind(), TransportKind::Empty);
 }
 
 TEST(TransportTest, InlinePlainTransportMovesAndLeavesSourceEmpty) {
@@ -368,8 +369,8 @@ TEST(TransportTest, InlinePlainTransportMovesAndLeavesSourceEmpty) {
   EXPECT_NE(transport.get<PlainTransport>(), nullptr);
 
   Transport moved(std::move(transport));
-  EXPECT_FALSE(transport);
-  EXPECT_EQ(transport.kind(), TransportKind::Empty);
+  EXPECT_FALSE(transport);                            // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(transport.kind(), TransportKind::Empty);  // NOLINT(bugprone-use-after-move)
   EXPECT_NE(moved.get<PlainTransport>(), nullptr);
   moved.reset();
   EXPECT_FALSE(moved);
@@ -411,7 +412,7 @@ TEST(TransportTest, MoveAssignmentReleasesThePreviousOwnedBackend) {
   Transport destination(std::make_unique<CountingTransportBackend>(destructions));
 
   destination = std::move(source);
-  EXPECT_FALSE(source);
+  EXPECT_FALSE(source);  // NOLINT(bugprone-use-after-move)
   EXPECT_EQ(destructions, 1U);
 
   destination.reset();

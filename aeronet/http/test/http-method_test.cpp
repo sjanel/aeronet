@@ -26,7 +26,7 @@ struct MethodCase {
   std::string_view token;
 };
 
-constexpr MethodCase kMethodCases[] = {
+constexpr MethodCase kMethodCases[]{
     {Method::GET, "GET"},         {Method::HEAD, "HEAD"},     {Method::POST, "POST"},
     {Method::PUT, "PUT"},         {Method::DELETE, "DELETE"}, {Method::CONNECT, "CONNECT"},
     {Method::OPTIONS, "OPTIONS"}, {Method::TRACE, "TRACE"},   {Method::PATCH, "PATCH"},

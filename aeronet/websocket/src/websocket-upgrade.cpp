@@ -5,7 +5,7 @@
 #include <limits>
 #include <string_view>
 
-#include "aeronet/base64-encode.hpp"
+#include "aeronet/base64.hpp"
 #include "aeronet/sha1.hpp"
 #include "aeronet/websocket-constants.hpp"
 
@@ -63,7 +63,7 @@ B64EncodedSha1 ComputeWebSocketAccept(std::string_view key) {
 
   B64EncodedSha1 ret;
 
-  B64Encode(hash, ret.data(), ret.data() + ret.size());
+  B64Encode(std::string_view(hash.data(), hash.size()), ret.data(), ret.data() + ret.size());
 
   return ret;
 }
