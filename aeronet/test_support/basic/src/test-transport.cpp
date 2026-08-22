@@ -50,7 +50,7 @@ uint64_t TestTransport::nextRandom() {
   return result;
 }
 
-ITransport::TransportResult TestTransport::read(char* buf, std::size_t len) {
+TransportResult TestTransport::read(char* buf, std::size_t len) {
   ++_readCallCount;
 
   // Check one-shot reset
@@ -104,7 +104,7 @@ ITransport::TransportResult TestTransport::read(char* buf, std::size_t len) {
   return {data.size(), TransportHint::None};
 }
 
-ITransport::TransportResult TestTransport::write(std::string_view data) {
+TransportResult TestTransport::write(std::string_view data) {
   ++_writeCallCount;
 
   // Check one-shot reset

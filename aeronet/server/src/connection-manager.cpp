@@ -85,8 +85,7 @@ inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& met
 
 inline void CheckHandshake(bool isTlsEnabled, ConnectionState& state, TlsMetricsInternal& metrics,
                            const TlsHandshakeCallback& cb, NativeHandle fd, TransportHint want = TransportHint::None) {
-  if (isTlsEnabled && !state.tlsEstablished && !state.tlsHandshakeEventEmitted &&
-      dynamic_cast<TlsTransport*>(state.transport.get()) != nullptr) {
+  if (isTlsEnabled && !state.tlsEstablished && !state.tlsHandshakeEventEmitted && state.transport.isTls()) {
     std::string_view reason;
     if (state.tlsHandshakeObserver.alpnStrictMismatch) {
       reason = kTlsHandshakeFailureReasonAlpnStrictMismatch;
@@ -380,7 +379,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // TLS handshake timeout (if enabled). Applies only while handshake pending.
     if (_config.tls.handshakeTimeout.count() > 0 && _config.tls.enabled &&
         state.tlsInfo.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
-        !state.transport->handshakeDone()) {
+        !state.transport.handshakeDone()) {
       if (now > state.tlsInfo.handshakeStart + _config.tls.handshakeTimeout) {
         FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, fd,
                              kTlsHandshakeFailureReasonHandshakeTimeout);
@@ -543,10 +542,10 @@ void SingleHttpServer::acceptNewConnections() {
       state.tlsInfo.handshakeStart = state.lastActivity;
       ++_tls.handshakesInFlight;
     } else {
-      state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+      state.transport = Transport(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
     }
 #else
-    state.transport = std::make_unique<PlainTransport>(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+    state.transport = Transport(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
 #endif
 
 #ifdef AERONET_ENABLE_TEST_HOOKS
@@ -591,7 +590,7 @@ void SingleHttpServer::acceptNewConnections() {
                      LastSystemError());
 #ifdef AERONET_ENABLE_OPENSSL
           if (_tls.ctxHolder) {
-            auto* tlsTr = dynamic_cast<TlsTransport*>(pCnx->transport.get());
+            auto* tlsTr = pCnx->transport.get<TlsTransport>();
             if (tlsTr != nullptr) {
               const SSL* ssl = tlsTr->rawSsl();
               if (ssl != nullptr) {
@@ -625,7 +624,7 @@ void SingleHttpServer::acceptNewConnections() {
       }
       bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
       _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-      if (bytesRead < chunkSize && !pCnx->transport->hasPendingReadData()) {
+      if (bytesRead < chunkSize && !pCnx->transport.hasPendingReadData()) {
         // For TLS transports: OpenSSL may hold already-decrypted data in its internal buffer that the kernel socket no
         // longer signals via epoll (critical with EPOLLET).  Continue reading if the transport reports pending data —
         // otherwise the server would stall until the peer sends more, causing severe throughput degradation with few
@@ -740,7 +739,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 }
 
 bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle fd, ConnectionState& state) {
-  if (state.tlsEstablished || !state.transport->handshakeDone()) {
+  if (state.tlsEstablished || !state.transport.handshakeDone()) {
     return false;
   }
 #ifdef AERONET_ENABLE_OPENSSL
@@ -933,7 +932,7 @@ NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std:
   // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
   // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
   // reused for the next read, causing data corruption.
-  state.transport = std::make_unique<PlainTransport>(upstreamFd, ZerocopyMode::Disabled, 0);
+  state.transport = Transport(upstreamFd, ZerocopyMode::Disabled, 0);
   state.peerFd = clientFd;
   state.connectPending = cres.connectPending;
 

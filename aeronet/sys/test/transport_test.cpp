@@ -8,9 +8,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/file.hpp"
 #include "aeronet/system-error.hpp"
@@ -103,7 +105,6 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
       writeFd, {IoAction{-1, error::kInterrupted}, IoAction{-1, error::kWouldBlock}, IoAction{-1, error::kWouldBlock}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Enabled, 0U);
-  EXPECT_FALSE(transport.hasPendingReadData());
   std::string_view data("foobar");
 
   // First write: error::kInterrupted is retried internally, then hits error::kWouldBlock -> WriteReady with 0 bytes
@@ -252,21 +253,21 @@ TEST(PlainTransport, GatherWriteTracksPartialProgressAcrossFragments) {
 }
 namespace {
 
-// A minimal transport that overrides nothing beyond the two pure-virtual I/O methods, so it inherits the
-// ITransport defaults: no sendfile support, and a sendFile() that reports it is unsupported.
-class BaseDefaultsTransport final : public ITransport {
+// A minimal custom backend that provides only read/write, so Transport supplies the default capabilities.
+class BaseDefaultsTransport final : public TransportBackend<BaseDefaultsTransport> {
  public:
-  TransportResult read(char* /*buf*/, std::size_t /*len*/) override { return {0, TransportHint::None}; }
-  TransportResult write(std::string_view /*data*/) override { return {0, TransportHint::None}; }
+  static TransportResult read(char* /*buf*/, std::size_t /*len*/) { return {0, TransportHint::None}; }
+
+  static TransportResult write(std::string_view /*data*/) { return {0, TransportHint::None}; }
 };
 
-class OrderedDefaultsTransport final : public ITransport {
+class OrderedDefaultsTransport final : public TransportBackend<OrderedDefaultsTransport> {
  public:
   explicit OrderedDefaultsTransport(bool shortFirstWrite) : _shortFirstWrite(shortFirstWrite) {}
 
-  TransportResult read(char* /*buf*/, std::size_t /*len*/) override { return {0, TransportHint::None}; }
+  static TransportResult read(char* /*buf*/, std::size_t /*len*/) { return {0, TransportHint::None}; }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     const std::size_t written =
         _shortFirstWrite && _writeCalls == 0 ? std::min<std::size_t>(2, data.size()) : data.size();
     _written.append(data.substr(0, written));
@@ -282,23 +283,195 @@ class OrderedDefaultsTransport final : public ITransport {
   std::size_t _writeCalls{0};
   bool _shortFirstWrite;
 };
+
+class CountingTransportBackend final : public TransportBackend<CountingTransportBackend> {
+ public:
+  explicit CountingTransportBackend(std::size_t& destructions) : _destructions(destructions) {}
+
+  ~CountingTransportBackend() { ++_destructions; }
+
+  static TransportResult read(char* /*buf*/, std::size_t /*len*/) { return {1, TransportHint::None}; }
+  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+
+ private:
+  std::size_t& _destructions;
+};
+
+class CapabilityTransportBackend final : public TransportBackend<CapabilityTransportBackend> {
+ public:
+  static TransportResult read(char* /*buf*/, std::size_t len) { return {len, TransportHint::None}; }
+  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+
+  static TransportResult write(std::string_view firstBuf, std::string_view secondBuf) {
+    return {firstBuf.size() + secondBuf.size(), TransportHint::None};
+  }
+
+  static TransportResult write(std::span<const std::string_view> buffers) {
+    std::size_t size = 0;
+    for (const std::string_view buffer : buffers) {
+      size += buffer.size();
+    }
+    return {size, TransportHint::None};
+  }
+
+  static TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) {
+    offset += count;
+    return {count, TransportHint::None};
+  }
+
+  static std::size_t pollZerocopyCompletions() noexcept { return 7; }
+  static bool supportsSendfile() noexcept { return true; }
+  static bool handshakeDone() noexcept { return false; }
+  static bool hasPendingReadData() noexcept { return true; }
+  static bool isZerocopyEnabled() noexcept { return true; }
+  static bool hasZerocopyPending() noexcept { return true; }
+
+  void disableZerocopy() noexcept { _zerocopyDisabled = true; }
+  [[nodiscard]] bool zerocopyDisabled() const noexcept { return _zerocopyDisabled; }
+
+ private:
+  bool _zerocopyDisabled{false};
+};
 }  // namespace
 
+static_assert(!std::is_polymorphic_v<Transport>);
+static_assert(!std::is_polymorphic_v<PlainTransport>);
+#if INTPTR_MAX == INT64_MAX
+static_assert(sizeof(Transport) == 3 * sizeof(void*));
+#endif
+static_assert(sizeof(PlainTransport) == sizeof(SocketTransportState));
+
+TEST(TransportTest, DefaultTransportIsEmpty) {
+  Transport transport;
+  EXPECT_FALSE(transport);
+  EXPECT_EQ(transport.kind(), TransportKind::Empty);
+  EXPECT_EQ(transport.get<PlainTransport>(), nullptr);
+  EXPECT_EQ(transport.get<BaseDefaultsTransport>(), nullptr);
+  EXPECT_FALSE(transport.isPlain());
+  EXPECT_FALSE(transport.isTls());
+}
+
+TEST(TransportTest, SelfOperatorEqualDoesNothing) {
+  Transport transport;
+  auto& self = transport;
+  self = std::move(transport);
+  EXPECT_FALSE(transport);
+  EXPECT_EQ(transport.kind(), TransportKind::Empty);
+}
+
+TEST(TransportTest, InlinePlainTransportMovesAndLeavesSourceEmpty) {
+  Transport transport(-1, ZerocopyMode::Disabled, 0U);
+
+  EXPECT_EQ(transport.kind(), TransportKind::Plain);
+  EXPECT_TRUE(transport.isPlain());
+  EXPECT_FALSE(transport.isTls());
+  EXPECT_NE(transport.get<PlainTransport>(), nullptr);
+
+  Transport moved(std::move(transport));
+  EXPECT_FALSE(transport);
+  EXPECT_EQ(transport.kind(), TransportKind::Empty);
+  EXPECT_NE(moved.get<PlainTransport>(), nullptr);
+  moved.reset();
+  EXPECT_FALSE(moved);
+}
+
+TEST(TransportTest, ErasedCustomOwnershipAndBorrowingRespectLifetime) {
+  std::size_t destructions = 0;
+  CountingTransportBackend borrowedBackend(destructions);
+  {
+    Transport borrowed = Transport::Borrow(borrowedBackend);
+    EXPECT_EQ(borrowed.kind(), TransportKind::Custom);
+    EXPECT_FALSE(borrowed.isPlain());
+    EXPECT_FALSE(borrowed.isTls());
+    EXPECT_EQ(borrowed.get<CountingTransportBackend>(), &borrowedBackend);
+    const Transport& constBorrowed = borrowed;
+    EXPECT_EQ(constBorrowed.get<CountingTransportBackend>(), &borrowedBackend);
+    EXPECT_EQ(borrowed.get<BaseDefaultsTransport>(), nullptr);
+    EXPECT_EQ(borrowed.get<PlainTransport>(), nullptr);
+    EXPECT_EQ(borrowed.write("abc").bytesProcessed, 3U);
+    borrowed.reset();
+    EXPECT_FALSE(borrowed);
+    EXPECT_EQ(destructions, 0U);
+  }
+  EXPECT_EQ(destructions, 0U);
+
+  {
+    Transport owned(std::make_unique<CountingTransportBackend>(destructions));
+    EXPECT_EQ(owned.kind(), TransportKind::Custom);
+    owned.reset();
+    EXPECT_FALSE(owned);
+    EXPECT_EQ(destructions, 1U);
+  }
+  EXPECT_EQ(destructions, 1U);
+}
+
+TEST(TransportTest, MoveAssignmentReleasesThePreviousOwnedBackend) {
+  std::size_t destructions = 0;
+  Transport source(std::make_unique<CountingTransportBackend>(destructions));
+  Transport destination(std::make_unique<CountingTransportBackend>(destructions));
+
+  destination = std::move(source);
+  EXPECT_FALSE(source);
+  EXPECT_EQ(destructions, 1U);
+
+  destination.reset();
+  EXPECT_EQ(destructions, 2U);
+}
+
 TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
-  BaseDefaultsTransport transport;
+  BaseDefaultsTransport backend;
+  Transport transport = Transport::Borrow(backend);
+  char buf{};
+  EXPECT_EQ(transport.read(&buf, 1).bytesProcessed, 0U);
+  EXPECT_TRUE(transport.handshakeDone());
+  EXPECT_FALSE(transport.hasPendingReadData());
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  EXPECT_FALSE(transport.hasZerocopyPending());
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+  transport.disableZerocopy();
   EXPECT_FALSE(transport.supportsSendfile());
   File file;  // ignored by the default sendFile()
   std::size_t offset = 0;
   const auto res = transport.sendFile(file, offset, 0);
   EXPECT_EQ(res.bytesProcessed, 0U);
   EXPECT_EQ(res.want, TransportHint::Error);
+
+  const auto writeResult = transport.write("HEAD", "BODY");
+  EXPECT_EQ(writeResult.bytesProcessed, 0U);
+  EXPECT_EQ(writeResult.want, TransportHint::None);
+}
+
+TEST(TransportTest, CustomBackendDispatchesProvidedOperations) {
+  CapabilityTransportBackend backend;
+  Transport transport = Transport::Borrow(backend);
+  char buf{};
+  EXPECT_EQ(transport.read(&buf, 3).bytesProcessed, 3U);
+  EXPECT_EQ(transport.write("abc").bytesProcessed, 3U);
+  EXPECT_EQ(transport.write("HEAD", "BODY").bytesProcessed, 8U);
+
+  const std::array<std::string_view, 3> fragments{"A", "", "BC"};
+  EXPECT_EQ(transport.write(std::span<const std::string_view>(fragments)).bytesProcessed, 3U);
+  EXPECT_TRUE(transport.supportsSendfile());
+  EXPECT_FALSE(transport.handshakeDone());
+  EXPECT_TRUE(transport.hasPendingReadData());
+  EXPECT_TRUE(transport.isZerocopyEnabled());
+  EXPECT_TRUE(transport.hasZerocopyPending());
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 7U);
+
+  File file;
+  std::size_t offset = 2;
+  EXPECT_EQ(transport.sendFile(file, offset, 5).bytesProcessed, 5U);
+  EXPECT_EQ(offset, 7U);
+
+  transport.disableZerocopy();
+  EXPECT_TRUE(backend.zerocopyDisabled());
 }
 
 TEST(TransportTest, GatherFallbackPreservesOrderingAndStopsOnShortWrite) {
-  const std::array<std::string_view, 2> fragments{"HEAD", "BODY"};
+  const std::array<std::string_view, 3> fragments{"HEAD", "", "BODY"};
 
   OrderedDefaultsTransport complete(false);
-  ITransport& completeBase = complete;
+  Transport completeBase = Transport::Borrow(complete);
   const auto completeResult = completeBase.write(std::span<const std::string_view>(fragments));
   EXPECT_EQ(completeResult.bytesProcessed, 8U);
   EXPECT_EQ(completeResult.want, TransportHint::None);
@@ -306,16 +479,39 @@ TEST(TransportTest, GatherFallbackPreservesOrderingAndStopsOnShortWrite) {
   EXPECT_EQ(complete.writeCalls(), 2U);
 
   OrderedDefaultsTransport partial(true);
-  ITransport& partialBase = partial;
+  Transport partialBase = Transport::Borrow(partial);
   const auto partialResult = partialBase.write(std::span<const std::string_view>(fragments));
   EXPECT_EQ(partialResult.bytesProcessed, 2U);
   EXPECT_EQ(partialResult.want, TransportHint::None);
   EXPECT_EQ(partial.written(), "HE");
   EXPECT_EQ(partial.writeCalls(), 1U);
+
+  OrderedDefaultsTransport completePair(false);
+  Transport completePairBase = Transport::Borrow(completePair);
+  const auto completePairResult = completePairBase.write("HEAD", "BODY");
+  EXPECT_EQ(completePairResult.bytesProcessed, 8U);
+  EXPECT_EQ(completePairResult.want, TransportHint::None);
+  EXPECT_EQ(completePair.written(), "HEADBODY");
+  EXPECT_EQ(completePair.writeCalls(), 2U);
+
+  OrderedDefaultsTransport partialPair(true);
+  Transport partialPairBase = Transport::Borrow(partialPair);
+  const auto partialPairResult = partialPairBase.write("HEAD", "BODY");
+  EXPECT_EQ(partialPairResult.bytesProcessed, 2U);
+  EXPECT_EQ(partialPairResult.want, TransportHint::None);
+  EXPECT_EQ(partialPair.written(), "HE");
+  EXPECT_EQ(partialPair.writeCalls(), 1U);
 }
+
 TEST(PlainTransport, SupportsSendfile) {
-  PlainTransport transport(-1, ZerocopyMode::Disabled, 0U);
+  Transport transport(-1, ZerocopyMode::Disabled, 0U);
   EXPECT_TRUE(transport.supportsSendfile());
+  EXPECT_TRUE(transport.handshakeDone());
+  EXPECT_FALSE(transport.hasPendingReadData());
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  EXPECT_FALSE(transport.hasZerocopyPending());
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+  transport.disableZerocopy();
 }
 
 TEST(PlainTransport, SendFileTransfersFileToSocketPeer) {

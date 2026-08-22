@@ -2,7 +2,6 @@
 #include "aeronet/transport-test-hook.hpp"
 
 #include <atomic>
-#include <memory>
 #include <utility>
 
 #include "aeronet/transport.hpp"
@@ -12,7 +11,7 @@ namespace {
 std::atomic<TransportDecoratorFn> g_transportDecorator{nullptr};
 }
 
-std::unique_ptr<ITransport> ApplyTransportDecorator(std::unique_ptr<ITransport> transport) {
+Transport ApplyTransportDecorator(Transport transport) {
   if (auto decorator = g_transportDecorator.load(std::memory_order_acquire)) {
     return decorator(std::move(transport));
   }

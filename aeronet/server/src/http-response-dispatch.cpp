@@ -120,9 +120,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   refreshKeepAliveDeadline(cnxIt);
 
   // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
-  if (auto* clientPlain = dynamic_cast<PlainTransport*>(state.transport.get())) {
-    clientPlain->disableZerocopy();
-  }
+  state.transport.disableZerocopy();
 
   // From now on, both connections bypass HTTP parsing; we simply proxy bytes.
   state.inBuffer.clear();
@@ -346,7 +344,7 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   if (state.isSendingFile()) {
     flushFilePayload(cnxIt);
   } else if (!state.hasPendingOutput() && state.waitingWritable &&
-             (state.tlsEstablished || state.transport->handshakeDone()) &&
+             (state.tlsEstablished || state.transport.handshakeDone()) &&
              (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
              state.isAnyCloseRequested()) {
     return;
@@ -430,7 +428,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
     return;
   }
 
-  if (!state.transport->handshakeDone()) {
+  if (!state.transport.handshakeDone()) {
     return;
   }
 
@@ -439,7 +437,7 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
   // Without kTLS, we must pread() into a buffer and SSL_write() (user-space TLS).
   bool userSpaceTls = false;
 #ifdef AERONET_ENABLE_OPENSSL
-  if (auto* tlsTr = dynamic_cast<TlsTransport*>(state.transport.get())) {
+  if (auto* tlsTr = state.transport.get<TlsTransport>()) {
     // kTLS enabled: kernel handles encryption, use sendfile() directly
     // kTLS not enabled: must use pread() + SSL_write() (user-space TLS fallback)
     userSpaceTls = !tlsTr->isKtlsSendEnabled();

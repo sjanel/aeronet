@@ -320,7 +320,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
   if (proxied && isTls) {
-    PlainTransport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
+    Transport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
     if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, req); !tunnel) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
       return std::unexpected(tunnel.error());
@@ -333,12 +333,12 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   } else
 #endif
   {
-    conn.transport = std::make_unique<PlainTransport>(fd, ZerocopyMode::Disabled, ~0U);
+    conn.transport = Transport(fd, ZerocopyMode::Disabled, ~0U);
   }
   return conn;
 }
 
-std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport& transport, NativeHandle fd,
+std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& transport, NativeHandle fd,
                                                                      const HttpRequest& req) {
   static constexpr std::string_view kConnect = "CONNECT ";
   static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
@@ -378,7 +378,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
   const std::string_view head = reqBuffer;
   std::size_t off = 0;
   while (off < head.size()) {
-    const ITransport::TransportResult wr = transport.write(head.substr(off));
+    const TransportResult wr = transport.write(head.substr(off));
     off += wr.bytesProcessed;
     if (off >= head.size()) {
       break;
@@ -408,7 +408,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(ITransport&
       return std::unexpected(HttpClientErrc::proxyError);
     }
     respBuffer.ensureAvailableCapacityExponential(kReadChunk);
-    const ITransport::TransportResult rd = transport.read(respBuffer.data() + respBuffer.size(), kReadChunk);
+    const TransportResult rd = transport.read(respBuffer.data() + respBuffer.size(), kReadChunk);
     if (rd.bytesProcessed > 0) {
       respBuffer.addSize(rd.bytesProcessed);
       continue;
@@ -485,9 +485,9 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
   // The TCP connect (including multi-address fallback) is already complete here: connectNew() resolves it
   // synchronously via ConnectTCP's blocking fallback. Only the TLS handshake remains.
   // Drive the TLS handshake to completion (no-op for plain transport).
-  while (!conn.transport->handshakeDone()) {
-    const ITransport::TransportResult transportRes = conn.transport->write(std::string_view{});
-    if (conn.transport->handshakeDone()) {
+  while (!conn.transport.handshakeDone()) {
+    const TransportResult transportRes = conn.transport.write(std::string_view{});
+    if (conn.transport.handshakeDone()) {
       break;
     }
     if (transportRes.want == TransportHint::Error) {
@@ -507,7 +507,7 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
   if (isTls && conn.transport) {
     const unsigned char* alpn = nullptr;
     unsigned int alpnLen = 0;
-    ::SSL_get0_alpn_selected(static_cast<TlsTransport*>(conn.transport.get())->rawSsl(), &alpn, &alpnLen);
+    ::SSL_get0_alpn_selected(conn.transport.get<TlsTransport>()->rawSsl(), &alpn, &alpnLen);
     if (alpn != nullptr && alpnLen != 0) {
       conn.protocol = ClientProtocolFromAlpnId(std::string_view(reinterpret_cast<const char*>(alpn), alpnLen));
     }
@@ -633,7 +633,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
     HttpClientResult result =
         finishConnect(conn, req.isTlsRequest(), connectDeadline)
             .and_then([&] { return ensureProtocolHandler(conn); })
-            .and_then([&] { return conn.proto.exchange(*this, *conn.transport, fd, req, ioDeadline, requestSent); });
+            .and_then([&] { return conn.proto.exchange(*this, conn.transport, fd, req, ioDeadline, requestSent); });
 
     if (result) {
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
