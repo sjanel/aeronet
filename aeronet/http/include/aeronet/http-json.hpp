@@ -33,7 +33,7 @@ void HttpMessage::bodyJson(const T& obj) {
   if (const auto ec = glz::write<glz::opts{}>(obj, buf)) [[unlikely]] {
     throw std::runtime_error("bodyJson serialization failed: " + glz::format_error(ec));
   }
-  body(std::move(buf), http::ContentTypeApplicationJson);
+  bodyImpl(std::move(buf), http::ContentTypeApplicationJson);
 }
 
 template <class T>
@@ -42,7 +42,7 @@ void HttpMessage::bodyYaml(const T& obj) {
   if (const auto ec = glz::write<glz::opts{.format = glz::YAML}>(obj, buf)) [[unlikely]] {
     throw std::runtime_error("bodyYaml serialization failed: " + glz::format_error(ec));
   }
-  body(std::move(buf), "text/yaml");
+  bodyImpl(std::move(buf), "text/yaml");
 }
 
 template <class T>

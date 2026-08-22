@@ -77,7 +77,7 @@ TEST(TCharsTest, BoundaryCharacters) {
 
 TEST(TCharsTest, IdempotentAcrossMultipleCalls) {
   // Spot-check a mix across both bitmap halves to ensure no hidden state.
-  const char samples[] = {'A', 'z', '0', '9', '!', '~', '_', '^', '+', '*'};
+  const char samples[]{'A', 'z', '0', '9', '!', '~', '_', '^', '+', '*'};
   for (int i = 0; i < 100; ++i) {
     for (char ch : samples) {
       EXPECT_TRUE(is_tchar(ch));

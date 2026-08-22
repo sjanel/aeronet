@@ -147,7 +147,7 @@ TEST(ResponseParserTest, IncrementalDelivery) {
   ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string buf;
-  std::string_view chunks[] = {"HTTP/1.1 200 OK\r\n", "Content-Length: 11\r\n\r\n", "hello", " world"};
+  constexpr std::string_view chunks[]{"HTTP/1.1 200 OK\r\n", "Content-Length: 11\r\n\r\n", "hello", " world"};
   ResponseParser::Status st = ResponseParser::Status::NeedMore;
   for (auto chunk : chunks) {
     buf.append(chunk);

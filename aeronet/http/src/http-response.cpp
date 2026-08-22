@@ -137,12 +137,6 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   }
   const auto oldReasonSz = reasonLength();
 
-  if (newReason.size() == oldReasonSz) {
-    // optimization: same length, just overwrite the old reason
-    Copy(newReason, _data.data() + kReasonBeg);
-    return *this;
-  }
-
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
 
   _data.ensureAvailableCapacityExponential(diff);

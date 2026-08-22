@@ -1627,7 +1627,7 @@ TEST_F(HttpRequestViewTest, HeaderParsingStress) {
     for (std::size_t headerPos = 0; headerPos < numHeaders; ++headerPos) {
       // Sometimes use known header names
       if (rng.coin()) {
-        static constexpr std::string_view kKnownHeaders[] = {
+        static constexpr std::string_view kKnownHeaders[]{
             http::Host,        http::ContentLength,    http::ContentType,
             "Accept",          "User-Agent",           "Authorization",
             "Cookie",          "Set-Cookie",           http::CacheControl,

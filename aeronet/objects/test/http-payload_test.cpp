@@ -298,7 +298,7 @@ TEST(HttpPayload, EnsureCapacityWithNegativeValueDoesNothing) {
 
 namespace {
 
-constexpr bool kExponential[] = {false, true};
+constexpr bool kExponential[]{false, true};
 
 void EnsureAvailableCapacity(HttpPayload& body, std::size_t capa, bool exponential) {
   if (exponential) {

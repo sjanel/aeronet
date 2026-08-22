@@ -182,10 +182,10 @@ constexpr char* GetContentTypeValuePtr(char* pContentLengthHeaderLine) {
 
 }  // namespace
 
-void HttpMessage::header(std::string_view key, std::string_view value) {
+void HttpMessage::headerImpl(std::string_view key, std::string_view value) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
-    headerAddLine(key, value);
+    headerAddLineImpl(key, value);
     return;
   }
 
@@ -252,17 +252,17 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
         if (addVaryHeader) {
           headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
         } else if (appendVaryValue) {
-          headerAppendValue(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
+          headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
         }
         headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
         _opts.setHasContentEncoding();
         _opts.setAutomaticDirectCompression();
       } else if (removeEncodingHeaders) {
-        headerRemoveLine(http::ContentEncoding);
+        headerRemoveLineImpl(http::ContentEncoding);
         _opts.resetHasContentEncoding();
         _opts.resetAutomaticDirectCompression();
         if (_opts.isAddVaryAcceptEncoding()) {
-          headerRemoveValue(http::Vary, http::AcceptEncoding);
+          headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
         }
       }
     };
@@ -348,7 +348,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
   Copy(newBody, _data.data() + bodyStartPos());
 }
 
-void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType) {
+void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view contentType) {
   if (!body.empty()) {
     if (hasBodyFile()) [[unlikely]] {
       throw std::logic_error("Cannot append to a captured file body");
@@ -360,7 +360,7 @@ void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
       }
-      this->body(body, contentType);
+      bodyImpl(body, contentType);
       return;
     }
 
@@ -417,7 +417,7 @@ void HttpMessage::bodyAppend(std::string_view body, std::string_view contentType
   }
 }
 
-void HttpMessage::file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) {
+void HttpMessage::fileImpl(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) {
   if (!fileObj) {
     throw std::invalid_argument("file requires an opened file");
   }
@@ -446,7 +446,7 @@ void HttpMessage::file(File fileObj, std::size_t offset, std::size_t length, std
   _payloadVariant = HttpPayload(FilePayload(std::move(fileObj), offset, resolvedLength));
 }
 
-const File* HttpMessage::file() const noexcept {
+const File* HttpMessage::fileImpl() const noexcept {
   const auto* pFilePayload = _payloadVariant.getIfFilePayload();
   return pFilePayload == nullptr ? nullptr : &pFilePayload->file;
 }
@@ -486,7 +486,7 @@ std::optional<std::string_view> HttpMessage::headerValue(std::string_view key) c
   return {first, last};
 }
 
-void HttpMessage::headerAddLine(std::string_view key, std::string_view value) {
+void HttpMessage::headerAddLineImpl(std::string_view key, std::string_view value) {
   assert(_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Date));
   assert(!_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Server));
   if (!http::IsValidHeaderName(key)) [[unlikely]] {
@@ -559,10 +559,10 @@ void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char*
   adjustBodyStart(diff);
 }
 
-void HttpMessage::headerAppendValue(std::string_view key, std::string_view value, std::string_view sep) {
+void HttpMessage::headerAppendValueImpl(std::string_view key, std::string_view value, std::string_view sep) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
-    headerAddLine(key, value);
+    headerAddLineImpl(key, value);
     return;
   }
 
@@ -590,7 +590,7 @@ void HttpMessage::headerAppendValue(std::string_view key, std::string_view value
   adjustBodyStart(static_cast<int64_t>(extraLen));
 }
 
-void HttpMessage::headerRemoveLine(std::string_view key) {
+void HttpMessage::headerRemoveLineImpl(std::string_view key) {
   // We cannot remove Content-Type and Content-Length headers separately from the body,
   // so we don't include them in the search when response has body.
   const std::string_view flatHeaders = hasBody() ? headersFlatViewWithoutCTCL() : headersFlatView();
@@ -619,7 +619,7 @@ void HttpMessage::headerRemoveLine(std::string_view key) {
   adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
 }
 
-void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep) {
+void HttpMessage::headerRemoveValueImpl(std::string_view key, std::string_view value, std::string_view sep) {
   if (sep.empty()) [[unlikely]] {
     throw std::invalid_argument("Separator cannot be empty when removing a header value");
   }
@@ -694,7 +694,8 @@ void HttpMessage::headerRemoveValue(std::string_view key, std::string_view value
 
 void HttpMessage::finalizeHeadersAndBody() {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-  // If the response has trailers, the finalization of the body was made at the first added trailer in trailerAddLine.
+  // If the response has trailers, the finalization of the body was made at the first added trailer in
+  // trailerAddLineImpl.
   if (_opts.isAutomaticDirectCompression() && trailersSize() == 0) {
     finalizeInlineBody();
   }
@@ -706,7 +707,7 @@ void HttpMessage::finalizeHeadersAndBody() {
   return {first, last};
 }
 
-void HttpMessage::trailerAddLine(std::string_view name, std::string_view value) {
+void HttpMessage::trailerAddLineImpl(std::string_view name, std::string_view value) {
   assert(!http::IsForbiddenTrailerHeader(name));
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid trailer header name");
@@ -752,7 +753,7 @@ void HttpMessage::trailerAddLine(std::string_view name, std::string_view value) 
     // transfer-encoding. We add the Trailer header if the option is set. Indeed, if isHead is true here, then
     // necessarily the isAddTrailerHeader option is known as well.
     if (_opts.isAddTrailerHeader()) {
-      headerAppendValue(http::Trailer, name, kTrailerValueSep);
+      headerAppendValueImpl(http::Trailer, name, kTrailerValueSep);
     }
     return;
   }
@@ -921,11 +922,11 @@ void HttpMessage::removeBodyAndItsHeaders() {
 
   // Also remove vary and content-encoding headers if present
   if (hasContentEncoding()) {
-    headerRemoveLine(http::ContentEncoding);
+    headerRemoveLineImpl(http::ContentEncoding);
     assert(!hasContentEncoding());
     _opts.resetAutomaticDirectCompression();
     if (_opts.isAddVaryAcceptEncoding()) {
-      headerRemoveValue(http::Vary, http::AcceptEncoding);
+      headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
     }
   }
 }

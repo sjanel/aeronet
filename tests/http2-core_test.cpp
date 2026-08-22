@@ -1085,7 +1085,7 @@ TEST(Http2Core, PingRequestProducesPingAck) {
 
   PingFrame pingFrame;
   pingFrame.isAck = false;
-  static constexpr std::byte opaqueData[] = {
+  static constexpr std::byte opaqueData[]{
       std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},
       std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
   };
