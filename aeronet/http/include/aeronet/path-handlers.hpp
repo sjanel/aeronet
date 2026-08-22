@@ -3,6 +3,7 @@
 #include <functional>
 
 #include "aeronet/http-response.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
 #endif

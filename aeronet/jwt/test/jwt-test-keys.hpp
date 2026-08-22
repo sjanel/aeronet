@@ -6,11 +6,10 @@
 #include <openssl/pem.h>
 
 #include <cstddef>
-#include <span>
 #include <string>
 #include <string_view>
 
-#include "aeronet/base64url.hpp"
+#include "aeronet/base64.hpp"
 
 // Test-only key generation helpers. Each TestKey carries the private PEM (to sign with), the public
 // PEM (to verify with), and the public key encoded as a JWK (to exercise the JWK path). Keys are
@@ -28,13 +27,13 @@ namespace detail {
 inline std::string BioToString(BIO* bio) {
   char* data = nullptr;
   const long len = ::BIO_get_mem_data(bio, &data);
-  return std::string(data, static_cast<std::size_t>(len));
+  return {data, static_cast<std::size_t>(len)};
 }
 
 inline std::string B64Url(const unsigned char* data, std::size_t len) {
   std::string out;
   out.resize(B64UrlEncodedLen(len));
-  B64UrlEncode(std::span<const char>(reinterpret_cast<const char*>(data), len), out.data());
+  B64UrlEncode(std::string_view(reinterpret_cast<const char*>(data), len), out.data());
   return out;
 }
 

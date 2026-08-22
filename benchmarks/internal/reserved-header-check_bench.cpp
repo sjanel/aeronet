@@ -35,27 +35,27 @@ constexpr bool IsReservedHeaderImpl(std::string_view name) noexcept {
   return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, name.size()});
 }
 
-constexpr std::string_view kHeaders[] = {"authorization",
-                                         "cache-control",
-                                         "content-encoding",
-                                         "content-length",
-                                         "content-range",
-                                         "content-type",
-                                         "cookie",
-                                         "expect",
-                                         "expires",
-                                         "host",
-                                         "if-match",
-                                         "if-modified-since",
-                                         "if-none-match",
-                                         "if-unmodified-since",
-                                         "pragma",
-                                         "range",
-                                         "set-cookie",
-                                         "te",
-                                         "trailer",
-                                         "transfer-encoding",
-                                         "vary"};
+constexpr std::string_view kHeaders[]{"authorization",
+                                      "cache-control",
+                                      "content-encoding",
+                                      "content-length",
+                                      "content-range",
+                                      "content-type",
+                                      "cookie",
+                                      "expect",
+                                      "expires",
+                                      "host",
+                                      "if-match",
+                                      "if-modified-since",
+                                      "if-none-match",
+                                      "if-unmodified-since",
+                                      "pragma",
+                                      "range",
+                                      "set-cookie",
+                                      "te",
+                                      "trailer",
+                                      "transfer-encoding",
+                                      "vary"};
 
 // Candidate for replacing IsReservedOrForbiddenRequestHeader: linear scan
 // using the project's SIMD CaseInsensitiveEqual. CaseInsensitiveEqual

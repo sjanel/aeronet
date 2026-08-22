@@ -10,7 +10,7 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/base64url.hpp"
+#include "aeronet/base64.hpp"
 #include "aeronet/jwt-algorithm-set.hpp"
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/jwt-error.hpp"
@@ -65,7 +65,7 @@ void AppendB64Url(std::string& dst, const char* pSrc, std::size_t srcLen) {
   const auto base = dst.size();
   const auto encLen = B64UrlEncodedLen(srcLen);
   dst.resize_and_overwrite(base + encLen, [pSrc, srcLen, base](char* buf, std::size_t newSize) {
-    B64UrlEncode(std::span<const char>(pSrc, srcLen), buf + base);
+    B64UrlEncode(std::string_view(pSrc, srcLen), buf + base);
     return newSize;
   });
 }
@@ -149,8 +149,8 @@ template <class Buf>
 [[nodiscard]] bool DecodeSegment(std::string_view b64, Buf& out) {
   assert(out.empty());
   out.ensureAvailableCapacity(B64UrlMaxDecodedLen(b64.size()));
-  std::size_t outLen = 0;
-  if (!B64UrlDecode(b64, out.data(), outLen)) {
+  std::size_t outLen = B64UrlDecode(b64, out.data());
+  if (outLen + 1UL == 0) {
     return false;
   }
   out.setSize(static_cast<Buf::size_type>(outLen));

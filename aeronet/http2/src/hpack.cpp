@@ -208,7 +208,7 @@ struct HuffmanCode {
 };
 
 // Huffman codes from RFC 7541 Appendix B
-constexpr HuffmanCode kHuffmanCodes[] = {
+constexpr HuffmanCode kHuffmanCodes[]{
     {0x1ff8, 13},      // 0
     {0x7fffd8, 23},    // 1
     {0xfffffe2, 28},   // 2

@@ -25,7 +25,7 @@ namespace aeronet {
 namespace {
 using UnitDuration = std::pair<std::string_view, std::chrono::milliseconds>;
 
-constexpr UnitDuration kDurationUnits[] = {
+constexpr UnitDuration kDurationUnits[]{
     {"y", std::chrono::years(1)},   {"mon", std::chrono::months(1)}, {"w", std::chrono::weeks(1)},
     {"d", std::chrono::days(1)},    {"d", std::chrono::days(1)},     {"h", std::chrono::hours(1)},
     {"m", std::chrono::minutes(1)}, {"s", std::chrono::seconds(1)},  {"ms", std::chrono::milliseconds(1)},

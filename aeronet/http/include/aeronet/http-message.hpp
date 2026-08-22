@@ -143,7 +143,7 @@ class HttpMessage {
   [[nodiscard]] std::string_view bodyInMemory() const noexcept;
 
   // Get the current file stored in this HttpMessage, or nullptr if no file is set.
-  [[nodiscard]] const File* file() const noexcept;
+  [[nodiscard]] const File* fileImpl() const noexcept;
 
   // Checks if this HttpMessage has a body (either inlined, captured or file).
   [[nodiscard]] bool hasBody() const noexcept { return !_payloadVariant.empty() || hasBodyInlined(); }
@@ -192,7 +192,9 @@ class HttpMessage {
   [[nodiscard]] std::size_t bodyInlinedSize() const noexcept { return bodyInlinedLength(); }
 
   // Returns the current direct compression mode for this HttpMessage.
-  [[nodiscard]] DirectCompressionMode directCompressionMode() const noexcept { return _opts._directCompressionMode; }
+  [[nodiscard]] DirectCompressionMode directCompressionModeImpl() const noexcept {
+    return _opts._directCompressionMode;
+  }
 
   // Checks if the given trailer key is present (case-insensitive search per RFC 7230).
   [[nodiscard]] bool hasTrailer(std::string_view key) const noexcept;
@@ -261,25 +263,25 @@ class HttpMessage {
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
   // std::logic_error.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void headerAddLine(std::string_view key, std::string_view value);
+  void headerAddLineImpl(std::string_view key, std::string_view value);
 
   // Convenient overload adding a header whose value is numeric.
-  void headerAddLine(std::string_view key, std::integral auto value) {
-    headerAddLine(key, IntegralCharBuffer<decltype(value)>(value));
+  void headerAddLineImpl(std::string_view key, std::integral auto value) {
+    headerAddLineImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
-  //   headerAppendValue("accept", "text/html", ", ")
-  //   headerAppendValue("Accept", "application/json", ", ")
+  //   headerAppendValueImpl("accept", "text/html", ", ")
+  //   headerAppendValueImpl("Accept", "application/json", ", ")
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  void headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ");
+  void headerAppendValueImpl(std::string_view key, std::string_view value, std::string_view sep = ", ");
 
   // Convenient overload appending a numeric value.
-  void headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") {
-    headerAppendValue(key, IntegralCharBuffer<decltype(value)>(value), sep);
+  void headerAppendValueImpl(std::string_view key, std::integral auto value, std::string_view sep = ", ") {
+    headerAppendValueImpl(key, IntegralCharBuffer<decltype(value)>(value), sep);
   }
 
   // Add or replace first header 'key' with 'value'.
@@ -288,18 +290,18 @@ class HttpMessage {
   // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
   // The header name and value must be valid per HTTP specifications.
   // As for 'headerAddLine()', do not insert any reserved header.
-  void header(std::string_view key, std::string_view value);
+  void headerImpl(std::string_view key, std::string_view value);
 
   // Convenient overload setting a header to a numeric value.
-  void header(std::string_view key, std::integral auto value) {
-    header(key, IntegralCharBuffer<decltype(value)>(value));
+  void headerImpl(std::string_view key, std::integral auto value) {
+    headerImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
   // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
   // search per RFC 7230). If the header is not found, the HttpMessage is not modified.
   // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
   // content.
-  void headerRemoveLine(std::string_view key);
+  void headerRemoveLineImpl(std::string_view key);
 
   // Remove the first 'value' from the header with the given key, search starting from backwards (case-insensitive
   // search per RFC 7230). If the value is the only one for the header, the whole header line is removed. If there are
@@ -308,7 +310,7 @@ class HttpMessage {
   // HttpMessage is not modified. Separator must not be empty, and should be the same as the one used in
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
-  void headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ");
+  void headerRemoveValueImpl(std::string_view key, std::string_view value, std::string_view sep = ", ");
 
   // -------------/
   // BODY SETTERS /
@@ -318,11 +320,11 @@ class HttpMessage {
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpMessage. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).
-  // If the HttpMessage is eligible for direct compression (see directCompressionMode()), the body will be
+  // If the HttpMessage is eligible for direct compression (see directCompressionModeImpl()), the body will be
   // compressed in-place in the internal buffer.
   // If content-type is omitted, it will be set to "text/plain" by default.
   // If the Body referencing internal memory of this HttpMessage is undefined behavior.
-  void body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) {
+  void bodyImpl(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Inline);
     setBodyInternal(body);
     if (isHead()) {
@@ -337,23 +339,23 @@ class HttpMessage {
   // The body is simply moved into this HttpMessage without any copy until the transport layer (if no compression
   // happens). Empty body is allowed - this will remove any existing body. The content type must be valid. Defaults to
   // "text/plain".
-  // It is possible to call 'bodyAppend()' on the moved std::string - this will call std::string::append() on the
+  // It is possible to call 'bodyAppendImpl()' on the moved std::string - this will call std::string::append() on the
   // captured std::string.
-  void body(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) {
+  void bodyImpl(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
   }
 
   // Same as above, but with a vector of char for the body, and 'application/octet-stream' as the default content type.
-  void body(std::vector<char>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+  void bodyImpl(std::vector<char>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
   }
 
   // Same as above, but with a vector of byte for the body, and 'application/octet-stream' as the default content type.
-  void body(std::vector<std::byte>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+  void bodyImpl(std::vector<std::byte>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body));
@@ -365,18 +367,18 @@ class HttpMessage {
   // The body is moved into this HttpMessage without any copy until the transport layer (if no compression happens).
   // Empty body is allowed (size=0) - this will remove any existing body. The content type must be valid. Defaults to
   // 'application/octet-stream'.
-  // If 'bodyAppend()' is called after this, aeronet will automatically allocate a buffer and copy the captured body
+  // If 'bodyAppendImpl()' is called after this, aeronet will automatically allocate a buffer and copy the captured body
   // into it before appending the new data.
-  void body(std::unique_ptr<char[]> body, std::size_t size,
-            std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+  void bodyImpl(std::unique_ptr<char[]> body, std::size_t size,
+                std::string_view contentType = http::ContentTypeApplicationOctetStream) {
     setBodyHeaders(contentType, size, BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
   }
 
   // Same as body(std::unique_ptr<char[]>, ...), but with a unique_ptr to a byte array for the body.
-  void body(std::unique_ptr<std::byte[]> body, std::size_t size,
-            std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+  void bodyImpl(std::unique_ptr<std::byte[]> body, std::size_t size,
+                std::string_view contentType = http::ContentTypeApplicationOctetStream) {
     setBodyHeaders(contentType, size, BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(std::move(body), size);
@@ -386,8 +388,8 @@ class HttpMessage {
   // This can be useful for large static content like HTML pages, images, etc. that are known at compile time and have a
   // lifetime that exceeds the HttpMessage, until its data is conveyed to the transport layer.
   // Internally, this will capture the provided std::string_view.
-  // Note that if bodyAppend() is called after bodyStatic(), aeronet will automatically allocate a buffer.
-  void bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) {
+  // Note that if bodyAppendImpl() is called after bodyStaticImpl(), aeronet will automatically allocate a buffer.
+  void bodyStaticImpl(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, staticBody.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
     setCapturedPayload(staticBody);
@@ -404,15 +406,15 @@ class HttpMessage {
   // Trailers should not be added before calling this method.
   // It is compatible with direct compression mode if activated for this HttpMessage, and will internally use streaming
   // compression.
-  void bodyAppend(std::string_view body, std::string_view contentType = {});
+  void bodyAppendImpl(std::string_view body, std::string_view contentType = {});
 
   // Same as string_view-based append, but accepts a span of bytes, and defaults content type to
   // 'application/octet-stream' if not specified and body is non-empty.
-  void bodyAppend(std::span<const std::byte> body, std::string_view contentType = {}) {
+  void bodyAppendImpl(std::span<const std::byte> body, std::string_view contentType = {}) {
     if (!body.empty() && contentType.empty()) {
       contentType = http::ContentTypeApplicationOctetStream;
     }
-    bodyAppend(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()}, contentType);
+    bodyAppendImpl(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()}, contentType);
   }
 
   // Sets (overwrites) the inline body directly from a writer callback up to 'maxLen' bytes.
@@ -576,13 +578,13 @@ class HttpMessage {
     }
   }
 
-  void file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {});
+  void fileImpl(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {});
 
-  void trailerAddLine(std::string_view name, std::string_view value);
+  void trailerAddLineImpl(std::string_view name, std::string_view value);
 
   // Convenient overload adding a trailer whose value is numeric.
-  void trailerAddLine(std::string_view key, std::integral auto value) {
-    trailerAddLine(key, IntegralCharBuffer<decltype(value)>(value));
+  void trailerAddLineImpl(std::string_view key, std::integral auto value) {
+    trailerAddLineImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
 #ifdef AERONET_ENABLE_GLAZE

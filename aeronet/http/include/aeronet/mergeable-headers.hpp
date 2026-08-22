@@ -38,7 +38,7 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
   //   ' ' : space join (User-Agent)
   //   'O' : override / keep-last semantics (Authorization, Host, Range, ...)
   //   '\0': duplicate forbidden
-  static constexpr Entry kEntries[] = {
+  static constexpr Entry kEntries[]{
       {"accept", ','},
       {"accept-charset", ','},
       {"accept-datetime", ','},

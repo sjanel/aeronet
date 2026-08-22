@@ -7,7 +7,7 @@
 namespace aeronet {
 
 namespace detail {
-inline constexpr char kNullCharSep[] = {'\0'};
+inline constexpr char kNullCharSep[]{'\0'};
 
 }  // namespace detail
 

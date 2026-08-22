@@ -19,7 +19,7 @@ namespace {
 constexpr char kHeaderSep[] = ", ";
 constexpr char kCRLF[] = "\r\n";
 constexpr char kComma[] = ",";
-constexpr char kNullCharSep[] = {'\0'};
+constexpr char kNullCharSep[]{'\0'};
 
 using TestTypeCommaSpace32 = DynamicConcatenatedStrings<kHeaderSep, uint32_t>;
 using TestTypeCommaSpace64 = DynamicConcatenatedStrings<kHeaderSep, uint64_t>;

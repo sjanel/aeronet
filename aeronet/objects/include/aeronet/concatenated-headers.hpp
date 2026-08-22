@@ -7,7 +7,7 @@
 namespace aeronet {
 
 namespace detail {
-inline constexpr char kCRLFChars[] = {"\r\n"};
+inline constexpr char kCRLFChars[]{"\r\n"};
 }
 
 using ConcatenatedHeaders = DynamicConcatenatedStrings<detail::kCRLFChars, uint32_t>;

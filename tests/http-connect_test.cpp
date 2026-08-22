@@ -141,7 +141,7 @@ TEST_F(HttpConnectDefaultConfig, WildcardAllowlistAllowsTarget) {
 TEST_F(HttpConnectDefaultConfig, ExplicitAllowlistRejectsTarget) {
   // only allow example.com
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    static constexpr std::string_view list[] = {"example.com"};
+    static constexpr std::string_view list[]{"example.com"};
     cfg.withConnectAllowlist(std::begin(list), std::end(list));
   });
 

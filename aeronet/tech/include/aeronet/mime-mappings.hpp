@@ -57,7 +57,7 @@ inline constexpr MIMETypeIdx kUnknownMIMEMappingIdx = static_cast<MIMETypeIdx>(~
 // Single source of truth, written in plain alphabetical order for
 // readability -- this order is also required for binary search on
 // extensionCode (enforced by static_assert in the .cpp).
-inline constexpr MIMEMapping kMIMEMappings[] = {
+inline constexpr MIMEMapping kMIMEMappings[]{
     {"7z", "application/x-7z-compressed"},
     {"aac", "audio/aac"},
     {"apng", "image/apng"},
