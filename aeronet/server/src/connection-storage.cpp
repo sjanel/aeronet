@@ -38,7 +38,7 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
       --handshakesInFlight;
     }
 
-    if (auto* tlsTr = dynamic_cast<TlsTransport*>(pConnectionState->transport.get())) {
+    if (auto* tlsTr = pConnectionState->transport.get<TlsTransport>()) {
       tlsTr->shutdown();
     }
   }

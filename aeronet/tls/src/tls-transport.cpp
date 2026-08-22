@@ -23,7 +23,7 @@ bool TlsTransport::hasPendingReadData() const noexcept {
   return _handshakeDone && _ssl && (::SSL_has_pending(_ssl.get()) != 0);
 }
 
-ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
+TransportResult TlsTransport::read(char* buf, std::size_t len) {
   TransportResult ret{0, handshake(TransportHint::ReadReady)};
   if (ret.want != TransportHint::None) {
     return ret;  // indicate would-block during handshake
@@ -75,7 +75,7 @@ ITransport::TransportResult TlsTransport::read(char* buf, std::size_t len) {
   return ret;
 }
 
-ITransport::TransportResult TlsTransport::write(std::string_view data) {
+TransportResult TlsTransport::write(std::string_view data) {
   TransportResult ret{0, handshake(TransportHint::WriteReady)};
   if (ret.want != TransportHint::None) {
     // indicate would-block during handshake
@@ -221,7 +221,7 @@ bool TlsTransport::enableZerocopy() noexcept {
   return _zerocopyState.enabled();
 }
 
-ITransport::TransportResult TlsTransport::writeZerocopy(std::string_view data) {
+TransportResult TlsTransport::writeZerocopy(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
 
   // Drain pending completion notifications before issuing a new zerocopy send.

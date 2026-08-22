@@ -52,10 +52,6 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
   DATA/WINDOW_UPDATE processing and close/prune churn at 1, 100, 1,000 and 10,000 active streams. Use the profile to decide
   between the current flat hash map, a tiny recent-stream cache, denser indexing, or splitting frequently touched state
   from callbacks, header storage and other cold fields.
-- **Transport dispatch without RTTI probes** - `ITransport` virtualizes every read/write and several server paths also
-  `dynamic_cast` to `PlainTransport` or `TlsTransport`. Prototype a tagged final transport/variant or cached capabilities
-  (`plain`, `TLS`, `sendfile`, kTLS) and compare cycles, branch misses and binary size on plain and TLS workloads. Adopt it
-  only if the gain pays for the larger dispatch surface and preserves optional TLS compilation.
 - **HTTP header mutation/search** - `HttpMessage` repeatedly scans the flat CRLF buffer for lookup, append, remove and
   override operations. First profile realistic 4/8/16/32-header construction and middleware mutation. If scans dominate,
   evaluate known-header offsets or a lazy compact index that is invalidated on mutation without adding allocation or
@@ -103,7 +99,7 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 | Stream randomized lookup, frame processing and prune churn through 10 K streams | Stream map/cache and hot/cold split |
 | Client identity/chunked/compressed responses from 0 B through 100 MiB | Response-buffer ownership transfer |
 | Static-file cache hit/miss/thrash at capacities 64 through 4,096 | O(1) or amortized eviction policy |
-| Transport dispatch and response-size syscall counts, plain + TLS | Tagged transport and TCP cork threshold |
+| Response-size syscall counts, plain + TLS | TCP cork threshold |
 | Header lookup/mutation with 4 through 32 fields | Flat scan versus compact/lazy indexing |
 | JWT decode/verify with 1 through 1,000 JWKs | `kid` index and base64url decode strategy |
 | Slow-reader and delayed zerocopy-completion memory plateau | Deferred-output high-water marks |

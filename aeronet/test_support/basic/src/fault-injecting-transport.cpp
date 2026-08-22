@@ -11,10 +11,10 @@
 
 namespace aeronet::test {
 
-FaultInjectingTransport::FaultInjectingTransport(std::unique_ptr<ITransport> inner, FaultPolicy policy)
-    : _inner(std::move(inner)), _policy(policy) {}
+FaultInjectingTransport::FaultInjectingTransport(Transport inner, FaultPolicy policy)
+    : _policy(policy), _inner(std::move(inner)) {}
 
-ITransport::TransportResult FaultInjectingTransport::read(char* buf, std::size_t len) {
+TransportResult FaultInjectingTransport::read(char* buf, std::size_t len) {
   ++_readCallCount;
 
   // Check one-shot reset
@@ -44,12 +44,12 @@ ITransport::TransportResult FaultInjectingTransport::read(char* buf, std::size_t
     maxRead = _policy.resetAfterTotalBytesRead - _totalBytesRead;
   }
 
-  auto result = _inner->read(buf, maxRead);
+  auto result = _inner.read(buf, maxRead);
   _totalBytesRead += result.bytesProcessed;
   return result;
 }
 
-ITransport::TransportResult FaultInjectingTransport::write(std::string_view data) {
+TransportResult FaultInjectingTransport::write(std::string_view data) {
   ++_writeCallCount;
 
   // Check one-shot reset
@@ -79,14 +79,23 @@ ITransport::TransportResult FaultInjectingTransport::write(std::string_view data
     toWrite = toWrite.substr(0, _policy.resetAfterTotalBytesWritten - _totalBytesWritten);
   }
 
-  auto result = _inner->write(toWrite);
+  auto result = _inner.write(toWrite);
   _totalBytesWritten += result.bytesProcessed;
   return result;
 }
 
-ITransport::TransportResult FaultInjectingTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
+TransportResult FaultInjectingTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
   // Delegate to single-buffer write to apply fault policies consistently
-  return ITransport::write(firstBuf, secondBuf);
+  TransportResult result = write(firstBuf);
+  if (result.want != TransportHint::None || result.bytesProcessed < firstBuf.size()) {
+    return result;
+  }
+  if (!secondBuf.empty()) {
+    const auto [bytesWritten, want] = write(secondBuf);
+    result.bytesProcessed += bytesWritten;
+    result.want = want;
+  }
+  return result;
 }
 
 }  // namespace aeronet::test

@@ -66,12 +66,12 @@ struct ConnectionState {
     }
   }
 
-  ITransport::TransportResult transportRead(std::size_t chunkSize);
+  TransportResult transportRead(std::size_t chunkSize);
 
-  ITransport::TransportResult transportWrite(std::string_view data);
-  ITransport::TransportResult transportWrite(const HttpMessageData& httpResponseData);
+  TransportResult transportWrite(std::string_view data);
+  TransportResult transportWrite(const HttpMessageData& httpResponseData);
 
-  ITransport::TransportResult transportWrite(std::span<const std::string_view> buffers);
+  TransportResult transportWrite(std::span<const std::string_view> buffers);
   // Return true if success, false if fatal error.
   bool tunnelTransportWrite(NativeHandle fd);
 
@@ -146,7 +146,7 @@ struct ConnectionState {
   // completion via the error queue. Without this, the allocator can reuse the freed
   // pages while the kernel is still DMA-ing from them, causing data corruption.
   vector<HttpMessageData> zerocopyPendingBuffers;
-  std::unique_ptr<ITransport> transport;  // set after accept (plain or TLS)
+  Transport transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
   // Timestamp of first byte of the current pending request headers.
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.

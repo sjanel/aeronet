@@ -75,13 +75,13 @@ class HttpRequestTest {
 
 namespace {
 
-class ScriptedHttp11Transport final : public ITransport {
+class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Transport> {
  public:
   enum class WriteMode : uint8_t { SplitAfterHead, Error, ReadReady, WriteReady, ReadWriteReady };
 
   explicit ScriptedHttp11Transport(WriteMode writeMode) : _writeMode(writeMode) {}
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     if (_writeMode == WriteMode::ReadWriteReady) {
       return {0, TransportHint::WriteReady};
     }
@@ -95,13 +95,13 @@ class ScriptedHttp11Transport final : public ITransport {
     return {size, TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     _written.append(data);
     ++_singleWriteCalls;
     return {data.size(), TransportHint::None};
   }
 
-  TransportResult write(std::string_view head, [[maybe_unused]] std::string_view body) override {
+  TransportResult write(std::string_view head, [[maybe_unused]] std::string_view body) {
     switch (_writeMode) {
       case WriteMode::SplitAfterHead:
         _written.append(head);
@@ -527,13 +527,13 @@ std::string MakeFilePayload(std::size_t size) {
 // can be exercised deterministically (would-block -> retry, fatal error, and a persistent would-block that
 // times out) without depending on socket buffer sizing. The head write is accepted verbatim and a canned
 // 200 response is served on read().
-class ScriptedSendfileTransport final : public ITransport {
+class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfileTransport> {
  public:
   enum class Mode : uint8_t { WouldBlockThenSuccess, Error, AlwaysWouldBlock };
 
   explicit ScriptedSendfileTransport(Mode mode) : _mode(mode) {}
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
     if (_responseOffset == kResponse.size()) {
       return {0, TransportHint::None};
@@ -544,14 +544,14 @@ class ScriptedSendfileTransport final : public ITransport {
     return {size, TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) override { return {data.size(), TransportHint::None}; }
-  TransportResult write(std::string_view head, std::string_view body) override {
+  TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+  TransportResult write(std::string_view head, std::string_view body) {
     return {head.size() + body.size(), TransportHint::None};
   }
 
-  [[nodiscard]] bool supportsSendfile() const noexcept override { return true; }
+  [[nodiscard]] bool supportsSendfile() const noexcept { return true; }
 
-  TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) override {
+  TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) {
     ++_sendFileCalls;
     if (_mode == Mode::Error) {
       return {0, TransportHint::Error};
@@ -578,13 +578,13 @@ class ScriptedSendfileTransport final : public ITransport {
 // A transport that reports no sendfile support, so a file body takes the read-into-buffer + write fallback
 // (the TLS path in production). The head write is accepted verbatim; the body write() is scripted so the
 // fallback's write-error and write-would-block branches can be reached deterministically.
-class ScriptedFallbackTransport final : public ITransport {
+class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallbackTransport> {
  public:
   enum class Mode : uint8_t { AcceptWrites, WriteError, WriteWouldBlock };
 
   explicit ScriptedFallbackTransport(Mode mode) : _mode(mode) {}
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
     if (_responseOffset == kResponse.size()) {
       return {0, TransportHint::None};
@@ -596,7 +596,7 @@ class ScriptedFallbackTransport final : public ITransport {
   }
 
   // Body chunk writes (single-buffer): scripted per mode.
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     switch (_mode) {
       case Mode::WriteError:
         return {0, TransportHint::Error};
@@ -608,7 +608,7 @@ class ScriptedFallbackTransport final : public ITransport {
   }
 
   // Head write (scatter): always accepted verbatim so the body phase is reached.
-  TransportResult write(std::string_view head, std::string_view body) override {
+  TransportResult write(std::string_view head, std::string_view body) {
     return {head.size() + body.size(), TransportHint::None};
   }
 

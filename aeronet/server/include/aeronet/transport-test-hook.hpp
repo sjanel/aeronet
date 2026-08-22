@@ -1,18 +1,16 @@
 #pragma once
 
-#include <memory>
-
 #include "aeronet/transport.hpp"
 
 namespace aeronet::test {
 
 /// Function pointer type for decorating/wrapping transports.
 /// Takes ownership of the input transport, returns the transport to use.
-using TransportDecoratorFn = std::unique_ptr<ITransport> (*)(std::unique_ptr<ITransport>);
+using TransportDecoratorFn = Transport (*)(Transport);
 
 /// Apply the currently registered decorator (if any) to a transport.
 /// Called by connection-manager at accept time.
-std::unique_ptr<ITransport> ApplyTransportDecorator(std::unique_ptr<ITransport> transport);
+Transport ApplyTransportDecorator(Transport transport);
 
 /// RAII guard that sets/clears the global transport decorator.
 class ScopedTransportDecorator {

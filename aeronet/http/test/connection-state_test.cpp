@@ -258,7 +258,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   state.fileSendActive = true;
 
   // Attach a PlainTransport that writes to sv[0]. We'll read from sv[1].
-  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
 
   // Loop until we've consumed the whole file; on each iteration read from file into
   // tunnelOrFileBuffer then write it to the transport and read on the peer socket.
@@ -522,7 +522,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
 
   ConnectionState state;
   // attach a plain transport that writes to sv[0]
-  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
 
   // ensure tlsEstablished is initially false
   state.tlsEstablished = false;
@@ -537,11 +537,11 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
 
 namespace {
 // Simple controllable transport for unit tests
-class FakeTransport final : public ITransport {
+class FakeTransport final : public TransportBackend<FakeTransport> {
  public:
   explicit FakeTransport(bool handshakeInitially) : _handshakeDone(handshakeInitially) {}
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     // Write a small marker and report bytes read
     const char* kMarker = "X";
     if (len > 0) {
@@ -551,14 +551,14 @@ class FakeTransport final : public ITransport {
     return {0U, TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     _lastWrite.assign(data.begin(), data.end());
     return {data.size(), TransportHint::None};
   }
 
   void setHandshakeDone(bool val) { _handshakeDone = val; }
 
-  [[nodiscard]] bool handshakeDone() const noexcept override { return _handshakeDone; }
+  [[nodiscard]] bool handshakeDone() const noexcept { return _handshakeDone; }
 
   [[nodiscard]] std::string lastWrite() const { return _lastWrite; }
 
@@ -663,7 +663,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   BaseFd raii[] = {BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
-  state.transport = std::make_unique<PlainTransport>(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
   state.tlsEstablished = true;  // simulate prior completion
 
   HttpMessageData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");

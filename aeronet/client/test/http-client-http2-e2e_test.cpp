@@ -145,7 +145,7 @@ const auto port = ts.port();
   return "http://127.0.0.1:" + std::to_string(port) + std::string(path);
 }
 
-class ScriptedHttp2Transport final : public ITransport {
+class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transport> {
  public:
   enum class Action : uint8_t {
     RstStream,
@@ -174,7 +174,7 @@ class ScriptedHttp2Transport final : public ITransport {
     _reads.emplace_back(reinterpret_cast<const char*>(fault.data()), fault.size());
   }
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     if (_action == Action::ReadWriteReady) {
       return {0, TransportHint::WriteReady};
     }
@@ -190,7 +190,7 @@ class ScriptedHttp2Transport final : public ITransport {
     return {data.size(), TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     switch (_action) {
       case Action::WriteError:
         return {0, TransportHint::Error};
@@ -213,7 +213,7 @@ class ScriptedHttp2Transport final : public ITransport {
   std::size_t _bytesWritten{0};
 };
 
-class LoopbackHttp2Transport final : public ITransport {
+class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transport> {
  public:
   enum class ResponseMode : uint8_t {
     MissingStatus,
@@ -235,7 +235,7 @@ class LoopbackHttp2Transport final : public ITransport {
     _server.setOnStreamReset([this](uint32_t, http2::ErrorCode) { _sawReset = true; });
   }
 
-  TransportResult read(char* buf, std::size_t len) override {
+  TransportResult read(char* buf, std::size_t len) {
     if (!_server.hasPendingOutput()) {
       return {0, TransportHint::Error};
     }
@@ -246,7 +246,7 @@ class LoopbackHttp2Transport final : public ITransport {
     return {readSize, TransportHint::None};
   }
 
-  TransportResult write(std::string_view data) override {
+  TransportResult write(std::string_view data) {
     _clientInput.append(data);
     while (!_clientInput.empty()) {
       const auto input = std::as_bytes(std::span<const char>(_clientInput.data(), _clientInput.size()));

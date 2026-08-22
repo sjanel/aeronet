@@ -26,7 +26,7 @@
 
 namespace aeronet::internal {
 
-std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClient& client, ITransport& transport,
+std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClient& client, Transport& transport,
                                                                         NativeHandle fd, std::string_view head,
                                                                         std::string_view body,
                                                                         SteadyClock::time_point deadline,
@@ -37,7 +37,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
     // While head bytes remain, scatter the rest of the head + the whole body in a single writev
     // (PlainTransport) or an ordered head-then-body write (TLS). Once the head is fully flushed,
     // stream the remaining body alone. This avoids copying the body into the head buffer.
-    const ITransport::TransportResult transportRes =
+    const TransportResult transportRes =
         off < head.size() ? transport.write(head.substr(off), body) : transport.write(body.substr(off - head.size()));
     off += transportRes.bytesProcessed;
     if (off != 0) {
@@ -59,7 +59,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
   return {};
 }
 
-std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(HttpClient& client, ITransport& transport,
+std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(HttpClient& client, Transport& transport,
                                                                              NativeHandle fd,
                                                                              const FilePayload& filePayload,
                                                                              SteadyClock::time_point deadline,
@@ -72,7 +72,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
     // Plain socket: hand the region to the kernel via sendfile(2). The bytes go straight from the page
     // cache to the socket - never copied into user space (mirrors the server's response sendfile path).
     while (remaining != 0) {
-      const ITransport::TransportResult transportRes = transport.sendFile(file, fileOffset, remaining);
+      const TransportResult transportRes = transport.sendFile(file, fileOffset, remaining);
       if (transportRes.bytesProcessed != 0) {
         requestSent = true;
         remaining -= transportRes.bytesProcessed;  // sendFile already advanced fileOffset
@@ -111,7 +111,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
     const std::string_view chunk(chunkBuf.data(), nread);
     std::size_t off = 0;
     while (off < chunk.size()) {
-      const ITransport::TransportResult transportRes = transport.write(chunk.substr(off));
+      const TransportResult transportRes = transport.write(chunk.substr(off));
       off += transportRes.bytesProcessed;
       if (off != 0) {
         requestSent = true;
@@ -133,7 +133,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
   return {};
 }
 
-HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransport& transport, NativeHandle fd,
+HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
   const HttpClientConfig& config = client.config();
@@ -197,8 +197,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, ITransp
 
   for (;;) {
     responseBuffer.ensureAvailableCapacityExponential(kReadChunk);
-    const ITransport::TransportResult transportRes =
-        transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
+    const TransportResult transportRes = transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
     if (transportRes.bytesProcessed > 0) {
       responseBuffer.addSize(transportRes.bytesProcessed);
     } else if (transportRes.want == TransportHint::ReadReady) {
