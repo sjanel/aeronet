@@ -38,7 +38,7 @@ struct level {
   static constexpr int off = 6;
 };
 
-static constexpr const char* kLevelNames[] = {
+static constexpr const char* kLevelNames[]{
     "trace", "debug", "info", "warn", "error", "critical", "off",
 };
 

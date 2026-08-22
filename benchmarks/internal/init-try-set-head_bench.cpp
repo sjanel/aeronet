@@ -335,7 +335,7 @@ DEFINE_END_TO_END_BENCH(EndToEnd_Prod_short_names, ParseHeaderLine, NameHasWhite
 
 // ================= Production HttpRequestView::initTrySetHead benchmark =================
 
-const std::string_view kRequestLines[] = {
+const std::string_view kRequestLines[]{
     "GET / HTTP/1.1\r\n",
     "GET /some-path HTTP/1.1\r\n",
     "GET /some-path?query=param HTTP/1.1\r\n",

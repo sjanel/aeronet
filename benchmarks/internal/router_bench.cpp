@@ -403,10 +403,10 @@ class LargeRouteTableFixture : public benchmark::Fixture {
  public:
   void SetUp(const benchmark::State& /* state */) override {
     // Generate 200+ routes to stress the tree
-    static constexpr std::string_view kResources[] = {"users",   "posts",  "comments", "likes",         "shares",
-                                                      "follows", "blocks", "messages", "notifications", "settings"};
+    static constexpr std::string_view kResources[]{"users",   "posts",  "comments", "likes",         "shares",
+                                                   "follows", "blocks", "messages", "notifications", "settings"};
 
-    static constexpr std::string_view kVersions[] = {"v1", "v2", "v3"};
+    static constexpr std::string_view kVersions[]{"v1", "v2", "v3"};
 
     for (auto version : kVersions) {
       for (auto resource : kResources) {

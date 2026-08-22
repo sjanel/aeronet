@@ -703,7 +703,7 @@ TEST_F(StaticFileHandlerTest, RangeInvalidFormsReturnErrors) {
     const char* header;
     const char* expectedBody;
   };
-  static constexpr Case cases[] = {
+  static constexpr Case cases[]{
       {"Range: foo=1-2", "Invalid Range\n"},     {"Range: bytes=", "Invalid Range\n"},
       {"Range: bytes=5", "Invalid Range\n"},     {"Range: bytes=-0", "Invalid Range\n"},
       {"Range: bytes=5-a", "Invalid Range\n"},   {"Range: bytes=5-6a", "Invalid Range\n"},
@@ -764,7 +764,7 @@ TEST_F(StaticFileHandlerTest, IfRangeHonorsEtagsAndDates) {
   test::ScopedTempFile tmpFile(tmpDir, fileContent);
   StaticFileConfig cfg;
 
-  static constexpr bool kBools[] = {true, false};
+  static constexpr bool kBools[]{true, false};
   for (bool enableConditionals : kBools) {
     cfg.enableConditional = enableConditionals;
     for (bool addLastModified : kBools) {

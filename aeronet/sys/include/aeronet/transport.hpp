@@ -34,6 +34,20 @@ struct TransportResult {
 
 enum class TransportKind : uint8_t { Empty, Plain, Tls, Custom };
 
+// Backend feature detection, hoisted to namespace-scope concepts rather than inline requires-expressions
+// inside the OperationsFor() generic lambdas: MSVC has been observed to misevaluate a requires-expression
+// referencing a multi-argument member (here sendFile's mutable std::size_t& offset) when it lives nested in
+// a lambda inside a class-template-instantiated function template (reproduced on Windows CI, PR #686/#687).
+template <typename Backend>
+concept HasSendFile = requires(Backend& backend, const File& file, std::size_t& offset, std::size_t count) {
+  { backend.sendFile(file, offset, count) } -> std::same_as<TransportResult>;
+};
+
+template <typename Backend>
+concept HasSupportsSendfile = requires(const Backend& backend) {
+  { backend.supportsSendfile() } -> std::same_as<bool>;
+};
+
 /// Shared non-virtual state for socket-backed transports.
 class SocketTransportState {
  public:
@@ -421,10 +435,10 @@ const Transport::Operations& Transport::OperationsFor() noexcept {
                   std::string_view data) { return BackendBase::Get(erased).write(data); },
       .writeTwo = WriteTwo,
       .writeMany = WriteMany,
-      .sendFile = [](ErasedTransportBackend* erased, const File& file, std::size_t& offset,
-                     std::size_t count) -> TransportResult {
+      .sendFile = [](ErasedTransportBackend* erased, [[maybe_unused]] const File& file,
+                     [[maybe_unused]] std::size_t& offset, [[maybe_unused]] std::size_t count) -> TransportResult {
         Backend& backend = BackendBase::Get(erased);
-        if constexpr (requires { backend.sendFile(file, offset, count); }) {
+        if constexpr (HasSendFile<Backend>) {
           return backend.sendFile(file, offset, count);
         } else {
           return {0, TransportHint::Error};
@@ -441,7 +455,7 @@ const Transport::Operations& Transport::OperationsFor() noexcept {
       .supportsSendfile =
           [](const ErasedTransportBackend* erased) noexcept {
             const Backend& backend = BackendBase::Get(erased);
-            if constexpr (requires { backend.supportsSendfile(); }) {
+            if constexpr (HasSupportsSendfile<Backend>) {
               return backend.supportsSendfile();
             } else {
               return false;

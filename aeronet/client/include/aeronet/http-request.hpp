@@ -108,12 +108,10 @@ class HttpRequest final : public HttpMessage {
   [[nodiscard]] std::string_view target() const noexcept { return {targetBeg(), targetEnd()}; }
 
   // Get the current file stored in this HttpRequest, or nullptr if no file is set.
-  [[nodiscard]] const File* file() const noexcept { return HttpMessage::file(); }
+  [[nodiscard]] const File* file() const noexcept { return fileImpl(); }
 
   // Returns the current direct compression mode for this HttpMessage.
-  [[nodiscard]] DirectCompressionMode directCompressionMode() const noexcept {
-    return HttpMessage::directCompressionMode();
-  }
+  [[nodiscard]] DirectCompressionMode directCompressionMode() const noexcept { return directCompressionModeImpl(); }
 
   // ---------------/
   // METHOD SETTERS /
@@ -171,7 +169,7 @@ class HttpRequest final : public HttpMessage {
   // std::logic_error.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   HttpRequest& headerAddLine(std::string_view key, std::string_view value) & {
-    HttpMessage::headerAddLine(key, value);
+    headerAddLineImpl(key, value);
     return *this;
   }
 
@@ -182,7 +180,7 @@ class HttpRequest final : public HttpMessage {
 
   // Convenient overload adding a header whose value is numeric.
   HttpRequest& headerAddLine(std::string_view key, std::integral auto value) & {
-    HttpMessage::headerAddLine(key, value);
+    headerAddLineImpl(key, value);
     return *this;
   }
 
@@ -199,7 +197,7 @@ class HttpRequest final : public HttpMessage {
   //   "accept: text/html"
   //   "accept: text/html, application/json"
   HttpRequest& headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ") & {
-    HttpMessage::headerAppendValue(key, value, sep);
+    headerAppendValueImpl(key, value, sep);
     return *this;
   }
 
@@ -210,7 +208,7 @@ class HttpRequest final : public HttpMessage {
 
   // Convenient overload appending a numeric value.
   HttpRequest& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") & {
-    HttpMessage::headerAppendValue(key, value, sep);
+    headerAppendValueImpl(key, value, sep);
     return *this;
   }
 
@@ -226,7 +224,7 @@ class HttpRequest final : public HttpMessage {
   // The header name and value must be valid per HTTP specifications.
   // As for 'headerAddLine()', do not insert any reserved header.
   HttpRequest& header(std::string_view key, std::string_view value) & {
-    HttpMessage::header(key, value);
+    headerImpl(key, value);
     return *this;
   }
 
@@ -235,7 +233,7 @@ class HttpRequest final : public HttpMessage {
 
   // Convenient overload setting a header to a numeric value.
   HttpRequest& header(std::string_view key, std::integral auto value) & {
-    HttpMessage::header(key, value);
+    headerImpl(key, value);
     return *this;
   }
 
@@ -247,7 +245,7 @@ class HttpRequest final : public HttpMessage {
   // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
   // content.
   HttpRequest& headerRemoveLine(std::string_view key) & {
-    HttpMessage::headerRemoveLine(key);
+    headerRemoveLineImpl(key);
     return *this;
   }
 
@@ -262,7 +260,7 @@ class HttpRequest final : public HttpMessage {
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
   HttpRequest& headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ") & {
-    HttpMessage::headerRemoveValue(key, value, sep);
+    headerRemoveValueImpl(key, value, sep);
     return *this;
   }
 
@@ -295,7 +293,7 @@ class HttpRequest final : public HttpMessage {
   // If content-type is omitted, it will be set to "text/plain" by default.
   // If the Body referencing internal memory of this HttpRequest is undefined behavior.
   HttpRequest& body(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    HttpMessage::body(body, contentType);
+    bodyImpl(body, contentType);
     return *this;
   }
 
@@ -336,7 +334,7 @@ class HttpRequest final : public HttpMessage {
   // It is possible to call 'bodyAppend()' on the moved std::string - this will call std::string::append() on the
   // captured std::string.
   HttpRequest& body(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) & {
-    HttpMessage::body(std::move(body), contentType);
+    bodyImpl(std::move(body), contentType);
     return *this;
   }
 
@@ -348,7 +346,7 @@ class HttpRequest final : public HttpMessage {
   // Same as above, but with a vector of char for the body, and 'application/octet-stream' as the default content type.
   HttpRequest& body(std::vector<char>&& body,
                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    HttpMessage::body(std::move(body), contentType);
+    bodyImpl(std::move(body), contentType);
     return *this;
   }
 
@@ -361,7 +359,7 @@ class HttpRequest final : public HttpMessage {
   // Same as above, but with a vector of byte for the body, and 'application/octet-stream' as the default content type.
   HttpRequest& body(std::vector<std::byte>&& body,
                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    HttpMessage::body(std::move(body), contentType);
+    bodyImpl(std::move(body), contentType);
     return *this;
   }
 
@@ -381,7 +379,7 @@ class HttpRequest final : public HttpMessage {
   // into it before appending the new data.
   HttpRequest& body(std::unique_ptr<char[]> body, std::size_t size,
                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    HttpMessage::body(std::move(body), size, contentType);
+    bodyImpl(std::move(body), size, contentType);
     return *this;
   }
 
@@ -394,7 +392,7 @@ class HttpRequest final : public HttpMessage {
   // Same as body(std::unique_ptr<char[]>, ...), but with a unique_ptr to a byte array for the body.
   HttpRequest& body(std::unique_ptr<std::byte[]> body, std::size_t size,
                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
-    HttpMessage::body(std::move(body), size, contentType);
+    bodyImpl(std::move(body), size, contentType);
     return *this;
   }
 
@@ -445,7 +443,7 @@ class HttpRequest final : public HttpMessage {
   // Internally, this will capture the provided std::string_view.
   // Note that if bodyAppend() is called after bodyStatic(), aeronet will automatically allocate a buffer.
   HttpRequest& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
-    HttpMessage::bodyStatic(staticBody, contentType);
+    bodyStaticImpl(staticBody, contentType);
     return *this;
   }
 
@@ -480,19 +478,19 @@ class HttpRequest final : public HttpMessage {
   // It is compatible with direct compression mode if activated for this HttpMessage, and will internally use streaming
   // compression.
   HttpRequest& bodyAppend(std::string_view body, std::string_view contentType = {}) & {
-    HttpMessage::bodyAppend(body, contentType);
+    bodyAppendImpl(body, contentType);
     return *this;
   }
 
   // Rvalue overload of string_view-based bodyAppend.
   HttpRequest&& bodyAppend(std::string_view body, std::string_view contentType = {}) && {
-    return std::move(this->bodyAppend(body, contentType));
+    return std::move(bodyAppend(body, contentType));
   }
 
   // Same as string_view-based append, but accepts a span of bytes, and defaults content type to
   // 'application/octet-stream' if not specified and body is non-empty.
   HttpRequest& bodyAppend(std::span<const std::byte> body, std::string_view contentType = {}) & {
-    HttpMessage::bodyAppend(body, contentType);
+    bodyAppendImpl(body, contentType);
     return *this;
   }
 
@@ -572,7 +570,7 @@ class HttpRequest final : public HttpMessage {
   //   - Content Type header: if non-empty, sets given content type value. Otherwise, attempt to guess it from the
   //     file object. If the MIME type is unknown, sets 'application/octet-stream' as Content type.
   HttpRequest& file(File fileObj, std::string_view contentType = {}) & {
-    HttpMessage::file(std::move(fileObj), 0, 0, contentType);
+    fileImpl(std::move(fileObj), 0, 0, contentType);
     return *this;
   }
 
@@ -584,7 +582,7 @@ class HttpRequest final : public HttpMessage {
   // Same as above, but with specified offset and length for the file content to be sent. If length is 0, it means
   // "until the end of the file". So to clear the file (or body) payload, use body("") instead.
   HttpRequest& file(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {}) & {
-    HttpMessage::file(std::move(fileObj), offset, length, contentType);
+    fileImpl(std::move(fileObj), offset, length, contentType);
     return *this;
   }
 
@@ -613,7 +611,7 @@ class HttpRequest final : public HttpMessage {
   //     of the buffer. If you use trailers frequently, consider using HTTP/2 which has a
   //     more efficient encoding for trailers, or HttpResponseWriter which manages this natively
   HttpRequest& trailerAddLine(std::string_view name, std::string_view value) & {
-    HttpMessage::trailerAddLine(name, value);
+    trailerAddLineImpl(name, value);
     return *this;
   }
 
@@ -624,7 +622,7 @@ class HttpRequest final : public HttpMessage {
 
   // Convenient overload adding a trailer whose value is numeric.
   HttpRequest& trailerAddLine(std::string_view key, std::integral auto value) & {
-    HttpMessage::trailerAddLine(key, value);
+    trailerAddLineImpl(key, value);
     return *this;
   }
 

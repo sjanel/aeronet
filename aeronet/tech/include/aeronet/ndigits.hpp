@@ -17,7 +17,7 @@ constexpr std::uint8_t ndigits(std::unsigned_integral auto n) noexcept {
   }
 
   if constexpr (sizeof(n) <= sizeof(std::uint16_t)) {
-    static constexpr uint16_t kThresholds[] = {100, 1000, 10000};
+    static constexpr uint16_t kThresholds[]{100, 1000, 10000};
     uint8_t digits = 2;
     digits = static_cast<uint8_t>(digits + (n >= kThresholds[0]));
     digits = static_cast<uint8_t>(digits + (n >= kThresholds[1]));

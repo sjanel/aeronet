@@ -340,7 +340,7 @@ struct DirectoryListingResult {
 std::uint8_t MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, char* buf) {
   const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(lastModified.time_since_epoch()).count();
 
-  static constexpr char kHexits[] = "0123456789abcdef";
+  static constexpr char kHexits[]{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
   std::uint8_t len = 0;
 
@@ -363,7 +363,8 @@ std::uint8_t MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, c
     // write from most-significant nibble to least
     for (std::int32_t pos = static_cast<std::int32_t>(digits) - 1; pos >= 0; --pos) {
       const auto shift = static_cast<std::uint64_t>(pos) * 4U;
-      const unsigned int nibble = static_cast<unsigned int>((value >> shift) & 0xFU);
+      const uint8_t nibble = static_cast<uint8_t>((value >> shift) & 0xFU);
+      assert(nibble < std::size(kHexits));
       buf[len++] = kHexits[nibble];
     }
   };

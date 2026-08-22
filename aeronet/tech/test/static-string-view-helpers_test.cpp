@@ -53,7 +53,7 @@ struct test6 {
   static_assert(JoinStringViewWithSep_v<kSep, kStr1, kStr2, kStr3, kStr4, kStr5> ==
                 "apples|bananas|oranges|blueberries|strawberries");
 
-  static constexpr std::string_view kStrArr[] = {"apples", "bananas", "oranges", "blueberries", "strawberries"};
+  static constexpr std::string_view kStrArr[]{"apples", "bananas", "oranges", "blueberries", "strawberries"};
 
   static_assert(make_joined_string_view<kSep, kStrArr>::value == "apples|bananas|oranges|blueberries|strawberries");
 };

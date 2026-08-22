@@ -66,7 +66,7 @@ TEST(CharHexConverter, FromHexDigitValidDigits) {
 }
 
 TEST(CharHexConverter, FromHexDigitInvalid) {
-  static constexpr const char invalids[] = {'g', 'G', '/', ':', ' ', 'z', '\0'};
+  static constexpr const char invalids[]{'g', 'G', '/', ':', ' ', 'z', '\0'};
   for (char ch : invalids) {
     auto val = from_hex_digit(ch);
     EXPECT_EQ(val, -1) << "char=" << ch;

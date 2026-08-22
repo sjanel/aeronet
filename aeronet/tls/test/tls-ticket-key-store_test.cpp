@@ -363,7 +363,7 @@ TEST(TlsTicketKeyStoreTest, EvpMacParamsWrongTypeParamFails) {
   // Some implementations accept OSSL_MAC_PARAM_DIGEST as a utf8 string.
   // We'll deliberately pass a binary integer parameter for that key which should be rejected.
   int bogus = 42;
-  static const OSSL_PARAM params[] = {
+  static const OSSL_PARAM params[]{
       OSSL_PARAM_construct_int("digest", &bogus),
       OSSL_PARAM_construct_end(),
   };
