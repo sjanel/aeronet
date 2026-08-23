@@ -14,9 +14,10 @@ The core build is intentionally modular. Enable optional capabilities at CMake c
 - `AERONET_ENABLE_HTTP2` for HTTP/2, including ALPN and h2c.
 - `AERONET_ENABLE_WEBSOCKET` for RFC 6455 endpoints.
 - `AERONET_ENABLE_ASYNC_HANDLERS` for coroutine handlers.
-- `AERONET_ENABLE_OPENTELEMETRY`, `AERONET_ENABLE_GLAZE`, and the JWT option when your application needs them.
+- `AERONET_ENABLE_HTTP_CLIENT` for the synchronous client and connection pool.
+- `AERONET_ENABLE_OPENTELEMETRY` for traces/metrics, `AERONET_ENABLE_GLAZE` for JSON/YAML configuration, and `AERONET_ENABLE_JWT` for JWT/JWKS. JWT is available only when both OpenSSL and Glaze are enabled.
 
-The [configuration reference](../reference/configuration.md) explains the feature gates and their dependencies.
+The [build configuration reference](../reference/configuration.md) explains every feature gate and dependency. The [server](../reference/server-configuration.md) and [client](../reference/client-configuration.md) references cover runtime controls.
 
 ## Recommended learning path
 

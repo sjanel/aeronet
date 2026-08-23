@@ -1,6 +1,6 @@
 # Documentation development
 
-The documentation site is generated with Material for MkDocs. Its source is the repository's `docs/` directory and its navigation lives in [mkdocs.yml](https://github.com/sjanel/aeronet/blob/main/mkdocs.yml).
+The documentation site is generated with Material for MkDocs. Its source is the repository's `docs/` directory and its navigation lives in [mkdocs.yml](../../mkdocs.yml).
 
 Keep links to repository source files relative, so they work when the Markdown is read on GitHub or from a local checkout. During an MkDocs build, [scripts/mkdocs_source_links.py](../../scripts/mkdocs_source_links.py) rewrites existing links outside `docs/` to the matching GitHub source URL.
 

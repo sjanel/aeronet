@@ -78,12 +78,15 @@ nav:
       - Routing and requests: guides/routing.md
       - Middleware and responses: guides/middleware-and-responses.md
       - Bodies, streaming, and static files: guides/bodies-streaming-and-files.md
+      - Production deployment patterns: guides/production-configuration.md
   - Protocols:
       - TLS and HTTP/2: protocols/tls-and-http2.md
       - WebSocket: protocols/websocket.md
       - HTTP client and JWT: protocols/client-and-jwt.md
   - Reference:
-      - Configuration and optional modules: reference/configuration.md
+      - Build configuration: reference/configuration.md
+      - Server configuration: reference/server-configuration.md
+      - Client configuration: reference/client-configuration.md
       - Feature reference: FEATURES.md
   - Operations:
       - Observability and logging: operations/observability.md
