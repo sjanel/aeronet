@@ -4,8 +4,13 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+## Breaking changes
+
+- **StaticFileConfig.maxMultipartRanges** zero value has no more special value meaning 'unlimited'. All queries containing ranges will be rejected with HTTP error 416. Also, the order of the configuration fields in `StaticFileConfig` slightly changed to decrease padding, beware if you used the aggregate constructor.
+
 ## Bug Fixes
 
+- **Static file ranges now follow RFC 9110 semantics**: byte-range units are case-insensitive, unsupported units andRange on HEAD are ignored, empty list elements do not count toward the configurable safety limit, multipart parts retain request order, and malformed or unsatisfiable ranges are distinguishe correctly.
 - **HTTP client request deadlines now win over late socket readiness**: if a client thread was descheduled across its request deadline and resumed with a peer close or other socket event already pending, the event could be reported instead of `HttpClientErrc::timeout`. The synchronous I/O driver now rechecks the deadline after polling before accepting readiness. Tests: `aeronet/client/test/http-client-core_test.cpp` (`ReadTimeoutReturnsError`, `Http2ReadTimeoutReturnsError`).
 
 ## Improvements
