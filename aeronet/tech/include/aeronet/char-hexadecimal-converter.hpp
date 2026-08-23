@@ -29,10 +29,10 @@ constexpr char* to_lower_hex(std::integral auto value, char* buf) {
 
   if constexpr (std::is_same_v<decltype(value), char> || std::is_same_v<decltype(value), signed char> ||
                 std::is_same_v<decltype(value), unsigned char>) {
-    buf[0] = kHexits[static_cast<unsigned char>(value) >> 4U];
-    buf[1] = kHexits[static_cast<unsigned char>(value) & 0x0F];
+    *buf++ = kHexits[static_cast<unsigned char>(value) >> 4U];
+    *buf++ = kHexits[static_cast<unsigned char>(value) & 0x0FU];
 
-    return buf + 2;
+    return buf;
   } else if constexpr (std::unsigned_integral<decltype(value)>) {
     char* end = buf + hex_digits(value);
     char* out = end;
@@ -54,10 +54,10 @@ constexpr char* to_upper_hex(std::integral auto value, char* buf) {
 
   if constexpr (std::is_same_v<decltype(value), char> || std::is_same_v<decltype(value), signed char> ||
                 std::is_same_v<decltype(value), unsigned char>) {
-    buf[0] = kHexits[static_cast<unsigned char>(value) >> 4U];
-    buf[1] = kHexits[static_cast<unsigned char>(value) & 0x0F];
+    *buf++ = kHexits[static_cast<unsigned char>(value) >> 4U];
+    *buf++ = kHexits[static_cast<unsigned char>(value) & 0x0FU];
 
-    return buf + 2;
+    return buf;
   } else {
     static_assert(false, "to_upper_hex only accepts char or unsigned char types");
   }
@@ -70,8 +70,8 @@ constexpr int8_t from_hex_digit(char ch) {
   };
 
   static constexpr HexTable kHexTable = [] {
-    HexTable table{};
-    for (signed char& val : table.data) {
+    HexTable table;
+    for (auto& val : table.data) {
       val = -1;
     }
     for (int i = 0; i < 10; ++i) {

@@ -258,13 +258,12 @@ struct DirectoryListingResult {
     return lhs.name < rhs.name;
   };
 
-  const std::filesystem::directory_iterator end;
-
-  while (!ec && it != end) {
+  for (const std::filesystem::directory_iterator end; it != end;) {
     std::filesystem::directory_entry current = *it;
     it.increment(ec);
     if (ec) {
       log::error("Failed to advance directory iterator for '{}': {}", PathString(directory).c_str(), ec.message());
+      return result;
     }
 
     std::string name = current.path().filename().string();
@@ -319,10 +318,6 @@ struct DirectoryListingResult {
 
       result.truncated = true;
     }
-  }
-
-  if (ec) {
-    return result;
   }
 
   result.isValid = true;
@@ -384,14 +379,15 @@ std::uint8_t MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, c
 struct RangeSelection {
   enum class State : std::uint8_t { None, Valid, Invalid, Unsatisfiable };
 
-  State state{State::None};
   std::size_t offset{0};
   std::size_t length{0};
+  std::uint32_t order{0};
+  State state{State::None};
 };
 
 // Result of parsing a (possibly multi-range) Range header.
 struct MultiRangeResult {
-  enum class Kind : std::uint8_t { None, SingleValid, MultiValid, Invalid, Unsatisfiable };
+  enum class Kind : std::uint8_t { None, SingleValid, MultiValid, Invalid, Unsatisfiable, Rejected };
 
   Kind kind{Kind::None};
   vector<RangeSelection> ranges;
@@ -415,7 +411,7 @@ std::size_t ParseSize(std::string_view token) {
 }
 
 // Parse a single byte-range-spec (e.g. "0-99", "50-", "-100").
-// Does NOT handle the "bytes=" prefix — caller must strip that.
+// Does NOT handle the "bytes=" prefix - caller must strip that.
 // ETag comparisons in this file use strong validators. Weak ETags
 // (prefixed with "W/") are treated as non-matching for strong comparisons. We
 // derive ETags from file size and modification time and require exact (strong)
@@ -423,28 +419,28 @@ std::size_t ParseSize(std::string_view token) {
 RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize) {
   RangeSelection result;
   spec = TrimOws(spec);
-  if (spec.empty()) {
-    result.state = RangeSelection::State::Invalid;
-    return result;
-  }
+  assert(!spec.empty());
   const auto dashPos = spec.find('-');
   if (dashPos == std::string_view::npos) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  auto firstPart = TrimOws(spec.substr(0, dashPos));
-  auto secondPart = TrimOws(spec.substr(dashPos + 1));
 
-  if (fileSize == 0) {
-    result.state = RangeSelection::State::Unsatisfiable;
+  auto firstPart = spec.substr(0, dashPos);
+  auto secondPart = spec.substr(dashPos + 1);
+  if (firstPart != TrimOws(firstPart) || secondPart != TrimOws(secondPart)) {
+    result.state = RangeSelection::State::Invalid;
     return result;
   }
-
   if (firstPart.empty()) {
     // suffix-byte-range-spec: bytes=-N (last N bytes)
     const std::size_t suffixLen = ParseSize(secondPart);
-    if (suffixLen == kInvalidSize || suffixLen == 0) {
+    if (suffixLen == kInvalidSize) {
       result.state = RangeSelection::State::Invalid;
+      return result;
+    }
+    if (suffixLen == 0 || fileSize == 0) {
+      result.state = RangeSelection::State::Unsatisfiable;
       return result;
     }
     const std::uint64_t len = std::min<std::uint64_t>(suffixLen, fileSize);
@@ -459,12 +455,11 @@ RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize)
     result.state = RangeSelection::State::Invalid;
     return result;
   }
-  if (firstValue >= fileSize) {
-    result.state = RangeSelection::State::Unsatisfiable;
-    return result;
-  }
-
   if (secondPart.empty()) {
+    if (firstValue >= fileSize) {
+      result.state = RangeSelection::State::Unsatisfiable;
+      return result;
+    }
     result.offset = firstValue;
     result.length = fileSize - firstValue;
     result.state = RangeSelection::State::Valid;
@@ -477,6 +472,10 @@ RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize)
     return result;
   }
   if (secondValue < firstValue) {
+    result.state = RangeSelection::State::Invalid;
+    return result;
+  }
+  if (firstValue >= fileSize) {
     result.state = RangeSelection::State::Unsatisfiable;
     return result;
   }
@@ -487,7 +486,7 @@ RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize)
   return result;
 }
 
-// Sort ranges by offset ascending and coalesce overlapping/adjacent ranges.
+// Coalesce overlapping or adjacent ranges while preserving the order of the first matching range-spec.
 void SortAndCoalesceRanges(vector<RangeSelection>& ranges) {
   if (ranges.size() <= 1) {
     return;
@@ -499,20 +498,23 @@ void SortAndCoalesceRanges(vector<RangeSelection>& ranges) {
   for (uint32_t idx = 1; idx < ranges.size(); ++idx) {
     const std::size_t curEnd = ranges[outIdx].offset + ranges[outIdx].length;
     if (ranges[idx].offset <= curEnd) {
-      // Overlapping or adjacent — merge
+      // Overlapping or adjacent - merge.
       const std::size_t newEnd = std::max(curEnd, ranges[idx].offset + ranges[idx].length);
       ranges[outIdx].length = newEnd - ranges[outIdx].offset;
+      ranges[outIdx].order = std::min(ranges[outIdx].order, ranges[idx].order);
     } else {
       ++outIdx;
       ranges[outIdx] = ranges[idx];
     }
   }
   ranges.resize(outIdx + 1);
+  std::ranges::sort(ranges, {}, &RangeSelection::order);
 }
 
 // Parse a (possibly multi-range) Range header value, returning a MultiRangeResult.
-// maxRanges limits the number of range-specs to prevent abuse; 0 means unlimited.
-// Unsatisfiable individual sub-ranges are silently dropped (RFC 7233 §4.4).
+// maxRanges limits the number of non-empty range-specs to prevent abuse.
+// Empty list elements are ignored as required by RFC 9110 §5.6.1.2, up to a bounded reasonable count.
+// Unsatisfiable individual sub-ranges are silently dropped (RFC 9110 §14.1.1).
 // If ALL sub-ranges are unsatisfiable, the result is Unsatisfiable.
 // Any syntactically invalid sub-range makes the whole request Invalid.
 MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::uint8_t maxRanges) {
@@ -523,7 +525,7 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
   }
   static constexpr std::string_view kBytesEqual = "bytes=";
   if (!CaseInsensitiveEqual(raw.substr(0, kBytesEqual.size()), kBytesEqual)) {
-    result.kind = MultiRangeResult::Kind::Invalid;
+    // RFC 9110 §14.2 requires origin servers to ignore unsupported range units.
     return result;
   }
   raw.remove_prefix(kBytesEqual.size());
@@ -536,32 +538,46 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
   // Split on commas: each piece is one byte-range-spec
   vector<RangeSelection> satisfiable;
   std::size_t rangeCount = 0;
-  while (!raw.empty()) {
+  std::uint8_t emptyRangeCount = 0;
+  static constexpr std::uint8_t kMaxIgnoredEmptyRangeSpecs = 16;
+  do {
     auto commaPos = raw.find(',');
-    auto spec = (commaPos == std::string_view::npos) ? raw : raw.substr(0, commaPos);
+    const auto spec = TrimOws((commaPos == std::string_view::npos) ? raw : raw.substr(0, commaPos));
 
-    ++rangeCount;
-    if (maxRanges > 0 && rangeCount > maxRanges) {
-      result.kind = MultiRangeResult::Kind::Invalid;
-      return result;
-    }
+    if (spec.empty()) {
+      if (++emptyRangeCount > kMaxIgnoredEmptyRangeSpecs) {
+        result.kind = MultiRangeResult::Kind::Rejected;
+        return result;
+      }
+    } else {
+      ++rangeCount;
+      if (rangeCount > maxRanges) {
+        result.kind = MultiRangeResult::Kind::Rejected;
+        return result;
+      }
 
-    RangeSelection sel = ParseSingleRangeSpec(spec, fileSize);
-    if (sel.state == RangeSelection::State::Invalid) {
-      result.kind = MultiRangeResult::Kind::Invalid;
-      return result;
+      RangeSelection sel = ParseSingleRangeSpec(spec, fileSize);
+      if (sel.state == RangeSelection::State::Invalid) {
+        result.kind = MultiRangeResult::Kind::Invalid;
+        return result;
+      }
+      if (sel.state == RangeSelection::State::Valid) {
+        assert(rangeCount - 1 <= std::numeric_limits<std::uint32_t>::max());
+        sel.order = static_cast<std::uint32_t>(rangeCount - 1);
+        satisfiable.push_back(sel);
+      }
+      // Unsatisfiable sub-ranges are silently dropped (RFC 9110 §14.1.1)
     }
-    if (sel.state == RangeSelection::State::Valid) {
-      satisfiable.push_back(sel);
-    }
-    // Unsatisfiable sub-ranges are silently dropped (RFC 7233 §4.4)
 
     if (commaPos == std::string_view::npos) {
       break;
     }
     raw.remove_prefix(commaPos + 1);
-  }
+  } while (!raw.empty());
 
+  if (rangeCount == 0) {
+    return result;
+  }
   if (satisfiable.empty()) {
     result.kind = MultiRangeResult::Kind::Unsatisfiable;
     return result;
@@ -583,7 +599,7 @@ bool EtagTokenMatches(std::string_view token, std::string_view etag) {
   if (token.empty()) {
     return false;
   }
-  // "*" matches any current entity tag (RFC 7232 §3.2)
+  // "*" matches any current entity tag (RFC 9110 §13.1.1).
   if (token == "*") {
     return true;
   }
@@ -1134,7 +1150,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   resp = HttpResponse(additionalCapacity, http::StatusCodeNotFound);
 
-  resp.headerAddLine(http::AcceptRanges, kBytes);
+  resp.headerAddLine(http::AcceptRanges, _config.enableRange ? kBytes : "none");
   if (_config.addEtag) {
     // ETag is always formatted when addEtag is set (a valid File guarantees a valid modification time).
     resp.headerAddLine(http::ETag, etagView);
@@ -1157,7 +1173,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
     }
   }
 
-  const bool allowRanges = _config.enableRange && conditionalOutcome.rangeAllowed;
+  const bool allowRanges =
+      request.method() == http::Method::GET && _config.enableRange && conditionalOutcome.rangeAllowed;
   if (allowRanges) {
     if (auto rangeHeaderVal = request.headerValue(http::Range); rangeHeaderVal.has_value()) {
       bool allowed = true;
@@ -1168,7 +1185,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
         MultiRangeResult rangeResult = ParseRanges(*rangeHeaderVal, fileSize, _config.maxMultipartRanges);
 
         if (rangeResult.kind == MultiRangeResult::Kind::Invalid ||
-            rangeResult.kind == MultiRangeResult::Kind::Unsatisfiable) {
+            rangeResult.kind == MultiRangeResult::Kind::Unsatisfiable ||
+            rangeResult.kind == MultiRangeResult::Kind::Rejected) {
           const auto unsatHeader = BuildUnsatisfiedRangeHeader(fileSize);
           resp.status(http::StatusCodeRangeNotSatisfiable);
           resp.headerAddLine(http::ContentRange, std::string_view(unsatHeader.buf, unsatHeader.len));
