@@ -639,7 +639,15 @@ void SingleHttpServer::acceptNewConnections() {
       continue;
     }
 
-    const bool closeNow = processConnectionInput(cnxIt);
+    bool closeNow = processConnectionInput(cnxIt);
+    // CONNECT setup can grow the POSIX fd-indexed connection vectors and invalidate cnxIt. It can also leave tunnel
+    // bytes that arrived with the request head in inBuffer. Re-find the connection and forward those bytes before
+    // returning to edge-triggered polling, where no further read edge would be guaranteed.
+    cnxIt = _connections.iterator(cnxFd);
+    pCnx = _connections.pConnectionState(cnxFd);
+    if (!closeNow && pCnx->isTunneling()) {
+      closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
+    }
     if (closeNow && !pCnx->hasPendingOutput() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       closeConnection(cnxIt);
     } else {
@@ -869,6 +877,16 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 
     if (processConnectionInput(cnxIt)) {
       break;
+    }
+
+    // CONNECT can switch this connection from HTTP parsing to raw tunneling inside
+    // processConnectionInput(). The client can receive the 200 response and send its
+    // first tunnel bytes before this edge-triggered read loop runs again. Continue in
+    // tunnel mode immediately so those bytes are never fed back into the HTTP parser.
+    cnxIt = _connections.iterator(fd);
+    pCnx = _connections.pConnectionState(fd);
+    if (pCnx->isTunneling()) {
+      return handleInTunneling(cnxIt);
     }
 
     if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {

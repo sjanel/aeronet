@@ -13,7 +13,7 @@
 using namespace aeronet;
 
 TEST(CharHexConverter, ToLowerHexBasic) {
-  char buf[3] = {};
+  char buf[3]{};
   char* end = to_lower_hex(',', buf);
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
@@ -26,7 +26,7 @@ TEST(CharHexConverter, ToLowerHexBasic) {
 }
 
 TEST(CharHexConverter, ToHexEdgeValues) {
-  char buf[3] = {};
+  char buf[3]{};
   // 0x00
   to_lower_hex(static_cast<unsigned char>(0x00), buf);
   buf[2] = '\0';
@@ -76,7 +76,7 @@ TEST(CharHexConverter, FromHexDigitInvalid) {
 TEST(CharHexConverter, RoundTrip) {
   // Round-trip test: encode then decode two hex digits
   for (int i = 0; i <= 0xFF; ++i) {
-    char buf[3] = {};
+    char buf[3]{};
     to_lower_hex(static_cast<unsigned char>(i), buf);
     // decode high nibble
     auto hi = from_hex_digit(buf[0]);
