@@ -1682,7 +1682,7 @@ uint16_t ParseConnectPort(std::string_view head) {
 void PumpTunnel(NativeHandle lhs, NativeHandle rhs, const std::atomic<bool>& stop) {
   char buf[8192];
   while (!stop.load(std::memory_order_relaxed)) {
-    const NativeHandle pair[2][2] = {{lhs, rhs}, {rhs, lhs}};
+    const NativeHandle pair[][2]{{lhs, rhs}, {rhs, lhs}};
     for (const auto& dir : pair) {
       if (!WaitReadable(dir[0], 10)) {
         continue;

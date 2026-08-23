@@ -225,7 +225,7 @@ TEST_F(UnixSocketTest, SendStreamSucceeds) {
   socklen_t len = sizeof(clientAddr);
   int acceptedFd = ::accept(server.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &len);
   ASSERT_GE(acceptedFd, 0);
-  char buf[16] = {};
+  char buf[16]{};
   const auto received = ::recv(acceptedFd, buf, sizeof(buf), MSG_DONTWAIT);
   EXPECT_EQ(6, received);
   EXPECT_EQ(0, std::memcmp(buf, data, 6));

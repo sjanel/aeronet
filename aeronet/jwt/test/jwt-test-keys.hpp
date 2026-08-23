@@ -54,7 +54,7 @@ inline std::string RsaJwk(EVP_PKEY* key) {
 }
 
 inline std::string EcJwk(EVP_PKEY* key) {
-  char group[64] = {};
+  char group[64];
   std::size_t groupLen = 0;
   ::EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof(group), &groupLen);
   std::string_view grpName(group, groupLen);

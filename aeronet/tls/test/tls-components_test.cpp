@@ -459,7 +459,7 @@ TEST(TlsTransportTest, ReadWriteAndRetryHints) {
   EXPECT_EQ(zeroWrite.want, TransportHint::None);
 
   SetNonBlocking(pair.serverFd.fd());
-  char buf[16] = {};
+  char buf[16]{};
   auto wantRead = transport.read(buf, sizeof(buf));
   EXPECT_EQ(wantRead.bytesProcessed, 0U);
   EXPECT_EQ(wantRead.want, TransportHint::ReadReady);
@@ -475,7 +475,7 @@ TEST(TlsTransportTest, ReadWriteAndRetryHints) {
   auto writeRes = transport.write("PONG");
   EXPECT_EQ(writeRes.want, TransportHint::None);
   EXPECT_EQ(writeRes.bytesProcessed, 4U);
-  char clientBuf[8] = {};
+  char clientBuf[8]{};
   const int clientRead = ::SSL_read(pair.clientSsl.get(), clientBuf, sizeof(clientBuf));
   ASSERT_EQ(clientRead, 4);
   EXPECT_EQ(std::string_view(clientBuf, 4), "PONG");

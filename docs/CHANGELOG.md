@@ -10,6 +10,7 @@ All notable changes to aeronet are documented in this file.
 
 ## Bug Fixes
 
+- **HTTP/1.1 CONNECT no longer stalls on its first tunnel bytes**: bytes already buffered with the CONNECT head, or arriving while the `200` response completed, could be fed back into HTTP parsing and wait forever for another edge-triggered read event. The connection now switches the active read loop to tunnel forwarding immediately.
 - **Static file ranges now follow RFC 9110 semantics**: byte-range units are case-insensitive, unsupported units andRange on HEAD are ignored, empty list elements do not count toward the configurable safety limit, multipart parts retain request order, and malformed or unsatisfiable ranges are distinguishe correctly.
 - **HTTP client request deadlines now win over late socket readiness**: if a client thread was descheduled across its request deadline and resumed with a peer close or other socket event already pending, the event could be reported instead of `HttpClientErrc::timeout`. The synchronous I/O driver now rechecks the deadline after polling before accepting readiness. Tests: `aeronet/client/test/http-client-core_test.cpp` (`ReadTimeoutReturnsError`, `Http2ReadTimeoutReturnsError`).
 

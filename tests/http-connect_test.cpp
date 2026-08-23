@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <exception>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
@@ -19,11 +22,105 @@
 #include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/transport-test-hook.hpp"
+#include "aeronet/transport.hpp"
 
 using namespace std::chrono_literals;
 using namespace aeronet;
 
 namespace {
+
+std::atomic<bool> gPauseNextAcceptedWrite{false};
+std::atomic<bool> gAcceptedWriteCompleted{false};
+std::atomic<bool> gResumeAcceptedWrite{false};
+std::atomic<NativeHandle> gAcceptedFd{kInvalidHandle};
+
+class AcceptedWriteResumeGuard {
+ public:
+  AcceptedWriteResumeGuard() = default;
+  AcceptedWriteResumeGuard(const AcceptedWriteResumeGuard&) = delete;
+  AcceptedWriteResumeGuard& operator=(const AcceptedWriteResumeGuard&) = delete;
+
+  ~AcceptedWriteResumeGuard() { Resume(); }
+
+  void Resume() {
+    if (_armed) {
+      _armed = false;
+      gResumeAcceptedWrite.store(true, std::memory_order_release);
+      gResumeAcceptedWrite.notify_all();
+    }
+  }
+
+ private:
+  bool _armed{true};
+};
+
+class PausingWriteTransport final : public TransportBackend<PausingWriteTransport> {
+ public:
+  explicit PausingWriteTransport(Transport inner) : _inner(std::move(inner)) {}
+
+  TransportResult read(char* buf, std::size_t len) {
+    auto result = _inner.read(buf, len);
+    if (result.bytesProcessed != 0) {
+      gAcceptedFd.store(test::g_last_accepted_fd.load(std::memory_order_acquire), std::memory_order_release);
+    }
+    return result;
+  }
+
+  TransportResult write(std::string_view data) { return PauseAfterCompletedWrite(_inner.write(data), data.size()); }
+
+  TransportResult write(std::string_view first, std::string_view second) {
+    return PauseAfterCompletedWrite(_inner.write(first, second), first.size() + second.size());
+  }
+
+  [[nodiscard]] bool handshakeDone() const noexcept { return _inner.handshakeDone(); }
+  [[nodiscard]] bool hasPendingReadData() const noexcept { return _inner.hasPendingReadData(); }
+
+ private:
+  static TransportResult PauseAfterCompletedWrite(TransportResult result, std::size_t requestedBytes) {
+    if (result.want == TransportHint::None && result.bytesProcessed == requestedBytes &&
+        gPauseNextAcceptedWrite.exchange(false, std::memory_order_acq_rel)) {
+      gAcceptedWriteCompleted.store(true, std::memory_order_release);
+      gAcceptedWriteCompleted.notify_all();
+      gResumeAcceptedWrite.wait(false, std::memory_order_acquire);
+    }
+    return result;
+  }
+
+  Transport _inner;
+};
+
+Transport PauseAcceptedWriteCompletion(Transport transport) {
+  return Transport(std::make_unique<PausingWriteTransport>(std::move(transport)));
+}
+
+bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (flag.load(std::memory_order_acquire)) {
+      return true;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return false;
+}
+
+bool WaitForSocketData(NativeHandle fd, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    char byte;
+#ifdef AERONET_WINDOWS
+    const auto received = ::recv(fd, &byte, 1, MSG_PEEK);
+#else
+    const auto received = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+#endif
+    if (received > 0) {
+      return true;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return false;
+}
 
 void AllowConnectHost(test::TestServer& server, std::string_view host) {
   server.postConfigUpdate([host](HttpServerConfig& cfg) {
@@ -51,13 +148,62 @@ class HttpConnectDefaultConfig : public ::testing::Test {
 
 }  // namespace
 
-// This test reproduces a partial-write scenario on the upstream side while tunneling.
-// The upstream echo helper used elsewhere writes back immediately; here we start an
-// upstream server that intentionally writes only a prefix on first recv to simulate
-// a partial write (peer transportWrite returns smaller than input) and later drains
-// the remainder. The server under test must append the remaining bytes to
-// peer.tunnelOutBuffer and schedule the peer for writable events so data is
-// eventually forwarded.
+TEST(HttpConnectTunnelScheduling, ForwardsDataArrivingAsConnectResponseCompletes) {
+  gPauseNextAcceptedWrite.store(true, std::memory_order_release);
+  gAcceptedWriteCompleted.store(false, std::memory_order_release);
+  gResumeAcceptedWrite.store(false, std::memory_order_release);
+  gAcceptedFd.store(kInvalidHandle, std::memory_order_release);
+  test::ScopedTransportDecorator decorator(&PauseAcceptedWriteCompletion);
+
+  test::TestServer server(HttpServerConfig{}, RouterConfig{}, 1s);
+  // Destroy this before the server so an assertion cannot leave its event loop
+  // paused while TestServer waits for the server thread to stop.
+  AcceptedWriteResumeGuard resumeGuard;
+  AllowConnectHost(server, "127.0.0.1");
+  auto echoSrv = test::startEchoServer();
+  test::ClientConnection tunnelClient(server.port());
+
+  const std::string request =
+      "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  constexpr std::string_view payload = "data-arriving-as-200-completes";
+  test::sendAll(tunnelClient.fd(), request, 1s);
+  if (!WaitForFlag(gAcceptedWriteCompleted, 1s)) {
+    resumeGuard.Resume();
+    FAIL() << "CONNECT response write did not reach the completion pause";
+    return;
+  }
+
+  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  test::sendAll(tunnelClient.fd(), payload, 1s);
+  const NativeHandle acceptedFd = gAcceptedFd.load(std::memory_order_acquire);
+  EXPECT_NE(acceptedFd, kInvalidHandle);
+  EXPECT_TRUE(WaitForSocketData(acceptedFd, 1s));
+  resumeGuard.Resume();
+
+  EXPECT_EQ(test::recvWithTimeout(tunnelClient.fd(), 1s, payload.size()), payload);
+}
+
+TEST_F(HttpConnectDefaultConfig, ForwardsTunnelDataCoalescedWithConnectHead) {
+  auto echoSrv = test::startEchoServer();
+  AllowConnectHost(ts, "127.0.0.1");
+
+  constexpr std::string_view payload = "coalesced-first-tunnel-payload";
+  const std::string request = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) +
+                              " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" + std::string(payload);
+  test::sendAll(fd, request, 1s);
+
+  std::string received = test::recvWithTimeout(fd, 1s);
+  EXPECT_TRUE(received.starts_with("HTTP/1.1 200")) << received;
+  if (!received.contains(payload)) {
+    received += test::recvWithTimeout(fd, 1s, payload.size());
+  }
+  EXPECT_TRUE(received.ends_with(payload)) << received;
+}
+
+// A large tunnel payload creates natural upstream backpressure and partial writes.
+// The server must buffer every unwritten suffix, request writable events, and
+// eventually forward the complete payload.
 TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Use the test helper to start an echo server on loopback (returns ephemeral port).
   auto echoSrv = test::startEchoServer();
@@ -76,7 +222,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   auto echoedHello = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, simpleHello.size());
   EXPECT_EQ(echoedHello, simpleHello);
 
-// Send payload that upstream will partially echo
+  // Send payload that upstream will partially echo
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   // We need a much smaller payload here otherwise the tests takes too long with additional memory checks
   std::string payload(1024UL * 1024, 'a');
