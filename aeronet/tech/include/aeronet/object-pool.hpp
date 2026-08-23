@@ -182,11 +182,9 @@ class ObjectPool {
   void addBlock() {
     const size_type newBlockSize = _pLastBlock == nullptr ? _totalCapacity : _pLastBlock->_blockSize * kGrowthFactor;
 
-    // We need to add padding to make sure that the Slot array that follows
-    // the Block header is properly aligned.
-    // malloc itselfs returns memory aligned to max_align_t, which is
-    // sufficient for our needs, but the Block header may have a size
-    // that is not a multiple of Slot alignment.
+    // We need to add padding to make sure that the Slot array that follows the Block header is properly aligned.
+    // malloc itselfs returns memory aligned to max_align_t, which is sufficient for our needs, but the Block header may
+    // have a size that is not a multiple of Slot alignment.
     Block* pNewBlock = static_cast<Block*>(std::malloc(sizeof(Block) + kMallocPadding + (newBlockSize * sizeof(Slot))));
     if (pNewBlock == nullptr) {
       throw std::bad_alloc();

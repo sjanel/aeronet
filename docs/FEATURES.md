@@ -209,7 +209,11 @@ Behavior summary
 - For tunneling we record `peerFd` on each side (client and upstream). A connection is considered in tunneling mode when
   `peerFd != -1` (exposed via `ConnectionState::isTunneling()` accessor). When the tunnel is active bytes read on one
   side are written to the peer's transport directly. Each side keeps a dedicated tunnel buffer for the peer flow so
-  frontend HTTP outbound buffering (`outBuffer`) and tunnel forwarding remain separate.
+  frontend HTTP outbound buffering (`outBuffer`) and tunnel forwarding remain separate. The first tunnel bytes are
+  forwarded without returning to HTTP parsing when they are already buffered with the CONNECT head or arrive while the
+  `200` response is completing. Tests:
+  [http-connect_test.cpp](../tests/http-connect_test.cpp) (`ForwardsDataArrivingAsConnectResponseCompletes`,
+  `ForwardsTunnelDataCoalescedWithConnectHead`).
 
 Configuration
 

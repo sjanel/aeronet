@@ -638,6 +638,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     if (action == LoopAction::Break) {
       break;
     }
+    if (action == LoopAction::SwitchProtocol) {
+      return state.isAnyCloseRequested();
+    }
 
     request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
