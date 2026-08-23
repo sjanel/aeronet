@@ -17,6 +17,20 @@ The detailed syntax, parameter decoding, trailing-slash behavior, and precedence
 
 For asynchronous handlers, wait for the body with the supported awaitable helpers before accessing a body that is still arriving. The [memory-management reference](../FEATURES.md#memory-management--stdstring_view-safety) explains these lifetime guarantees.
 
+## A parameterized JSON-shaped response
+
+The handler receives a non-owning request view, so values copied into a response may safely outlive the handler call. Keep a `string_view` only when it remains inside the request lifetime.
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/users/{userId}", [](const HttpRequestView& request) {
+  const std::string_view userId = request.pathParamValueOrEmpty("userId");
+  return HttpResponse(200).body(std::string{"{\"id\":\""} + std::string{userId} + "\"}", "application/json");
+});
+```
+
+The exact parameter syntax and precedence are documented in [routing patterns](../FEATURES.md#routing-patterns--path-parameters). Use a default handler deliberately: registered paths retain aeronet's deterministic 404 and 405 behavior.
+
 ## Continue from here
 
 - Add request and response policy with [Middleware and responses](middleware-and-responses.md).

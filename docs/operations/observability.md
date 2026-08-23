@@ -8,6 +8,25 @@ The logging module integrates with spdlog when enabled. Configure the sink, leve
 
 See [Logging](../FEATURES.md#logging) for the supported configuration and structured access-log behavior.
 
+```cpp
+using namespace std::chrono_literals;
+
+HttpServerConfig config;
+config.accessLog.sink = AccessLogConfig::Sink::Stdout;
+config.accessLog.format = AccessLogConfig::Format::JSON;
+config.accessLog.useForwardedFor = true;  // Only when the trusted proxy sanitizes it.
+
+TelemetryConfig telemetry;
+telemetry.otelEnabled = true;
+telemetry.withEndpoint("http://otel-collector:4318")
+    .withServiceName("orders")
+    .withSampleRate(0.25)
+    .addHttpHeader("authorization", "Bearer <collector-token>");
+config.withTelemetryConfig(std::move(telemetry));
+```
+
+`useForwardedFor` is a trust-boundary setting, not a general convenience switch. Do not log request bodies or authorization credentials. OpenTelemetry requires `AERONET_ENABLE_OPENTELEMETRY=ON`; DogStatsD can be enabled separately with a Unix-domain socket, tags, namespace, and an optional metric-only configuration.
+
 ## OpenTelemetry
 
 Enable OpenTelemetry at build time when the application needs traces or metrics. aeronet exposes built-in instrumentation and configuration hooks while leaving exporter and deployment choices explicit.

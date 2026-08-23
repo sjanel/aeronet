@@ -22,6 +22,19 @@ Use the detailed references for the behavior that must be explicit in production
 - [Compression negotiation](../FEATURES.md#compression--negotiation)
 - [Reserved and managed response headers](../FEATURES.md#reserved--managed-response-headers)
 
+## Buffered response example
+
+For responses that are already available, return a value rather than streaming it. aeronet controls framing headers such as `Content-Length` and transfer encoding, so handlers should describe the application response rather than manually generate protocol framing.
+
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/health", [](const HttpRequestView&) {
+  return HttpResponse(200).body("{\"status\":\"ok\"}", "application/json");
+});
+```
+
+Use route or router CORS policy helpers instead of open-coding preflight semantics. `RouterConfig::withDefaultCorsPolicy()` supplies the default only where a route has no more-specific policy.
+
 ## Error and connection behavior
 
 The protocol layer handles framing and standard parser errors. Application handlers should make their own domain failures clear with an appropriate status and response body. For shutdown and client-disconnect behavior, read [connection close semantics](../FEATURES.md#connection-close-semantics) and the [server lifecycle](../FEATURES.md#httpserver-lifecycle).

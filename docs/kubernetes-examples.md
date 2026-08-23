@@ -70,7 +70,7 @@ data:
         livenessPath: /livez
         readinessPath: /readyz
         startupPath: /startupz
-        contentType: text/plain
+        contentType: "text/plain; charset=utf-8"
 
       # Optional HTTP behavior tuning.
       enableKeepAlive: true
@@ -200,7 +200,7 @@ data:
           "livenessPath": "/livez",
           "readinessPath": "/readyz",
           "startupPath": "/startupz",
-          "contentType": "text/plain"
+          "contentType": "text/plain; charset=utf-8"
         },
         "telemetry": {
           "otelEnabled": false,
@@ -348,5 +348,5 @@ kubectl get endpoints aeronet-example-yaml
 
 ## Related Docs
 
-- [README.md](https://github.com/sjanel/aeronet/blob/main/README.md)
+- [README.md](../README.md)
 - [FEATURES.md](FEATURES.md#built-in-kubernetes-style-probes)
