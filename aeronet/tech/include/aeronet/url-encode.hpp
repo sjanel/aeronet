@@ -27,7 +27,7 @@ constexpr auto URLEncodedSize(std::string_view data, IsNotEncodedFunc isNotEncod
 /// URLEncodedSize(data, isNotEncodedFunc) bytes). The function returns a pointer to the char immediately after the last
 /// written char in the buffer.
 template <class IsNotEncodedFunc>
-char* URLEncode(std::string_view data, IsNotEncodedFunc isNotEncodedFunc, char* AERONET_RESTRICT buf) {
+constexpr char* URLEncode(std::string_view data, IsNotEncodedFunc isNotEncodedFunc, char* AERONET_RESTRICT buf) {
   const char* it = data.data();
   const char* const last = it + data.size();
 

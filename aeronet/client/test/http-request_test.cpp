@@ -1016,6 +1016,13 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativePathNonTls) {
   EXPECT_EQ(req.target(), "/y");
 }
 
+TEST_F(HttpRequestTest, ResolveRedirectRelativePathNonTlsError) {
+  auto req = makeRequest(http::Method::GET, "http://example.com/x");
+  auto res = HttpRequestTest::ResolveRedirect(req, "y\r\n");
+
+  EXPECT_FALSE(res);
+}
+
 TEST_F(HttpRequestTest, ResolveRedirectRelativePathTls) {
   auto req = makeRequest(http::Method::GET, "https://example.com/x");
   auto res = HttpRequestTest::ResolveRedirect(req, "y");

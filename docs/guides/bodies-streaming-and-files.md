@@ -21,4 +21,4 @@ For the complete response model, see [Streaming responses](../FEATURES.md#stream
 
 The static-file helper supports efficient plain-socket transfer and HTTP range and conditional-request behavior. It is suitable for explicit file-serving endpoints, not as a replacement for a dedicated CDN where that is the better operational fit.
 
-See [Static File Handler](../FEATURES.md#static-file-handler-rfc-7233--rfc-7232) and the buildable [static-file example](https://github.com/sjanel/aeronet/blob/main/examples/static-file.cpp).
+See [Static File Handler](../FEATURES.md#static-file-handler-rfc-9110-range-and-conditional-requests) and the buildable [static-file example](../../examples/static-file.cpp).
