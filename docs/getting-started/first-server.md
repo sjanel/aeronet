@@ -32,7 +32,7 @@ int main() {
 }
 ```
 
-Compile this program with your CMake target linked to aeronet_server, then run it and make a request:
+Compile this program with your CMake target linked to `aeronet_server`, then run it and make a request:
 
 ```bash
 curl -i http://127.0.0.1:8080/hello
@@ -41,6 +41,6 @@ curl -i http://127.0.0.1:8080/hello
 The server object owns the listening socket and its event loop. `run()` blocks the current thread; use the lifecycle APIs described in the [feature reference](../FEATURES.md#httpserver-lifecycle) when an application needs a non-blocking or restartable server.
 
 !!! note
-    The complete [server-minimal.cpp](https://github.com/sjanel/aeronet/blob/main/examples/server-minimal.cpp) example adds argument parsing, graceful signal handling, and a more informative response.
+    The complete [server-minimal.cpp](../../examples/server-minimal.cpp) example adds argument parsing, graceful signal handling, and a more informative response.
 
 Next, learn [Routing and requests](../guides/routing.md).

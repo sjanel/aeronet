@@ -515,6 +515,17 @@ jobs:
           # Use half the CPUs for parallelism, but at least 1
           JOBS=$(( ((NUM_PROC + 1) / 2) ))
           scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} README.md docs/FEATURES.md docs/getting-started/first-server.md
+          echo "Verifying MkDocs guide, protocol, operation, and configuration examples"
+          scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} --include aeronet/main/include \
+            docs/guides/production-configuration.md \
+            docs/guides/routing.md \
+            docs/guides/middleware-and-responses.md \
+            docs/guides/bodies-streaming-and-files.md \
+            docs/protocols/tls-and-http2.md \
+            docs/protocols/client-and-jwt.md \
+            docs/operations/observability.md \
+            docs/reference/server-configuration.md \
+            docs/reference/client-configuration.md
 
       - name: Build MkDocs site
         run: |

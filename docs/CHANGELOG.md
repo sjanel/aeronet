@@ -561,4 +561,4 @@ If you discover a security vulnerability, please email <dev.sjanel@gmail.com>. D
 
 **Download:** [aeronet v1.0.0 Release](https://github.com/sjanel/aeronet/releases/tag/1.0.0)
 
-**License:** Aeronet is licensed under the [LICENSE](https://github.com/sjanel/aeronet/blob/main/LICENSE) file in the repository.
+**License:** Aeronet is licensed under the [LICENSE](../LICENSE) file in the repository.
