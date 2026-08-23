@@ -4107,7 +4107,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
 }
 
 // ---------------------------------------------------------------------------
-// Multipart / multi-range integration tests (RFC 7233 multipart/byteranges)
+// Multipart / multi-range integration tests (RFC 9110 multipart/byteranges)
 // ---------------------------------------------------------------------------
 
 namespace {

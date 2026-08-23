@@ -32,8 +32,8 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
                                                                         SteadyClock::time_point deadline,
                                                                         bool& requestSent) {
   const std::size_t total = head.size() + body.size();
-  std::size_t off = 0;
-  while (off < total) {
+  assert(total != 0);
+  for (std::size_t off = 0;;) {
     // While head bytes remain, scatter the rest of the head + the whole body in a single writev
     // (PlainTransport) or an ordered head-then-body write (TLS). Once the head is fully flushed,
     // stream the remaining body alone. This avoids copying the body into the head buffer.
@@ -109,8 +109,8 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
       return std::unexpected(HttpClientErrc::writeError);
     }
     const std::string_view chunk(chunkBuf.data(), nread);
-    std::size_t off = 0;
-    while (off < chunk.size()) {
+
+    for (std::size_t off = 0;;) {
       const TransportResult transportRes = transport.write(chunk.substr(off));
       off += transportRes.bytesProcessed;
       if (off != 0) {

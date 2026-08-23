@@ -29,7 +29,7 @@ Single consolidated reference for **aeronet** features.
 1. [TLS Features](#tls-features)
 1. [CONNECT (HTTP tunneling)](#connect-http-tunneling)
 1. [Streaming Responses](#streaming-responses-chunked--incremental)
-1. [Static File Handler (RFC 7233 / RFC 7232)](#static-file-handler-rfc-7233--rfc-7232)
+1. [Static File Handler (RFC 9110 Range and Conditional Requests)](#static-file-handler-rfc-9110-range-and-conditional-requests)
 1. [Mixed Mode Dispatch Precedence](#mixed-mode--dispatch-precedence)
 1. [Logging](#logging)
 1. [OpenTelemetry Integration](#opentelemetry-integration)
@@ -2383,15 +2383,16 @@ SingleHttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
 Testing: see `tests/http_streaming.cpp`.
 
 - [x] `StaticFileHandler` serves directory trees with zero-copy `file`
-- [x] RFC 7233 single-range parsing and validation (`Range`, `If-Range`)
-- [x] RFC 7232 validators (`If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`)
+- [x] RFC 9110 range parsing and validation (`Range`, `If-Range`)
+- [x] RFC 9110 validators (`If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`)
 - [x] Strong ETag generation (`size-lastWriteTime`), `Last-Modified`, `Accept-Ranges: bytes`
 - [x] 416 (Range Not Satisfiable) with `Content-Range: bytes */N`
 - [x] Integration hooks in `HttpServerConfig::staticFiles`
 
 <a id="static-file-handler-rfc-7233--rfc-7232"></a>
+<a id="static-file-handler-rfc-9110-range-and-conditional-requests"></a>
 
-## Static File Handler (RFC 7233 / RFC 7232)
+## Static File Handler (RFC 9110 Range and Conditional Requests)
 
 `StaticFileHandler` provides a hardened helper for serving filesystem trees while respecting HTTP caching and range semantics.
 The handler is designed to plug into the existing routing API: it is an invocable object that accepts an `HttpRequestView` and returns an `HttpResponse`, so it works with `SingleHttpServer` and `MultiHttpServer` exactly like any other handler.
@@ -2403,30 +2404,33 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   aeronet emits an HTML index with optional trailing-slash redirect, hidden-file filtering (`showHiddenFiles`),
   configurable CSS (`withDirectoryListingCss`) and a pluggable renderer (`directoryIndexRenderer`). Large directories
   obey `maxEntriesToList` and advertise truncation via `x-directory-listing-truncated: 1`.
-- **Single-range support**: `Range: bytes=N-M` (RFC 7233 §2.1) is parsed with strict validation. Valid ranges return
-  `206 Partial Content` with `Content-Range`. Invalid syntax returns `416` with `Content-Range: bytes */<size>` per the
-  spec.
-- **Multi-range support** (`multipart/byteranges`, RFC 7233 §4.1): comma-separated byte ranges such as
+- **Single-range support**: `Range: bytes=N-M` (RFC 9110 §§14.1.2, 14.2) is parsed with strict validation. Valid
+  ranges return `206 Partial Content` with `Content-Range`; unsatisfiable and malformed ranges are rejected with 416
+  and `Content-Range: bytes */<size>`. Unsupported range units are ignored as required by RFC 9110.
+- **Multi-range support** (`multipart/byteranges`, RFC 9110 §15.3.7.2): comma-separated byte ranges such as
   `Range: bytes=0-99,200-299,500-` are fully supported. The response uses status `206 Partial Content` with
   `Content-Type: multipart/byteranges; boundary=<token>` and each MIME part carries its own `Content-Type` and
   `Content-Range` header. Implementation details:
-  - Overlapping and adjacent ranges are **sorted and coalesced** per RFC recommendation, reducing redundant I/O.
+  - Overlapping and adjacent ranges are **coalesced**, reducing redundant I/O while preserving the request order of
+    independent multipart parts.
   - If multi-range resolution produces a **single range** after coalescing, the handler emits a simple
     `Content-Range` response (no multipart overhead).
   - Unsatisfiable sub-ranges are **silently dropped**; a `416` is returned only when *all* sub-ranges are
-    unsatisfiable (RFC 7233 §4.4).
+    unsatisfiable (RFC 9110 §14.1.1).
   - `If-Range` interaction: when the validator mismatches, the full body is returned (200) regardless of the
     number of ranges requested.
   - Safety limits are configurable via `StaticFileConfig`:
-    - `maxMultipartRanges` (default **16**) - requests exceeding this are treated as invalid (416).
+    - `maxMultipartRanges` (default **16**) - a server-side safety cap, since HTTP defines no maximum. Requests with
+      more non-empty range specs are rejected with 416.
     - `maxMultipartBodySize` (default **32 MiB**) - if the assembled multipart body would exceed this limit the
       handler falls back to a full 200 response instead of partial content.
 - **Conditional requests**: `If-None-Match`, `If-Match`, `If-Modified-Since`, `If-Unmodified-Since`, and `If-Range`
   are honoured using strong validators. Requests that do not modify the resource return `304 Not Modified` for GET/HEAD
   or `412 Precondition Failed` for unsafe methods. `If-Range` transparently falls back to the full body when the
   validator mismatches.
-- **Headers**: the handler always emits `Accept-Ranges: bytes` so clients learn range capability. `ETag` and
-  `Last-Modified` are enabled by default (configurable) and share the same strong validator used by conditionals.
+- **Headers**: the handler emits `Accept-Ranges: bytes` when ranges are enabled and `Accept-Ranges: none` when they
+  are disabled. `ETag` and `Last-Modified` are enabled by default (configurable) and share the same strong validator
+  used by conditionals.
 - **Pre-computed header cache**: the formatted per-file header fragments (`ETag`, `Last-Modified` and the resolved
   `Content-Type`) are cached keyed by the resolved file path, so repeated requests to the same, unchanged file skip the
   ETag/date/MIME formatting entirely. Each request still performs a single `fstat()` (done when opening the file); the

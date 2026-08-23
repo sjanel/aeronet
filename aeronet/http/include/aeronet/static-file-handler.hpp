@@ -19,7 +19,7 @@
 
 namespace aeronet {
 
-// Serves files from a fixed root directory with RFC 7233 / RFC 7232 semantics.
+// Serves files from a fixed root directory with RFC 9110 range and conditional-request semantics.
 // Can be used as a RequestHandler callable handler in Router.
 class StaticFileHandler {
  public:

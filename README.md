@@ -173,7 +173,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 | Trailers exposure | ✔ | Incoming request trailers over HTTP/1.1 (RFC 7230 §4.1.2 chunked) and HTTP/2 (RFC 9113 §8.1 trailing HEADERS) |
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
-| sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 7233 single-range & RFC 7232 validators |
+| sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 9110 range and conditional requests |
 | HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS |
 | JWT (JWS) | ✔ (flag) | RFC 7519 sign/verify; HS/RS/ES/PS/EdDSA; JWK/JWKS by `kid`; rejects `alg:none` |
 
@@ -229,7 +229,7 @@ The landing page above plus the minimal examples are usually enough to evaluate 
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 - [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
 - [Multipart/form-data utilities](docs/FEATURES.md#multipartform-data-utilities-rfc-7578)
-- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-7233--rfc-7232)
+- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-9110-range-and-conditional-requests)
 
 #### Protocols & observability
 

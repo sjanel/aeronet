@@ -29,64 +29,25 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
 
 #### P1 - copies, allocations and asymptotic hot paths
 
-- **HPACK dynamic table churn and lookup** - `HpackDynamicTable::add()` front-inserts into a `vector` (O(n) relocation),
-  while `HpackEncoder::findHeader()` linearly scans dynamic entries for every encoded header. Benchmark a circular
-  contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test
-  an optional name/value index. Select the design on combined insert/evict/indexed-access/lookup results rather than
-  assuming a `deque` wins despite its weaker locality.
-- **HTTP client response ownership** - suitably-sized HTTP/1.1 chunk reassembly and decompression outputs now rotate
-  their scratch allocations into `HttpResponse`, preserving an equal-capacity replacement while removing the final
-  body copy. Oversized scratch stays reusable and falls back to copying a small body, avoiding duplicate high-water
-  retention. Identity bodies embedded in the HTTP/1.1 receive buffer and assembled HTTP/2 bodies still need a safe
-  ownership-transfer or result-owned-buffer path. Cover identity, chunked, compressed, empty and 1 MiB+ responses. This
-  complements the request-side wire-buffer unification already listed in the HTTP client section below.
-- **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and
-  `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit
-  high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and
-  already-computed responses to grow without a configured bound. Validate memory plateaus under slow-reader tests before
-  measuring normal-load overhead.
+- **HPACK dynamic table churn and lookup** - `HpackDynamicTable::add()` front-inserts into a `vector` (O(n) relocation), while `HpackEncoder::findHeader()` linearly scans dynamic entries for every encoded header. Benchmark a circular contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test an optional name/value index. Select the design on combined insert/evict/indexed-access/lookup results rather than assuming a `deque` wins despite its weaker locality.
+- **HTTP client response ownership** - suitably-sized HTTP/1.1 chunk reassembly and decompression outputs now rotate their scratch allocations into `HttpResponse`, preserving an equal-capacity replacement while removing the final body copy. Oversized scratch stays reusable and falls back to copying a small body, avoiding duplicate high-water retention. Identity bodies embedded in the HTTP/1.1 receive buffer and assembled HTTP/2 bodies still need a safe ownership-transfer or result-owned-buffer path. Cover identity, chunked, compressed, empty and 1 MiB+ responses. This complements the request-side wire-buffer unification already listed in the HTTP client section below.
+- **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and already-computed responses to grow without a configured bound. Validate memory plateaus under slow-reader tests before measuring normal-load overhead.
 
 #### P2 - cache locality, dispatch and repeated scans
 
-- **HTTP/2 stream lookup and hot/cold layout** - extend the stream benchmark beyond insert/erase to randomized lookup,
-  DATA/WINDOW_UPDATE processing and close/prune churn at 1, 100, 1,000 and 10,000 active streams. Use the profile to decide
-  between the current flat hash map, a tiny recent-stream cache, denser indexing, or splitting frequently touched state
-  from callbacks, header storage and other cold fields.
-- **HTTP header mutation/search** - `HttpMessage` repeatedly scans the flat CRLF buffer for lookup, append, remove and
-  override operations. First profile realistic 4/8/16/32-header construction and middleware mutation. If scans dominate,
-  evaluate known-header offsets or a lazy compact index that is invalidated on mutation without adding allocation or
-  meaningful `sizeof(HttpMessage)` cost to the common case.
-- **TCP cork syscall policy** - Linux response dispatch currently wraps eligible sends in `TcpCorkGuard`, issuing cork and
-  uncork `setsockopt` calls even for responses that may already fit in one gathered write. Benchmark disabled, always-on
-  and size/write-count-threshold policies for 0 B, 512 B, 4 KiB and streaming responses; retain cork only where packet
-  reduction outweighs the extra syscalls and latency.
-- **JWT/JWKS verification primitives** - `Jwks::find()` scans every key for each token and base64url decoding classifies
-  every character through branches. Add end-to-end JWT decode/verify benchmarks by algorithm, token size and JWKS size,
-  then compare linear lookup with a compact sorted/hash index and branch classification with a 256-byte decode table.
-  Include missing-`kid` and malformed-input cases so failure paths do not regress.
-- **Hot object layout audit** - record `sizeof`, alignment and cache-line access profiles for `ConnectionState`,
-  `Http2Stream`, `WebSocketHandler`, `HttpMessage`, `HttpRequestView` and client connection state at 10 K simulated
-  connections/streams. Move genuinely cold optional state behind existing natural-empty/pool mechanisms only when cache
-  results beat the added indirection. `ConnectionState` lifecycle flags are already bit-packed; do not reopen that item
-  without new layout evidence.
-- **Compression/decompression retained memory** - benchmark codec context reset, scratch-buffer growth and peak retained
-  capacity across alternating tiny/large bodies and many keep-alive sessions. Tune growth/shrink thresholds per codec,
-  and continue the Brotli reset/reuse research, only when allocation traces show a benefit over the existing reusable
-  `BufferCache` / `ObjectArrayPool` paths.
+- **HTTP/2 stream lookup and hot/cold layout** - extend the stream benchmark beyond insert/erase to randomized lookup, DATA/WINDOW_UPDATE processing and close/prune churn at 1, 100, 1,000 and 10,000 active streams. Use the profile to decide between the current flat hash map, a tiny recent-stream cache, denser indexing, or splitting frequently touched state from callbacks, header storage and other cold fields.
+- **HTTP header mutation/search** - `HttpMessage` repeatedly scans the flat CRLF buffer for lookup, append, remove and override operations. First profile realistic 4/8/16/32-header construction and middleware mutation. If scans dominate, evaluate known-header offsets or a lazy compact index that is invalidated on mutation without adding allocation or meaningful `sizeof(HttpMessage)` cost to the common case.
+- **TCP cork syscall policy** - Linux response dispatch currently wraps eligible sends in `TcpCorkGuard`, issuing cork and uncork `setsockopt` calls even for responses that may already fit in one gathered write. Benchmark disabled, always-on and size/write-count-threshold policies for 0 B, 512 B, 4 KiB and streaming responses; retain cork only where packet reduction outweighs the extra syscalls and latency.
+- **JWT/JWKS verification primitives** - `Jwks::find()` scans every key for each token and base64url decoding classifies every character through branches. Add end-to-end JWT decode/verify benchmarks by algorithm, token size and JWKS size, then compare linear lookup with a compact sorted/hash index and branch classification with a 256-byte decode table. Include missing-`kid` and malformed-input cases so failure paths do not regress.
+- **Hot object layout audit** - record `sizeof`, alignment and cache-line access profiles for `ConnectionState`, `Http2Stream`, `WebSocketHandler`, `HttpMessage`, `HttpRequestView` and client connection state at 10 K simulated connections/streams. Move genuinely cold optional state behind existing natural-empty/pool mechanisms only when cache results beat the added indirection. `ConnectionState` lifecycle flags are already bit-packed; do not reopen that item without new layout evidence.
+- **Compression/decompression retained memory** - benchmark codec context reset, scratch-buffer growth and peak retained capacity across alternating tiny/large bodies and many keep-alive sessions. Tune growth/shrink thresholds per codec, and continue the Brotli reset/reuse research, only when allocation traces show a benefit over the existing reusable `BufferCache` / `ObjectArrayPool` paths.
 
 #### P3 - platform and build experiments
 
-- **Configurable/adaptive HTTP client reads** - the client currently requests fixed 16 KiB chunks for HTTP/1.1 and HTTP/2
-  receives. Benchmark configurable 4/16/64 KiB and adaptive growth under small responses, bulk transfers, TLS
-  and constrained-memory workloads before exposing a knob or policy.
-- **Repeat-connection latency** - add a bounded TTL DNS cache and client-side TLS session reuse only after benchmarks
-  separate resolver, TCP and handshake time. Expiry, address rotation and failed-resumption fallback must remain explicit.
-- **Profile-guided builds** - evaluate PGO (and BOLT on supported Linux toolchains) in the benchmark binaries against the
-  existing Release + IPO baseline. Keep this an opt-in build/documentation path: installed library code must not assume
-  the benchmark host's CPU or workload.
-- **Platform event backends** - continue the dedicated IOCP, native macOS `EVFILT_TIMER`, and Linux `io_uring` work already
-  listed elsewhere in this roadmap. Treat these as transport/backend projects with end-to-end results, not local syscall
-  substitutions.
+- **Configurable/adaptive HTTP client reads** - the client currently requests fixed 16 KiB chunks for HTTP/1.1 and HTTP/2 receives. Benchmark configurable 4/16/64 KiB and adaptive growth under small responses, bulk transfers, TLS and constrained-memory workloads before exposing a knob or policy.
+- **Repeat-connection latency** - add a bounded TTL DNS cache and client-side TLS session reuse only after benchmarks separate resolver, TCP and handshake time. Expiry, address rotation and failed-resumption fallback must remain explicit.
+- **Profile-guided builds** - evaluate PGO (and BOLT on supported Linux toolchains) in the benchmark binaries against the existing Release + IPO baseline. Keep this an opt-in build/documentation path: installed library code must not assume the benchmark host's CPU or workload.
+- **Platform event backends** - continue the dedicated IOCP, native macOS `EVFILT_TIMER`, and Linux `io_uring` work already listed elsewhere in this roadmap. Treat these as transport/backend projects with end-to-end results, not local syscall substitutions.
 
 #### Benchmark ideas
 
@@ -140,8 +101,7 @@ questions:
    top of an HTTP/3 mapping (QPACK encode/decode, request/response streams), so HTTP/3 is a transport swap
    rather than a second application API.
 
-Deliverable of the spike: a go/no-go recommendation with a dependency choice and a rough transport-layer
-design, **before** committing to implementation.
+Deliverable of the spike: a go/no-go recommendation with a dependency choice and a rough transport-layer design, **before** committing to implementation.
 
 ### Optional feature modules (compile-time gated)
 
@@ -149,13 +109,7 @@ The following features are inspired by capabilities that make frameworks like **
 
 #### HTTP Client (`AERONET_ENABLE_HTTP_CLIENT`)
 
-Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks
-**HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the
-shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff
-policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT`
-tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an
-`HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the
-request path. See the README HTTP client section and `docs/FEATURES.md` for the full surface.
+Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks **HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT` tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the request path. See the README HTTP client section and `docs/FEATURES.md` for the full surface.
 
 Example:
 
@@ -172,17 +126,10 @@ Still planned:
 Client performance work from the repository-wide audit (response-buffer ownership, receive sizing, and DNS/TLS reuse)
 is tracked in the [performance optimization backlog](#performance-optimization-backlog) above.
 
-- **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so
-  handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing**
-  in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per
-  connection.
-- **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the
-  client builds the request directly in the buffer it writes, with zero reassembly (today request fields are
-  copied once into the send buffer).
+- **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing** in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per connection.
+- **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the client builds the request directly in the buffer it writes, with zero reassembly (today request fields are copied once into the send buffer).
 - **Pluggable timeouts / cancellation** for in-flight client exchanges.
-- **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and
-  decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client
-  currently emits none).
+- **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client currently emits none).
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
 
 #### Server-Sent Events (SSE) convenience layer
@@ -199,12 +146,6 @@ router.setPath(http::Method::GET, "/events", [](const HttpRequestView&, HttpResp
 
 Growing in popularity as a lighter alternative to WebSocket for server → client push (dashboards, notifications, live feeds).
 
-#### Rate Limiting middleware (`AERONET_ENABLE_RATE_LIMIT`)
-
-Built-in token bucket or sliding window rate limiter. Per-IP and/or per-route. Returns `429 Too Many Requests` with `Retry-After` header. Configurable burst / sustained rates. Pluggable backend interface (in-memory default, extensible to Redis or shared stores). Currently only TLS handshake rate limiting exists (`TLSConfig::handshakeRateLimitPerSecond`); this would extend to HTTP request level.
-
-Status: **Delivered** (in the next release): middleware-first `RateLimitRequestMiddlewareBuilder` with an in-memory token-bucket backend (`429` + `Retry-After`), a configurable client-key strategy, global or per-route / per-group installation, plus an optional Redis sliding-window contract (`RedisSlidingWindowRateLimitStore`) for distributed synchronization.
-
 #### Cookie helpers & Session store (`AERONET_ENABLE_SESSIONS`)
 
 - **Cookie builder**: RFC 6265-compliant `Set-Cookie` helper with `SameSite`, `Secure`, `HttpOnly`, `MaxAge`, `Path`, `Domain` attributes. Currently only raw header parsing exists.
@@ -213,34 +154,6 @@ Status: **Delivered** (in the next release): middleware-first `RateLimitRequestM
 #### Response caching middleware (`AERONET_ENABLE_RESPONSE_CACHE`)
 
 In-memory LRU cache keyed by method + path + `Vary` headers. Respects `Cache-Control` directives (`max-age`, `no-store`, `no-cache`, `private`). Configurable max entries and memory budget. Per-route opt-in via middleware registration. ETag / `If-None-Match` validation for cached entries. Useful for APIs with expensive computation behind cacheable endpoints.
-
-#### Regex route constraints
-
-Status: **Delivered in `1.3.0`** as route parameter constraints - inline `{name:pattern}` syntax
-(e.g. `/users/{id:[0-9]+}`), compiled at registration, with a fast custom matcher for common character
-classes and a `std::regex` fallback. A non-matching parameter yields `404`.
-
-#### Route groups & prefix mounting
-
-Status: Delivered in `1.3.0` (`Router::group`, nested groups, shared middleware/config inheritance).
-
-Organize routes under a common prefix with shared middleware, reducing boilerplate for versioned APIs. Inspired by Express.js `Router`, Gin `Group()`, Axum `Router::nest()`:
-
-```cpp
-Router router;
-auto api = router.group("/api/v1");
-api.addRequestMiddleware(authMiddleware);
-api.setPath(http::Method::GET, "/users", listUsersHandler);     // matches /api/v1/users
-api.setPath(http::Method::GET, "/users/{id}", getUserHandler);  // matches /api/v1/users/{id}
-```
-
-Every major framework provides this (Express, Gin, Axum, Actix-web, FastAPI, Spring Boot). Without it, handler registrations repeat prefixes and middleware is duplicated across routes.
-
-#### Per-route request timeout
-
-Status: **Delivered in `1.3.0`** - `PathHandlerEntry::timeout()` (also settable per group and via JSON/YAML
-config) enforces a per-route handler deadline during periodic sweeps (per-connection for HTTP/1.1, per-stream
-for HTTP/2), returning `408 Request Timeout` when it expires.
 
 #### Content negotiation (Accept header)
 
