@@ -12,6 +12,8 @@
 #ifdef AERONET_WINDOWS
 #include <io.h>
 #include <sys/stat.h>
+
+#include "aeronet/safe-cast.hpp"
 #else
 #include <unistd.h>
 #endif
@@ -185,30 +187,22 @@ void AccessLogWriter::formatJSON(const RequestMetrics& metrics) {
 }
 
 void AccessLogWriter::flush() noexcept {
-  if (_buffer.empty()) {
-    return;
-  }
-
   int fd;
-  if (_sink == AccessLogConfig::Sink::Stdout) {
-    fd = 1;
-  } else {
-    assert(_sink == AccessLogConfig::Sink::File);
+  if (_sink == AccessLogConfig::Sink::File) {
     fd = static_cast<int>(_fileFd.fd());
+  } else {
+    fd = 1;
   }
 
-  const char* const start = _buffer.data();
-  const char* data = start;
-  std::size_t remaining = _buffer.size();
+  const char* const pStart = _buffer.data();
+  const char* pData = pStart;
 
-  do {
+  for (std::size_t remaining = _buffer.size(); remaining != 0;) {
 #ifdef AERONET_WINDOWS
-    const auto chunk = remaining > static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())
-                           ? std::numeric_limits<unsigned int>::max()
-                           : static_cast<unsigned int>(remaining);
-    const auto written = ::_write(fd, data, chunk);
+    const auto chunk = SafeCast<unsigned int>(remaining);
+    const auto written = ::_write(fd, pData, chunk);
 #else
-    const auto written = ::write(fd, data, remaining);
+    const auto written = ::write(fd, pData, remaining);
 #endif
     if (written <= 0) {
       // flush is noexcept, so logging failures must not escape this path.
@@ -218,12 +212,12 @@ void AccessLogWriter::flush() noexcept {
       return;
     }
 
-    data += written;
+    pData += written;
     remaining -= static_cast<std::size_t>(written);
-  } while (remaining > 0);
+  }
 
-  assert(data > start);
-  _buffer.erase_front(static_cast<decltype(_buffer.size())>(data - start));
+  assert(static_cast<decltype(_buffer.size())>(pData - pStart) == _buffer.size());
+  _buffer.clear();
 }
 
 }  // namespace aeronet

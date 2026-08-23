@@ -66,12 +66,12 @@ constexpr auto TimeToStringISO8601UTCWithMs(SysTimePoint timePoint, auto out) {
 /// Returns pointer past last written char.
 constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   // Fixed-width tables: no pointer-array indirection, just base + index*3.
-  static constexpr char kWeekdays[][3] = {
+  static constexpr char kWeekdays[][3]{
       {'S', 'u', 'n'}, {'M', 'o', 'n'}, {'T', 'u', 'e'}, {'W', 'e', 'd'},
       {'T', 'h', 'u'}, {'F', 'r', 'i'}, {'S', 'a', 't'},
   };
 
-  static constexpr char kMonths[][3] = {
+  static constexpr char kMonths[][3]{
       {'J', 'a', 'n'}, {'F', 'e', 'b'}, {'M', 'a', 'r'}, {'A', 'p', 'r'}, {'M', 'a', 'y'}, {'J', 'u', 'n'},
       {'J', 'u', 'l'}, {'A', 'u', 'g'}, {'S', 'e', 'p'}, {'O', 'c', 't'}, {'N', 'o', 'v'}, {'D', 'e', 'c'},
   };

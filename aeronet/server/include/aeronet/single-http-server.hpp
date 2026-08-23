@@ -530,7 +530,7 @@ class SingleHttpServer {
   bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionIt cnxIt, std::size_t consumedBytes,
                             const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> postMiddleware);
 
-  enum class LoopAction : uint8_t { Nothing, Continue, Break };
+  enum class LoopAction : uint8_t { Nothing, Continue, Break, SwitchProtocol };
 
   LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 

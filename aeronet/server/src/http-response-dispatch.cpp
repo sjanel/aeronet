@@ -122,9 +122,9 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
   state.transport.disableZerocopy();
 
-  // From now on, both connections bypass HTTP parsing; we simply proxy bytes.
-  state.inBuffer.clear();
-  return LoopAction::Continue;
+  // From now on, both connections bypass HTTP parsing. Keep any bytes following the CONNECT head so
+  // handleReadableClient can forward them as tunnel data.
+  return LoopAction::SwitchProtocol;
 }
 
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
