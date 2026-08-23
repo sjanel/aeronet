@@ -29,7 +29,10 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_BUILD_EXAMPLES` | ON* | Build example programs |
 | `AERONET_BUILD_TESTS` | ON* | Build unit tests (needs GTest) |
 | `AERONET_BUILD_SHARED` | OFF | Build shared instead of static libs |
+| `AERONET_BUILD_MODULES` | OFF | Build as C++ modules (experimental) |
+| `AERONET_BUILD_BENCHMARKS` | ON top-level except Debug | Build benchmark executables and selected comparison backends |
 | `AERONET_INSTALL` | ON* | Enable install + package config export |
+| `AERONET_ENABLE_CCACHE` | ON* | Use ccache when it is installed |
 | `AERONET_ENABLE_SPDLOG` | ON* | Enable spdlog logging integration |
 | `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
 | `AERONET_ENABLE_GLAZE` | ON* | Enable glaze-based JSON serialization helpers |
@@ -37,6 +40,8 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
 | `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
+| `AERONET_ENABLE_HTTP_CLIENT` | ON | Enable the synchronous `HttpClient` module |
+| `AERONET_ENABLE_JWT` | ON when OpenSSL + Glaze are ON | Enable JWS-profile JWT/JWKS support; forced OFF without both prerequisites |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib / zlib-ng) compression + decompression |
 | `AERONET_ENABLE_ZLIBNG` | ON | Use `zlib-ng` implementation instead of classic `zlib` |
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
@@ -46,6 +51,8 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
+| `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable test-only transport hooks; keep OFF in production |
+| `AERONET_ENABLE_WARNINGS` | ON* | Enable the project warning set |
 
 *Defaults apply when aeronet is the top-level project; they flip to OFF when used as a dependency.
 
@@ -57,7 +64,7 @@ Release (static, TLS + zlib + zstd + brotli ON, tests OFF):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DAERONET_ENABLE_OPENSSL=ON -DAERONET_ENABLE_ZLIB=ON -DAERONET_ENABLE_ZSTD=ON -DAERONET_ENABLE_BROTLI=ON \
   -DAERONET_BUILD_TESTS=OFF
-cmake --build build -j
+cmake --build build --parallel
 ```
 
 Debug with sanitizers + tests:
@@ -65,30 +72,48 @@ Debug with sanitizers + tests:
 ```bash
 cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug \
   -DAERONET_ENABLE_ASAN=ON -DAERONET_BUILD_TESTS=ON
-cmake --build build-debug -j
-ctest --test-dir build-debug --output-on-failure -j
+cmake --build build-debug --parallel
+ctest --test-dir build-debug --output-on-failure
 ```
 
 Plain HTTP only (no TLS / extra codecs):
 
 ```bash
-cmake -S . -B build-plain -DCMAKE_BUILD_TYPE=Release
-cmake --build build-plain -j
+cmake -S . -B build-plain -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DAERONET_BUILD_TESTS=OFF \
+  -DAERONET_ENABLE_OPENSSL=OFF -DAERONET_ENABLE_HTTP2=OFF \
+  -DAERONET_ENABLE_WEBSOCKET=OFF -DAERONET_ENABLE_HTTP_CLIENT=OFF \
+  -DAERONET_ENABLE_ZLIB=OFF -DAERONET_ENABLE_ZSTD=OFF \
+  -DAERONET_ENABLE_BROTLI=OFF -DAERONET_ENABLE_SPDLOG=OFF \
+  -DAERONET_ENABLE_GLAZE=OFF -DAERONET_ENABLE_OPENTELEMETRY=OFF
+cmake --build build-plain --parallel
 ```
 
 Enable glaze JSON support explicitly:
 
 ```bash
 cmake -S . -B build-glaze -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_GLAZE=ON
-cmake --build build-glaze -j
+cmake --build build-glaze --parallel
 ```
 
-Shared libraries (HTTP only):
+Shared libraries (minimal HTTP-only profile):
 
 ```bash
-cmake -S . -B build-shared -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_SHARED=ON
-cmake --build build-shared -j
+cmake -S . -B build-shared -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DAERONET_BUILD_SHARED=ON -DAERONET_BUILD_TESTS=OFF \
+  -DAERONET_ENABLE_OPENSSL=OFF -DAERONET_ENABLE_HTTP2=OFF \
+  -DAERONET_ENABLE_WEBSOCKET=OFF -DAERONET_ENABLE_HTTP_CLIENT=OFF \
+  -DAERONET_ENABLE_ZLIB=OFF -DAERONET_ENABLE_ZSTD=OFF \
+  -DAERONET_ENABLE_BROTLI=OFF -DAERONET_ENABLE_SPDLOG=OFF \
+  -DAERONET_ENABLE_GLAZE=OFF -DAERONET_ENABLE_OPENTELEMETRY=OFF
+cmake --build build-shared --parallel
 ```
+
+## Continuous-integration coverage
+
+The CI workflow is the tested compatibility matrix, rather than a promise that every possible toolchain is interchangeable. It exercises GCC 13 and Clang 21 on Ubuntu x86_64 with optional features both OFF and ON, plus a GCC Release smoke build. Feature-enabled Debug and Release builds also run on Ubuntu ARM. macOS and Windows builds cover Debug and Release, and an Alpine/musl Debug job covers the minimal libc environment. The Examples and Docs job builds every example with all optional features enabled, runs the executable smoke tests, compiles the established Markdown C++ examples, and builds this MkDocs site with `--strict`.
+
+Use the exact CI versions for a supported baseline. The [build configuration reference](reference/configuration.md) maps each feature to its dependency and default.
 
 ### macOS
 
@@ -96,7 +121,7 @@ cmake --build build-shared -j
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DAERONET_BUILD_TESTS=ON
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure -j
+ctest --test-dir build --output-on-failure
 ```
 
 ### Windows (Visual Studio 2022)
@@ -106,14 +131,14 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_BUILD_TYPE=Release `
   -DAERONET_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
-ctest --test-dir build --build-config Release --output-on-failure -j
+ctest --test-dir build --build-config Release --output-on-failure
 ```
 
 ## Install
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_INSTALL=ON
-cmake --build build -j
+cmake --build build --parallel
 cmake --install build --prefix "$(pwd)/dist"
 ```
 
@@ -183,7 +208,7 @@ conan install . --output-folder=build/conan -s build_type=Release \
   -o aeronet:with_openssl=True -o aeronet:with_spdlog=False
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan/conan_toolchain.cmake \
   -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake --build build --parallel
 ```
 
 Linking in CMake after `find_package(aeronet CONFIG)` works the same (Conan generated files expose targets).

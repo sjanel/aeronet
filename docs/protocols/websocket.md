@@ -10,4 +10,4 @@ The [WebSocket reference](../FEATURES.md#websocket-rfc-6455) covers the upgrade 
 
 ## Try the example
 
-The buildable [WebSocket echo example](https://github.com/sjanel/aeronet/blob/main/examples/websocket-echo.cpp) serves a small browser client and demonstrates a stateful endpoint factory. Use it as the baseline for testing browser interoperability before adding application-specific authentication or message formats.
+The buildable [WebSocket echo example](../../examples/websocket-echo.cpp) serves a small browser client and demonstrates a stateful endpoint factory. Use it as the baseline for testing browser interoperability before adding application-specific authentication or message formats.

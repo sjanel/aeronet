@@ -17,8 +17,22 @@ Use `HttpResponseWriter` when the body is generated over time or would otherwise
 
 For the complete response model, see [Streaming responses](../FEATURES.md#streaming-responses-chunked--incremental) and [large body optimization](../FEATURES.md#large-body-optimization).
 
+```cpp
+Router router;
+router.setPath(http::Method::GET, "/events", [](const HttpRequestView&, HttpResponseWriter& writer) {
+  writer.status(200);
+  writer.contentType("text/event-stream");
+  writer.writeBody("event: ready\\ndata: connected\\n\\n");
+  writer.end();
+});
+```
+
+The writer is incremental, so do not retain request-backed `string_view` data after the handler unless the application copies it first. Call `end()` exactly once after optional trailers.
+
 ## Static files and ranges
 
 The static-file helper supports efficient plain-socket transfer and HTTP range and conditional-request behavior. It is suitable for explicit file-serving endpoints, not as a replacement for a dedicated CDN where that is the better operational fit.
 
 See [Static File Handler](../FEATURES.md#static-file-handler-rfc-9110-range-and-conditional-requests) and the buildable [static-file example](../../examples/static-file.cpp).
+
+`StaticFileConfig` defaults to range and conditional support, strong ETags, Last-Modified, a 128 KiB inline threshold, and hidden-file/directory-index serving disabled. The full list of limits and callback hooks is in the [server configuration reference](../reference/server-configuration.md#compression-decompression-and-files).

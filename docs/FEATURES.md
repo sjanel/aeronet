@@ -5,6 +5,10 @@ Single consolidated reference for **aeronet** features.
 > **Platform support:** aeronet runs on **Linux** (primary, epoll), **macOS** (kqueue), and **Windows** (WSAPoll).
 > Features marked *(Linux-only)* are automatically disabled on other platforms with graceful fallbacks.
 
+For build switches and every public configuration object, use the [build configuration](reference/configuration.md),
+[server configuration](reference/server-configuration.md), and [client configuration](reference/client-configuration.md)
+references. This page remains the protocol and behavior reference.
+
 ## Scripted Benchmark Framework Coverage
 
 - Scripted benchmark orchestration includes a Boost.Beast backend (`beast-bench-server`) for HTTP/1.1 and WebSocket comparisons.
