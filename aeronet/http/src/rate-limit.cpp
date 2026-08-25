@@ -1,11 +1,13 @@
 #include "aeronet/rate-limit.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string_view>
@@ -29,27 +31,49 @@ void RateLimitConfig::validate() const {
   if (idleTtl <= std::chrono::seconds::zero()) {
     throw std::invalid_argument("RateLimitConfig.idleTtl must be > 0");
   }
+  if (nbShards == 0) {
+    throw std::invalid_argument("RateLimitConfig.nbShards cannot be 0");
+  }
 }
 
-void InMemoryTokenBucketRateLimitStore::evictOne(const RateLimitConfig& config,
-                                                 std::chrono::steady_clock::time_point now) {
-  if (_buckets.size() < config.maxKeys) {
-    return;
-  }
+InMemoryTokenBucketRateLimitStore::InMemoryTokenBucketRateLimitStore(uint8_t nbShards)
+    : _shards(std::make_unique<Shard[]>(nbShards)), _nbShards(nbShards) {}
 
-  for (auto it = _buckets.begin(); it != _buckets.end();) {
-    if (now - it->second.lastSeen >= config.idleTtl) {
-      it = _buckets.erase(it);
-      if (_buckets.size() < config.maxKeys) {
-        return;
+void InMemoryTokenBucketRateLimitStore::evictToLimit(const RateLimitConfig& config,
+                                                     std::chrono::steady_clock::time_point now,
+                                                     std::size_t protectedShardIndex, std::string_view protectedKey) {
+  std::scoped_lock evictionLock(_evictionLock);
+
+  for (std::size_t shardIndex = 0; shardIndex < _nbShards && _size.load(std::memory_order_relaxed) > config.maxKeys;
+       ++shardIndex) {
+    Shard& shard = _shards[shardIndex];
+    std::scoped_lock lock(shard.lock);
+    for (auto it = shard.buckets.begin();
+         it != shard.buckets.end() && _size.load(std::memory_order_relaxed) > config.maxKeys;) {
+      const bool protectedEntry = shardIndex == protectedShardIndex && it->first == protectedKey;
+      if (!protectedEntry && now - it->second.lastSeen >= config.idleTtl) {
+        it = shard.buckets.erase(it);
+        _size.fetch_sub(1U, std::memory_order_relaxed);
+      } else {
+        ++it;
       }
-    } else {
-      ++it;
     }
   }
 
-  if (!_buckets.empty()) {
-    _buckets.erase(_buckets.begin());
+  for (std::size_t shardIndex = 0; shardIndex < _nbShards && _size.load(std::memory_order_relaxed) > config.maxKeys;
+       ++shardIndex) {
+    Shard& shard = _shards[shardIndex];
+    std::scoped_lock lock(shard.lock);
+    for (auto it = shard.buckets.begin();
+         it != shard.buckets.end() && _size.load(std::memory_order_relaxed) > config.maxKeys;) {
+      const bool protectedEntry = shardIndex == protectedShardIndex && it->first == protectedKey;
+      if (!protectedEntry) {
+        it = shard.buckets.erase(it);
+        _size.fetch_sub(1U, std::memory_order_relaxed);
+      } else {
+        ++it;
+      }
+    }
   }
 }
 
@@ -59,40 +83,56 @@ RateLimitDecision InMemoryTokenBucketRateLimitStore::consume(std::string_view ke
   if (key.empty()) {
     return RateLimitDecision::Allow();
   }
+  const std::size_t shardIndex = CityHash{}(key) % _nbShards;
+  Shard& shard = _shards[shardIndex];
+  RateLimitDecision decision;
+  bool inserted{};
 
-  std::scoped_lock lock(_lock);
+  {
+    std::scoped_lock lock(shard.lock);
 
-  auto it = _buckets.find(key);
-  if (it == _buckets.end()) {
-    evictOne(config, now);
+    if (shard.buckets.empty()) {
+      const std::size_t expectedShardKeys = (static_cast<std::size_t>(config.maxKeys) + _nbShards - 1U) / _nbShards;
+      shard.buckets.reserve(expectedShardKeys);
+    }
 
-    it = _buckets.try_emplace(key).first;
+    auto [it, wasInserted] = shard.buckets.try_emplace(key, static_cast<double>(config.burst), now);
+    inserted = wasInserted;
+    if (inserted) {
+      _size.fetch_add(1U, std::memory_order_relaxed);
+    }
 
-    Bucket& fresh = it->second;
-    fresh.tokens = static_cast<double>(config.burst);
-    fresh.lastRefill = now;
+    Bucket& bucket = it->second;
+    if (!inserted) {
+      bucket.lastSeen = now;
+
+      const auto elapsed = now - bucket.lastRefill;
+      if (elapsed > std::chrono::steady_clock::duration::zero()) {
+        const double seconds = std::chrono::duration<double>(elapsed).count();
+        bucket.tokens =
+            std::min(static_cast<double>(config.burst), bucket.tokens + (seconds * config.requestsPerSecond));
+        bucket.lastRefill = now;
+      }
+    }
+
+    if (bucket.tokens >= 1.0) [[likely]] {
+      bucket.tokens -= 1.0;
+      decision = RateLimitDecision::Allow();
+    } else {
+      const double missing = 1.0 - bucket.tokens;
+      const double waitSecondsRaw = missing / static_cast<double>(config.requestsPerSecond);
+      const auto waitSeconds = static_cast<uint32_t>(
+          std::clamp(std::ceil(waitSecondsRaw), 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
+      decision = RateLimitDecision::Reject(waitSeconds);
+    }
   }
 
-  Bucket& bucket = it->second;
-  bucket.lastSeen = now;
-
-  const auto elapsed = now - bucket.lastRefill;
-  if (elapsed > std::chrono::steady_clock::duration::zero()) {
-    const double seconds = std::chrono::duration<double>(elapsed).count();
-    bucket.tokens = std::min(static_cast<double>(config.burst), bucket.tokens + (seconds * config.requestsPerSecond));
-    bucket.lastRefill = now;
+  if (inserted && _size.load(std::memory_order_relaxed) > config.maxKeys) [[unlikely]] {
+    // bytell_hash_map::erase may relocate a different collision-chain element. Do not access bucket or it after this.
+    evictToLimit(config, now, shardIndex, key);
   }
 
-  if (bucket.tokens >= 1.0) {
-    bucket.tokens -= 1.0;
-    return RateLimitDecision::Allow();
-  }
-
-  const double missing = 1.0 - bucket.tokens;
-  const double waitSecondsRaw = missing / static_cast<double>(config.requestsPerSecond);
-  const auto waitSeconds = static_cast<uint32_t>(
-      std::clamp(std::ceil(waitSecondsRaw), 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
-  return RateLimitDecision::Reject(waitSeconds);
+  return decision;
 }
 
 namespace {

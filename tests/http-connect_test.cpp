@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
 
+#ifdef AERONET_WINDOWS
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
+
 #include <array>
 #include <atomic>
 #include <cerrno>

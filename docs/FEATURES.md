@@ -1607,6 +1607,9 @@ opts.keyStrategy = RateLimitClientKeyStrategy::PeerAddress;
 router.addRequestMiddleware(std::move(opts).build());
 ```
 
+The default in-memory store uses independently locked shards so requests for unrelated keys can proceed concurrently.
+Each shard reserves its share of `maxKeys` lazily on first use, while eviction maintains the configured global key cap.
+
 Per-route / group scoping uses the standard middleware APIs:
 
 ```cpp
@@ -1633,6 +1636,7 @@ This contract is designed for distributed quotas across multiple aeronet process
 ### Related Tests
 
 - See `tests/http-routing_test.cpp` for examples covering ordering, short-circuits, and streaming responses.
+- See `aeronet/http/test/rate-limit_test.cpp` for token refill, capacity eviction, and concurrent-consumption coverage.
 
 ## Trailing Slash Policy
 

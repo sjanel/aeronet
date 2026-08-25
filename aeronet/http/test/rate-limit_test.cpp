@@ -2,14 +2,36 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <atomic>
+#include <barrier>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace aeronet {
 namespace {
+
+std::vector<std::string> FindKeysInSameRateLimitShard(std::size_t count) {
+  std::array<std::vector<std::string>, 64> keysByShard;
+
+  for (std::size_t candidateIndex = 0;; ++candidateIndex) {
+    std::string candidate = "same-shard-" + std::to_string(candidateIndex);
+    auto& shardKeys = keysByShard[CityHash{}(candidate) % keysByShard.size()];
+    shardKeys.emplace_back(std::move(candidate));
+    if (shardKeys.size() == count) {
+      return shardKeys;
+    }
+  }
+}
 
 TEST(RateLimitConfigTest, InvalidValuesThrow) {
   RateLimitConfig cfg;
@@ -30,6 +52,10 @@ TEST(RateLimitConfigTest, InvalidValuesThrow) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 
   cfg = {};
+  cfg.nbShards = 0;
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg = {};
   EXPECT_NO_THROW(cfg.validate());
 }
 
@@ -40,7 +66,7 @@ TEST(RateLimitStoreTest, AllowsWithinBurstAndRejectsAfter) {
   cfg.maxKeys = 64;
   cfg.idleTtl = std::chrono::seconds{10};
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
@@ -57,7 +83,7 @@ TEST(RateLimitStoreTest, RefillsOverTime) {
   cfg.burst = 2;
   cfg.maxKeys = 64;
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
@@ -76,7 +102,7 @@ TEST(RateLimitStoreTest, DifferentKeysAreIndependent) {
   cfg.requestsPerSecond = 1;
   cfg.burst = 1;
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
@@ -90,7 +116,7 @@ TEST(RateLimitStoreTest, EmptyKeyBypassesLimits) {
   cfg.burst = 1;
   cfg.maxKeys = 0;
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume({}, t0, cfg).allowed());
@@ -102,7 +128,7 @@ TEST(RateLimitStoreTest, MaxKeysZeroEvictionPathKeepsNewKeyUsable) {
   cfg.burst = 1;
   cfg.maxKeys = 0;
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
@@ -116,7 +142,7 @@ TEST(RateLimitStoreTest, EvictsIdleKeyWhenCapacityReached) {
   cfg.maxKeys = 1;
   cfg.idleTtl = std::chrono::seconds{1};
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-old", t0, cfg).allowed());
@@ -131,7 +157,7 @@ TEST(RateLimitStoreTest, EvictsFirstKeyWhenNoIdleKeyExists) {
   cfg.maxKeys = 1;
   cfg.idleTtl = std::chrono::seconds{10};
 
-  InMemoryTokenBucketRateLimitStore store;
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
   EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
@@ -139,23 +165,144 @@ TEST(RateLimitStoreTest, EvictsFirstKeyWhenNoIdleKeyExists) {
   EXPECT_FALSE(store.consume("ip-b", t0, cfg).allowed());
 }
 
-TEST(RateLimitStoreTest, EvictsMultipleIdleKeysAfterLimitIsLowered) {
-  RateLimitConfig fillCfg;
-  fillCfg.requestsPerSecond = 1;
-  fillCfg.burst = 1;
-  fillCfg.maxKeys = 8;
-  fillCfg.idleTtl = std::chrono::seconds{1};
+TEST(RateLimitStoreTest, NeverEvictsNewKeyWhenNoIdleKeyExists) {
+  constexpr std::string_view keys[]{"ip-a", "ip-b", "ip-c", "ip-d", "ip-e", "ip-f", "ip-g", "ip-h"};
 
-  InMemoryTokenBucketRateLimitStore store;
+  RateLimitConfig cfg;
+  cfg.requestsPerSecond = 1;
+  cfg.burst = 1;
+  cfg.maxKeys = 1;
+  cfg.idleTtl = std::chrono::seconds{10};
+
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  for (const std::string_view oldKey : keys) {
+    for (const std::string_view newKey : keys) {
+      if (oldKey == newKey) {
+        continue;
+      }
+
+      InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
+      EXPECT_TRUE(store.consume(oldKey, t0, cfg).allowed());
+      EXPECT_TRUE(store.consume(newKey, t0, cfg).allowed());
+      EXPECT_FALSE(store.consume(newKey, t0, cfg).allowed()) << "old=" << oldKey << ", new=" << newKey;
+    }
+  }
+}
+
+TEST(RateLimitStoreTest, SerializesConcurrentConsumptionOfOneKey) {
+  constexpr std::size_t threadCount = 8;
+  constexpr std::size_t requestsPerThread = 8;
+
+  RateLimitConfig cfg;
+  cfg.requestsPerSecond = 1;
+  cfg.burst = 32;
+  cfg.maxKeys = 64;
+
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  std::barrier startLine{static_cast<std::ptrdiff_t>(threadCount)};
+  std::atomic<std::size_t> allowedCount{};
+  std::vector<std::thread> threads;
+  threads.reserve(threadCount);
+
+  for (std::size_t threadIndex = 0; threadIndex < threadCount; ++threadIndex) {
+    threads.emplace_back([&] {
+      startLine.arrive_and_wait();
+      for (std::size_t requestIndex = 0; requestIndex < requestsPerThread; ++requestIndex) {
+        if (store.consume("shared-key", t0, cfg).allowed()) {
+          allowedCount.fetch_add(1U, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+
+  EXPECT_EQ(allowedCount.load(std::memory_order_relaxed), cfg.burst);
+}
+
+TEST(RateLimitStoreTest, ConcurrentDistinctInsertionsRemainUsableDuringEviction) {
+  constexpr std::string_view keys[]{"ip-a", "ip-b", "ip-c", "ip-d", "ip-e", "ip-f", "ip-g", "ip-h"};
+
+  RateLimitConfig cfg;
+  cfg.requestsPerSecond = 1;
+  cfg.burst = 1;
+  cfg.maxKeys = 1;
+  cfg.idleTtl = std::chrono::seconds{10};
+
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
+  const auto t0 = std::chrono::steady_clock::time_point{};
+  std::barrier startLine{static_cast<std::ptrdiff_t>(std::size(keys))};
+  std::atomic<std::size_t> allowedCount{};
+  std::vector<std::thread> threads;
+  threads.reserve(std::size(keys));
+
+  for (const std::string_view key : keys) {
+    threads.emplace_back([&, key] {
+      startLine.arrive_and_wait();
+      if (store.consume(key, t0, cfg).allowed()) {
+        allowedCount.fetch_add(1U, std::memory_order_relaxed);
+      }
+    });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+
+  EXPECT_EQ(allowedCount.load(std::memory_order_relaxed), std::size(keys));
+}
+
+TEST(RateLimitStoreTest, EvictsMultipleIdleKeysAfterLimitIsLowered) {
+  RateLimitConfig cfg;
+  cfg.requestsPerSecond = 1;
+  cfg.burst = 1;
+  cfg.maxKeys = 8;
+  cfg.idleTtl = std::chrono::seconds{1};
+
+  InMemoryTokenBucketRateLimitStore store(cfg.nbShards);
   const auto t0 = std::chrono::steady_clock::time_point{};
 
-  EXPECT_TRUE(store.consume("ip-a", t0, fillCfg).allowed());
-  EXPECT_TRUE(store.consume("ip-b", t0, fillCfg).allowed());
-  EXPECT_TRUE(store.consume("ip-c", t0, fillCfg).allowed());
+  EXPECT_TRUE(store.consume("ip-a", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-b", t0, cfg).allowed());
+  EXPECT_TRUE(store.consume("ip-c", t0, cfg).allowed());
 
-  RateLimitConfig tightCfg = fillCfg;
+  RateLimitConfig tightCfg = cfg;
   tightCfg.maxKeys = 1;
   EXPECT_TRUE(store.consume("ip-d", t0 + std::chrono::seconds{1}, tightCfg).allowed());
+}
+
+TEST(RateLimitStoreTest, EvictsSeveralKeysFromProtectedShard) {
+  const std::vector<std::string> keys = FindKeysInSameRateLimitShard(4);
+  const auto t0 = std::chrono::steady_clock::time_point{};
+
+  RateLimitConfig cfg;
+  cfg.requestsPerSecond = 1;
+  cfg.burst = 1;
+  cfg.maxKeys = 4;
+  cfg.idleTtl = std::chrono::seconds{1};
+
+  InMemoryTokenBucketRateLimitStore idleStore(cfg.nbShards);
+  EXPECT_TRUE(idleStore.consume(keys[0], t0, cfg).allowed());
+  EXPECT_TRUE(idleStore.consume(keys[1], t0, cfg).allowed());
+  EXPECT_TRUE(idleStore.consume(keys[2], t0, cfg).allowed());
+
+  RateLimitConfig tightCfg = cfg;
+  tightCfg.maxKeys = 3;
+  const auto idleTime = t0 + cfg.idleTtl;
+  EXPECT_TRUE(idleStore.consume(keys[3], idleTime, tightCfg).allowed());
+  EXPECT_TRUE(idleStore.consume(keys[3], idleTime, tightCfg).rejected());
+
+  InMemoryTokenBucketRateLimitStore fallbackStore(cfg.nbShards);
+  EXPECT_TRUE(fallbackStore.consume(keys[0], t0, cfg).allowed());
+  EXPECT_TRUE(fallbackStore.consume(keys[1], t0, cfg).allowed());
+  EXPECT_TRUE(fallbackStore.consume(keys[2], t0, cfg).allowed());
+
+  cfg.idleTtl = std::chrono::seconds{10};
+  tightCfg = cfg;
+  tightCfg.maxKeys = 3;
+  EXPECT_TRUE(fallbackStore.consume(keys[3], t0, tightCfg).allowed());
+  EXPECT_TRUE(fallbackStore.consume(keys[3], t0, tightCfg).rejected());
 }
 
 TEST(RateLimitRedisContractTest, BuildsKeyWithHashTagByDefault) {
