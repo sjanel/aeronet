@@ -29,7 +29,6 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
 
 #### P1 - copies, allocations and asymptotic hot paths
 
-- **HPACK dynamic table churn and lookup** - `HpackDynamicTable::add()` front-inserts into a `vector` (O(n) relocation), while `HpackEncoder::findHeader()` linearly scans dynamic entries for every encoded header. Benchmark a circular contiguous table, segmented queue and the current vector at realistic 4 KiB and enlarged table sizes; separately test an optional name/value index. Select the design on combined insert/evict/indexed-access/lookup results rather than assuming a `deque` wins despite its weaker locality.
 - **HTTP client response ownership** - suitably-sized HTTP/1.1 chunk reassembly and decompression outputs now rotate their scratch allocations into `HttpResponse`, preserving an equal-capacity replacement while removing the final body copy. Oversized scratch stays reusable and falls back to copying a small body, avoiding duplicate high-water retention. Identity bodies embedded in the HTTP/1.1 receive buffer and assembled HTTP/2 bodies still need a safe ownership-transfer or result-owned-buffer path. Cover identity, chunked, compressed, empty and 1 MiB+ responses. This complements the request-side wire-buffer unification already listed in the HTTP client section below.
 - **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and already-computed responses to grow without a configured bound. Validate memory plateaus under slow-reader tests before measuring normal-load overhead.
 
@@ -56,7 +55,6 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 
 | Benchmark gap | Decision it must support |
 | --- | --- |
-| HPACK insert/evict churn plus hit/miss lookup at multiple table sizes | Dynamic-table container and optional index |
 | Stream randomized lookup, frame processing and prune churn through 10 K streams | Stream map/cache and hot/cold split |
 | Client identity/chunked/compressed responses from 0 B through 100 MiB | Response-buffer ownership transfer |
 | Static-file cache hit/miss/thrash at capacities 64 through 4,096 | O(1) or amortized eviction policy |

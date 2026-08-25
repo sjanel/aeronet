@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -1048,6 +1049,111 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
 // ============================
 
 namespace {
+
+constexpr std::size_t kDynamicIndexMinEntries = 128U;
+
+[[nodiscard]] uint32_t HpackDynamicTableIndex(std::size_t tableIdx) noexcept {
+  return static_cast<uint32_t>(std::size(kStaticTable) + 1U + tableIdx);
+}
+
+[[nodiscard]] HpackLookupResult FindDynamicHeaderLinear(const HpackDynamicTable& table, std::string_view name,
+                                                        std::string_view value) {
+  HpackLookupResult result;
+  for (std::size_t tableIdx = 0; tableIdx < table.entryCount(); ++tableIdx) {
+    const auto& entry = table[static_cast<uint32_t>(tableIdx)];
+    if (entry.name() != name) {
+      continue;
+    }
+    if (result.match == HpackLookupResult::Match::None) {
+      result = {HpackLookupResult::Match::NameOnly, HpackDynamicTableIndex(tableIdx)};
+    }
+    if (entry.value() == value) {
+      return {HpackLookupResult::Match::Full, HpackDynamicTableIndex(tableIdx)};
+    }
+  }
+  return result;
+}
+
+}  // namespace
+
+std::size_t HpackEncoder::dynamicFullHash(std::size_t nameHash, std::string_view value) noexcept {
+  const auto valueHash = CityHash{}(value);
+  return nameHash ^ (valueHash + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (nameHash << 6U) + (nameHash >> 2U));
+}
+
+std::size_t HpackEncoder::dynamicNameHash(std::size_t nameHash) noexcept {
+  return nameHash ^ static_cast<std::size_t>(0xd6e8feb86659fd93ULL);
+}
+
+void HpackEncoder::addToDynamicIndex(std::string_view name, std::string_view value) {
+  ++_newestDynamicSerial;
+  indexDynamicHeader(name, value, _newestDynamicSerial);
+
+  // FIFO eviction leaves old hashes behind. Rebuild after stale entries double the live index rather than paying
+  // for two erases on every insertion. The hashes contain no views into Header storage, so stale slots are safe.
+  if ((_dynamicTable.entryCount() * 4U) + 32U < _dynamicIndex.size()) {
+    rebuildDynamicIndex();
+  }
+}
+
+void HpackEncoder::resizeDynamicIndex() {
+  assert(_dynamicTable.entryCount() >= kDynamicIndexMinEntries);
+  if ((_dynamicTable.entryCount() * 4U) + 32U < _dynamicIndex.size()) {
+    rebuildDynamicIndex();
+  }
+}
+
+HpackLookupResult HpackEncoder::findDynamicHeaderIndexed(std::string_view name, std::string_view value) const {
+  const auto nameHash = CityHash{}(name);
+  if (const auto iter = _dynamicIndex.find(dynamicFullHash(nameHash, value)); iter != _dynamicIndex.end()) {
+    const auto tableIdx = dynamicLiveIndex(iter->second);
+    if (tableIdx < _dynamicTable.entryCount()) {
+      const auto& entry = _dynamicTable[static_cast<uint32_t>(tableIdx)];
+      if (entry.name() == name && entry.value() == value) {
+        return {HpackLookupResult::Match::Full, HpackDynamicTableIndex(tableIdx)};
+      }
+    }
+    // A disagreement means either a stale serial or a hash collision. Fall back so collisions cannot alter output.
+    return FindDynamicHeaderLinear(_dynamicTable, name, value);
+  }
+
+  if (const auto iter = _dynamicIndex.find(dynamicNameHash(nameHash)); iter != _dynamicIndex.end()) {
+    const auto tableIdx = dynamicLiveIndex(iter->second);
+    if (tableIdx < _dynamicTable.entryCount() && _dynamicTable[static_cast<uint32_t>(tableIdx)].name() == name) {
+      return {HpackLookupResult::Match::NameOnly, HpackDynamicTableIndex(tableIdx)};
+    }
+    return FindDynamicHeaderLinear(_dynamicTable, name, value);
+  }
+  return {};
+}
+
+std::size_t HpackEncoder::dynamicLiveIndex(uint64_t serial) const noexcept {
+  assert(serial <= _newestDynamicSerial);
+  return static_cast<std::size_t>(_newestDynamicSerial - serial);
+}
+
+void HpackEncoder::indexDynamicHeader(std::string_view name, std::string_view value, uint64_t serial) {
+  const auto nameHash = CityHash{}(name);
+  _dynamicIndex[dynamicNameHash(nameHash)] = serial;
+  _dynamicIndex[dynamicFullHash(nameHash, value)] = serial;
+}
+
+void HpackEncoder::rebuildDynamicIndex() {
+  _dynamicIndex.clear();
+  _dynamicIndex.reserve(_dynamicTable.entryCount() * 2U);
+  for (std::size_t idx = _dynamicTable.entryCount(); idx != 0U; --idx) {
+    const auto tableIdx = idx - 1U;
+    const auto& entry = _dynamicTable[static_cast<uint32_t>(tableIdx)];
+    indexDynamicHeader(entry.name(), entry.value(), _newestDynamicSerial - tableIdx);
+  }
+}
+
+void HpackEncoder::resetDynamicIndex() {
+  _dynamicIndex = {};
+  _newestDynamicSerial = 0U;
+}
+
+namespace {
 void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t prefixMask) {
   const uint8_t maxPrefix = static_cast<uint8_t>((1U << prefixBits) - 1);
 
@@ -1157,8 +1263,18 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
     }
     EncodeString(output, value);
 
-    // Add to dynamic table
-    _dynamicTable.add(name, value);
+    // Add to dynamic table. Large tables get a lazy encoder-only index once a linear scan becomes expensive.
+    const bool added = _dynamicTable.add(name, value);
+    if (!_dynamicIndex.empty()) {
+      if (added) {
+        addToDynamicIndex(name, value);
+      } else {
+        resetDynamicIndex();
+      }
+    } else if (added && _dynamicTable.entryCount() >= kDynamicIndexMinEntries) {
+      _newestDynamicSerial = _dynamicTable.entryCount();
+      rebuildDynamicIndex();
+    }
 
   } else if (mode == IndexingMode::NeverIndexed) {
     // Literal Header Field Never Indexed (RFC 7541 §6.2.3)
@@ -1189,6 +1305,13 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, std::size_t ne
   // Format: 001xxxxx
   EncodeInteger(output, newSize, 5, 0x20);
   _dynamicTable.setMaxSize(newSize);
+  if (!_dynamicIndex.empty()) {
+    if (_dynamicTable.entryCount() >= kDynamicIndexMinEntries) {
+      resizeDynamicIndex();
+    } else {
+      resetDynamicIndex();
+    }
+  }
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {
@@ -1217,8 +1340,18 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
     }
   }
 
-  // Search dynamic table in a linear scan, which is reasonable since dynamic table is expected to be small and recently
-  // added entries are more likely to match.
+  if (!_dynamicIndex.empty()) {
+    const auto indexed = findDynamicHeaderIndexed(name, value);
+    if (indexed.match == HpackLookupResult::Match::Full) {
+      return indexed;
+    }
+    if (indexed.match == HpackLookupResult::Match::NameOnly) {
+      result = indexed;
+    }
+    return result;
+  }
+
+  // Small dynamic tables are faster and smaller as a contiguous linear scan. Recently added entries are checked first.
   for (uint32_t idx = 0; idx < _dynamicTable.entryCount(); ++idx) {
     const auto& entry = _dynamicTable[idx];
     if (entry.name() == name) {
