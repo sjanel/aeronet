@@ -17,7 +17,7 @@ class PartialWriteTransport final : public TransportBackend<PartialWriteTranspor
  public:
   PartialWriteTransport() = default;
 
-  TransportResult read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len) {
+  static TransportResult read([[maybe_unused]] char* buf, [[maybe_unused]] std::size_t len) {
     return {0, TransportHint::Error};
   }
 

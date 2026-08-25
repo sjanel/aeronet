@@ -47,7 +47,7 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
   options.config.validate();
 
   if (!options.store) {
-    options.store = std::make_shared<InMemoryTokenBucketRateLimitStore>();
+    options.store = std::make_shared<InMemoryTokenBucketRateLimitStore>(options.config.nbShards);
   }
 
   if (options.keyStrategy == RateLimitClientKeyStrategy::HeaderValue && options.headerName.empty()) {

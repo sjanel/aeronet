@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -28,6 +30,8 @@ struct RateLimitConfig {
   uint32_t maxKeys{65536};
   // When store/backing callback errors, fail-open continues request processing.
   bool failOpen{true};
+  // Number of shards for the hash map
+  uint8_t nbShards{64};
 };
 
 struct RateLimitDecision {
@@ -59,22 +63,36 @@ class IRateLimitStore {
 
 class InMemoryTokenBucketRateLimitStore final : public IRateLimitStore {
  public:
-  InMemoryTokenBucketRateLimitStore() = default;
+  // Constructs an empty sharded token-bucket store.
+  explicit InMemoryTokenBucketRateLimitStore(uint8_t nbShards);
 
   RateLimitDecision consume(std::string_view key, std::chrono::steady_clock::time_point now,
                             const RateLimitConfig& config) override;
 
  private:
   struct Bucket {
+    Bucket(double initialTokens, std::chrono::steady_clock::time_point now) noexcept
+        : tokens(initialTokens), lastRefill(now), lastSeen(now) {}
+
     double tokens{};
     std::chrono::steady_clock::time_point lastRefill;
     std::chrono::steady_clock::time_point lastSeen;
   };
 
-  void evictOne(const RateLimitConfig& config, std::chrono::steady_clock::time_point now);
+  using BucketMap = flat_hash_map<RawChars32, Bucket, CityHash, std::equal_to<>>;
 
-  flat_hash_map<RawChars32, Bucket, CityHash, std::equal_to<>> _buckets;
-  std::mutex _lock;
+  struct Shard {
+    BucketMap buckets;
+    std::mutex lock;
+  };
+
+  void evictToLimit(const RateLimitConfig& config, std::chrono::steady_clock::time_point now,
+                    std::size_t protectedShardIndex, std::string_view protectedKey);
+
+  std::unique_ptr<Shard[]> _shards;
+  std::atomic<std::size_t> _size;
+  std::mutex _evictionLock;
+  uint8_t _nbShards;
 };
 
 // Optional Redis-backed sliding-window contract.
