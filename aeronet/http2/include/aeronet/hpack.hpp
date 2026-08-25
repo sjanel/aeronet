@@ -5,6 +5,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -213,8 +214,22 @@ class HpackEncoder {
   [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value);
 
  private:
+  friend struct HpackEncoderTestAccess;
+
+  void addToDynamicIndex(std::string_view name, std::string_view value);
+  [[nodiscard]] static std::size_t dynamicFullHash(std::size_t nameHash, std::string_view value) noexcept;
+  [[nodiscard]] static std::size_t dynamicNameHash(std::size_t nameHash) noexcept;
+  void resizeDynamicIndex();
+  [[nodiscard]] HpackLookupResult findDynamicHeaderIndexed(std::string_view name, std::string_view value) const;
+  [[nodiscard]] std::size_t dynamicLiveIndex(uint64_t serial) const noexcept;
+  void indexDynamicHeader(std::string_view name, std::string_view value, uint64_t serial);
+  void rebuildDynamicIndex();
+  void resetDynamicIndex();
+
   HpackDynamicTable _dynamicTable;
+  flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
   std::size_t _pendingTableSizeUpdate = static_cast<std::size_t>(~0ULL);
+  uint64_t _newestDynamicSerial{0U};
 };
 
 }  // namespace aeronet::http2
