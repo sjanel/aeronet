@@ -12,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
@@ -19,6 +20,19 @@
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
+
+struct HpackEncoderTestAccess {
+  static void redirectFullLookup(HpackEncoder& encoder, std::string_view name, std::string_view value,
+                                 std::size_t tableIdx) {
+    const auto nameHash = CityHash{}(name);
+    encoder._dynamicIndex[HpackEncoder::dynamicFullHash(nameHash, value)] = encoder._newestDynamicSerial - tableIdx;
+  }
+
+  static void redirectNameLookup(HpackEncoder& encoder, std::string_view name, std::size_t tableIdx) {
+    const auto nameHash = CityHash{}(name);
+    encoder._dynamicIndex[HpackEncoder::dynamicNameHash(nameHash)] = encoder._newestDynamicSerial - tableIdx;
+  }
+};
 
 namespace {
 
@@ -1013,6 +1027,153 @@ TEST(HpackEncoder, FindHeaderNotFound) {
 
   auto result = encoder.findHeader("x-nonexistent", "value");
   EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexedLookup) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  for (std::size_t idx = 0; idx < 160U; ++idx) {
+    const auto suffix = std::to_string(idx);
+    encoder.encode(output, "x-indexed-" + suffix, "value-" + suffix);
+  }
+
+  auto result = encoder.findHeader("x-indexed-159", "value-159");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
+
+  result = encoder.findHeader("x-indexed-0", "value-0");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 221U);
+
+  result = encoder.findHeader("x-indexed-80", "different");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::NameOnly);
+  EXPECT_EQ(result.index, 141U);
+
+  result = encoder.findHeader("x-indexed-absent", "value");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexTracksChurn) {
+  HpackEncoder encoder(16384);
+  RawBytes output;
+  const std::string value(64U, 'v');
+  for (std::size_t idx = 0; idx < 200U; ++idx) {
+    encoder.encode(output, "x-churn-" + std::to_string(idx), value);
+  }
+
+  // The index deliberately keeps stale hashes until its periodic rebuild. Both exact and name-only probes must detect
+  // the stale serial and preserve lookup correctness through their linear fallback.
+  auto result = encoder.findHeader("x-churn-0", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+  result = encoder.findHeader("x-churn-0", "different");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+
+  for (std::size_t idx = 200U; idx < 1000U; ++idx) {
+    encoder.encode(output, "x-churn-" + std::to_string(idx), value);
+  }
+
+  result = encoder.findHeader("x-churn-999", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
+
+  result = encoder.findHeader("x-churn-0", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexHandlesHashCollisions) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  for (std::size_t idx = 0; idx < 128U; ++idx) {
+    const auto suffix = std::to_string(idx);
+    encoder.encode(output, "x-collision-" + suffix, "value-" + suffix);
+  }
+  encoder.encode(output, "x-collision-target", "older");
+  encoder.encode(output, "x-collision-target", "newer");
+
+  // Redirecting a hash slot models collisions without depending on a particular hash implementation's output.
+  // A same-name collision must scan past the newer value and find the older exact entry.
+  HpackEncoderTestAccess::redirectFullLookup(encoder, "x-collision-target", "older", 0U);
+  auto result = encoder.findHeader("x-collision-target", "older");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 63U);
+
+  // A full-hash collision with a different name must also recover the exact entry through the linear fallback.
+  HpackEncoderTestAccess::redirectFullLookup(encoder, "x-collision-0", "value-0", 0U);
+  result = encoder.findHeader("x-collision-0", "value-0");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 191U);
+
+  // A name-hash collision must preserve a valid name-only result.
+  HpackEncoderTestAccess::redirectNameLookup(encoder, "x-collision-target", 2U);
+  result = encoder.findHeader("x-collision-target", "absent");
+  EXPECT_EQ(result.match, HpackLookupResult::Match::NameOnly);
+  EXPECT_EQ(result.index, 62U);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexHandlesResizeAndClear) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  const std::string value(64U, 'v');
+  for (std::size_t idx = 0; idx < 500U; ++idx) {
+    encoder.encode(output, "x-resize-" + std::to_string(idx), value);
+  }
+
+  encoder.encodeDynamicTableSizeUpdate(output, 60000U);
+  encoder.encodeDynamicTableSizeUpdate(output, 16384U);
+  auto result = encoder.findHeader("x-resize-499", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
+  result = encoder.findHeader("x-resize-0", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+
+  encoder.encode(output, "x-oversized", std::string(16384U, 'x'));
+  EXPECT_EQ(encoder.dynamicTable().entryCount(), 0U);
+  result = encoder.findHeader("x-resize-499", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexResetsBelowActivationThreshold) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  const std::string value(64U, 'v');
+  for (std::size_t idx = 0; idx < 140U; ++idx) {
+    encoder.encode(output, "x-shrink-" + std::to_string(idx), value);
+  }
+
+  encoder.encodeDynamicTableSizeUpdate(output, 8192U);
+  EXPECT_LT(encoder.dynamicTable().entryCount(), 128U);
+  const auto result = encoder.findHeader("x-shrink-139", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
+}
+
+TEST(HpackEncoder, CopiesAndMovesLargeDynamicTableIndex) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  for (std::size_t idx = 0; idx < 140U; ++idx) {
+    const auto suffix = std::to_string(idx);
+    encoder.encode(output, "x-copy-" + suffix, "value-" + suffix);
+  }
+
+  HpackEncoder copied(encoder);
+  EXPECT_EQ(copied.findHeader("x-copy-0", "value-0").match, HpackLookupResult::Match::Full);
+
+  HpackEncoder copyAssigned;
+  copyAssigned = encoder;
+  EXPECT_EQ(copyAssigned.findHeader("x-copy-139", "value-139").index, 62U);
+
+  HpackEncoder moved(std::move(copied));
+  EXPECT_EQ(moved.findHeader("x-copy-0", "value-0").match, HpackLookupResult::Match::Full);
+
+  HpackEncoder moveAssigned;
+  moveAssigned = std::move(copyAssigned);
+  EXPECT_EQ(moveAssigned.findHeader("x-copy-139", "value-139").index, 62U);
+
+  HpackEncoder small;
+  HpackEncoder smallCopy(small);
+  copyAssigned = small;
+  EXPECT_EQ(smallCopy.findHeader("x-copy-0", "value-0").match, HpackLookupResult::Match::None);
+  EXPECT_EQ(copyAssigned.findHeader("x-copy-0", "value-0").match, HpackLookupResult::Match::None);
 }
 
 TEST(HpackEncoder, EncodeDynamicTableSizeUpdate) {
