@@ -19,6 +19,7 @@ All notable changes to aeronet are documented in this file.
 - **Transport dispatch no longer needs vtables or RTTI probes**: the final `Transport` owner stores its 16-byte `PlainTransport` inline, removing the plain backend allocation and its manual lifetime handling. Plain reads, writes, and capability checks take a direct-call path; TLS and opt-in custom backends remain out of line behind an RAII owner and cached operation table, so OpenSSL remains absent from non-TLS builds.
 - **Lower-copy HTTP/2 outbound I/O**: DATA payloads and oversized HPACK blocks now retain their backing allocations in a partial-write-safe fragment queue instead of being recopied behind frame headers. The shared client/server path uses `writev` / `WSASend` for cleartext scatter I/O and ordered owned-fragment writes for TLS, including flow-control-deferred streaming responses and uploads. Tests: `aeronet/http2/test/http2-connection_test.cpp` (`OwnedDataUsesGatherFragmentsAcrossPartialWrites`, `OversizedHeaderBlockGathersContinuationWithoutRecopy`), `aeronet/sys/test/transport_test.cpp` (`*Gather*`), and `aeronet/client/test/http-client-http2-e2e_test.cpp` (`LargeUploadAndResponseUseH2GatherPath`). Benchmark: `benchmarks/internal/http2-flow-control_bench.cpp` (`BM_ConnectionQueueOwnedDataFragments`).
 - **Slightly improved websocket upgrade handler**: minimized allocations and removed a copy.
+- **Improved rate limiter performance** by using a sharding on several locks instead of a unique one.
 
 ## Others
 
