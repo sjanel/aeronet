@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <string>
@@ -38,12 +39,15 @@ std::atomic<NativeHandle> gAcceptedFd{kInvalidHandle};
 class AcceptedWriteResumeGuard {
  public:
   AcceptedWriteResumeGuard() = default;
+
   AcceptedWriteResumeGuard(const AcceptedWriteResumeGuard&) = delete;
+  AcceptedWriteResumeGuard(AcceptedWriteResumeGuard&&) = delete;
   AcceptedWriteResumeGuard& operator=(const AcceptedWriteResumeGuard&) = delete;
+  AcceptedWriteResumeGuard& operator=(AcceptedWriteResumeGuard&&) = delete;
 
   ~AcceptedWriteResumeGuard() { Resume(); }
 
-  void Resume() {
+  void Resume() noexcept {
     if (_armed) {
       _armed = false;
       gResumeAcceptedWrite.store(true, std::memory_order_release);
@@ -155,7 +159,7 @@ TEST(HttpConnectTunnelScheduling, ForwardsDataArrivingAsConnectResponseCompletes
   gAcceptedFd.store(kInvalidHandle, std::memory_order_release);
   test::ScopedTransportDecorator decorator(&PauseAcceptedWriteCompletion);
 
-  test::TestServer server(HttpServerConfig{}, RouterConfig{}, 1s);
+  test::TestServer server(HttpServerConfig(), RouterConfig(), 1s);
   // Destroy this before the server so an assertion cannot leave its event loop
   // paused while TestServer waits for the server thread to stop.
   AcceptedWriteResumeGuard resumeGuard;

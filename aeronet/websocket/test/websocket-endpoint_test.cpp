@@ -34,7 +34,7 @@ TEST(WebSocketEndpointTest, DefaultConstruction) {
 
 TEST(WebSocketEndpointTest, WithFactory_CreatesEndpointWithFactory) {
   auto endpoint = WebSocketEndpoint::WithFactory([](const HttpRequestView& /*request*/) {
-    return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{});
+    return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), websocket::WebSocketCallbacks());
   });
 
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));

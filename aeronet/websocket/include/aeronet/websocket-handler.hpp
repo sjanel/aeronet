@@ -90,7 +90,8 @@ class WebSocketHandler final : public IProtocolHandler {
   /// @param config     Configuration options
   /// @param callbacks  Event callbacks (can be set later via setCallbacks)
   /// @param deflateParams Optional negotiated deflate parameters for compression
-  explicit WebSocketHandler(WebSocketConfig config = {}, WebSocketCallbacks callbacks = {},
+  explicit WebSocketHandler(WebSocketConfig config = WebSocketConfig(),
+                            WebSocketCallbacks callbacks = WebSocketCallbacks(),
                             std::optional<DeflateNegotiatedParams> deflateParams = std::nullopt);
 
   // Non-copyable, movable
@@ -236,12 +237,12 @@ class WebSocketHandler final : public IProtocolHandler {
 /// Create a WebSocket handler for server-side use.
 /// Convenience factory function.
 [[nodiscard]] std::unique_ptr<WebSocketHandler> CreateServerWebSocketHandler(
-    WebSocketCallbacks callbacks = {}, std::size_t maxMessageSize = kDefaultMaxMessageSize);
+    WebSocketCallbacks callbacks = WebSocketCallbacks(), std::size_t maxMessageSize = kDefaultMaxMessageSize);
 
 /// Create a WebSocket handler for client-side use.
 /// Convenience factory function.
 [[nodiscard]] std::unique_ptr<WebSocketHandler> CreateClientWebSocketHandler(
-    WebSocketCallbacks callbacks = {}, std::size_t maxMessageSize = kDefaultMaxMessageSize);
+    WebSocketCallbacks callbacks = WebSocketCallbacks(), std::size_t maxMessageSize = kDefaultMaxMessageSize);
 
 }  // namespace websocket
 }  // namespace aeronet

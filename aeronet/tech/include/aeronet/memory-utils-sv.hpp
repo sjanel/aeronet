@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <string_view>
 
 #include "aeronet/memory-utils.hpp"
