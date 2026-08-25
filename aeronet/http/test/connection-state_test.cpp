@@ -541,7 +541,7 @@ class FakeTransport final : public TransportBackend<FakeTransport> {
  public:
   explicit FakeTransport(bool handshakeInitially) : _handshakeDone(handshakeInitially) {}
 
-  TransportResult read(char* buf, std::size_t len) {
+  static TransportResult read(char* buf, std::size_t len) {
     // Write a small marker and report bytes read
     const char* kMarker = "X";
     if (len > 0) {

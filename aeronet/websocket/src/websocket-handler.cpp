@@ -612,7 +612,7 @@ std::unique_ptr<WebSocketHandler> CreateServerWebSocketHandler(WebSocketCallback
   WebSocketConfig config;
   config.isServerSide = true;
   config.maxMessageSize = maxMessageSize;
-  return std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+  return std::make_unique<WebSocketHandler>(std::move(config), std::move(callbacks));
 }
 
 std::unique_ptr<WebSocketHandler> CreateClientWebSocketHandler(WebSocketCallbacks callbacks,
@@ -620,7 +620,7 @@ std::unique_ptr<WebSocketHandler> CreateClientWebSocketHandler(WebSocketCallback
   WebSocketConfig config;
   config.isServerSide = false;
   config.maxMessageSize = maxMessageSize;
-  return std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+  return std::make_unique<WebSocketHandler>(std::move(config), std::move(callbacks));
 }
 
 }  // namespace aeronet::websocket

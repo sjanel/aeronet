@@ -1497,7 +1497,7 @@ TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
   test::EventLoopHookGuard hookGuard;
 
   // Keep router simple; no request is sent.
-  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  test::TestServer localTs(TestServerConfig(), RouterConfig(), std::chrono::milliseconds{5});
   localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());
@@ -1517,7 +1517,7 @@ TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {
 
 TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
   test::EventLoopHookGuard hookGuard;
-  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  test::TestServer localTs(TestServerConfig(), RouterConfig(), std::chrono::milliseconds{5});
   localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());
@@ -1536,7 +1536,7 @@ TEST(SingleHttpServer, EpollHupWithoutInTriggersClose) {
 
 TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
   test::EventLoopHookGuard hookGuard;
-  test::TestServer localTs(TestServerConfig(), RouterConfig{}, std::chrono::milliseconds{5});
+  test::TestServer localTs(TestServerConfig(), RouterConfig(), std::chrono::milliseconds{5});
   localTs.resetRouterAndGet().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
   test::ClientConnection clientConnection(localTs.port());

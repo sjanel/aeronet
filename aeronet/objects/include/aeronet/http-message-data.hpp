@@ -50,6 +50,20 @@ class HttpMessageData {
     }
   }
 
+  /// Grows the writable buffer by `sz` bytes and returns the start of the new uninitialized region.
+  char* resizeUp(std::size_t sz) {
+    if (_capturedBody.empty()) {
+      const std::size_t oldSize = _buf.size();
+      _buf.ensureAvailableCapacity(sz);
+      _buf.setSize(oldSize + sz);
+      return _buf.data() + oldSize;
+    }
+    const std::size_t oldSize = _capturedBody.size();
+    _capturedBody.ensureAvailableCapacity(sz);
+    _capturedBody.addSize(sz);
+    return _capturedBody.data() + oldSize;
+  }
+
   void append(std::string_view data) { append(data.data(), data.size()); }
 
   void append(const char* data, std::size_t size) {

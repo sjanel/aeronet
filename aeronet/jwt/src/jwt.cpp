@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <glaze/glaze.hpp>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
