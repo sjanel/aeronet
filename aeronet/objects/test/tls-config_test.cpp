@@ -11,6 +11,8 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/http-server-config.hpp"
+
 namespace aeronet {
 
 namespace {
@@ -18,7 +20,102 @@ namespace {
 constexpr std::string_view kDummyCertPem = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n";
 constexpr std::string_view kDummyKeyPem = "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n";
 
+TlsRevocationStatus NoRevocationOpinion(TlsPeerCertificateView, void*) noexcept {
+  return TlsRevocationStatus::NoOpinion;
+}
+
 }  // namespace
+
+TEST(TLSConfigTest, AdvancedRevocationSettingsRequireClientVerification) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem);
+  cfg.withTlsCrlFile("clients.crl");
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.requestClientCert = true;
+  EXPECT_NO_THROW(cfg.validate());
+
+  cfg.withoutTlsCrl().withTlsRevocationCallback(&NoRevocationOpinion);
+  EXPECT_NO_THROW(cfg.validate());
+}
+
+TEST(TLSConfigTest, CrlCheckAllRequiresCrlFile) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem);
+  cfg.requestClientCert = true;
+  cfg.crlCheckAll = true;
+
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TLSConfigTest, SniOcspStapleIsAssociatedWithExistingNormalizedRoute) {
+  TLSConfig cfg;
+  cfg.withTlsSniCertificateMemory("API.EXAMPLE.COM", kDummyCertPem, kDummyKeyPem)
+      .withTlsSniOcspStapleFile("api.example.com", "api.ocsp.der");
+
+  ASSERT_EQ(cfg.sniCertificates().size(), 1U);
+  EXPECT_EQ(cfg.sniCertificates().front().ocspResponseFile(), "api.ocsp.der");
+  EXPECT_THROW(cfg.withTlsSniOcspStapleFile("missing.example.com", "missing.der"), std::invalid_argument);
+  EXPECT_THROW(cfg.withTlsSniOcspStapleFile("api.example.com", ""), std::invalid_argument);
+}
+
+TEST(TLSConfigTest, AdvancedTlsSettingsSurviveCopyAndMove) {
+  int context = 0;
+  TLSConfig original;
+  original.withTlsOcspStapleFile("server.ocsp.der")
+      .withTlsCrlFile("clients.crl", true)
+      .withTlsRevocationCallback(&NoRevocationOpinion, &context)
+      .withTlsKeyLogFile("debug.keys");
+  original.withTlsSniCertificateMemory("api.example.com", kDummyCertPem, kDummyKeyPem)
+      .withTlsSniOcspStapleFile("api.example.com", "api.ocsp.der");
+
+  TLSConfig copy = original;
+  EXPECT_EQ(copy, original);
+  TLSConfig moved = std::move(copy);
+  EXPECT_EQ(moved, original);
+
+  TLSConfig assigned;
+  assigned = original;
+  EXPECT_EQ(assigned, original);
+  TLSConfig moveAssigned;
+  moveAssigned = std::move(assigned);
+  EXPECT_EQ(moveAssigned, original);
+}
+
+TEST(HttpServerConfigTest, AdvancedTlsConvenienceBuildersEnableTlsAndForwardSettings) {
+  int context = 0;
+  HttpServerConfig cfg;
+  cfg.withTlsOcspStapleFile("server.ocsp.der")
+      .withTlsCrlFile("clients.crl", true)
+      .withTlsRevocationCallback(&NoRevocationOpinion, &context)
+      .withTlsKeyLogFile("debug.keys");
+
+  EXPECT_TRUE(cfg.tls.enabled);
+  EXPECT_EQ(cfg.tls.ocspResponseFile(), "server.ocsp.der");
+  EXPECT_EQ(cfg.tls.crlFile(), "clients.crl");
+  EXPECT_TRUE(cfg.tls.crlCheckAll);
+  EXPECT_EQ(cfg.tls.revocationCallback, &NoRevocationOpinion);
+  EXPECT_EQ(cfg.tls.revocationUserContext, &context);
+  EXPECT_EQ(cfg.tls.keyLogFile(), "debug.keys");
+
+  cfg.tls.withoutTlsOcspStaple().withoutTlsCrl();
+  EXPECT_TRUE(cfg.tls.ocspResponseFile().empty());
+  EXPECT_TRUE(cfg.tls.crlFile().empty());
+  EXPECT_FALSE(cfg.tls.crlCheckAll);
+}
+
+TEST(TLSConfigTest, KeyLoggingValidationMatchesBuildType) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem).withTlsKeyLogFile("debug.keys");
+#ifdef NDEBUG
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+#else
+  EXPECT_NO_THROW(cfg.validate());
+#endif
+}
 
 TEST(HttpTlsVersionBounds, ValidMinVersion) {
   TLSConfig cfg;

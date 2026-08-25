@@ -1976,7 +1976,7 @@ SingleHttpServer server(std::move(cfg));
 
 ## TLS Features
 
-Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required mTLS, ALPN (strict mode), handshake timeout, per‑server metrics.
+Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required mTLS, ALPN (strict mode), passive OCSP stapling, client-certificate revocation controls, handshake timeout, and per-server metrics. The [TLS deployment guide](protocols/tls-and-http2.md#tls) explains the complete operational model.
 
 | Capability | Status | Notes |
 | ------------ | -------- | ------- |
@@ -2010,7 +2010,11 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | SNI multi-cert routing | ✅ | `TLSConfig::withTlsSniCertificate*()` selects cert by SNI |
 | Hot cert/key reload (atomic swap) | ✅ | `postConfigUpdate()` with TLS config change rebuilds and swaps TLS context for new connections |
 | Dynamic trust store update | ✅ | `postConfigUpdate()` with trust store change |
-| OCSP stapling / revocation checks | ⏳ | OCSP staple responses & revocation checking with caching. |
+| Passive cached OCSP stapling | ✅ | Default and per-SNI DER responses are parsed once and served without handshake-time network I/O. |
+| Client CRL verification | ✅ | PEM/DER CRLs with leaf-only or full-chain checking. |
+| Application revocation hook | ✅ | A `noexcept` callback can reject an otherwise valid inbound client-certificate chain. |
+| TLS key log | ✅ | NSS-compatible output in debug builds only; release builds reject the setting. |
+| Sensitive-data scrubbing | ✅ | Configuration PEM keys and static/runtime ticket keys are cleansed on replacement/destruction within documented ownership boundaries. |
 
 ### TLS Configuration Example
 
@@ -2207,6 +2211,11 @@ Key configuration helpers:
 | `withTlsRequestClientCert()` | Request (but not require) client cert (mTLS optional) |
 | `withTlsRequireClientCert()` | Strict mTLS (fatal if absent/invalid) |
 | `withTlsTrustedClientCert(pem)` | Append trust anchor (repeatable) |
+| `withTlsOcspStapleFile(derPath)` | Cache a successful DER OCSP response for the default certificate |
+| `TLSConfig::withTlsSniOcspStapleFile(host, derPath)` | Cache a response for an existing SNI mapping |
+| `withTlsCrlFile(path, checkAll)` | Check inbound client certificates against a PEM/DER CRL |
+| `withTlsRevocationCallback(callback, context)` | Add an application decision after normal chain verification |
+| `withTlsKeyLogFile(path)` | Append NSS-compatible secrets in debug builds only |
 
 Client certificate modes:
 
@@ -2221,6 +2230,8 @@ ALPN behavior:
 Security & metrics integration:
 
 - No global mutable OpenSSL state; each server instance owns its context to allow per-instance policies.
+- The effective default minimum is TLS 1.2; server cipher preference and no-renegotiation are enabled, and TLS
+  compression is disabled by default.
 - Stats track: successful handshakes, strict ALPN mismatches, cert-present count, distributions (ciphers, versions, ALPN protocols), handshake duration aggregates.
 
 Runtime notes:
@@ -2232,12 +2243,32 @@ Testing guidance:
 
 - Use `withTlsCertKeyMemory` with ephemeral self-signed test certificates (see test helper) to avoid filesystem dependencies.
 - For ALPN strict tests, provide a protocol set that intentionally does not match to exercise mismatch counter.
+- Advanced TLS integration coverage is in [`tls-components_test.cpp`](../aeronet/tls/test/tls-components_test.cpp); configuration and scrub primitive coverage are in [`tls-config_test.cpp`](../aeronet/objects/test/tls-config_test.cpp) and [`memory-utils_test.cpp`](../aeronet/tech/test/memory-utils_test.cpp).
 
-Roadmap (see also table above): OCSP stapling / revocation checks.
+#### OCSP, CRLs, and application revocation
+
+OCSP is passive and server-certificate-facing. `withTlsOcspStapleFile()` reads at most 1 MiB, requires exactly one successful DER `OCSPResponse`, and caches the bytes while building the TLS context. It deliberately performs no network fetch. It also does not establish that the response matches the configured certificate, verify the responder signature, or enforce `thisUpdate`/`nextUpdate`; the provisioning job must do those checks. Associate an SNI-specific response after adding the corresponding certificate:
+
+```cpp
+HttpServerConfig cfg;
+cfg.withTlsCertKey("default.crt", "default.key");
+cfg.tls.withTlsSniCertificateFiles("api.example.com", "api.crt", "api.key")
+       .withTlsSniOcspStapleFile("api.example.com", "api.ocsp.der");
+```
+
+CRLs and the application callback are inbound client-certificate controls, so client-certificate verification must also be requested or required. OpenSSL verifies the chain and CRL first. The callback then receives each verified certificate plus its chain depth and can return `NoOpinion`, `Good`, or `Revoked`; it cannot override a normal verification failure. Keep it bounded and non-blocking because it executes on the handshake path.
+
+Update OCSP, CRL, trust, or certificate inputs with `postConfigUpdate()`. A successful update atomically installs a new context for new connections; existing connections keep their current TLS state. Full examples and operational warnings are in [TLS and HTTP/2](protocols/tls-and-http2.md#revocation-and-certificate-status).
+
+#### Debug key logging and zeroization scope
+
+`withTlsKeyLogFile()` writes NSS `SSLKEYLOGFILE`-compatible traffic secrets for Wireshark and similar tools. The setting is rejected when `NDEBUG` is defined. On POSIX, a newly created file uses owner-only mode `0600`; an existing file keeps its existing permissions. Key logs defeat TLS confidentiality for captured sessions, so use an isolated debug environment, remove the file after diagnosis, and never ship it in a production image.
+
+Private-key PEM held by `TLSConfig`, per-SNI in-memory private keys, caller-supplied static ticket keys, and live ticket-store key material are explicitly scrubbed when replaced or destroyed. Ticket-key name comparisons are constant-time. This does not promise whole-process zeroization: caller-owned strings, allocator copies, filesystem pages, crash dumps, OpenSSL internal objects, and kernel buffers remain outside aeronet's ownership. OpenSSL owns and cleans its live handshake/session secrets according to its own lifecycle. See the [hardening audit](protocols/tls-and-http2.md#hardening-and-secret-lifecycle) for the exact boundary.
 
 ### TLS Session Tickets
 
-Session tickets allow TLS session resumption without server-side session caches, enabling faster subsequent handshakes (0-RTT negotiation). aeronet provides automatic key management with configurable rotation.
+Session tickets allow TLS session resumption without server-side session caches, enabling faster subsequent handshakes. They do not enable TLS 1.3 early data in aeronet. Automatic key management includes configurable rotation.
 
 #### Session Ticket Concepts
 
@@ -2250,8 +2281,8 @@ Session tickets allow TLS session resumption without server-side session caches,
 | Method | Purpose |
 | -------- | --------- |
 | `withTlsSessionTickets(true)` | Enable session tickets (default: disabled) |
-| `withTlsSessionTicketLifetime(duration)` | Key rotation interval (default: 1 hour) |
-| `withTlsSessionTicketMaxKeys(n)` | Maximum keys in rotation (default: 3) |
+| `withTlsSessionTicketLifetime(duration)` | Key rotation interval (default: 24 hours) |
+| `withTlsSessionTicketMaxKeys(n)` | Maximum keys in rotation (default: 2) |
 | `withTlsSessionTicketKey(key)` | Load a static 48-byte key (disables rotation) |
 
 #### Automatic Key Rotation
@@ -2512,10 +2543,7 @@ curl -i http://localhost:8080/somefile.txt
 curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
 ```
 
-Testing lives in `tests/http-core_test.cpp` which exercises full-body responses, single-range `206`, multi-range
-`206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit
-behaviour. Unit tests in `aeronet/http/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing,
-coalescing, boundary generation, and multipart body assembly paths.
+Testing lives in `tests/http-core_test.cpp` which exercises full-body responses, single-range `206`, multi-range `206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit behaviour. Unit tests in `aeronet/http/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing, coalescing, boundary generation, and multipart body assembly paths.
 
 ```bash
 # Test multi-range request
@@ -2663,9 +2691,7 @@ int main() {
 }
 ```
 
-`dogStatsDEnabled` convenience flag plus socket/tag helpers so lightweight DogStatsD
-metrics (Unix Domain Socket) can be emitted even when OpenTelemetry support is compiled out. Covered by
-`objects/test/opentelemetry-integration_test.cpp`.
+`dogStatsDEnabled` convenience flag plus socket/tag helpers so lightweight DogStatsD metrics (Unix Domain Socket) can be emitted even when OpenTelemetry support is compiled out.
 
 ### Built-in Instrumentation (phase 1)
 
@@ -2703,9 +2729,7 @@ Behavior:
 - DogStatsD emission does not use client-side bucket boundaries; histogram aggregation/bucketing is configured
   on the DogStatsD backend/agent.
 
-All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates. When
-`dogStatsDEnabled` is enabled, Aeronet also emits counter metrics over DogStatsD/UDS even if the build
-does not include OpenTelemetry.
+All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates. When `dogStatsDEnabled` is enabled, Aeronet also emits counter metrics over DogStatsD/UDS even if the build does not include OpenTelemetry.
 
 ### Testing & Observability
 

@@ -15,6 +15,7 @@
 
 #include "aeronet/internal/raw-bytes-base.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/secure-zero.hpp"
 
 namespace aeronet {
 
@@ -127,6 +128,15 @@ class StaticConcatenatedStrings {
   [[nodiscard]] const char* c_str(size_type idx) const { return begPtr(idx); }
 
   [[nodiscard]] std::string_view operator[](size_type idx) const { return {begPtr(idx), sizeAt(idx)}; }
+
+  // Overwrite one part in place without changing offsets or capacity. Intended for owned secrets before replacement
+  // or destruction.
+  void secureClearPart(size_type idx) noexcept {
+    if (!_buf.empty()) {
+      const size_type begPos = idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})];
+      SecureZero(_buf.data() + begPos, sizeAt(idx));
+    }
+  }
 
   // Number of static parts.
   [[nodiscard]] static constexpr size_type size() noexcept { return static_cast<size_type>(kParts); }

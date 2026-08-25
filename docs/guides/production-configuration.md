@@ -60,6 +60,10 @@ config.tls.withTlsMinVersion("TLS1.2");
 
 This needs `AERONET_ENABLE_OPENSSL=ON` and `AERONET_ENABLE_HTTP2=ON`. Add client-certificate trust material before enabling `withTlsRequireClientCert()`; use SNI mappings when multiple hostnames require separate certificates. `KtlsMode::Required` is only appropriate after verifying kernel, OpenSSL, and cipher compatibility in the target environment.
 
+For certificates that publish an OCSP responder, fetch and verify the response out of process and load its DER file with `withTlsOcspStapleFile()`. Schedule refresh before `nextUpdate`, then use `postConfigUpdate()` so the new response is parsed and atomically installed for new connections. This keeps responder latency and outages out of the handshake path. If the listener verifies client certificates, add `withTlsCrlFile()` or a bounded, non-blocking `withTlsRevocationCallback()` according to your CA policy. The callback runs on the handshake path.
+
+Never enable `withTlsKeyLogFile()` in a production build or image. It is rejected when `NDEBUG` is defined, and its contents allow decryption of captured sessions. See the [complete TLS guide](../protocols/tls-and-http2.md#tls) for OCSP ownership, CRL semantics, reload examples, and zeroization boundaries.
+
 ## HTTP to HTTPS redirect listener
 
 Run the redirector and TLS listener separately. A redirect listener does not run application routes and cannot have TLS enabled.
