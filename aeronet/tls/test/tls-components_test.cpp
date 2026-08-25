@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/sslerr.h>
@@ -15,6 +16,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -98,13 +101,14 @@ TLSConfig MakeTlsConfig(std::initializer_list<std::string_view> serverAlpn, bool
 struct SslTestPair {
   SslTestPair(std::initializer_list<std::string_view> serverAlpn, std::initializer_list<std::string_view> clientAlpn,
               bool strictAlpn = false)
-      : cfg(MakeTlsConfig(serverAlpn, strictAlpn)),
+      : SslTestPair(MakeTlsConfig(serverAlpn, strictAlpn), clientAlpn) {}
+
+  SslTestPair(TLSConfig tlsConfig, std::initializer_list<std::string_view> clientAlpn)
+      : cfg(std::move(tlsConfig)),
         context(cfg),
         clientCtx(nullptr, &::SSL_CTX_free),
         serverSsl(nullptr, &::SSL_free),
         clientSsl(nullptr, &::SSL_free) {
-    auto cert = CertKeyCache::Get().localhost;
-
     auto* serverCtx = reinterpret_cast<SSL_CTX*>(context.raw());
     serverSsl = TlsTransport::SslPtr(::SSL_new(serverCtx), &::SSL_free);
     EXPECT_NE(serverSsl, nullptr);
@@ -144,6 +148,121 @@ struct SslTestPair {
   BaseFd serverFd;
   BaseFd clientFd;
 };
+
+std::string MakeOcspResponseDer(int status) {
+  std::unique_ptr<OCSP_RESPONSE, decltype(&::OCSP_RESPONSE_free)> response(::OCSP_response_create(status, nullptr),
+                                                                           &::OCSP_RESPONSE_free);
+  if (!response) {
+    throw std::runtime_error("OCSP_response_create failed");
+  }
+  unsigned char* data = nullptr;
+  const int size = ::i2d_OCSP_RESPONSE(response.get(), &data);
+  if (size <= 0 || data == nullptr) {
+    throw std::runtime_error("i2d_OCSP_RESPONSE failed");
+  }
+  auto freeData = [](unsigned char* ptr) { ::OPENSSL_free(ptr); };
+  std::unique_ptr<unsigned char, decltype(freeData)> owned(data, freeData);
+  return {reinterpret_cast<const char*>(owned.get()), static_cast<std::size_t>(size)};
+}
+
+std::string MakeSuccessfulOcspResponseDer() { return MakeOcspResponseDer(OCSP_RESPONSE_STATUS_SUCCESSFUL); }
+
+std::string MakeCrlPem(const std::pair<std::string, std::string>& issuer, bool revokeIssuerCertificate) {
+  auto certBio = MakeMemBio(issuer.first.data(), static_cast<int>(issuer.first.size()));
+  auto certificate = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+  auto keyBio = MakeMemBio(issuer.second.data(), static_cast<int>(issuer.second.size()));
+  auto key = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+  std::unique_ptr<X509_CRL, decltype(&::X509_CRL_free)> crl(::X509_CRL_new(), &::X509_CRL_free);
+  if (!crl || ::X509_CRL_set_version(crl.get(), 1) != 1 ||
+      ::X509_CRL_set_issuer_name(crl.get(), ::X509_get_subject_name(certificate.get())) != 1) {
+    throw std::runtime_error("Failed to initialize test CRL");
+  }
+  std::unique_ptr<ASN1_TIME, decltype(&::ASN1_TIME_free)> lastUpdate(::ASN1_TIME_new(), &::ASN1_TIME_free);
+  std::unique_ptr<ASN1_TIME, decltype(&::ASN1_TIME_free)> nextUpdate(::ASN1_TIME_new(), &::ASN1_TIME_free);
+  if (!lastUpdate || !nextUpdate || ::X509_gmtime_adj(lastUpdate.get(), -60) == nullptr ||
+      ::X509_gmtime_adj(nextUpdate.get(), 3600) == nullptr ||
+      ::X509_CRL_set1_lastUpdate(crl.get(), lastUpdate.get()) != 1 ||
+      ::X509_CRL_set1_nextUpdate(crl.get(), nextUpdate.get()) != 1) {
+    throw std::runtime_error("Failed to set test CRL validity");
+  }
+  if (revokeIssuerCertificate) {
+    std::unique_ptr<X509_REVOKED, decltype(&::X509_REVOKED_free)> revoked(::X509_REVOKED_new(), &::X509_REVOKED_free);
+    std::unique_ptr<ASN1_TIME, decltype(&::ASN1_TIME_free)> revokedAt(::ASN1_TIME_new(), &::ASN1_TIME_free);
+    if (!revoked || !revokedAt || ::X509_gmtime_adj(revokedAt.get(), -30) == nullptr ||
+        ::X509_REVOKED_set_serialNumber(revoked.get(), ::X509_get_serialNumber(certificate.get())) != 1 ||
+        ::X509_REVOKED_set_revocationDate(revoked.get(), revokedAt.get()) != 1 ||
+        ::X509_CRL_add0_revoked(crl.get(), revoked.get()) != 1) {
+      throw std::runtime_error("Failed to add test CRL entry");
+    }
+    static_cast<void>(revoked.release());
+    if (::X509_CRL_sort(crl.get()) != 1) {
+      throw std::runtime_error("Failed to sort test CRL");
+    }
+  }
+  if (::X509_CRL_sign(crl.get(), key.get(), ::EVP_sha256()) <= 0) {
+    throw std::runtime_error("Failed to sign test CRL");
+  }
+  auto output = MakeMemoryBio();
+  if (::PEM_write_bio_X509_CRL(output.get(), crl.get()) != 1) {
+    throw std::runtime_error("Failed to serialize test CRL");
+  }
+  char* data = nullptr;
+  const long size = ::BIO_get_mem_data(output.get(), &data);
+  if (size <= 0 || data == nullptr) {
+    throw std::runtime_error("Test CRL memory BIO is empty");
+  }
+  return {data, static_cast<std::size_t>(size)};
+}
+
+std::string ConvertCrlPemToDer(std::string_view pem) {
+  auto input = MakeMemBio(pem.data(), static_cast<int>(pem.size()));
+  std::unique_ptr<X509_CRL, decltype(&::X509_CRL_free)> crl(
+      ::PEM_read_bio_X509_CRL(input.get(), nullptr, nullptr, nullptr), &::X509_CRL_free);
+  if (!crl) {
+    throw std::runtime_error("Failed to parse test CRL PEM");
+  }
+  unsigned char* data = nullptr;
+  const int size = ::i2d_X509_CRL(crl.get(), &data);
+  if (size <= 0 || data == nullptr) {
+    throw std::runtime_error("Failed to serialize test CRL DER");
+  }
+  auto freeData = [](unsigned char* ptr) { ::OPENSSL_free(ptr); };
+  std::unique_ptr<unsigned char, decltype(freeData)> owned(data, freeData);
+  return {reinterpret_cast<const char*>(owned.get()), static_cast<std::size_t>(size)};
+}
+
+void InstallClientCertificate(SslTestPair& pair, const std::pair<std::string, std::string>& certKey) {
+  auto certBio = MakeMemBio(certKey.first.data(), static_cast<int>(certKey.first.size()));
+  auto certificate = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+  auto keyBio = MakeMemBio(certKey.second.data(), static_cast<int>(certKey.second.size()));
+  auto key = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+  if (::SSL_use_certificate(pair.clientSsl.get(), certificate.get()) != 1 ||
+      ::SSL_use_PrivateKey(pair.clientSsl.get(), key.get()) != 1) {
+    throw std::runtime_error("Failed to install TLS client certificate");
+  }
+}
+
+std::string PeerCommonName(SSL* ssl) {
+  auto certificate = MakeX509(::SSL_get1_peer_certificate(ssl));
+  char commonName[256]{};
+  const int size = ::X509_NAME_get_text_by_NID(::X509_get_subject_name(certificate.get()), NID_commonName, commonName,
+                                               static_cast<int>(sizeof(commonName)));
+  if (size < 0) {
+    throw std::runtime_error("Failed to read test peer common name");
+  }
+  return {commonName, static_cast<std::size_t>(size)};
+}
+
+struct RevocationDecision {
+  TlsRevocationStatus status;
+  int calls{0};
+};
+
+TlsRevocationStatus DecideCertificateStatus(TlsPeerCertificateView certificate, void* userContext) noexcept {
+  auto& decision = *static_cast<RevocationDecision*>(userContext);
+  ++decision.calls;
+  return certificate.nativeCertificate == nullptr ? TlsRevocationStatus::NoOpinion : decision.status;
+}
 
 struct ControlledBioState {
   int readResult{-1};
@@ -263,6 +382,223 @@ TEST(TlsContextTest, CollectsHandshakeInfo) {
   EXPECT_EQ(metrics.handshakeDurationCount, 1U);
   EXPECT_EQ(metrics.handshakeDurationMaxNs, metrics.handshakeDurationTotalNs);
 }
+
+TEST(TlsContextTest, StaplesCachedOcspResponseWhenClientRequestsIt) {
+  const std::string responseDer = MakeSuccessfulOcspResponseDer();
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile responseFile(tmpDir, responseDer);
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.withTlsOcspStapleFile(responseFile.filePath().string());
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  ASSERT_EQ(::SSL_set_tlsext_status_type(pair.clientSsl.get(), TLSEXT_STATUSTYPE_ocsp), 1);
+
+  ASSERT_TRUE(PerformHandshake(pair));
+
+  const unsigned char* stapled = nullptr;
+  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), &stapled);
+  ASSERT_EQ(stapledSize, static_cast<long>(responseDer.size()));
+  ASSERT_NE(stapled, nullptr);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
+}
+
+TEST(TlsContextTest, RejectsInvalidOrMissingOcspResponseAtContextCreation) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile invalidFile(tmpDir, "not-an-ocsp-response");
+  test::ScopedTempFile emptyFile(tmpDir, "");
+  test::ScopedTempFile failedResponseFile(tmpDir, MakeOcspResponseDer(OCSP_RESPONSE_STATUS_TRYLATER));
+  test::ScopedTempFile trailingDataFile(tmpDir, MakeSuccessfulOcspResponseDer() + "trailing");
+  test::ScopedTempFile oversizedFile(tmpDir, std::string((1U << 20U) + 1U, 'x'));
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  auto expectRejected = [&cfg](const std::filesystem::path& path) {
+    cfg.withTlsOcspStapleFile(path.string());
+    EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+    EXPECT_EQ(::ERR_peek_error(), 0U);
+  };
+  expectRejected(invalidFile.filePath());
+  expectRejected(emptyFile.filePath());
+  expectRejected(failedResponseFile.filePath());
+  expectRejected(trailingDataFile.filePath());
+  expectRejected(oversizedFile.filePath());
+  expectRejected("/__aeronet_missing_ocsp_response__.der");
+}
+
+TEST(TlsContextTest, SniRouteCachesItsOwnOcspResponse) {
+  const std::string responseDer = MakeSuccessfulOcspResponseDer();
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile responseFile(tmpDir, responseDer);
+  auto sniCert = CertKeyCache::Get().serverA;
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.withTlsSniCertificateMemory("api.example.com", sniCert.first, sniCert.second)
+      .withTlsSniOcspStapleFile("api.example.com", responseFile.filePath().string());
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  ASSERT_EQ(::SSL_set_tlsext_host_name(pair.clientSsl.get(), "api.example.com"), 1);
+  ASSERT_EQ(::SSL_set_tlsext_status_type(pair.clientSsl.get(), TLSEXT_STATUSTYPE_ocsp), 1);
+
+  ASSERT_TRUE(PerformHandshake(pair));
+
+  const unsigned char* stapled = nullptr;
+  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), &stapled);
+  ASSERT_EQ(stapledSize, static_cast<long>(responseDer.size()));
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
+}
+
+TEST(TlsContextTest, SniWildcardMatchesOneLabelAtADotBoundary) {
+  auto makeConfig = [] {
+    const auto& certificates = CertKeyCache::Get();
+    TLSConfig cfg;
+    cfg.enabled = true;
+    cfg.withCertPem(certificates.localhost.first)
+        .withKeyPem(certificates.localhost.second)
+        .withTlsSniCertificateMemory("*.example.com", certificates.serverA.first, certificates.serverA.second);
+    return cfg;
+  };
+
+  SslTestPair matching(makeConfig(), {});
+  ASSERT_EQ(::SSL_set_tlsext_host_name(matching.clientSsl.get(), "api.example.com"), 1);
+  ASSERT_TRUE(PerformHandshake(matching));
+  EXPECT_EQ(PeerCommonName(matching.clientSsl.get()), "server-a");
+
+  for (const char* nonMatchingName : {"notexample.com", "deep.api.example.com", "example.com"}) {
+    SslTestPair nonMatching(makeConfig(), {});
+    ASSERT_EQ(::SSL_set_tlsext_host_name(nonMatching.clientSsl.get(), nonMatchingName), 1);
+    ASSERT_TRUE(PerformHandshake(nonMatching));
+    EXPECT_EQ(PeerCommonName(nonMatching.clientSsl.get()), "localhost") << nonMatchingName;
+  }
+}
+
+TEST(TlsContextTest, RevocationCallbackCanRejectVerifiedClientCertificate) {
+  auto clientCert = CertKeyCache::Get().client;
+  RevocationDecision decision{TlsRevocationStatus::Revoked};
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.requireClientCert = true;
+  cfg.withTlsTrustedClientCert(clientCert.first).withTlsRevocationCallback(&DecideCertificateStatus, &decision);
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  InstallClientCertificate(pair, clientCert);
+
+  EXPECT_FALSE(PerformHandshake(pair));
+  EXPECT_GT(decision.calls, 0);
+  ::ERR_clear_error();
+}
+
+TEST(TlsContextTest, RevocationCallbackGoodOrNoOpinionAllowsVerifiedClientCertificate) {
+  auto clientCert = CertKeyCache::Get().client;
+  for (const TlsRevocationStatus status : {TlsRevocationStatus::Good, TlsRevocationStatus::NoOpinion}) {
+    RevocationDecision decision{status};
+    TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+    cfg.requireClientCert = true;
+    cfg.withTlsTrustedClientCert(clientCert.first).withTlsRevocationCallback(&DecideCertificateStatus, &decision);
+    SslTestPair pair(std::move(cfg), {"http/1.1"});
+    InstallClientCertificate(pair, clientCert);
+
+    EXPECT_TRUE(PerformHandshake(pair));
+    EXPECT_GT(decision.calls, 0);
+  }
+}
+
+TEST(TlsContextTest, RevocationCallbackInvalidDecisionFailsClosed) {
+  auto clientCert = CertKeyCache::Get().client;
+  RevocationDecision decision{static_cast<TlsRevocationStatus>(255)};
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.requireClientCert = true;
+  cfg.withTlsTrustedClientCert(clientCert.first).withTlsRevocationCallback(&DecideCertificateStatus, &decision);
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  InstallClientCertificate(pair, clientCert);
+
+  EXPECT_FALSE(PerformHandshake(pair));
+  EXPECT_GT(decision.calls, 0);
+  ::ERR_clear_error();
+}
+
+TEST(TlsContextTest, RevocationSettingsWithoutClientVerificationFailClosed) {
+  RevocationDecision decision{TlsRevocationStatus::Good};
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.withTlsRevocationCallback(&DecideCertificateStatus, &decision);
+
+  EXPECT_THROW(TlsContext{cfg}, std::invalid_argument);
+}
+
+TEST(TlsContextTest, MissingCrlFailsAtContextCreation) {
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.requestClientCert = true;
+  cfg.withTlsCrlFile("/__aeronet_missing_client_crl__.pem");
+
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+TEST(TlsContextTest, LoadsPemOrDerCrlAndEnablesLeafOrFullChainChecks) {
+  auto clientCert = CertKeyCache::Get().client;
+  const std::string crlPem = MakeCrlPem(clientCert, false);
+  test::ScopedTempDir tmpDir;
+
+  for (const std::string& crl : {crlPem, ConvertCrlPemToDer(crlPem)}) {
+    test::ScopedTempFile crlFile(tmpDir, crl);
+    for (const bool checkAll : {false, true}) {
+      TLSConfig cfg = MakeTlsConfig({}, false);
+      cfg.requestClientCert = true;
+      cfg.withTlsTrustedClientCert(clientCert.first).withTlsCrlFile(crlFile.filePath().string(), checkAll);
+      TlsContext context(cfg);
+      auto* raw = reinterpret_cast<SSL_CTX*>(context.raw());
+      const unsigned long flags = ::X509_VERIFY_PARAM_get_flags(::X509_STORE_get0_param(::SSL_CTX_get_cert_store(raw)));
+      EXPECT_NE(flags & X509_V_FLAG_CRL_CHECK, 0U);
+      if (checkAll) {
+        EXPECT_NE(flags & X509_V_FLAG_CRL_CHECK_ALL, 0U);
+      } else {
+        EXPECT_EQ(flags & X509_V_FLAG_CRL_CHECK_ALL, 0U);
+      }
+    }
+  }
+}
+
+TEST(TlsContextTest, CrlRejectsRevokedClientCertificate) {
+  auto clientCert = CertKeyCache::Get().client;
+  const std::string crlPem = MakeCrlPem(clientCert, true);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile crlFile(tmpDir, crlPem);
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.requireClientCert = true;
+  cfg.withTlsTrustedClientCert(clientCert.first).withTlsCrlFile(crlFile.filePath().string());
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  InstallClientCertificate(pair, clientCert);
+
+  EXPECT_FALSE(PerformHandshake(pair));
+  ::ERR_clear_error();
+}
+
+TEST(TlsContextTest, AppliesHardenedContextDefaults) {
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  TlsContext context(cfg);
+  auto* raw = reinterpret_cast<SSL_CTX*>(context.raw());
+
+  EXPECT_EQ(::SSL_CTX_get_min_proto_version(raw), TLS1_2_VERSION);
+  EXPECT_NE(::SSL_CTX_get_options(raw) & SSL_OP_CIPHER_SERVER_PREFERENCE, 0U);
+#ifdef SSL_OP_NO_RENEGOTIATION
+  EXPECT_NE(::SSL_CTX_get_options(raw) & SSL_OP_NO_RENEGOTIATION, 0U);
+#endif
+}
+
+#ifndef NDEBUG
+TEST(TlsContextTest, DebugKeyLogWritesNssCompatibleSecretsToOwnerOnlyFile) {
+  test::ScopedTempDir tmpDir;
+  const std::filesystem::path keyLogPath = tmpDir.dirPath() / "tls.keys";
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.withTlsKeyLogFile(keyLogPath.string());
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+
+  ASSERT_TRUE(PerformHandshake(pair));
+
+  std::ifstream keyLog(keyLogPath);
+  ASSERT_TRUE(keyLog);
+  const std::string contents{std::istreambuf_iterator<char>(keyLog), std::istreambuf_iterator<char>()};
+  EXPECT_TRUE(contents.contains("CLIENT_HANDSHAKE_TRAFFIC_SECRET") ||
+              contents.contains("SERVER_HANDSHAKE_TRAFFIC_SECRET"));
+#ifdef AERONET_POSIX
+  using Perms = std::filesystem::perms;
+  const Perms permissions = std::filesystem::status(keyLogPath).permissions();
+  EXPECT_EQ(permissions & (Perms::group_all | Perms::others_all), Perms::none);
+#endif
+}
+#endif
 
 TEST(TlsContextTest, StrictAlpnMismatchIncrementsMetric) {
   SslTestPair pair({"h2"}, {"http/1.1"}, true);

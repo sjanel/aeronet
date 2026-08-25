@@ -33,16 +33,38 @@ class TlsTicketKeyStore {
 
  private:
   struct KeyMaterial {
-    using Part = std::array<unsigned char, 16>;
+    static constexpr std::size_t kPartSize = 16;
+    using Bytes = std::array<unsigned char, TLSConfig::kSessionTicketKeySize>;
 
-    auto data() {
-      static_assert(TLSConfig::kSessionTicketKeySize == 3U * sizeof(Part), "Session ticket key size mismatch");
-      return std::span<unsigned char, TLSConfig::kSessionTicketKeySize>{name.data(), TLSConfig::kSessionTicketKeySize};
+    KeyMaterial() = default;
+    KeyMaterial(const KeyMaterial&) = delete;
+    KeyMaterial& operator=(const KeyMaterial&) = delete;
+    KeyMaterial(KeyMaterial&& other) noexcept;
+    KeyMaterial& operator=(KeyMaterial&& other) noexcept;
+    ~KeyMaterial();
+
+    [[nodiscard]] auto data() noexcept { return std::span<unsigned char, TLSConfig::kSessionTicketKeySize>{bytes}; }
+    [[nodiscard]] auto name() noexcept { return std::span<unsigned char, kPartSize>{bytes.data(), kPartSize}; }
+    [[nodiscard]] auto name() const noexcept {
+      return std::span<const unsigned char, kPartSize>{bytes.data(), kPartSize};
+    }
+    [[nodiscard]] auto hmacKey() noexcept {
+      return std::span<unsigned char, kPartSize>{bytes.data() + kPartSize, kPartSize};
+    }
+    [[nodiscard]] auto hmacKey() const noexcept {
+      return std::span<const unsigned char, kPartSize>{bytes.data() + kPartSize, kPartSize};
+    }
+    [[nodiscard]] auto aesKey() noexcept {
+      return std::span<unsigned char, kPartSize>{bytes.data() + 2U * kPartSize, kPartSize};
+    }
+    [[nodiscard]] auto aesKey() const noexcept {
+      return std::span<const unsigned char, kPartSize>{bytes.data() + 2U * kPartSize, kPartSize};
     }
 
-    Part name;
-    Part hmacKey;
-    Part aesKey;
+    void scrub() noexcept;
+
+    static_assert(TLSConfig::kSessionTicketKeySize == 3U * kPartSize, "Session ticket key size mismatch");
+    Bytes bytes;
     std::chrono::steady_clock::time_point created;
   };
 

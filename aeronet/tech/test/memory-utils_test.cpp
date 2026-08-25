@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
@@ -9,8 +10,19 @@
 #include <string_view>
 
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/secure-zero.hpp"
 
 namespace aeronet {
+
+TEST(MemoryUtils, SecureZeroOverwritesEveryByte) {
+  std::array<unsigned char, 64> secret;
+  secret.fill(0xA5);
+
+  SecureZero(secret.data(), secret.size());
+
+  EXPECT_TRUE(std::ranges::all_of(secret, [](unsigned char value) { return value == 0; }));
+  SecureZero(nullptr, 0);
+}
 
 namespace {
 
