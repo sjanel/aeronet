@@ -15,7 +15,6 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <algorithm>
@@ -176,37 +175,30 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t n
   return size;
 }
 
-void BuildDeflateResponse(DeflateNegotiatedParams params, RawChars& output) {
-  const auto nDigitsServerMaxWindowBits = ndigits(params.serverMaxWindowBits);
-  const auto nDigitsClientMaxWindowBits = ndigits(params.clientMaxWindowBits);
-
-  output.ensureAvailableCapacity(
-      ComputeDeflateResponseSize(params, nDigitsServerMaxWindowBits, nDigitsClientMaxWindowBits));
-  char* ptr = output.data() + output.size();
-
-  ptr = AppendFixed<kPermessageDeflate>(ptr);
+char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
+  pData = AppendFixed<kPermessageDeflate>(pData);
 
   if (params.serverNoContextTakeover) {
-    ptr = AppendFixed<kSemicolonSpace>(ptr);
-    ptr = AppendFixed<kServerNoContextTakeover>(ptr);
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kServerNoContextTakeover>(pData);
   }
   if (params.clientNoContextTakeover) {
-    ptr = AppendFixed<kSemicolonSpace>(ptr);
-    ptr = AppendFixed<kClientNoContextTakeover>(ptr);
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kClientNoContextTakeover>(pData);
   }
   if (params.serverMaxWindowBits < 15) {
-    ptr = AppendFixed<kSemicolonSpace>(ptr);
-    ptr = AppendFixed<kServerMaxWindowBits>(ptr);
-    *ptr++ = '=';
-    ptr = WriteUInt(ptr, params.serverMaxWindowBits, nDigitsServerMaxWindowBits);
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kServerMaxWindowBits>(pData);
+    *pData++ = '=';
+    pData = WriteUInt(pData, params.serverMaxWindowBits, ndigits(params.serverMaxWindowBits));
   }
   if (params.clientMaxWindowBits < 15) {
-    ptr = AppendFixed<kSemicolonSpace>(ptr);
-    ptr = AppendFixed<kClientMaxWindowBits>(ptr);
-    *ptr++ = '=';
-    ptr = WriteUInt(ptr, params.clientMaxWindowBits, nDigitsClientMaxWindowBits);
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kClientMaxWindowBits>(pData);
+    *pData++ = '=';
+    pData = WriteUInt(pData, params.clientMaxWindowBits, ndigits(params.clientMaxWindowBits));
   }
-  output.setEnd(ptr);
+  return pData;
 }
 
 struct DeflateContext::Impl {

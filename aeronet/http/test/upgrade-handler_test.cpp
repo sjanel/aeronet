@@ -579,13 +579,28 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WithWhitespace) {
 }
 
 #ifdef AERONET_ENABLE_WEBSOCKET
+
+namespace {
+
+RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult) {
+  const auto sz = upgrade::ComputeWebSocketUpgradeResponseSize(validationResult);
+  RawChars response(upgrade::ComputeWebSocketUpgradeResponseSize(validationResult));
+  upgrade::BuildWebSocketUpgradeResponse(validationResult, response.data());
+  response.setSize(sz);
+  return response;
+}
+
+}  // namespace
+
 // Tests for BuildWebSocketUpgradeResponse
 TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_Basic) {
   UpgradeValidationResult validationResult;
   validationResult.valid = true;
   validationResult.targetProtocol = ProtocolType::WebSocket;
   std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
-  const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
+
+  const auto response = BuildWebSocketUpgradeResponse(validationResult);
+
   const std::string_view responseView(response.data(), response.size());
 
   // Check status line
@@ -608,7 +623,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithProtocol) {
   std::ranges::copy(kExpectedWebSocketAccept, validationResult.secWebSocketAccept.data());
   validationResult.selectedProtocol = "graphql-ws";
 
-  const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
+  const auto response = BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response.data(), response.size());
 
   EXPECT_TRUE(
@@ -628,7 +643,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
       .clientNoContextTakeover = false,
   };
 
-  const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
+  const auto response = BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response.data(), response.size());
 
   // Check extension header is present
@@ -645,11 +660,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
 // Tests for BuildHttp2UpgradeResponse
 #ifdef AERONET_ENABLE_HTTP2
 TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
-  UpgradeValidationResult validationResult;
-  validationResult.valid = true;
-  validationResult.targetProtocol = ProtocolType::Http2;
-
-  const auto response = upgrade::BuildHttp2UpgradeResponse(validationResult);
+  const auto response = upgrade::BuildHttp2UpgradeResponse();
   const std::string_view responseView(response.data(), response.size());
 
   // Check status line
@@ -830,7 +841,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_NoProtocolNoDeflate) {
   std::copy_n("testaccept", std::min<size_t>(std::strlen("testaccept"), validationResult.secWebSocketAccept.size()),
               validationResult.secWebSocketAccept.data());
 
-  const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
+  const auto response = BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response);
 
   // Should not contain protocol or extensions headers
@@ -852,7 +863,7 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
       .clientNoContextTakeover = true,
   };
 
-  const auto response = upgrade::BuildWebSocketUpgradeResponse(validationResult);
+  const auto response = BuildWebSocketUpgradeResponse(validationResult);
   const std::string_view responseView(response);
 
   EXPECT_TRUE(responseView.contains("server_no_context_takeover"));

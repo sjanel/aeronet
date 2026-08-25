@@ -43,7 +43,7 @@ struct WebSocketEndpoint {
   static WebSocketEndpoint WithCallbacks(websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
     ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{}, std::move(cb));
+      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), std::move(cb));
     };
     return ep;
   }
@@ -54,7 +54,7 @@ struct WebSocketEndpoint {
     WebSocketEndpoint ep;
     ep.config = config;
     ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(cfg, std::move(cb));
+      return std::make_unique<websocket::WebSocketHandler>(std::move(cfg), std::move(cb));
     };
     return ep;
   }
@@ -69,7 +69,7 @@ struct WebSocketEndpoint {
       ep.supportedProtocols.append(proto);
     }
     ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig{}, std::move(cb));
+      return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), std::move(cb));
     };
     return ep;
   }
@@ -86,7 +86,7 @@ struct WebSocketEndpoint {
       ep.supportedProtocols.append(proto);
     }
     ep.factory = [cfg = config, cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
-      return std::make_unique<websocket::WebSocketHandler>(cfg, std::move(cb));
+      return std::make_unique<websocket::WebSocketHandler>(std::move(cfg), std::move(cb));
     };
     return ep;
   }

@@ -4,7 +4,6 @@
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/protocol-handler.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -98,6 +97,9 @@ namespace upgrade {
 [[nodiscard]] ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
+
+std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult);
+
 /// Generate a raw 101 Switching Protocols response for WebSocket upgrade.
 ///
 /// Returns the complete HTTP response as raw bytes, ready to be written to the socket.
@@ -105,8 +107,7 @@ namespace upgrade {
 /// (Connection, Upgrade) which normal response building disallows.
 ///
 /// @param validationResult  Result from ValidateWebSocketUpgrade() (must be valid)
-/// @return                  Complete 101 response as raw bytes
-[[nodiscard]] RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult);
+void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult, char* pData);
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -117,9 +118,8 @@ namespace upgrade {
 /// HTTP/2 connection preface (SETTINGS frame), and then respond to the
 /// original request using HTTP/2.
 ///
-/// @param validationResult  Result from ValidateHttp2Upgrade() (must be valid)
 /// @return                  Complete 101 response as raw bytes
-[[nodiscard]] std::string_view BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult);
+[[nodiscard]] std::string_view BuildHttp2UpgradeResponse();
 #endif
 
 }  // namespace upgrade

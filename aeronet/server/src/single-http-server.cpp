@@ -508,7 +508,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       installH2TunnelBridge(cnxIt->fd(), state);
 
       // Queue the upgrade response
-      state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse(upgradeValidation));
+      state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse());
       flushOutbound(cnxIt);
 
       log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxIt->fd());
@@ -543,13 +543,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
           if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
             // Factory didn't configure compression but it was negotiated - recreate handler
             auto config = wsHandler->config();
-            wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks{},
+            wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks(),
                                                                       upgradeValidation.deflateParams);
           }
         } else {
           auto config = endpoint.config;
           config.isServerSide = true;
-          wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks{},
+          wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks(),
                                                                     upgradeValidation.deflateParams);
         }
 
@@ -558,7 +558,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         state.protocol = ProtocolType::WebSocket;
 
         // Queue the upgrade response
-        state.outBuffer.append(upgrade::BuildWebSocketUpgradeResponse(upgradeValidation));
+        char* pData = state.outBuffer.resizeUp(upgrade::ComputeWebSocketUpgradeResponseSize(upgradeValidation));
+
+        upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, pData);
         flushOutbound(cnxIt);
 
         ++state.requestsServed;

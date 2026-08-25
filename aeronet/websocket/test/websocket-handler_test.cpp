@@ -434,7 +434,7 @@ TEST_F(WebSocketHandlerTest, MessageTooLarge) {
   WebSocketConfig config;
   config.isServerSide = false;
   config.maxMessageSize = 100;  // Small limit
-  handler = std::make_unique<WebSocketHandler>(config);
+  handler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   // Try to send a large message via fragments
   std::string largePayload(60, 'X');
@@ -552,7 +552,7 @@ TEST_F(WebSocketHandlerTest, MoveAssignment) {
 
   WebSocketConfig config;
   config.isServerSide = true;
-  WebSocketHandler newHandler(config);
+  WebSocketHandler newHandler(config, WebSocketCallbacks());
   newHandler = std::move(*handler);
 
   EXPECT_EQ(newHandler.type(), ProtocolType::WebSocket);
@@ -567,7 +567,7 @@ TEST_F(WebSocketHandlerTest, ClientSideMasksOutgoingFrames) {
   // Create a client-side handler
   WebSocketConfig config;
   config.isServerSide = false;  // Client side - should mask outgoing
-  auto clientHandler = std::make_unique<WebSocketHandler>(config);
+  auto clientHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   clientHandler->sendText("Hello");
   EXPECT_TRUE(clientHandler->hasPendingOutput());
@@ -584,7 +584,7 @@ TEST_F(WebSocketHandlerTest, ServerSideDoesNotMaskOutgoing) {
   // Create server-side handler
   WebSocketConfig config;
   config.isServerSide = true;
-  auto serverHandler = std::make_unique<WebSocketHandler>(config);
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   serverHandler->sendText("Hello");
   EXPECT_TRUE(serverHandler->hasPendingOutput());
@@ -734,7 +734,7 @@ TEST_F(WebSocketHandlerTest, SendPongTruncatesLongPayload) {
   // Create a server-side handler (no masking = smaller output)
   WebSocketConfig config;
   config.isServerSide = true;
-  auto serverHandler = std::make_unique<WebSocketHandler>(config);
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   // Send pong with payload > 125 bytes
   std::array<std::byte, 150> longPayload;
@@ -885,7 +885,7 @@ TEST_F(WebSocketHandlerTest, PayloadTooLargeError) {
 TEST_F(WebSocketHandlerTest, SendPingTruncatesLongPayload) {
   WebSocketConfig config;
   config.isServerSide = true;
-  auto serverHandler = std::make_unique<WebSocketHandler>(config);
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   // Send ping with payload > 125 bytes
   std::array<std::byte, 150> longPayload;
@@ -906,7 +906,7 @@ TEST_F(WebSocketHandlerTest, SendPingTruncatesLongPayload) {
 TEST_F(WebSocketHandlerTest, SetCallbacksAfterConstruction) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   int msgCount = 0;
   WebSocketCallbacks newCallbacks;
@@ -981,7 +981,7 @@ TEST_F(WebSocketHandlerTest, SingleFrameMessageTooLargeWithoutOnError) {
   config.isServerSide = false;
   config.maxMessageSize = 10;
 
-  handler = std::make_unique<WebSocketHandler>(config);
+  handler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   auto frame = BuildUnmaskedFrame(Opcode::Text, "This exceeds ten bytes limit");
   auto result = process(frame);
@@ -1066,7 +1066,7 @@ TEST_F(WebSocketHandlerTest, SingleFrameWithoutOnMessageCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
 
-  handler = std::make_unique<WebSocketHandler>(config);
+  handler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   auto frame = BuildUnmaskedFrame(Opcode::Text, "Hello");
   auto result = process(frame);
@@ -1154,7 +1154,7 @@ TEST_F(WebSocketHandlerTest, FragmentedTextWithInvalidUtf8WithoutOnError) {
   WebSocketConfig config;
   config.isServerSide = false;
 
-  handler = std::make_unique<WebSocketHandler>(config);
+  handler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   auto frag1 = BuildUnmaskedFrame(Opcode::Text, "Hello ", false);
   (void)handler->processInput(buf_bytes(frag1), dummyState);
@@ -1302,7 +1302,7 @@ TEST_F(WebSocketHandlerTest, CompressedTextWithInvalidUtf8) {
   auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
 
   // Compress invalid UTF-8 data
-  DeflateContext ctx(deflateParams, DeflateConfig{}, false);
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
   std::string invalidUtf8;
   invalidUtf8 += "Hello ";
   invalidUtf8 += '\xC0';
@@ -1336,7 +1336,7 @@ TEST_F(WebSocketHandlerTest, CompressionFallbackWhenNotBeneficial) {
       .clientNoContextTakeover = true,
   };
 
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   // High-entropy data that doesn't compress well; >= minCompressSize so compression is attempted.
   // With noContextTakeover, deflate overhead exceeds savings for small incompressible data.
@@ -1373,7 +1373,7 @@ TEST_F(WebSocketHandlerTest, RSV1AcceptedWithCompression) {
   auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
 
   // Create a compressed message
-  DeflateContext ctx(deflateParams, DeflateConfig{}, false);
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
   std::string_view original = "Hello, compressed world!";
   RawBytes compressed;
   ASSERT_EQ(ctx.compress(sv_bytes(original), compressed), nullptr);
@@ -1402,7 +1402,7 @@ TEST_F(WebSocketHandlerTest, SendTextWithCompression) {
       .clientNoContextTakeover = false,
   };
 
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   // Send a compressible message
   std::string largeText(500, 'X');  // Repetitive data compresses well
@@ -1427,7 +1427,7 @@ TEST_F(WebSocketHandlerTest, SendBinaryWithCompression) {
       .clientNoContextTakeover = false,
   };
 
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   // Send compressible binary data
   std::array<std::byte, 500> binaryData;
@@ -1451,7 +1451,7 @@ TEST_F(WebSocketHandlerTest, CompressionSkipsSmallPayloads) {
       .clientNoContextTakeover = false,
   };
 
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   // Send small message
   EXPECT_TRUE(compressHandler->sendText("small"));
@@ -1508,7 +1508,7 @@ TEST_F(WebSocketHandlerTest, CompressedFragmentedMessage) {
   auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
 
   // Compress full message
-  DeflateContext ctx(deflateParams, DeflateConfig{}, false);
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
   std::string_view original = "Hello, fragmented compressed world!";
   RawBytes compressed;
   ASSERT_EQ(ctx.compress(sv_bytes(original), compressed), nullptr);
@@ -1565,7 +1565,7 @@ TEST_F(WebSocketHandlerTest, Utf8OverlongEncoding3Byte) {
 
 TEST_F(WebSocketHandlerTest, Utf84ByteValid) {
   // Valid 4-byte sequence for U+1F600 (😀)
-  std::array<char, 4> valid4byte = {'\xF0', '\x9F', '\x98', '\x80'};
+  static constexpr std::array valid4byte{'\xF0', '\x9F', '\x98', '\x80'};
   RawBytes frame;
   BuildFrame(frame, Opcode::Text, container_bytes(valid4byte), true, false);
 
@@ -1593,7 +1593,7 @@ TEST_F(WebSocketHandlerTest, ConfigAccessor) {
   WebSocketConfig config;
   config.isServerSide = true;
   config.maxMessageSize = 12345;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   EXPECT_TRUE(testHandler->config().isServerSide);
   EXPECT_EQ(testHandler->config().maxMessageSize, 12345);
@@ -1630,7 +1630,7 @@ TEST_F(WebSocketHandlerTest, CloseTimeout_WithVeryShortTimeout) {
   WebSocketConfig config;
   config.isServerSide = false;
   config.closeTimeout = std::chrono::milliseconds{1};
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   testHandler->sendClose(CloseCode::Normal, "closing");
 
@@ -1644,7 +1644,7 @@ TEST_F(WebSocketHandlerTest, CloseTimeout_ForceCloseOnTimeout) {
   WebSocketConfig config;
   config.isServerSide = false;
   config.closeTimeout = std::chrono::milliseconds{1};
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   testHandler->sendClose(CloseCode::Normal, "closing");
   EXPECT_TRUE(testHandler->isClosing());
@@ -1847,7 +1847,7 @@ TEST_F(WebSocketHandlerTest, ForceCloseOnTimeout_NoOpIfNotClosing) {
 TEST_F(WebSocketHandlerTest, ProtocolErrorWithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   // Reserved opcode triggers ProtocolError
   RawBytes frame;
@@ -1862,7 +1862,7 @@ TEST_F(WebSocketHandlerTest, PayloadTooLargeWithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
   config.maxFrameSize = 100;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   RawBytes frame;
   frame.push_back(std::byte{0x82});  // FIN=1, opcode=binary
@@ -1883,7 +1883,7 @@ TEST_F(WebSocketHandlerTest, PayloadTooLargeWithoutOnErrorCallback) {
 TEST_F(WebSocketHandlerTest, UnexpectedContinuationWithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   auto frame = BuildUnmaskedFrame(Opcode::Continuation, "data", true);
   auto result = testHandler->processInput(buf_bytes(frame), dummyState);
@@ -1893,7 +1893,7 @@ TEST_F(WebSocketHandlerTest, UnexpectedContinuationWithoutOnErrorCallback) {
 TEST_F(WebSocketHandlerTest, ExpectedContinuationWithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   // Start a fragment
   auto frag1 = BuildUnmaskedFrame(Opcode::Text, "Start", false);
@@ -1906,7 +1906,7 @@ TEST_F(WebSocketHandlerTest, ExpectedContinuationWithoutOnErrorCallback) {
 TEST_F(WebSocketHandlerTest, InvalidUtf8WithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   std::array<char, 2> invalidUtf8 = {'\xC0', '\x80'};
   RawBytes frame;
@@ -1920,7 +1920,7 @@ TEST_F(WebSocketHandlerTest, MessageTooLargeWithoutOnErrorCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
   config.maxMessageSize = 100;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   std::string largePayload(60, 'X');
   auto frag1 = BuildUnmaskedFrame(Opcode::Text, largePayload, false);
@@ -1934,7 +1934,7 @@ TEST_F(WebSocketHandlerTest, MessageTooLargeWithoutOnErrorCallback) {
 TEST_F(WebSocketHandlerTest, PongWithoutOnPongCallback) {
   WebSocketConfig config;
   config.isServerSide = false;
-  auto testHandler = std::make_unique<WebSocketHandler>(config);
+  auto testHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
 
   RawBytes frame;
   BuildFrame(frame, Opcode::Pong, sv_bytes("pong"), true, false);
@@ -1997,7 +1997,7 @@ TEST_F(WebSocketHandlerTest, ClientSideSendWithCompression) {
       .clientNoContextTakeover = false,
   };
 
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   std::string largeText(500, 'X');
   EXPECT_TRUE(compressHandler->sendText(largeText));
@@ -2021,7 +2021,7 @@ TEST_F(WebSocketHandlerTest, DecompressionFailureWithoutOnErrorCallback) {
   };
 
   // No onError callback
-  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks{}, deflateParams);
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks(), deflateParams);
 
   // Frame with RSV1 (compressed) but invalid deflate data
   RawBytes frame;

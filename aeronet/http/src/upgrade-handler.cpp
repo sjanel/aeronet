@@ -4,11 +4,9 @@
 #include <cstddef>
 #include <string_view>
 
-#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/protocol-handler.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
@@ -19,6 +17,7 @@
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/header-write.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/websocket-constants.hpp"
@@ -35,14 +34,6 @@ namespace aeronet {
 namespace {
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-
-// Helper to write a header line to RawChars
-void AppendHeaderCRLF(std::string_view name, std::string_view value, RawChars& buf) {
-  const auto headerSize = name.size() + http::HeaderSep.size() + value.size() + http::CRLF.size();
-  buf.ensureAvailableCapacityExponential(headerSize);
-  WriteHeaderCRLF(name, value, buf.data() + buf.size());
-  buf.addSize(headerSize);
-}
 
 // Parse a comma-separated list of tokens (for Sec-WebSocket-Protocol, etc.)
 ConcatenatedStrings ParseTokenList(std::string_view header) {
@@ -257,57 +248,65 @@ constexpr std::string_view kSwitchingProtocolsHttp11HeaderLine = "HTTP/1.1 101 S
 }
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-RawChars BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult) {
-  // Build raw HTTP response: "HTTP/1.1 101 Switching Protocols\r\n" + headers + "\r\n"
-  RawChars response(kSwitchingProtocolsHttp11HeaderLine.size() + 192);  // Typical 101 WebSocket response size
 
-  // Status line
-  response.unchecked_append(kSwitchingProtocolsHttp11HeaderLine);
-
-  // Headers
-  AppendHeaderCRLF(http::Upgrade, websocket::UpgradeValue, response);
-  AppendHeaderCRLF(http::Connection, http::Upgrade, response);
-  AppendHeaderCRLF(
-      websocket::SecWebSocketAccept,
-      std::string_view(validationResult.secWebSocketAccept.data(), validationResult.secWebSocketAccept.size()),
-      response);
+std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult) {
+  std::size_t responseSz =
+      kSwitchingProtocolsHttp11HeaderLine.size() +
+      http::HeaderSize(http::Upgrade.size(), websocket::UpgradeValue.size()) +
+      http::HeaderSize(http::Connection.size(), http::Upgrade.size()) +
+      http::HeaderSize(websocket::SecWebSocketAccept.size(), validationResult.secWebSocketAccept.size());
 
   if (!validationResult.selectedProtocol.empty()) {
-    AppendHeaderCRLF(websocket::SecWebSocketProtocol, validationResult.selectedProtocol, response);
+    responseSz += http::HeaderSize(websocket::SecWebSocketProtocol.size(), validationResult.selectedProtocol.size());
+  }
+  if (validationResult.deflateParams.has_value()) {
+    const auto& params = validationResult.deflateParams.value();
+    const auto valueSize =
+        ComputeDeflateResponseSize(params, ndigits(params.serverMaxWindowBits), ndigits(params.clientMaxWindowBits));
+
+    responseSz +=
+        websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() + valueSize + http::DoubleCRLF.size();
+  } else {
+    responseSz += http::CRLF.size();
+  }
+  return responseSz;
+}
+
+// Build raw HTTP response: "HTTP/1.1 101 Switching Protocols\r\n" + headers + "\r\n"
+void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult, char* pData) {
+  // Status line
+  pData = AppendFixed<kSwitchingProtocolsHttp11HeaderLine>(pData);
+
+  // Headers
+  pData = WriteHeaderCRLF(http::Upgrade, websocket::UpgradeValue, pData);
+  pData = WriteHeaderCRLF(http::Connection, http::Upgrade, pData);
+  pData = WriteHeaderCRLF(
+      websocket::SecWebSocketAccept,
+      std::string_view(validationResult.secWebSocketAccept.data(), validationResult.secWebSocketAccept.size()), pData);
+
+  if (!validationResult.selectedProtocol.empty()) {
+    pData = WriteHeaderCRLF(websocket::SecWebSocketProtocol, validationResult.selectedProtocol, pData);
   }
 
   // Include negotiated extensions
   if (validationResult.deflateParams.has_value()) {
     const auto& params = validationResult.deflateParams.value();
-    const auto nDigitsServerMaxWindowBits = ndigits(params.serverMaxWindowBits);
-    const auto nDigitsClientMaxWindowBits = ndigits(params.clientMaxWindowBits);
 
-    const auto valueSize = ComputeDeflateResponseSize(params, nDigitsServerMaxWindowBits, nDigitsClientMaxWindowBits);
-    response.ensureAvailableCapacityExponential(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() +
-                                                valueSize + http::CRLF.size() + http::CRLF.size());
-
-    char* pData = response.data() + response.size();
     pData = AppendFixed<websocket::SecWebSocketExtensions>(pData);
     pData = AppendFixed<http::HeaderSep>(pData);
-    response.addSize(websocket::SecWebSocketExtensions.size() + http::HeaderSep.size());
 
-    websocket::BuildDeflateResponse(params, response);
+    pData = websocket::BuildDeflateResponse(params, pData);
 
-    CopyFixed<http::CRLF>(response.data() + response.size());
-    response.addSize(http::CRLF.size());
+    pData = AppendFixed<http::DoubleCRLF>(pData);
+  } else {
+    pData = AppendFixed<http::CRLF>(pData);
   }
-
-  // End of headers
-  response.append(http::CRLF);
-
-  return response;
 }
+
 #endif
 
 #ifdef AERONET_ENABLE_HTTP2
-std::string_view BuildHttp2UpgradeResponse(const UpgradeValidationResult& validationResult) {
-  (void)validationResult;  // Used for future extension
-
+std::string_view BuildHttp2UpgradeResponse() {
   static constexpr std::string_view kHttpUpgradeResponse =
       JoinStringView_v<kSwitchingProtocolsHttp11HeaderLine, http::Upgrade, http::HeaderSep, http2::kAlpnH2c, http::CRLF,
                        http::Connection, http::HeaderSep, http::Upgrade, http::DoubleCRLF>;
