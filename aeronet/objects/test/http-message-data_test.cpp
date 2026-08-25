@@ -259,6 +259,30 @@ TEST(HttpResponseDataTest, AppendCharPointerWithBody) {
   EXPECT_EQ(data.remainingSize(), 15U);
 }
 
+TEST(HttpResponseDataTest, ResizeUpWithoutBodyReturnsStartOfNewRegion) {
+  HttpMessageData data("Head");
+
+  char* const writePtr = data.resizeUp(5U);
+  std::memcpy(writePtr, " data", 5U);  // NOLINT(bugprone-not-null-terminated-result)
+
+  EXPECT_EQ(data.firstBuffer(), "Head data");
+  EXPECT_EQ(data.secondBuffer(), "");
+  EXPECT_EQ(data.remainingSize(), 9U);
+}
+
+TEST(HttpResponseDataTest, ResizeUpWithBodyReturnsStartOfNewRegion) {
+  RawChars head("Head");
+  HttpPayload body(std::string_view("Body"));
+  HttpMessageData data(std::move(head), std::move(body));
+
+  char* const writePtr = data.resizeUp(5U);
+  std::memcpy(writePtr, " data", 5U);  // NOLINT(bugprone-not-null-terminated-result)
+
+  EXPECT_EQ(data.firstBuffer(), "Head");
+  EXPECT_EQ(data.secondBuffer(), "Body data");
+  EXPECT_EQ(data.remainingSize(), 13U);
+}
+
 // Test multiple appends
 TEST(HttpResponseDataTest, MultipleAppends) {
   HttpMessageData data;

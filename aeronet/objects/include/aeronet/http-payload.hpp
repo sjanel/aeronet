@@ -107,7 +107,8 @@ class HttpPayload {
   // May switch representation to RawChars for unsupported storage types.
   void insert(std::size_t pos, std::string_view data);
 
-  // Should only be called after ensureAvailableCapacityExponential (capacity should be at least size() + sz)
+  // Should only be called after ensureAvailableCapacity / ensureAvailableCapacityExponential (capacity should be at
+  // least size() + sz)
   void addSize(std::size_t sz);
 
   void clear() noexcept;
