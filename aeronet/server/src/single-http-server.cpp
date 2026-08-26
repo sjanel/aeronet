@@ -300,11 +300,9 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 }
 
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
-  // Save the client fd before entering the loop. processInput() may call back
-  // into setupTunnelConnection() (HTTP/2 CONNECT), which emplaces a new entry
-  // into _connections.active and may trigger a rehash, invalidating cnxIt.
-  // We re-find cnxIt by fd after each processInput() call, matching the same
-  // pattern used by the HTTP/1.1 CONNECT path in http-response-dispatch.cpp.
+  // Save the client fd before entering the loop. processInput() may call back into setupTunnelConnection()
+  // (HTTP/2 CONNECT), whose insertion may invalidate cnxIt by growing the POSIX fd vector or rehashing the Windows
+  // map. Re-find cnxIt by fd after each processInput() call, matching the HTTP/1.1 CONNECT path.
   const NativeHandle clientFd = cnxIt->fd();
 
   ConnectionState* pState = _connections.pConnectionState(clientFd);
@@ -631,8 +629,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     }
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
-    // processSpecialMethods may emplace into _connStates (inserting upstream) and
-    // will update cnxIt by reference if rehashing occurs.
+    // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
     const auto action = processSpecialMethods(cnxIt, consumedBytes, pCorsPolicy);
     if (action == LoopAction::Continue) {
       continue;

@@ -99,7 +99,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
     return LoopAction::Break;
   }
 
-  // Save client fd - setupTunnelConnection may rehash the connection map.
+  // Save client fd - setupTunnelConnection may invalidate the platform-specific connection iterator.
   const auto clientFd = cnxIt->fd();
 
   const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
@@ -111,7 +111,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   // Re-find client iterator after potential connections reallocation inside setupTunnelConnection.
   cnxIt = _connections.iterator(clientFd);
   ConnectionState& state = _connections.connectionState(cnxIt);
-  assert(cnxIt != _connections.end() && "Client connection cannot vanish during map rehash");
+  assert(cnxIt != _connections.end() && "Client connection cannot vanish during connection insertion");
 
   finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
 
