@@ -24,13 +24,12 @@ namespace aeronet::internal {
 
 class ConnectionStorage {
  public:
-  //  - The server and request layer rely on a stable ConnectionState address:
-  // TODO: change that, we can store vector + idx instead of raw pointer.
-  //      * HttpRequestView stores `ConnectionState* _ownerState` and uses it for async/body coordination
-  //        (e.g. HttpRequestView::markAwaitingBody()) and body access bridges.
-  //      * The event loop code often keeps `ConnectionState&` / `ConnectionState*` across helper calls
-  //        that may emplace new connections (see processSpecialMethods comment in the .cpp).
-  //    If ConnectionState were stored by value in the hash table, these pointers/references could dangle.
+  // ConnectionState addresses must remain stable for the lifetime of a connection. In particular, an async handler's
+  // coroutine frame retains the HttpRequestView& passed to it, while HttpRequestView itself points back to its owning
+  // state and to body-stream context stored in that state. Replacing the pointer below with an index into a resizable
+  // vector<ConnectionState> would therefore leave references outside ConnectionStorage dangling when the vector grows.
+  // ObjectPool provides non-relocating block storage; retaining its resolved pointer here also avoids an indexed block
+  // lookup on every hot-path state access.
 #ifdef AERONET_WINDOWS
   using ConnectionMap = flat_hash_map<Connection, ConnectionState*, std::hash<NativeHandle>, std::equal_to<>>;
 #else

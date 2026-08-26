@@ -129,6 +129,23 @@ TEST(ConnectionStorage, SweepCachedConnectionsRemovesAll) {
 }
 
 #ifdef AERONET_POSIX
+TEST(ConnectionStorage, ConnectionStateAddressSurvivesFdVectorGrowth) {
+  ConnectionStorage storage;
+
+  constexpr NativeHandle firstFd = 100;
+  auto firstIt = storage.emplace(Connection(BaseFd(firstFd)));
+  ConnectionState* const pFirstState = storage.pConnectionState(firstIt);
+  HttpRequestView* const pFirstRequest = &pFirstState->request;
+
+  // Force both fd-indexed vectors to grow. Async coroutine frames may retain pFirstRequest, so neither address may
+  // change when a later accept or CONNECT insertion uses a higher fd.
+  constexpr NativeHandle highFd = 4096;
+  ASSERT_TRUE(storage.emplace(Connection(BaseFd(highFd))) != storage.end());
+
+  EXPECT_EQ(storage.pConnectionState(firstFd), pFirstState);
+  EXPECT_EQ(&storage.connectionState(storage.iterator(firstFd)).request, pFirstRequest);
+}
+
 TEST(ConnectionStorage, ShrinkToFitTrimsTrailingNulls) {
   ConnectionStorage storage;
 
