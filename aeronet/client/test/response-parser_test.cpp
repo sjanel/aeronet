@@ -21,6 +21,12 @@ namespace {
 
 constexpr std::size_t kMax = 1024UL * 1024UL;
 
+ResponseParser::Status ParseCopy(ResponseParser& parser, std::string_view raw, bool eof, HttpResponse& resp,
+                                 std::size_t maxBytes) {
+  std::string mutableRaw(raw);
+  return parser.parse(mutableRaw, eof, resp, maxBytes);
+}
+
 // Feed the whole buffer at once (eof=false unless stated). The parser borrows a body-assembly buffer; the
 // tests below mirror this by declaring a local `RawChars bodyBuf;` right before each parser.
 ResponseParser::Status parseAll(std::string_view raw, HttpResponse& resp, bool head = false, bool eof = false,
@@ -28,14 +34,14 @@ ResponseParser::Status parseAll(std::string_view raw, HttpResponse& resp, bool h
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(head);
-  return parser.parse(raw, eof, resp, maxBytes);
+  return ParseCopy(parser, raw, eof, resp, maxBytes);
 }
 
 }  // namespace
 
 TEST(ResponseParserTest, SimpleContentLength) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello", resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.reason(), "OK");
@@ -44,9 +50,12 @@ TEST(ResponseParserTest, SimpleContentLength) {
 
 TEST(ResponseParserTest, StoresNonReservedHeader) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nLocation: /x\r\n\r\nhi", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-MiXeD: value\r\nLocation: /x\r\n\r\nhi", resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.headerValueOrEmpty("location"), "/x");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-mixed"), "value");
+  ASSERT_NE(resp.headers().begin(), resp.headers().end());
+  EXPECT_EQ((*resp.headers().begin()).name, "x-mixed");
 }
 
 TEST(ResponseParserTest, NoBodyOn204) {
@@ -67,7 +76,7 @@ TEST(ResponseParserTest, NoBodyOn304) {
 
 TEST(ResponseParserTest, HeadRequestHasNoBodyDespiteContentLength) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n", resp, /*head=*/true);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n", resp, /*head=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_TRUE(resp.bodyInMemory().empty());
 }
@@ -75,7 +84,7 @@ TEST(ResponseParserTest, HeadRequestHasNoBodyDespiteContentLength) {
 TEST(ResponseParserTest, ChunkedDecoding) {
   HttpResponse resp;
   std::string raw =
-      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"
       "5\r\nhello\r\n"
       "6\r\n world\r\n"
       "0\r\n\r\n";
@@ -87,9 +96,9 @@ TEST(ResponseParserTest, ChunkedDecoding) {
 TEST(ResponseParserTest, ChunkedWithExtensionAndTrailer) {
   HttpResponse resp;
   std::string raw =
-      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"
       "4;foo=bar\r\nabcd\r\n"
-      "0\r\nX-Trailer: v\r\n\r\n";
+      "0\r\nx-trailer: v\r\n\r\n";
   auto st = parseAll(raw, resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "abcd");
@@ -98,7 +107,7 @@ TEST(ResponseParserTest, ChunkedWithExtensionAndTrailer) {
 TEST(ResponseParserTest, ChunkSizeScannerAcceptsHexOwsAndExtensions) {
   HttpResponse resp;
   const std::string raw =
-      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"
       "\t0A \t;foo=\"bar\tbaz\";flag\r\n"
       "0123456789\r\n"
       "0 ;done\r\n\r\n";
@@ -111,7 +120,7 @@ TEST(ResponseParserTest, ChunkMetadataCanArriveOneCrlfByteAtATime) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
 
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
   raw += "1;foo";
@@ -147,7 +156,7 @@ TEST(ResponseParserTest, IncrementalDelivery) {
   ResponseParser parser(bodyBuf);
   parser.reset(false);
   std::string buf;
-  constexpr std::string_view chunks[]{"HTTP/1.1 200 OK\r\n", "Content-Length: 11\r\n\r\n", "hello", " world"};
+  constexpr std::string_view chunks[]{"HTTP/1.1 200 OK\r\n", "content-length: 11\r\n\r\n", "hello", " world"};
   ResponseParser::Status st = ResponseParser::Status::NeedMore;
   for (auto chunk : chunks) {
     buf.append(chunk);
@@ -163,25 +172,25 @@ TEST(ResponseParserTest, KeepAliveDefaults) {
   HttpResponse resp1;
   ResponseParser p1(bodyBuf);
   p1.reset(false);
-  p1.parse("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", false, resp1, kMax);
+  ParseCopy(p1, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", false, resp1, kMax);
   EXPECT_TRUE(p1.keepAlive());  // HTTP/1.1 default keep-alive
 
   HttpResponse resp2;
   ResponseParser p2(bodyBuf);
   p2.reset(false);
-  p2.parse("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", false, resp2, kMax);
+  ParseCopy(p2, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", false, resp2, kMax);
   EXPECT_FALSE(p2.keepAlive());
 
   HttpResponse resp3;
   ResponseParser p3(bodyBuf);
   p3.reset(false);
-  p3.parse("HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n", false, resp3, kMax);
+  ParseCopy(p3, "HTTP/1.0 200 OK\r\ncontent-length: 0\r\n\r\n", false, resp3, kMax);
   EXPECT_FALSE(p3.keepAlive());  // HTTP/1.0 default close
 }
 
 TEST(ResponseParserTest, DiscardsInterim100Continue) {
   HttpResponse resp;
-  std::string raw = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+  std::string raw = "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
   auto st = parseAll(raw, resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.status(), 200);
@@ -199,7 +208,7 @@ TEST(ResponseParserTest, ConsumedTracksHeadPlusBody) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcLEFTOVER";
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabcLEFTOVER";
   auto st = parser.parse(raw, false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "abc");
@@ -208,7 +217,7 @@ TEST(ResponseParserTest, ConsumedTracksHeadPlusBody) {
 
 TEST(ResponseParserTest, ContentLengthTruncatedAtEofIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", resp, /*head=*/false, /*eof=*/true);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", resp, /*head=*/false, /*eof=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -217,7 +226,7 @@ TEST(ResponseParserTest, ChunkedIncompleteNeedsMore) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhel";
   auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::NeedMore);
   raw += "lo\r\n0\r\n\r\n";
@@ -228,14 +237,14 @@ TEST(ResponseParserTest, ChunkedIncompleteNeedsMore) {
 
 TEST(ResponseParserTest, MaxResponseBytesExceededIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789", resp, /*head=*/false, /*eof=*/false,
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n0123456789", resp, /*head=*/false, /*eof=*/false,
                      /*maxBytes=*/5);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
 TEST(ResponseParserTest, InvalidContentLengthIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\n", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: abc\r\n\r\n", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -259,7 +268,8 @@ TEST(ResponseParserTest, Http10KeepAliveHeaderEnablesReuse) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
+  auto st =
+      ParseCopy(parser, "HTTP/1.0 200 OK\r\nconnection: keep-alive\r\ncontent-length: 0\r\n\r\n", false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_TRUE(parser.keepAlive());  // explicit keep-alive overrides the HTTP/1.0 close default
 }
@@ -270,10 +280,11 @@ TEST(ResponseParserTest, ConnectionTokenListClosesReuse) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.1 200 OK\r\nConnection: close, foo\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
+  auto st =
+      ParseCopy(parser, "HTTP/1.1 200 OK\r\nconnection: close, foo\r\ncontent-length: 0\r\n\r\n", false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_FALSE(parser.keepAlive());
-  // The Connection header is still surfaced losslessly.
+  // The Connection header value is still preserved under its normalized name.
   EXPECT_EQ(resp.headerValueOrEmpty("connection"), "close, foo");
 }
 
@@ -283,8 +294,8 @@ TEST(ResponseParserTest, Http10ConnectionTokenListEnablesReuse) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.0 200 OK\r\nConnection: Keep-Alive, Upgrade\r\nContent-Length: 0\r\n\r\n", false, resp,
-                         kMax);
+  auto st = ParseCopy(parser, "HTTP/1.0 200 OK\r\nconnection: Keep-Alive, Upgrade\r\ncontent-length: 0\r\n\r\n", false,
+                      resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_TRUE(parser.keepAlive());
 }
@@ -292,7 +303,7 @@ TEST(ResponseParserTest, Http10ConnectionTokenListEnablesReuse) {
 TEST(ResponseParserTest, LengthBodyExceedsMaxIsError) {
   HttpResponse resp;
   // Headers fit under maxBytes, but the declared (and delivered) body overflows it.
-  std::string raw = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n" + std::string(100, 'a');
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n" + std::string(100, 'a');
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
@@ -306,14 +317,14 @@ TEST(ResponseParserTest, UntilCloseBodyExceedsMaxIsError) {
 
 TEST(ResponseParserTest, ChunkedBadSizeIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nXYZ\r\ndata", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\nXYZ\r\ndata", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
 TEST(ResponseParserTest, ChunkedBodyExceedsMaxIsError) {
   HttpResponse resp;
   std::string raw =
-      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n64\r\n" + std::string(100, 'c') + "\r\n0\r\n\r\n";
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n64\r\n" + std::string(100, 'c') + "\r\n0\r\n\r\n";
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
@@ -323,7 +334,7 @@ TEST(ResponseParserTest, ChunkedLoweredLimitRejectsAlreadyBufferedBody) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  const std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nx";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nx";
 
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::NeedMore);
   ASSERT_EQ(bodyBuf.size(), 1);
@@ -333,13 +344,13 @@ TEST(ResponseParserTest, ChunkedLoweredLimitRejectsAlreadyBufferedBody) {
 TEST(ResponseParserTest, ChunkedMissingCrlfAtEofIsError) {
   HttpResponse resp;
   auto st =
-      parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello", resp, /*head=*/false, /*eof=*/true);
+      parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello", resp, /*head=*/false, /*eof=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
 TEST(ResponseParserTest, ChunkedTrailersTruncatedAtEofIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n", resp, /*head=*/false, /*eof=*/true);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\n", resp, /*head=*/false, /*eof=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -348,7 +359,7 @@ TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, 10);
+  auto st = ParseCopy(parser, "HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, 10);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -361,7 +372,7 @@ TEST(ResponseParserTest, IncompleteHeaderBoundedByBufferedSize) {
   ResponseParser parser(bodyBuf);
   parser.reset(false);
   // Status line (17 bytes) fits under maxBytes=50, but the unterminated header pushes the buffer past it.
-  const std::string raw = "HTTP/1.1 200 OK\r\nX: " + std::string(100, 'a');  // no trailing CRLF
+  std::string raw = "HTTP/1.1 200 OK\r\nx: " + std::string(100, 'a');  // no trailing CRLF
   auto st = parser.parse(raw, /*eof=*/false, resp, /*maxResponseBytes=*/50);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
@@ -370,7 +381,7 @@ TEST(ResponseParserTest, IncompleteHeaderBoundedByBufferedSize) {
 // to bypass the per-header size check, so such a head could be accepted whole).
 TEST(ResponseParserTest, OversizedTerminatedHeaderIsError) {
   HttpResponse resp;
-  const std::string raw = "HTTP/1.1 200 OK\r\nX: " + std::string(100, 'a') + "\r\n\r\n";
+  const std::string raw = "HTTP/1.1 200 OK\r\nx: " + std::string(100, 'a') + "\r\n\r\n";
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
@@ -401,7 +412,7 @@ TEST(ResponseParserTest, RejectsHeaderWithoutColon) {
 
 TEST(ResponseParserTest, HeaderLineBeyondMaxBytesIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nA: 1\r\nB: 2\r\n\r\n", resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/20);
+  auto st = parseAll("HTTP/1.1 200 OK\r\na: 1\r\nb: 2\r\n\r\n", resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/20);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -410,18 +421,18 @@ TEST(ResponseParserTest, ReparseAfterCompleteStaysComplete) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::Complete);
   // A redundant parse() once Done short-circuits straight back to Complete.
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), ResponseParser::Status::Complete);
 }
 
-// "Transfer-Encoding: gzip, chunked" is chunked: only the *last* token decides framing. The chunk bytes
+// "transfer-encoding: gzip, chunked" is chunked: only the *last* token decides framing. The chunk bytes
 // here are plain text (no codec wired in), so de-chunking yields them verbatim.
 TEST(ResponseParserTest, TransferEncodingCommaListLastTokenChunked) {
   HttpResponse resp;
   std::string raw =
-      "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: gzip, chunked\r\n\r\n"
       "5\r\nhello\r\n0\r\n\r\n";
   auto st = parseAll(raw, resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
@@ -432,21 +443,21 @@ TEST(ResponseParserTest, TransferEncodingCommaListLastTokenChunked) {
 // stops before consuming the whole token).
 TEST(ResponseParserTest, ChunkedSizeWithTrailingJunkIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5x\r\nhello", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5x\r\nhello", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
 // A truncated chunk-size line (no terminating LF) that reaches EOF is an error, not an endless wait.
 TEST(ResponseParserTest, ChunkedSizeTruncatedAtEofIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3", resp, /*head=*/false, /*eof=*/true);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3", resp, /*head=*/false, /*eof=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
 // Content-Length with a valid digit prefix then trailing junk ("5x") is rejected.
 TEST(ResponseParserTest, ContentLengthWithTrailingJunkIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\n", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 5x\r\n\r\n", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -459,13 +470,13 @@ TEST(ResponseParserTest, RejectsHeaderStartingWithColon) {
 
 TEST(ResponseParserTest, ChunkSizeOverflowIsRejectedWithoutRejectingSizeTMax) {
   constexpr std::size_t kMaxHexDigits = sizeof(std::size_t) * 2U;
-  const std::string head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+  const std::string head = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
 
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
   HttpResponse maxResponse;
-  const std::string maxLine = head + std::string(kMaxHexDigits, 'f') + "\r\n";
+  std::string maxLine = head + std::string(kMaxHexDigits, 'f') + "\r\n";
   EXPECT_EQ(parser.parse(maxLine, false, maxResponse, std::numeric_limits<std::size_t>::max()),
             ResponseParser::Status::NeedMore);
 
@@ -477,7 +488,7 @@ TEST(ResponseParserTest, ChunkSizeOverflowIsRejectedWithoutRejectingSizeTMax) {
 TEST(ResponseParserTest, ChunkSizeScannerRejectsMalformedSyntax) {
   const auto expectError = [](std::string_view chunkLine) {
     HttpResponse resp;
-    std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
     raw.append(chunkLine);
     raw.append("x\r\n0\r\n\r\n");
     EXPECT_EQ(parseAll(raw, resp), ResponseParser::Status::Error) << chunkLine;
@@ -520,7 +531,7 @@ TEST(ResponseParserTest, RejectsBareLfLineEndings) {
 }
 
 TEST(ResponseParserTest, RejectsBareLfInChunkedBody) {
-  constexpr std::string_view kHead = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+  constexpr std::string_view kHead = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
   for (const std::string_view body : {
            std::string_view("5\nhello\r\n0\r\n\r\n"),
            std::string_view("5\r\nhello\n0\r\n\r\n"),
@@ -540,7 +551,7 @@ TEST(ResponseParserTest, ConnectionTrailingCommaClosesReuse) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  auto st = parser.parse("HTTP/1.1 200 OK\r\nConnection: close,\r\nContent-Length: 0\r\n\r\n", false, resp, kMax);
+  auto st = ParseCopy(parser, "HTTP/1.1 200 OK\r\nconnection: close,\r\ncontent-length: 0\r\n\r\n", false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_FALSE(parser.keepAlive());
 }
@@ -549,7 +560,7 @@ TEST(ResponseParserTest, ConnectionTrailingCommaClosesReuse) {
 // the hex parse rather than being mistaken for a zero-length final chunk.
 TEST(ResponseParserTest, ChunkedEmptySizeLineIsError) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\n", resp);
+  auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n\n", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -557,7 +568,7 @@ TEST(ResponseParserTest, ChunkedEmptySizeLineIsError) {
 TEST(ResponseParserTest, ChunkedDataTruncatedAtEofIsError) {
   HttpResponse resp;
   auto st =
-      parseAll("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel", resp, /*head=*/false, /*eof=*/true);
+      parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhel", resp, /*head=*/false, /*eof=*/true);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -567,7 +578,7 @@ TEST(ResponseParserTest, ChunkedDataCrlfPendingNeedsMore) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello";
   auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::NeedMore);
   raw += "\r\n0\r\n\r\n";
@@ -578,7 +589,7 @@ TEST(ResponseParserTest, ChunkedDataCrlfPendingNeedsMore) {
 
 TEST(ResponseParserTest, ChunkedBodyTransfersAllocationAndPreservesScratchCapacity) {
   const std::string payload(4096, 'x');
-  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1000\r\n";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1000\r\n";
   raw.append(payload);
 
   RawChars bodyBuf;
@@ -602,7 +613,7 @@ TEST(ResponseParserTest, ChunkedBodyTransfersAllocationAndPreservesScratchCapaci
 
   // The replacement is used directly by the next exchange, while the first response remains independent.
   const std::string secondPayload(2048, 'y');
-  std::string secondRaw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n800\r\n";
+  std::string secondRaw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n800\r\n";
   secondRaw.append(secondPayload);
   secondRaw.append("\r\n0\r\n\r\n");
   const char* secondAllocation = bodyBuf.data();
@@ -615,7 +626,7 @@ TEST(ResponseParserTest, ChunkedBodyTransfersAllocationAndPreservesScratchCapaci
 }
 
 TEST(ResponseParserTest, ChunkDataDelimiterIsValidated) {
-  constexpr std::string_view kHead = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+  constexpr std::string_view kHead = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
   for (const std::string_view body : {std::string_view("1\r\nxX\n0\r\n\r\n"), std::string_view("1\r\nx\rX0\r\n\r\n")}) {
     HttpResponse resp;
     const std::string raw = std::string(kHead) + std::string(body);
@@ -633,9 +644,9 @@ TEST(ResponseParserTest, OversizedScratchStaysReusableForSmallChunkedBody) {
   ResponseParser parser(bodyBuf);
   parser.reset(false);
   HttpResponse resp;
-  ASSERT_EQ(
-      parser.parse("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false, resp, kMax),
-      ResponseParser::Status::Complete);
+  ASSERT_EQ(ParseCopy(parser, "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", false,
+                      resp, kMax),
+            ResponseParser::Status::Complete);
   EXPECT_FALSE(resp.hasBodyCaptured());
   EXPECT_EQ(resp.bodyInMemory(), "hello");
   EXPECT_NE(resp.bodyInMemory().data(), scratchAllocation);
@@ -650,7 +661,7 @@ TEST(ResponseParserTest, ChunkedTrailersPendingNeedsMore) {
   RawChars bodyBuf;
   ResponseParser parser(bodyBuf);
   parser.reset(false);
-  std::string raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n";
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\n";
   auto st = parser.parse(raw, /*eof=*/false, resp, kMax);
   EXPECT_EQ(st, ResponseParser::Status::NeedMore);
   raw += "\r\n";  // close the (empty) trailer block
@@ -663,7 +674,7 @@ TEST(ResponseParserTest, ChunkedTrailersPendingNeedsMore) {
 // reason is simply left empty.
 TEST(ResponseParserTest, StatusLineWithoutReasonPhrase) {
   HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n", resp);
+  auto st = parseAll("HTTP/1.1 200\r\ncontent-length: 0\r\n\r\n", resp);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.reason().empty());
@@ -685,9 +696,9 @@ struct Decode {
 };
 
 std::string LengthFramed(std::string_view encodingName, std::string_view body) {
-  std::string raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: ";
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-encoding: ";
   raw.append(encodingName);
-  raw.append("\r\nContent-Length: ");
+  raw.append("\r\ncontent-length: ");
   raw.append(std::to_string(body.size()));
   raw.append("\r\n\r\n");
   raw.append(body);
@@ -708,7 +719,7 @@ TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
     parser.reset(false);
     parser.setDecodeContext(decode.ctx());
     HttpResponse resp;
-    const std::string raw = LengthFramed(GetEncodingStr(enc), std::string_view(compressed));
+    std::string raw = LengthFramed(GetEncodingStr(enc), std::string_view(compressed));
     const auto st = parser.parse(raw, false, resp, kMaxResponseBytes);
     EXPECT_EQ(st, ResponseParser::Status::Complete) << GetEncodingStr(enc);
     EXPECT_EQ(resp.bodyInMemory(), payload) << GetEncodingStr(enc);
@@ -730,9 +741,9 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
   const RawChars compressed = test::Compress(enc, payload);
 
   // Wrap the compressed bytes in a single chunk.
-  std::string raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: ";
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-encoding: ";
   raw.append(GetEncodingStr(enc));
-  raw.append("\r\nTransfer-Encoding: chunked\r\n\r\n");
+  raw.append("\r\ntransfer-encoding: chunked\r\n\r\n");
   char hex[32];
   raw.append(hex, to_lower_hex(compressed.size(), hex));
   raw.append(http::CRLF);
@@ -756,7 +767,8 @@ TEST(ResponseParserDecompress, NoContentEncodingPassesThrough) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = parser.parse("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", false, resp, kMaxResponseBytes);
+  const auto st =
+      ParseCopy(parser, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello", false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
@@ -767,7 +779,7 @@ TEST(ResponseParserDecompress, IdentityEncodingPassesThroughAndDropsHeader) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = parser.parse(LengthFramed("identity", "hello"), false, resp, kMaxResponseBytes);
+  const auto st = ParseCopy(parser, LengthFramed("identity", "hello"), false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "hello");
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
@@ -781,8 +793,9 @@ TEST(ResponseParserDecompress, IdentityChunkedTransfersReassemblyAllocation) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = parser.parse(
-      "HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+  const auto st = ParseCopy(
+      parser,
+      "HTTP/1.1 200 OK\r\ncontent-encoding: identity\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
       false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
   EXPECT_TRUE(resp.hasBodyCaptured());
@@ -799,7 +812,7 @@ TEST(ResponseParserDecompress, UnsupportedEncodingIsError) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = parser.parse(LengthFramed("made-up", "whatever-bytes"), false, resp, kMaxResponseBytes);
+  const auto st = ParseCopy(parser, LengthFramed("made-up", "whatever-bytes"), false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 
@@ -813,7 +826,8 @@ TEST(ResponseParserDecompress, GarbageCompressedBodyIsError) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = parser.parse(LengthFramed(GetEncodingStr(enc), "not-a-valid-frame"), false, resp, kMaxResponseBytes);
+  const auto st =
+      ParseCopy(parser, LengthFramed(GetEncodingStr(enc), "not-a-valid-frame"), false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 

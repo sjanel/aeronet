@@ -223,8 +223,8 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
     // supply body as captured payload directly (simulate handler that sets captured payload)
     respObj.body(payload);
     // add trailers after body
-    respObj.trailerAddLine("X-Checksum", "cksum");
-    respObj.trailerAddLine("X-Extra", "val");
+    respObj.trailerAddLine("x-checksum", "cksum");
+    respObj.trailerAddLine("x-extra", "val");
     return respObj;
   });
 
@@ -232,14 +232,14 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
   NativeHandle fd = sock.fd();
   std::string req =
       "GET /captured-trailers HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
-      "Accept-Encoding: *\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
+      "accept-encoding: *\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("X-Checksum: cksum"));
-  EXPECT_TRUE(resp.contains("X-Extra: val"));
+  EXPECT_TRUE(resp.contains("x-checksum: cksum"));
+  EXPECT_TRUE(resp.contains("x-extra: val"));
 }
 
 // Compression for inline body where compression moves body to captured payload, with trailers added
@@ -261,7 +261,7 @@ TEST(HttpCompression, InlineBodyWithTrailers) {
     // create inline body (string_view) to force inline storage
     respObj.body(std::string_view(inlinePayload));
     // trailers must be added after body
-    respObj.trailerAddLine("X-Inline", "ok");
+    respObj.trailerAddLine("x-inline", "ok");
     return respObj;
   });
 
@@ -269,13 +269,13 @@ TEST(HttpCompression, InlineBodyWithTrailers) {
   NativeHandle fd = sock.fd();
   std::string req =
       "GET /inline-trailers HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
-      "Accept-Encoding: *\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
+      "accept-encoding: *\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.contains("X-Inline: ok"));
+  EXPECT_TRUE(resp.contains("x-inline: ok"));
 }
 
 TEST(HttpCompression, IdentityForbiddenNoAlternativesReturns406) {
@@ -1123,7 +1123,7 @@ TEST(HttpCompression, DirectCompression_WithTrailers) {
   ts.router().setDefault([&payload](const HttpRequestView& req) {
     auto resp = req.makeResponse();
     resp.body(std::string_view{payload}, "text/plain");
-    resp.trailerAddLine("X-Checksum", "abc123");
+    resp.trailerAddLine("x-checksum", "abc123");
     return resp;
   });
 
@@ -1131,13 +1131,13 @@ TEST(HttpCompression, DirectCompression_WithTrailers) {
   NativeHandle fd = sock.fd();
   std::string req =
       "GET /dc-trailers HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
-      "Accept-Encoding: gzip\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
+      "accept-encoding: gzip\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string rawResp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(rawResp.contains("X-Checksum: abc123"));
+  EXPECT_TRUE(rawResp.contains("x-checksum: abc123"));
 }
 
 TEST(HttpCompression, DirectCompression_MultipleSequentialRequests) {
@@ -1229,8 +1229,8 @@ TEST(HttpCompression, DirectCompression_CustomHeadersPreserved) {
   std::string payload(256, 'H');
   ts.router().setDefault([&payload](const HttpRequestView& req) {
     auto resp = req.makeResponse();
-    resp.header("X-Custom-One", "value1");
-    resp.header("X-Custom-Two", "value2");
+    resp.header("x-custom-one", "value1");
+    resp.header("x-custom-two", "value2");
     resp.body(std::string_view{payload}, "text/plain");
     return resp;
   });
@@ -1242,10 +1242,10 @@ TEST(HttpCompression, DirectCompression_CustomHeadersPreserved) {
   EXPECT_EQ(it->second, "gzip");
 
   // Custom headers must survive
-  auto itC1 = resp.headers.find("X-Custom-One");
+  auto itC1 = resp.headers.find("x-custom-one");
   ASSERT_NE(itC1, resp.headers.end());
   EXPECT_EQ(itC1->second, "value1");
-  auto itC2 = resp.headers.find("X-Custom-Two");
+  auto itC2 = resp.headers.find("x-custom-two");
   ASSERT_NE(itC2, resp.headers.end());
   EXPECT_EQ(itC2->second, "value2");
 }

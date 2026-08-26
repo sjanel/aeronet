@@ -35,7 +35,6 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
@@ -273,21 +272,21 @@ class Http2ClientEngine {
       _resp->status(statusCode);
       _finalHeadersSeen = true;
     }
-    // Regular headers (and trailers, delivered as a later block) are preserved losslessly, except
-    // Content-Type and Content-Length which HttpResponse reconstructs via body() -- mirroring the
-    // HTTP/1.1 response parser. The decoded views only live for this callback, so values are copied.
+    // Regular header and trailer values are preserved, except Content-Type and Content-Length which HttpResponse
+    // reconstructs via body(), mirroring the HTTP/1.1 response parser. Names are normalized to lower-case. The
+    // decoded views only live for this callback, so values are copied.
     for (const auto& [name, value] : headers) {
       if (name.starts_with(':')) {
         continue;
       }
-      if (CaseInsensitiveEqual(name, http::ContentType)) {
+      if (name == http::ContentType) {
         _contentType.assign(value);
         continue;
       }
-      if (CaseInsensitiveEqual(name, http::ContentLength)) {
+      if (name == http::ContentLength) {
         continue;
       }
-      _resp->headerAddLineUnchecked(name, value);
+      _resp->headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
     if (endStream) {
       _responseComplete = true;  // response (or its trailers block) carried END_STREAM

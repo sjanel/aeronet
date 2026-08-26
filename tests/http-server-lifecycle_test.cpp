@@ -288,7 +288,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
   SingleHttpServer destination(config);
   destination.router().setDefault([&payload]([[maybe_unused]] const HttpRequestView&) {
     HttpResponse resp(payload);
-    resp.header("X-Who", "destination");
+    resp.header("x-who", "destination");
     return resp;
   });
 
@@ -312,7 +312,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
         auto resp = optResp.value_or("");
 
         EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
-        EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("X-Who", expectedHeaderValue)));
+        EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-who", expectedHeaderValue)));
         auto bodyStart = resp.find(http::DoubleCRLF);
         ASSERT_NE(bodyStart, std::string::npos);
         bodyStart += http::DoubleCRLF.size();
@@ -332,7 +332,7 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
     SingleHttpServer source(config);
     source.router().setDefault([&]([[maybe_unused]] const HttpRequestView&) {
       HttpResponse resp(payload);
-      resp.header("X-Who", "source");
+      resp.header("x-who", "source");
       return resp;
     });
 

@@ -348,12 +348,12 @@ TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
         test::ClientConnection client(h2ts.port());
         ASSERT_NE(client.fd(), -1);
         std::string rawReq = "GET /h2c-upgrade HTTP/1.1\r\n";
-        rawReq += "Host: localhost\r\n";
+        rawReq += "host: localhost\r\n";
         if (!upgradeFail) {
-          rawReq += "Connection: Upgrade, HTTP2-Settings\r\n";
+          rawReq += "connection: Upgrade, HTTP2-Settings\r\n";
         }
-        rawReq += "Upgrade: h2c\r\n";
-        rawReq += "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n";
+        rawReq += "upgrade: h2c\r\n";
+        rawReq += "http2-settings: AAMAAABkAARAAAAAAAIAAAAA\r\n";
         rawReq += "\r\n";
         test::sendAll(client.fd(), rawReq);
 
@@ -1756,7 +1756,7 @@ TEST(Http2Streaming, SimpleWriteBodyAndEnd) {
                              [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
                                writer.contentType("text/plain");
-                               writer.headerAddLine("X-Custom", "streaming-value");
+                               writer.headerAddLine("x-custom", "streaming-value");
                                writer.writeBody("hello ");
                                writer.writeBody("world");
                                writer.end();
@@ -1858,11 +1858,11 @@ TEST(Http2Streaming, HeadersIgnoredAfterFirstWrite) {
   ts.http().router().setPath(http::Method::GET, "/hdr-ignore",
                              [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
-                               writer.headerAddLine("X-Before", "visible");
+                               writer.headerAddLine("x-before", "visible");
                                writer.writeBody("data");
                                // These should be silently ignored after headers are sent
                                writer.status(http::StatusCode{404});
-                               writer.headerAddLine("X-After", "invisible");
+                               writer.headerAddLine("x-after", "invisible");
                                writer.end();
                              });
 
@@ -1880,9 +1880,9 @@ TEST(Http2Streaming, MultipleCustomHeaders) {
                              [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
                                writer.status(http::StatusCode{200});
                                writer.contentType("application/json");
-                               writer.headerAddLine("X-Request-Id", "abc-123");
-                               writer.headerAddLine("X-Trace-Id", "trace-456");
-                               writer.header("Cache-Control", "no-cache");
+                               writer.headerAddLine("x-request-id", "abc-123");
+                               writer.headerAddLine("x-trace-id", "trace-456");
+                               writer.header("cache-control", "no-cache");
                                writer.writeBody(R"({"ok":true})");
                                writer.end();
                              });
@@ -2463,12 +2463,12 @@ TEST(TlsHttp2Client, RequestWithQueryParams) {
   // Note: TlsHttp2Client's `get(path)` takes a string, we can pass "/hello?a=1&b=spaces%20%20and%2Fslash"
   // This verifies that HTTP/2 path and queries are percent-decoded correctly mirroring HTTP/1.1
   auto response = client.get("/hello?a=1&b=spaces%20%20and%2Fslash");
-  EXPECT_EQ(response.statusCode, 200) << "Body: " << response.body;
+  EXPECT_EQ(response.statusCode, 200) << "body: " << response.body;
 
   // Also check that invalid percent-encoding is handled gracefully (e.g. not treated as literal % followed by chars,
   // and doesn't cause server error)
   auto badResponse = client.get("/hello%salut");
-  EXPECT_EQ(badResponse.statusCode, 400) << "Body: " << badResponse.body;
+  EXPECT_EQ(badResponse.statusCode, 400) << "body: " << badResponse.body;
 }
 
 TEST(TlsHttp2Client, MultipleSequentialRequests) {
@@ -2501,7 +2501,7 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   ts.setDefault([&](const HttpRequestView& req) {
     receivedBody = std::string(req.body());
     receivedContentType = std::string(req.headerValueOrEmpty("content-type"));
-    return req.makeResponse("Received: " + receivedBody);
+    return req.makeResponse("received: " + receivedBody);
   });
 
   test::TlsHttp2Client client(ts.port());
@@ -2637,7 +2637,7 @@ TEST(TlsHttp2Client, MakeResponsePrefillsGlobalHeaders) {
 
   ts.setDefault([](const HttpRequestView& req) {
     auto resp = req.makeResponse(http::StatusCodeAccepted, "h2-body", "text/custom");
-    resp.header("X-Local", "local-value");
+    resp.header("x-local", "local-value");
     return resp;
   });
 

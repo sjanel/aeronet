@@ -23,6 +23,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/test_util.hpp"
 #include "bench_util.hpp"
@@ -83,7 +84,8 @@ struct AeronetServerRunner {
       // Read requested header count from query param 'size'
       const std::size_t headerCount = req.queryParamInt<std::size_t>("size").value();
       for (size_t headerPos = 0; headerPos < headerCount; ++headerPos) {
-        resp.headerAddLine(g_stringPool.next(), g_stringPool.next());
+        const std::string headerName = g_stringPool.next();
+        resp.headerAddLine(LowerAsciiKey{headerName}, g_stringPool.next());
       }
       resp.body(std::to_string(headerCount));
       return resp;
@@ -608,7 +610,7 @@ void AeronetResponseBuild(benchmark::State& state) {
       auto headerVal = g_stringPool.next();
       bytesSynthesized += headerKey.size() + headerVal.size();
 
-      resp.headerAddLine(headerKey, headerVal);
+      resp.headerAddLine(LowerAsciiKey{headerKey}, headerVal);
     }
     resp.body(std::move(body));
     // Finalization occurs when serialized for send; emulate by calling body() + reserved header injection via copy

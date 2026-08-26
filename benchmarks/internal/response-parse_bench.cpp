@@ -53,7 +53,7 @@ std::string MakeHeadOnlyResponse(std::size_t headerCount, std::size_t valueBytes
 }
 
 void BM_ChunkedTransferBody(benchmark::State& state) {
-  const std::string response =
+  std::string response =
       MakeChunkedResponse(static_cast<std::size_t>(state.range(0)), static_cast<std::size_t>(state.range(1)));
   RawChars bodyBuf;
   for (auto _ : state) {
@@ -69,7 +69,7 @@ void BM_ChunkedTransferBody(benchmark::State& state) {
 BENCHMARK(BM_ChunkedTransferBody)->Args({256UL * 1024UL, 1024UL})->Args({64UL * 1024UL, 16UL});
 
 void BM_ResponseHeadScan(benchmark::State& state) {
-  const std::string response =
+  std::string response =
       MakeHeadOnlyResponse(static_cast<std::size_t>(state.range(0)), static_cast<std::size_t>(state.range(1)));
   RawChars bodyBuf;
   for (auto _ : state) {

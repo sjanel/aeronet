@@ -7,39 +7,38 @@
 
 namespace aeronet {
 
-// A std::string_view guaranteed to contain no ASCII upper-case letter ('A'-'Z') -- guaranteed at compile time
-// when built from a string literal, or via assert() only (debug builds) when built from a dynamic
-// std::string_view. Used wherever a case-sensitive lookup expects an already-normalized-to-lower-case key,
-// e.g. HttpRequestView::headerValue()/hasHeader() and the equivalent trailer*() accessors (header and trailer
-// names are normalized to lower-case at parse time), but the type itself carries no HTTP-specific semantics --
-// it can be reused anywhere a similar "pre-lowered key" contract is needed.
+// A std::string_view guaranteed to contain no ASCII upper-case letter ('A'-'Z') -- guaranteed at compile time when
+// built from a string literal, or via assert() only (debug builds) when built from a dynamic std::string_view. Used
+// wherever an already-normalized-to-lower-case key is required, e.g. all HttpMessage and HttpRequestView methods taking
+// one header or trailer name. Header and trailer names are normalized to lower-case at protocol/configuration ingress,
+// but the type itself carries no HTTP-specific semantics -- it can be reused anywhere a similar "pre-lowered key"
+// contract is needed.
 //
 // Two construction paths, intentionally asymmetric:
 //
 //  1) From a string literal / any fixed-size `constexpr char[N]` (implicit, consteval):
 //       req.headerValue("content-type");   // OK, validated at compile time
 //       req.headerValue("Content-Type");   // does not compile
-//     PRECONDITION (enforced at COMPILE TIME): no character in [A-Z]. Violation => hard compile error at the
-//     call site (or at the point of definition, if used to initialize a namespace-scope constant -- see
+//     PRECONDITION (enforced at COMPILE TIME): no character in [A-Z]. Violation => hard compile error at the call site
+//     (or at the point of definition, if used to initialize a namespace-scope constant -- see
 //     aeronet::http::ContentType and siblings for the intended pattern).
 //
 //  2) From a dynamic std::string_view (explicit, noexcept):
 //       LowerAsciiKey{myRuntimeSv}
 //     PRECONDITION (checked with assert() ONLY, i.e. ONLY in debug builds -- NDEBUG undefined): no character in
 //     [A-Z]. In Release builds (NDEBUG defined) this is NOT checked at all: passing a key that isn't already
-//     lower-case is undefined behavior on the caller's part -- in practice it degrades gracefully to "the
-//     lookup silently returns nullopt / empty / false", never a crash, but it IS a caller bug. It is the
-//     caller's responsibility to lower-case dynamic keys beforehand (see tolower-str.hpp) before wrapping them
-//     here. The constructor is deliberately `explicit`: this makes every such runtime-only-checked call site
-//     visually distinct from a compile-time-validated literal, which is the whole point of this type existing
+//     lower-case is undefined behavior on the caller's part: a lookup may miss and an insertion may violate normalized
+//     storage. It is the caller's responsibility to lower-case dynamic keys beforehand (see tolower-str.hpp) before
+//     wrapping them here. The constructor is deliberately `explicit`: this makes every such runtime-only-checked call
+//     site visually distinct from a compile-time-validated literal, which is the whole point of this type existing
 //     rather than passing raw std::string_view around.
 //
-// Implicitly convertible back to std::string_view (see operator std::string_view() below) so that, once
-// constructed, it behaves exactly like a plain string_view everywhere downstream (map lookups, comparisons,
-// etc.) -- the friction is only ever on the way in, never on the way out.
+// Implicitly convertible back to std::string_view (see operator std::string_view() below) so that, once constructed, it
+// behaves exactly like a plain string_view everywhere downstream (map lookups, comparisons, etc.) -- the friction is
+// only ever on the way in, never on the way out.
 class LowerAsciiKey {
  public:
-  // Default-constructed LowerAsciiKey is empty.
+  // Default-constructed LowerAsciiKey is empty (and obviously valid).
   constexpr LowerAsciiKey() noexcept = default;
 
   // Implicit on purpose: lets call sites pass literals directly, e.g. req.headerValue("content-type").

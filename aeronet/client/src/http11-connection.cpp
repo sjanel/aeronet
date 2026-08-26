@@ -193,7 +193,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   RawChars& responseBuffer = client.responseBuffer();
   responseBuffer.clear();  // reuse the buffer's allocation across requests
   bool eof = false;
-  static constexpr std::size_t kReadChunk = 16384;
+  static constexpr std::size_t kReadChunk = 16384;  // TODO: make this configurable
 
   for (;;) {
     responseBuffer.ensureAvailableCapacityExponential(kReadChunk);

@@ -152,7 +152,8 @@ class HttpResponse final : public HttpMessage {
   //   ""
   //   "HeaderName: Value\r\n"
   //   "HeaderName1: Value1\r\nHeaderName2: Value2\r\n"
-  // Empty concatenatedHeaders are allowed.
+  // Empty concatenatedHeaders are allowed. Header names may use any valid ASCII case and are normalized to
+  // lower-case when stored.
   // Throws std::invalid_argument if the concatenatedHeaders format is invalid.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain)
@@ -243,7 +244,8 @@ class HttpResponse final : public HttpMessage {
   // RValue overload of contentEncoding(enc).
   HttpResponse&& contentEncoding(std::string_view enc) && { return std::move(header(http::ContentEncoding, enc)); }
 
-  // Append a header line (duplicates allowed, fastest path).
+  // Append a header line (duplicates allowed, fastest path). The name must be lower-case; literals are checked at
+  // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
@@ -253,104 +255,102 @@ class HttpResponse final : public HttpMessage {
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
   // std::logic_error.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  HttpResponse& headerAddLine(std::string_view key, std::string_view value) & {
+  HttpResponse& headerAddLine(LowerAsciiKey key, std::string_view value) & {
     headerAddLineImpl(key, value);
     return *this;
   }
 
   // Rvalue overload of headerAddLine.
-  HttpResponse&& headerAddLine(std::string_view key, std::string_view value) && {
+  HttpResponse&& headerAddLine(LowerAsciiKey key, std::string_view value) && {
     return std::move(headerAddLine(key, value));
   }
 
   // Convenient overload adding a header whose value is numeric.
-  HttpResponse& headerAddLine(std::string_view key, std::integral auto value) & {
+  HttpResponse& headerAddLine(LowerAsciiKey key, std::integral auto value) & {
     headerAddLineImpl(key, value);
     return *this;
   }
 
   // Convenient overload adding a header whose value is numeric.
-  HttpResponse&& headerAddLine(std::string_view key, std::integral auto value) && {
+  HttpResponse&& headerAddLine(LowerAsciiKey key, std::integral auto value) && {
     return std::move(headerAddLine(key, value));
   }
 
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
   //   headerAppendValue("accept", "text/html", ", ")
-  //   headerAppendValue("Accept", "application/json", ", ")
+  //   headerAppendValue("accept", "application/json", ", ")
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  HttpResponse& headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ") & {
+  HttpResponse& headerAppendValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerAppendValueImpl(key, value, sep);
     return *this;
   }
 
   // Rvalue overload of headerAppendValue.
-  HttpResponse&& headerAppendValue(std::string_view key, std::string_view value, std::string_view sep = ", ") && {
+  HttpResponse&& headerAppendValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") && {
     return std::move(headerAppendValue(key, value, sep));
   }
 
   // Convenient overload appending a numeric value.
-  HttpResponse& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") & {
+  HttpResponse& headerAppendValue(LowerAsciiKey key, std::integral auto value, std::string_view sep = ", ") & {
     headerAppendValueImpl(key, value, sep);
     return *this;
   }
 
   // Convenient overload appending a numeric value.
-  HttpResponse&& headerAppendValue(std::string_view key, std::integral auto value, std::string_view sep = ", ") && {
+  HttpResponse&& headerAppendValue(LowerAsciiKey key, std::integral auto value, std::string_view sep = ", ") && {
     return std::move(headerAppendValue(key, value, sep));
   }
 
   // Add or replace first header 'key' with 'value'.
-  // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved in
-  // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
+  // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications.
   // As for 'headerAddLine()', do not insert any reserved header.
-  HttpResponse& header(std::string_view key, std::string_view value) & {
+  HttpResponse& header(LowerAsciiKey key, std::string_view value) & {
     headerImpl(key, value);
     return *this;
   }
 
   // RValue overload of header(key, value).
-  HttpResponse&& header(std::string_view key, std::string_view value) && { return std::move(header(key, value)); }
+  HttpResponse&& header(LowerAsciiKey key, std::string_view value) && { return std::move(header(key, value)); }
 
   // Convenient overload setting a header to a numeric value.
-  HttpResponse& header(std::string_view key, std::integral auto value) & {
+  HttpResponse& header(LowerAsciiKey key, std::integral auto value) & {
     headerImpl(key, value);
     return *this;
   }
 
   // Convenient overload setting a header to a numeric value.
-  HttpResponse&& header(std::string_view key, std::integral auto value) && { return std::move(header(key, value)); }
+  HttpResponse&& header(LowerAsciiKey key, std::integral auto value) && { return std::move(header(key, value)); }
 
-  // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
-  // search per RFC 7230). If the header is not found, the HttpMessage is not modified.
+  // Remove the last occurrence of the header with the given lower-case key. If the header is not found, the
+  // HttpMessage is not modified.
   // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
   // content.
-  HttpResponse& headerRemoveLine(std::string_view key) & {
+  HttpResponse& headerRemoveLine(LowerAsciiKey key) & {
     headerRemoveLineImpl(key);
     return *this;
   }
 
   // RValue overload of headerRemoveLine.
-  HttpResponse&& headerRemoveLine(std::string_view key) && { return std::move(headerRemoveLine(key)); }
+  HttpResponse&& headerRemoveLine(LowerAsciiKey key) && { return std::move(headerRemoveLine(key)); }
 
-  // Remove the first 'value' from the header with the given key, search starting from backwards (case-insensitive
-  // search per RFC 7230). If the value is the only one for the header, the whole header line is removed. If there are
+  // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
+  // header, the whole header line is removed. If there are
   // multiple values for the header, only the first specified value is removed (starting from the beginning) and the
   // other values are kept, according to the split made by given 'sep'. If the header or value is not found, the
   // HttpMessage is not modified. Separator must not be empty, and should be the same as the one used in
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
-  HttpResponse& headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ") & {
+  HttpResponse& headerRemoveValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerRemoveValueImpl(key, value, sep);
     return *this;
   }
 
   // RValue overload of headerRemoveValue.
-  HttpResponse&& headerRemoveValue(std::string_view key, std::string_view value, std::string_view sep = ", ") && {
+  HttpResponse&& headerRemoveValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") && {
     return std::move(headerRemoveValue(key, value, sep));
   }
 
@@ -679,7 +679,8 @@ class HttpResponse final : public HttpMessage {
   }
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
-  // The header name and value must be valid per HTTP specifications.
+  // The header name and value must be valid per HTTP specifications. The name must be lower-case; literals are
+  // checked at compile time through LowerAsciiKey.
   //
   // IMPORTANT ORDERING CONSTRAINT:
   //   Trailers MUST be added AFTER the body has been set (via body() or its overloads).
@@ -697,24 +698,24 @@ class HttpResponse final : public HttpMessage {
   //     We need to switch to chunked transfer encoding and this will move internal parts
   //     of the buffer. If you use trailers frequently, consider using HTTP/2 which has a
   //     more efficient encoding for trailers, or HttpResponseWriter which manages this natively
-  HttpResponse& trailerAddLine(std::string_view name, std::string_view value) & {
+  HttpResponse& trailerAddLine(LowerAsciiKey name, std::string_view value) & {
     trailerAddLineImpl(name, value);
     return *this;
   }
 
   // Adds a trailer header to be sent after the response body (RFC 7230 §4.1.2).
-  HttpResponse&& trailerAddLine(std::string_view name, std::string_view value) && {
+  HttpResponse&& trailerAddLine(LowerAsciiKey name, std::string_view value) && {
     return std::move(trailerAddLine(name, value));
   }
 
   // Convenient overload adding a trailer whose value is numeric.
-  HttpResponse& trailerAddLine(std::string_view key, std::integral auto value) & {
+  HttpResponse& trailerAddLine(LowerAsciiKey key, std::integral auto value) & {
     trailerAddLineImpl(key, value);
     return *this;
   }
 
   // Convenient overload adding a trailer whose value is numeric.
-  HttpResponse&& trailerAddLine(std::string_view key, std::integral auto value) && {
+  HttpResponse&& trailerAddLine(LowerAsciiKey key, std::integral auto value) && {
     return std::move(trailerAddLine(key, value));
   }
 

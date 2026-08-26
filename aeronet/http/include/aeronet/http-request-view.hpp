@@ -477,7 +477,7 @@ class HttpRequestView {
   [[nodiscard]] std::string_view scheme() const noexcept { return {_pScheme, _schemeLength}; }
 
   // HTTP/2 :authority pseudo-header (equivalent to Host header); empty for HTTP/1.x.
-  // For HTTP/1.x requests, use headerValueOrEmpty("Host") instead.
+  // For HTTP/1.x requests, use headerValueOrEmpty("host") instead.
   [[nodiscard]] std::string_view authority() const noexcept { return {_pAuthority, _authorityLength}; }
 #endif
 
