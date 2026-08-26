@@ -1,6 +1,8 @@
 #include "aeronet/tls-context.hpp"
 
-#include <openssl/evp.h>       // EVP_PKEY_free
+#include <openssl/err.h>
+#include <openssl/evp.h>  // EVP_PKEY_free
+#include <openssl/ocsp.h>
 #include <openssl/pem.h>       // PEM_read_bio_X509, PEM_read_bio_PrivateKey
 #include <openssl/prov_ssl.h>  // TLS1_2_VERSION
 #include <openssl/ssl.h>       // SSL_*, SSL_read/write, handshake, shutdown, SSL_CTX, SSL_get_error
@@ -12,17 +14,27 @@
 #include <cassert>
 #include <cctype>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
+#ifdef AERONET_POSIX
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-observer.hpp"
@@ -32,6 +44,17 @@
 namespace aeronet {
 
 namespace {
+
+constexpr std::size_t kMaxOcspResponseBytes = 1U << 20U;
+
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const int kTicketStoreIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const int kRevocationDataIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
+const int kKeyLogWriterIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg);
 
@@ -51,15 +74,15 @@ bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view
   if (!wildcard) {
     return CaseInsensitiveEqual(serverName, pattern);
   }
-  // pattern starts with "*.", so require serverName to be longer than the remaining
-  // pattern characters after the "*." prefix. The `- 2` strips the leading "*." from
-  // `pattern` (two characters) when comparing lengths for a wildcard match.
-  pattern = pattern.substr(2);
+  // Keep the dot from "*." in the suffix. This enforces a label boundary and prevents
+  // "*.example.com" from matching "notexample.com".
+  pattern.remove_prefix(1);
   if (serverName.size() <= pattern.size()) {
     return false;
   }
-  serverName.remove_prefix(serverName.size() - pattern.size());
-  return CaseInsensitiveEqual(serverName, pattern);
+  const std::size_t prefixSize = serverName.size() - pattern.size();
+  return !serverName.substr(0, prefixSize).contains('.') &&
+         CaseInsensitiveEqual(serverName.substr(prefixSize), pattern);
 }
 
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
@@ -94,6 +117,12 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
 }
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
+  ::SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
+  assert((::SSL_CTX_get_options(ctx) & SSL_OP_CIPHER_SERVER_PREFERENCE) != 0);
+#ifdef SSL_OP_NO_RENEGOTIATION
+  ::SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION);
+  assert((::SSL_CTX_get_options(ctx) & SSL_OP_NO_RENEGOTIATION) != 0);
+#endif
   if (cfg.disableCompression) {
     ::SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION);
     assert((::SSL_CTX_get_options(ctx) & SSL_OP_NO_COMPRESSION) != 0);
@@ -126,11 +155,9 @@ void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
 }
 
 void ConfigureProtocolBounds(SSL_CTX* ctx, const TLSConfig& cfg) {
-  if (cfg.minVersion != TLSConfig::Version{}) {
-    const int mv = ParseTlsVersion(cfg.minVersion);
-    if (mv == 0 || ::SSL_CTX_set_min_proto_version(ctx, mv) != 1) {
-      throw std::runtime_error("Failed to set minimum TLS version");
-    }
+  const int minVersion = cfg.minVersion == TLSConfig::Version{} ? TLS1_2_VERSION : ParseTlsVersion(cfg.minVersion);
+  if (minVersion == 0 || ::SSL_CTX_set_min_proto_version(ctx, minVersion) != 1) {
+    throw std::runtime_error("Failed to set minimum TLS version");
   }
   if (cfg.maxVersion != TLSConfig::Version{}) {
     const int Mv = ParseTlsVersion(cfg.maxVersion);
@@ -140,11 +167,43 @@ void ConfigureProtocolBounds(SSL_CTX* ctx, const TLSConfig& cfg) {
   }
 }
 
-void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
+void LoadCrl(SSL_CTX* ctx, const TLSConfig& cfg) {
+  if (cfg.crlFile().empty()) {
+    return;
+  }
+  X509_STORE* store = ::SSL_CTX_get_cert_store(ctx);
+  assert(store != nullptr && "SSL_CTX missing cert store");
+  X509_LOOKUP* lookup = ::X509_STORE_add_lookup(store, ::X509_LOOKUP_file());
+  if (lookup == nullptr) {
+    throw std::runtime_error("Failed to create TLS CRL lookup for: " + std::string(cfg.crlFile()));
+  }
+  int loaded = ::X509_load_crl_file(lookup, cfg.crlFileCstr(), X509_FILETYPE_PEM);
+  if (loaded == 0) {
+    ::ERR_clear_error();
+    loaded = ::X509_load_crl_file(lookup, cfg.crlFileCstr(), X509_FILETYPE_ASN1);
+  }
+  if (loaded == 0) {
+    ::ERR_clear_error();
+    throw std::runtime_error("Failed to load TLS CRL file: " + std::string(cfg.crlFile()));
+  }
+  unsigned long flags = X509_V_FLAG_CRL_CHECK;
+  if (cfg.crlCheckAll) {
+    flags |= X509_V_FLAG_CRL_CHECK_ALL;
+  }
+  if (::X509_STORE_set_flags(store, flags) != 1) {
+    throw std::runtime_error("Failed to enable TLS CRL verification for: " + std::string(cfg.crlFile()));
+  }
+}
+
+void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg, void* revocationData,
+                                 int (*verifyCallback)(int, X509_STORE_CTX*)) {
   // requireClientCert implies requestClientCert (normally normalized by TLSConfig::validate). Treat
   // requireClientCert as sufficient here too, so a TlsContext built from a config that bypassed
   // validation still enforces mTLS instead of silently accepting certificate-less clients.
   if (!cfg.requestClientCert && !cfg.requireClientCert) {
+    if (!cfg.crlFile().empty() || cfg.revocationCallback != nullptr) {
+      throw std::invalid_argument("TLS revocation checks require client certificate verification");
+    }
     return;
   }
   int verifyMode = SSL_VERIFY_PEER | SSL_VERIFY_CLIENT_ONCE;
@@ -152,7 +211,10 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
     // NOLINTNEXTLINE(bugprone-signed-bitwise)
     verifyMode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
   }
-  ::SSL_CTX_set_verify(ctx, verifyMode, nullptr);
+  if (cfg.revocationCallback != nullptr && ::SSL_CTX_set_ex_data(ctx, kRevocationDataIndex, revocationData) != 1) {
+    throw std::runtime_error("Failed to attach the TLS revocation callback context");
+  }
+  ::SSL_CTX_set_verify(ctx, verifyMode, cfg.revocationCallback == nullptr ? nullptr : verifyCallback);
   for (std::string_view pem : cfg.trustedClientCertsPem()) {
     if (pem.empty()) {
       throw std::runtime_error("Empty trusted client certificate PEM provided");
@@ -165,10 +227,37 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg) {
       throw std::runtime_error("Failed to add trusted client certificate to store");
     }
   }
+  LoadCrl(ctx, cfg);
 }
 
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-const int kTicketStoreIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+std::span<const std::byte> LoadOcspResponse(ObjectArrayPool<char>& charStorage, std::string_view path) {
+  if (path.empty()) {
+    return {};
+  }
+  std::ifstream file(std::string(path), std::ios::binary | std::ios::ate);
+  if (!file) {
+    throw std::runtime_error("Failed to open TLS OCSP response file: " + std::string(path));
+  }
+  const std::streampos endPos = file.tellg();
+  if (endPos <= 0 || endPos > static_cast<std::streamoff>(kMaxOcspResponseBytes)) {
+    throw std::runtime_error("TLS OCSP response file is empty or exceeds 1 MiB: " + std::string(path));
+  }
+  const auto size = static_cast<std::size_t>(endPos);
+  char* pBuf = charStorage.allocateAndDefaultConstruct(size);
+  file.seekg(0);
+  if (!file.read(pBuf, static_cast<std::streamsize>(size))) {
+    throw std::runtime_error("Failed to read TLS OCSP response file: " + std::string(path));
+  }
+  const unsigned char* cursor = reinterpret_cast<const unsigned char*>(pBuf);
+  const unsigned char* const end = cursor + size;
+  std::unique_ptr<OCSP_RESPONSE, decltype(&::OCSP_RESPONSE_free)> parsed(
+      ::d2i_OCSP_RESPONSE(nullptr, &cursor, static_cast<long>(size)), &::OCSP_RESPONSE_free);
+  if (!parsed || cursor != end || ::OCSP_response_status(parsed.get()) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+    ::ERR_clear_error();
+    throw std::runtime_error("TLS OCSP file does not contain one successful DER response: " + std::string(path));
+  }
+  return {reinterpret_cast<const std::byte*>(pBuf), size};
+}
 
 int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
                           int enc) {
@@ -226,7 +315,7 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
 }
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
-  // Hardcoded valid cipher strings — these calls should always succeed.
+  // Hardcoded valid cipher strings - these calls should always succeed.
   [[maybe_unused]] const int suiteRc = ::SSL_CTX_set_ciphersuites(ctx, CipherPolicyTls13(cfg.cipherPolicy));
   assert(suiteRc == 1 && "Failed to set TLS 1.3 cipher suites");
   [[maybe_unused]] const int listRc = ::SSL_CTX_set_cipher_list(ctx, CipherPolicyTls12(cfg.cipherPolicy));
@@ -235,14 +324,63 @@ void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg) {
 
 }  // namespace
 
+class TlsContext::KeyLogWriter {
+ public:
+  explicit KeyLogWriter(std::string_view path) {
+    std::string ownedPath(path);
+#ifdef AERONET_POSIX
+    const int fd = ::open(ownedPath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (fd >= 0) {
+      _file = ::fdopen(fd, "ab");
+      if (_file == nullptr) {
+        ::close(fd);
+      }
+    }
+#else
+    _file = std::fopen(ownedPath.c_str(), "ab");
+#endif
+    if (_file == nullptr) {
+      throw std::runtime_error("Failed to open TLS key log file: " + ownedPath);
+    }
+    std::setvbuf(_file, nullptr, _IONBF, 0);
+  }
+
+  KeyLogWriter(const KeyLogWriter&) = delete;
+  KeyLogWriter& operator=(const KeyLogWriter&) = delete;
+
+  ~KeyLogWriter() {
+    if (_file != nullptr && std::fclose(_file) != 0) {
+      log_noexcept::error("Failed to close TLS key log file");
+    }
+  }
+
+  void write(std::string_view line) {
+    std::scoped_lock lock(_mutex);
+    if (std::fwrite(line.data(), line.size(), 1, _file) != 1 || std::fputc('\n', _file) == EOF) {
+      log::error("Failed to append TLS key log line");
+    }
+  }
+
+ private:
+  std::FILE* _file{nullptr};
+  std::mutex _mutex;
+};
+
 void TlsContext::CtxDel::operator()(ssl_ctx_st* ctxPtr) const noexcept {
   ::SSL_CTX_free(reinterpret_cast<SSL_CTX*>(ctxPtr));
 }
 
-TlsContext::~TlsContext() = default;
+TlsContext::~TlsContext() {
+  // Destroy every SSL_CTX while callback arguments owned by this object are still alive.
+  _ctx.reset();
+  _sniRoutes.routes.reset();
+  _sniRoutes.nbRoutes = 0;
+}
 
 TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore)
-    : _ctx(::SSL_CTX_new(TLS_server_method())), _ticketKeyStore(std::move(ticketKeyStore)) {
+    : _revocationData{cfg.revocationCallback, cfg.revocationUserContext},
+      _ticketKeyStore(std::move(ticketKeyStore)),
+      _ctx(::SSL_CTX_new(TLS_server_method())) {
   if (!_ctx) {
     throw std::bad_alloc();
   }
@@ -251,7 +389,30 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   ConfigureContextOptions(ctx, cfg);
   ConfigureProtocolBounds(ctx, cfg);
   LoadCertificateAndKey(ctx, cfg.certPem(), cfg.keyPem(), cfg.certFileCstr(), cfg.keyFileCstr());
-  ConfigureClientVerification(ctx, cfg);
+  ConfigureClientVerification(ctx, cfg, &_revocationData, &TlsContext::VerifyPeerCertificate);
+
+  auto ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, cfg.ocspResponseFile());
+  if (!ocspResponse.empty()) {
+    _ocspResponse.assign(ocspResponse);
+    _sniRoutes.charStorage.shrinkLastAllocated(reinterpret_cast<const char*>(ocspResponse.data()), 0);
+
+    if (::SSL_CTX_set_tlsext_status_arg(ctx, &_ocspResponse) != 1 ||
+        ::SSL_CTX_set_tlsext_status_cb(ctx, &TlsContext::StapleOcspResponse) != 1) {
+      throw std::runtime_error("Failed to configure the default TLS OCSP staple");
+    }
+  }
+
+  if (!cfg.keyLogFile().empty()) {
+#ifdef NDEBUG
+    throw std::invalid_argument("TLS key logging is available only in debug builds");
+#else
+    _keyLogWriter = std::make_unique<KeyLogWriter>(cfg.keyLogFile());
+    if (::SSL_CTX_set_ex_data(ctx, kKeyLogWriterIndex, _keyLogWriter.get()) != 1) {
+      throw std::runtime_error("Failed to attach the TLS key log writer");
+    }
+    ::SSL_CTX_set_keylog_callback(ctx, &TlsContext::LogSessionKeys);
+#endif
+  }
 
   const auto alpnProtocols = cfg.alpnProtocols();
   const std::size_t wireLen = std::ranges::fold_left(
@@ -277,7 +438,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
 
   const auto& sniCerts = cfg.sniCertificates();
   if (!sniCerts.empty()) {
-    _sniRoutes = SniRoutes{std::make_unique<SniRoute[]>(sniCerts.size()), sniCerts.size()};
+    _sniRoutes = SniRoutes{std::make_unique<SniRoute[]>(sniCerts.size()), sniCerts.size(), ObjectArrayPool<char>{}};
     SniRoute* pRoute = _sniRoutes.routes.get();
     for (const auto& entry : sniCerts) {
       CtxPtr routeCtx{reinterpret_cast<ssl_ctx_st*>(::SSL_CTX_new(::TLS_server_method()))};
@@ -293,12 +454,31 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       } else {
         LoadCertificateAndKey(routeRaw, entry.certPem(), entry.keyPem(), nullptr, nullptr);
       }
-      ConfigureClientVerification(routeRaw, cfg);
+      ConfigureClientVerification(routeRaw, cfg, &_revocationData, &TlsContext::VerifyPeerCertificate);
       if (wireLen != 0) {
         ::SSL_CTX_set_alpn_select_cb(routeRaw, &TlsContext::SelectAlpn, &_alpnData);
       }
       ConfigureSessionTickets(routeRaw, cfg, _ticketKeyStore);
-      *pRoute = SniRoute(RawChars32(entry.pattern()), entry.isWildcard, std::move(routeCtx));
+
+      char* pPattern = _sniRoutes.charStorage.allocateAndDefaultConstruct(entry.pattern().size());
+      Copy(entry.pattern(), pPattern);
+
+      auto ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, entry.ocspResponseFile());
+
+      *pRoute = SniRoute(std::string_view(pPattern, entry.pattern().size()), entry.isWildcard, std::move(routeCtx),
+                         ocspResponse);
+      routeRaw = reinterpret_cast<SSL_CTX*>(pRoute->ctx.get());
+      if (!pRoute->ocspResponse.empty() &&
+          (::SSL_CTX_set_tlsext_status_arg(routeRaw, &pRoute->ocspResponse) != 1 ||
+           ::SSL_CTX_set_tlsext_status_cb(routeRaw, &TlsContext::StapleOcspResponse) != 1)) {
+        throw std::runtime_error("Failed to configure an SNI TLS OCSP staple for: " + std::string(entry.pattern()));
+      }
+      if (_keyLogWriter) {
+        if (::SSL_CTX_set_ex_data(routeRaw, kKeyLogWriterIndex, _keyLogWriter.get()) != 1) {
+          throw std::runtime_error("Failed to attach the SNI TLS key log writer for: " + std::string(entry.pattern()));
+        }
+        ::SSL_CTX_set_keylog_callback(routeRaw, &TlsContext::LogSessionKeys);
+      }
       ++pRoute;
     }
     ::SSL_CTX_set_tlsext_servername_arg(ctx, &_sniRoutes);
@@ -312,6 +492,60 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   log::debug("SSL_CTX options:");
   log::debug(" - kTLS:        {}", ktlsAllowed ? "enabled" : "disabled");
   log::debug(" - compression: {}", compressionAllowed ? "enabled" : "disabled");
+}
+
+int TlsContext::StapleOcspResponse(SSL* ssl, void* arg) {
+  const auto& response = *static_cast<const RawBytes32*>(arg);
+  assert(!response.empty());
+  auto* copy =
+      static_cast<unsigned char*>(::OPENSSL_memdup(response.data(), static_cast<std::size_t>(response.size())));
+  if (copy == nullptr) {
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+  }
+  if (::SSL_set_tlsext_status_ocsp_resp(ssl, copy, static_cast<int>(response.size())) != 1) {
+    ::OPENSSL_free(copy);
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+  }
+  return SSL_TLSEXT_ERR_OK;
+}
+
+int TlsContext::VerifyPeerCertificate(int preverifyOk, X509_STORE_CTX* storeCtx) {
+  if (preverifyOk != 1) {
+    return 0;
+  }
+  auto* ssl = static_cast<SSL*>(::X509_STORE_CTX_get_ex_data(storeCtx, ::SSL_get_ex_data_X509_STORE_CTX_idx()));
+  if (ssl == nullptr) {
+    ::X509_STORE_CTX_set_error(storeCtx, X509_V_ERR_APPLICATION_VERIFICATION);
+    return 0;
+  }
+  SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
+  auto* data = static_cast<RevocationData*>(::SSL_CTX_get_ex_data(sslCtx, kRevocationDataIndex));
+  if (data == nullptr || data->callback == nullptr) {
+    return 1;
+  }
+  X509* certificate = ::X509_STORE_CTX_get_current_cert(storeCtx);
+  const TlsRevocationStatus status = data->callback(
+      TlsPeerCertificateView{certificate, ::X509_STORE_CTX_get_error_depth(storeCtx)}, data->userContext);
+  switch (status) {
+    case TlsRevocationStatus::NoOpinion:
+      [[fallthrough]];
+    case TlsRevocationStatus::Good:
+      return 1;
+    case TlsRevocationStatus::Revoked:
+      ::X509_STORE_CTX_set_error(storeCtx, X509_V_ERR_CERT_REVOKED);
+      return 0;
+    default:
+      ::X509_STORE_CTX_set_error(storeCtx, X509_V_ERR_APPLICATION_VERIFICATION);
+      return 0;
+  }
+}
+
+void TlsContext::LogSessionKeys(const SSL* ssl, const char* line) {
+  SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
+  auto* writer = static_cast<KeyLogWriter*>(::SSL_CTX_get_ex_data(sslCtx, kKeyLogWriterIndex));
+  if (writer != nullptr && line != nullptr) {
+    writer->write(line);
+  }
 }
 
 int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out, unsigned char* outlen,

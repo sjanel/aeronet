@@ -195,6 +195,26 @@ HttpServerConfig& HttpServerConfig::withTlsHandshakeTimeout(std::chrono::millise
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTlsOcspStapleFile(std::string_view derFile) {
+  ensureTls().withTlsOcspStapleFile(derFile);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withTlsCrlFile(std::string_view file, bool checkAll) {
+  ensureTls().withTlsCrlFile(file, checkAll);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withTlsRevocationCallback(TlsRevocationCallback callback, void* userContext) {
+  ensureTls().withTlsRevocationCallback(callback, userContext);
+  return *this;
+}
+
+HttpServerConfig& HttpServerConfig::withTlsKeyLogFile(std::string_view file) {
+  ensureTls().withTlsKeyLogFile(file);
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withTlsTrustedClientCert(std::string_view certPem) {
   ensureTls().withTlsTrustedClientCert(certPem);
   return *this;

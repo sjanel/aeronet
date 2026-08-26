@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-config.hpp"
@@ -11,6 +12,7 @@
 // Forward declare OpenSSL context structs (avoid pulling heavy headers into public interface).
 struct ssl_ctx_st;  // SSL_CTX
 struct ssl_st;      // SSL
+struct x509_store_ctx_st;
 
 namespace aeronet {
 
@@ -52,26 +54,41 @@ class TlsContext {
   using CtxPtr = std::unique_ptr<ssl_ctx_st, CtxDel>;
 
   struct SniRoute {
-    RawChars32 pattern;
+    std::string_view pattern;
     bool wildcard{false};
     CtxPtr ctx;
+    std::span<const std::byte> ocspResponse;
   };
 
   struct SniRoutes {
     std::unique_ptr<SniRoute[]> routes;
-    std::size_t nbRoutes;
+    std::size_t nbRoutes{0};
+    ObjectArrayPool<char> charStorage;
   };
 
   static int SelectSniRoute(ssl_st* ssl, int* alert, void* arg);
   static int SelectAlpn(ssl_st* ssl, const unsigned char** out, unsigned char* outlen, const unsigned char* in,
                         unsigned int inlen, void* arg);
+  static int StapleOcspResponse(ssl_st* ssl, void* arg);
+  static int VerifyPeerCertificate(int preverifyOk, x509_store_ctx_st* storeCtx);
+  static void LogSessionKeys(const ssl_st* ssl, const char* line);
 
-  CtxPtr _ctx;
-  // alpnData is a unique_ptr because the pointer value should stay valid as passed to SSL_CTX_set_alpn_select_cb
-  // callback. If TlsContext is moved around, not having a unique_ptr would invalid the pointer passed to the callback
+  struct RevocationData {
+    TlsRevocationCallback callback{nullptr};
+    void* userContext{nullptr};
+  };
+
+  class KeyLogWriter;
+
+  // Callback arguments are declared before the contexts so they outlive every SSL_CTX during normal destruction and
+  // constructor unwinding. TlsContext is non-movable, which keeps their addresses stable.
   AlpnData _alpnData;
-  SniRoutes _sniRoutes;
+  RawBytes32 _ocspResponse;
+  RevocationData _revocationData;
+  std::unique_ptr<KeyLogWriter> _keyLogWriter;
   std::shared_ptr<TlsTicketKeyStore> _ticketKeyStore;
+  SniRoutes _sniRoutes;
+  CtxPtr _ctx;
 };
 
 }  // namespace aeronet

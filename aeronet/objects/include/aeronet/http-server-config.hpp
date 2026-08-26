@@ -480,6 +480,18 @@ struct HttpServerConfig {
 
   HttpServerConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout);
 
+  // Staple a pre-fetched DER OCSP response. It is cached at TLS-context creation; aeronet never fetches it on demand.
+  HttpServerConfig& withTlsOcspStapleFile(std::string_view derFile);
+
+  // Verify inbound client certificates against a PEM or DER CRL. checkAll also requires CRLs for intermediate CAs.
+  HttpServerConfig& withTlsCrlFile(std::string_view file, bool checkAll = false);
+
+  // Add an application revocation decision hook for verified inbound client certificates.
+  HttpServerConfig& withTlsRevocationCallback(TlsRevocationCallback callback, void* userContext = nullptr);
+
+  // Write NSS-compatible TLS secrets for packet decryption. Rejected by release builds.
+  HttpServerConfig& withTlsKeyLogFile(std::string_view file);
+
   // Add a single trusted client certificate (PEM) to verification store (useful for tests / pinning). Multiple allowed.
   HttpServerConfig& withTlsTrustedClientCert(std::string_view certPem);
 

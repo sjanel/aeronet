@@ -76,7 +76,7 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable 
 | `enabled` | false | Master switch, enabled by certificate/key convenience methods. |
 | `withCertFile()` / `withKeyFile()` | empty | PEM certificate chain and private-key paths. |
 | `withCertPem()` / `withKeyPem()` | empty | In-memory PEM credentials, used when the corresponding file setting is empty. |
-| `withTlsMinVersion()` / `withTlsMaxVersion()` | unset | Protocol bounds; accepted server strings are `TLS1.2` and `TLS1.3`. |
+| `withTlsMinVersion()` / `withTlsMaxVersion()` | TLS 1.2 / unset | Protocol bounds; accepted server strings are `TLS1.2` and `TLS1.3`. TLS 1.2 is enforced when the minimum is not explicitly set. |
 | `withCipherList()` / `withTlsCipherPolicy()` | empty / Default | OpenSSL TLS 1.2-and-earlier ciphers or a `Default`, `Modern`, `Compatibility`, or `Legacy` policy. |
 | `withTlsAlpnProtocols()` | empty | Ordered ALPN preference list. Use `{ "h2", "http/1.1" }` for TLS HTTP/2. |
 | `alpnMustMatch` | false | Fail a handshake with no ALPN overlap. |
@@ -90,8 +90,13 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable 
 | `ktlsMode` | Opportunistic | `Disabled`, `Opportunistic`, `Enabled` (warn if inactive), or `Required`; Linux/OpenSSL capability dependent. |
 | `sessionTickets` | disabled, 2 keys, 24 h | Enable ticket rotation, choose lifetime/key slots, or supply static 48-byte keys. |
 | `withTlsSniCertificateFiles/Memory()` | none | Add exact or wildcard SNI certificate mappings. |
+| `withTlsOcspStapleFile()` | none | Load one successful DER OCSP response into the context cache for the default certificate. No handshake-time fetch is performed. |
+| `TLSConfig::withTlsSniOcspStapleFile()` | none | Associate a DER OCSP response with an existing exact or wildcard SNI certificate mapping. |
+| `withTlsCrlFile(path, checkAll)` | none, false | Load a PEM/DER CRL for inbound client-certificate verification; `checkAll` checks the full verified chain. |
+| `withTlsRevocationCallback()` | none | Apply an application revocation decision after normal verification for each inbound client certificate. |
+| `withTlsKeyLogFile()` | none | Append NSS-compatible traffic secrets in debug builds only. Release builds reject this setting. |
 
-See [TLS and HTTP/2](../protocols/tls-and-http2.md) for a runnable protocol example and [production patterns](../guides/production-configuration.md) for a hardened listener profile.
+CRL and callback settings require `requestClientCert` or `requireClientCert`. OCSP inputs are passive operator-managed caches: refresh them with `postConfigUpdate()` before expiry. See [TLS and HTTP/2](../protocols/tls-and-http2.md) for the full lifecycle and security model and [production patterns](../guides/production-configuration.md) for a hardened listener profile.
 
 ## HTTP/2 configuration
 
