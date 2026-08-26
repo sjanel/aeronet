@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "aeronet/dynamic-concatenated-strings.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/unix-socket.hpp"
 
@@ -39,13 +40,24 @@ class DogStatsD {
 
   void increment(std::string_view metric, uint64_t value = 1UL, const DogStatsDTags& tags = {}) noexcept;
 
+  void increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags, MetricLabels labels) noexcept;
+
   void gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags = {}) noexcept;
+
+  void gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags, MetricLabels labels) noexcept;
 
   void histogram(std::string_view metric, double value, const DogStatsDTags& tags = {}) noexcept;
 
+  void histogram(std::string_view metric, double value, const DogStatsDTags& tags, MetricLabels labels) noexcept;
+
   void timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags = {}) noexcept;
 
+  void timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags,
+              MetricLabels labels) noexcept;
+
   void set(std::string_view metric, std::string_view value, const DogStatsDTags& tags = {}) noexcept;
+
+  void set(std::string_view metric, std::string_view value, const DogStatsDTags& tags, MetricLabels labels) noexcept;
 
   [[nodiscard]] std::string_view socketPath() const noexcept { return {_buf.data(), _socketPathLength}; }
 
@@ -55,7 +67,7 @@ class DogStatsD {
 
  private:
   void sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
-                         const DogStatsDTags& tags) noexcept;
+                         const DogStatsDTags& tags, MetricLabels labels) noexcept;
 
   bool tryReconnect() noexcept;
 

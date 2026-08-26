@@ -566,6 +566,28 @@ inline ActionQueue<SyscallAction> g_accept_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
 inline ActionQueue<std::pair<int64_t, int>> g_send_actions;  // (ret, errno)
 
+#ifdef AERONET_POSIX
+inline thread_local vector<std::string>* g_send_capture = nullptr;
+
+/// Captures send() payloads on the current thread without writing them to a socket.
+class SendCaptureGuard {
+ public:
+  explicit SendCaptureGuard(vector<std::string>& messages) noexcept : _previous(g_send_capture) {
+    g_send_capture = &messages;
+  }
+
+  SendCaptureGuard(const SendCaptureGuard&) = delete;
+  SendCaptureGuard(SendCaptureGuard&&) = delete;
+  SendCaptureGuard& operator=(const SendCaptureGuard&) = delete;
+  SendCaptureGuard& operator=(SendCaptureGuard&&) = delete;
+
+  ~SendCaptureGuard() { g_send_capture = _previous; }
+
+ private:
+  vector<std::string>* _previous;
+};
+#endif
+
 // Install IO actions on the next accepted client socket.
 // This is required because tests create a client-side fd, but the server writes on the
 // server-side accepted fd (same process, different fd number).
@@ -1388,6 +1410,10 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, cons
     }
     errno = err;
     return -1;
+  }
+  if (aeronet::test::g_send_capture != nullptr) {
+    aeronet::test::g_send_capture->emplace_back(static_cast<const char*>(buf), len);
+    return static_cast<ssize_t>(len);
   }
   auto real = aeronet::test::ResolveRealSend();
   return real(sockfd, buf, len, flags);

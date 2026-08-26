@@ -15,8 +15,10 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
@@ -24,6 +26,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 #include "http2-read-write.hpp"
 
@@ -46,6 +49,38 @@ constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 
 constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
 constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
+
+constexpr uint64_t HpackHeaderFieldSize(std::string_view name, std::string_view value) noexcept {
+  constexpr uint64_t kEntryOverhead = 32;
+  return name.size() + value.size() + kEntryOverhead;
+}
+
+constexpr std::string_view FrameTypeName(FrameType type) noexcept {
+  switch (type) {
+    case FrameType::Data:
+      return "data";
+    case FrameType::Headers:
+      return "headers";
+    case FrameType::Priority:
+      return "priority";
+    case FrameType::RstStream:
+      return "rst_stream";
+    case FrameType::Settings:
+      return "settings";
+    case FrameType::PushPromise:
+      return "push_promise";
+    case FrameType::Ping:
+      return "ping";
+    case FrameType::GoAway:
+      return "goaway";
+    case FrameType::WindowUpdate:
+      return "window_update";
+    case FrameType::Continuation:
+      return "continuation";
+    default:
+      return "unknown";
+  }
+}
 
 }  // namespace
 
@@ -219,15 +254,69 @@ void Http2Connection::OutputBlock::release() noexcept {
 // Constructor / Destructor
 // ============================
 
-Http2Connection::Http2Connection(const Http2Config& config, bool isServer)
+Http2Connection::Http2Connection(const Http2Config& config, bool isServer, tracing::TelemetryContext* telemetryContext)
     : _localSettings(config),
       _connectionSendWindow(static_cast<int32_t>(kDefaultInitialWindowSize)),
       _connectionRecvWindow(static_cast<int32_t>(config.connectionWindowSize)),
       _hpackEncoder(config.headerTableSize),
       _hpackDecoder(config.headerTableSize, config.mergeUnknownRequestHeaders),
-      // Reserve some initial space for output buffer
-      _outputBuffer(1024),
+      _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
       _isServer(isServer) {}
+
+void Http2Connection::recordFrame(bool sent, FrameType type, uint64_t payloadBytes, uint64_t count) const noexcept {
+  if (_pTelemetryContext == nullptr) {
+    return;
+  }
+
+  const MetricLabel labels[]{
+      {"direction", sent ? "sent" : "received"},
+      {"frame.type", FrameTypeName(type)},
+  };
+  _pTelemetryContext->counterAdd("aeronet.http2.frames", count, labels);
+  if (payloadBytes != 0) {
+    _pTelemetryContext->counterAdd("aeronet.http2.frame.payload.bytes", payloadBytes, labels);
+  }
+}
+
+void Http2Connection::recordHpack(bool sent, uint64_t compressedBytes, uint64_t headerListSize) const noexcept {
+  if (_pTelemetryContext == nullptr) {
+    return;
+  }
+
+  const MetricLabel labels[]{{"direction", sent ? "sent" : "received"}};
+  _pTelemetryContext->histogram("aeronet.http2.hpack.block.compressed.bytes", static_cast<double>(compressedBytes),
+                                labels);
+  _pTelemetryContext->histogram("aeronet.http2.hpack.block.header_list.bytes", static_cast<double>(headerListSize),
+                                labels);
+  if (headerListSize != 0) {
+    _pTelemetryContext->histogram("aeronet.http2.hpack.compression.ratio",
+                                  static_cast<double>(compressedBytes) / static_cast<double>(headerListSize), labels);
+  }
+}
+
+void Http2Connection::recordStreamOpened(bool locallyInitiated) const noexcept {
+  if (_pTelemetryContext == nullptr) {
+    return;
+  }
+
+  const MetricLabel labels[]{{"initiator", locallyInitiated ? "local" : "remote"}};
+  _pTelemetryContext->counterAdd("aeronet.http2.streams.opened", 1UL, labels);
+  _pTelemetryContext->histogram("aeronet.http2.streams.active", static_cast<double>(_activeStreamCount));
+}
+
+void Http2Connection::recordStreamClosed(uint32_t streamId, ErrorCode errorCode) const noexcept {
+  if (_pTelemetryContext == nullptr) {
+    return;
+  }
+
+  const bool locallyInitiated = _isServer ? (streamId & 1U) == 0 : (streamId & 1U) != 0;
+  const MetricLabel labels[]{
+      {"initiator", locallyInitiated ? "local" : "remote"},
+      {"error.type", ErrorCodeName(errorCode)},
+  };
+  _pTelemetryContext->counterAdd("aeronet.http2.streams.closed", 1UL, labels);
+  _pTelemetryContext->histogram("aeronet.http2.streams.active", static_cast<double>(_activeStreamCount));
+}
 
 // ============================
 // Connection lifecycle
@@ -354,8 +443,14 @@ void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
   }
 
   WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, msg);
+  recordFrame(true, FrameType::GoAway, 8U + ConvertProcessResultErrorMsgToSv(msg).size());
   _state = ConnectionState::GoAwaySent;
   _goAwayLastStreamId = _lastPeerStreamId;
+}
+
+void Http2Connection::sendPing(PingFrame pingFrame) {
+  WritePingFrame(_outputBuffer, pingFrame);
+  recordFrame(true, FrameType::Ping, sizeof(pingFrame.opaqueData));
 }
 
 void Http2Connection::sendServerPreface() {
@@ -414,6 +509,7 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
   }
   assert(_activeStreamCount != 0);
   --_activeStreamCount;
+  recordStreamClosed(streamId, errorCode);
 
   if (_onStreamClosed) {
     _onStreamClosed(streamId);
@@ -450,6 +546,7 @@ ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream)
     }
 
     ++_activeStreamCount;
+    recordStreamOpened(true);
   }
   Http2Stream* pStream = &it->second;
 
@@ -484,17 +581,24 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
   _outputBuffer.addSize(FrameHeader::kSize);
 
   const auto oldSize = _outputBuffer.size();
+  uint64_t headerListSize = 0;
   if (!target.empty()) {
     // pseudo headers for requests.
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, http::MethodToStr(method));
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, isTlsRequest ? "https" : "http");
+    const std::string_view methodStr = http::MethodToStr(method);
+    const std::string_view scheme = isTlsRequest ? "https" : "http";
+    headerListSize = HpackHeaderFieldSize(http::PseudoHeaderMethod, methodStr) +
+                     HpackHeaderFieldSize(http::PseudoHeaderScheme, scheme) +
+                     HpackHeaderFieldSize(http::PseudoHeaderAuthority, authority) +
+                     HpackHeaderFieldSize(http::PseudoHeaderPath, target);
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, methodStr);
+    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, scheme);
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderAuthority, authority);
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
   }
 
   // Encode headers
   encodeHeaders(streamId, target.empty() ? http::StatusCode{} : http::MagicForHttpRequest, headersView, endStream,
-                oldSize, pGlobalHeaders);
+                oldSize, pGlobalHeaders, headerListSize);
 
   return err;
 }
@@ -514,7 +618,7 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
   const auto oldSize = _outputBuffer.size();
 
   // Encode headers
-  encodeHeaders(streamId, statusCode, headersView, endStream, oldSize, pGlobalHeaders);
+  encodeHeaders(streamId, statusCode, headersView, endStream, oldSize, pGlobalHeaders, 0);
 
   return err;
 }
@@ -556,6 +660,7 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   if (data.empty()) {
     if (endStream) {
       WriteDataFrame(_outputBuffer, streamId, {}, true);
+      recordFrame(true, FrameType::Data, 0);
     }
     return ErrorCode::NoError;
   }
@@ -563,6 +668,8 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   RawBytes owner(data.size());
   owner.unchecked_append(data);
   queueDataBlock(std::move(owner), 0, data.size(), streamId, endStream);
+  recordFrame(true, FrameType::Data, data.size(),
+              (data.size() + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
 }
 
@@ -584,16 +691,20 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::si
   if (dataSize == 0) {
     if (endStream) {
       WriteDataFrame(_outputBuffer, streamId, {}, true);
+      recordFrame(true, FrameType::Data, 0);
     }
     return ErrorCode::NoError;
   }
 
   queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
+  recordFrame(true, FrameType::Data, dataSize,
+              (dataSize + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
 }
 
 void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
+  recordFrame(true, FrameType::RstStream, sizeof(uint32_t));
 
   const auto it = _streams.find(streamId);
   if (it != _streams.end()) {
@@ -615,6 +726,7 @@ void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
 
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
+  recordFrame(true, FrameType::WindowUpdate, sizeof(uint32_t));
 
   // Security hardening: check for recv-window overflow (must not exceed 2^31-1
   // per RFC 9113 §6.9.1), matching the overflow guard on the send-window side.
@@ -683,6 +795,8 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
     }
 
     const auto payload = data.subspan(FrameHeader::kSize, header.length);
+
+    recordFrame(false, header.type, header.length);
 
     ProcessResult result = processFrame(header, payload);
 
@@ -846,6 +960,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     }
 
     ++_activeStreamCount;
+    recordStreamOpened(false);
     _lastPeerStreamId = header.streamId;
   }
   Http2Stream* pStream = &it->second;
@@ -1065,6 +1180,7 @@ Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader head
     // Send PING response
     frame.isAck = true;
     WritePingFrame(_outputBuffer, frame);
+    recordFrame(true, FrameType::Ping, sizeof(frame.opaqueData));
     return ProcessResult{ProcessResult::Action::OutputReady};
   }
 
@@ -1204,7 +1320,8 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // ============================
 
 void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                    bool endStream, std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders) {
+                                    bool endStream, std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders,
+                                    uint64_t headerListSize) {
   assert(statusCode == 0 || statusCode == http::MagicForHttpRequest || (statusCode >= 100 && statusCode <= 999));
 
   // Encode :status pseudo-header first if present
@@ -1212,6 +1329,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     char statusBuf[3];
     writeStatusCode(statusBuf, statusCode);
     const std::string_view statusStr(statusBuf, sizeof(statusBuf));
+    headerListSize += HpackHeaderFieldSize(http::PseudoHeaderStatus, statusStr);
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 
@@ -1230,7 +1348,9 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     // strict peer (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
     // TODO: avoid const_cast by bringing a non-const headersView.
     tolower(const_cast<char*>(name.data()), name.size());
-    _hpackEncoder.encode(_outputBuffer, name, TrimOws(value));
+    const std::string_view trimmedValue = TrimOws(value);
+    headerListSize += HpackHeaderFieldSize(name, trimmedValue);
+    _hpackEncoder.encode(_outputBuffer, name, trimmedValue);
   }
 
   if (pGlobalHeaders != nullptr) {
@@ -1246,12 +1366,14 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
         continue;
       }
 
+      headerListSize += HpackHeaderFieldSize(headerName, headerValue);
       _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }
   }
 
   const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - oldSize);
   const auto outputSizeBeforeHeaders = oldSize - FrameHeader::kSize;
+  recordHpack(true, headerBlockSize, headerListSize);
 
   // Check if we need to split into CONTINUATION frames
   if (headerBlockSize <= _peerSettings.maxFrameSize) {
@@ -1263,8 +1385,10 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     // "freed" (the HPACK-encoded data) with 0xFF before we can re-claim them.
     WriteFrameHeader(_outputBuffer.data() + outputSizeBeforeHeaders,
                      {headerBlockSize, FrameType::Headers, flags, streamId});
+    recordFrame(true, FrameType::Headers, headerBlockSize);
     return;
   }
+  const uint64_t continuationBytes = headerBlockSize - _peerSettings.maxFrameSize;
   // sendHeaders seals older output first, so this allocation contains only the reserved
   // frame-header gap followed by the HPACK block. Transfer it intact and interleave frame
   // headers with views over the original HPACK bytes.
@@ -1274,6 +1398,9 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   _outputWritePos = 0;
   queueOutputBlock(OutputBlock::Headers(std::move(owner), oldSize, headerBlockSize, _peerSettings.maxFrameSize,
                                         streamId, endStream));
+  recordFrame(true, FrameType::Headers, _peerSettings.maxFrameSize);
+  recordFrame(true, FrameType::Continuation, continuationBytes,
+              (continuationBytes + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
 }
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,
@@ -1288,6 +1415,8 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   if (!decodeResult.isSuccess()) {
     return decodeResult.isCompressionError() ? ErrorCode::CompressionError : ErrorCode::ProtocolError;
   }
+
+  recordHpack(false, headerBlock.size(), decodeResult.headerListSize);
 
   if (decodeResult.headerListSize > _localSettings.maxHeaderListSize) {
     return ErrorCode::EnhanceYourCalm;
@@ -1316,13 +1445,20 @@ void Http2Connection::sendSettings() {
   };
 
   WriteSettingsFrame(_outputBuffer, entries);
+  recordFrame(true, FrameType::Settings, std::size(entries) * 6U);
   _settingsSent = true;
 
   // Also send connection-level WINDOW_UPDATE if needed
   if (_localSettings.connectionWindowSize > kDefaultInitialWindowSize) {
     uint32_t increment = _localSettings.connectionWindowSize - kDefaultInitialWindowSize;
     WriteWindowUpdateFrame(_outputBuffer, 0, increment);
+    recordFrame(true, FrameType::WindowUpdate, sizeof(increment));
   }
+}
+
+void Http2Connection::sendSettingsAck() {
+  WriteSettingsAckFrame(_outputBuffer);
+  recordFrame(true, FrameType::Settings, 0);
 }
 
 // ============================

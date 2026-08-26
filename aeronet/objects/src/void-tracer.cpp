@@ -42,9 +42,21 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const n
   }
 }
 
+void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.increment(name, delta, labels);
+  }
+}
+
 void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
   if (_impl) {
     _impl->dogstatsd.gauge(name, value);
+  }
+}
+
+void TelemetryContext::gauge(std::string_view name, int64_t value, MetricLabels labels) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.gauge(name, value, labels);
   }
 }
 
@@ -54,9 +66,21 @@ void TelemetryContext::histogram(std::string_view name, double value) const noex
   }
 }
 
+void TelemetryContext::histogram(std::string_view name, double value, MetricLabels labels) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.histogram(name, value, labels);
+  }
+}
+
 void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms) const noexcept {
   if (_impl) {
     _impl->dogstatsd.timing(name, ms);
+  }
+}
+
+void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept {
+  if (_impl) {
+    _impl->dogstatsd.timing(name, ms, labels);
   }
 }
 
