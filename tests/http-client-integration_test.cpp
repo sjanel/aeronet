@@ -30,7 +30,7 @@ class HttpClientIntegration : public ::testing::Test {
     });
     router.setPath(http::Method::GET, "/headers", [](const HttpRequestView& req) {
       auto resp = req.makeResponse(http::StatusCodeOK, "ok", "text/plain");
-      resp.headerAddLine("X-Custom", "custom-value");
+      resp.headerAddLine("x-custom", "custom-value");
       return resp;
     });
     // Streaming handler -> Transfer-Encoding: chunked on the wire.
@@ -81,7 +81,7 @@ TEST_F(HttpClientIntegration, ReadsCustomResponseHeader) {
   HttpClient client;
   auto resp = client.get(url("/headers")).value();
   EXPECT_EQ(resp.status(), 200);
-  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "custom-value");  // case-insensitive lookup
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "custom-value");
   EXPECT_EQ(resp.bodyInMemory(), "ok");
 }
 

@@ -69,7 +69,7 @@ using namespace aeronet;
 int main() {
   Router router;
   router.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
-    return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
+    return HttpResponse(200).header("x-req-body", req.body()).body("hello from aeronet\n");
   });
   HttpServer server(HttpServerConfig{}, std::move(router)); // default port is ephemeral, OS will pick an available one
   server.run(); // blocking. Use start() for non-blocking
@@ -86,7 +86,7 @@ When the response body size is not known upfront, or when you want to transmit t
 Router router;
 router.setDefault([](const HttpRequestView& req, HttpResponseWriter& writer){
   writer.status(200);
-  writer.header("X-Req-Path", req.path());
+  writer.header("x-req-path", req.path());
   writer.contentType("text/plain");
   for (int i = 0; i < 10; ++i) {
     writer.writeBody(std::string(50,'x')); // each call is its own network chunk
@@ -662,7 +662,10 @@ You can build it thanks to the numerous provided methods to store the main compo
 Usage guidelines:
 
 - Use `headerAddLine()` when duplicates are acceptable or not possible from the client code (cheapest path).
-- Use `header()` only when you must guarantee uniqueness. Matching is case‑insensitive.
+- Use `header()` only when you must guarantee uniqueness. Its key, like all header lookup/removal keys, must be
+  lower-case. Lower-case string literals are checked at compile time through `LowerAsciiKey`.
+- `headerAddLine()` and `trailerAddLine()` also require lower-case names through `LowerAsciiKey`. Header/trailer
+  iteration and flat views therefore always expose lower-case names.
 - Do not use any of those to set `Content-Type` and `Content-Length`. The first one is set along with the `body` methods, and the second one is managed by the library.
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - For maximum performance, fill the response in order, starting with status/reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
@@ -715,7 +718,9 @@ content type in `HttpServerConfig`, and (3) `application/octet-stream` as a fina
 helper is available for filename-extension based detection (the built-in mapping now includes common C/C++ extensions
 such as `c`, `h`, `cpp`, `hpp`, `cc`).
 
-All other headers (custom application / caching / CORS / etc.) may be freely set; they are forwarded verbatim.
+All other headers (custom application / caching / CORS / etc.) may be freely set. Values are forwarded unchanged,
+while field names are normalized to lower-case. Lower-case field names are valid in HTTP/1.x and mandatory in HTTP/2;
+the API intentionally does not preserve cosmetic HTTP/1.x capitalization.
 This central rule lives in a single helper (`http::IsReservedResponseHeader`).
 
 ## Middleware & Cross-Cutting Features
@@ -840,7 +845,7 @@ if (result) {
 
 // POST with a JSON body and a custom header, via the fluent request builder
 auto req = client.makeRequest(aeronet::http::Method::POST, "https://example.com/api");
-req.headerAddLine("X-Trace-Id", "abc123").body(R"({"key":"value"})", "application/json");
+req.headerAddLine("x-trace-id", "abc123").body(R"({"key":"value"})", "application/json");
 auto created = client.request(std::move(req));
 if (created) {
   auto status = created->status();
@@ -886,7 +891,7 @@ auto result = client.get("https://example.com/health");  // reached through a CO
 
 The returned response is an `HttpResponse`.
 
-Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` - none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). Received headers are surfaced losslessly: `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) is available verbatim via `headerValueOrEmpty()`.
+Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`): a non-2xx status is a normal `HttpResponse` in the success state, while a per-request runtime failure (invalid URL, DNS/connect failure, timeout, TLS handshake error, malformed/oversized response, ...) lands in the error state as an `HttpClientErrc` - none of these throw. `ErrcToStr()` maps a code to a description. Exceptions are reserved for hard setup errors detected while building the client / TLS context (codec or certificate misconfiguration): those throw `aeronet::HttpClientException` (or `std::logic_error` when `https` is requested in a build without OpenSSL). For received headers, `Content-Type` and the decoded `Content-Length` are normalized through the body, `Transfer-Encoding` is consumed while de-framing, and every other header (including `Connection`, `Date`, custom `X-*`, ...) keeps its value and is available with a lower-case name via `headerValueOrEmpty()`.
 
 > The current client is synchronous (it owns and drives its own event loop), so an HTTP/2 connection
 > carries one stream at a time. A coroutine-friendly API (`co_await client.get(...)`) integrated with a
@@ -1060,7 +1065,7 @@ using aeronet::http::Method;
 int main() {
     Router router;
     router.setPath(Method::GET, "/hello", [](const HttpRequestView& req) {
-        return HttpResponse(200).header("X-Req-Body", req.body()).body("hello from aeronet\n");
+        return HttpResponse(200).header("x-req-body", req.body()).body("hello from aeronet\n");
     });
     HttpServer server(HttpServerConfig{}, std::move(router));
     server.run();

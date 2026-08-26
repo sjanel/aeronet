@@ -92,7 +92,7 @@ constexpr std::string_view kVaryHeaderContent[]{
     "*, SomethingElse",
 };
 
-constexpr std::string_view kTrailerName = "X-Trailer";
+constexpr LowerAsciiKey kTrailerName = "x-trailer";
 constexpr std::string_view kTrailerValue = "Some trailer value that should be preserved";
 
 HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool addTrailer, std::string_view body) {

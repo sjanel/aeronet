@@ -85,7 +85,7 @@ class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Tran
     if (_writeMode == WriteMode::ReadWriteReady) {
       return {0, TransportHint::WriteReady};
     }
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
     if (_responseOffset == kResponse.size()) {
       return {0, TransportHint::None};
     }
@@ -451,7 +451,7 @@ TEST_F(HttpClientE2ETest, CustomRequestHeaderIsSent) {
   // The /echo route echoes the body; here we just assert a custom header does not break the round-trip
   // and that an explicit Host override is honoured by the builder.
   auto req = client.makeRequest(50UL, http::Method::GET, Url("/hello"));
-  req.headerAddLine("X-Test", "1").header("User-Agent", "custom-agent/1.0");
+  req.headerAddLine("x-test", "1").header("user-agent", "custom-agent/1.0");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
@@ -462,7 +462,7 @@ TEST_F(HttpClientE2ETest, SeeOtherRewritesPostToGetAndDropsBody) {
   // POST with a body + a custom header -> 303 -> GET /hello with the body (and its CT/CL) dropped but the
   // user header preserved (exercises the redirect "dropBody" header-rewrite path).
   auto req = client.makeRequest(http::Method::POST, Url("/see-other"));
-  req.body("discarded-payload", "text/plain").headerAddLine("X-Keep", "kept");
+  req.body("discarded-payload", "text/plain").headerAddLine("x-keep", "kept");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
@@ -470,7 +470,7 @@ TEST_F(HttpClientE2ETest, SeeOtherRewritesPostToGetAndDropsBody) {
 
 TEST_F(HttpClientE2ETest, BodylessPostSendsContentLengthZero) {
   HttpClient client;
-  // A POST without any body still frames correctly: the builder injects "Content-Length: 0".
+  // A POST without any body still frames correctly: the builder injects "content-length: 0".
   auto req = client.makeRequest(http::Method::POST, Url("/echo"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -534,7 +534,7 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
   explicit ScriptedSendfileTransport(Mode mode) : _mode(mode) {}
 
   TransportResult read(char* buf, std::size_t len) {
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
     if (_responseOffset == kResponse.size()) {
       return {0, TransportHint::None};
     }
@@ -586,7 +586,7 @@ class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallback
   explicit ScriptedFallbackTransport(Mode mode) : _mode(mode) {}
 
   TransportResult read(char* buf, std::size_t len) {
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
     if (_responseOffset == kResponse.size()) {
       return {0, TransportHint::None};
     }
@@ -890,7 +890,7 @@ TEST_F(HttpClientE2ETest, ZeroIdlePoolDropsConnection) {
 
 TEST_F(HttpClientE2ETest, BodylessPutSendsContentLengthZero) {
   HttpClient client;
-  // A PUT without a body still frames correctly: the builder injects "Content-Length: 0".
+  // A PUT without a body still frames correctly: the builder injects "content-length: 0".
   auto req = client.makeRequest(http::Method::PUT, Url("/put"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -899,7 +899,7 @@ TEST_F(HttpClientE2ETest, BodylessPutSendsContentLengthZero) {
 
 TEST_F(HttpClientE2ETest, BodylessPatchSendsContentLengthZero) {
   HttpClient client;
-  // PATCH is also a body-bearing method, so an empty PATCH is framed with "Content-Length: 0".
+  // PATCH is also a body-bearing method, so an empty PATCH is framed with "content-length: 0".
   auto req = client.makeRequest(http::Method::PATCH, Url("/patch"));
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -988,20 +988,20 @@ TEST_F(HttpClientE2ETest, ClearIdleConnectionsDropsRegisteredPooledFd) {
 TEST_F(HttpClientE2ETest, ExplicitHostHeaderSuppressesInjected) {
   HttpClient client;
   auto req = client.makeRequest(http::Method::GET, Url("/reflect"));
-  req.header("Host", "custom-authority.example:1234");
+  req.header("host", "custom-authority.example:1234");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.headerValueOrEmpty("echo-host"), "custom-authority.example:1234");
 }
 
-// With keep-alive off the builder would inject "Connection: close"; a user-supplied Connection header
+// With keep-alive off the builder would inject "connection: close"; a user-supplied Connection header
 // suppresses that injection (the user's directive wins). The exchange still completes.
 TEST_F(HttpClientE2ETest, ExplicitConnectionHeaderWithKeepAliveOff) {
   HttpClientConfig cfg;
   cfg.keepAlive = false;
   HttpClient client(cfg);
   auto req = client.makeRequest(http::Method::GET, Url("/reflect"));
-  req.header("Connection", "close");
+  req.header("connection", "close");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "reflect");
@@ -1150,9 +1150,9 @@ TEST_F(HttpClientCacheE2ETest, HeadCachedSeparatelyFromGet) {
 TEST_F(HttpClientCacheE2ETest, DistinctRequestHeadersAreDistinctEntries) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
   auto reqA = client.makeRequest(http::Method::GET, Url("/counter"));
-  reqA.header("X-Tenant", "a");
+  reqA.header("x-tenant", "a");
   auto reqB = client.makeRequest(http::Method::GET, Url("/counter"));
-  reqB.header("X-Tenant", "b");
+  reqB.header("x-tenant", "b");
 
   EXPECT_EQ(client.request(reqA).value().bodyInMemory(), "1");
   EXPECT_EQ(client.request(reqB).value().bodyInMemory(), "2");  // different header -> different key
@@ -1703,7 +1703,7 @@ class TinyProxy {
  public:
   // rejectResponse: when non-empty, CONNECT requests are answered with it (and closed) instead of tunnelled.
   // dropOnConnect: when true, CONNECT requests are dropped (socket closed with no response at all).
-  explicit TinyProxy(std::string httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nhey",
+  explicit TinyProxy(std::string httpResponse = "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nhey",
                      std::string rejectResponse = {}, bool dropOnConnect = false)
       : _httpResponse(std::move(httpResponse)),
         _rejectResponse(std::move(rejectResponse)),
@@ -1840,7 +1840,7 @@ std::string ProxyUrl(uint16_t proxyPort) { return "http://127.0.0.1:" + std::to_
 // ("GET http://origin/path HTTP/1.1") so the proxy knows which origin to forward to, while the Host header
 // still names the origin. The origin host never has to resolve -- the client connects to the proxy.
 TEST(HttpClientProxyE2ETest, HttpOriginUsesAbsoluteFormRequestTarget) {
-  TinyProxy proxy("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nproxy");
+  TinyProxy proxy("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nproxy");
   HttpClientConfig cfg;
   cfg.withProxy(ProxyUrl(proxy.port()));
   HttpClient client(cfg);
@@ -1859,7 +1859,7 @@ TEST(HttpClientProxyE2ETest, HttpOriginUsesAbsoluteFormRequestTarget) {
 // The absolute-form target spells out a default port too ("http://host:80/..."), and keep-alive reuse works
 // through the proxy (both requests land on the one pooled connection the proxy terminates).
 TEST(HttpClientProxyE2ETest, HttpOriginDefaultPortAndKeepAliveReuse) {
-  TinyProxy proxy("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+  TinyProxy proxy("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
   HttpClientConfig cfg;
   cfg.withProxy(ProxyUrl(proxy.port()));
   HttpClient client(cfg);
@@ -1962,7 +1962,7 @@ TEST_F(HttpClientProxyTlsE2ETest, HttpsOriginVerifiedAgainstProxyCa) {
 // A proxy that refuses the CONNECT (403) surfaces as HttpClientErrc::proxyError -- the tunnel never opens,
 // so the TLS handshake is never attempted.
 TEST_F(HttpClientProxyTlsE2ETest, ProxyRefusesConnectReturnsProxyError) {
-  TinyProxy proxy("", "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+  TinyProxy proxy("", "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
   cfg.withProxy(ProxyUrl(proxy.port()));
@@ -2197,7 +2197,7 @@ TEST(HttpClientErrorE2ETest, DnsResolutionFailureReturnsError) {
 TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   HttpClientConfig cfg;  // default retry policy: a fresh-connection post-send failure is never retried
   HttpClient client(cfg);
@@ -2226,8 +2226,8 @@ TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
 TEST(HttpClientErrorE2ETest, StaleKeepAliveConnectionRetriedOnFreshSucceeds) {
   RawServer server([](NativeHandle fd, int idx) {
     DrainRequest(fd);
-    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst"
-                         : "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecond");
+    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nfirst"
+                         : "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nsecond");
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::seconds{2};  // safety net so a worst-case stale read cannot hang
@@ -2251,7 +2251,7 @@ TEST(HttpClientErrorE2ETest, StaleKeepAliveConnectionRetriedOnFreshSucceeds) {
 TEST(HttpClientErrorE2ETest, RetryExhaustionDropsDeadPoolThenReturnsError) {
   auto server = std::make_unique<RawServer>([](NativeHandle fd, int) {
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nfirst");
   });
   const uint16_t serverPort = server->port();
 
@@ -2281,7 +2281,7 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
     DrainRequest(fd);
     // Promise 100 body bytes but deliver 5 then close: the failure surfaces only after the full request
     // was written.
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   HttpClient client;  // default retry policy: a sent request is never re-submitted
   auto result = client.post(MakeUrl(server.port()), "payload");
@@ -2297,8 +2297,8 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
 TEST(HttpClientErrorE2ETest, PostOnStalePooledConnectionUsesFreshConnection) {
   RawServer server([](NativeHandle fd, int idx) {
     DrainRequest(fd);
-    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
-                         : "HTTP/1.1 201 Created\r\nContent-Length: 4\r\n\r\ndone");
+    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
+                         : "HTTP/1.1 201 Created\r\ncontent-length: 4\r\n\r\ndone");
   });
   HttpClient client;  // keep-alive on; the free pre-send stale-pool retry applies even to POST
   EXPECT_EQ(client.post(MakeUrl(server.port()), "a").value().status(), 200);  // pools the connection
@@ -2327,9 +2327,9 @@ TEST(HttpClientErrorE2ETest, StatusRetryReusesKeepAliveConnection) {
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
+    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n");
     DrainRequest(fd);  // the retry arrives on the same kept-alive connection
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
   });
   HttpClientConfig cfg;
   cfg.withRetry(FastRetry(2));  // 429 / 503 are retried by default
@@ -2349,7 +2349,7 @@ TEST(HttpClientErrorE2ETest, StatusRetryExhaustedReturnsLastResponse) {
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   });
   HttpClientConfig cfg;
   cfg.withRetry(FastRetry(2));
@@ -2367,7 +2367,7 @@ TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    SendAll(fd, "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   });
   HttpClientConfig cfg;
   cfg.withRetry(FastRetry(3));
@@ -2379,19 +2379,19 @@ TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
   EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
 }
 
-// A delta-seconds Retry-After is honored (and capped at maxDelay): with maxDelay = 10ms a "Retry-After: 5"
+// A delta-seconds Retry-After is honored (and capped at maxDelay): with maxDelay = 10ms a "retry-after: 5"
 // is clamped to (effectively) no wait, so the retry still happens promptly and recovers on the same conn.
 TEST(HttpClientErrorE2ETest, StatusRetryHonorsRetryAfter) {
   for (std::string_view retryAfterValue : {"5", "5invalid"}) {
     RawServer server([retryAfterValue](NativeHandle fd, int) {
       DrainRequest(fd);
       RawChars data;
-      data.append("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: ");
+      data.append("HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nretry-after: ");
       data.append(retryAfterValue);
       data.append("\r\n\r\n");
       SendAll(fd, data);
       DrainRequest(fd);
-      SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+      SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\ndone");
     });
     RetryConfig retry = FastRetry(2);
     retry.maxDelay = std::chrono::milliseconds{10};  // Retry-After: 5s is clamped to this
@@ -2419,8 +2419,8 @@ TEST(HttpClientErrorE2ETest, StatusRetryWithoutKeepAliveIgnoresRetryAfter) {
   RawServer server([&](NativeHandle fd, int idx) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, idx == 0 ? "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 9\r\n\r\n"
-                         : "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    SendAll(fd, idx == 0 ? "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nretry-after: 9\r\n\r\n"
+                         : "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
   });
   RetryConfig retry = FastRetry(2);
   retry.honorRetryAfter = false;  // ignore the server's Retry-After header; use computed backoff
@@ -2446,8 +2446,8 @@ TEST(HttpClientErrorE2ETest, IdempotentPostSendFailureRetriedWhenEnabled) {
   RawServer server([&](NativeHandle fd, int idx) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort"  // truncated -> malformed
-                         : "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello");
+    SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort"  // truncated -> malformed
+                         : "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello");
   });
   RetryConfig retry = FastRetry(2);
   retry.retryIdempotentAfterSend = true;
@@ -2469,7 +2469,7 @@ TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   RetryConfig retry = FastRetry(3);
   retry.retryIdempotentAfterSend = true;  // still excludes POST (not idempotent)
@@ -2508,7 +2508,7 @@ TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
 TEST(HttpClientErrorE2ETest, ZeroMaxAttemptsTreatedAsSingleAttempt) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi");
   });
   RetryConfig retry;
   retry.maxAttempts = 0;
@@ -2533,7 +2533,7 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
           const std::scoped_lock lock(mtx);
           capturedHead = std::move(head);
         }
-        SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
       },
       AF_INET6);
   if (!server.listening()) {
@@ -2576,7 +2576,7 @@ TEST(HttpClientErrorE2ETest, Http2AbruptCloseReturnsConnectionClosed) {
 TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
   });
   HttpClient client(Http2RawConfig());
   auto result = client.get(MakeUrl(server.port()));

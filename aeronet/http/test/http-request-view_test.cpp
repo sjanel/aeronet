@@ -733,7 +733,7 @@ TEST_F(HttpRequestViewTest, HeaderAccessorsBasicAndEmptyVsMissing) {
   //  - empty value (X-Empty)
   //  - value with trailing spaces (X-Trim)
   //  - value with leading & trailing mixed whitespace (X-Spaces)
-  //  - lowercase key to verify case-insensitive lookup (content-length)
+  //  - lowercase reserved key (content-length)
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
                             "X-Empty:\r\n"
@@ -1791,12 +1791,12 @@ TEST_F(HttpRequestViewTest, MakeResponseCanBeModifiedAfterCreation) {
   ASSERT_EQ(st, http::StatusCodeOK);
 
   auto resp = req.makeResponse(http::StatusCodeOK, "initial");
-  resp.header("X-Custom", "value");
-  resp.header("X-Another", "data");
+  resp.header("x-custom", "value");
+  resp.header("x-another", "data");
 
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Another"), "data");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "value");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-another"), "data");
   EXPECT_EQ(resp.bodyInMemory(), "initial");
 }
 

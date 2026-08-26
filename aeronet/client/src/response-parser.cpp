@@ -18,6 +18,7 @@
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/tolower-str.hpp"
 
 namespace aeronet {
 
@@ -384,7 +385,7 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
   }
 }
 
-ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, HttpResponse& resp,
+ResponseParser::Status ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
                                              std::size_t maxResponseBytes) {
   // --- Status line + headers ---
   const char* const bufferBegin = buffer.data();
@@ -456,7 +457,7 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
       }
       // decideFraming() only ever yields Complete (bodyless / zero-length) or NeedMore (a body follows).
       if (decideFraming() == Status::Complete) {
-        return installBody(resp, buffer);
+        return installBody(resp, std::string_view(buffer.data(), buffer.size()));
       }
       break;  // proceed to body parsing below
     }
@@ -465,35 +466,33 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
     if (colon == std::string_view::npos || colon == 0) {
       return Status::Error;
     }
+    tolower(buffer.data() + static_cast<std::size_t>(line.data() - buffer.data()), colon);
     const std::string_view name = line.substr(0, colon);
     const std::string_view value = TrimOws(line.substr(colon + 1));
 
     // Content-Type / Content-Length / Transfer-Encoding are normalized by HttpResponse::body()
     // (Content-Type + decoded Content-Length) and by de-framing (chunked), so they are consumed
-    // locally rather than stored. Every other header - including otherwise-reserved ones such as
-    // Connection, Date, Trailer, Upgrade - is stored verbatim via headerAddLineUnchecked() so the received
-    // message is represented losslessly.
-    if (CaseInsensitiveEqual(name, http::ContentType)) {
+    // locally rather than stored. Every other header, including otherwise-reserved ones such as Connection, Date,
+    // Trailer and Upgrade, keeps its value. Names have already been normalized to lower-case above.
+    if (name == http::ContentType) {
       // Remember where the value sits in the buffer instead of copying it; it is resolved at install time.
       _contentTypeOff = static_cast<std::size_t>(value.data() - buffer.data());
       _contentTypeLen = value.size();
-    } else if (CaseInsensitiveEqual(name, http::ContentLength)) {
-      std::size_t len = 0;
-      const auto* pValue = value.data();
-      const auto* pEnd = pValue + value.size();
-      const auto [ptr, ec] = std::from_chars(pValue, pEnd, len);
+    } else if (name == http::ContentLength) {
+      const auto* pBeg = value.data();
+      const auto* pEnd = pBeg + value.size();
+      const auto [ptr, ec] = std::from_chars(pBeg, pEnd, _bodyRemaining);
       if (ec != std::errc{} || ptr != pEnd) {
         return Status::Error;
       }
       _hasContentLength = true;
-      _bodyRemaining = len;
-    } else if (CaseInsensitiveEqual(name, http::TransferEncoding)) {
+    } else if (name == http::TransferEncoding) {
       _chunked = LastTransferEncodingIsChunked(value);
     } else {
-      if (CaseInsensitiveEqual(name, http::Connection)) {
+      if (name == http::Connection) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
       }
-      resp.headerAddLineUnchecked(name, value);
+      resp.headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
   }
 
@@ -501,9 +500,9 @@ ResponseParser::Status ResponseParser::parse(std::string_view buffer, bool eof, 
     return Status::Complete;
   }
 
-  const Status bodyStatus = parseBody(buffer, eof, maxResponseBytes);
+  const Status bodyStatus = parseBody(std::string_view(buffer.data(), buffer.size()), eof, maxResponseBytes);
   if (bodyStatus == Status::Complete) {
-    return installBody(resp, buffer);
+    return installBody(resp, std::string_view(buffer.data(), buffer.size()));
   }
   return bodyStatus;
 }

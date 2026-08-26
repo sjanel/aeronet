@@ -269,14 +269,14 @@ TEST_F(HttpRequestTest, EmptyConcatenatedHeaders) {
 
 TEST_F(HttpRequestTest, Headers) {
   auto req = makeRequest(http::Method::GET, "http://host/path", {}, "some body");
-  req.headerAddLine("X-A", "1").headerAddLine("X-B", "2");
-  EXPECT_EQ(req.headerValueOrEmpty("X-A"), "1");
-  EXPECT_EQ(req.headerValueOrEmpty("X-B"), "2");
+  req.headerAddLine("x-a", "1").headerAddLine("x-b", "2");
+  EXPECT_EQ(req.headerValueOrEmpty("x-a"), "1");
+  EXPECT_EQ(req.headerValueOrEmpty("x-b"), "2");
 
   static constexpr std::string_view kExpectedHeadersFlatView =
       "host: host\r\n"
-      "X-A: 1\r\n"
-      "X-B: 2\r\n"
+      "x-a: 1\r\n"
+      "x-b: 2\r\n"
       "content-type: application/octet-stream\r\n"
       "content-length: 9\r\n";
 
@@ -297,7 +297,7 @@ TEST_F(HttpRequestTest, Headers) {
 // In a release build that was heap corruption and a SIGSEGV; under ASan it reports a heap-buffer-overflow. The
 // assertions here fail deterministically without the fix, before any out-of-bounds access is even reached.
 TEST_F(HttpRequestTest, BodylessRequestWithAdditionalCapacityKeepsBodyStartAtHeadEnd) {
-  static constexpr std::string_view kAuthorization = "authorization";
+  static constexpr LowerAsciiKey kAuthorization = "authorization";
   // Realistically sized bearer token: big enough that the old overshoot was unmistakable.
   const std::string tokenValue = "Bearer " + std::string(1024, 'x');
   const std::size_t additionalCapacity = http::HeaderSize(kAuthorization.size(), tokenValue.size());
@@ -345,7 +345,7 @@ TEST_F(HttpRequestTest, BodylessRequestWithAdditionalCapacityKeepsBodyStartAtHea
 // Same shape as above, but with a body: this path was already correct (the constructor taking a body fixes bodyStartPos
 // up after writing the head), so it guards against the fix regressing it.
 TEST_F(HttpRequestTest, BodyRequestWithAdditionalCapacityKeepsBodyStartBeforeBody) {
-  static constexpr std::string_view kAuthorization = "authorization";
+  static constexpr LowerAsciiKey kAuthorization = "authorization";
   static constexpr std::string_view kBody = "payload";
   const std::string tokenValue = "Bearer " + std::string(512, 'y');
   const std::size_t additionalCapacity = http::HeaderSize(kAuthorization.size(), tokenValue.size());
@@ -376,7 +376,7 @@ TEST_F(HttpRequestTest, HostHeaderShouldBeReserved) {
 
 TEST_F(HttpRequestTest, LvalueFluentSetters) {
   auto req = makeRequest(http::Method::POST, "http://h/p");
-  req.method(http::Method::PUT).header("X-A", "1").headerAddLine("X-B", "2").body("payload");
+  req.method(http::Method::PUT).header("x-a", "1").headerAddLine("x-b", "2").body("payload");
   EXPECT_EQ(req.method(), http::Method::PUT);
   EXPECT_EQ(req.host(), "h");
   EXPECT_EQ(req.bodyInMemory(), "payload");
@@ -396,7 +396,7 @@ TEST_F(HttpRequestTest, LvalueFluentSetters) {
 
 TEST_F(HttpRequestTest, RvalueFluentSetters) {
   auto req = makeRequest(http::Method::POST, "http://h/p");
-  req = std::move(req).method(http::Method::PUT).header("X-A", "1").headerAddLine("X-B", "2").body("payload");
+  req = std::move(req).method(http::Method::PUT).header("x-a", "1").headerAddLine("x-b", "2").body("payload");
   EXPECT_EQ(req.method(), http::Method::PUT);
   EXPECT_EQ(req.host(), "h");
   EXPECT_EQ(req.bodyInMemory(), "payload");
@@ -622,12 +622,12 @@ TEST_F(HttpRequestTest, FileWithOffsetRValue) {
 
 TEST_F(HttpRequestTest, TrailerAddLine) {
   auto req = makeRequest(http::Method::POST, "http://h/p").body("payload");
-  req.trailerAddLine("X-Trailer-1", "v1").trailerAddLine("X-Trailer-2", "v2");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-1"), "v1");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-2"), "v2");
+  req.trailerAddLine("x-trailer-1", "v1").trailerAddLine("x-trailer-2", "v2");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-trailer-1"), "v1");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-trailer-2"), "v2");
 
-  req = makeRequest(http::Method::POST, "http://h/p").body("payload").trailerAddLine("X-Trailer-3", "v3");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-3"), "v3");
+  req = makeRequest(http::Method::POST, "http://h/p").body("payload").trailerAddLine("x-trailer-3", "v3");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-trailer-3"), "v3");
 }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -714,7 +714,7 @@ TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {
   auto req = makeRequest(http::Method::POST, "http://h/p").body(largePayload);
   ASSERT_TRUE(IsAutomaticDirectCompression(req));
 
-  req.trailerAddLine("X-Trailer-1", "v1").trailerAddLine("X-Trailer-2", "v2");
+  req.trailerAddLine("x-trailer-1", "v1").trailerAddLine("x-trailer-2", "v2");
   const std::string compressedBody(req.bodyInMemory());
   EXPECT_LT(compressedBody.size(), largePayload.size());
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
@@ -730,52 +730,52 @@ TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {
   FinalizeHeadersAndBody(req);
 
   EXPECT_EQ(req.bodyInMemory(), compressedBody);
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-1"), "v1");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Trailer-2"), "v2");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-trailer-1"), "v1");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-trailer-2"), "v2");
 }
 
 #endif
 
 TEST_F(HttpRequestTest, ChunkedRequestSerializationIncludesAdvertisedTrailers) {
   auto req = makeRequest(http::Method::POST, "http://h/p").body("payload");
-  req.trailerAddLine("X-First", "one").trailerAddLine("X-Second", "two");
+  req.trailerAddLine("x-first", "one").trailerAddLine("x-second", "two");
 
   const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
   const std::string_view wire = CompleteRequestForHttp11(wireReq);
 
   // HTTP/1.1 framing must not mutate the reusable request: a retry or redirect can select HTTP/2.
   EXPECT_EQ(req.bodyInMemory(), "payload");
-  EXPECT_EQ(req.trailerValueOrEmpty("X-First"), "one");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-first"), "one");
   EXPECT_FALSE(req.headerValue(http::TransferEncoding).has_value());
 
   EXPECT_TRUE(wire.starts_with("POST /p HTTP/1.1\r\n"));
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                             std::string(http::chunked) + std::string(http::CRLF)));
   EXPECT_FALSE(wire.contains(std::string(http::ContentLength) + std::string(http::HeaderSep)));
-  EXPECT_TRUE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep) + "X-First, X-Second\r\n"));
-  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-First: one\r\nX-Second: two\r\n\r\n"));
+  EXPECT_TRUE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep) + "x-first, x-second\r\n"));
+  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nx-first: one\r\nx-second: two\r\n\r\n"));
 }
 
 TEST_F(HttpRequestTest, ChunkedRequestSerializationKeepsLargeCapturedSourceProtocolNeutral) {
   const std::string payload(1UL << 20U, 'x');
   auto req = makeRequest(http::Method::POST, "http://h/p").body(std::string(payload));
-  req.trailerAddLine("X-Checksum", "abc123");
+  req.trailerAddLine("x-checksum", "abc123");
 
   const HttpRequest wireReq = FinalizeTrailersForHttp11(req, 0);
   const std::string_view wireHead = CompleteRequestForHttp11(wireReq);
 
   EXPECT_TRUE(wireHead.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                                 std::string(http::chunked) + std::string(http::CRLF)));
-  EXPECT_TRUE(CapturedPayloadForHttp11(wireReq).ends_with("\r\n0\r\nX-Checksum: abc123\r\n\r\n"));
+  EXPECT_TRUE(CapturedPayloadForHttp11(wireReq).ends_with("\r\n0\r\nx-checksum: abc123\r\n\r\n"));
 
   EXPECT_EQ(req.bodyInMemory(), payload);
-  EXPECT_EQ(req.trailerValueOrEmpty("X-Checksum"), "abc123");
+  EXPECT_EQ(req.trailerValueOrEmpty("x-checksum"), "abc123");
   EXPECT_FALSE(req.headerValue(http::TransferEncoding).has_value());
 }
 
 TEST_F(HttpRequestTest, EmptyBodyRequestShouldNotHaveZeroContentLengthHeader) {
   auto req = makeRequest(http::Method::POST, "http://h/p");
-  req.headerAddLine("X-Custom", "value");
+  req.headerAddLine("x-custom", "value");
   const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
   const std::string_view wire = CompleteRequestForHttp11(wireReq);
 
@@ -784,14 +784,14 @@ TEST_F(HttpRequestTest, EmptyBodyRequestShouldNotHaveZeroContentLengthHeader) {
 
 TEST_F(HttpRequestTest, ChunkedRequestSerializationCanOmitTrailerHeader) {
   auto req = makeRequestWithoutTrailerHeader(http::Method::POST, "http://h/p").body("payload");
-  req.trailerAddLine("X-Only", "value");
+  req.trailerAddLine("x-only", "value");
   const HttpRequest wireReq = FinalizeTrailersForHttp11(req);
   const std::string_view wire = CompleteRequestForHttp11(wireReq);
 
   EXPECT_TRUE(wire.contains(std::string(http::TransferEncoding) + std::string(http::HeaderSep) +
                             std::string(http::chunked) + std::string(http::CRLF)));
   EXPECT_FALSE(wire.contains(std::string(http::Trailer) + std::string(http::HeaderSep)));
-  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nX-Only: value\r\n\r\n"));
+  EXPECT_TRUE(wire.ends_with("7\r\npayload\r\n0\r\nx-only: value\r\n\r\n"));
 }
 
 TEST_F(HttpRequestTest, VeryLongUrlIsNotTruncated) {
@@ -819,7 +819,7 @@ TEST_F(HttpRequestTest, VeryLongUrlIsNotTruncated) {
 TEST_F(HttpRequestTest, RvalueOverloadsCompose) {
   // Exercise every rvalue-qualified overload in a single chained temporary.
   auto req = makeRequest(http::Method::PATCH, "http://h/r");
-  req = std::move(req).method(http::Method::PATCH).header("X-H", "v").headerAddLine("X-Add", "w").body("rbody");
+  req = std::move(req).method(http::Method::PATCH).header("x-h", "v").headerAddLine("x-add", "w").body("rbody");
 
   EXPECT_EQ(req.method(), http::Method::PATCH);
   EXPECT_EQ(req.host(), "h");

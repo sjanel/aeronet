@@ -48,10 +48,9 @@ struct PregenPool {
   }
 
   std::string randomStr(std::size_t n) {
-    std::string out(n, 'X');  // make it start with X to avoid conflicts with HTTP known headers
+    std::string out(n, 'x');  // make it start with x to avoid conflicts with HTTP known headers
     static constexpr char charset[] =
         "0123456789"
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz";
     std::uniform_int_distribution<std::size_t> dist(0, std::size(charset) - 2);
     for (std::size_t charPos = 1; charPos < out.size(); ++charPos) {
