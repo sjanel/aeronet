@@ -152,8 +152,9 @@ TEST(ConfigLoaderTest, TraceMethodPolicyEnum) {
 }
 
 // ============================================================================
-// TLS configuration
+// TLS configuration (only in debug because keyLogFile is used)
 // ============================================================================
+#ifndef NDEBUG
 TEST(ConfigLoaderTest, TlsBasicFields) {
   auto config = detail::ParseConfigString(R"({
     "server": {
@@ -168,6 +169,10 @@ TEST(ConfigLoaderTest, TlsBasicFields) {
         "disableCompression": false,
         "requestClientCert": true,
         "requireClientCert": false,
+        "ocspResponseFile": "/etc/tls/ocsp.der",
+        "crlFile": "/etc/tls/client-ca.crl",
+        "crlCheckAll": true,
+        "keyLogFile": "/tmp/aeronet-keys.log",
         "logHandshake": true,
         "maxConcurrentHandshakes": 100,
         "handshakeRateLimitPerSecond": 50,
@@ -191,6 +196,10 @@ TEST(ConfigLoaderTest, TlsBasicFields) {
   EXPECT_FALSE(config.server.tls.disableCompression);
   EXPECT_TRUE(config.server.tls.requestClientCert);
   EXPECT_FALSE(config.server.tls.requireClientCert);
+  EXPECT_EQ(config.server.tls.ocspResponseFile(), "/etc/tls/ocsp.der");
+  EXPECT_EQ(config.server.tls.crlFile(), "/etc/tls/client-ca.crl");
+  EXPECT_TRUE(config.server.tls.crlCheckAll);
+  EXPECT_EQ(config.server.tls.keyLogFile(), "/tmp/aeronet-keys.log");
   EXPECT_FALSE(config.server.tls.alpnMustMatch);
   EXPECT_TRUE(config.server.tls.logHandshake);
   EXPECT_EQ(config.server.tls.maxConcurrentHandshakes, 100U);
@@ -198,6 +207,7 @@ TEST(ConfigLoaderTest, TlsBasicFields) {
   EXPECT_EQ(config.server.tls.handshakeRateLimitBurst, 10U);
   EXPECT_EQ(config.server.tls.handshakeTimeout, std::chrono::milliseconds{10000});
 }
+#endif
 
 TEST(ConfigLoaderTest, TlsPemFields) {
   auto config = detail::ParseConfigString(R"({
@@ -301,7 +311,8 @@ TEST(ConfigLoaderTest, TlsSniCertificates) {
         "certFile": "default.crt",
         "keyFile": "default.key",
         "sniCertificates": [
-          {"pattern": "example.com", "certFile": "/certs/example.crt", "keyFile": "/certs/example.key"},
+          {"pattern": "example.com", "certFile": "/certs/example.crt", "keyFile": "/certs/example.key",
+           "ocspResponseFile": "/certs/example.ocsp.der"},
           {"pattern": "other.com", "certPem": "pem-cert", "keyPem": "pem-key"}
         ]
       }
@@ -313,6 +324,7 @@ TEST(ConfigLoaderTest, TlsSniCertificates) {
   EXPECT_EQ(sniCerts[0].pattern(), "example.com");
   EXPECT_EQ(sniCerts[0].certFile(), "/certs/example.crt");
   EXPECT_EQ(sniCerts[0].keyFile(), "/certs/example.key");
+  EXPECT_EQ(sniCerts[0].ocspResponseFile(), "/certs/example.ocsp.der");
   EXPECT_EQ(sniCerts[1].pattern(), "other.com");
   EXPECT_EQ(sniCerts[1].certPem(), "pem-cert");
   EXPECT_EQ(sniCerts[1].keyPem(), "pem-key");

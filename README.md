@@ -162,7 +162,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 | Keep‑Alive / Limits | ✔ | Header/body size, max requests per connection, idle timeout |
 | Compression (gzip/deflate/zstd/br) | ✔ | Flags opt‑in; q‑value negotiation; threshold; per‑response opt‑out; direct compression |
 | Inbound body decompression | ✔ | Multi‑layer, safety guards, header removal |
-| TLS | ✔ (flag) | ALPN, mTLS, session tickets, kTLS sendfile, timeouts, metrics |
+| TLS | ✔ (flag) | ALPN, mTLS, SNI, tickets, cached OCSP, CRLs/revocation hooks, debug key logs, kTLS, metrics |
 | OpenTelemetry | ✔ (flag) | Distributed tracing spans, metrics counters (experimental) |
 | Async wrapper | ✔ | Background thread convenience |
 | Metrics hook | ✔ (alpha) | Per‑request basic stats |
@@ -236,6 +236,7 @@ The landing page above plus the minimal examples are usually enough to evaluate 
 - [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
 - [HTTP/2](docs/FEATURES.md#http2-rfc-9113)
 - [TLS Features](docs/FEATURES.md#tls-features)
+- [TLS deployment guide](docs/protocols/tls-and-http2.md#tls)
 - [Automatic HTTP → HTTPS redirect](docs/FEATURES.md#automatic-http--https-redirect)
 - [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration)
 - [Logging](docs/FEATURES.md#logging)
@@ -739,8 +740,7 @@ router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
 }.build());
 ```
 
-See [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware) for group-scoped limiters and the Redis
-adapter contract (eval callback, key schema, script shape).
+See [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware) for group-scoped limiters and the Redis adapter contract (eval callback, key schema, script shape).
 
 ### Compression (gzip, deflate, zstd, brotli)
 
@@ -754,10 +754,30 @@ Two compression layers for outbound responses:
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
 See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
 
-Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that
-response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.md#per-response-manual-content-encoding-automatic-compression-suppression)
+Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.md#per-response-manual-content-encoding-automatic-compression-suppression)
 
 ## Protocols & Modules
+
+### TLS / HTTPS
+
+Build with `-DAERONET_ENABLE_OPENSSL=ON`, then provide a PEM certificate chain and private key. TLS 1.2 is the effective minimum when no explicit lower bound is set; TLS compression is disabled, server cipher preference is enabled, and renegotiation is disabled where OpenSSL exposes that option.
+
+```cpp
+#include <chrono>
+
+HttpServerConfig config;
+config.withPort(443)
+    .withTlsCertKey("/run/tls/fullchain.pem", "/run/tls/private.key")
+    .withTlsAlpnProtocols({"h2", "http/1.1"})
+    .withTlsHandshakeTimeout(std::chrono::seconds{10})
+    .withTlsOcspStapleFile("/run/tls/ocsp-response.der");
+config.tls.withTlsMinVersion("TLS1.2");
+```
+
+OCSP stapling is passive: aeronet parses and caches the supplied DER response while building the TLS context, then serves it without network I/O during handshakes. Operators remain responsible for fetching, verifying, and refreshing the response before `nextUpdate`; `postConfigUpdate()` atomically loads a replacement for new connections.
+Inbound client-certificate revocation can use a PEM/DER CRL and/or an application callback. NSS-compatible key logs are restricted to debug builds because they allow captured traffic to be decrypted.
+
+The [complete TLS deployment guide](docs/protocols/tls-and-http2.md#tls) covers mTLS, SNI, OCSP refresh, CRLs, revocation callbacks, session tickets, debug key logging, hot reload, kTLS, and the exact zeroization boundaries.
 
 ### HTTP/2 support
 
@@ -800,10 +820,7 @@ See the [full HTTP/2 example](examples/http2.cpp) for more details.
 
 ### HTTP Client
 
-Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 + HTTP/2
-client** (`aeronet::HttpClient`) built on the very same non-blocking transport, TLS, HPACK/frame-codec
-and event-loop bricks as the server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default).
-It is handy for service-to-service calls, health checks and tests that exercise a live server.
+Although aeronet is primarily a server library, it ships an optional, lightweight **HTTP/1.1 + HTTP/2 client** (`aeronet::HttpClient`) built on the very same non-blocking transport, TLS, HPACK/frame-codec and event-loop bricks as the server. Enable it with `-DAERONET_ENABLE_HTTP_CLIENT=ON` (on by default). It is handy for service-to-service calls, health checks and tests that exercise a live server.
 
 ```cpp
 #include <aeronet/http-client.hpp>
@@ -856,12 +873,7 @@ if (result) {
 }
 ```
 
-Route every request through a cleartext HTTP forward proxy. For an https origin the client opens an HTTP
-`CONNECT` tunnel to the origin and completes the TLS handshake through it; a plain http origin is sent to
-the proxy in absolute-form. The optional second argument is a CA bundle used to verify an intercepting
-proxy that re-signs origin certificates (mitmproxy and friends). A malformed proxy URL or an `https` proxy
-throws `HttpClientException` at construction; a proxy that refuses the `CONNECT` yields
-`HttpClientErrc::proxyError`.
+Route every request through a cleartext HTTP forward proxy. For an https origin the client opens an HTTP `CONNECT` tunnel to the origin and completes the TLS handshake through it; a plain http origin is sent to the proxy in absolute-form. The optional second argument is a CA bundle used to verify an intercepting proxy that re-signs origin certificates (mitmproxy and friends). A malformed proxy URL or an `https` proxy throws `HttpClientException` at construction; a proxy that refuses the `CONNECT` yields `HttpClientErrc::proxyError`.
 
 ```cpp
 #include <aeronet/http-client.hpp>
@@ -883,10 +895,7 @@ Every request returns an `aeronet::HttpClientResult` (`std::expected<HttpRespons
 
 ### JWT (JSON Web Tokens)
 
-An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of
-the OpenSSL crypto already linked for TLS - so it adds no new dependency. Enable it with
-`-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out
-of scope.
+An optional **JWT** module (`aeronet::Jwt`) implements the JWS (signature) profile of RFC 7519 on top of the OpenSSL crypto already linked for TLS - so it adds no new dependency. Enable it with `-DAERONET_ENABLE_JWT=ON` (on by default whenever OpenSSL + glaze are enabled). JWE (encryption) is out of scope.
 
 ```cpp
 #include <aeronet/jwt.hpp>
@@ -917,14 +926,9 @@ Highlights:
 
 ### OpenTelemetry Support (Experimental)
 
-Optional distributed tracing & metrics integration. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON`
-(pulls in `protobuf` as an additional dependency). Each `SingleHttpServer` owns its own `TelemetryContext`
-instance - no global singletons or static state, so multiple servers can run independent telemetry
-configurations without interference, and every telemetry failure is logged via `log::error()` rather than
-silently swallowed. You may also create your own `TelemetryContext` for custom metrics/traces.
+Optional distributed tracing & metrics integration. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON` (pulls in `protobuf` as an additional dependency). Each `SingleHttpServer` owns its own `TelemetryContext` instance - no global singletons or static state, so multiple servers can run independent telemetry configurations without interference, and every telemetry failure is logged via `log::error()` rather than silently swallowed. You may also create your own `TelemetryContext` for custom metrics/traces.
 
-See [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration) for the configuration API, built-in
-instrumentation, and testing/observability notes.
+See [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration) for the configuration API, built-in instrumentation, and testing/observability notes.
 
 ## Operational Features
 
@@ -995,10 +999,7 @@ curl -i http://localhost:8080/static
 curl -i http://localhost:8080/stream
 ```
 
-The example demonstrates both the fixed-response (server synthesizes a `content-length` header) and the
-streaming writer path. For plaintext sockets the server uses the kernel `sendfile(2)` syscall for zero-copy
-transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer
-and writes through the TLS transport.
+The example demonstrates both the fixed-response (server synthesizes a `content-length` header) and the streaming writer path. For plaintext sockets the server uses the kernel `sendfile(2)` syscall for zero-copy transmission. When TLS is enabled the example exercises the TLS fallback that pread()s into the connection buffer and writes through the TLS transport.
 
 ## Platform Support
 
@@ -1031,8 +1032,7 @@ For TLS toggles, sanitizers, Conan/vcpkg usage and `find_package` examples, see 
 ### C++ modules support (experimental)
 
 When `AERONET_BUILD_MODULES=ON` is set in CMake, the library builds an optional C++20 module interface (`aeronet`).
-The module re-exports the public API surface of `<aeronet/aeronet.hpp>` - only user-facing types, configuration
-structs, handler callbacks, and protocol enums are exported; internal implementation details are omitted.
+The module re-exports the public API surface of `<aeronet/aeronet.hpp>` - only user-facing types, configuration structs, handler callbacks, and protocol enums are exported; internal implementation details are omitted.
 
 **Requirements:**
 

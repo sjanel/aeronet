@@ -4,7 +4,6 @@
 
 - **Security Hardening Audit**:
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
-  - Memory scrubbing for sensitive data (handshake keys, session tickets)
   - Fuzzing harness integration (libFuzzer + AFL)
 
 ## Medium priority
@@ -70,7 +69,6 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 
 - **HTTP/3 / QUIC** - a separate transport layer (future major feature); scoped as a research spike below before any commitment.
 - **Fuzz Harness Integration** - libFuzzer targets for HTTP/1.1 and HTTP/2 parsing
-- **OCSP Stapling & Advanced TLS** - Passive stapling with cached responses, CRL hooks, key logging (debug only)
 - **Per-SNI mTLS Policies** - Different client cert requirements per SNI hostname
 - **Advanced Metrics** - ~~Histogram/percentile latency buckets~~ ✔ (implemented via `TelemetryContext::histogram()` + `TelemetryConfig::addHistogramBuckets()`); per-route stats not yet implemented
 
@@ -220,19 +218,9 @@ Built-in topic-based broadcast for WebSocket connections. `WsRoom` / `WsTopic` a
 
 Compute a weak or strong ETag from the response body (e.g. hash) and handle `If-None-Match` / `304 Not Modified` for dynamic endpoints, not just static files. Reduces bandwidth for API responses that rarely change. Express (`etag` by default), Rails, ASP.NET, and Spring all auto-generate ETags for regular responses.
 
-### TLS enhancements (detailed roadmap)
-
-#### Phase 3 (Advanced / Enterprise)
-
-- OCSP stapling (passive, cached)
-- Optional CRL / revocation hooks
-- Key log (debug only)
-- Security hardening audits (zeroization, memory scrub confirmations)
-
-#### Phase 4 (Future Protocol / Extensibility)
+### TLS enhancements (future)
 
 - Per-SNI mTLS policies
-- Session ticket key rotation scheduling & multi-key window
 - (Stretch) Exploring QUIC/HTTP/3 (would likely be a separate transport layer, so only mention if strategic)
 
 ## Realistic Network Testing

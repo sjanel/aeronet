@@ -8,6 +8,7 @@
 
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/secure-zero.hpp"
 #include "aeronet/tolower-str.hpp"
 
 namespace aeronet {
@@ -21,6 +22,123 @@ auto NormalizeHostname(std::string_view host) {
 }
 
 }  // namespace
+
+TLSConfig::SniCertificate::SniCertificate(const SniCertificate& other) {
+  try {
+    _strings = other._strings;
+    isWildcard = other.isWildcard;
+  } catch (...) {
+    scrubSensitiveData();
+    throw;
+  }
+}
+
+TLSConfig::SniCertificate& TLSConfig::SniCertificate::operator=(const SniCertificate& other) {
+  if (this != &other) {
+    SniCertificate copy(other);
+    swap(copy);
+  }
+  return *this;
+}
+
+TLSConfig::SniCertificate& TLSConfig::SniCertificate::operator=(SniCertificate&& other) noexcept {
+  if (this != &other) {
+    SniCertificate moved(std::move(other));
+    swap(moved);
+  }
+  return *this;
+}
+
+TLSConfig::SniCertificate::~SniCertificate() { scrubSensitiveData(); }
+
+void TLSConfig::SniCertificate::swap(SniCertificate& other) noexcept {
+  using std::swap;
+  swap(_strings, other._strings);
+  swap(isWildcard, other.isWildcard);
+}
+
+TLSConfig::TLSConfig(const TLSConfig& other) {
+  try {
+    sessionTickets = other.sessionTickets;
+    handshakeTimeout = other.handshakeTimeout;
+    revocationCallback = other.revocationCallback;
+    revocationUserContext = other.revocationUserContext;
+    enabled = other.enabled;
+    requestClientCert = other.requestClientCert;
+    requireClientCert = other.requireClientCert;
+    alpnMustMatch = other.alpnMustMatch;
+    logHandshake = other.logHandshake;
+    disableCompression = other.disableCompression;
+    crlCheckAll = other.crlCheckAll;
+    cipherPolicy = other.cipherPolicy;
+    ktlsMode = other.ktlsMode;
+    minVersion = other.minVersion;
+    maxVersion = other.maxVersion;
+    maxConcurrentHandshakes = other.maxConcurrentHandshakes;
+    handshakeRateLimitPerSecond = other.handshakeRateLimitPerSecond;
+    handshakeRateLimitBurst = other.handshakeRateLimitBurst;
+    _alpnProtocols = other._alpnProtocols;
+    _trustedClientCertsPem = other._trustedClientCertsPem;
+    _tlsStrings = other._tlsStrings;
+    _sniCertificates = other._sniCertificates;
+    _staticTicketKeys = other._staticTicketKeys;
+  } catch (...) {
+    scrubSensitiveData();
+    throw;
+  }
+}
+
+TLSConfig& TLSConfig::operator=(const TLSConfig& other) {
+  if (this != &other) {
+    TLSConfig copy(other);
+    swap(copy);
+  }
+  return *this;
+}
+
+TLSConfig& TLSConfig::operator=(TLSConfig&& other) noexcept {
+  if (this != &other) {
+    TLSConfig moved(std::move(other));
+    swap(moved);
+  }
+  return *this;
+}
+
+TLSConfig::~TLSConfig() { scrubSensitiveData(); }
+
+void TLSConfig::scrubSensitiveData() noexcept {
+  _tlsStrings.secureClearPart(kKeyPem);
+  for (auto& key : _staticTicketKeys) {
+    SecureZero(key.data(), key.size());
+  }
+}
+
+void TLSConfig::swap(TLSConfig& other) noexcept {
+  using std::swap;
+  swap(sessionTickets, other.sessionTickets);
+  swap(handshakeTimeout, other.handshakeTimeout);
+  swap(revocationCallback, other.revocationCallback);
+  swap(revocationUserContext, other.revocationUserContext);
+  swap(enabled, other.enabled);
+  swap(requestClientCert, other.requestClientCert);
+  swap(requireClientCert, other.requireClientCert);
+  swap(alpnMustMatch, other.alpnMustMatch);
+  swap(logHandshake, other.logHandshake);
+  swap(disableCompression, other.disableCompression);
+  swap(crlCheckAll, other.crlCheckAll);
+  swap(cipherPolicy, other.cipherPolicy);
+  swap(ktlsMode, other.ktlsMode);
+  swap(minVersion, other.minVersion);
+  swap(maxVersion, other.maxVersion);
+  swap(maxConcurrentHandshakes, other.maxConcurrentHandshakes);
+  swap(handshakeRateLimitPerSecond, other.handshakeRateLimitPerSecond);
+  swap(handshakeRateLimitBurst, other.handshakeRateLimitBurst);
+  swap(_tlsStrings, other._tlsStrings);
+  swap(_alpnProtocols, other._alpnProtocols);
+  swap(_trustedClientCertsPem, other._trustedClientCertsPem);
+  swap(_sniCertificates, other._sniCertificates);
+  swap(_staticTicketKeys, other._staticTicketKeys);
+}
 
 void TLSConfig::validate() {
   if (!enabled) {
@@ -99,6 +217,50 @@ void TLSConfig::validate() {
   if (handshakeRateLimitPerSecond == 0 && handshakeRateLimitBurst != 0) {
     throw std::invalid_argument("TLS handshake rate limit burst set but rate is zero");
   }
+  if ((!crlFile().empty() || revocationCallback != nullptr) && !requestClientCert && !requireClientCert) {
+    throw std::invalid_argument("TLS client-certificate revocation checks require client certificate verification");
+  }
+  if (crlCheckAll && crlFile().empty()) {
+    throw std::invalid_argument("crlCheckAll is true but no CRL file is configured");
+  }
+#ifdef NDEBUG
+  if (!keyLogFile().empty()) {
+    throw std::invalid_argument("TLS key logging is available only in debug builds");
+  }
+#endif
+}
+
+TLSConfig& TLSConfig::withTlsSessionTicketKey(SessionTicketKey keyMaterial) {
+  try {
+    // Avoid leaving an abandoned key copy behind when the vector grows: relocate through a pre-reserved replacement,
+    // scrub the old inline elements, then publish the replacement.
+    if (_staticTicketKeys.size() == _staticTicketKeys.capacity()) {
+      vector<SessionTicketKey> replacement;
+      replacement.reserve(std::max<std::uint32_t>(1U, _staticTicketKeys.size() * 2U));
+      for (const auto& key : _staticTicketKeys) {
+        replacement.push_back(key);
+      }
+      for (auto& key : _staticTicketKeys) {
+        SecureZero(key.data(), key.size());
+      }
+      _staticTicketKeys.swap(replacement);
+    }
+    _staticTicketKeys.push_back(keyMaterial);
+  } catch (...) {
+    SecureZero(keyMaterial.data(), keyMaterial.size());
+    throw;
+  }
+  SecureZero(keyMaterial.data(), keyMaterial.size());
+  sessionTickets.enabled = true;
+  return *this;
+}
+
+TLSConfig& TLSConfig::clearTlsSessionTicketKeys() {
+  for (auto& key : _staticTicketKeys) {
+    SecureZero(key.data(), key.size());
+  }
+  _staticTicketKeys.clear();
+  return *this;
 }
 
 TLSConfig& TLSConfig::withTlsMinVersion(std::string_view ver) {
@@ -152,6 +314,20 @@ TLSConfig& TLSConfig::withTlsSniCertificateMemory(std::string_view hostname, std
   entry.isWildcard = isWildcard;
   entry.setCertPem(certPem);
   entry.setKeyPem(keyPem);
+  return *this;
+}
+
+TLSConfig& TLSConfig::withTlsSniOcspStapleFile(std::string_view hostname, std::string_view derFile) {
+  if (hostname.empty() || derFile.empty()) {
+    throw std::invalid_argument("SNI hostname and OCSP response file must be non-empty");
+  }
+  auto normalized = NormalizeHostname(hostname);
+  const auto it = std::ranges::find_if(
+      _sniCertificates, [&](const SniCertificate& certificate) { return certificate.pattern() == normalized; });
+  if (it == _sniCertificates.end()) {
+    throw std::invalid_argument("SNI OCSP response has no matching certificate mapping");
+  }
+  it->setOcspResponseFile(derFile);
   return *this;
 }
 

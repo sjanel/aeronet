@@ -1,6 +1,7 @@
 #include "aeronet/tls-ticket-key-store.hpp"
 
 #include <openssl/core_names.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/rand.h>
@@ -21,6 +22,27 @@
 #include "aeronet/tls-config.hpp"
 
 namespace aeronet {
+
+TlsTicketKeyStore::KeyMaterial::KeyMaterial(KeyMaterial&& other) noexcept : bytes(other.bytes), created(other.created) {
+  other.scrub();
+}
+
+TlsTicketKeyStore::KeyMaterial& TlsTicketKeyStore::KeyMaterial::operator=(KeyMaterial&& other) noexcept {
+  if (this != &other) {
+    scrub();
+    bytes = other.bytes;
+    created = other.created;
+    other.scrub();
+  }
+  return *this;
+}
+
+TlsTicketKeyStore::KeyMaterial::~KeyMaterial() { scrub(); }
+
+void TlsTicketKeyStore::KeyMaterial::scrub() noexcept {
+  auto bytes = data();
+  ::OPENSSL_cleanse(bytes.data(), bytes.size());
+}
 
 TlsTicketKeyStore::TlsTicketKeyStore(std::chrono::seconds lifetime, std::uint32_t maxKeys)
     : _lifetime(lifetime), _maxKeys(std::max(1U, maxKeys)) {}
@@ -74,11 +96,14 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
     if (::RAND_bytes(iv, ivLen) != 1) {
       return -1;
     }
-    Copy(key.name.data(), key.name.size(), keyName);
-    if (::EVP_EncryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, key.aesKey.data(), iv) != 1) {
+    const auto name = key.name();
+    const auto aesKey = key.aesKey();
+    const auto hmacKey = key.hmacKey();
+    Copy(name.data(), name.size(), keyName);
+    if (::EVP_EncryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, aesKey.data(), iv) != 1) {
       return -1;
     }
-    if (!InitMacContext(mctx, key.hmacKey.data(), key.hmacKey.size())) {
+    if (!InitMacContext(mctx, hmacKey.data(), hmacKey.size())) {
       return -1;
     }
     return 1;
@@ -88,10 +113,12 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
   if (key == nullptr) {
     return 0;  // trigger full handshake
   }
-  if (::EVP_DecryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, key->aesKey.data(), iv) != 1) {
+  const auto aesKey = key->aesKey();
+  const auto hmacKey = key->hmacKey();
+  if (::EVP_DecryptInit_ex(cctx, ::EVP_aes_128_cbc(), nullptr, aesKey.data(), iv) != 1) {
     return -1;
   }
-  if (!InitMacContext(mctx, key->hmacKey.data(), key->hmacKey.size())) {
+  if (!InitMacContext(mctx, hmacKey.data(), hmacKey.size())) {
     return -1;
   }
   return 1;
@@ -119,7 +146,8 @@ void TlsTicketKeyStore::rotateIfNeededUnlocked() {
 
 const TlsTicketKeyStore::KeyMaterial* TlsTicketKeyStore::findKeyUnlocked(const unsigned char keyName[16]) const {
   for (const auto& mat : _keys) {
-    if (std::memcmp(mat.name.data(), keyName, mat.name.size()) == 0) {
+    const auto name = mat.name();
+    if (::CRYPTO_memcmp(name.data(), keyName, name.size()) == 0) {
       return &mat;
     }
   }
