@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "aeronet/dogstatsd.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"
 
 namespace aeronet::tracing {
@@ -70,17 +71,32 @@ class TelemetryContext {
   // Create a span with given name. Returns nullptr if tracing disabled/failed.
   [[nodiscard]] SpanPtr createSpan(std::string_view name) const noexcept;
 
+  // Whether tracing or metrics are enabled for this context.
+  [[nodiscard]] bool enabled() const noexcept { return _impl != nullptr; }
+
   // Increment a counter by delta. No-op if metrics disabled/failed.
   void counterAdd(std::string_view name, uint64_t delta = 1UL) const noexcept;
+
+  // Increment a counter by delta with per-measurement labels. No-op if metrics disabled/failed.
+  void counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept;
 
   // Record a gauge value. No-op if metrics disabled/failed.
   void gauge(std::string_view name, int64_t value) const noexcept;
 
+  // Record a gauge value with per-measurement labels. No-op if metrics disabled/failed.
+  void gauge(std::string_view name, int64_t value, MetricLabels labels) const noexcept;
+
   // Record a histogram value. No-op if metrics disabled/failed.
   void histogram(std::string_view name, double value) const noexcept;
 
+  // Record a histogram value with per-measurement labels. No-op if metrics disabled/failed.
+  void histogram(std::string_view name, double value, MetricLabels labels) const noexcept;
+
   // Record a timing value. No-op if metrics disabled/failed.
   void timing(std::string_view name, std::chrono::milliseconds ms) const noexcept;
+
+  // Record a timing value with per-measurement labels. No-op if metrics disabled/failed.
+  void timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept;
 
   // Access underlying DogStatsD client, or nullptr if not enabled.
   // You can use it to emit custom DogStatsD metrics.

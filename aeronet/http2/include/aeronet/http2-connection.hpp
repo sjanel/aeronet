@@ -27,6 +27,10 @@
 #include "aeronet/http-method.hpp"
 #endif
 
+namespace aeronet::tracing {
+class TelemetryContext;
+}
+
 namespace aeronet::http2 {
 
 /// HTTP/2 connection state.
@@ -97,7 +101,9 @@ class Http2Connection {
   /// Create a new HTTP/2 connection with the specified configuration.
   /// @param config HTTP/2 configuration
   /// @param isServer True if this is the server side of the connection
-  explicit Http2Connection(const Http2Config& config, bool isServer = true);
+  /// @param telemetryContext Optional telemetry destination for detailed HTTP/2 metrics; must outlive the connection
+  explicit Http2Connection(const Http2Config& config, bool isServer = true,
+                           tracing::TelemetryContext* telemetryContext = nullptr);
 
   // ============================
   // Connection lifecycle
@@ -227,7 +233,7 @@ class Http2Connection {
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
   /// Send PING frame.
-  void sendPing(PingFrame pingFrame) { WritePingFrame(_outputBuffer, pingFrame); }
+  void sendPing(PingFrame pingFrame);
 
   /// Send WINDOW_UPDATE frame.
   /// @param streamId Stream ID (0 for connection-level)
@@ -385,7 +391,7 @@ class Http2Connection {
   // ============================
 
   void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
-                     std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders);
+                     std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders, uint64_t headerListSize);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.
@@ -397,7 +403,7 @@ class Http2Connection {
 
   void sendSettings();
 
-  void sendSettingsAck() { WriteSettingsAckFrame(_outputBuffer); }
+  void sendSettingsAck();
 
   [[nodiscard]] ErrorCode prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream);
 
@@ -410,6 +416,14 @@ class Http2Connection {
   void queueOutputBlock(OutputBlock block);
 
   void sealOutputBuffer();
+
+  void recordFrame(bool sent, FrameType type, uint64_t payloadBytes, uint64_t count = 1UL) const noexcept;
+
+  void recordHpack(bool sent, uint64_t compressedBytes, uint64_t headerListSize) const noexcept;
+
+  void recordStreamOpened(bool locallyInitiated) const noexcept;
+
+  void recordStreamClosed(uint32_t streamId, ErrorCode errorCode) const noexcept;
 
   // ============================
   // Error handling
@@ -461,6 +475,7 @@ class Http2Connection {
   StreamEventCallback _onStreamClosed;
   GoAwayCb _onGoAway;
   std::function<void(uint32_t streamId, uint32_t increment)> _onWindowUpdate;
+  tracing::TelemetryContext* _pTelemetryContext;
 
   ConnectionState _state{ConnectionState::AwaitingPreface};
 

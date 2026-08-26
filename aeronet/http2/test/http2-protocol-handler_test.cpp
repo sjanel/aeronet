@@ -40,10 +40,15 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#ifdef AERONET_POSIX
+#define AERONET_WANT_SOCKET_OVERRIDES
+#include "aeronet/sys-test-support.hpp"
+#endif
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
+#include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -4387,6 +4392,70 @@ TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
   EXPECT_EQ(callbackCount, 1);
   EXPECT_EQ(lastStatus, http::StatusCodeOK);
 }
+
+#ifdef AERONET_POSIX
+TEST(Http2ProtocolHandler, EmitsDetailedLabeledMetrics) {
+  struct TelemetryRestorer {
+    explicit TelemetryRestorer(tracing::TelemetryContext&& savedContext) : saved(std::move(savedContext)) {}
+
+    TelemetryRestorer(const TelemetryRestorer&) = delete;
+    TelemetryRestorer(TelemetryRestorer&&) = delete;
+
+    TelemetryRestorer& operator=(const TelemetryRestorer&) = delete;
+    TelemetryRestorer& operator=(TelemetryRestorer&&) = delete;
+
+    ~TelemetryRestorer() { telemetry = std::move(saved); }
+
+    tracing::TelemetryContext saved;
+  } telemetryRestorer{std::move(telemetry)};
+
+  test::UnixDogstatsdSink sink;
+  TelemetryConfig cfg;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(sink.path());
+  telemetry = tracing::TelemetryContext(cfg);
+
+  vector<std::string> messages;
+  test::SendCaptureGuard sendCapture(messages);
+
+  {
+    Router router;
+    router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
+
+    Http2ProtocolLoopback loop(router);
+    loop.connect();
+
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    hdrs.append(MakeHttp1HeaderLine(":path", "/metrics"));
+    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  }
+
+  const auto contains = [&messages](std::string_view metric, std::string_view labels) {
+    return std::ranges::any_of(messages, [metric, labels](const std::string& message) {
+      return message.contains(metric) && message.contains(labels);
+    });
+  };
+
+  EXPECT_TRUE(contains("aeronet.http2.frames:1|c", "direction:received,frame.type:headers"));
+  EXPECT_TRUE(contains("aeronet.http2.frames:1|c", "direction:sent,frame.type:settings"));
+  EXPECT_TRUE(contains("aeronet.http2.frame.payload.bytes:", "direction:received,frame.type:headers"));
+  EXPECT_TRUE(contains("aeronet.http2.hpack.compression.ratio:", "direction:received"));
+  EXPECT_TRUE(contains("aeronet.http2.hpack.block.compressed.bytes:", "direction:sent"));
+  EXPECT_TRUE(contains("aeronet.http2.streams.opened:1|c", "initiator:remote"));
+  EXPECT_TRUE(contains("aeronet.http2.streams.closed:1|c", "error.type:NO_ERROR"));
+  EXPECT_TRUE(contains("aeronet.http2.streams.active:0|h", ""));
+  EXPECT_TRUE(contains("aeronet.http2.stream.requests:1|c", "http.request.method:GET,http.response.status_code:200"));
+  EXPECT_TRUE(contains("aeronet.http2.stream.duration:", "http.request.method:GET,http.response.status_code:200"));
+  EXPECT_TRUE(
+      contains("aeronet.http2.stream.request.body.bytes:0|h", "http.request.method:GET,http.response.status_code:200"));
+}
+#endif
 
 #ifdef AERONET_ENABLE_OPENTELEMETRY
 // ============== Trace Span Attributes (OpenTelemetry) ==============

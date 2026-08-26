@@ -13,7 +13,7 @@ namespace aeronet::http2 {
 /// HTTP/2 frame header (9 bytes) as defined in RFC 9113 §4.1.
 /// Layout: Length (3 bytes) | Type (1 byte) | Flags (1 byte) | Reserved (1 bit) | Stream ID (31 bits)
 struct FrameHeader {
-  static constexpr std::size_t kSize = kFrameHeaderSize;
+  static constexpr std::size_t kSize = 9;
 
   /// Check if a specific flag is set.
   [[nodiscard]] constexpr bool hasFlag(uint8_t flag) const noexcept { return (flags & flag) != 0; }
