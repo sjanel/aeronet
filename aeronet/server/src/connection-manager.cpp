@@ -940,9 +940,9 @@ NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std:
     return kInvalidHandle;
   }
 
-  // Insert upstream connection state. Inserting may rehash the map — callers must
-  // not hold iterators across this call. Duplicate fd for a newly connected socket
-  // indicates a library bug (the kernel assigns unique fds for each socket()).
+  // Insert upstream connection state. Insertion may invalidate connection iterators by growing the POSIX fd-indexed
+  // vector or rehashing the Windows map, so callers must not hold them across this call. A duplicate fd for a newly
+  // connected socket indicates a library bug (the kernel assigns unique fds for each socket()).
   const auto upIt = _connections.emplace(std::move(cres.cnx));
   ConnectionState& state = _connections.connectionState(upIt);
 

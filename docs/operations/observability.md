@@ -1,6 +1,6 @@
 # Observability and logging
 
-aeronet provides opt-in logging and OpenTelemetry integration so applications can expose protocol and request behavior without embedding a global logging policy in the library.
+`aeronet` provides opt-in logging and OpenTelemetry integration so applications can expose protocol and request behavior without embedding a global logging policy in the library.
 
 ## Logging
 
