@@ -365,7 +365,6 @@ using aeronet::http2::kAlpnH2;
 using aeronet::http2::kAlpnH2c;
 using aeronet::http2::kConnectionPreface;
 using aeronet::http2::kDefaultInitialWindowSize;
-using aeronet::http2::kFrameHeaderSize;
 }  // namespace http2
 #endif
 

@@ -2693,7 +2693,7 @@ int main() {
 
 `dogStatsDEnabled` convenience flag plus socket/tag helpers so lightweight DogStatsD metrics (Unix Domain Socket) can be emitted even when OpenTelemetry support is compiled out.
 
-### Built-in Instrumentation (phase 1)
+### Built-in Instrumentation
 
 Automatic (no handler code changes):
 
@@ -2729,7 +2729,9 @@ Behavior:
 - DogStatsD emission does not use client-side bucket boundaries; histogram aggregation/bucketing is configured
   on the DogStatsD backend/agent.
 
-All instrumentation is fully async (OTLP HTTP exporter) with configurable endpoints and sample rates. When `dogStatsDEnabled` is enabled, Aeronet also emits counter metrics over DogStatsD/UDS even if the build does not include OpenTelemetry.
+Every metric method accepts an optional non-owning `MetricLabels` span. Labels are exported as OpenTelemetry data-point attributes and as DogStatsD tags without allocating a label container. The detailed HTTP/2 instrumentation includes frame counts and payload bytes by direction/type, stream open/close/active and request duration/body-size statistics, and HPACK compressed bytes, RFC header-list bytes, and compression ratios by direction. Stream IDs are deliberately not exported as labels to avoid unbounded metric cardinality. See the [observability guide](operations/observability.md#built-in-http2-metrics) for the complete instrument table, units, label sets, ratio definition, examples, and performance/layout notes.
+
+OTLP metrics are exported periodically with configurable intervals and endpoints. Instrument recording and DogStatsD datagram emission occur on the caller's event-loop thread. When `dogStatsDEnabled` is enabled, aeronet emits metrics over DogStatsD/UDS even if the build does not include OpenTelemetry.
 
 ### Testing & Observability
 

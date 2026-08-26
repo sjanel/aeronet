@@ -49,6 +49,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/simple-charconv.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/timedef.hpp"
@@ -71,7 +72,7 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
                                            internal::DecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
                                            std::string_view clientAddress)
-    : _connection(config, true),
+    : _connection(config, true, &telemetryContext),
       _pRouter(&router),
       _fileSendBuffer(64UL * 1024UL),
       _pServerConfig(&serverConfig),
@@ -1344,6 +1345,22 @@ bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handl
 #endif  // AERONET_ENABLE_ASYNC_HANDLERS
 
 void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::StatusCode status) {
+  if (_pTelemetryContext->enabled()) {
+    char statusBuffer[3];
+    writeStatusCode(statusBuffer, status);
+
+    const MetricLabel labels[]{
+        {"http.request.method", http::MethodToStr(request.method())},
+        {"http.response.status_code", std::string_view(statusBuffer, sizeof(statusBuffer))},
+    };
+    const auto duration =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request.reqStart());
+    _pTelemetryContext->counterAdd("aeronet.http2.stream.requests", 1UL, labels);
+    _pTelemetryContext->histogram("aeronet.http2.stream.duration", duration.count(), labels);
+    _pTelemetryContext->histogram("aeronet.http2.stream.request.body.bytes", static_cast<double>(request.body().size()),
+                                  labels);
+  }
+
   request.end(status);
   if (_requestCompletionCallback) {
     _requestCompletionCallback(request, status);

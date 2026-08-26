@@ -241,8 +241,10 @@ void OtlpTestCollector::handleClient(NativeHandle clientFd) {
       log::error("OTLP test collector failed to parse request: {}", ex.what());
     }
     try {
+      // OTLP responses are protobuf messages. Both success response types have
+      // an empty default serialization, so a zero-length body is valid.
       static constexpr std::string_view kOkResponse =
-          "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+          "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
       sendAll(client.fd(), kOkResponse, std::chrono::milliseconds{1000});
     } catch (const std::exception& ex) {
       log::error("OTLP test collector failed to reply: {}", ex.what());

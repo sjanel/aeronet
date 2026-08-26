@@ -16,6 +16,7 @@
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
 using namespace std::chrono_literals;
@@ -72,6 +73,36 @@ bool MetricsContainCounter(const ::opentelemetry::proto::collector::metrics::v1:
             default:
               break;
           }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+bool MetricsContainLabel(const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& proto,
+                         std::string_view metricName, std::string_view key, std::string_view value) {
+  const auto pointsContainLabel = [key, value](const auto& points) {
+    for (const auto& point : points) {
+      for (const auto& attribute : point.attributes()) {
+        if (attribute.key() == key && attribute.value().string_value() == value) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const auto& resourceMetric : proto.resource_metrics()) {
+    for (const auto& scopeMetric : resourceMetric.scope_metrics()) {
+      for (const auto& metric : scopeMetric.metrics()) {
+        if (metric.name() != metricName) {
+          continue;
+        }
+        if ((metric.has_sum() && pointsContainLabel(metric.sum().data_points())) ||
+            (metric.has_gauge() && pointsContainLabel(metric.gauge().data_points())) ||
+            (metric.has_histogram() && pointsContainLabel(metric.histogram().data_points()))) {
+          return true;
         }
       }
     }
@@ -141,4 +172,57 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   EXPECT_TRUE(MetricsContainCounter(metricsProto, "aeronet.connections.accepted"));
 
   EXPECT_TRUE(collector.drain().empty());  // No extra requests
+}
+
+TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
+  test::OtlpTestCollector collector;
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint(collector.endpointForTraces());
+  cfg.withServiceName("aeronet-label-e2e");
+  cfg.exportInterval = 50ms;
+  cfg.exportTimeout = 49ms;
+
+  tracing::TelemetryContext telemetry(cfg);
+  const MetricLabel labels[]{
+      {"protocol", "h2"},
+      {"frame.type", "headers"},
+  };
+  telemetry.counterAdd("aeronet.test.labeled", 1UL, labels);
+  telemetry.gauge("aeronet.test.labeled_gauge", 2, labels);
+  telemetry.histogram("aeronet.test.labeled_histogram", 3.0, labels);
+  telemetry.timing("aeronet.test.labeled_timing", 4ms, labels);
+
+  bool counterProtocolFound = false;
+  bool counterFrameTypeFound = false;
+  bool gaugeFound = false;
+  bool histogramFound = false;
+  bool timingFound = false;
+  const auto deadline = std::chrono::steady_clock::now() + 2s;  // NOLINT(misc-include-cleaner)
+  while (!(counterProtocolFound && counterFrameTypeFound && gaugeFound && histogramFound && timingFound) &&
+         std::chrono::steady_clock::now() < deadline) {
+    try {
+      const auto request = collector.waitForRequest(250ms);
+      if (request.path != "/v1/metrics") {
+        continue;
+      }
+
+      ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest proto;
+      ASSERT_TRUE(proto.ParseFromString(request.body));
+      counterProtocolFound |= MetricsContainLabel(proto, "aeronet.test.labeled", "protocol", "h2");
+      counterFrameTypeFound |= MetricsContainLabel(proto, "aeronet.test.labeled", "frame.type", "headers");
+      gaugeFound |= MetricsContainLabel(proto, "aeronet.test.labeled_gauge", "protocol", "h2");
+      histogramFound |= MetricsContainLabel(proto, "aeronet.test.labeled_histogram", "protocol", "h2");
+      timingFound |= MetricsContainLabel(proto, "aeronet.test.labeled_timing", "protocol", "h2");
+    } catch (const std::exception&) {
+      // Periodic exports are asynchronous. Keep polling until the overall deadline.
+    }
+  }
+
+  EXPECT_TRUE(counterProtocolFound);
+  EXPECT_TRUE(counterFrameTypeFound);
+  EXPECT_TRUE(gaugeFound);
+  EXPECT_TRUE(histogramFound);
+  EXPECT_TRUE(timingFound);
 }
