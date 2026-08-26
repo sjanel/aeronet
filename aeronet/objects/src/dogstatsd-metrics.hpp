@@ -28,9 +28,21 @@ class DogStatsdMetrics {
     }
   }
 
+  void increment(std::string_view metric, uint64_t delta, MetricLabels labels) noexcept {
+    if (_pTags != nullptr) {
+      _client.increment(metric, delta, *_pTags, labels);
+    }
+  }
+
   void gauge(std::string_view metric, int64_t value) noexcept {
     if (_pTags != nullptr) {
       _client.gauge(metric, value, *_pTags);
+    }
+  }
+
+  void gauge(std::string_view metric, int64_t value, MetricLabels labels) noexcept {
+    if (_pTags != nullptr) {
+      _client.gauge(metric, value, *_pTags, labels);
     }
   }
 
@@ -40,9 +52,21 @@ class DogStatsdMetrics {
     }
   }
 
+  void histogram(std::string_view metric, double value, MetricLabels labels) noexcept {
+    if (_pTags != nullptr) {
+      _client.histogram(metric, value, *_pTags, labels);
+    }
+  }
+
   void timing(std::string_view metric, std::chrono::milliseconds ms) noexcept {
     if (_pTags != nullptr) {
       _client.timing(metric, ms, *_pTags);
+    }
+  }
+
+  void timing(std::string_view metric, std::chrono::milliseconds ms, MetricLabels labels) noexcept {
+    if (_pTags != nullptr) {
+      _client.timing(metric, ms, *_pTags, labels);
     }
   }
 

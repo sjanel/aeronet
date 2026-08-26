@@ -132,6 +132,32 @@ TEST(DogStatsDTest, SendsAllMetricTypesWithTags) {
   EXPECT_EQ(sink.recvMessage(), "svc.users:abc|s|#env:dev,role:web");
 }
 
+TEST(DogStatsDTest, AppendsPerMeasurementLabels) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+  DogStatsD::DogStatsDTags tags;
+  tags.append("env:dev");
+  const MetricLabel labels[]{
+      {"protocol", "h2"},
+      {"frame.type", "headers"},
+  };
+
+  client.increment("frames", 2, tags, labels);
+  EXPECT_EQ(sink.recvMessage(), "svc.frames:2|c|#env:dev,protocol:h2,frame.type:headers");
+
+  client.histogram("ratio", 0.5, {}, labels);
+  EXPECT_EQ(sink.recvMessage(), "svc.ratio:0.5|h|#protocol:h2,frame.type:headers");
+
+  client.gauge("active", 3, {}, labels);
+  EXPECT_EQ(sink.recvMessage(), "svc.active:3|g|#protocol:h2,frame.type:headers");
+
+  client.timing("latency", std::chrono::milliseconds{8}, {}, labels);
+  EXPECT_EQ(sink.recvMessage(), "svc.latency:8|ms|#protocol:h2,frame.type:headers");
+
+  client.set("peers", "client-a", {}, labels);
+  EXPECT_EQ(sink.recvMessage(), "svc.peers:client-a|s|#protocol:h2,frame.type:headers");
+}
+
 TEST(DogStatsDTest, RespectsExistingNamespaceDotAndEmptyTags) {
   test::UnixDogstatsdSink sink;
   DogStatsD client(sink.path(), "svc.");

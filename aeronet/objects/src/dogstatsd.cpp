@@ -97,8 +97,19 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
 }
 
 void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
-                                  const DogStatsDTags& tags) noexcept {
-  const auto tagsSize = tags.empty() ? 0UL : kTagsPrefix.size() + tags.fullSize();
+                                  const DogStatsDTags& tags, MetricLabels labels) noexcept {
+  std::size_t labelsSize = 0;
+  for (const auto& [key, labelValue] : labels) {
+    labelsSize += key.size() + 1U + labelValue.size();
+  }
+  if (!labels.empty()) {
+    labelsSize += labels.size() - 1U;
+  }
+
+  const bool hasTags = !tags.empty() || !labels.empty();
+  const auto tagsSize = hasTags ? kTagsPrefix.size() + tags.fullSize() + labelsSize +
+                                      static_cast<std::size_t>(!tags.empty() && !labels.empty())
+                                : 0UL;
   const auto nsSize = _buf.size() - _socketPathLength;
   const auto dataSize = nsSize + metric.size() + 1U + value.size() + typeSuffix.size() + tagsSize;
 
@@ -116,9 +127,23 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
   *pData++ = ':';
   pData = Append(value, pData);
   pData = Append(typeSuffix, pData);
-  if (tagsSize != 0) {
+  if (hasTags) {
     pData = AppendFixed<kTagsPrefix>(pData);
-    pData = Append(tags.fullString(), pData);
+    if (!tags.empty()) {
+      pData = Append(tags.fullString(), pData);
+      if (!labels.empty()) {
+        *pData++ = ',';
+      }
+    }
+    for (std::size_t idx = 0; idx < labels.size(); ++idx) {
+      const auto& [key, labelValue] = labels[idx];
+      if (idx != 0) {
+        *pData++ = ',';
+      }
+      pData = Append(key, pData);
+      *pData++ = ':';
+      pData = Append(labelValue, pData);
+    }
   }
 
   if (_fd.send(_buf.data() + _buf.size(), dataSize) == -1) {
@@ -139,34 +164,72 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
 void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags);
+    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags, {});
+  }
+}
+
+void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags,
+                          MetricLabels labels) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags, labels);
   }
 }
 
 void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags);
+    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, {});
+  }
+}
+
+void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags, MetricLabels labels) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, labels);
   }
 }
 
 void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kFloatingBufferSize];
-    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags);
+    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, {});
+  }
+}
+
+void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags,
+                          MetricLabels labels) noexcept {
+  if (ensureConnected()) {
+    char buffer[kFloatingBufferSize];
+    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, labels);
   }
 }
 
 void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags);
+    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, {});
+  }
+}
+
+void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags,
+                       MetricLabels labels) noexcept {
+  if (ensureConnected()) {
+    char buffer[kMaxIntegerStrBufferSize];
+    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, labels);
   }
 }
 
 void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
-    sendMetricMessage(metric, value, kSetSuffix, tags);
+    sendMetricMessage(metric, value, kSetSuffix, tags, {});
+  }
+}
+
+void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags,
+                    MetricLabels labels) noexcept {
+  if (ensureConnected()) {
+    sendMetricMessage(metric, value, kSetSuffix, tags, labels);
   }
 }
 

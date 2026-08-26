@@ -48,7 +48,9 @@
 // Detect metrics SDK support for MeterProvider
 #if __has_include(<opentelemetry/sdk/metrics/meter_provider.h>)
 #define AERONET_HAVE_METRICS_SDK 1
+#include <opentelemetry/common/key_value_iterable.h>
 #include <opentelemetry/metrics/sync_instruments.h>
+#include <opentelemetry/nostd/function_ref.h>
 #include <opentelemetry/nostd/unique_ptr.h>
 #include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_options.h>
@@ -83,6 +85,29 @@ namespace {
 namespace {
 inline auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
 }  // namespace
+
+#ifdef AERONET_HAVE_METRICS_SDK
+class OtelMetricLabels final : public opentelemetry::common::KeyValueIterable {
+ public:
+  explicit OtelMetricLabels(MetricLabels labels) noexcept : _labels(labels) {}
+
+  bool ForEachKeyValue(
+      opentelemetry::nostd::function_ref<bool(opentelemetry::nostd::string_view, opentelemetry::common::AttributeValue)>
+          callback) const noexcept override {
+    for (const auto& [key, value] : _labels) {
+      if (!callback(OtelSv(key), OtelSv(value))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] std::size_t size() const noexcept override { return _labels.size(); }
+
+ private:
+  MetricLabels _labels;
+};
+#endif
 
 // Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
 void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
@@ -304,6 +329,29 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const n
   }
 }
 
+void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
+  if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateUInt64Counter(OtelSv(name));
+        }
+        if (labels.empty()) {
+          it->second->Add(delta);
+        } else {
+          it->second->Add(delta, OtelMetricLabels(labels));
+        }
+      } catch (const std::exception& ex) {
+        log::error("Failed to add counter '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.increment(name, delta, labels);
+  }
+}
+
 void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
@@ -320,6 +368,29 @@ void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcep
     }
 #endif
     _impl->_dogstatsd.gauge(name, value);
+  }
+}
+
+void TelemetryContext::gauge(std::string_view name, int64_t value, MetricLabels labels) const noexcept {
+  if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
+        }
+        if (labels.empty()) {
+          it->second->Record(value);
+        } else {
+          it->second->Record(value, OtelMetricLabels(labels));
+        }
+      } catch (const std::exception& ex) {
+        log::error("Failed to set gauge '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.gauge(name, value, labels);
   }
 }
 
@@ -342,6 +413,29 @@ void TelemetryContext::histogram(std::string_view name, double value) const noex
   }
 }
 
+void TelemetryContext::histogram(std::string_view name, double value, MetricLabels labels) const noexcept {
+  if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_histograms.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateDoubleHistogram(OtelSv(name));
+        }
+        if (labels.empty()) {
+          it->second->Record(value);
+        } else {
+          it->second->Record(value, OtelMetricLabels(labels));
+        }
+      } catch (const std::exception& ex) {
+        log::error("Failed to record histogram '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.histogram(name, value, labels);
+  }
+}
+
 void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
@@ -358,6 +452,30 @@ void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds m
     }
 #endif
     _impl->_dogstatsd.timing(name, ms);
+  }
+}
+
+void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept {
+  if (_impl) {
+#ifdef AERONET_HAVE_METRICS_SDK
+    if (_impl->_meter) {
+      try {
+        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
+        if (inserted) {
+          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
+        }
+        const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(ms).count();
+        if (labels.empty()) {
+          it->second->Record(value);
+        } else {
+          it->second->Record(value, OtelMetricLabels(labels));
+        }
+      } catch (const std::exception& ex) {
+        log::error("Failed to set gauge '{}': {}", name, ex.what());
+      }
+    }
+#endif
+    _impl->_dogstatsd.timing(name, ms, labels);
   }
 }
 
