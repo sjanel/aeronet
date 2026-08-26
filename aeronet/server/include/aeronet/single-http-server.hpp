@@ -432,7 +432,7 @@ class SingleHttpServer {
   void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
-  friend class HttpResponseWriter;              // allow streaming writer to access queueData and _connStates
+  friend class HttpResponseWriter;              // allow streaming writer to access queueData and connection storage
   friend class internal::Http1WriterTransport;  // HTTP/1.1 transport backend for streaming writer
   friend class MultiHttpServer;
   friend class H2TunnelBridge;  // allow tunnel bridge to access connection management internals
