@@ -398,6 +398,53 @@ TEST_F(WebSocketHandlerTest, OutputWrittenFully) {
   EXPECT_FALSE(handler->hasPendingOutput());
 }
 
+TEST_F(WebSocketHandlerTest, DrainOutputBufferReturnsFalseWhenEmpty) {
+  HttpMessageData dest;
+
+  EXPECT_FALSE(handler->drainOutputBuffer(dest));
+  EXPECT_TRUE(dest.empty());
+}
+
+TEST_F(WebSocketHandlerTest, DrainOutputBufferMovesPendingOutputIntoEmptyDestination) {
+  ASSERT_TRUE(handler->sendText("Test"));
+  const auto output = handler->getPendingOutput();
+  const auto* outputData = reinterpret_cast<const char*>(output.data());
+  const std::string expected(outputData, output.size());
+  HttpMessageData dest;
+
+  EXPECT_TRUE(handler->drainOutputBuffer(dest));
+
+  EXPECT_FALSE(handler->hasPendingOutput());
+  EXPECT_EQ(dest.firstBuffer(), expected);
+  EXPECT_EQ(dest.firstBuffer().data(), outputData);
+}
+
+TEST_F(WebSocketHandlerTest, DrainOutputBufferAppendsToNonEmptyDestination) {
+  ASSERT_TRUE(handler->sendText("Test"));
+  const auto output = handler->getPendingOutput();
+  std::string expected("prefix");
+  expected.append(reinterpret_cast<const char*>(output.data()), output.size());
+  HttpMessageData dest(std::string_view("prefix"));
+
+  EXPECT_TRUE(handler->drainOutputBuffer(dest));
+
+  EXPECT_FALSE(handler->hasPendingOutput());
+  EXPECT_EQ(dest.firstBuffer(), expected);
+}
+
+TEST_F(WebSocketHandlerTest, DrainOutputBufferCopiesPartiallyWrittenOutput) {
+  ASSERT_TRUE(handler->sendText("Test"));
+  handler->onOutputWritten(1);
+  const auto output = handler->getPendingOutput();
+  const std::string expected(reinterpret_cast<const char*>(output.data()), output.size());
+  HttpMessageData dest;
+
+  EXPECT_TRUE(handler->drainOutputBuffer(dest));
+
+  EXPECT_FALSE(handler->hasPendingOutput());
+  EXPECT_EQ(dest.firstBuffer(), expected);
+}
+
 // ============================================================================
 // Close handshake tests
 // ============================================================================

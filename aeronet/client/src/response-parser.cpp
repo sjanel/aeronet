@@ -31,11 +31,6 @@ constexpr bool LastTransferEncodingIsChunked(std::string_view value) {
   return CaseInsensitiveEqual(TrimOws(last), http::chunked);
 }
 
-// True when `view` covers exactly the initialized bytes owned by `buffer`.
-constexpr bool IsWholeBufferView(std::string_view view, std::string_view buffer) noexcept {
-  return view.size() == buffer.size() && view.data() == buffer.data();
-}
-
 enum class ChunkLineStatus : uint8_t { Complete, NeedMore, Error };
 
 struct ChunkLineResult {
@@ -147,6 +142,31 @@ constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, boo
 
 }  // namespace
 
+RawChars* ResponseParser::WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
+  return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
+}
+
+void ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
+                                        RawChars* owner) {
+  if (owner == nullptr || body.empty()) {
+    resp.body(body, contentType);
+    return;
+  }
+
+  assert(WholeBufferOwner(body, *owner) != nullptr);
+  if (owner->capacity() - body.size() > body.size()) {
+    resp.body(body, contentType);
+    owner->clear();
+    return;
+  }
+
+  RawChars replacement(owner->capacity());
+  resp.setBodyHeaders(contentType, body.size(), HttpMessage::BodySetContext::Captured);
+  resp.setBodyInternal({});
+  resp.setCapturedPayload(std::move(*owner));
+  *owner = std::move(replacement);
+}
+
 void ResponseParser::reset(bool headRequest) noexcept {
   _bodyBuf->clear();
   _pos = 0;
@@ -181,26 +201,6 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
   // If the scratch is over twice the body size, retain it and copy the small body instead of making both the response
   // and client pin that high-water allocation. The common stable-size path keeps the same allocation count and retained
   // capacity as before, but removes the large final memcpy.
-  const auto install = [&resp, contentType](std::string_view installedBody, RawChars* owner) {
-    if (owner == nullptr || installedBody.empty()) {
-      resp.body(installedBody, contentType);
-      return;
-    }
-
-    assert(IsWholeBufferView(installedBody, *owner));
-    if (owner->capacity() - installedBody.size() > installedBody.size()) {
-      resp.body(installedBody, contentType);
-      owner->clear();
-      return;
-    }
-
-    RawChars replacement(owner->capacity());
-    resp.setBodyHeaders(contentType, installedBody.size(), HttpMessage::BodySetContext::Captured);
-    resp.setBodyInternal({});
-    resp.setCapturedPayload(std::move(*owner));
-    *owner = std::move(replacement);
-  };
-
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
   // removal is cheap and legal), then install the decoded bytes. No intermediate copy of the compressed body.
@@ -215,18 +215,15 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
       }
       resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
       RawChars* decodedOwner;
-      if (IsWholeBufferView(decoded, *_decode.out)) {
-        decodedOwner = _decode.out;
-      } else if (IsWholeBufferView(decoded, *_bodyBuf)) {
-        decodedOwner = _bodyBuf;
-      } else {
-        decodedOwner = nullptr;
+      decodedOwner = WholeBufferOwner(decoded, *_decode.out);
+      if (decodedOwner == nullptr) {
+        decodedOwner = WholeBufferOwner(decoded, *_bodyBuf);
       }
-      install(decoded, decodedOwner);
+      InstallBodyStorage(resp, decoded, contentType, decodedOwner);
       return Status::Complete;
     }
   }
-  install(body, _framing == Framing::Chunked ? _bodyBuf : nullptr);
+  InstallBodyStorage(resp, body, contentType, _framing == Framing::Chunked ? _bodyBuf : nullptr);
   return Status::Complete;
 }
 

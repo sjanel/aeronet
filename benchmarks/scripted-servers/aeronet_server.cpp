@@ -4,6 +4,7 @@
 // All endpoints are designed to stress specific aspects of HTTP handling.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstddef>
@@ -40,6 +41,31 @@ using namespace aeronet;
 namespace {
 
 constexpr std::size_t kCompressionMinBytes = 16UL;  // Compress responses larger than 16 bytes
+constexpr std::size_t kClientBenchLargeBodySize = 1UL << 20U;
+constexpr std::size_t kClientBenchPostBodySize = 4096;
+constexpr std::size_t kClientBenchHeaderCount = 32;
+constexpr std::size_t kClientBenchHeaderValueSize = 64;
+
+struct ClientBenchPayloads {
+  ClientBenchPayloads()
+      : largeBody(kClientBenchLargeBodySize, 'x'),
+        postBody(kClientBenchPostBodySize, 'A'),
+        jsonBody(bench::BuildJson(200)),
+        compressBody(bench::BuildJson(800)),
+        headerValue(kClientBenchHeaderValueSize, 'x') {
+    for (std::size_t idx = 0; idx < headerNames.size(); ++idx) {
+      headerNames[idx] = std::format("x-bench-header-{}", idx);
+    }
+  }
+
+  std::string largeBody;
+  std::string postBody;
+  std::string jsonBody;
+  std::string compressBody;
+  std::string compressedBody;
+  std::string headerValue;
+  std::array<std::string, kClientBenchHeaderCount> headerNames;
+};
 
 /// Raise the soft file-descriptor limit to the hard limit so that benchmarks
 /// with many concurrent connections (and their associated file sends) do not
@@ -95,6 +121,50 @@ int main(int argc, char* argv[]) {
   RouterConfig routerConfig;
   routerConfig.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Strict;
   Router router(std::move(routerConfig));
+
+  // Client benchmarks must measure the client rather than dynamic response generation.
+  // These endpoints reuse immutable payloads and avoid per-request formatting, random
+  // generation, uppercasing, and compression performed by the server benchmark routes.
+  if (benchCfg.clientBenchMode) {
+    auto payloads = std::make_shared<ClientBenchPayloads>();
+    auto compressed = bench::GzipCompress(payloads->compressBody);
+    if (!compressed) {
+      std::cerr << "Error: could not precompress the scripted-client benchmark payload\n";
+      return 1;
+    }
+    payloads->compressedBody = std::move(*compressed);
+
+    router.setPath(http::Method::GET, "/client-bench/headers", [payloads](const HttpRequestView& req) {
+      auto resp = req.makeResponse(4096UL, http::StatusCodeOK);
+      for (std::string_view name : payloads->headerNames) {
+        resp.headerAddLine(LowerAsciiKey{name}, payloads->headerValue);
+      }
+      resp.bodyStatic("Generated 32 headers");
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/client-bench/large-get", [payloads](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK);
+      resp.bodyStatic(payloads->largeBody, http::ContentTypeApplicationOctetStream);
+      return resp;
+    });
+    router.setPath(http::Method::POST, "/client-bench/post", [payloads](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK);
+      resp.bodyStatic(payloads->postBody, http::ContentTypeApplicationOctetStream);
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/client-bench/json", [payloads](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK);
+      resp.bodyStatic(payloads->jsonBody, http::ContentTypeApplicationJson);
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/client-bench/compress", [payloads](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeOK);
+      resp.contentEncoding(http::gzip);
+      resp.bodyStatic(payloads->compressedBody, http::ContentTypeApplicationJson);
+      return resp;
+    });
+    std::cout << "Prebuilt scripted-client endpoints registered at /client-bench/*\n";
+  }
 
   // ============================================================
   // Endpoint 1: /ping - Minimal latency test
