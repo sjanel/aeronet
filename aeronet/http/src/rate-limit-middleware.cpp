@@ -81,7 +81,7 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
                                  HttpResponse::BodySize(opts.rejectionBody.size()),
                              http::StatusCodeTooManyRequests);
 
-    response.headerAddLine("Retry-After", decision.retryAfterSeconds);
+    response.headerAddLine("retry-after", decision.retryAfterSeconds);
     response.body(opts.rejectionBody);
     return MiddlewareResult::ShortCircuit(std::move(response));
   };

@@ -206,7 +206,7 @@ inline ScenarioSpec MakeScenario(const ClientBenchConfig& cfg) {
     // Many request headers (client serialization) + many response headers (client parsing).
     sc.path = "/headers?count=32&size=64";
     for (int i = 0; i < 24; ++i) {
-      sc.requestHeaders.emplace_back("X-Bench-Req-" + std::to_string(i),
+      sc.requestHeaders.emplace_back("x-bench-req-" + std::to_string(i),
                                      "payload-value-for-bench-request-header-" + std::to_string(i));
     }
     return sc;

@@ -581,7 +581,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
     return resp;
   });
 
-  testCbHandler.after([](const HttpRequestView&, HttpResponse& resp) { resp.headerAddLine("X-After-CB", "Yes"); });
+  testCbHandler.after([](const HttpRequestView&, HttpResponse& resp) { resp.headerAddLine("x-after-cb", "Yes"); });
 
   cfg.withNbThreads(8U);
   MultiHttpServer multi(cfg, std::move(router));
@@ -616,7 +616,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
     auto resp = test::simpleGet(multi.port(), "/test-cb");
 
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
-    EXPECT_TRUE(resp.contains("X-After-CB: Yes"));
+    EXPECT_TRUE(resp.contains("x-after-cb: Yes"));
   }
 
   // Send a malformed request to trigger parser error callback (e.g., invalid start-line)
@@ -1043,17 +1043,21 @@ TEST(MultiHttpServerDedicatedProbes, ReadinessReportsNotReadyWhileDraining) {
   MultiHttpServer multi(std::move(cfg), std::move(router));
   auto handle = multi.startDetached();
 
-  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200"));
-
-  // Keep a connection alive so drain does not complete instantly (workers stay in Draining state).
+  // startDetached() intentionally returns before the worker threads have necessarily entered their event loops.
+  // Complete an application request to synchronize with a Running worker, and keep that connection alive so the
+  // subsequent drain cannot complete before the dedicated probe assertions run.
   test::ClientConnection cnx(appPort);
   test::sendAll(cnx.fd(), test::SimpleGetRequest("/keep", http::keepalive));
-  std::this_thread::sleep_for(30ms);
+  const std::string keepAliveResponse = test::recvWithTimeout(cnx.fd());
+  ASSERT_TRUE(keepAliveResponse.starts_with("HTTP/1.1 200")) << keepAliveResponse;
+
+  const std::string readyBeforeDrain = test::simpleGet(probePort, "/readyz");
+  EXPECT_TRUE(readyBeforeDrain.starts_with("HTTP/1.1 200")) << readyBeforeDrain;
 
   multi.beginDrain(SignalHandler::GetMaxDrainPeriod());
-  std::this_thread::sleep_for(30ms);
 
-  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 503"));
+  const std::string readyDuringDrain = test::simpleGet(probePort, "/readyz");
+  EXPECT_TRUE(readyDuringDrain.starts_with("HTTP/1.1 503")) << readyDuringDrain;
   // Liveness and startup stay healthy while draining (the loops are progressing and have started).
   EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(test::simpleGet(probePort, "/startupz").starts_with("HTTP/1.1 200"));

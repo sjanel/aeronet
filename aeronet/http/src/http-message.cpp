@@ -39,7 +39,6 @@
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/toupperlower.hpp"
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 #include "aeronet/encoder-result.hpp"
@@ -50,23 +49,23 @@ namespace aeronet {
 namespace {
 
 constexpr void CheckContentTypeLengthEncoding(std::string_view headerName, bool hasBody) {
-  // Fast path: most headers don't start with 'c' or 'C'
+  // Fast path: most headers don't start with 'c'
   assert(!headerName.empty());
-  if (headerName[0] != 'c' && headerName[0] != 'C') {
+  if (headerName[0] != 'c') {
     return;
   }
   if (headerName.size() != http::ContentType.size() && headerName.size() != http::ContentLength.size()) {
-    if (hasBody && CaseInsensitiveEqual(headerName, http::ContentEncoding)) [[unlikely]] {
+    if (hasBody && headerName == http::ContentEncoding) [[unlikely]] {
       throw std::logic_error("content-encoding cannot be changed with body already set");
     }
     return;
   }
 
   // Second fast path: check exact length (Content-Type is 12 chars, Content-Length is 14 chars)
-  if (CaseInsensitiveEqual(headerName, http::ContentType)) [[unlikely]] {
+  if (headerName == http::ContentType) [[unlikely]] {
     throw std::invalid_argument("content-type header should be set with the body");
   }
-  if (CaseInsensitiveEqual(headerName, http::ContentLength)) [[unlikely]] {
+  if (headerName == http::ContentLength) [[unlikely]] {
     throw std::invalid_argument("content-length header should be set with the body");
   }
 }
@@ -113,28 +112,25 @@ struct HeaderSearchResult {
 // flatHeaders should end immediately after the last header CRLF.
 // Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
 constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
-  const char* endKey = key.data() + key.size();
-  const char* headersBeg = flatHeaders.data();
-  const char* headersEnd = headersBeg + flatHeaders.size();
+  if (key.empty()) {
+    return {};
+  }
 
-  while (headersBeg < headersEnd) {
-    // Perform an inplace case-insensitive 'starts_with' algorithm
-    const char* begKey = key.data();
-    for (; *headersBeg != ':' && begKey != endKey; ++headersBeg, ++begKey) {
-      if (tolower(*headersBeg) != tolower(*begKey)) {
-        break;
-      }
+  for (std::size_t headerNamePos = 0; headerNamePos < flatHeaders.size();) {
+    const std::size_t valuePos = headerNamePos + key.size();
+    if (flatHeaders.substr(headerNamePos).starts_with(key) &&
+        flatHeaders.substr(valuePos).starts_with(http::HeaderSep)) {
+      const char* valueBegin = flatHeaders.data() + headerNamePos + key.size() + http::HeaderSep.size();
+      return {valueBegin, SearchCRLF(valueBegin, flatHeaders.data() + flatHeaders.size())};
     }
 
-    const char* nextCRLF = SearchCRLF(headersBeg + http::HeaderSep.size(), headersEnd);
-
-    if (*headersBeg == ':' && begKey == endKey) {
-      // Found the header we are looking for
-      return {headersBeg + http::HeaderSep.size(), nextCRLF};
+    // CR is rare in a valid HTTP header block, so string_view::find can use an efficient memchr-like scan to jump
+    // directly to the next line instead of examining header values byte by byte.
+    const std::size_t endLinePos = flatHeaders.find(http::CRLF, headerNamePos);
+    if (endLinePos == std::string_view::npos) {
+      return {};
     }
-
-    // Not the header we are looking for - move headersBeg to next header
-    headersBeg = nextCRLF + http::CRLF.size();
+    headerNamePos = endLinePos + http::CRLF.size();
   }
   return {};
 }
@@ -144,33 +140,30 @@ constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, s
 // flatHeaders should end immediately after the last header CRLF.
 // Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
 constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
-  if (key.empty()) {
+  if (key.empty() || flatHeaders.empty()) {
     return {};
   }
-  const char* first = flatHeaders.data();
-  const char* last = first + flatHeaders.size();
 
-  while (first < last) {
-    last -= http::CRLF.size();
-
-    const char* endValue = last;
-
-    while (*last != '\n') {
-      --last;
-    }
-
-    const char* currentBegKey = ++last;
-
-    const char* pColon =
-        static_cast<const char*>(std::memchr(currentBegKey, ':', static_cast<std::size_t>(endValue - currentBegKey)));
-    assert(pColon != nullptr);  // should not happen in well-formed headers
-
-    if (CaseInsensitiveEqual(std::string_view(currentBegKey, pColon), key)) {
-      // Found the header we are looking for
-      return {pColon + http::HeaderSep.size(), endValue};
-    }
+  std::size_t lineEnd = flatHeaders.size();
+  if (flatHeaders.ends_with(http::CRLF)) {
+    lineEnd -= http::CRLF.size();
   }
-  return {};
+
+  while (true) {
+    const std::size_t previousEnd = lineEnd == 0 ? std::string_view::npos : flatHeaders.rfind(http::CRLF, lineEnd - 1U);
+    const std::size_t lineStart = previousEnd == std::string_view::npos ? 0 : previousEnd + http::CRLF.size();
+    const std::size_t valuePos = lineStart + key.size();
+
+    if (flatHeaders.substr(lineStart).starts_with(key) && flatHeaders.substr(valuePos).starts_with(http::HeaderSep)) {
+      const char* valueBegin = flatHeaders.data() + valuePos + http::HeaderSep.size();
+      return {valueBegin, flatHeaders.data() + lineEnd};
+    }
+
+    if (previousEnd == std::string_view::npos) {
+      return {};
+    }
+    lineEnd = previousEnd;
+  }
 }
 
 constexpr char* GetContentTypeValuePtr(char* pContentLengthHeaderLine) {
@@ -182,7 +175,7 @@ constexpr char* GetContentTypeValuePtr(char* pContentLengthHeaderLine) {
 
 }  // namespace
 
-void HttpMessage::headerImpl(std::string_view key, std::string_view value) {
+void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     headerAddLineImpl(key, value);
@@ -457,11 +450,11 @@ std::string_view HttpMessage::bodyInMemory() const noexcept {
   return ret;
 }
 
-bool HttpMessage::hasTrailer(std::string_view key) const noexcept {
+bool HttpMessage::hasTrailer(LowerAsciiKey key) const noexcept {
   return HeadersLinearSearch(trailersFlatView(), key).valueBegin != nullptr;
 }
 
-std::optional<std::string_view> HttpMessage::trailerValue(std::string_view key) const noexcept {
+std::optional<std::string_view> HttpMessage::trailerValue(LowerAsciiKey key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
   if (first == nullptr) {
     return std::nullopt;
@@ -469,11 +462,11 @@ std::optional<std::string_view> HttpMessage::trailerValue(std::string_view key) 
   return std::string_view(first, last);
 }
 
-bool HttpMessage::hasHeader(std::string_view key) const noexcept {
+bool HttpMessage::hasHeader(LowerAsciiKey key) const noexcept {
   return HeadersLinearSearch(headersFlatView(), key).valueBegin != nullptr;
 }
 
-std::optional<std::string_view> HttpMessage::headerValue(std::string_view key) const noexcept {
+std::optional<std::string_view> HttpMessage::headerValue(LowerAsciiKey key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     return std::nullopt;
@@ -481,14 +474,14 @@ std::optional<std::string_view> HttpMessage::headerValue(std::string_view key) c
   return std::string_view(first, last);
 }
 
-[[nodiscard]] std::string_view HttpMessage::headerValueOrEmpty(std::string_view key) const noexcept {
+[[nodiscard]] std::string_view HttpMessage::headerValueOrEmpty(LowerAsciiKey key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   return {first, last};
 }
 
-void HttpMessage::headerAddLineImpl(std::string_view key, std::string_view value) {
-  assert(_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Date));
-  assert(!_opts.isHttpRequest() || !CaseInsensitiveEqual(key, http::Server));
+void HttpMessage::headerAddLineImpl(LowerAsciiKey key, std::string_view value) {
+  assert(_opts.isHttpRequest() || key != http::Date);
+  assert(!_opts.isHttpRequest() || key != http::Server);
   if (!http::IsValidHeaderName(key)) [[unlikely]] {
     throw std::invalid_argument("HTTP header name is invalid");
   }
@@ -503,30 +496,31 @@ void HttpMessage::headerAddLineImpl(std::string_view key, std::string_view value
 
   headerAddLineUnchecked(key, value);
 
-  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+  if (key == http::ContentEncoding) {
     _opts.setHasContentEncoding();
   }
 }
 
-void HttpMessage::headerAddLineUnchecked(std::string_view key, std::string_view value) {
+void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view value) {
   const std::size_t headerLineSize = http::HeaderSize(key.size(), value.size());
 
   _data.ensureAvailableCapacityExponential(headerLineSize);
 
-  char* insertPtr = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
+  char* pData = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
   const auto bodySz = bodyLength();
 
   if (bodySz == 0) {
-    CopyFixed<http::DoubleCRLF>(insertPtr + headerLineSize);
+    CopyFixed<http::DoubleCRLF>(pData + headerLineSize);
   } else {
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
     // after setting the body, so we can consider this as a 'slow' path.
-    insertPtr = getContentTypeHeaderLinePtr();
-    std::memmove(insertPtr + headerLineSize, insertPtr, static_cast<std::size_t>(_data.end() - insertPtr));
+    pData = getContentTypeHeaderLinePtr();
+    std::memmove(pData + headerLineSize, pData, static_cast<std::size_t>(_data.end() - pData));
   }
-  WriteCRLFHeader(key, value, insertPtr);
+  WriteCRLFHeader(key, value, pData);
+
   _data.addSize(headerLineSize);
 
   adjustBodyStart(static_cast<int64_t>(headerLineSize));
@@ -559,7 +553,7 @@ void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char*
   adjustBodyStart(diff);
 }
 
-void HttpMessage::headerAppendValueImpl(std::string_view key, std::string_view value, std::string_view sep) {
+void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep) {
   const auto [first, last] = HeadersLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     headerAddLineImpl(key, value);
@@ -590,7 +584,7 @@ void HttpMessage::headerAppendValueImpl(std::string_view key, std::string_view v
   adjustBodyStart(static_cast<int64_t>(extraLen));
 }
 
-void HttpMessage::headerRemoveLineImpl(std::string_view key) {
+void HttpMessage::headerRemoveLineImpl(LowerAsciiKey key) {
   // We cannot remove Content-Type and Content-Length headers separately from the body,
   // so we don't include them in the search when response has body.
   const std::string_view flatHeaders = hasBody() ? headersFlatViewWithoutCTCL() : headersFlatView();
@@ -599,14 +593,14 @@ void HttpMessage::headerRemoveLineImpl(std::string_view key) {
     return;
   }
 
-  if (CaseInsensitiveEqual(key, http::ContentEncoding)) {
+  if (key == http::ContentEncoding) {
     if (hasBody()) {
       throw std::logic_error("Cannot remove Content-Encoding header when response has body");
     }
     _opts.resetHasContentEncoding();
   }
 
-  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
+  if (_opts.isHttpRequest() && key == http::Host) {
     throw std::invalid_argument("Cannot remove Host header from HTTP request");
   }
 
@@ -619,7 +613,7 @@ void HttpMessage::headerRemoveLineImpl(std::string_view key) {
   adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
 }
 
-void HttpMessage::headerRemoveValueImpl(std::string_view key, std::string_view value, std::string_view sep) {
+void HttpMessage::headerRemoveValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep) {
   if (sep.empty()) [[unlikely]] {
     throw std::invalid_argument("Separator cannot be empty when removing a header value");
   }
@@ -628,7 +622,7 @@ void HttpMessage::headerRemoveValueImpl(std::string_view key, std::string_view v
     return;
   }
 
-  if (_opts.isHttpRequest() && CaseInsensitiveEqual(key, http::Host)) {
+  if (_opts.isHttpRequest() && key == http::Host) {
     throw std::invalid_argument("Cannot remove Host header value from HTTP request");
   }
 
@@ -702,12 +696,12 @@ void HttpMessage::finalizeHeadersAndBody() {
 #endif
 }
 
-[[nodiscard]] std::string_view HttpMessage::trailerValueOrEmpty(std::string_view key) const noexcept {
+[[nodiscard]] std::string_view HttpMessage::trailerValueOrEmpty(LowerAsciiKey key) const noexcept {
   const auto [first, last] = HeadersLinearSearch(trailersFlatView(), key);
   return {first, last};
 }
 
-void HttpMessage::trailerAddLineImpl(std::string_view name, std::string_view value) {
+void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value) {
   assert(!http::IsForbiddenTrailerHeader(name));
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid trailer header name");
@@ -781,21 +775,21 @@ void HttpMessage::trailerAddLineImpl(std::string_view name, std::string_view val
     neededCapacity += static_cast<int64_t>(name.size() + kTrailerValueSep.size());
   }
 
-  char* insertPtr;
+  char* pData;
   if (hasBodyCaptured()) {
     assert(!_payloadVariant.isFilePayload());
     _payloadVariant.ensureAvailableCapacityExponential(neededCapacity);
-    insertPtr = _payloadVariant.data() + _payloadVariant.size();
+    pData = _payloadVariant.data() + _payloadVariant.size();
     _payloadVariant.addSize(lineSize);
   } else {
     _data.ensureAvailableCapacityExponential(neededCapacity);
-    insertPtr = _data.end();
+    pData = _data.end();
     _data.addSize(lineSize);
   }
 
   _opts._trailerLen = newTrailerLen;
 
-  WriteHeaderCRLF(name, value, insertPtr);
+  WriteHeaderCRLF(name, value, pData);
 }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -1037,7 +1031,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
     assert(pGlobalHeaders != nullptr);
     for (std::string_view headerKeyVal : *pGlobalHeaders) {
       const std::string_view key = headerKeyVal.substr(0, headerKeyVal.find(':'));
-      if (hasHeaders && headerValue(key)) {
+      if (hasHeaders && hasHeader(LowerAsciiKey{key})) {
         // Header already present, skip it
         globalHeadersToSkipBmp.set(pos);
         writeAllGlobalHeaders = false;

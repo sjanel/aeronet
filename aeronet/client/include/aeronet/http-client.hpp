@@ -49,11 +49,10 @@ class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 clie
 //   * Automatic redirect following and connection-level retry.
 //   * Reuses HttpResponse as the response/request field container (no bespoke header/body types).
 //
-// The returned response is an HttpResponse. Received headers are preserved losslessly
-// except Content-Type, Content-Length and Transfer-Encoding, which are normalized: Content-Type and the
-// decoded Content-Length are reconstructed via body(), and chunked framing is de-framed away. Every
-// other header (Connection, Date, Trailer, Upgrade, Location, ETag, Set-Cookie, custom ...) is
-// available as usual.
+// The returned response is an HttpResponse. Received header values are preserved except Content-Type,
+// Content-Length and Transfer-Encoding, which are normalized: Content-Type and the decoded Content-Length are
+// reconstructed via body(), and chunked framing is de-framed away. Every other header (Connection, Date, Trailer,
+// Upgrade, Location, ETag, Set-Cookie, custom ...) is available as usual, with its field name in lower-case.
 //
 // Thread-safety: a single HttpClient instance is NOT thread-safe (it owns one event loop and a
 // connection pool). Use one instance per thread, or guard externally.

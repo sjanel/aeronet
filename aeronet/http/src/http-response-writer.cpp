@@ -65,7 +65,7 @@ void HttpResponseWriter::reason(std::string_view reason) {
   _fixedResponse.reason(reason);
 }
 
-void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view value) {
+void HttpResponseWriter::headerAddLine(LowerAsciiKey name, std::string_view value) {
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -73,7 +73,7 @@ void HttpResponseWriter::headerAddLine(std::string_view name, std::string_view v
   _fixedResponse.headerAddLine(name, value);
 }
 
-void HttpResponseWriter::header(std::string_view name, std::string_view value) {
+void HttpResponseWriter::header(LowerAsciiKey name, std::string_view value) {
   if (_state != State::Opened) {
     log::warn("Streaming: cannot add header after headers sent");
     return;
@@ -207,7 +207,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   return true;
 }
 
-void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view value) {
+void HttpResponseWriter::trailerAddLine(LowerAsciiKey name, std::string_view value) {
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP header name");
   }
@@ -215,12 +215,12 @@ void HttpResponseWriter::trailerAddLine(std::string_view name, std::string_view 
     throw std::invalid_argument("HTTP header value is invalid");
   }
   if (_state == State::Ended || _state == State::Failed) {
-    log::warn("Streaming: trailerAddLine ignored {} name={} reason={}", _transport->logId(), name,
+    log::warn("Streaming: trailerAddLine ignored {} name={} reason={}", _transport->logId(), name.get(),
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
   if (_fixedResponse.hasBodyFile()) {
-    log::warn("Streaming: trailerAddLine ignored {} name={} reason=sendfile-active", _transport->logId(), name);
+    log::warn("Streaming: trailerAddLine ignored {} name={} reason=sendfile-active", _transport->logId(), name.get());
     return;
   }
 

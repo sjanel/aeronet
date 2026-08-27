@@ -278,7 +278,7 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
   });
 
   ts.router().addResponseMiddleware(
-      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Global-Middleware", "applied"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("x-global-middleware", "applied"); });
 
   ts.router().addRequestMiddleware([](HttpRequestView& req) {
     if (req.path() == "/mw-short") {
@@ -292,13 +292,13 @@ TEST(HttpMiddleware, GlobalRequestShortCircuit) {
   const std::string response = test::simpleGet(ts.port(), "/mw-short");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 503")) << response;
   EXPECT_TRUE(response.contains("short-circuited")) << response;
-  EXPECT_TRUE(response.contains("X-Global-Middleware: applied")) << response;
+  EXPECT_TRUE(response.contains("x-global-middleware: applied")) << response;
   EXPECT_FALSE(handlerCalled.load(std::memory_order_relaxed));
 
   const std::string response2 = test::simpleGet(ts.port(), "/other-path");
   EXPECT_TRUE(response2.starts_with("HTTP/1.1 200")) << response2;
   EXPECT_TRUE(response2.contains("handler")) << response2;
-  EXPECT_TRUE(response2.contains("X-Global-Middleware: applied")) << response2;
+  EXPECT_TRUE(response2.contains("x-global-middleware: applied")) << response2;
   EXPECT_TRUE(handlerCalled.load(std::memory_order_relaxed));
 }
 
@@ -315,7 +315,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
-    resp.header("X-Global-Middleware", "post");
+    resp.header("x-global-middleware", "post");
   });
 
   auto entry = ts.router().setPath(http::Method::GET, "/mw-route", [&](const HttpRequestView&) {
@@ -335,7 +335,7 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   entry.after([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("route-post");
-    resp.header("X-Route-Middleware", "post");
+    resp.header("x-route-middleware", "post");
     const std::string existingBody(resp.bodyInMemory());
     std::string updatedBody("route:");
     updatedBody += existingBody;
@@ -345,8 +345,8 @@ TEST(HttpMiddleware, RouteMiddlewareOrderAndResponseMutation) {
   const std::string response = test::simpleGet(ts.port(), "/mw-route");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(response.contains("route:handler")) << response;
-  EXPECT_TRUE(response.contains("X-Route-Middleware: post")) << response;
-  EXPECT_TRUE(response.contains("X-Global-Middleware: post")) << response;
+  EXPECT_TRUE(response.contains("x-route-middleware: post")) << response;
+  EXPECT_TRUE(response.contains("x-global-middleware: post")) << response;
 
   vector<std::string> snapshot;
   {
@@ -370,7 +370,7 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
   ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     std::scoped_lock lock(seqMutex);
     sequence.emplace_back("global-post");
-    resp.header("X-Global-Streaming", "post");
+    resp.header("x-global-streaming", "post");
   });
 
   auto entry =
@@ -381,7 +381,7 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
         }
         writer.status(http::StatusCodeOK);
         writer.reason("OK");
-        writer.header("X-Handler", "emitted");
+        writer.header("x-handler", "emitted");
         writer.contentType("text/plain");
         EXPECT_TRUE(writer.writeBody("chunk-1"));
         EXPECT_TRUE(writer.writeBody("chunk-2"));
@@ -399,14 +399,14 @@ TEST(HttpMiddleware, StreamingResponseMiddlewareApplied) {
     sequence.emplace_back("route-post");
     resp.status(http::StatusCodeAccepted);
     resp.reason("Accepted by middleware");
-    resp.header("X-Route-Streaming", "post");
+    resp.header("x-route-streaming", "post");
   });
 
   const std::string response = test::simpleGet(ts.port(), "/mw-stream");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 202")) << response;
-  EXPECT_TRUE(response.contains("X-Handler: emitted")) << response;
-  EXPECT_TRUE(response.contains("X-Route-Streaming: post")) << response;
-  EXPECT_TRUE(response.contains("X-Global-Streaming: post")) << response;
+  EXPECT_TRUE(response.contains("x-handler: emitted")) << response;
+  EXPECT_TRUE(response.contains("x-route-streaming: post")) << response;
+  EXPECT_TRUE(response.contains("x-global-streaming: post")) << response;
   EXPECT_TRUE(response.contains("chunk-1")) << response;
   EXPECT_TRUE(response.contains("chunk-2")) << response;
 
@@ -559,7 +559,7 @@ TEST(HttpMiddlewareMetrics, StreamingFlagPropagates) {
       router.setPath(http::Method::GET, "/mw-stream-metrics", [](const HttpRequestView&, HttpResponseWriter& writer) {
         writer.status(http::StatusCodeOK);
         writer.reason("OK");
-        writer.header("X", "1");
+        writer.header("x", "1");
         EXPECT_TRUE(writer.writeBody("chunk"));
         writer.end();
       });
@@ -607,7 +607,7 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
 
   ts.router().addResponseMiddleware([&](const HttpRequestView&, HttpResponse& resp) {
     postSeen.store(true, std::memory_order_relaxed);
-    resp.header("X-Router-Post", "ok");
+    resp.header("x-router-post", "ok");
   });
 
   ts.router().setPath(http::Method::GET, "/router-owned",
@@ -615,7 +615,7 @@ TEST(HttpMiddleware, RouterOwnsGlobalMiddleware) {
 
   const std::string response = test::simpleGet(ts.port(), "/router-owned");
   EXPECT_TRUE(response.contains("payload")) << response;
-  EXPECT_TRUE(response.contains("X-Router-Post: ok")) << response;
+  EXPECT_TRUE(response.contains("x-router-post: ok")) << response;
   EXPECT_TRUE(preSeen.load(std::memory_order_relaxed));
   EXPECT_TRUE(postSeen.load(std::memory_order_relaxed));
 }

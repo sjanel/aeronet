@@ -109,19 +109,19 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
   ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp;
     resp.status(201).reason("Created");
-    resp.header("X-One", "1");
-    resp.header("X-Two", "two");
+    resp.header("x-one", "1");
+    resp.header("x-two", "two");
     resp.body("B");
     return resp;
   });
   test::ClientConnection cc(ts.port());
   NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 201 Created"));
-  ASSERT_TRUE(resp.contains("X-One: 1"));
-  ASSERT_TRUE(resp.contains("X-Two: two"));
+  ASSERT_TRUE(resp.contains("x-one: 1"));
+  ASSERT_TRUE(resp.contains("x-two: two"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1")));   // auto generated
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close")));  // auto generated (keep-alive or close)
 }
@@ -135,33 +135,31 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
   });
   test::ClientConnection cc(ts.port());
   NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 302 Found"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/new")));
 }
 
-TEST(HttpHeadersCustom, CaseInsensitiveReplacementPreservesFirstCasing) {
-  // Verify that calling customHeader with different casing replaces existing value without duplicating the line and
-  // preserves the original header name casing from the first insertion.
+TEST(HttpHeadersCustom, LowercaseReplacementKeepsSingleLine) {
+  // Repeated replacement updates the existing normalized header without duplicating the line.
   ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp;
-    resp.header("x-cAsE", "one");
-    resp.header("X-Case", "two");    // should replace value only
-    resp.header("X-CASE", "three");  // replace again
+    resp.header("x-case", "one");
+    resp.header("x-case", "two");  // should replace value only
+    resp.header("x-case", "three");  // replace again
     resp.body("b");
     return resp;
   });
   test::ClientConnection cc(ts.port());
   NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string responseText = test::recvUntilClosed(fd);
-  // Expect only one occurrence with original first casing and final value 'three'.
-  ASSERT_TRUE(responseText.contains("x-cAsE: three")) << responseText;
+  ASSERT_TRUE(responseText.contains("x-case: three")) << responseText;
   EXPECT_FALSE(responseText.contains("X-Case:")) << responseText;
-  EXPECT_FALSE(responseText.contains("X-CASE: three")) << responseText;
+  EXPECT_EQ(responseText.find("x-case: three"), responseText.rfind("x-case: three")) << responseText;
 }
 
 TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
@@ -182,8 +180,8 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
 
   test::ClientConnection cc(ts.port());
   NativeHandle fd = cc.fd();
-  std::string header = "POST /fairness HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
-                       "\r\nConnection: close\r\n\r\n";
+  std::string header = "POST /fairness HTTP/1.1\r\nhost: x\r\ncontent-length: " + std::to_string(payloadSize) +
+                       "\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, header);
   const auto chunkDelay = ts.server.config().pollInterval + 10ms;
   for (std::size_t sent = 0; sent < payload.size();) {
@@ -218,8 +216,8 @@ TEST(HttpServerConfigLimits, DeferredReadDrainsBufferAfterFairnessCap) {
     return resp;
   });
 
-  std::string raw = "POST /deferred HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
-                    "\r\nConnection: close\r\n\r\n" + payload;
+  std::string raw = "POST /deferred HTTP/1.1\r\nhost: x\r\ncontent-length: " + std::to_string(payloadSize) +
+                    "\r\nconnection: close\r\n\r\n" + payload;
   std::string resp = test::sendAndCollect(port, raw);
   ASSERT_FALSE(resp.empty()) << "expected a response";
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -241,8 +239,8 @@ TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
   });
 
   // First request: succeed normally to verify the cap path works.
-  std::string raw = "POST /deferred2 HTTP/1.1\r\nHost: x\r\nContent-Length: " + std::to_string(payloadSize) +
-                    "\r\nConnection: close\r\n\r\n" + payload;
+  std::string raw = "POST /deferred2 HTTP/1.1\r\nhost: x\r\ncontent-length: " + std::to_string(payloadSize) +
+                    "\r\nconnection: close\r\n\r\n" + payload;
   std::string resp = test::sendAndCollect(port, raw);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("ok")) << resp;
@@ -275,7 +273,7 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersCompletedAfterDeadline) {
   std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
 
   // Try to finish the request; the server should already consider it timed out.
-  static constexpr std::string_view rest = " HTTP/1.1\r\nHost: x\r\n\r\n";
+  static constexpr std::string_view rest = " HTTP/1.1\r\nhost: x\r\n\r\n";
   SafeSend(fd, rest.data(), rest.size());
 
   ASSERT_FALSE(resp.empty());
@@ -331,13 +329,13 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   test::ClientConnection cnx(port);
   NativeHandle fd = cnx.fd();
 
-  std::string req1 = "GET /one HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+  std::string req1 = "GET /one HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\ncontent-length: 0\r\n\r\n";
   test::sendAll(fd, req1);
   std::string resp1 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp1.contains("ECHO/one"));
   EXPECT_FALSE(resp1.contains(MakeHttp1HeaderLine(http::Connection, "close")));
 
-  std::string req2 = "GET /two HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
+  std::string req2 = "GET /two HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n";  // implicit keep-alive
   test::sendAll(fd, req2);
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
@@ -352,7 +350,7 @@ TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection
   test::ClientConnection cnx(port);
   NativeHandle fd = cnx.fd();
 
-  std::string req1 = "GET /a HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+  std::string req1 = "GET /a HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\ncontent-length: 0\r\n\r\n";
   test::sendAll(fd, req1);
   std::string resp1 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
@@ -361,7 +359,7 @@ TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection
   EXPECT_TRUE(resp1.ends_with(http::DoubleCRLF)) << resp1;
 
   // The connection is immediately reusable: a second request on the same fd is served.
-  std::string req2 = "GET /b HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n";  // implicit keep-alive
+  std::string req2 = "GET /b HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n";  // implicit keep-alive
   test::sendAll(fd, req2);
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.starts_with("HTTP/1.1 200")) << resp2;
@@ -492,13 +490,13 @@ TEST_P(HttpErrorParamTest, EmitsExpectedStatus) {
 INSTANTIATE_TEST_SUITE_P(
     HttpErrors, HttpErrorParamTest,
     ::testing::Values(ErrorCase{"MalformedRequestLine", "GETONLYNOPATH\r\n\r\n", "400"},
-                      ErrorCase{"VersionNotSupported", "GET /test HTTP/2.0\r\nHost: x\r\n\r\n", "505"},
+                      ErrorCase{"VersionNotSupported", "GET /test HTTP/2.0\r\nhost: x\r\n\r\n", "505"},
                       ErrorCase{"UnsupportedTransferEncoding",
-                                "POST /u HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\nConnection: close\r\n\r\n",
+                                "POST /u HTTP/1.1\r\nhost: x\r\ntransfer-encoding: gzip\r\nconnection: close\r\n\r\n",
                                 "501"},
                       ErrorCase{"ContentLengthTransferEncodingConflict",
-                                "POST /c HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nTransfer-Encoding: "
-                                "chunked\r\nConnection: close\r\n\r\nhello",
+                                "POST /c HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\ntransfer-encoding: "
+                                "chunked\r\nconnection: close\r\n\r\nhello",
                                 "400"}));
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
@@ -507,14 +505,14 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
-  std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\n\r\n";
+  std::string_view req = "GET /h HTTP/1.0\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req);
 
   std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_FALSE(resp.contains("Connection:"));
+  ASSERT_FALSE(resp.contains("connection:"));
   // Second request should not yield another response (connection closed). We attempt to read after sending.
-  std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\n\r\n";
+  std::string_view req2 = "GET /h2 HTTP/1.0\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req2);
   // Expect no data (connection should be closed) -- use test helper which waits briefly
   auto n2 = test::recvWithTimeout(fd);
@@ -526,11 +524,11 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
-  std::string_view req = "GET /h HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  std::string_view req = "GET /h HTTP/1.0\r\nhost: x\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req);
   std::string first = test::recvWithTimeout(fd);
   ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
-  std::string_view req2 = "GET /h2 HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  std::string_view req2 = "GET /h2 HTTP/1.0\r\nhost: x\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd);
   ASSERT_TRUE(second.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
@@ -549,7 +547,7 @@ std::string sendRaw(std::string_view raw) {
 
 TEST(HttpMalformed, MissingSpacesInRequestLine) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
-  std::string resp = sendRaw("GET/abcHTTP/1.1\r\nHost: x\r\n\r\n");
+  std::string resp = sendRaw("GET/abcHTTP/1.1\r\nhost: x\r\n\r\n");
   ASSERT_TRUE(resp.contains("400")) << resp;
 }
 
@@ -558,7 +556,7 @@ TEST(HttpMalformed, OversizedHeaders) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   std::string big(200, 'A');
-  std::string raw = "GET / HTTP/1.1\r\nHost: x\r\nX-Big: " + big + "\r\n\r\n";
+  std::string raw = "GET / HTTP/1.1\r\nhost: x\r\nx-big: " + big + "\r\n\r\n";
   std::string resp = sendRaw(raw);
   ASSERT_TRUE(resp.contains("431")) << resp;
 }
@@ -567,7 +565,7 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
   // Transfer-Encoding with invalid hex char 'Z'
-  std::string raw = "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
+  std::string raw = "POST / HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\nZ\r\n";  // incomplete + invalid
   std::string resp = sendRaw(raw);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
@@ -583,11 +581,11 @@ TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
 
   // Representative variants for common methods.
   static constexpr std::pair<std::string_view, std::string_view> cases[]{
-      {"GET /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
-      {"get /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
-      {"GeT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "GET"},
-      {"POST /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "POST"},
-      {"pOsT /ci HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", "POST"},
+      {"GET /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
+      {"get /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
+      {"GeT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
+      {"POST /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "POST"},
+      {"pOsT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "POST"},
   };
 
   for (const auto& pair : cases) {
@@ -973,7 +971,7 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
 
   constexpr int kRequests = 30;
   for (int iter = 0; iter < kRequests; ++iter) {
-    const std::string reqStr = "GET /ka-stress HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n";
+    const std::string reqStr = "GET /ka-stress HTTP/1.1\r\nhost: localhost\r\nconnection: keep-alive\r\n\r\n";
     test::sendAll(fd, reqStr);
 
     auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{5000},
@@ -1015,14 +1013,14 @@ TEST(HttpTrailers, BasicTrailer) {
 
   std::string req =
       "POST /trailer HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\nWiki\r\n"
       "5\r\npedia\r\n"
       "0\r\n"
-      "X-Checksum: abc123\r\n"
+      "x-checksum: abc123\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1061,15 +1059,15 @@ TEST(HttpTrailers, MultipleTrailers) {
 
   std::string req =
       "POST /multi HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "X-Checksum: xyz789\r\n"
-      "X-Timestamp: 2025-10-20T12:00:00Z\r\n"
-      "X-Custom-Trailer: value123\r\n"
+      "x-checksum: xyz789\r\n"
+      "x-timestamp: 2025-10-20T12:00:00Z\r\n"
+      "x-custom-trailer: value123\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1090,12 +1088,12 @@ TEST(HttpTrailers, TrailersDoNotLeakAcrossKeepAliveRequests) {
   // First request: chunked body + one trailer; keep the connection open (no Connection: close).
   const std::string chunkedWithTrailer =
       "POST /first HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ndata\r\n"
       "0\r\n"
-      "X-Checksum: abc123\r\n"
+      "x-checksum: abc123\r\n"
       "\r\n";
   test::sendAll(fd, chunkedWithTrailer);
   const std::string first = test::recvWithTimeout(fd, 500ms);  // NOLINT(misc-include-cleaner)
@@ -1105,9 +1103,9 @@ TEST(HttpTrailers, TrailersDoNotLeakAcrossKeepAliveRequests) {
   // Second request on the same connection: fixed-length, no trailers.
   const std::string fixedLength =
       "POST /second HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Content-Length: 5\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "content-length: 5\r\n"
+      "connection: close\r\n"
       "\r\n"
       "hello";
   test::sendAll(fd, fixedLength);
@@ -1129,9 +1127,9 @@ TEST(HttpTrailers, NoTrailers) {
 
   std::string req =
       "POST /notrailer HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ndata\r\n"
       "0\r\n"
@@ -1157,13 +1155,13 @@ TEST(HttpTrailers, TrailerWhitespaceTrim) {
 
   std::string req =
       "POST /trim HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "2\r\nhi\r\n"
       "0\r\n"
-      "X-Data:   trimmed  \r\n"
+      "x-data:   trimmed  \r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1179,12 +1177,12 @@ TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1200,12 +1198,12 @@ TEST(HttpTrailers, ForbiddenTrailerContentLength) {
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "Content-Length: 100\r\n"
+      "content-length: 100\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1221,12 +1219,12 @@ TEST(HttpTrailers, ForbiddenTrailerHost) {
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "Host: evil.com\r\n"
+      "host: evil.com\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1242,12 +1240,12 @@ TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
 
   std::string req =
       "POST /forbidden HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "Authorization: Bearer token123\r\n"
+      "authorization: Bearer token123\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1269,12 +1267,12 @@ TEST(HttpTrailers, TrailerSizeLimit) {
   std::string largeValue(300, 'X');
   std::string req =
       "POST /largetrailer HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "X-Large: " +
+      "x-large: " +
       largeValue +
       "\r\n"
       "\r\n";
@@ -1299,9 +1297,9 @@ TEST(HttpTrailers, TrailerEmptyValue) {
 
   std::string req =
       "POST /empty HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
@@ -1329,13 +1327,13 @@ TEST(HttpTrailers, TrailerCaseInsensitive) {
 
   std::string req =
       "POST /case HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "X-Checksum: test123\r\n"
+      "x-checksum: test123\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1359,14 +1357,14 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
 
   std::string req =
       "POST /dupmerge HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "Accept: text/html\r\n"
-      "Accept: application/json\r\n"
+      "accept: text/html\r\n"
+      "accept: application/json\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1390,14 +1388,14 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
 
   std::string req =
       "POST /dupoverride HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "From: a@example.com\r\n"
-      "From: b@example.com\r\n"
+      "from: a@example.com\r\n"
+      "from: b@example.com\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1416,13 +1414,13 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
 
   std::string req =
       "POST /unknownnomerge HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
-      "X-Experimental: a\r\n"
-      "X-Experimental: b\r\n"
+      "x-experimental: a\r\n"
+      "x-experimental: b\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1438,8 +1436,8 @@ TEST(HttpTrailers, MalformedTrailerNoColon) {
 
   std::string req =
       "POST /malformed HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Transfer-Encoding: chunked\r\n"
+      "host: example.com\r\n"
+      "transfer-encoding: chunked\r\n"
       "\r\n"
       "4\r\ntest\r\n"
       "0\r\n"
@@ -1463,9 +1461,9 @@ TEST(HttpTrailers, NonChunkedNoTrailers) {
 
   std::string req =
       "POST /fixed HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Content-Length: 4\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "content-length: 4\r\n"
+      "connection: close\r\n"
       "\r\n"
       "test";
   test::sendAll(fd, req);
@@ -1501,8 +1499,8 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
       req += path;
       req +=
           " HTTP/1.1\r\n"
-          "Host: example.com\r\n"
-          "Connection: close\r\n"
+          "host: example.com\r\n"
+          "connection: close\r\n"
           "\r\n";
 
       test::sendAll(fd, req);
@@ -1537,9 +1535,9 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
   ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(200);
     writer.writeBody("data");
-    writer.trailerAddLine("X-Checksum", "xyz789");
-    writer.trailerAddLine("X-Timestamp", "2025-10-20T12:00:00Z");
-    writer.trailerAddLine("X-Custom", "value");
+    writer.trailerAddLine("x-checksum", "xyz789");
+    writer.trailerAddLine("x-timestamp", "2025-10-20T12:00:00Z");
+    writer.trailerAddLine("x-custom", "value");
     writer.end();
   });
 
@@ -1548,15 +1546,15 @@ TEST(HttpResponseWriterTrailers, MultipleTrailers) {
 
   std::string req =
       "GET /multi HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
 
-  EXPECT_TRUE(resp.contains("X-Checksum: xyz789"));
-  EXPECT_TRUE(resp.contains("X-Timestamp: 2025-10-20T12:00:00Z"));
-  EXPECT_TRUE(resp.contains("X-Custom: value"));
+  EXPECT_TRUE(resp.contains("x-checksum: xyz789"));
+  EXPECT_TRUE(resp.contains("x-timestamp: 2025-10-20T12:00:00Z"));
+  EXPECT_TRUE(resp.contains("x-custom: value"));
 }
 
 // Test trailer with empty value
@@ -1564,7 +1562,7 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
   ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
-    writer.trailerAddLine("X-Empty", "");
+    writer.trailerAddLine("x-empty", "");
     writer.end();
   });
 
@@ -1573,14 +1571,14 @@ TEST(HttpResponseWriterTrailers, EmptyValue) {
 
   std::string req =
       "GET /empty HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
 
   // Empty value should still create the header line
-  EXPECT_TRUE(resp.contains("X-Empty:"));
+  EXPECT_TRUE(resp.contains("x-empty:"));
 }
 
 // Test trailer added after end() is ignored
@@ -1589,7 +1587,7 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("test");
     writer.end();
-    writer.trailerAddLine("X-Late", "ignored");  // Should be ignored
+    writer.trailerAddLine("x-late", "ignored");  // Should be ignored
   });
 
   test::ClientConnection sock(port);
@@ -1597,14 +1595,14 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
 
   std::string req =
       "GET /late HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
 
   // Late trailer should NOT appear
-  EXPECT_FALSE(resp.contains("X-Late"));
+  EXPECT_FALSE(resp.contains("x-late"));
 }
 
 // Test trailers ignored for fixed-length responses
@@ -1613,7 +1611,7 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
     writer.status(http::StatusCodeOK);
     writer.contentLength(4);  // Fixed length
     writer.writeBody("test");
-    writer.trailerAddLine("X-Ignored", "value");  // Should be ignored
+    writer.trailerAddLine("x-ignored", "value");  // Should be ignored
     writer.end();
   });
 
@@ -1622,8 +1620,8 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
 
   std::string req =
       "GET /fixed HTTP/1.1\r\n"
-      "Host: example.com\r\n"
-      "Connection: close\r\n"
+      "host: example.com\r\n"
+      "connection: close\r\n"
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
@@ -1633,7 +1631,7 @@ TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   EXPECT_FALSE(resp.contains(http::TransferEncoding));
 
   // Trailer should NOT appear
-  EXPECT_FALSE(resp.contains("X-Ignored"));
+  EXPECT_FALSE(resp.contains("x-ignored"));
 }
 
 TEST(HttpStats, BasicCountersIncrement) {
@@ -2415,7 +2413,7 @@ std::string RequestVerb(std::string_view verb, std::string_view target) {
   req.push_back(' ');
   req.append(target);
 
-  req.append(" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+  req.append(" HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
   test::sendAll(fd, req);
   return test::recvUntilClosed(fd);
 }
@@ -2424,9 +2422,9 @@ std::string RequestMethod(std::string_view method, std::string_view path, std::s
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
 
-  std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nHost: test\r\nConnection: close\r\n";
+  std::string req = std::string(method) + " " + std::string(path) + " HTTP/1.1\r\nhost: test\r\nconnection: close\r\n";
   if (!body.empty()) {
-    req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    req += "content-length: " + std::to_string(body.size()) + "\r\n";
   }
   req += "\r\n";
   req += body;
@@ -2480,22 +2478,22 @@ TEST(HttpStreaming, ChunkedSimple) {
   ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(200);
     writer.contentType("text/plain");
-    EXPECT_THROW(writer.header("Invalid Header", "value"), std::invalid_argument);
-    EXPECT_THROW(writer.headerAddLine("Invalid Header", "value"), std::invalid_argument);
-    EXPECT_THROW(writer.headerAddLine("X-Header", "value\r\n"), std::invalid_argument);
-    writer.headerAddLine("X-Custom", "value");
+    EXPECT_THROW(writer.header("invalid header", "value"), std::invalid_argument);
+    EXPECT_THROW(writer.headerAddLine("invalid header", "value"), std::invalid_argument);
+    EXPECT_THROW(writer.headerAddLine("x-header", "value\r\n"), std::invalid_argument);
+    writer.headerAddLine("x-custom", "value");
     writer.contentType("text/custom");  // should be allowed to update content type before body is written
     writer.writeBody("hello ");
     writer.status(400);                             // should be ignored after headers sent
-    writer.headerAddLine("X-Custom-2", "value 2");  // should be ignored after headers sent
+    writer.headerAddLine("x-custom-2", "value 2");  // should be ignored after headers sent
     writer.writeBody("world");
     writer.end();
     writer.end();  // second end() should be no-op
   });
   std::string resp = BlockingFetch("GET", "/stream");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  ASSERT_TRUE(resp.contains("X-Custom: value\r\n"));
-  ASSERT_FALSE(resp.contains("X-Custom-2"));  // header added after headers sent should be ignored
+  ASSERT_TRUE(resp.contains("x-custom: value\r\n"));
+  ASSERT_FALSE(resp.contains("x-custom-2"));  // header added after headers sent should be ignored
   // Should contain chunk sizes in hex (6 and 5) and terminating 0 chunk.
   ASSERT_TRUE(resp.contains("6\r\nhello "));
   ASSERT_TRUE(resp.contains("5\r\nworld"));
@@ -2506,15 +2504,15 @@ TEST(HttpStreaming, HttpHeaderValuesAreTrimmed) {
   ts.resetConfig();
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header("X-Trimmed", "   trimmed-value   ");
-    writer.headerAddLine("X-Also-Trimmed", "  another-trim  ");
+    writer.header("x-trimmed", "   trimmed-value   ");
+    writer.headerAddLine("x-also-trimmed", "  another-trim  ");
     writer.writeBody("data");
     writer.end();
   });
   std::string resp = BlockingFetch("GET", "/trim-headers");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(resp.contains("X-Trimmed: trimmed-value\r\n"));
-  EXPECT_TRUE(resp.contains("X-Also-Trimmed: another-trim\r\n"));
+  EXPECT_TRUE(resp.contains("x-trimmed: trimmed-value\r\n"));
+  EXPECT_TRUE(resp.contains("x-also-trimmed: another-trim\r\n"));
 }
 
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
@@ -2555,7 +2553,7 @@ TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
     writer.status(200);
     writer.file(File(path));
     EXPECT_FALSE(writer.writeBody("extra data"));  // should be no-op
-    writer.trailerAddLine("X-Trailer", "value");   // should be no-op
+    writer.trailerAddLine("x-trailer", "value");   // should be no-op
     writer.end();
   });
 
@@ -2651,7 +2649,7 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   std::string resp = BlockingFetch("HEAD", "/head");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
-  // ("Content-Length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
+  // ("content-length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
   // The terminating chunk in a chunked response would appear as "\r\n0\r\n\r\n" (preceded by the blank line
   // after headers or previous chunk). We also assert absence of Transfer-Encoding: chunked and body payload.
   ASSERT_FALSE(resp.contains("\r\n0\r\n\r\n"));
@@ -2790,13 +2788,13 @@ TEST(HttpStreamingCompression, MultiChunkCompressedWriteReusesBuffer) {
 TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(200);
-    writer.header("X-Custom-A", "alpha");
-    writer.header("X-Custom-B", "beta");
+    writer.header("x-custom-a", "alpha");
+    writer.header("x-custom-b", "beta");
     writer.contentType("application/json");  // override default
     // First write sends headers implicitly.
     writer.writeBody("{\"k\":1}");
     // These should be ignored because headers already sent.
-    writer.header("X-Ignored", "zzz");
+    writer.header("x-ignored", "zzz");
     writer.contentType("text/plain");
     writer.end();
   });
@@ -2808,14 +2806,14 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(headResp.starts_with("HTTP/1.1 200"));
   // Custom headers should appear exactly once each.
-  ASSERT_TRUE(getResp.contains("X-Custom-A: alpha\r\n"));
-  ASSERT_TRUE(getResp.contains("X-Custom-B: beta\r\n"));
+  ASSERT_TRUE(getResp.contains("x-custom-a: alpha\r\n"));
+  ASSERT_TRUE(getResp.contains("x-custom-b: beta\r\n"));
   // Overridden content type
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
   // Default text/plain should not appear.
   ASSERT_FALSE(getResp.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   // Ignored header should not appear.
-  ASSERT_FALSE(getResp.contains("X-Ignored: zzz"));
+  ASSERT_FALSE(getResp.contains("x-ignored: zzz"));
   // Body present in GET but not in HEAD.
   ASSERT_TRUE(getResp.contains("{\"k\":1}"));
   ASSERT_FALSE(headResp.contains("{\"k\":1}"));
@@ -2950,9 +2948,9 @@ TEST(HttpServerMixed, KeepAliveSequentialMixedStreamingAndNormal) {
                       [](const HttpRequestView&) { return HttpResponse(201).reason("Created").body("NORMAL"); });
 
   // Build raw requests (each must include Host and Connection: keep-alive)
-  std::string r1 = "GET /ka HTTP/1.1\r\nHost: test\r\nConnection: keep-alive\r\n\r\n";  // streaming
+  std::string r1 = "GET /ka HTTP/1.1\r\nhost: test\r\nconnection: keep-alive\r\n\r\n";  // streaming
   std::string r2 =
-      "POST /ka HTTP/1.1\r\nHost: test\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";  // normal, closes
+      "POST /ka HTTP/1.1\r\nhost: test\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";  // normal, closes
 
   test::ClientConnection cnx(port);
 
@@ -2989,12 +2987,12 @@ TEST(StreamingKeepAlive, TwoSequentialRequests) {
 
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
-  std::string req1 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  std::string req1 = "GET / HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
   auto r1 = test::recvWithTimeout(fd);
   ASSERT_FALSE(r1.empty());
   // Send second request on same connection.
-  std::string req2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";  // request close after second
+  std::string req2 = "GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";  // request close after second
   test::sendAll(fd, req2);
   auto r2 = test::recvWithTimeout(fd);
   ASSERT_FALSE(r2.empty());
@@ -3011,7 +3009,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
 
-  std::string hreq = "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n";
+  std::string hreq = "HEAD / HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, hreq);
   auto hr = test::recvWithTimeout(fd);
   // Ensure no body appears after header terminator.
@@ -3019,7 +3017,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   ASSERT_NE(pos, std::string::npos);
   ASSERT_TRUE(hr.substr(pos + http::DoubleCRLF.size()).empty());
   // second GET
-  std::string g2 = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  std::string g2 = "GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, g2);
   auto gr2 = test::recvWithTimeout(fd);
   ASSERT_TRUE(gr2.contains("ignored-body"));  // ensure body from second request present
@@ -3030,7 +3028,7 @@ void raw(auto port, std::string_view verb, std::string& out) {
   test::ClientConnection sock(port);
   auto fd = sock.fd();
   std::string req(verb);
-  req += " /len HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  req += " /len HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   out = test::recvUntilClosed(fd);
 }
@@ -3039,9 +3037,9 @@ void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, st
   test::ClientConnection sock(port);
   auto fd = sock.fd();
   std::string req(verb);
-  req += " /len HTTP/1.1\r\nHost: x\r\n";
+  req += " /len HTTP/1.1\r\nhost: x\r\n";
   req += extraHeaders;
-  req += "Connection: close\r\n\r\n";
+  req += "connection: close\r\n\r\n";
   test::sendAll(fd, req);
   out = test::recvUntilClosed(fd);
 }
@@ -3156,7 +3154,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
     writer.end();
   });
   std::string resp;
-  rawWith(port, "GET", "Accept-Encoding: gzip\r\n", resp);
+  rawWith(port, "GET", "accept-encoding: gzip\r\n", resp);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // We expect a fixed-length header present.
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(originalSize))));
@@ -3196,7 +3194,7 @@ TEST(StreamingBackpressure, LargeBodyQueues) {
   });
   test::ClientConnection cnx(port);
   auto fd = cnx.fd();
-  std::string_view req = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+  std::string_view req = "GET / HTTP/1.1\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req);
 
   auto data = test::recvUntilClosed(fd);
@@ -3261,10 +3259,10 @@ TEST(HttpStreaming, CustomContentTypeAndEncoding) {
   test::ClientConnection cc(port);
   auto fd = cc.fd();
   std::string req =
-      "GET /h HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+      "GET /h HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  // Ensure our original casing appears exactly and no differently cased duplicate exists.
+  // Ensure the managed headers appear once with their normalized names.
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/xml"))) << resp;
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "identity"))) << resp;
   // Body should be identity (contains long run of 'Z').
@@ -3329,7 +3327,7 @@ TEST(HttpResponseWriterFailures, OperationsAfterEnd) {
 
     // These should all be ignored (State::Ended)
     EXPECT_FALSE(writer.writeBody("more"));
-    writer.trailerAddLine("X-Ignored", "value");
+    writer.trailerAddLine("x-ignored", "value");
     writer.end();  // Second end() should be harmless
   });
 
@@ -3343,13 +3341,13 @@ TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
   ts.router().setPath(http::Method::GET, "/modify-after-headers",
                       [](const HttpRequestView&, HttpResponseWriter& writer) {
                         writer.status(http::StatusCodeOK);
-                        writer.header("X-Before", "value1");
+                        writer.header("x-before", "value1");
                         writer.writeBody("chunk1");  // This sends headers
 
                         // These should be ignored (State::HeadersSent)
                         writer.status(http::StatusCodeNotFound);     // Ignored
-                        writer.header("X-After", "value2");          // Ignored
-                        writer.headerAddLine("X-After2", "value3");  // Ignored
+                        writer.header("x-after", "value2");          // Ignored
+                        writer.headerAddLine("x-after2", "value3");  // Ignored
                         writer.contentLength(50);                    // Ignored
 
                         writer.writeBody("chunk2");
@@ -3358,8 +3356,8 @@ TEST(HttpResponseWriterFailures, ModifyAfterHeadersSent) {
 
   const std::string response = test::simpleGet(port, "/modify-after-headers");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(response.contains("X-Before: value1"));
-  EXPECT_FALSE(response.contains("X-After"));
+  EXPECT_TRUE(response.contains("x-before: value1"));
+  EXPECT_FALSE(response.contains("x-after"));
 }
 
 // Test trailerAddLine for fixed-length response (non-chunked) - should be ignored
@@ -3369,12 +3367,12 @@ TEST(HttpResponseWriterFailures, TrailerForFixedLength) {
     writer.contentLength(4);  // Fixed length = non-chunked
 
     // trailerAddLine should be ignored before writing body ...
-    writer.trailerAddLine("X-Trailer", "ignored");
+    writer.trailerAddLine("x-trailer", "ignored");
 
     writer.writeBody("test");
 
     // ... and because not chunked
-    writer.trailerAddLine("X-Trailer", "ignored");
+    writer.trailerAddLine("x-trailer", "ignored");
     writer.end();
   });
 
@@ -3517,7 +3515,7 @@ TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
 
   test::ClientConnection sock(port);
   auto fd = sock.fd();
-  std::string req = "GET /ensure-headers-sent-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  std::string req = "GET /ensure-headers-sent-fail HTTP/1.1\r\nhost: test\r\n\r\n";
   test::sendAll(fd, req);
   sock.close();  // Close immediately to trigger enqueue failure
 }
@@ -3531,16 +3529,16 @@ TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
   ts.router().setPath(http::Method::GET, "/last-chunk-fail", [](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("chunk1");
-    writer.trailerAddLine("X-Trailer", "value");
-    EXPECT_THROW(writer.trailerAddLine("Invalid:header", "value"), std::invalid_argument);
-    EXPECT_THROW(writer.trailerAddLine("X-Trailer", "value\r\n"), std::invalid_argument);
+    writer.trailerAddLine("x-trailer", "value");
+    EXPECT_THROW(writer.trailerAddLine("invalid:header", "value"), std::invalid_argument);
+    EXPECT_THROW(writer.trailerAddLine("x-trailer", "value\r\n"), std::invalid_argument);
     // end() calls emitLastChunk
     writer.end();
   });
 
   test::ClientConnection sock(port);
   auto fd = sock.fd();
-  std::string req = "GET /last-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  std::string req = "GET /last-chunk-fail HTTP/1.1\r\nhost: test\r\n\r\n";
   test::sendAll(fd, req);
   // Read some data first
   char buf[1024];
@@ -3567,7 +3565,7 @@ TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
 
   test::ClientConnection sock(port);
   auto fd = sock.fd();
-  std::string req = "HEAD /fixed-body-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  std::string req = "HEAD /fixed-body-fail HTTP/1.1\r\nhost: test\r\n\r\n";
   test::sendAll(fd, req);
   sock.close();  // Close to trigger enqueue failure on body write
 }
@@ -3592,7 +3590,7 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
 
   test::ClientConnection sock(ts2.port());
   auto fd = sock.fd();
-  std::string req = "GET /compress-end-fail HTTP/1.1\r\nHost: test\r\nAccept-Encoding: gzip\r\n\r\n";
+  std::string req = "GET /compress-end-fail HTTP/1.1\r\nhost: test\r\naccept-encoding: gzip\r\n\r\n";
   test::sendAll(fd, req);
   // Read headers
   char buf[512];
@@ -3621,7 +3619,7 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
 
   test::ClientConnection sock(ts3.port());
   auto fd = sock.fd();
-  std::string req = "GET /identity-buffered-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  std::string req = "GET /identity-buffered-fail HTTP/1.1\r\nhost: test\r\n\r\n";
   test::sendAll(fd, req);
   // Read headers
   char buf[512];
@@ -3641,7 +3639,7 @@ TEST(HttpResponseWriterFailures, EmitChunkFailure) {
                         for (int i = 0; i < 100; ++i) {
                           if (!writer.writeBody(largeData)) {
                             writer.contentLength(999);
-                            writer.trailerAddLine("X-Fail", "yes");
+                            writer.trailerAddLine("x-fail", "yes");
                             writer.end();
                             return;
                           }
@@ -3651,7 +3649,7 @@ TEST(HttpResponseWriterFailures, EmitChunkFailure) {
 
   test::ClientConnection sock(port);
   auto fd = sock.fd();
-  std::string req = "GET /emit-chunk-fail HTTP/1.1\r\nHost: test\r\n\r\n";
+  std::string req = "GET /emit-chunk-fail HTTP/1.1\r\nhost: test\r\n\r\n";
   test::sendAll(fd, req);
   sock.close();
 }
@@ -3699,13 +3697,13 @@ TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
                         auto base = req.makeResponse(http::StatusCodeAccepted, "ignored", http::ContentTypeTextPlain);
 
                         writer.status(base.status());
-                        if (auto val = base.headerValue("X-Global")) {
-                          writer.headerAddLine("X-Global", *val);
+                        if (auto val = base.headerValue("x-global")) {
+                          writer.headerAddLine("x-global", *val);
                         }
-                        if (auto val = base.headerValue("X-Another")) {
-                          writer.headerAddLine("X-Another", *val);
+                        if (auto val = base.headerValue("x-another")) {
+                          writer.headerAddLine("x-another", *val);
                         }
-                        writer.headerAddLine("X-Stream", "yes");
+                        writer.headerAddLine("x-stream", "yes");
 
                         writer.writeBody("stream-body");
                         writer.end();
@@ -3713,14 +3711,14 @@ TEST(HttpStreamingMakeResponse, PrefillsGlobalHeadersHttp11) {
 
   test::ClientConnection client(port);
   const auto fd = client.fd();
-  std::string req = "GET /stream-make-response HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /stream-make-response HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
   const std::string resp = test::recvUntilClosed(fd);
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 202"));
-  EXPECT_TRUE(resp.contains("X-Global: gvalue"));
-  EXPECT_TRUE(resp.contains("X-Another: anothervalue"));
-  EXPECT_TRUE(resp.contains("X-Stream: yes"));
+  EXPECT_TRUE(resp.contains("x-global: gvalue"));
+  EXPECT_TRUE(resp.contains("x-another: anothervalue"));
+  EXPECT_TRUE(resp.contains("x-stream: yes"));
   EXPECT_TRUE(resp.contains("stream-body"));
 }
 
@@ -3738,10 +3736,10 @@ TEST(HttpStreaming, ChunkedRequestWithExpect100Continue) {
   // Send headers first with Expect: 100-continue
   std::string headers =
       "POST /chunked-expect HTTP/1.1\r\n"
-      "Host: test\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Expect: 100-continue\r\n"
-      "Connection: close\r\n\r\n";
+      "host: test\r\n"
+      "transfer-encoding: chunked\r\n"
+      "expect: 100-continue\r\n"
+      "connection: close\r\n\r\n";
   test::sendAll(fd, headers);
 
   // Wait for 100 Continue interim response
@@ -3781,10 +3779,10 @@ TEST(HttpStreaming, ChunkedRequestWithMalformedContentEncodingRejects400) {
   // Send chunked request with malformed Content-Encoding (double comma = empty token)
   std::string req =
       "POST /chunked-bad-encoding HTTP/1.1\r\n"
-      "Host: test\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Content-Encoding: identity,,identity\r\n"
-      "Connection: close\r\n\r\n"
+      "host: test\r\n"
+      "transfer-encoding: chunked\r\n"
+      "content-encoding: identity,,identity\r\n"
+      "connection: close\r\n\r\n"
       "3\r\nabc\r\n"
       "0\r\n\r\n";
   test::sendAll(fd, req);
@@ -3810,10 +3808,10 @@ TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
   // Send chunked request with empty Content-Encoding header value
   std::string req =
       "POST /chunked-empty-encoding HTTP/1.1\r\n"
-      "Host: test\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Content-Encoding: \r\n"
-      "Connection: close\r\n\r\n"
+      "host: test\r\n"
+      "transfer-encoding: chunked\r\n"
+      "content-encoding: \r\n"
+      "connection: close\r\n\r\n"
       "3\r\nxyz\r\n"
       "0\r\n\r\n";
   test::sendAll(fd, req);
@@ -3834,9 +3832,9 @@ TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
   // Send chunked request with malformed CRLF after chunk data
   std::string req =
       "POST /chunked-malformed-crlf HTTP/1.1\r\n"
-      "Host: test\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n\r\n"
+      "host: test\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n\r\n"
       "3\r\nabc\n\n"  // Malformed CRLF here
       "0\r\n\r\n";
   test::sendAll(fd, req);
@@ -3862,9 +3860,9 @@ TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
   // Send chunked request with body larger than maxBodyBytes
   std::string req =
       "POST /chunked-too-large HTTP/1.1\r\n"
-      "Host: test\r\n"
-      "Transfer-Encoding: chunked\r\n"
-      "Connection: close\r\n\r\n"
+      "host: test\r\n"
+      "transfer-encoding: chunked\r\n"
+      "connection: close\r\n\r\n"
       "3\r\n123\r\n"
       "3\r\n456\r\n"
       "0\r\n\r\n";
@@ -4088,7 +4086,7 @@ TEST(HttpLargeFile, ServeLargeFile) {
   test::ClientConnection cnx(ts.port());
   NativeHandle fd = cnx.fd();
 
-  std::string req = "GET /" + fileName + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /" + fileName + " HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n";
   test::sendAll(fd, req);
 
   // Use recvWithTimeout which waits for complete Content-Length
@@ -4205,7 +4203,7 @@ TEST(HttpRangeMulti, MultiRangePartialContent) {
   EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
 
   const auto ct = getHeader(parsed, http::ContentType);
-  EXPECT_TRUE(ct.starts_with("multipart/byteranges; boundary=")) << "Got: " << ct;
+  EXPECT_TRUE(ct.starts_with("multipart/byteranges; boundary=")) << "got: " << ct;
 
   auto parts = ParseMultipartByterangesResponse(ct, parsed.body);
   ASSERT_EQ(parts.size(), 2U);
@@ -4553,7 +4551,7 @@ TEST(HttpQueryStructuredBindings, IterateKeyValues) {
   });
   // Build raw HTTP request using helpers
   test::ClientConnection client(ts.port());
-  std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+  std::string req = "GET /sb?a=1&b=two%20words&empty=&novalue HTTP/1.1\r\nhost: test\r\nconnection: close\r\n\r\n";
   test::sendAll(client.fd(), req);
   auto resp = test::recvUntilClosed(client.fd());
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
@@ -4591,7 +4589,7 @@ TEST(HttpRateLimit, GlobalPeerAddressLimiterReturns429AndRetryAfter) {
 
   const auto r2 = aeronet::test::simpleGet(ts.port(), "/rl");
   EXPECT_TRUE(r2.starts_with("HTTP/1.1 429")) << r2;
-  EXPECT_TRUE(r2.contains("Retry-After:")) << r2;
+  EXPECT_TRUE(r2.contains("retry-after:")) << r2;
 }
 
 TEST(HttpRateLimit, RouteSpecificLimiterOnlyAffectsItsRoute) {
@@ -4744,7 +4742,7 @@ TEST(HttpRateLimit, StoreExceptionsFailClosedWithRetryAfterAndBody) {
 
   const auto response = aeronet::test::simpleGet(ts.port(), "/throw-closed");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 429")) << response;
-  EXPECT_TRUE(response.contains("Retry-After: 1")) << response;
+  EXPECT_TRUE(response.contains("retry-after: 1")) << response;
   EXPECT_TRUE(response.contains("slow down")) << response;
 }
 

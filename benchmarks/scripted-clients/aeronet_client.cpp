@@ -12,6 +12,7 @@
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "bench-client-harness.hpp"
 
 namespace {
@@ -44,7 +45,7 @@ class AeronetSession {
         _request(_client.makeRequest(spec.method == "POST" ? aeronet::http::Method::POST : aeronet::http::Method::GET,
                                      cfg.baseUrl + spec.path)) {
     for (const auto& [name, value] : spec.requestHeaders) {
-      _request.headerAddLine(name, value);
+      _request.headerAddLine(aeronet::LowerAsciiKey{name}, value);
     }
     if (spec.method == "POST") {
       _request.body(spec.body, "application/octet-stream");
