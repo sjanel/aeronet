@@ -27,6 +27,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/date-header-cache.hpp"
 #include "aeronet/internal/keep-alive-deadline-queue.hpp"
 #include "aeronet/internal/lifecycle.hpp"
 #include "aeronet/internal/pending-updates.hpp"
@@ -659,6 +660,8 @@ class SingleHttpServer {
   EventLoop _eventLoop;
 
   internal::Lifecycle _lifecycle;
+
+  internal::DateHeaderCache _dateHeader;
 
 #ifndef AERONET_LINUX
   // Timestamp of last maintenance sweep. Used as fallback on Windows/macOS where the

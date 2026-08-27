@@ -111,8 +111,6 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   return out + sizeof(kSkeleton);
 }
 
-inline constexpr SysTimePoint kInvalidTimePoint = SysTimePoint::max();
-
 // Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and
 // return a time_point. If parsing fails, returns kInvalidTimePoint.
 SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr);

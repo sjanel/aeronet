@@ -12,11 +12,13 @@
 
 using namespace aeronet;
 
+static constexpr const char* const pDateHeader = "Sun, 06 Nov 1994 08:49:37 GMT";
+
 TEST(HttpErrorBuildTest, BuildSimpleErrorOnly) {
   // Test a few representative error codes
   for (auto code :
        {static_cast<http::StatusCode>(400), static_cast<http::StatusCode>(404), static_cast<http::StatusCode>(500)}) {
-    auto data = BuildSimpleError(code, {}, "Err");
+    auto data = BuildSimpleError(code, {}, "Err", pDateHeader);
     std::string_view full(data);
     std::string expected = std::string("HTTP/1.1 ") + std::to_string(code);
     EXPECT_TRUE(full.rfind(expected, 0) == 0) << "Response did not start with '" << expected << "':\n" << full;
@@ -43,17 +45,25 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithGlobalHeaders) {
   gh.append("X-Test: foo");
   gh.append("X-Server: aeronet");
 
-  auto data = BuildSimpleError(http::StatusCode{500}, gh, "Internal");
+  auto data = BuildSimpleError(http::StatusCode{500}, gh, "Internal", pDateHeader);
   std::string_view full(data);
 
   EXPECT_TRUE(full.contains("X-Test: foo\r\n")) << full;
   EXPECT_TRUE(full.contains("X-Server: aeronet\r\n")) << full;
 }
 
+TEST(HttpErrorBuildTest, BuildSimpleErrorUsesCachedDateHeader) {
+  static constexpr std::string_view kDateHeader = "Sun, 06 Nov 1994 08:49:37 GMT";
+
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const auto data = BuildSimpleError(http::StatusCode{400}, {}, "Bad request", kDateHeader.data());
+  EXPECT_TRUE(std::string_view(data).contains(kDateHeader)) << std::string_view(data);
+}
+
 TEST(HttpErrorBuildTest, BuildSimpleErrorUsesDefaultReasonWhenEmpty) {
   // When reason is empty, BuildSimpleError should use http::reasonPhraseFor(status)
   for (auto code : {static_cast<http::StatusCode>(400), static_cast<http::StatusCode>(503)}) {
-    auto data = BuildSimpleError(code, {}, "");
+    auto data = BuildSimpleError(code, {}, "", pDateHeader);
     std::string_view full(data);
     std::string expected =
         std::string("HTTP/1.1 ") + std::to_string(code) + " " + std::string(http::ReasonPhraseFor(code));
@@ -63,7 +73,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorUsesDefaultReasonWhenEmpty) {
 
 TEST(HttpErrorBuildTest, BuildSimpleErrorWithEmptyBody) {
   // When body is empty, Content-Length should be 0 and no body data should be present
-  auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
+  auto data = BuildSimpleError(http::StatusCode{404}, {}, "", pDateHeader);
   std::string_view full(data);
 
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << full;
@@ -73,7 +83,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithEmptyBody) {
 TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
   // Test with a larger body to ensure Content-Length is computed correctly
   std::string largeBody(1024, 'A');  // 1 KB body of 'A's
-  auto data = BuildSimpleError(http::StatusCode{413}, {}, largeBody);
+  auto data = BuildSimpleError(http::StatusCode{413}, {}, largeBody, pDateHeader);
   std::string_view full(data);
 
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "1024"))) << full;
@@ -82,7 +92,7 @@ TEST(HttpErrorBuildTest, BuildSimpleErrorWithLargeBody) {
 
 TEST(HttpErrorBuildTest, ShouldEmitContentType) {
   // When body is empty, Content-Length should be 0 and no body data should be present
-  auto data = BuildSimpleError(http::StatusCode{404}, {}, "");
+  auto data = BuildSimpleError(http::StatusCode{404}, {}, "", pDateHeader);
   std::string_view full(data);
 
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain))) << full;

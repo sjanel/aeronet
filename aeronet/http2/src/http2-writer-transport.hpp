@@ -19,7 +19,6 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/writer-transport.hpp"
 
 namespace aeronet::http2 {
@@ -33,8 +32,12 @@ namespace aeronet::http2 {
 /// pending-send maps for deferred flushing.
 class Http2WriterTransport final : public internal::IWriterTransport {
  public:
-  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders)
-      : _pConnection(&connection), _pGlobalHeaders(pGlobalHeaders), _streamId(streamId) {}
+  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders,
+                       const char* cachedDateHeader)
+      : _pConnection(&connection),
+        _pGlobalHeaders(pGlobalHeaders),
+        _pCachedDateHeader(cachedDateHeader),
+        _streamId(streamId) {}
 
   bool emitHeaders(HttpResponse& response, const HttpRequestView& /*request*/, bool /*compressionActivated*/,
                    Encoding /*compressionFormat*/, std::size_t /*declaredLength*/, bool isHead) override {
@@ -42,8 +45,8 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     response.finalizeHeadersAndBody();
 
-    // Finalize Date header (same as sendResponse path)
-    WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.dateHeaderStartPos());
+    // Finalize Date header (same as sendResponse path).
+    CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
 
     // Determine END_STREAM: headers-only response if HEAD request, or no body expected and no trailers.
     // For streaming, we generally do NOT set END_STREAM on HEADERS because body follows.
@@ -162,6 +165,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
  private:
   Http2Connection* _pConnection;
   const ConcatenatedHeaders* _pGlobalHeaders;
+  const char* _pCachedDateHeader;
   uint32_t _streamId;
   bool _isHead{false};
 

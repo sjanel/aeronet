@@ -25,7 +25,6 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/writer-transport.hpp"
 
 namespace aeronet::internal {
@@ -83,8 +82,8 @@ class Http1WriterTransport final : public IWriterTransport {
     response._opts.setStreamingBody();
 
     auto cnxIt = _server->_connections.iterator(_fd);
-    _server->queueData(cnxIt, response.finalizeForHttp1(SysClock::now(), http::HTTP_1_1, response._opts, nullptr,
-                                                        _server->config().minCapturedBodySize));
+    _server->queueData(cnxIt, response.finalizeForHttp1(_server->_dateHeader.data(), http::HTTP_1_1, response._opts,
+                                                        nullptr, _server->config().minCapturedBodySize));
     ConnectionState& cnx = _server->_connections.connectionState(cnxIt);
     if (cnx.isAnyCloseRequested()) {
       log::error("Http1WriterTransport: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),

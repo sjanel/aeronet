@@ -11,6 +11,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
@@ -100,7 +101,7 @@ class File {
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
   Identity _identity;
   std::size_t _fileSize{kError};
-  SysTimePoint _mtime{SysTimePoint::max()};  // == kInvalidTimePoint sentinel when metadata is unavailable
+  SysTimePoint _mtime{kInvalidTimePoint};
 };
 
 }  // namespace aeronet
