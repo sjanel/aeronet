@@ -445,11 +445,13 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
         // (its own idle timeout) would otherwise accept the request bytes locally and fail only on the
         // subsequent read, where a transparent retry could re-submit a non-idempotent request. Discard a
         // stale connection here (and its likely-stale siblings) so the request is always issued on a socket
-        // we have just confirmed is still open. IsConnectionStale also treats *pending bytes* as stale,
-        // which for HTTP/2 covers a GOAWAY (or any housekeeping frame) that arrived while idle: the
-        // connection is simply reconnected rather than reused. The engine is additionally consulted so a
-        // multiplexing protocol that cannot host one more stream is never handed out.
-        if (!IsConnectionStale(conn.cnx.fd()) && conn.proto.canTakeAnotherStream()) {
+        // we have just confirmed is still open. HTTP/2 first consumes already-arrived control frames so
+        // harmless flow-control traffic does not force a reconnect, while GOAWAY, close, malformed, and
+        // partial frames are rejected before any new request byte is sent. The final raw probe catches EOF,
+        // errors, and data that raced in after the protocol drain.
+        const bool reusable = conn.proto.isHttp2() ? conn.proto.prepareForReuse(conn.transport, conn.cnx.fd())
+                                                   : !IsConnectionStale(conn.cnx.fd());
+        if (reusable && conn.proto.canTakeAnotherStream()) {
           conn.reused = true;
           return conn;
         }

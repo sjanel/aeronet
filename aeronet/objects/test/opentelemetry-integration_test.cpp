@@ -10,6 +10,10 @@
 #include <string_view>
 #include <vector>
 
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+#include "../src/otel-metric-labels.hpp"
+#endif
+
 #include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -70,6 +74,7 @@ TEST(OpenTelemetryIntegration, HistogramBuckets) {
 
 TEST(OpenTelemetryIntegration, MetricsOperations) {
   tracing::TelemetryContext telemetry;
+  const MetricLabel labels[]{{"protocol", "h2"}};
 
   // Should be safe to call even without initialization
   auto span = telemetry.createSpan("test.span");
@@ -79,6 +84,10 @@ TEST(OpenTelemetryIntegration, MetricsOperations) {
   telemetry.gauge("test.gauge", 3);
   telemetry.histogram("test.histogram", 3.14);
   telemetry.timing("test.timing", std::chrono::milliseconds(100));
+  telemetry.counterAdd("test.labeled.counter", 10U, labels);
+  telemetry.gauge("test.labeled.gauge", 3, labels);
+  telemetry.histogram("test.labeled.histogram", 3.14, labels);
+  telemetry.timing("test.labeled.timing", std::chrono::milliseconds(100), labels);
 
   // Initialize
   TelemetryConfig cfg;
@@ -102,10 +111,40 @@ TEST(OpenTelemetryIntegration, MetricsOperations) {
       telemetry.histogram("test.histogram2", 1.61);
       telemetry.timing("test.timing", std::chrono::milliseconds(250));
       telemetry.timing("test.timing2", std::chrono::milliseconds(500));
+      telemetry.counterAdd("events.with-empty-labels", 1U, {});
+      telemetry.gauge("gauge.with-empty-labels", 4, {});
+      telemetry.histogram("histogram.with-empty-labels", 2.5, {});
+      telemetry.timing("timing.with-empty-labels", std::chrono::milliseconds(25), {});
       cfg.withEndpoint("http://localhost:4318/v1/metrics/");
     }
   }
 }
+
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+
+TEST(OpenTelemetryIntegration, MetricLabelsAdapterSupportsSizeIterationAndEarlyStop) {
+  const MetricLabel labels[]{
+      {"protocol", "h2"},
+      {"frame.type", "headers"},
+  };
+  const tracing::detail::OtelMetricLabels otelLabels(labels);
+  EXPECT_EQ(otelLabels.size(), 2U);
+
+  std::size_t visited = 0;
+  EXPECT_FALSE(otelLabels.ForEachKeyValue([&](auto, auto) {
+    ++visited;
+    return false;
+  }));
+  EXPECT_EQ(visited, 1U);
+
+  EXPECT_TRUE(otelLabels.ForEachKeyValue([&](auto, auto) {
+    ++visited;
+    return true;
+  }));
+  EXPECT_EQ(visited, 3U);
+}
+
+#endif
 
 TEST(OpenTelemetryIntegration, SpanOperations) {
   tracing::TelemetryContext telemetry;
@@ -292,6 +331,16 @@ TEST(OpenTelemetryIntegration, MallocFailureHandling) {
   EXPECT_NO_THROW(telemetry.histogram("test.should-fail-histogram", 1.0));
   test::FailNextMalloc(1);
   EXPECT_NO_THROW(telemetry.timing("test.should-fail-timing", std::chrono::milliseconds(100)));
+
+  const MetricLabel labels[]{{"protocol", "h2"}};
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.counterAdd("test.should-fail-labeled-counter", 1, labels));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.gauge("test.should-fail-labeled-gauge", 1, labels));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.histogram("test.should-fail-labeled-histogram", 1.0, labels));
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.timing("test.should-fail-labeled-timing", std::chrono::milliseconds(100), labels));
 }
 
 #endif

@@ -18,7 +18,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef AERONET_POSIX
+#include <sys/socket.h>
+#endif
+
 #include "aeronet/aeronet.hpp"
+#include "aeronet/base-fd.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/file.hpp"
@@ -37,6 +42,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -237,7 +243,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
 
   TransportResult read(char* buf, std::size_t len) {
     if (!_server.hasPendingOutput()) {
-      return {0, TransportHint::Error};
+      return {0, _idleWouldBlock ? TransportHint::ReadReady : TransportHint::Error};
     }
     const std::span<const std::byte> output = _server.getPendingOutput();
     const std::size_t readSize = std::min(output.size(), len);
@@ -263,6 +269,17 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
 
   [[nodiscard]] bool sawReset() const noexcept { return _sawReset; }
   [[nodiscard]] std::size_t bytesWritten() const noexcept { return _bytesWritten; }
+  [[nodiscard]] bool hasPendingReadData() const noexcept { return _server.hasPendingOutput(); }
+
+  void queuePing() {
+    _idleWouldBlock = true;
+    _server.sendPing({});
+  }
+
+  void queueGoAway() {
+    _idleWouldBlock = true;
+    _server.initiateGoAway();
+  }
 
  private:
   void respond(uint32_t streamId) {
@@ -308,6 +325,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
   std::size_t _bytesWritten{0};
   bool _responded{false};
   bool _sawReset{false};
+  bool _idleWouldBlock{false};
 };
 
 HttpRequest MakeFinalizedHttp2Request(HttpClient& client) {
@@ -440,6 +458,7 @@ TEST(HttpClientHttp2TransportTest, MissingContentTypeDefaultsToOctetStream) {
 
   ASSERT_TRUE(result);
   EXPECT_EQ(result->bodyInMemory(), "raw");
+  EXPECT_TRUE(result->hasBodyCaptured());
   EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
 }
 
@@ -460,6 +479,45 @@ TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_TRUE(transport.sawReset());
   EXPECT_GT(transport.bytesWritten(), 0U);
+}
+
+TEST(HttpClientHttp2TransportTest, PooledReuseDrainsPingAndRejectsGoAway) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+
+  for (const bool queueGoAway : {false, true}) {
+    HttpRequest req = MakeFinalizedHttp2Request(client);
+    LoopbackHttp2Transport backend(config.http2, LoopbackHttp2Transport::ResponseMode::EmptyData);
+    internal::ClientConnection connection(config.http2);
+    bool requestSent = false;
+    auto result = connection.exchange(client, backend, kInvalidHandle, req, SteadyClock::now(), requestSent);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(connection.keepAlive());
+
+    if (queueGoAway) {
+      backend.queueGoAway();
+    } else {
+      backend.queuePing();
+    }
+
+    NativeHandle localFd = kInvalidHandle;
+    NativeHandle peerFd = kInvalidHandle;
+#ifdef AERONET_WINDOWS
+    CreateLocalSocketPair(localFd, peerFd);
+#else
+    NativeHandle socketFds[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, socketFds), 0);
+    localFd = socketFds[0];
+    peerFd = socketFds[1];
+#endif
+    BaseFd local(localFd);
+    BaseFd peer(peerFd);
+    Transport transport = Transport::Borrow(backend);
+
+    EXPECT_EQ(connection.prepareForReuse(transport, local.fd()), !queueGoAway);
+    EXPECT_FALSE(backend.hasPendingReadData());
+  }
 }
 
 TEST(HttpClientHttp2E2ETest, PriorKnowledgeSimpleGet) {
@@ -616,9 +674,26 @@ TEST(HttpClientHttp2E2ETest, LargeResponseBodyReassembledAcrossDataFrames) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
   HttpClient client(cfg);
-  auto resp = client.get(Url("/big")).value();
-  EXPECT_EQ(resp.status(), 200);
-  EXPECT_EQ(resp.bodyInMemory(), MakeLargeBody());
+  const std::string expected = MakeLargeBody();
+  auto first = client.get(Url("/big")).value();
+  EXPECT_EQ(first.status(), 200);
+  EXPECT_EQ(first.bodyInMemory(), expected);
+  EXPECT_TRUE(first.hasBodyCaptured());
+  const char* const firstAllocation = first.bodyInMemory().data();
+
+  // The first transfer leaves an equal-capacity accumulator behind. A following small response is copied
+  // instead of making both it and the client retain a 1 MiB allocation, while the first response remains valid.
+  auto smallResponse = client.get(Url("/hello")).value();
+  EXPECT_EQ(smallResponse.bodyInMemory(), "world");
+  EXPECT_FALSE(smallResponse.hasBodyCaptured());
+  EXPECT_EQ(first.bodyInMemory(), expected);
+
+  // The retained accumulator is filled directly by the next large response and rotates into that result.
+  auto second = client.get(Url("/big")).value();
+  EXPECT_EQ(second.bodyInMemory(), expected);
+  EXPECT_TRUE(second.hasBodyCaptured());
+  EXPECT_NE(second.bodyInMemory().data(), firstAllocation);
+  EXPECT_EQ(first.bodyInMemory(), expected);
 }
 
 TEST(HttpClientHttp2E2ETest, SlowHandlerLargeResponseSurvivesKeepAliveSweep) {
@@ -655,6 +730,7 @@ TEST(HttpClientHttp2E2ETest, TransparentResponseDecompression) {
   auto resp = client.get(Url("/big")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), MakeLargeBody());
+  EXPECT_TRUE(resp.hasBodyCaptured());
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
 }
 
@@ -963,6 +1039,20 @@ TEST(HttpClientHttp2TlsE2ETest, LargeUploadAndResponseUseH2GatherPath) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), payload);
   EXPECT_TRUE(sawHttp2.load(std::memory_order_relaxed));
+}
+
+TEST(HttpClientHttp2TlsE2ETest, SequentialPostsReuseConnectionWithPendingControlFrames) {
+  ConfigureTlsTs(tlsTs);
+  const uint64_t handshakesBefore = tlsTs.stats().tlsHandshakesSucceeded;
+
+  HttpClient client(TlsClientConfig(HttpVersionMode::Http2));
+  for (int reqIdx = 0; reqIdx < 3; ++reqIdx) {
+    auto resp = client.post(TlsUrl(tlsPort, "/echo"), "body", "text/plain").value();
+    ASSERT_EQ(resp.status(), 200);
+    ASSERT_EQ(resp.bodyInMemory(), "body");
+  }
+
+  EXPECT_EQ(tlsTs.stats().tlsHandshakesSucceeded - handshakesBefore, 1U);
 }
 
 TEST(HttpClientHttp2TlsE2ETest, Http11ModeNeverNegotiatesH2) {

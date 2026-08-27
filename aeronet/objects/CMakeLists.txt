@@ -343,8 +343,17 @@ AeronetAddUnitTest(
     opentelemetry-integration_test
     test/opentelemetry-integration_test.cpp
     LIBRARIES
+    aeronet_objects
     aeronet_test_support
 )
+
+if(AERONET_BUILD_TESTS AND AERONET_ENABLE_OPENTELEMETRY)
+    if(TARGET opentelemetry-cpp::metrics)
+        target_link_libraries(opentelemetry-integration_test PRIVATE opentelemetry-cpp::metrics)
+    elseif(TARGET opentelemetry_metrics)
+        target_link_libraries(opentelemetry-integration_test PRIVATE opentelemetry_metrics)
+    endif()
+endif()
 
 AeronetAddUnitTest(
     request-task_test
