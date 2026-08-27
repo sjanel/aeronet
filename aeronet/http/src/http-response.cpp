@@ -18,6 +18,10 @@
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
+#ifndef NDEBUG
+#include "aeronet/timestring.hpp"
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -41,7 +45,7 @@ constexpr void InitData(char* data) {
   // In debug, this allows for easier inspection of the response data before finalization.
   // In release, it's not needed because the final HTTP version and date will be written at finalization step.
   http::HTTP_1_1.writeFull(data);
-  WriteCRLFDateHeader(SysClock::now(), data + HttpResponse::kReasonBeg);
+  TimeToStringRFC7231(SysClock::now(), AppendFixed<http::CRLFDateHeaderSep>(data + HttpResponse::kReasonBeg));
 #endif
   // Set last, so the debug pre-write above lands on this byte;
   // the marker must win so hasReason() stays correct before finalization (it is overwritten by the

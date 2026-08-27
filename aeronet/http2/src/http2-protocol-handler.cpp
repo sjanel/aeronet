@@ -52,7 +52,6 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "http2-header-is-valid.hpp"
 #include "http2-writer-transport.hpp"
@@ -71,7 +70,7 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
                                            internal::CompressionState& compressionState,
                                            internal::DecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-                                           std::string_view clientAddress)
+                                           const char* cachedDateHeader, std::string_view clientAddress)
     : _connection(config, true, &telemetryContext),
       _pRouter(&router),
       _fileSendBuffer(64UL * 1024UL),
@@ -80,6 +79,7 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
       _pDecompressionState(&decompressionState),
       _pTmpBuffer(&tmpBuffer),
       _pTelemetryContext(&telemetryContext),
+      _pCachedDateHeader(cachedDateHeader),
       _clientAddress(clientAddress) {
   setupCallbacks();
 }
@@ -712,7 +712,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
       _pServerConfig->globalHeaders.empty() ? nullptr : &_pServerConfig->globalHeaders;
 
   // Create H2 transport and writer
-  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders);
+  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders, _pCachedDateHeader);
 
   // Negotiate compression has been done in onHeadersDecodedReceived.
   HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
@@ -1090,8 +1090,8 @@ Http2ProtocolHandler::TunnelUpstreamsMap Http2ProtocolHandler::drainTunnelUpstre
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
   FilePayload* pFilePayload = response.filePayloadPtr();
 
-  // finalize Date header
-  WriteCRLFDateHeader(SysClock::now(), response._data.data() + response.dateHeaderStartPos());
+  // Finalize Date header
+  CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
 
   const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pServerConfig->globalHeaders;
 
@@ -1386,15 +1386,14 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
   }
 }
 
-std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
-                                                             HttpServerConfig& serverConfig,
-                                                             internal::CompressionState& compressionState,
-                                                             internal::DecompressionState& decompressionState,
-                                                             tracing::TelemetryContext& telemetryContext,
-                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls,
-                                                             std::string_view clientAddress) {
-  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(
-      config, router, serverConfig, compressionState, decompressionState, telemetryContext, tmpBuffer, clientAddress);
+std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
+    const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
+    internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
+    tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, bool sendServerPrefaceForTls,
+    const char* cachedDateHeader, std::string_view clientAddress) {
+  auto protocolHandler =
+      std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState, decompressionState,
+                                             telemetryContext, tmpBuffer, cachedDateHeader, clientAddress);
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

@@ -24,7 +24,6 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-cork-guard.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
@@ -162,7 +161,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     opts.setHeadMethod();
   }
 
-  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
+  queueData(cnxIt, resp.finalizeForHttp1(_dateHeader.data(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
