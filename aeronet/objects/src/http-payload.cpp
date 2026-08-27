@@ -30,11 +30,11 @@ HttpPayload::HttpPayload(const HttpPayload& rhs) {
           _data = val;
         } else if constexpr (std::is_same_v<T, CharBuffer>) {
           CharBuffer copy{std::make_unique_for_overwrite<char[]>(val.second), val.second};
-          std::memcpy(copy.first.get(), val.first.get(), val.second);
+          Copy(val.first.get(), val.second, copy.first.get());
           _data = std::move(copy);
         } else if constexpr (std::is_same_v<T, BytesBuffer>) {
           BytesBuffer copy{std::make_unique_for_overwrite<std::byte[]>(val.second), val.second};
-          std::memcpy(copy.first.get(), val.first.get(), val.second);
+          Copy(val.first.get(), val.second, copy.first.get());
           _data = std::move(copy);
         } else {
           static_assert(false, "Unhandled type in HttpPayload variant");

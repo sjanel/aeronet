@@ -40,8 +40,8 @@ TlsTicketKeyStore::KeyMaterial& TlsTicketKeyStore::KeyMaterial::operator=(KeyMat
 TlsTicketKeyStore::KeyMaterial::~KeyMaterial() { scrub(); }
 
 void TlsTicketKeyStore::KeyMaterial::scrub() noexcept {
-  auto bytes = data();
-  ::OPENSSL_cleanse(bytes.data(), bytes.size());
+  auto dataSpan = data();
+  ::OPENSSL_cleanse(dataSpan.data(), dataSpan.size());
 }
 
 TlsTicketKeyStore::TlsTicketKeyStore(std::chrono::seconds lifetime, std::uint32_t maxKeys)

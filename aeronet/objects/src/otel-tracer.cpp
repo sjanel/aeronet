@@ -65,6 +65,7 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
+#include "otel-metric-labels.hpp"
 #endif
 
 // Detect OTLP metrics exporter
@@ -85,29 +86,6 @@ namespace {
 namespace {
 inline auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
 }  // namespace
-
-#ifdef AERONET_HAVE_METRICS_SDK
-class OtelMetricLabels final : public opentelemetry::common::KeyValueIterable {
- public:
-  explicit OtelMetricLabels(MetricLabels labels) noexcept : _labels(labels) {}
-
-  bool ForEachKeyValue(
-      opentelemetry::nostd::function_ref<bool(opentelemetry::nostd::string_view, opentelemetry::common::AttributeValue)>
-          callback) const noexcept override {
-    for (const auto& [key, value] : _labels) {
-      if (!callback(OtelSv(key), OtelSv(value))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  [[nodiscard]] std::size_t size() const noexcept override { return _labels.size(); }
-
- private:
-  MetricLabels _labels;
-};
-#endif
 
 // Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
 void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
@@ -341,7 +319,7 @@ void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricL
         if (labels.empty()) {
           it->second->Add(delta);
         } else {
-          it->second->Add(delta, OtelMetricLabels(labels));
+          it->second->Add(delta, detail::OtelMetricLabels(labels));
         }
       } catch (const std::exception& ex) {
         log::error("Failed to add counter '{}': {}", name, ex.what());
@@ -383,7 +361,7 @@ void TelemetryContext::gauge(std::string_view name, int64_t value, MetricLabels 
         if (labels.empty()) {
           it->second->Record(value);
         } else {
-          it->second->Record(value, OtelMetricLabels(labels));
+          it->second->Record(value, detail::OtelMetricLabels(labels));
         }
       } catch (const std::exception& ex) {
         log::error("Failed to set gauge '{}': {}", name, ex.what());
@@ -425,7 +403,7 @@ void TelemetryContext::histogram(std::string_view name, double value, MetricLabe
         if (labels.empty()) {
           it->second->Record(value);
         } else {
-          it->second->Record(value, OtelMetricLabels(labels));
+          it->second->Record(value, detail::OtelMetricLabels(labels));
         }
       } catch (const std::exception& ex) {
         log::error("Failed to record histogram '{}': {}", name, ex.what());
@@ -468,7 +446,7 @@ void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds m
         if (labels.empty()) {
           it->second->Record(value);
         } else {
-          it->second->Record(value, OtelMetricLabels(labels));
+          it->second->Record(value, detail::OtelMetricLabels(labels));
         }
       } catch (const std::exception& ex) {
         log::error("Failed to set gauge '{}': {}", name, ex.what());

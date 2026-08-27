@@ -11,23 +11,30 @@ external load generator*, it is **one over-provisioned server + many client impl
 
 ```text
             ┌─────────────────────────────────────────────┐
-            │  aeronet-bench-server --threads <nproc>      │  <- never the bottleneck
+            │  aeronet-bench-server --threads <remaining>  │  <- never the bottleneck
             └─────────────────────────────────────────────┘
                          ▲      ▲      ▲      ▲
-                         │      │      │      │   (each driver: --threads worker threads,
-        ┌────────────────┘      │      │      └───────────────┐  one client + one connection each)
+                         │      │      │      │   (each driver: several synchronous connections
+        ┌────────────────┘      │      │      └───────────────┐  per reserved client CPU)
    aeronet-bench-client   curl-bench-client   drogon-bench-client   beast-bench-client
 ```
 
-* A single **`aeronet-bench-server`** is started with a high thread count so it can always keep up: the
-  measured cost is therefore the **client's** (request serialization, response parsing, buffer/alloc
-  management), not the server's.
+* A single **`aeronet-bench-server`** is started with a high thread count so it can always keep up. On Linux,
+  the runner pins the client and server to disjoint physical cores and keeps the selected client cores'
+  SMT siblings away from the server. The measured resource budget is therefore the **client's** (request
+  serialization, response parsing, buffer/allocation management), not scheduler contention with the server.
 * Every driver shares [`bench-client-harness.hpp`](bench-client-harness.hpp): a uniform CLI, a multi-threaded
   timing loop, a bounded-memory HdrHistogram-lite for latency percentiles, and a uniform JSON result line.
-* **Fair concurrency model**: `--threads N` spawns `N` worker threads, each owning its own client instance and
-  one keep-alive connection running a synchronous request/response loop. That is the natural mode of every
-  client here (aeronet's `HttpClient` is one-instance-per-thread; libcurl easy, Drogon's synchronous
-  `sendRequest`, and Beast's blocking I/O are all synchronous).
+* **Fair, saturated concurrency model**: `--threads N` reserves `N` logical CPUs for the client and defaults
+  to three synchronous connections per CPU (`--connections 3N`). Each connection owns one client instance
+  and worker because that is the common mode supported by every candidate (aeronet's `HttpClient`, libcurl
+  easy, Drogon's synchronous `sendRequest`, and Beast's blocking I/O). A one-connection-per-CPU setup leaves
+  each worker asleep while its request is handled by the server; the extra connections fill those gaps and
+  keep aggregate client CPU utilization near 100% without giving it more CPU time. The default connection
+  count is capped below the server worker count, so the server still has more workers than the client.
+* **Cheap server side**: the runner enables dedicated `/client-bench/*` endpoints whose response bodies are
+  generated or compressed once at startup and served as immutable buffers. Dynamic JSON construction,
+  random-body generation, uppercasing, and gzip encoding therefore cannot become the measured bottleneck.
 * **Apples-to-apples**: all drivers send `Accept-Encoding: identity`, so the server never compresses and we
   compare raw transfer + parsing (no codec asymmetry between clients).
 * **Protocol-agnostic**: the same drivers and scenarios run over HTTP/1.1, cleartext HTTP/2 (`h2c`) and
@@ -64,6 +71,7 @@ cd build-release/benchmarks/scripted-clients
 ./run_client_benchmarks.py --client aeronet,curl    # subset of clients
 ./run_client_benchmarks.py --scenario small-get,large-get
 ./run_client_benchmarks.py --threads 8 --duration 15s --warmup 3s --html
+./run_client_benchmarks.py --repeat 3                 # report the median-throughput sample
 ./run_client_benchmarks.py --protocol h2c           # cleartext HTTP/2 (aeronet + curl)
 ./run_client_benchmarks.py --protocol h2-tls        # HTTP/2 over TLS (ALPN "h2")
 ```
@@ -74,10 +82,13 @@ Options:
 --client a,b         comma-separated client subset (default: aeronet,curl,drogon,beast)
 --scenario a,b       comma-separated scenario subset
 --protocol P         http1 | h2c | h2-tls (default: http1); see Protocols below
---threads N          client worker threads / connections (default: 4)
---server-threads N   aeronet-bench-server threads (default: nproc)
---duration D         measured window per run, e.g. 10s / 500ms (default: 10s)
---warmup D           warmup window per run (default: 2s)
+--threads N          logical CPUs reserved for the client (default: 4)
+--connections N      synchronous connections (default: up to 3 per thread, fewer than server threads)
+--server-threads N   aeronet-bench-server threads (default: unreserved CPUs)
+--duration D         measured window per run, e.g. 10s / 500ms (default: 30s)
+--warmup D           warmup window per run (default: 5s)
+--repeat N           samples per client/scenario; report median throughput (default: 1)
+--no-cpu-pin         disable automatic client/server physical-core isolation
 --port N             server port (default: 8090)
 --output DIR         artifact output directory (default: ./results)
 --html               also write an HTML report with bar charts
@@ -126,11 +137,13 @@ The suite runs over three protocols, selected with `--protocol` exactly as the s
 
 ### Running a single driver directly
 
-Each driver is a standalone executable with the same CLI (handy for profiling one client):
+Each driver is a standalone executable with the same CLI (handy for profiling one client). At this lower
+level, `--threads` is the number of synchronous workers/connections; CPU budgeting and pinning are supplied
+by the Python orchestrator:
 
 ```bash
 # start a server in another terminal
-./benchmarks/scripted-servers/aeronet-bench-server --port 8090 --threads 16
+./benchmarks/scripted-servers/aeronet-bench-server --port 8090 --threads 16 --client-bench
 
 # then point a driver at it
 ./benchmarks/scripted-clients/aeronet-bench-client --url http://127.0.0.1:8090 \
@@ -146,17 +159,18 @@ Each driver is a standalone executable with the same CLI (handy for profiling on
 | Scenario    | Method | Endpoint                    | Stresses                                                      |
 |-------------|--------|-----------------------------|---------------------------------------------------------------|
 | `small-get` | GET    | `/ping` (3-byte body)       | Pure request-build + response-parse overhead (headline)       |
-| `headers`   | GET    | `/headers?count=32&size=64` | 24 request headers serialized + 32 response headers parsed    |
-| `large-get` | GET    | `/body?size=1MiB`           | Big response payload: body read / copy throughput (big get)   |
-| `post`      | POST   | `/uppercase` (4 KiB)        | Request body write path                                       |
-| `json`      | GET    | `/json?items=200`           | Mixed small-payload parse                                     |
-| `compress`  | GET    | `/json?items=800` + gzip    | Automatic content decompression: server gzips, client decodes |
+| `headers`   | GET    | `/client-bench/headers`     | 24 request headers serialized + 32 response headers parsed    |
+| `large-get` | GET    | `/client-bench/large-get`   | Big response payload: body read / copy throughput (big get)   |
+| `post`      | POST   | `/client-bench/post` (4 KiB) | Request body write path                                      |
+| `json`      | GET    | `/client-bench/json`        | Mixed small-payload parse                                     |
+| `compress`  | GET    | `/client-bench/compress`    | Automatic content decompression of a precompressed JSON body  |
 | `no-reuse`  | GET    | `/ping`                     | Fresh TCP connection per request (connect overhead)           |
 
 ### Fair compression comparison
 
-In the `compress` scenario the client advertises `Accept-Encoding: gzip`, the server returns a gzip'd body,
-and the client decodes it. **aeronet** decodes natively (its built-in content-coding, backed by **zlib-ng**).
+In the `compress` scenario the client advertises `Accept-Encoding: gzip`, the server returns a body compressed
+once at startup, and the client decodes it. **aeronet** decodes natively (its built-in content-coding, backed by
+**zlib-ng**).
 To keep the codec identical across clients, the competitors do **not** use their own bundled inflate — they
 decode the raw gzip body with the **same zlib-ng** (native `zng_*` API), exactly as the scripted *server*
 benchmarks do. So the only thing that differs is the integration (automatic vs. an explicit decode step), not
@@ -196,7 +210,8 @@ all three linked from the top of the main README. The HTTP/1.1 client bench runs
 
 ## Tips for accurate measurement
 
-The same advice as the scripted-server benchmarks applies: pin the performance governor, keep the server and
-client on separate cores (`taskset`), warm up (handled via `--warmup`), and take the median of a few runs.
+The same advice as the scripted-server benchmarks applies: pin the performance governor, warm up (handled
+via `--warmup`), and use `--repeat 3` or `--repeat 5` to take the median-throughput sample. The runner handles
+client/server physical-core isolation automatically on Linux when enough cores and `taskset` are available.
 See [`../scripted-servers/README.md`](../scripted-servers/README.md#tips-for-accurate-benchmarking) for the
-full CPU-pinning recipe.
+full host-tuning recipe.

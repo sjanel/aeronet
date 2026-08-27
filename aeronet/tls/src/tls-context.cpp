@@ -463,7 +463,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       char* pPattern = _sniRoutes.charStorage.allocateAndDefaultConstruct(entry.pattern().size());
       Copy(entry.pattern(), pPattern);
 
-      auto ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, entry.ocspResponseFile());
+      ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, entry.ocspResponseFile());
 
       *pRoute = SniRoute(std::string_view(pPattern, entry.pattern().size()), entry.isWildcard, std::move(routeCtx),
                          ocspResponse);

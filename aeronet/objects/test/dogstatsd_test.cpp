@@ -22,11 +22,17 @@ namespace aeronet {
 
 TEST(DogStatsDTest, DefaultConstructorDisabled) {
   DogStatsD client;
+  const MetricLabel labels[]{{"protocol", "h2"}};
   EXPECT_NO_THROW(client.increment("noop"));
   EXPECT_NO_THROW(client.gauge("noop", 1.0));
   EXPECT_NO_THROW(client.histogram("noop", 2.0));
   EXPECT_NO_THROW(client.timing("noop", std::chrono::milliseconds{1}));
   EXPECT_NO_THROW(client.set("noop", "value"));
+  EXPECT_NO_THROW(client.increment("noop", 1, {}, labels));
+  EXPECT_NO_THROW(client.gauge("noop", 1, {}, labels));
+  EXPECT_NO_THROW(client.histogram("noop", 2.0, {}, labels));
+  EXPECT_NO_THROW(client.timing("noop", std::chrono::milliseconds{1}, {}, labels));
+  EXPECT_NO_THROW(client.set("noop", "value", {}, labels));
 }
 
 TEST(DogStatsDTest, EmptyNamespace) {

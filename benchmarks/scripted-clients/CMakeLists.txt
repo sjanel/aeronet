@@ -97,6 +97,16 @@ configure_file(
   COPYONLY
 )
 
+if(AERONET_BUILD_TESTS)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME scripted-client-runner_test
+      COMMAND ${Python3_EXECUTABLE} ${SCRIPTED_CLIENTS_DIR}/run_client_benchmarks_test.py
+    )
+  endif()
+endif()
+
 # Convenience target: build everything the orchestrator needs, then run it.
 add_custom_target(run-scripted-client-benchmarks
   COMMAND ${SCRIPTED_CLIENTS_BUILD_DIR}/run_client_benchmarks.py

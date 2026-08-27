@@ -13,6 +13,7 @@ namespace aeronet {
 
 struct DecompressionConfig;
 namespace internal {
+class ClientConnection;
 struct DecompressionState;
 }  // namespace internal
 
@@ -72,6 +73,8 @@ class ResponseParser {
   [[nodiscard]] std::size_t consumed() const noexcept { return _pos; }
 
  private:
+  friend class internal::ClientConnection;
+
   enum class State : uint8_t {
     StatusLine,
     Headers,
@@ -87,6 +90,12 @@ class ResponseParser {
 
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);
+  // Return candidate when body covers exactly its initialized bytes, otherwise nullptr.
+  static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept;
+  // Install body by rotating a suitably-sized owner allocation into the response. A missing or oversized
+  // owner falls back to a copy, retaining oversized scratch for later reuse.
+  static void InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
+                                 RawChars* owner);
   // Install the (de-framed) body into `resp`, applying automatic decompression when configured.
   // Returns Status::Complete on success, or Status::Error if decompression failed.
   Status installBody(HttpResponse& resp, std::string_view buffer) const;

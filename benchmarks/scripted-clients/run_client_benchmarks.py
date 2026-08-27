@@ -11,6 +11,7 @@ Usage:
     ./run_client_benchmarks.py --client aeronet,curl    # subset of clients
     ./run_client_benchmarks.py --scenario small-get     # subset of scenarios
     ./run_client_benchmarks.py --threads 8 --duration 15s --html
+    ./run_client_benchmarks.py --repeat 3               # median-throughput sample
 """
 from __future__ import annotations
 
@@ -18,12 +19,13 @@ import argparse
 import datetime as _dt
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # aeronet driver is always present; the others depend on what was built (libcurl / drogon / beast).
 CLIENT_ORDER = ["aeronet", "curl", "drogon", "beast"]
@@ -43,10 +45,118 @@ SCENARIO_BODY_SIZE: Dict[str, int] = {
 }
 
 DEFAULT_PORT = 8090
+DEFAULT_CONNECTIONS_PER_THREAD = 3
 
 
 class BenchError(RuntimeError):
     pass
+
+
+def _parse_cpu_list(value: str) -> List[int]:
+    """Parse a Linux CPU-list value such as ``0-3,8,10-11``."""
+    cpus: List[int] = []
+    for part in value.strip().split(","):
+        if not part:
+            continue
+        if "-" not in part:
+            cpus.append(int(part))
+            continue
+        start_text, end_text = part.split("-", 1)
+        cpus.extend(range(int(start_text), int(end_text) + 1))
+    return cpus
+
+
+def _format_cpu_list(cpus: Sequence[int]) -> str:
+    """Format CPU IDs for ``taskset -c``, coalescing adjacent IDs into ranges."""
+    ordered = sorted(set(cpus))
+    if not ordered:
+        return ""
+    parts: List[str] = []
+    start = previous = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        parts.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu
+    parts.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(parts)
+
+
+def _available_cpus() -> List[int]:
+    """Return CPUs available to this process, respecting Linux cpuset restrictions."""
+    if hasattr(os, "sched_getaffinity"):
+        return sorted(os.sched_getaffinity(0))
+    return list(range(os.cpu_count() or 1))
+
+
+def _linux_sibling_map(cpus: Sequence[int]) -> Dict[int, List[int]]:
+    """Read physical-core sibling sets from sysfs, falling back to singleton groups."""
+    available = set(cpus)
+    siblings: Dict[int, List[int]] = {}
+    for cpu in cpus:
+        path = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
+        try:
+            group = sorted(available.intersection(_parse_cpu_list(path.read_text(encoding="ascii"))))
+        except (OSError, ValueError):
+            group = [cpu]
+        siblings[cpu] = group or [cpu]
+    return siblings
+
+
+def _partition_cpu_sets(
+    cpus: Sequence[int], client_threads: int, sibling_map: Dict[int, List[int]],
+) -> Tuple[List[int], List[int]]:
+    """Give the client one logical CPU on each isolated physical core.
+
+    Sibling logical CPUs of a selected client CPU are withheld from the server so SMT
+    contention cannot make one candidate look faster or slower. The unused siblings
+    are intentional: ``--threads`` remains the client's exact logical-CPU budget.
+    """
+    available = set(cpus)
+    groups: List[List[int]] = []
+    seen = set()
+    for cpu in sorted(available):
+        group = frozenset(available.intersection(sibling_map.get(cpu, [cpu])))
+        if not group:
+            group = frozenset((cpu,))
+        if group in seen:
+            continue
+        seen.add(group)
+        groups.append(sorted(group))
+
+    # Keep at least one whole physical core for the server. If that is impossible,
+    # leave both processes unpinned instead of making either side the bottleneck.
+    if client_threads < 1 or client_threads >= len(groups):
+        return [], []
+
+    client_cpus = [group[0] for group in groups[:client_threads]]
+    reserved_for_client = {cpu for group in groups[:client_threads] for cpu in group}
+    server_cpus = sorted(available - reserved_for_client)
+    return client_cpus, server_cpus
+
+
+def _select_median_result(samples: Sequence[dict], requested_samples: Optional[int] = None) -> dict:
+    """Return the whole lower-median-throughput sample, preserving coherent sub-metrics."""
+    if not samples:
+        raise BenchError("cannot select a median from zero successful samples")
+    ordered = sorted(samples, key=lambda sample: float(sample["rps"]))
+    selected = ordered[(len(ordered) - 1) // 2]
+    if (requested_samples or len(samples)) > 1:
+        sample_values = ", ".join(fmt_rps(float(sample["rps"])) for sample in ordered)
+        success_note = ""
+        if requested_samples is not None and requested_samples != len(samples):
+            success_note = f" ({len(samples)}/{requested_samples} successful)"
+        print(
+            f"    Repeat: RPS (sorted) = [{sample_values}], "
+            f"median = {fmt_rps(float(selected['rps']))}{success_note}"
+        )
+    return selected
+
+
+def _default_connections(client_threads: int, server_threads: int) -> int:
+    """Choose enough clients to hide synchronous waits without outnumbering server workers."""
+    return min(client_threads * DEFAULT_CONNECTIONS_PER_THREAD, max(1, server_threads - 1))
 
 
 def find_build_dir(script_dir: Path) -> Path:
@@ -99,8 +209,12 @@ def find_certs(script_dir: Path) -> Tuple[Path, Path]:
 
 
 def start_server(server_bin: Path, port: int, threads: int, protocol: str,
-                 certs: Optional[Tuple[Path, Path]] = None) -> subprocess.Popen:
-    cmd = [str(server_bin), "--port", str(port), "--threads", str(threads)]
+                 certs: Optional[Tuple[Path, Path]] = None,
+                 command_prefix: Sequence[str] = ()) -> subprocess.Popen:
+    cmd = [
+        *command_prefix, str(server_bin), "--port", str(port),
+        "--threads", str(threads), "--client-bench",
+    ]
     if protocol in ("h2c", "h2-tls"):
         cmd.append("--h2")  # h2c is on by default, but be explicit (and it drives ALPN under TLS)
     if protocol == "h2-tls":
@@ -130,18 +244,24 @@ def run_driver(
     binary: Path,
     base_url: str,
     scenario: str,
-    threads: int,
+    connections: int,
     duration: str,
     warmup: str,
     protocol: str,
     profiler: Optional[Any] = None,
+    command_prefix: Sequence[str] = (),
+    sample: int = 0,
+    repeat: int = 1,
 ) -> Optional[dict]:
     cmd = [
+        *command_prefix,
         str(binary),
         "--url", base_url,
         "--scenario", scenario,
         "--protocol", protocol,
-        "--threads", str(threads),
+        # Every shared driver is synchronous, so one worker thread is needed per
+        # connection. Process affinity below limits those workers to --threads CPUs.
+        "--threads", str(connections),
         "--duration", duration,
         "--warmup", warmup,
         "--json",
@@ -152,9 +272,10 @@ def run_driver(
     profile_dir = None
     if profiler is not None:
         client_name = binary.name.removesuffix("-bench-client")
-        cmd, profile_dir = profiler.wrap_command(
-            cmd, [protocol, client_name, scenario]
-        )
+        profile_parts = [protocol, client_name, scenario]
+        if repeat > 1:
+            profile_parts.append(f"sample-{sample + 1}")
+        cmd, profile_dir = profiler.wrap_command(cmd, profile_parts)
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
@@ -279,8 +400,10 @@ def to_pages_summary(results: List[dict], meta: dict, scenarios: List[str], clie
     return {
         "protocol": meta["protocol"],
         "tool": "scripted-clients",
+        "generated_at": meta["date"],
+        "repeat": meta["repeat"],
         "threads": meta["threads"],
-        "connections": meta["threads"],  # one keep-alive connection per worker thread
+        "connections": meta["connections"],
         "duration": meta["duration"],
         "warmup": meta["warmup"],
         "servers": [c for c in clients if any(r["client"] == c for r in results)],
@@ -368,13 +491,32 @@ def main() -> int:
         help="protocol to benchmark: http1 (HTTP/1.1), h2c (cleartext HTTP/2), h2-tls (HTTP/2 over TLS). "
              "h2c/h2-tls only measure HTTP/2-capable clients (aeronet, curl).",
     )
-    parser.add_argument("--threads", type=int, default=4, help="client worker threads / connections")
     parser.add_argument(
-        "--server-threads", type=int, default=os.cpu_count() or 8,
-        help="aeronet-bench-server threads (kept high so the server is not the bottleneck)",
+        "--threads", type=int, default=4,
+        help="logical CPUs reserved for the client (default: 4)",
+    )
+    parser.add_argument(
+        "--connections", type=int, default=None,
+        help=(
+            f"synchronous client connections (default: up to {DEFAULT_CONNECTIONS_PER_THREAD} per thread, "
+            "fewer than server threads)"
+        ),
+    )
+    parser.add_argument(
+        "--server-threads", type=int, default=None,
+        help="aeronet-bench-server threads (default: CPUs not reserved for the client)",
     )
     parser.add_argument("--duration", default="30s", help="measured window per run")
     parser.add_argument("--warmup", default="5s", help="warmup window per run")
+    parser.add_argument(
+        "--repeat", type=int, default=int(os.environ.get("BENCH_REPEAT", "1")),
+        help="number of samples per (client, scenario); report the median-throughput sample (default: 1)",
+    )
+    parser.add_argument(
+        "--no-cpu-pin", action="store_true",
+        default=os.environ.get("BENCH_NO_CPU_PIN", "") not in ("", "0", "false", "False"),
+        help="disable automatic client/server pinning to disjoint physical cores",
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--build-dir", default=None, help="override build dir auto-detection")
     parser.add_argument("--output", default=str(script_dir / "results"), help="artifact output directory")
@@ -401,6 +543,31 @@ def main() -> int:
         help="Open each generated perf.data in Hotspot (best with one client/scenario)",
     )
     args = parser.parse_args()
+
+    client_threads = max(1, args.threads)
+    repeat = max(1, args.repeat)
+    available_cpus = _available_cpus()
+    client_cpus: List[int] = []
+    server_cpus: List[int] = []
+    if (
+        not args.no_cpu_pin
+        and sys.platform.startswith("linux")
+        and shutil.which("taskset") is not None
+    ):
+        client_cpus, server_cpus = _partition_cpu_sets(
+            available_cpus, client_threads, _linux_sibling_map(available_cpus)
+        )
+    client_prefix = ["taskset", "-c", _format_cpu_list(client_cpus)] if client_cpus else []
+    server_prefix = ["taskset", "-c", _format_cpu_list(server_cpus)] if server_cpus else []
+    default_server_threads = len(server_cpus) if server_cpus else len(available_cpus)
+    server_threads = max(1, args.server_threads if args.server_threads is not None else default_server_threads)
+    if args.connections is None:
+        # Keep the server worker count strictly above the number of synchronous
+        # clients whenever the host has enough capacity. Dedicated cheap response
+        # endpoints then make the client CPU budget the limiting resource.
+        connections = _default_connections(client_threads, server_threads)
+    else:
+        connections = max(1, args.connections)
 
     profiler = None
     if args.profile:
@@ -451,30 +618,54 @@ def main() -> int:
     meta = {
         "date": _dt.datetime.now().isoformat(timespec="seconds"),
         "protocol": protocol,
-        "threads": args.threads,
-        "server_threads": args.server_threads,
+        "repeat": repeat,
+        "threads": client_threads,
+        "connections": connections,
+        "server_threads": server_threads,
         "duration": args.duration,
         "warmup": args.warmup,
         "clients": [n for n, _ in available],
         "scenarios": scenarios,
     }
 
-    print(f"Server : {server_bin.name} --threads {args.server_threads} (port {args.port}) [{protocol}]")
+    print(f"Server : {server_bin.name} --threads {server_threads} (port {args.port}) [{protocol}]")
     print(f"Clients: {', '.join(n for n, _ in available)}")
-    print(f"Threads: {args.threads}  duration: {args.duration}  warmup: {args.warmup}")
+    print(
+        f"Threads: {client_threads}  connections: {connections}  "
+        f"duration: {args.duration}  warmup: {args.warmup}  repeat: {repeat}"
+    )
+    if client_cpus:
+        print(f"CPU pin: client={_format_cpu_list(client_cpus)}  server={_format_cpu_list(server_cpus)}")
+    elif not args.no_cpu_pin:
+        print("CPU pin: disabled (not enough disjoint physical cores or taskset unavailable)")
+    if connections >= server_threads:
+        print(
+            "Warning: client connections are not below server threads; "
+            "the server may become the bottleneck",
+            file=sys.stderr,
+        )
 
-    server = start_server(server_bin, args.port, args.server_threads, protocol, certs)
+    server = start_server(
+        server_bin, args.port, server_threads, protocol, certs,
+        command_prefix=server_prefix,
+    )
     results: List[dict] = []
     try:
         for scenario in scenarios:
             print(f"\n--- {scenario} ---")
             for name, binary in available:
-                res = run_driver(
-                    binary, base_url, scenario, args.threads, args.duration,
-                    args.warmup, protocol, profiler,
-                )
-                if res is None:
+                samples = []
+                for sample in range(repeat):
+                    res = run_driver(
+                        binary, base_url, scenario, connections, args.duration,
+                        args.warmup, protocol, profiler,
+                        command_prefix=client_prefix, sample=sample, repeat=repeat,
+                    )
+                    if res is not None:
+                        samples.append(res)
+                if not samples:
                     continue
+                res = _select_median_result(samples, repeat)
                 results.append(res)
                 print(
                     f"  {name:<10} {fmt_rps(res['rps']):>9} rps  "

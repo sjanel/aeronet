@@ -55,10 +55,10 @@ class TlsTicketKeyStore {
       return std::span<const unsigned char, kPartSize>{bytes.data() + kPartSize, kPartSize};
     }
     [[nodiscard]] auto aesKey() noexcept {
-      return std::span<unsigned char, kPartSize>{bytes.data() + 2U * kPartSize, kPartSize};
+      return std::span<unsigned char, kPartSize>{bytes.data() + (2U * kPartSize), kPartSize};
     }
     [[nodiscard]] auto aesKey() const noexcept {
-      return std::span<const unsigned char, kPartSize>{bytes.data() + 2U * kPartSize, kPartSize};
+      return std::span<const unsigned char, kPartSize>{bytes.data() + (2U * kPartSize), kPartSize};
     }
 
     void scrub() noexcept;

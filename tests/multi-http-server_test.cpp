@@ -61,6 +61,7 @@ TEST(MultiHttpServer, EmptyChecks) {
   EXPECT_FALSE(multi.isRunning());
   EXPECT_FALSE(multi.isDraining());
   EXPECT_EQ(multi.nbThreads(), 0);
+  EXPECT_EQ(multi.probePort(), 0);
 
   // Calling stop should be safe even on an empty server
   EXPECT_NO_THROW(multi.stop());
@@ -76,11 +77,7 @@ TEST(MultiHttpServer, EmptyChecks) {
 TEST(MultiHttpServer, BasicStartAndServe) {
   const uint16_t threads = 4;
   MultiHttpServer multi(HttpServerConfig{}.withReusePort().withNbThreads(threads));
-  multi.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) {
-    HttpResponse resp;
-    resp.body("Hello "); /* path not exposed directly */
-    return resp;
-  });
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Hello"); });
   auto handle = multi.startDetached();
 
   auto port = multi.port();
