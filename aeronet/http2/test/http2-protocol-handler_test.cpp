@@ -2091,7 +2091,7 @@ TEST(Http2ProtocolHandler, ResponseMiddlewareExecutes) {
   Router router;
 
   router.addResponseMiddleware(
-      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Middleware-Added", "test-value"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("x-middleware-added", "test-value"); });
 
   router.setPath(http::Method::GET, "/test", [](const HttpRequestView&) { return HttpResponse(200); });
 
@@ -3128,7 +3128,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerResponseMiddlewareApplied) {
   Router router;
 
   router.addResponseMiddleware(
-      [](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Async-MW", "applied"); });
+      [](const HttpRequestView&, HttpResponse& resp) { resp.header("x-async-mw", "applied"); });
 
   router.setPath(http::Method::GET, "/async-resp-mw",
                  [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200, "resp-mw-test"); });
@@ -3800,7 +3800,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithResponseMiddleware) {
                  writer.writeBody("stream-resp-data");
                  writer.end();
                }})
-      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("X-Stream-MW", "applied"); });
+      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("x-stream-mw", "applied"); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -4007,7 +4007,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
                  co_return HttpResponse(200, std::to_string(result));
                })
       .cors(std::move(cors))
-      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("X-After-MW", "done"); });
+      .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("x-after-mw", "done"); });
 
   Http2ProtocolLoopback loop(router);
   loop.handler.setAsyncPostCallback(

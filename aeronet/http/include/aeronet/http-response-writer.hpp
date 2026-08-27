@@ -11,6 +11,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -40,20 +41,20 @@ class HttpResponseWriter {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void reason(std::string_view reason);
 
-  // Append a header line (duplicates allowed, fastest path).
+  // Append a header line (duplicates allowed, fastest path). The name must be lower-case; literals are checked at
+  // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void headerAddLine(std::string_view name, std::string_view value);
+  void headerAddLine(LowerAsciiKey name, std::string_view value);
 
   // Set or replace a header value ensuring at most one instance.
-  // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved.
+  // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // If not found, falls back to headerAddLine(). Use only when you must guarantee uniqueness; otherwise prefer
   // headerAddLine().
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void header(std::string_view name, std::string_view value);
+  void header(LowerAsciiKey name, std::string_view value);
 
   // Inserts or replaces the Content-Type header.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -135,18 +136,19 @@ class HttpResponseWriter {
   //     w.status(200);
   //     w.writeBody("chunk 1");
   //     w.writeBody("chunk 2");
-  //     w.trailerAddLine("X-Checksum", computeChecksum());  // Computed after body
-  //     w.trailerAddLine("X-Processing-Time-Ms", "42");
+  //     w.trailerAddLine("x-checksum", computeChecksum());  // Computed after body
+  //     w.trailerAddLine("x-processing-time-ms", "42");
   //     w.end();  // Trailers emitted here
   //   }
   //
   // Serialization:
   //   Trailers are buffered internally and emitted in end() as:
   //     0\r\n
-  //     X-Checksum: abc123\r\n
-  //     X-Processing-Time-Ms: 42\r\n
+  //     x-checksum: abc123\r\n
+  //     x-processing-time-ms: 42\r\n
   //     \r\n
-  void trailerAddLine(std::string_view name, std::string_view value);
+  // The name must be lower-case. Literals are checked at compile time through LowerAsciiKey.
+  void trailerAddLine(LowerAsciiKey name, std::string_view value);
 
   // Finalize the streaming response.
   // Responsibilities:

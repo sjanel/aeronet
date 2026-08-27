@@ -86,7 +86,7 @@ class HttpResponseTest : public ::testing::Test {
       if (sepPos == std::string_view::npos) {
         throw std::invalid_argument("Invalid header in global headers");
       }
-      resp.headerAddLine(headerNameAndValue.substr(0, sepPos),
+      resp.headerAddLine(LowerAsciiKey{headerNameAndValue.substr(0, sepPos)},
                          headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
     }
     if (opts.head) {
@@ -212,7 +212,7 @@ TEST_F(HttpResponseTest, StatusOnly) {
   EXPECT_FALSE(resp.hasBodyFile());
   EXPECT_FALSE(resp.hasHeader(http::ContentType));
   EXPECT_FALSE(resp.hasBody());
-  EXPECT_FALSE(resp.hasTrailer("X-Nonexistent"));
+  EXPECT_FALSE(resp.hasTrailer("x-nonexistent"));
   resp.status(404);
   EXPECT_EQ(404, resp.status());
   EXPECT_EQ(resp.statusStr(), "404");
@@ -279,11 +279,12 @@ TEST_F(HttpResponseTest, ConstructorFromBytesSpan) {
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
   static constexpr std::string_view kBadConcatenatedHeaders[]{
       "HeaderWithoutSep\r\n",
-      "HeaderWithNoValue: \r\nAnotherHeaderWithoutSep\r\n",
-      "HeaderWithNoCRLF: Value",
+      "headerwithnovalue: \r\nAnotherHeaderWithoutSep\r\n",
+      "headerwithnocrlf: Value",
       "NotUsingHeaderSep:Value",
       "Invalid Header Name!: Value\r\n",
-      "Valid-Header: Invalid\x01Value\r\n",
+      "NotNormalized: Value\r\n",
+      "valid-header: Invalid\x01Value\r\n",
   };
 
   for (std::string_view badHeaders : kBadConcatenatedHeaders) {
@@ -297,21 +298,21 @@ TEST_F(HttpResponseTest, HttpPartsSizes) {
   EXPECT_EQ(resp.statusLineSize(), std::string_view("HTTP/1.1 200 \r\n").size());
   EXPECT_EQ(resp.statusLineSize(), resp.statusLineLength());
 
-  EXPECT_EQ(resp.headersSize(), std::string_view("Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
-                                                 "Content-Type: text/plain\r\n"
-                                                 "Content-Length: 13\r\n")
+  EXPECT_EQ(resp.headersSize(), std::string_view("date: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                                 "content-type: text/plain\r\n"
+                                                 "content-length: 13\r\n")
                                     .size());
   EXPECT_EQ(resp.headersSize(), resp.headersLength());
 
-  EXPECT_EQ(resp.headSize(), std::string_view("HTTP/1.1 200 \r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
-                                              "Content-Type: text/plain\r\n"
-                                              "Content-Length: 13\r\n\r\n")
+  EXPECT_EQ(resp.headSize(), std::string_view("HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                              "content-type: text/plain\r\n"
+                                              "content-length: 13\r\n\r\n")
                                  .size());
   EXPECT_EQ(resp.headSize(), resp.headLength());
 
-  EXPECT_EQ(resp.sizeInMemory(), std::string_view("HTTP/1.1 200 \r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
-                                                  "Content-Type: text/plain\r\n"
-                                                  "Content-Length: 13\r\n\r\n"
+  EXPECT_EQ(resp.sizeInMemory(), std::string_view("HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+                                                  "content-type: text/plain\r\n"
+                                                  "content-length: 13\r\n\r\n"
                                                   "Hello, World!")
                                      .size());
 
@@ -338,8 +339,8 @@ TEST_F(HttpResponseTest, ConstructorWithBodyContentTypeOnly) {
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
   static constexpr std::string_view kConcatenatedHeaders[]{
       "",
-      "X-Custom-Header: CustomValue\r\n",
-      "X-1: Salut\r\nX-2: Bonjour\r\nX-3: Hola\r\n",
+      "x-custom-header: CustomValue\r\n",
+      "x-1: Salut\r\nx-2: Bonjour\r\nx-3: Hola\r\n",
   };
 
   static constexpr std::string_view kBodies[]{
@@ -361,17 +362,17 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
         EXPECT_EQ(resp.status(), 200);
         EXPECT_EQ(resp.reason(), "");
         EXPECT_EQ(resp.bodyInMemory(), body);
-        if (concatenatedHeaders.contains("X-Custom-Header: ")) {
-          EXPECT_EQ(resp.headerValueOrEmpty("X-Custom-Header"), "CustomValue");
+        if (concatenatedHeaders.contains("x-custom-header: ")) {
+          EXPECT_EQ(resp.headerValueOrEmpty("x-custom-header"), "CustomValue");
         } else {
-          EXPECT_FALSE(resp.hasHeader("X-Custom-Header"));
+          EXPECT_FALSE(resp.hasHeader("x-custom-header"));
         }
-        if (concatenatedHeaders.contains("X-1: ")) {
-          EXPECT_EQ(resp.headerValueOrEmpty("X-1"), "Salut");
-          EXPECT_EQ(resp.headerValueOrEmpty("X-2"), "Bonjour");
-          EXPECT_EQ(resp.headerValueOrEmpty("X-3"), "Hola");
+        if (concatenatedHeaders.contains("x-1: ")) {
+          EXPECT_EQ(resp.headerValueOrEmpty("x-1"), "Salut");
+          EXPECT_EQ(resp.headerValueOrEmpty("x-2"), "Bonjour");
+          EXPECT_EQ(resp.headerValueOrEmpty("x-3"), "Hola");
         } else {
-          EXPECT_FALSE(resp.hasHeader("X-1"));
+          EXPECT_FALSE(resp.hasHeader("x-1"));
         }
         if (!body.empty()) {
           EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/custom");
@@ -383,10 +384,10 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeaders) {
 
         const auto full = concatenated(std::move(resp));
         EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
-        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Custom-Header", "CustomValue")),
-                  concatenatedHeaders.contains("X-Custom-Header: "));
-        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("X-Another-Header", "AnotherValue")),
-                  concatenatedHeaders.contains("X-Another-Header: "));
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("x-custom-header", "CustomValue")),
+                  concatenatedHeaders.contains("x-custom-header: "));
+        EXPECT_EQ(full.contains(MakeHttp1HeaderLine("x-another-header", "AnotherValue")),
+                  concatenatedHeaders.contains("x-another-header: "));
         EXPECT_EQ(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/custom")), !body.empty());
         // Empty-body responses now synthesize `content-length: 0` at finalization so keep-alive clients can
         // frame the (zero-length) body immediately (status 200 permits it) -> a Content-Length line is always
@@ -406,8 +407,8 @@ TEST_F(HttpResponseTest, BadStatusCode) {
 TEST_F(HttpResponseTest, HeadersRange) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.headerAddLine("Header-1", "Value1");
-  resp.headerAddLine("Header-2", "Value2");
+  resp.headerAddLine("header-1", "Value1");
+  resp.headerAddLine("header-2", "Value2");
   auto headers = resp.headers();
 
   static_assert(std::ranges::input_range<decltype(headers)>);
@@ -416,7 +417,7 @@ TEST_F(HttpResponseTest, HeadersRange) {
       std::indirect_unary_predicate<decltype([](auto&&) { return true; }), std::ranges::iterator_t<decltype(headers)>>);
 
   EXPECT_TRUE(std::ranges::any_of(
-      headers, [](const auto& header) { return header.name == "Header-1" && header.value == "Value1"; }));
+      headers, [](const auto& header) { return header.name == "header-1" && header.value == "Value1"; }));
 }
 
 TEST_F(HttpResponseTest, HeaderAndBodySize) {
@@ -462,30 +463,30 @@ constexpr auto kAppendZeroOrOneABytes = [](std::byte* buf) {
 
 TEST_F(HttpResponseTest, InterleavedReasonAndHeaderMutations) {
   HttpResponse resp(http::StatusCodeOK, "");
-  resp.headerAddLine("X-A", "1");
-  resp.headerAddLine("X-B", "2");
+  resp.headerAddLine("x-a", "1");
+  resp.headerAddLine("x-b", "2");
   resp.reason("LONGER-REASON");
-  resp.header("X-a", "LARGER-VALUE-123");
+  resp.header("x-a", "LARGER-VALUE-123");
   resp.reason("");
-  resp.header("x-A", "S");
+  resp.header("x-a", "S");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
-  EXPECT_TRUE(full.contains("X-A: S\r\n"));
-  EXPECT_TRUE(full.contains("X-B: 2\r\n"));
+  EXPECT_TRUE(full.contains("x-a: S\r\n"));
+  EXPECT_TRUE(full.contains("x-b: 2\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyAddReasonWithHeaders) {
-  auto resp = HttpResponse(200).headerAddLine("X-Header", 127);
+  auto resp = HttpResponse(200).headerAddLine("x-header", 127);
   resp.status(404);
   resp.reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
   EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains("x-header: 127\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -510,14 +511,14 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithBody) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenHigherWithHeaders) {
   HttpResponse resp(200);
   resp.reason("OK");
-  resp.headerAddLine("X-Header", 127);
+  resp.headerAddLine("x-header", 127);
   resp.status(404);
   resp.reason("Not Found");
   EXPECT_EQ(resp.reason(), "Not Found");
   auto full = concatenated(std::move(resp));
 
   EXPECT_TRUE(full.starts_with("HTTP/1.1 404 Not Found\r\n"));
-  EXPECT_TRUE(full.contains("X-Header: 127\r\n"));
+  EXPECT_TRUE(full.contains("x-header: 127\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -556,15 +557,15 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithBody) {
 }
 
 TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithHeaders) {
-  auto resp = HttpResponse(404).reason("Not Found").headerAddLine("X-Header-1", "Value1");
-  resp.headerAddLine("X-Header-2", "Value2");
+  auto resp = HttpResponse(404).reason("Not Found").headerAddLine("x-header-1", "Value1");
+  resp.headerAddLine("x-header-2", "Value2");
   resp.status(200).reason("OK");
   EXPECT_EQ(resp.reason(), "OK");
   auto full = concatenated(std::move(resp));
 
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains("x-header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("x-header-2: Value2\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -586,16 +587,16 @@ TEST_F(HttpResponseTest, StatusReasonAndBodyOverridenLowerWithoutHeaders) {
 TEST_F(HttpResponseTest, StatusReasonAndBodyRemoveReasonWithHeaders) {
   HttpResponse resp(404);
   resp.reason("Not Found");
-  resp.headerAddLine("X-Header-1", "Value1");
-  resp.headerAddLine("X-Header-2", "Value2");
+  resp.headerAddLine("x-header-1", "Value1");
+  resp.headerAddLine("x-header-2", "Value2");
   resp.status(200).reason("");
   EXPECT_EQ(resp.reason(), "");
   EXPECT_FALSE(resp.hasReason());
   auto full = concatenated(std::move(resp));
 
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
-  EXPECT_TRUE(full.contains("X-Header-1: Value1\r\n"));
-  EXPECT_TRUE(full.contains("X-Header-2: Value2\r\n"));
+  EXPECT_TRUE(full.contains("x-header-1: Value1\r\n"));
+  EXPECT_TRUE(full.contains("x-header-2: Value2\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -608,7 +609,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   EXPECT_EQ(resp.reason(), "OK");
   EXPECT_TRUE(resp.hasReason());
   EXPECT_EQ(resp.reasonSize(), resp.reasonLength());
-  resp.headerAddLine("X-A", "B").body("Hello");
+  resp.headerAddLine("x-a", "B").body("Hello");
   auto full = concatenated(std::move(resp));
   ASSERT_GE(full.size(), 16U);
   auto prefix = full.substr(0, 15);
@@ -616,7 +617,7 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
   EXPECT_EQ(prefix.substr(8, 1), " ");
   EXPECT_EQ(prefix.substr(9, 3), "200");
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
-  EXPECT_TRUE(full.contains("X-A: B\r\n"));
+  EXPECT_TRUE(full.contains("x-a: B\r\n"));
   auto posBody = full.find("Hello");
   ASSERT_NE(posBody, std::string_view::npos);
   auto separator = full.substr(0, posBody);
@@ -629,45 +630,45 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
 
 TEST_F(HttpResponseTest, EmptyHeaderSearchShouldReturnNullopt) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value");
+  resp.headerAddLine("x-test", "value");
   auto val = resp.headerValue("");
   EXPECT_FALSE(val.has_value());
 }
 
 TEST_F(HttpResponseTest, InsertingInvalidHeaderNameShouldThrow) {
   HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.headerAddLine("Invalid Header", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAddLine("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("invalid header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("another:invalid", "value"), std::invalid_argument);
   EXPECT_THROW(resp.headerAddLine("", "value"), std::invalid_argument);
 
-  EXPECT_THROW(resp.headerAppendValue("Invalid Header", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAppendValue("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("invalid header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("another:invalid", "value"), std::invalid_argument);
   EXPECT_THROW(resp.headerAppendValue("", "value"), std::invalid_argument);
 
   resp.body("some body");
-  EXPECT_THROW(resp.trailerAddLine("Invalid Trailer", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.trailerAddLine("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("invalid trailer", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("another:invalid", "value"), std::invalid_argument);
   EXPECT_THROW(resp.trailerAddLine("", "value"), std::invalid_argument);
 
-  EXPECT_THROW(resp.header("Invalid Header", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.header("Another:Invalid", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.header("invalid header", "value"), std::invalid_argument);
+  EXPECT_THROW(resp.header("another:invalid", "value"), std::invalid_argument);
   EXPECT_THROW(resp.header("", "value"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, InsertingInvalidHeaderValueShouldThrow) {
   HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.headerAddLine("X-Test", "value\r\n"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAddLine("X-Test", "value\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("x-test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine("x-test", "value\x7F"), std::invalid_argument);
 
-  EXPECT_THROW(resp.headerAppendValue("X-Test", "value\r\n"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAppendValue("X-Test", "value\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("x-test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("x-test", "value\x7F"), std::invalid_argument);
 
   resp.body("some body");
-  EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value\r\n"), std::invalid_argument);
-  EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("x-trailer", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.trailerAddLine("x-trailer", "value\x7F"), std::invalid_argument);
 
-  EXPECT_THROW(resp.header("X-Test", "value\r\n"), std::invalid_argument);
-  EXPECT_THROW(resp.header("X-Test", "value\x7F"), std::invalid_argument);
+  EXPECT_THROW(resp.header("x-test", "value\r\n"), std::invalid_argument);
+  EXPECT_THROW(resp.header("x-test", "value\x7F"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, ContentTypeAndContentLengthShouldBeAddedWhenSettingBody) {
@@ -693,48 +694,48 @@ TEST_F(HttpResponseTest, ContentTypeAndContentLengthShouldBeAddedWhenSettingBody
   resp.headerAddLine("content-typr", "text/html");
   resp.headerAddLine("content-lengty", "10");
 
-  resp.headerAddLine("Content-typ", "text/html");
-  resp.headerAddLine("Content-lengt", "10");
+  resp.headerAddLine("content-typ", "text/html");
+  resp.headerAddLine("content-lengt", "10");
 
-  resp.headerAddLine("Content-typr", "text/html");
-  resp.headerAddLine("Content-lengty", "10");
+  resp.headerAddLine("content-typr", "text/html");
+  resp.headerAddLine("content-lengty", "10");
 }
 
 TEST_F(HttpResponseTest, ContentEncodingCanBeModifiedOnlyBeforeTheBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("Content-Encoding", "identity");
+  resp.headerAddLine("content-encoding", "identity");
   EXPECT_TRUE(resp.hasHeader(http::ContentEncoding));
   resp.headerRemoveLine(http::ContentEncoding);  // should be possible, no body set
   EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
-  resp.headerAddLine("Content-Encoding", "identity");
+  resp.headerAddLine("content-encoding", "identity");
   resp.body("Hello");
-  EXPECT_THROW(resp.header("Content-Encoding", "deflate"), std::logic_error);
+  EXPECT_THROW(resp.header("content-encoding", "deflate"), std::logic_error);
   EXPECT_THROW(resp.headerRemoveLine(http::ContentEncoding), std::logic_error);
-  EXPECT_EQ(resp.headerValueOrEmpty("Content-Encoding"), "identity");
+  EXPECT_EQ(resp.headerValueOrEmpty("content-encoding"), "identity");
 }
 
 TEST_F(HttpResponseTest, AllowsDuplicates) {
   HttpResponse resp;
-  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2");
+  resp.headerAddLine("x-dup", "1").headerAddLine("x-dup", "2");
   auto full = concatenated(std::move(resp));
-  auto first = full.find("X-Dup: 1\r\n");
-  auto second = full.find("X-Dup: 2\r\n");
+  auto first = full.find("x-dup: 1\r\n");
+  auto second = full.find("x-dup: 2\r\n");
   ASSERT_NE(first, std::string_view::npos);
   ASSERT_NE(second, std::string_view::npos);
   EXPECT_LT(first, second);
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueAppendsToExistingHeader) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("X-Custom", "value1");
-  resp.headerAppendValue("X-Custom", "value2");
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").header("x-custom", "value1");
+  resp.headerAppendValue("x-custom", "value2");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Custom: value1, value2\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-custom: value1, value2\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
-  auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("X-Missing", "v1");
+  auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("x-missing", "v1");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Missing: v1\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-missing: v1\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, SetSameReason) {
@@ -758,440 +759,440 @@ TEST_F(HttpResponseTest, SetSameReason) {
 TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "second", "");
+  resp.header("x-list", "first");
+  resp.headerAppendValue("x-list", "second", "");
 
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: firstsecond\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-list: firstsecond\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "", ", ");
+  resp.header("x-list", "first");
+  resp.headerAppendValue("x-list", "", ", ");
 
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first, \r\n")) << full;
+  EXPECT_TRUE(full.contains("x-list: first, \r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "", "");
+  resp.header("x-list", "first");
+  resp.headerAppendValue("x-list", "", "");
 
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-list: first\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueHonorsCustomSeparator) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-List", "first");
-  resp.headerAppendValue("X-List", "second", "; ");
+  resp.header("x-list", "first");
+  resp.headerAppendValue("x-list", "second", "; ");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-List: first; second\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-list: first; second\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Numeric", "1");
-  resp.headerAppendValue("X-Numeric", 42, "|");
+  resp.header("x-numeric", "1");
+  resp.headerAppendValue("x-numeric", 42, "|");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Numeric: 1|42\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-numeric: 1|42\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineNotFound) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-First", "value1");
-  resp.headerAddLine("X-Second", "value2");
+  resp.headerAddLine("x-first", "value1");
+  resp.headerAddLine("x-second", "value2");
 
-  resp.headerRemoveLine("X-NotExists");
+  resp.headerRemoveLine("x-notexists");
 
-  EXPECT_TRUE(resp.hasHeader("X-First"));
-  EXPECT_TRUE(resp.hasHeader("X-Second"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-First"), "value1");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Second"), "value2");
+  EXPECT_TRUE(resp.hasHeader("x-first"));
+  EXPECT_TRUE(resp.hasHeader("x-second"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-first"), "value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-second"), "value2");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineEmptyName) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value");
+  resp.headerAddLine("x-test", "value");
 
   resp.headerRemoveLine("");
 
-  EXPECT_TRUE(resp.hasHeader("X-Test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value");
+  EXPECT_TRUE(resp.hasHeader("x-test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineSimple) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Remove", "value");
-  resp.headerAddLine("X-Keep", "keep-value");
+  resp.headerAddLine("x-remove", "value");
+  resp.headerAddLine("x-keep", "keep-value");
 
-  EXPECT_TRUE(resp.hasHeader("X-Remove"));
-  resp.headerRemoveLine("X-Remove");
+  EXPECT_TRUE(resp.hasHeader("x-remove"));
+  resp.headerRemoveLine("x-remove");
 
-  EXPECT_FALSE(resp.hasHeader("X-Remove"));
-  EXPECT_TRUE(resp.hasHeader("X-Keep"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-value");
+  EXPECT_FALSE(resp.hasHeader("x-remove"));
+  EXPECT_TRUE(resp.hasHeader("x-keep"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-keep"), "keep-value");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLinePartialMatch) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Remove", "value");
-  resp.headerAddLine("X-Keep", "keep-value");
+  resp.headerAddLine("x-remove", "value");
+  resp.headerAddLine("x-keep", "keep-value");
 
-  ASSERT_EQ(resp.headerValueOrEmpty("X-Remove"), "value");
+  ASSERT_EQ(resp.headerValueOrEmpty("x-remove"), "value");
 
-  resp.headerRemoveLine("-Remove");  // should do nothing
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Remove"), "value");
+  resp.headerRemoveLine("-remove");  // should do nothing
+  EXPECT_EQ(resp.headerValueOrEmpty("x-remove"), "value");
 
-  resp.headerRemoveLine("-Keep");  // should do nothing
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-value");
+  resp.headerRemoveLine("-keep");  // should do nothing
+  EXPECT_EQ(resp.headerValueOrEmpty("x-keep"), "keep-value");
 }
 
-TEST_F(HttpResponseTest, HeaderRemoveLineCaseInsensitive) {
+TEST_F(HttpResponseTest, HeaderRemoveLineLowercaseKey) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-CasE-TeSt", "value");
-  resp.headerAddLine("X-Other", "other-value");
+  resp.headerAddLine("x-case-test", "value");
+  resp.headerAddLine("x-other", "other-value");
 
-  EXPECT_TRUE(resp.hasHeader("X-CasE-TeSt"));
+  EXPECT_TRUE(resp.hasHeader("x-case-test"));
   resp.headerRemoveLine("x-case-test");
 
-  EXPECT_FALSE(resp.hasHeader("X-CasE-TeSt"));
   EXPECT_FALSE(resp.hasHeader("x-case-test"));
-  EXPECT_TRUE(resp.hasHeader("X-Other"));
+  EXPECT_FALSE(resp.hasHeader("x-case-test"));
+  EXPECT_TRUE(resp.hasHeader("x-other"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineRemovesLast) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Duplicate", "first");
-  resp.headerAddLine("X-Duplicate", "second");
-  resp.headerAddLine("X-Duplicate", "third");
+  resp.headerAddLine("x-duplicate", "first");
+  resp.headerAddLine("x-duplicate", "second");
+  resp.headerAddLine("x-duplicate", "third");
 
-  resp.headerRemoveLine("X-Duplicate");
+  resp.headerRemoveLine("x-duplicate");
 
   // Should remove the last occurrence (from reverse search)
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Duplicate"), "first");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-duplicate"), "first");
 
-  resp.headerRemoveLine("X-Duplicate");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Duplicate"), "first");
+  resp.headerRemoveLine("x-duplicate");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-duplicate"), "first");
 
-  resp.headerRemoveLine("X-Duplicate");
-  EXPECT_FALSE(resp.hasHeader("X-Duplicate"));
+  resp.headerRemoveLine("x-duplicate");
+  EXPECT_FALSE(resp.hasHeader("x-duplicate"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineMultipleTimes) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Multi", "value1");
-  resp.headerAddLine("X-Multi", "value2");
-  resp.headerAddLine("X-Multi", "value3");
+  resp.headerAddLine("x-multi", "value1");
+  resp.headerAddLine("x-multi", "value2");
+  resp.headerAddLine("x-multi", "value3");
 
   // Removes value3 (last), headerValue still returns value1 (first)
-  resp.headerRemoveLine("X-Multi");
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "value1");
+  resp.headerRemoveLine("x-multi");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "value1");
 
   // Removes value2 (now last), headerValue still returns value1 (first and only)
-  resp.headerRemoveLine("X-Multi");
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "value1");
+  resp.headerRemoveLine("x-multi");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "value1");
 
   // Removes value1 (only remaining)
-  resp.headerRemoveLine("X-Multi");
-  EXPECT_FALSE(resp.hasHeader("X-Multi"));
+  resp.headerRemoveLine("x-multi");
+  EXPECT_FALSE(resp.hasHeader("x-multi"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineWithBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Header", "value");
+  resp.headerAddLine("x-header", "value");
   resp.body("Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 
-  EXPECT_TRUE(resp.hasHeader("X-Header"));
-  resp.headerRemoveLine("X-Header");
+  EXPECT_TRUE(resp.hasHeader("x-header"));
+  resp.headerRemoveLine("x-header");
 
-  EXPECT_FALSE(resp.hasHeader("X-Header"));
+  EXPECT_FALSE(resp.hasHeader("x-header"));
   EXPECT_EQ(resp.bodyInMemory(), "Test body content");
   EXPECT_EQ(resp.bodyLength(), 17U);
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineRValue) {
   auto resp = HttpResponse(http::StatusCodeOK)
-                  .headerAddLine("X-Remove", "value")
-                  .headerAddLine("X-Keep", "keep")
-                  .headerRemoveLine("X-Remove");
+                  .headerAddLine("x-remove", "value")
+                  .headerAddLine("x-keep", "keep")
+                  .headerRemoveLine("x-remove");
 
-  EXPECT_FALSE(resp.hasHeader("X-Remove"));
-  EXPECT_TRUE(resp.hasHeader("X-Keep"));
+  EXPECT_FALSE(resp.hasHeader("x-remove"));
+  EXPECT_TRUE(resp.hasHeader("x-keep"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueNotFound) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value1, value2");
+  resp.headerAddLine("x-test", "value1, value2");
 
-  resp.headerRemoveValue("X-NotExists", "value1");
-  EXPECT_TRUE(resp.hasHeader("X-Test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+  resp.headerRemoveValue("x-notexists", "value1");
+  EXPECT_TRUE(resp.hasHeader("x-test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value1, value2");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueNotInHeader) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value1, value2");
+  resp.headerAddLine("x-test", "value1, value2");
 
-  resp.headerRemoveValue("X-Test", "value3");
-  EXPECT_TRUE(resp.hasHeader("X-Test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+  resp.headerRemoveValue("x-test", "value3");
+  EXPECT_TRUE(resp.hasHeader("x-test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value1, value2");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueFullLineRemoval) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Single", "only-value");
-  resp.headerAddLine("X-Keep", "keep-me");
+  resp.headerAddLine("x-single", "only-value");
+  resp.headerAddLine("x-keep", "keep-me");
 
-  EXPECT_TRUE(resp.hasHeader("X-Single"));
-  resp.headerRemoveValue("X-Single", "only-value");
+  EXPECT_TRUE(resp.hasHeader("x-single"));
+  resp.headerRemoveValue("x-single", "only-value");
 
-  EXPECT_FALSE(resp.hasHeader("X-Single"));
-  EXPECT_TRUE(resp.hasHeader("X-Keep"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Keep"), "keep-me");
+  EXPECT_FALSE(resp.hasHeader("x-single"));
+  EXPECT_TRUE(resp.hasHeader("x-keep"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-keep"), "keep-me");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueAtStart) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Multi", "first, second, third");
+  resp.headerAddLine("x-multi", "first, second, third");
 
-  resp.headerRemoveValue("X-Multi", "first");
+  resp.headerRemoveValue("x-multi", "first");
 
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "second, third");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "second, third");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueAtEnd) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Multi", "first, second, third");
+  resp.headerAddLine("x-multi", "first, second, third");
 
-  resp.headerRemoveValue("X-Multi", "third");
+  resp.headerRemoveValue("x-multi", "third");
 
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "first, second");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "first, second");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueInMiddle) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Multi", "first, second, third");
+  resp.headerAddLine("x-multi", "first, second, third");
 
-  resp.headerRemoveValue("X-Multi", "second");
+  resp.headerRemoveValue("x-multi", "second");
 
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "first, third");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "first, third");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparator) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Custom", "alpha;beta;gamma");
+  resp.headerAddLine("x-custom", "alpha;beta;gamma");
 
-  resp.headerRemoveValue("X-Custom", "beta", ";");
+  resp.headerRemoveValue("x-custom", "beta", ";");
 
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "alpha;gamma");
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "alpha;gamma");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueLongSeparator) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Custom", "sep>alpha<sep>beta<sep>gamma<sep");
+  resp.headerAddLine("x-custom", "sep>alpha<sep>beta<sep>gamma<sep");
 
-  resp.headerRemoveValue("X-Custom", "alpha", "<sep>");  // should do nothing
+  resp.headerRemoveValue("x-custom", "alpha", "<sep>");  // should do nothing
 
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>beta<sep>gamma<sep");
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "sep>alpha<sep>beta<sep>gamma<sep");
 
-  resp.headerRemoveValue("X-Custom", "gamma", "<sep>");  // should do nothing
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>beta<sep>gamma<sep");
+  resp.headerRemoveValue("x-custom", "gamma", "<sep>");  // should do nothing
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "sep>alpha<sep>beta<sep>gamma<sep");
 
-  resp.headerRemoveValue("X-Custom", "beta", "<sep>");
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "sep>alpha<sep>gamma<sep");
+  resp.headerRemoveValue("x-custom", "beta", "<sep>");
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "sep>alpha<sep>gamma<sep");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparatorAtStart) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Custom", "alpha|beta|gamma");
+  resp.headerAddLine("x-custom", "alpha|beta|gamma");
 
-  resp.headerRemoveValue("X-Custom", "alpha", "|");
+  resp.headerRemoveValue("x-custom", "alpha", "|");
 
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "beta|gamma");
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "beta|gamma");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueCustomSeparatorAtEnd) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Custom", "alpha|beta|gamma");
+  resp.headerAddLine("x-custom", "alpha|beta|gamma");
 
-  resp.headerRemoveValue("X-Custom", "gamma", "|");
+  resp.headerRemoveValue("x-custom", "gamma", "|");
 
-  EXPECT_TRUE(resp.hasHeader("X-Custom"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "alpha|beta");
+  EXPECT_TRUE(resp.hasHeader("x-custom"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "alpha|beta");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueNotProperlyDelimited) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "somevalue, valueanother, value");
+  resp.headerAddLine("x-test", "somevalue, valueanother, value");
 
   // Try to remove "value" which is a substring but not properly delimited
-  resp.headerRemoveValue("X-Test", "value");
+  resp.headerRemoveValue("x-test", "value");
 
   // Should not remove anything because "value" is not properly delimited
-  EXPECT_TRUE(resp.hasHeader("X-Test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "somevalue, valueanother");
+  EXPECT_TRUE(resp.hasHeader("x-test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "somevalue, valueanother");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValuePartialMatch) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value1, value2, value3");
+  resp.headerAddLine("x-test", "value1, value2, value3");
 
   // Try to remove "value" which is a substring of all values
-  resp.headerRemoveValue("X-Test", "value");
+  resp.headerRemoveValue("x-test", "value");
 
   // Should not remove anything because "value" is not properly delimited
-  EXPECT_TRUE(resp.hasHeader("X-Test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2, value3");
+  EXPECT_TRUE(resp.hasHeader("x-test"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value1, value2, value3");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueMultipleOccurrences) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Multi", "apple, banana, apple, cherry");
+  resp.headerAddLine("x-multi", "apple, banana, apple, cherry");
 
   // Removes first occurrence within the value (left-to-right search)
-  resp.headerRemoveValue("X-Multi", "apple");
+  resp.headerRemoveValue("x-multi", "apple");
 
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "banana, apple, cherry");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "banana, apple, cherry");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueWithSpaces) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Spaced", "value1, value2, value3");
+  resp.headerAddLine("x-spaced", "value1, value2, value3");
 
-  resp.headerRemoveValue("X-Spaced", "value2");
+  resp.headerRemoveValue("x-spaced", "value2");
 
-  EXPECT_TRUE(resp.hasHeader("X-Spaced"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Spaced"), "value1, value3");
+  EXPECT_TRUE(resp.hasHeader("x-spaced"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-spaced"), "value1, value3");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueFromEmptyHeader) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "");
+  resp.headerAddLine("x-test", "");
 
-  resp.headerRemoveValue("X-Test", "");
+  resp.headerRemoveValue("x-test", "");
 
-  EXPECT_FALSE(resp.hasHeader("X-Test"));
+  EXPECT_FALSE(resp.hasHeader("x-test"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueInMiddle) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value1, , value2");
+  resp.headerAddLine("x-test", "value1, , value2");
 
-  resp.headerRemoveValue("X-Test", "");
+  resp.headerRemoveValue("x-test", "");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value1, value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value1, value2");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueAtFirst) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", ", value2");
+  resp.headerAddLine("x-test", ", value2");
 
-  resp.headerRemoveValue("X-Test", "", ", ");
+  resp.headerRemoveValue("x-test", "", ", ");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value2");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueAtLast) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "value2-");
+  resp.headerAddLine("x-test", "value2-");
 
-  resp.headerRemoveValue("X-Test", "", "-");
+  resp.headerRemoveValue("x-test", "", "-");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value2");
 }
 
-TEST_F(HttpResponseTest, HeaderRemoveValueCaseInsensitiveHeader) {
+TEST_F(HttpResponseTest, HeaderRemoveValueLowercaseKey) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-CaSe", "val1, val2, val3");
+  resp.headerAddLine("x-case", "val1, val2, val3");
 
   resp.headerRemoveValue("x-case", "val2");
 
-  EXPECT_TRUE(resp.hasHeader("X-CaSe"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-CaSe"), "val1, val3");
+  EXPECT_TRUE(resp.hasHeader("x-case"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-case"), "val1, val3");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueFromDuplicateHeaders) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Dup", "alpha, beta");
-  resp.headerAddLine("X-Dup", "gamma, delta");
+  resp.headerAddLine("x-dup", "alpha, beta");
+  resp.headerAddLine("x-dup", "gamma, delta");
 
   // Works on the last header (reverse search), but headerValue returns first
-  resp.headerRemoveValue("X-Dup", "gamma");
+  resp.headerRemoveValue("x-dup", "gamma");
 
   // Both headers still exist, second is now just "delta"
-  EXPECT_TRUE(resp.hasHeader("X-Dup"));
+  EXPECT_TRUE(resp.hasHeader("x-dup"));
   // headerValue returns the first header
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Dup"), "alpha, beta");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-dup"), "alpha, beta");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueWithBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Values", "a, b, c");
+  resp.headerAddLine("x-values", "a, b, c");
   resp.body("Body content here");
 
-  resp.headerRemoveValue("X-Values", "b");
+  resp.headerRemoveValue("x-values", "b");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Values"), "a, c");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-values"), "a, c");
   EXPECT_EQ(resp.bodyInMemory(), "Body content here");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueRValue) {
   auto resp =
-      HttpResponse(http::StatusCodeOK).headerAddLine("X-Multi", "v1, v2, v3").headerRemoveValue("X-Multi", "v2");
+      HttpResponse(http::StatusCodeOK).headerAddLine("x-multi", "v1, v2, v3").headerRemoveValue("x-multi", "v2");
 
-  EXPECT_TRUE(resp.hasHeader("X-Multi"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Multi"), "v1, v3");
+  EXPECT_TRUE(resp.hasHeader("x-multi"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-multi"), "v1, v3");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueLeavesSingleValue) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Two", "first, second");
+  resp.headerAddLine("x-two", "first, second");
 
-  resp.headerRemoveValue("X-Two", "first", ", ");
+  resp.headerRemoveValue("x-two", "first", ", ");
 
-  EXPECT_TRUE(resp.hasHeader("X-Two"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Two"), "second");
+  EXPECT_TRUE(resp.hasHeader("x-two"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-two"), "second");
 
   // Removing the only remaining value removes the whole header line
-  resp.headerRemoveValue("X-Two", "second", ", ");
-  EXPECT_FALSE(resp.hasHeader("X-Two"));
+  resp.headerRemoveValue("x-two", "second", ", ");
+  EXPECT_FALSE(resp.hasHeader("x-two"));
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueComplexSeparator) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Complex", "item1::item2::item3");
+  resp.headerAddLine("x-complex", "item1::item2::item3");
 
-  resp.headerRemoveValue("X-Complex", "item2", "::");
+  resp.headerRemoveValue("x-complex", "item2", "::");
 
-  EXPECT_TRUE(resp.hasHeader("X-Complex"));
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Complex"), "item1::item3");
+  EXPECT_TRUE(resp.hasHeader("x-complex"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-complex"), "item1::item3");
 
-  resp.headerRemoveValue("X-Compley", "item1", "::");  // should do nothing
+  resp.headerRemoveValue("x-compley", "item1", "::");  // should do nothing
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Complex"), "item1::item3");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-complex"), "item1::item3");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveValueWithEmptySepartorShouldThrow) {
-  EXPECT_THROW(HttpResponse{}.headerRemoveValue("X-Test", "value1", ""), std::invalid_argument);
+  EXPECT_THROW(HttpResponse{}.headerRemoveValue("x-test", "value1", ""), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, ContentEncodingHeader) {
@@ -1261,15 +1262,15 @@ TEST_F(HttpResponseTest, FileOffsetPlusLengthExceedsSizeThrows) {
 TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Global", "UserValue");
+  resp.header("x-global", "UserValue");
   ConcatenatedHeaders globalHeaders;
-  globalHeaders.append("X-Global: GlobalValue");
-  globalHeaders.append("X-Another: AnotherValue");
+  globalHeaders.append("x-global: GlobalValue");
+  globalHeaders.append("x-another: AnotherValue");
   resp.reason("Some Reason");
   auto full = concatenated(std::move(resp), globalHeaders);
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 Some Reason\r\n"));
-  EXPECT_TRUE(full.contains("X-Global: UserValue\r\n"));
-  EXPECT_TRUE(full.contains("X-Another: AnotherValue\r\n"));
+  EXPECT_TRUE(full.contains("x-global: UserValue\r\n"));
+  EXPECT_TRUE(full.contains("x-another: AnotherValue\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1277,67 +1278,67 @@ TEST_F(HttpResponseTest, GlobalHeadersShouldNotOverrideUserHeaders) {
 
 TEST_F(HttpResponseTest, HeaderAppendValuesAreTrimmed) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAppendValue("X-Trimmed-Header", "   Value1   ", ", ");
-  resp.headerAppendValue("X-Trimmed-Header", "\tValue2\t", ", ");
-  resp.headerAppendValue("X-Trimmed-Header", " \t  Value3 \t ", ", ");
+  resp.headerAppendValue("x-trimmed-header", "   Value1   ", ", ");
+  resp.headerAppendValue("x-trimmed-header", "\tValue2\t", ", ");
+  resp.headerAppendValue("x-trimmed-header", " \t  Value3 \t ", ", ");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header"), "Value1, Value2, Value3");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header"), "Value1, Value2, Value3");
 }
 
 TEST_F(HttpResponseTest, HeaderGetterAfterSet) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
   // Mix of headers to exercise several lookup cases:
-  // - customHeader replaces case-insensitively
+  // - header replaces an existing normalized lower-case name
   // - addCustomHeader allows duplicates (first occurrence should be returned by headerValue)
   // - empty value is a present-but-empty header
-  resp.header("X-Simple", "hello");
-  resp.headerAddLine("X-Dup", "1");
-  resp.headerAddLine("X-Dup", "2");
-  // Replace X-Simple with different casing (should replace existing header)
+  resp.header("x-simple", "hello");
+  resp.headerAddLine("x-dup", "1");
+  resp.headerAddLine("x-dup", "2");
+  // Replace x-simple (should replace the existing header)
   resp.header("x-simple", "HELLO2");
   // Present but empty value
-  resp.header("X-Empty", "");
+  resp.header("x-empty", "");
 
-  // headerValue should see the replaced value (case-insensitive replace)
-  auto opt = resp.headerValue("X-Simple");
+  // headerValue should see the replaced value
+  auto opt = resp.headerValue("x-simple");
   EXPECT_EQ(opt.value_or(""), "HELLO2");
 
   // duplicate headers: headerValue returns the first occurrence
-  auto dup = resp.headerValue("X-Dup");
+  auto dup = resp.headerValue("x-dup");
   EXPECT_EQ(dup.value_or(""), "1");
 
   // empty-but-present header: headerValue returns an empty string_view but present
-  auto emptyOpt = resp.headerValue("X-Empty");
+  auto emptyOpt = resp.headerValue("x-empty");
   EXPECT_EQ(emptyOpt.value_or("something"), std::string_view{});
 
   // missing header should return nullopt via headerValue and empty view via headerValueOrEmpty
-  auto missing = resp.headerValue("No-Such-Header");
+  auto missing = resp.headerValue("no-such-header");
   EXPECT_FALSE(missing.has_value());
-  EXPECT_EQ(resp.headerValueOrEmpty("No-Such-Header"), std::string_view{});
+  EXPECT_EQ(resp.headerValueOrEmpty("no-such-header"), std::string_view{});
 }
 
 TEST_F(HttpResponseTest, HeaderNewViaSetter) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-First", "One");
+  resp.header("x-first", "One");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-First: One\r\n"));
+  EXPECT_TRUE(full.contains("x-first: One\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
 }
 
-TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
+TEST_F(HttpResponseTest, HeaderReplaceLowercaseKey) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Val", "LEN10VALUE");  // length 10
+  resp.header("x-val", "LEN10VALUE");  // length 10
   resp.body("Data");                   // length 4
   resp.header("x-val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains("x-val: 0123456789\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -1348,12 +1349,12 @@ TEST_F(HttpResponseTest, HeaderReplaceCaseInsensitive) {
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Key", "before X-Key: should-not-trigger");
-  // Replace header; algorithm must not treat the embedded "X-Key: " in the value as another header start
-  resp.header("X-Key", "REPLACED-VALUE");
+  resp.header("x-key", "before X-Key: should-not-trigger");
+  // Replace header; algorithm must not treat the embedded "x-key: " in the value as another header start
+  resp.header("x-key", "REPLACED-VALUE");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Key: REPLACED-VALUE\r\n"));
+  EXPECT_TRUE(full.contains("x-key: REPLACED-VALUE\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1362,11 +1363,11 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternLarger) {
 TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Key", "AAAA X-Key: B BBBBBB");
-  resp.header("X-Key", "SMALL");
+  resp.header("x-key", "AAAA X-Key: B BBBBBB");
+  resp.header("x-key", "SMALL");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Key: SMALL\r\n"));
+  EXPECT_TRUE(full.contains("x-key: SMALL\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1375,12 +1376,12 @@ TEST_F(HttpResponseTest, HeaderReplaceIgnoresEmbeddedKeyPatternSmaller) {
 TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Replace", "AA");
+  resp.header("x-replace", "AA");
   // Replace with larger value
-  resp.header("X-Replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  resp.header("x-replace", "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n"));
+  EXPECT_TRUE(full.contains("x-replace: ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1389,11 +1390,11 @@ TEST_F(HttpResponseTest, HeaderReplaceLargerValue) {
 TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Replace", "LEN10VALUE");  // length 10
-  resp.header("X-Replace", "0123456789");  // also length 10
+  resp.header("x-replace", "LEN10VALUE");  // length 10
+  resp.header("x-replace", "0123456789");  // also length 10
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains("x-replace: 0123456789\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1402,12 +1403,12 @@ TEST_F(HttpResponseTest, HeaderReplaceSameLengthValue) {
 TEST_F(HttpResponseTest, HeaderReplaceSmallerValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Replace", "LONG-LONG-VALUE");
+  resp.header("x-replace", "LONG-LONG-VALUE");
   // Replace with smaller
-  resp.header("X-Replace", "S");
+  resp.header("x-replace", "S");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Replace: S\r\n"));
+  EXPECT_TRUE(full.contains("x-replace: S\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF));
@@ -1436,37 +1437,37 @@ TEST_F(HttpResponseTest, HeaderValueContentTypeAreTrimmed) {
 TEST_F(HttpResponseTest, HeaderValueFindsLastHeader) {
   HttpResponse resp(http::StatusCodeOK);
   // Add multiple headers and ensure headerValue finds the last one when searching
-  resp.headerAddLine("X-A", "one");
-  resp.headerAddLine("X-B", "two");
-  resp.headerAddLine("X-C", "three");
+  resp.headerAddLine("x-a", "one");
+  resp.headerAddLine("x-b", "two");
+  resp.headerAddLine("x-c", "three");
 
-  EXPECT_EQ(resp.headerValue("X-C").value_or(""), "three");
-  EXPECT_EQ(resp.headerValue("X-D"), std::nullopt);
-  EXPECT_TRUE(resp.hasHeader("X-C"));
-  EXPECT_FALSE(resp.hasHeader("X-D"));
+  EXPECT_EQ(resp.headerValue("x-c").value_or(""), "three");
+  EXPECT_EQ(resp.headerValue("x-d"), std::nullopt);
+  EXPECT_TRUE(resp.hasHeader("x-c"));
+  EXPECT_FALSE(resp.hasHeader("x-d"));
 }
 
 TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderAddLine) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Trimmed-Header-1", "   Value1   ");
-  resp.headerAddLine("X-Trimmed-Header-2", "\tValue2\t");
-  resp.headerAddLine("X-Trimmed-Header-3", " \t  Value3 \t ");
+  resp.headerAddLine("x-trimmed-header-1", "   Value1   ");
+  resp.headerAddLine("x-trimmed-header-2", "\tValue2\t");
+  resp.headerAddLine("x-trimmed-header-3", " \t  Value3 \t ");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value3");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-3"), "Value3");
 }
 
 TEST_F(HttpResponseTest, HeaderValuesAreTrimmedHeaderSet) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.header("X-Trimmed-Header-1", "   Value1   ");
-  resp.header("X-Trimmed-Header-2", "\tValue2\t");
-  resp.header("X-Trimmed-Header-3", " \t  Value3 \t ");
-  resp.header("X-Trimmed-Header-3", " \t  Value33 \t ");
+  resp.header("x-trimmed-header-1", "   Value1   ");
+  resp.header("x-trimmed-header-2", "\tValue2\t");
+  resp.header("x-trimmed-header-3", " \t  Value3 \t ");
+  resp.header("x-trimmed-header-3", " \t  Value33 \t ");
 
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-1"), "Value1");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-2"), "Value2");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Trimmed-Header-3"), "Value33");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-1"), "Value1");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-2"), "Value2");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-trimmed-header-3"), "Value33");
 }
 
 TEST_F(HttpResponseTest, LargeHeaderCountStress) {
@@ -1474,7 +1475,7 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
   for (int i = 0; i < kCount; ++i) {
-    resp.headerAddLine("X-" + std::to_string(i), std::to_string(i));
+    resp.headerAddLine(LowerAsciiKey{"x-" + std::to_string(i)}, std::to_string(i));
   }
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
@@ -1543,10 +1544,10 @@ TEST_F(HttpResponseTest, LocationHeaderRValue) {
 TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Custom", "Value");
+  resp.header("x-custom", "Value");
   resp.body("BodyContent");
-  resp.trailerAddLine("X-Trailer", "TrailerValue1");
-  resp.trailerAddLine("X-Trailer-2", "TrailerValue-2");
+  resp.trailerAddLine("x-trailer", "TrailerValue1");
+  resp.trailerAddLine("x-trailer-2", "TrailerValue-2");
 
   EXPECT_EQ(resp.trailersLength(), http::HeaderSize(9U, 13U) + http::HeaderSize(11U, 14U));
 
@@ -1557,15 +1558,15 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
   all.append(prepared.secondBuffer());
 
   EXPECT_TRUE(all.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Custom", "Value")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("x-custom", "Value")));
   // When trailers are present, body is chunked encoded per RFC 7230 §4.1.2
   EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::Trailer, "X-Trailer, X-Trailer-2")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine(http::Trailer, "x-trailer, x-trailer-2")));
   EXPECT_FALSE(all.contains(http::ContentLength));
   // Body should be in chunked format: "b\r\nBodyContent\r\n0\r\n" (b = 11 in hex)
   EXPECT_TRUE(all.contains("b\r\nBodyContent\r\n0\r\n"));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer", "TrailerValue1")));
-  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("X-Trailer-2", "TrailerValue-2")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("x-trailer", "TrailerValue1")));
+  EXPECT_TRUE(all.contains(MakeHttp1HeaderLine("x-trailer-2", "TrailerValue-2")));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::close)));
   EXPECT_FALSE(all.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   EXPECT_TRUE(all.contains(kExpectedDateRaw));
@@ -1573,11 +1574,11 @@ TEST_F(HttpResponseTest, NoAddedHeadersInFinalize) {
 
 TEST_F(HttpResponseTest, ReplaceDifferentSizes) {
   HttpResponse resp1(http::StatusCodeOK, "OK");
-  resp1.headerAddLine("X-A", "1").body("Hello");
+  resp1.headerAddLine("x-a", "1").body("Hello");
   HttpResponse resp2(http::StatusCodeOK, "OK");
-  resp2.headerAddLine("X-A", "1").body("Hello");
+  resp2.headerAddLine("x-a", "1").body("Hello");
   HttpResponse resp3(http::StatusCodeOK, "OK");
-  resp3.headerAddLine("X-A", "1").body("Hello");
+  resp3.headerAddLine("x-a", "1").body("Hello");
   auto firstFull = concatenated(std::move(resp1));
   auto firstLen = firstFull.size();
   resp2.body("WorldWide");
@@ -1610,10 +1611,10 @@ TEST_F(HttpResponseTest, SendInvalidFile) {
 
 TEST_F(HttpResponseTest, AllowsDuplicatesAfterResettingBody) {
   HttpResponse resp(204, "No Content");
-  resp.headerAddLine("X-Dup", "1").headerAddLine("X-Dup", "2").body("");
+  resp.headerAddLine("x-dup", "1").headerAddLine("x-dup", "2").body("");
   auto full = concatenated(std::move(resp));
-  auto first = full.find("X-Dup: 1\r\n");
-  auto second = full.find("X-Dup: 2\r\n");
+  auto first = full.find("x-dup: 1\r\n");
+  auto second = full.find("x-dup: 2\r\n");
   ASSERT_NE(first, std::string_view::npos);
   ASSERT_NE(second, std::string_view::npos);
   EXPECT_LT(first, second);
@@ -1824,11 +1825,11 @@ TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Trace", "alpha");
+  resp.header("x-trace", "alpha");
   resp.body("payload");
-  resp.headerAppendValue("X-Trace", "beta");
+  resp.headerAppendValue("x-trace", "beta");
   auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("X-Trace: alpha, beta\r\n")) << full;
+  EXPECT_TRUE(full.contains("x-trace: alpha, beta\r\n")) << full;
   EXPECT_TRUE(full.ends_with("payload")) << full;
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, "7"))) << full;
 }
@@ -2049,12 +2050,12 @@ TEST_F(HttpResponseTest, HeadBodyWithoutGlobalHeaders) {
 TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Val", "AA");
+  resp.header("x-val", "AA");
   resp.body("Hello");                  // body length 5
-  resp.header("X-Val", "ABCDEFGHIJ");  // grow header value
+  resp.header("x-val", "ABCDEFGHIJ");  // grow header value
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: ABCDEFGHIJ\r\n"));
+  EXPECT_TRUE(full.contains("x-val: ABCDEFGHIJ\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -2065,12 +2066,12 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodyLargerValue) {
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.header("X-Val", "LEN10VALUE");  // length 10
+  resp.header("x-val", "LEN10VALUE");  // length 10
   resp.body("Data");                   // length 4
-  resp.header("X-Val", "0123456789");  // same length replacement
+  resp.header("x-val", "0123456789");  // same length replacement
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: 0123456789\r\n"));
+  EXPECT_TRUE(full.contains("x-val: 0123456789\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -2079,12 +2080,12 @@ TEST_F(HttpResponseTest, HeaderReplaceWithBodySameLengthValue) {
 }
 
 TEST_F(HttpResponseTest, HeaderReplaceWithBodySmallerValue) {
-  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").header("X-Val", "SOME-LONG-VALUE");
+  auto resp = HttpResponse(http::StatusCodeOK).reason("OK").header("x-val", "SOME-LONG-VALUE");
   resp.body("WorldWide");     // length 9
-  resp.header("X-Val", "S");  // shrink header value
+  resp.header("x-val", "S");  // shrink header value
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n"));
-  EXPECT_TRUE(full.contains("X-Val: S\r\n"));
+  EXPECT_TRUE(full.contains("x-val: S\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -2170,7 +2171,7 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   EXPECT_FALSE(resp.hasBodyCaptured());
   EXPECT_FALSE(resp.hasBodyInMemory());
 
-  EXPECT_THROW(resp.trailerAddLine("X-trailer", "value");, std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-trailer", "value");, std::logic_error);
 
   auto prepared = finalizePrepared(std::move(resp));
   ASSERT_NE(prepared.getIfFilePayload(), nullptr);
@@ -2478,11 +2479,11 @@ TEST_F(HttpResponseTest, SimpleBodyWithoutGlobalHeaders) {
 TEST_F(HttpResponseTest, SingleTerminatingCRLF) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
-  resp.headerAddLine("X-Header", "v1");
+  resp.headerAddLine("x-header", "v1");
   auto full = concatenated(std::move(resp));
   ASSERT_TRUE(full.size() >= 4);
   EXPECT_EQ(full.substr(full.size() - 4), http::DoubleCRLF);
-  EXPECT_TRUE(full.contains("X-Header: v1"));
+  EXPECT_TRUE(full.contains("x-header: v1"));
 }
 
 // =============================================================================
@@ -2493,19 +2494,19 @@ TEST_F(HttpResponseTest, AddTrailerAfterEmptyBodyThrows) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("");
   // Explicitly-empty body should still be considered 'no body' for trailers
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-checksum", "abc123"), std::logic_error);
 }
 
 TEST_F(HttpResponseTest, AddTrailerWithoutBodyThrows) {
   HttpResponse resp(http::StatusCodeOK);
   // No body set at all -> adding trailer should throw
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-checksum", "abc123"), std::logic_error);
 }
 
 TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
+  resp.trailerAddLine("x-trailer", "value");
   EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
   EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
 }
@@ -2513,7 +2514,7 @@ TEST_F(HttpResponseTest, AppendBodyAfterTrailersShouldThrow) {
 TEST_F(HttpResponseTest, AppendBodyFromStringAfterTrailersIsLogicError) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
+  resp.trailerAddLine("x-trailer", "value");
   EXPECT_THROW(resp.bodyAppend("additional body"), std::logic_error);
 }
 
@@ -2521,7 +2522,7 @@ TEST_F(HttpResponseTest, CannotSendFileAfterTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
   resp.body("some body");
-  resp.trailerAddLine("X-trailer", "value");
+  resp.trailerAddLine("x-trailer", "value");
   constexpr std::string_view kPayload = "static file payload";
 
   test::ScopedTempDir tmpDir;
@@ -2536,14 +2537,14 @@ TEST_F(HttpResponseTest, CapturedBodyWithTrailersAppendsFinalCRLF) {
   std::string bigBody(5000, 'x');
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::move(bigBody));
-  resp.trailerAddLine("X-Custom-Trail", "trail-value");
+  resp.trailerAddLine("x-custom-trail", "trail-value");
 
   // Finalize and inspect the serialized response which concatenates head + external payload
   auto prepared = finalizePrepared(std::move(resp));
   std::string tail(prepared.secondBuffer());
 
   // The external payload (tail) should contain the body followed by the trailer line and a terminating CRLF
-  EXPECT_TRUE(tail.contains("X-Custom-Trail: trail-value\r\n"));
+  EXPECT_TRUE(tail.contains("x-custom-trail: trail-value\r\n"));
   EXPECT_TRUE(tail.size() >= 2 && tail.substr(tail.size() - 2) == "\r\n");
 }
 
@@ -2552,25 +2553,25 @@ TEST_F(HttpResponseTest, LoopOnTrailers) {
   auto trailers = resp.trailers();
 
   EXPECT_EQ(trailers.begin(), trailers.end());
-  resp.trailerAddLine("Header-1", "Value1");
+  resp.trailerAddLine("header-1", "Value1");
 
   trailers = resp.trailers();
   EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 1);
-  EXPECT_EQ((*trailers.begin()).name, "Header-1");
+  EXPECT_EQ((*trailers.begin()).name, "header-1");
   EXPECT_EQ((*trailers.begin()).value, "Value1");
 
-  resp.trailerAddLine("Header-2", "Value2").trailerAddLine("Header-3", "Value3");
+  resp.trailerAddLine("header-2", "Value2").trailerAddLine("header-3", "Value3");
 
   trailers = resp.trailers();
   EXPECT_EQ(std::distance(trailers.begin(), trailers.end()), 3);
   auto it = trailers.begin();
-  EXPECT_EQ((*it).name, "Header-1");
+  EXPECT_EQ((*it).name, "header-1");
   EXPECT_EQ((*it).value, "Value1");
   ++it;
-  EXPECT_EQ((*it).name, "Header-2");
+  EXPECT_EQ((*it).name, "header-2");
   EXPECT_EQ((*it).value, "Value2");
   ++it;
-  EXPECT_EQ((*it).name, "Header-3");
+  EXPECT_EQ((*it).name, "header-3");
   EXPECT_EQ((*it).value, "Value3");
   EXPECT_EQ(++it, trailers.end());
 }
@@ -2578,7 +2579,7 @@ TEST_F(HttpResponseTest, LoopOnTrailers) {
 TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("initial");
-  resp.trailerAddLine("X-Test", "val");
+  resp.trailerAddLine("x-test", "val");
   // Once a trailer was inserted, setting body later must throw
   EXPECT_THROW(resp.body("later"), std::logic_error);
 }
@@ -2586,7 +2587,7 @@ TEST_F(HttpResponseTest, SetBodyAfterTrailerThrows) {
 TEST_F(HttpResponseTest, SetInlineBodyFromWriterShouldThrowAfterTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("some body");
-  resp.trailerAddLine("X-Trailer", "value");
+  resp.trailerAddLine("x-trailer", "value");
   EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneA), std::logic_error);
   EXPECT_THROW(resp.bodyInlineSet(8U, kAppendZeroOrOneABytes), std::logic_error);
 }
@@ -3310,7 +3311,7 @@ TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
     EXPECT_TRUE(IsAutomaticDirectCompression(resp));
 
     // Adding a trailer should finalize the compressed body
-    resp.trailerAddLine("X-Checksum", "abc123");
+    resp.trailerAddLine("x-checksum", "abc123");
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
 
     // Verify the body is properly compressed and decompressible
@@ -3466,16 +3467,16 @@ TEST_F(HttpResponseTest, Body_ResetWithCustomHeaders_HeadersPreserved) {
   for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
 
-    resp.headerAddLine("X-Custom", "value1");
+    resp.headerAddLine("x-custom", "value1");
     resp.body(std::string_view{bodyA}, http::ContentTypeTextPlain);
-    EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value1");
+    EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "value1");
 
     // Reset body
     resp.body(std::string_view{bodyB}, http::ContentTypeTextPlain);
     FinalizeCompressedBody(resp);
 
     // Custom header should still be present
-    EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "value1");
+    EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "value1");
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
   }
 }
@@ -3520,31 +3521,31 @@ TEST_F(HttpResponseTest, Body_BytesSpan_DirectCompressionRoundTrip) {
 
 TEST_F(HttpResponseTest, RepeatedGrowShrinkCycles) {
   HttpResponse resp(http::StatusCodeOK, "");
-  resp.headerAddLine("X-Static", "STATIC");
-  resp.header("X-Cycle", "A");
+  resp.headerAddLine("x-static", "STATIC");
+  resp.header("x-cycle", "A");
   resp.reason("R1");
-  resp.header("X-Cycle", "ABCDEFGHIJ");
+  resp.header("x-cycle", "ABCDEFGHIJ");
   resp.body("one");
   resp.reason("");
-  resp.header("X-Cycle", "B");
+  resp.header("x-cycle", "B");
   resp.body("two-two");
   resp.reason("LONGER-REASON");
-  resp.header("X-Cycle", "ABCDEFGHIJKLMNOP");
+  resp.header("x-cycle", "ABCDEFGHIJKLMNOP");
   resp.body("short");
   resp.reason("");
-  resp.header("X-Cycle", "C");
+  resp.header("x-cycle", "C");
   resp.body("0123456789ABCDEFGHIJ");
-  resp.header("X-Cycle", "LONGVALUE-1234567890");
+  resp.header("x-cycle", "LONGVALUE-1234567890");
   resp.reason("MID");
-  resp.header("X-Cycle", "X");
+  resp.header("x-cycle", "X");
   resp.body("XYZ");
   resp.reason("");
-  resp.header("X-Cycle", "Z");
+  resp.header("x-cycle", "Z");
   resp.body("END");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.starts_with("HTTP/1.1 200 \r\n"));
-  EXPECT_TRUE(full.contains("X-Static: STATIC\r\n"));
-  EXPECT_TRUE(full.contains("X-Cycle: Z\r\n"));
+  EXPECT_TRUE(full.contains("x-static: STATIC\r\n"));
+  EXPECT_TRUE(full.contains("x-cycle: Z\r\n"));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/plain")));
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::Connection, "close")));
   EXPECT_TRUE(full.contains(kExpectedDateRaw));
@@ -3674,7 +3675,7 @@ auto ExpectedGlobalHeaderValues(const HttpResponse& resp, const ConcatenatedHead
   for (std::string_view gh : globalHeaders) {
     std::string_view name = gh.substr(0, gh.find(": "));
     std::string_view value = gh.substr(gh.find(": ") + 2);
-    auto opt = resp.headerValue(name);
+    auto opt = resp.headerValue(LowerAsciiKey{name});
     if (opt) {
       expected.emplace(std::string(name), *opt);
     } else {
@@ -3716,7 +3717,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
       header += value;
       globalHeaders.append(header);
       if (userOverrideDist(rng)) {
-        resp.header(name, "user-" + value);
+        resp.header(LowerAsciiKey{name}, "user-" + value);
       }
     }
 
@@ -3725,7 +3726,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
     ParsedResponse parsed = parseResponse(serialized, false);
 
     for (std::string_view gh : globalHeaders) {
-      // gh is a string_view of the form "Name: Value". Extract the name for comparisons.
+      // gh is a string_view of the form "name: Value". Extract the name for comparisons.
       const auto sep = gh.find(http::HeaderSep);
       ASSERT_NE(sep, std::string_view::npos);
       std::string_view name = gh.substr(0, sep);
@@ -3744,7 +3745,7 @@ TEST_F(HttpResponseTest, RandomGlobalHeadersApplyOnce) {
 
 TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Seed", "local-value");
+  resp.headerAddLine("x-seed", "local-value");
   resp.body("payload");
 
   constexpr int kGlobalHeaders = HttpServerConfig::kMaxGlobalHeaders;
@@ -3764,8 +3765,8 @@ TEST_F(HttpResponseTest, ALotOfGlobalHeaders) {
     globalHeaders.append(header);
   }
   // Force overlap with a couple of entries (exercise dynamic bitmap skip path)
-  resp.header(headerVec[42].name(), "UserOverride-42");
-  resp.header(headerVec[199].name(), "UserOverride-199");
+  resp.header(LowerAsciiKey{headerVec[42].name()}, "UserOverride-42");
+  resp.header(LowerAsciiKey{headerVec[199].name()}, "UserOverride-199");
 
   auto expected = ExpectedGlobalHeaderValues(resp, globalHeaders);
   auto serialized = concatenated(std::move(resp), globalHeaders);
@@ -3845,9 +3846,9 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       EXPECT_EQ(resp.status(), lastStatus);
       EXPECT_EQ(resp.reason(), lastReason);
       if (lastHeaderKey.empty()) {
-        EXPECT_FALSE(resp.headerValue(lastHeaderKey).has_value());
+        EXPECT_FALSE(resp.headerValue(LowerAsciiKey{lastHeaderKey}).has_value());
       }
-      EXPECT_EQ(resp.trailerValueOrEmpty(lastTrailerKey), lastTrailerValue);
+      EXPECT_EQ(resp.trailerValueOrEmpty(LowerAsciiKey{lastTrailerKey}), lastTrailerValue);
       if (resp.hasBodyFile()) {
         const auto& file = *resp.file();
         const auto sz = file.size();
@@ -3868,20 +3869,20 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
 
       switch (op) {
         case 0:
-          lastHeaderKey = "X-" + std::to_string(step);
+          lastHeaderKey = "x-" + std::to_string(step);
           if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
             lastHeaderKey = fuzzHeaderVec[static_cast<uint32_t>(rng() % fuzzHeaderVec.size())].name();
           }
           lastHeaderValue = makeValue(smallLen(rng));
-          resp.headerAddLine(lastHeaderKey, lastHeaderValue);
+          resp.headerAddLine(LowerAsciiKey{lastHeaderKey}, lastHeaderValue);
           break;
         case 1:
-          lastHeaderKey = "U-" + std::string(static_cast<std::size_t>(step % 5), 'S');
+          lastHeaderKey = "u-" + std::string(static_cast<std::size_t>(step % 5), 's');
           if (!fuzzHeaderVec.empty() && reuseGlobalNameDist(rng) == 0) {
             lastHeaderKey = fuzzHeaderVec[static_cast<uint32_t>(rng() % fuzzHeaderVec.size())].name();
           }
           lastHeaderValue = makeValue(midLen(rng));
-          resp.header(lastHeaderKey, lastHeaderValue);
+          resp.header(LowerAsciiKey{lastHeaderKey}, lastHeaderValue);
           break;
         case 2:
           lastReason = makeValue(smallLen(rng));
@@ -3915,14 +3916,14 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
         }
         case 5:
           if (lastBody.empty()) {
-            EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value"), std::logic_error);
+            EXPECT_THROW(resp.trailerAddLine("x-trailer", "value"), std::logic_error);
           } else if (!resp.hasBodyFile()) {
-            lastTrailerKey = "X-" + std::to_string(step);
+            lastTrailerKey = "x-" + std::to_string(step);
             lastTrailerValue = makeValue(smallLen(rng));
-            resp.trailerAddLine(lastTrailerKey, lastTrailerValue);
+            resp.trailerAddLine(LowerAsciiKey{lastTrailerKey}, lastTrailerValue);
           } else {
             // Once a file body was set, trailers cannot be added
-            EXPECT_THROW(resp.trailerAddLine("X-Trailer", "value"), std::logic_error);
+            EXPECT_THROW(resp.trailerAddLine("x-trailer", "value"), std::logic_error);
           }
           break;
         case 6: {  // File
@@ -4083,38 +4084,38 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
 TEST(HttpResponseTrailers, BasicTrailer) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("test body");
-  EXPECT_FALSE(resp.hasTrailer("X-Checksum"));
-  resp.trailerAddLine("X-Checksum", "abc123");
+  EXPECT_FALSE(resp.hasTrailer("x-checksum"));
+  resp.trailerAddLine("x-checksum", "abc123");
 
-  EXPECT_EQ(resp.trailerValueOrEmpty("X-Another"), "");
-  EXPECT_EQ(resp.trailerValueOrEmpty("X-checksum"), "abc123");
-  EXPECT_EQ(resp.trailerValue("x-CHECKSUM").value_or(""), "abc123");
-  EXPECT_FALSE(resp.trailerValue("x-CHEKSUM"));
-  EXPECT_TRUE(resp.hasTrailer("X-Checksum"));
+  EXPECT_EQ(resp.trailerValueOrEmpty("x-another"), "");
+  EXPECT_EQ(resp.trailerValueOrEmpty("x-checksum"), "abc123");
+  EXPECT_EQ(resp.trailerValue("x-checksum").value_or(""), "abc123");
+  EXPECT_FALSE(resp.trailerValue("x-cheksum"));
+  EXPECT_TRUE(resp.hasTrailer("x-checksum"));
 
   // We can't easily test the serialized output without finalizing,
   // but we can verify no exception is thrown
-  EXPECT_NO_THROW(resp.trailerAddLine("X-Signature", "sha256:..."));
+  EXPECT_NO_THROW(resp.trailerAddLine("x-signature", "sha256:..."));
 }
 
 // Test error when adding trailer before body
 TEST(HttpResponseTrailers, ErrorBeforeBody) {
   HttpResponse resp(http::StatusCodeOK);
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-checksum", "abc123"), std::logic_error);
 }
 
 // Test error when adding trailer after an explicitly empty body
 TEST(HttpResponseTrailers, EmptyBodyThrows) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("");  // empty body set explicitly
-  EXPECT_THROW(resp.trailerAddLine("X-Checksum", "abc123"), std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-checksum", "abc123"), std::logic_error);
 }
 
 // Test trailer with captured body (std::string)
 TEST(HttpResponseTrailers, CapturedBodyString) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string("captured body content"));
-  EXPECT_NO_THROW(resp.trailerAddLine("X-Custom", "value"));
+  EXPECT_NO_THROW(resp.trailerAddLine("x-custom", "value"));
 }
 
 // Test trailer with captured body (vector<char>)
@@ -4122,40 +4123,40 @@ TEST(HttpResponseTrailers, CapturedBodyVector) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::vector<char>{'h', 'e', 'l', 'l', 'o'});
   EXPECT_EQ(resp.bodyInMemory(), std::string_view("hello"));
-  EXPECT_NO_THROW(resp.trailerAddLine("X-Data", "123"));
+  EXPECT_NO_THROW(resp.trailerAddLine("x-data", "123"));
 
   resp = HttpResponse{"some body that should be erased"};
   resp.body(std::vector<char>{});  // empty body
   EXPECT_EQ(resp.bodyInMemory(), std::string_view());
-  EXPECT_THROW(resp.trailerAddLine("X-Data", "123"), std::logic_error);
+  EXPECT_THROW(resp.trailerAddLine("x-data", "123"), std::logic_error);
 }
 
 // Test multiple trailers
 TEST(HttpResponseTrailers, MultipleTrailers) {
   HttpResponse resp("body");
-  resp.trailerAddLine("X-Checksum", "abc");
-  resp.trailerAddLine("X-Timestamp", "2025-10-20T12:00:00Z");
-  resp.trailerAddLine("X-Custom", "val");
-  EXPECT_EQ(resp.trailersFlatView(), "X-Checksum: abc\r\nX-Timestamp: 2025-10-20T12:00:00Z\r\nX-Custom: val\r\n");
+  resp.trailerAddLine("x-checksum", "abc");
+  resp.trailerAddLine("x-timestamp", "2025-10-20T12:00:00Z");
+  resp.trailerAddLine("x-custom", "val");
+  EXPECT_EQ(resp.trailersFlatView(), "x-checksum: abc\r\nx-timestamp: 2025-10-20T12:00:00Z\r\nx-custom: val\r\n");
 }
 
 // Test empty trailer value
 TEST(HttpResponseTrailers, EmptyValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("test");
-  EXPECT_NO_THROW(resp.trailerAddLine("X-Empty", ""));
+  EXPECT_NO_THROW(resp.trailerAddLine("x-empty", ""));
 }
 
 // Test rvalue ref version
 TEST(HttpResponseTrailers, RvalueRef) {
-  EXPECT_NO_THROW(HttpResponse(http::StatusCodeOK).body("test").trailerAddLine("X-Check", "val"));
+  EXPECT_NO_THROW(HttpResponse(http::StatusCodeOK).body("test").trailerAddLine("x-check", "val"));
 }
 
 // Test that setting the body after inserting a trailer throws
 TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("initial");
-  resp.trailerAddLine("X-After", "v");
+  resp.trailerAddLine("x-after", "v");
   // setting inline body after trailer insertion should throw
   EXPECT_THROW(resp.body("later"), std::logic_error);
   // setting captured string body after trailer insertion should also throw
@@ -4168,7 +4169,7 @@ TEST(HttpResponseTrailers, BodyAfterTrailerThrows) {
 
 TEST_F(HttpResponseTest, TrailersNoBody) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("X-Test", "val");
+  resp.headerAddLine("x-test", "val");
   // No trailers added -> empty view
   EXPECT_TRUE(resp.trailersFlatView().empty());
   // body remains accessible and unchanged
@@ -4186,13 +4187,13 @@ TEST_F(HttpResponseTest, TrailersInline_NoTrailers) {
 
 TEST_F(HttpResponseTest, TrailersInline_WithTrailers) {
   HttpResponse resp("inline-body");
-  resp.trailerAddLine("X-First", "one");
-  resp.trailerAddLine("X-Second", "two");
+  resp.trailerAddLine("x-first", "one");
+  resp.trailerAddLine("x-second", "two");
   auto tv = resp.trailersFlatView();
   EXPECT_FALSE(tv.empty());
   // trailers are stored as header lines terminated by CRLF
-  EXPECT_TRUE(tv.contains("X-First: one\r\n"));
-  EXPECT_TRUE(tv.contains("X-Second: two\r\n"));
+  EXPECT_TRUE(tv.contains("x-first: one\r\n"));
+  EXPECT_TRUE(tv.contains("x-second: two\r\n"));
   EXPECT_TRUE(tv.ends_with(http::CRLF));
   // body() should not include trailers
   EXPECT_EQ(resp.bodyInMemory(), std::string_view("inline-body"));
@@ -4209,10 +4210,10 @@ TEST_F(HttpResponseTest, TrailersCaptured_NoTrailers) {
 TEST_F(HttpResponseTest, TrailersCaptured_WithTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string("captured-body"));
-  resp.trailerAddLine("X-Custom", "val");
+  resp.trailerAddLine("x-custom", "val");
   auto tv = resp.trailersFlatView();
   EXPECT_FALSE(tv.empty());
-  EXPECT_TRUE(tv.contains("X-Custom: val\r\n"));
+  EXPECT_TRUE(tv.contains("x-custom: val\r\n"));
   EXPECT_TRUE(tv.ends_with(http::CRLF));
   // body() must remain the original captured body (trailers excluded)
   EXPECT_EQ(resp.bodyInMemory(), std::string_view("captured-body"));
@@ -4220,41 +4221,41 @@ TEST_F(HttpResponseTest, TrailersCaptured_WithTrailers) {
 
 TEST(HttpResponseAppendHeaderValue, AppendsToEmptyHeader) {
   HttpResponse resp;
-  resp.headerAppendValue("X-Test", "alpha");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "alpha");
+  resp.headerAppendValue("x-test", "alpha");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "alpha");
 }
 
 TEST(HttpResponseAppendHeaderValue, AppendsWithDefaultSeparator) {
   HttpResponse resp;
-  resp.header("X-Test", "one");
-  resp.headerAppendValue("X-Test", "two");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "one, two");
+  resp.header("x-test", "one");
+  resp.headerAppendValue("x-test", "two");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "one, two");
 }
 
 TEST(HttpResponseAppendHeaderValue, AppendsWithCustomSeparator) {
   HttpResponse resp;
-  resp.header("X-Test", "first");
-  resp.headerAppendValue("X-Test", "second", "; ");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Test"), "first; second");
+  resp.header("x-test", "first");
+  resp.headerAppendValue("x-test", "second", "; ");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "first; second");
 }
 
 TEST(HttpResponseAppendHeaderValue, NumericOverloadAndSubsequentAppend) {
   HttpResponse resp;
-  resp.headerAppendValue("X-Num", 123);
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "123");
+  resp.headerAppendValue("x-num", 123);
+  EXPECT_EQ(resp.headerValueOrEmpty("x-num"), "123");
 
-  resp.headerAppendValue("X-Num", 456);
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "123, 456");
+  resp.headerAppendValue("x-num", 456);
+  EXPECT_EQ(resp.headerValueOrEmpty("x-num"), "123, 456");
 
-  resp = HttpResponse{}.headerAppendValue("X-Num", 456);
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Num"), "456");
+  resp = HttpResponse{}.headerAppendValue("x-num", 456);
+  EXPECT_EQ(resp.headerValueOrEmpty("x-num"), "456");
 }
 
-TEST(HttpResponseAppendHeaderValue, CaseInsensitiveKeyMatch) {
+TEST(HttpResponseAppendHeaderValue, LowercaseKeyMatch) {
   HttpResponse resp;
-  resp.header("x-TeSt", "lower");
-  resp.headerAppendValue("X-TEST", "upper");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-test"), "lower, upper");
+  resp.header("x-test", "lower");
+  resp.headerAppendValue("x-test", "upper");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "lower, upper");
 }
 
 TEST(HttpResponseAppendHeaderValue, VaryMergesAcceptEncoding) {
@@ -4294,7 +4295,7 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionFinalization) {
           EXPECT_FALSE(resp.headerValue(http::Vary));
         }
         if (addTrailers) {
-          resp.trailerAddLine("X-Trailer", "value");
+          resp.trailerAddLine("x-trailer", "value");
         } else {
           EXPECT_EQ(resp.trailersSize(), 0U);
         }
@@ -4329,17 +4330,15 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionFinalization) {
   }
 }
 
-TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionWithCustomHeaders) {
-  // Test that custom headers (when mixed case) are also lowercased during HTTP/2 finalization
-  // while compression is being finalized
+TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionPreservesNormalizedHeaders) {
+  // Lower-case custom names remain unchanged while compression is finalized.
   const std::string body(2048, 'D');
   for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
     resp.directCompressionMode(DirectCompressionMode::On);
 
-    // Add custom headers before body (so they get lowercased during HTTP/2 finalization)
-    resp.headerAddLine("X-Custom-Header", "ValuePreserved");
-    resp.headerAddLine("Cache-Control", "max-age=3600");
+    resp.headerAddLine("x-custom-header", "ValuePreserved");
+    resp.headerAddLine("cache-control", "max-age=3600");
 
     resp.body(body, http::ContentTypeApplicationJson);
 
@@ -4351,8 +4350,8 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionWithCustomHeade
 
     std::string headers(resp.headersFlatView());
 
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("X-Custom-Header", "ValuePreserved")));
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("Cache-Control", "max-age=3600")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-custom-header", "ValuePreserved")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("cache-control", "max-age=3600")));
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-encoding", GetEncodingStr(enc))));
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-type", "application/json")));
 
@@ -4368,7 +4367,7 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoDirectCompressionNoTrailers_Id
   HttpResponse resp = makePrepared(PreparedOptions{});
   resp.directCompressionMode(DirectCompressionMode::Off);  // No compression
 
-  resp.headerAddLine("X-Test", "Value");
+  resp.headerAddLine("x-test", "Value");
   resp.body("Hello World", "text/plain");
 
   // Call finalize multiple times
@@ -4380,7 +4379,7 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_NoDirectCompressionNoTrailers_Id
 
   // Should be identical
   EXPECT_EQ(firstHeaders, secondHeaders);
-  EXPECT_TRUE(firstHeaders.contains(MakeHttp1HeaderLine("X-Test", "Value")));
+  EXPECT_TRUE(firstHeaders.contains(MakeHttp1HeaderLine("x-test", "Value")));
 }
 
 // =============================================================================
@@ -4423,8 +4422,8 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
               std::string_view bodySv = "CapturedData12345";  // 17 bytes
               HttpResponse resp = isPrepared ? makePrepared(opts) : HttpResponse{};
               resp.body(std::string(bodySv));  // 17 bytes = 0x11
-              resp.trailerAddLine("X-Sig", "sig-value");
-              resp.trailerAddLine("X-Sig-2", "sig-value-2");
+              resp.trailerAddLine("x-sig", "sig-value");
+              resp.trailerAddLine("x-sig-2", "sig-value-2");
 
               std::string result =
                   concatenated(std::move(resp), opts.gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
@@ -4438,11 +4437,11 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
                 exp += globalHeaders;
               }
               if (addTrailerHeader && head && isPrepared) {
-                exp += MakeHttp1HeaderLine(http::Trailer, "X-Sig, X-Sig-2");
+                exp += MakeHttp1HeaderLine(http::Trailer, "x-sig, x-sig-2");
               }
               exp += MakeHttp1HeaderLine(http::ContentType, "text/plain");
               if (addTrailerHeader && (!head || !isPrepared)) {
-                exp += MakeHttp1HeaderLine(http::Trailer, "X-Sig, X-Sig-2");
+                exp += MakeHttp1HeaderLine(http::Trailer, "x-sig, x-sig-2");
               }
               if (head) {
                 exp += MakeHttp1HeaderLine(http::ContentLength, std::to_string(bodySv.size()));
@@ -4464,8 +4463,8 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
                 exp += bodySv;
                 exp += "\r\n";
                 exp += "0\r\n";
-                exp += "X-Sig: sig-value\r\n";
-                exp += "X-Sig-2: sig-value-2\r\n";
+                exp += "x-sig: sig-value\r\n";
+                exp += "x-sig-2: sig-value-2\r\n";
                 exp += "\r\n";
               }
 
@@ -4476,7 +4475,7 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
 
               // Inline body
               resp = isPrepared ? makePrepared(opts) : HttpResponse{};
-              resp.body(bodySv).trailerAddLine("X-Sig", "sig-value").trailerAddLine("X-Sig-2", "sig-value-2");
+              resp.body(bodySv).trailerAddLine("x-sig", "sig-value").trailerAddLine("x-sig-2", "sig-value-2");
               result = concatenated(std::move(resp), opts.gh, head, keepAlive, minCapturedBodySz, addTrailerHeader);
               ASSERT_EQ(result, exp) << "Failed with keepAlive=" << keepAlive
                                      << " addTrailerHeader=" << addTrailerHeader
@@ -4493,17 +4492,17 @@ TEST_F(HttpResponseTest, FinalizationCombinations) {
 TEST_F(HttpResponseTest, TrailersAutoChunkedMultipleTrailers) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("test");
-  resp.trailerAddLine("Trailer-One", "value1");
-  resp.trailerAddLine("Trailer-Two", "value2");
-  resp.trailerAddLine("Trailer-Three", "value3");
+  resp.trailerAddLine("trailer-one", "value1");
+  resp.trailerAddLine("trailer-two", "value2");
+  resp.trailerAddLine("trailer-three", "value3");
 
   const std::string result = concatenated(std::move(resp));
 
   EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
   EXPECT_TRUE(result.contains("4\r\ntest\r\n0\r\n"));
-  EXPECT_TRUE(result.contains("Trailer-One: value1\r\n"));
-  EXPECT_TRUE(result.contains("Trailer-Two: value2\r\n"));
-  EXPECT_TRUE(result.contains("Trailer-Three: value3\r\n"));
+  EXPECT_TRUE(result.contains("trailer-one: value1\r\n"));
+  EXPECT_TRUE(result.contains("trailer-two: value2\r\n"));
+  EXPECT_TRUE(result.contains("trailer-three: value3\r\n"));
 }
 
 TEST_F(HttpResponseTest, HeadLargeBodyDoesNotGrowInlineCapacity) {
@@ -4562,7 +4561,7 @@ TEST_F(HttpResponseTest, HeadBodyInlineAppend) {
       } else {
         EXPECT_EQ(resp.bodyInMemory(), std::string_view("AA"));
       }
-      resp.trailerAddLine("X-Test", "value");
+      resp.trailerAddLine("x-test", "value");
 
       std::string result = concatenated(std::move(resp), {}, true);
 
@@ -4604,7 +4603,7 @@ TEST_F(HttpResponseTest, HeadBodyAppend) {
     // We cannot infer anything for the capacity, because we don't know in advance how many bytes the user will
     // actually append
 
-    resp.trailerAddLine("X-Test", "value");
+    resp.trailerAddLine("x-test", "value");
 
     std::string result = concatenated(std::move(resp), {}, true);
 
@@ -4676,14 +4675,14 @@ TEST_F(HttpResponseTest, HeadBodyInlineSet) {
 
 TEST_F(HttpResponseTest, TrailersAutoChunkedPreservesOtherHeaders) {
   HttpResponse resp(http::StatusCodeOK);
-  resp.header("X-Custom", "custom-value");
+  resp.header("x-custom", "custom-value");
   resp.body(R"({"key":"value"})", "application/json");
-  resp.trailerAddLine("X-Hash", "sha256:...");
+  resp.trailerAddLine("x-hash", "sha256:...");
 
   const std::string result = concatenated(std::move(resp));
 
   // Other headers should be preserved
-  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine("X-Custom", "custom-value")));
+  EXPECT_TRUE(result.contains(MakeHttp1HeaderLine("x-custom", "custom-value")));
   EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
   // But Content-Length should be replaced with Transfer-Encoding
   EXPECT_FALSE(result.contains(http::ContentLength));
@@ -4695,7 +4694,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedLargeBody) {
   const std::string largeBody(0x1234, 'X');  // 4660 bytes
   HttpResponse resp(http::StatusCodeOK);
   resp.body(largeBody);
-  resp.trailerAddLine("X-Size", "large");
+  resp.trailerAddLine("x-size", "large");
 
   const std::string result = concatenated(std::move(resp));
 
@@ -4708,12 +4707,12 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedLargeBody) {
 TEST_F(HttpResponseTest, TrailersAutoChunkedEmptyTrailerValue) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body("data");
-  resp.trailerAddLine("X-Empty", "");
+  resp.trailerAddLine("x-empty", "");
 
   const std::string result = concatenated(std::move(resp));
 
   EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
-  EXPECT_TRUE(result.contains("X-Empty: \r\n"));
+  EXPECT_TRUE(result.contains("x-empty: \r\n"));
 }
 
 TEST_F(HttpResponseTest, NoTrailersNoChunkedConversion) {
@@ -4760,13 +4759,13 @@ TEST_F(HttpResponseTest, NoTrailersNoChunkedConversionCapturedBody) {
 TEST_F(HttpResponseTest, TrailersAutoChunkedVectorBody) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::vector<char>{'A', 'B', 'C', 'D'});
-  resp.trailerAddLine("X-Check", "done");
+  resp.trailerAddLine("x-check", "done");
 
   const std::string result = concatenated(std::move(resp));
 
   EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
   EXPECT_TRUE(result.contains("4\r\nABCD\r\n0\r\n"));
-  EXPECT_TRUE(result.contains("X-Check: done\r\n"));
+  EXPECT_TRUE(result.contains("x-check: done\r\n"));
 }
 
 TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
@@ -4777,7 +4776,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
 
     auto resp = makePrepared(PreparedOptions{.head = head});
     resp.body(std::move(bodyPtr), sizeof(data) - 1);
-    resp.trailerAddLine("X-Final", "yes");
+    resp.trailerAddLine("x-final", "yes");
 
     const std::string result = concatenated(std::move(resp), {}, head);
 
@@ -4787,12 +4786,12 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedUniquePtrBody) {
       const char* pEnd = std::to_chars(dataSzBuf, dataSzBuf + sizeof(dataSzBuf), sizeof(data) - 1).ptr;
       EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, std::string_view(dataSzBuf, pEnd))));
       EXPECT_FALSE(result.contains("5\r\nHello\r\n0\r\n"));
-      EXPECT_FALSE(result.contains("X-Final: yes\r\n"));
+      EXPECT_FALSE(result.contains("x-final: yes\r\n"));
       EXPECT_TRUE(result.ends_with("\r\n\r\n"));
     } else {
       EXPECT_FALSE(result.contains(http::ContentLength));
       EXPECT_TRUE(result.contains("5\r\nHello\r\n0\r\n"));
-      EXPECT_TRUE(result.contains("X-Final: yes\r\n"));
+      EXPECT_TRUE(result.contains("x-final: yes\r\n"));
     }
   }
 }
@@ -4802,13 +4801,13 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBytesSpanBody) {
   const char data[] = "Hello";
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::span<const std::byte>(reinterpret_cast<const std::byte*>(data), 5));
-  resp.trailerAddLine("X-Final", "yes");
+  resp.trailerAddLine("x-final", "yes");
 
   const std::string result = concatenated(std::move(resp));
 
   EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::TransferEncoding, http::chunked)));
   EXPECT_TRUE(result.contains("5\r\nHello\r\n0\r\n"));
-  EXPECT_TRUE(result.contains("X-Final: yes\r\n"));
+  EXPECT_TRUE(result.contains("x-final: yes\r\n"));
 }
 
 TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
@@ -4817,7 +4816,7 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
     const std::string body(static_cast<std::size_t>(sz), 'X');
     HttpResponse resp(http::StatusCodeOK);
     resp.body(body);
-    resp.trailerAddLine("X-Size", std::to_string(sz));
+    resp.trailerAddLine("x-size", std::to_string(sz));
 
     const std::string result = concatenated(std::move(resp));
 
@@ -4844,22 +4843,22 @@ TEST_F(HttpResponseTest, CloneEmptyMessage) {
 TEST_F(HttpResponseTest, CloneWithHeadersAndInlineBody) {
   HttpResponse resp(http::StatusCodeOK, "hello world", "text/plain");
   resp.reason("OK");
-  resp.header("X-Custom", "abc");
-  resp.headerAddLine("X-Multi", "1");
-  resp.headerAddLine("X-Multi", "2");
+  resp.header("x-custom", "abc");
+  resp.headerAddLine("x-multi", "1");
+  resp.headerAddLine("x-multi", "2");
 
   HttpResponse copy = cloneFinalized(resp);
   EXPECT_EQ(copy.status(), resp.status());
   EXPECT_EQ(copy.reason(), resp.reason());
   EXPECT_EQ(copy.bodyInMemory(), "hello world");
   EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
-  EXPECT_EQ(copy.headerValueOrEmpty("X-Custom"), "abc");
+  EXPECT_EQ(copy.headerValueOrEmpty("x-custom"), "abc");
 
   // The clone is a deep, independent copy: mutating it never touches the original.
   copy.body("changed");
-  copy.header("X-Custom", "z");
+  copy.header("x-custom", "z");
   EXPECT_EQ(resp.bodyInMemory(), "hello world");
-  EXPECT_EQ(resp.headerValueOrEmpty("X-Custom"), "abc");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "abc");
 
   // Serialized bytes of two clones of the untouched original match exactly.
   EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(resp)));

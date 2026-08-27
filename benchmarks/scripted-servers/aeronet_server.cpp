@@ -29,6 +29,7 @@
 
 #include "aeronet/aeronet-server.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -116,11 +117,12 @@ int main(int argc, char* argv[]) {
     }
     const std::size_t headerSize = *optHeaderSize;
 
-    static constexpr std::string_view kHeaderNamePrefix = "X-Bench-Header-";
+    static constexpr std::string_view kHeaderNamePrefix = "x-bench-header-";
     auto resp = req.makeResponse(count * http::HeaderSize(kHeaderNamePrefix.size() + ndigits(count), headerSize),
                                  http::StatusCodeOK);
     for (std::size_t headerPos = 0; headerPos < count; ++headerPos) {
-      resp.headerAddLine(std::format("{}{}", kHeaderNamePrefix, headerPos), bench::GenerateRandomString(headerSize));
+      const std::string headerName = std::format("{}{}", kHeaderNamePrefix, headerPos);
+      resp.headerAddLine(LowerAsciiKey{headerName}, bench::GenerateRandomString(headerSize));
     }
     resp.body(std::format("Generated {} headers", count));
     return resp;
@@ -166,8 +168,8 @@ int main(int argc, char* argv[]) {
     auto body = std::format("fib({})={}, hash={}", complexity, fibResult, hashResult);
 
     auto resp = req.makeResponse(64UL + HttpResponse::BodySize(body.size()), http::StatusCodeOK);
-    resp.headerAddLine("X-Fib-Result", fibResult);
-    resp.headerAddLine("X-Hash-Result", hashResult);
+    resp.headerAddLine("x-fib-result", fibResult);
+    resp.headerAddLine("x-hash-result", hashResult);
     resp.body(std::move(body));
     return resp;
   });

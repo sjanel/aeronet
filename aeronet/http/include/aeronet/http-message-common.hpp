@@ -26,6 +26,9 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     if (!http::IsValidHeaderName(headerName)) {
       throw std::invalid_argument("Invalid header name in concatenated headers");
     }
+    if (std::ranges::any_of(headerName, [](char ch) { return ch >= 'A' && ch <= 'Z'; })) {
+      throw std::invalid_argument("Header names should be normalized to lower case in concatenated headers");
+    }
     first += headerName.size() + http::HeaderSep.size();
 
     const char* endLine = SearchCRLF(first, last);

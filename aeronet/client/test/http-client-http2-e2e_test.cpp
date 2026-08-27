@@ -725,11 +725,11 @@ TEST(HttpClientHttp2E2ETest, UserFramingHeadersRespected) {
   // the injected ones, and connection-specific headers (forbidden in HTTP/2) are silently dropped.
   HttpClient client = MakeHttp2Client();
   auto req = client.makeRequest(http::Method::POST, Url("/echo"));
-  req.header("Host", "override-authority.test")
-      .header("User-Agent", "custom-agent/1.0")
-      .header("Accept-Encoding", "identity")
-      .header("Keep-Alive", "timeout=5")
-      .header("Proxy-Connection", "keep-alive")
+  req.header("host", "override-authority.test")
+      .header("user-agent", "custom-agent/1.0")
+      .header("accept-encoding", "identity")
+      .header("keep-alive", "timeout=5")
+      .header("proxy-connection", "keep-alive")
       .body("payload", "text/plain");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
@@ -765,7 +765,7 @@ TEST(HttpClientHttp2E2ETest, CustomHeadersRoundTrip) {
   HttpClient client = MakeHttp2Client();
   // Uppercase name on purpose: HTTP/2 requires lowercase field names on the wire, the engine lowers it.
   auto req = client.makeRequest(http::Method::GET, Url("/headers"));
-  req.header("X-Custom-Token", "abc123");
+  req.header("x-custom-token", "abc123");
   auto resp = client.request(req).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.headerValueOrEmpty("x-echoed"), "abc123");

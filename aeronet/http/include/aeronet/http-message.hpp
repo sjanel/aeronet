@@ -27,6 +27,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/ndigits.hpp"
@@ -90,32 +91,33 @@ class HttpMessage {
   // GETTERS /
   // --------/
 
-  // Checks if the given header key is present (case-insensitive search per RFC 7230).
-  [[nodiscard]] bool hasHeader(std::string_view key) const noexcept;
+  // Checks if the given lower-case header key is present. Lower-case literals are checked at compile time;
+  // dynamic keys must be normalized before explicitly constructing LowerAsciiKey.
+  [[nodiscard]] bool hasHeader(LowerAsciiKey key) const noexcept;
 
   // Checks if this HttpMessage has a Content-Encoding header.
   [[nodiscard]] bool hasContentEncoding() const noexcept { return _opts.hasContentEncoding(); }
 
-  // Retrieves the value of the first occurrence of the given header key (case-insensitive search per RFC 7230).
+  // Retrieves the value of the first occurrence of the given lower-case header key.
   // If the header is not found, returns std::nullopt.
   // Notes:
   //  - For HttpMessage that started direct automatic streaming compression, 'content-length' will not reflect the
   //    actual body length before the finalization.
-  [[nodiscard]] std::optional<std::string_view> headerValue(std::string_view key) const noexcept;
+  [[nodiscard]] std::optional<std::string_view> headerValue(LowerAsciiKey key) const noexcept;
 
   // Same as headerValue(), but returns an empty string_view instead of std::nullopt if the header is not found.
   // To distinguish between missing and present-but-empty header values, use headerValue().
-  [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept;
+  [[nodiscard]] std::string_view headerValueOrEmpty(LowerAsciiKey key) const noexcept;
 
-  // Get a contiguous view of the current headers stored in this HttpMessage. Each header line is formatted as: name +
-  // ": " + value + CRLF. If no headers are present, it returns an empty view.
+  // Get a contiguous view of the current headers stored in this HttpMessage. Header names are lower-case and each
+  // header line is formatted as: name + ": " + value + CRLF. If no headers are present, it returns an empty view.
   // For an HttpResponse, the returned view does not include the Date header, managed by aeronet.
   [[nodiscard]] std::string_view headersFlatView() const noexcept {
     return {_data.data() + headersStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
   }
 
   // Return a non-allocating, iterable view over headers.
-  // Each element is a HeaderView with name and value string_views.
+  // Each element is a HeaderView with a lower-case name and a value string_view.
   // Usage example:
   //   for (const auto &[name, value] : response.headers()) {
   //       process(name, value);
@@ -196,12 +198,12 @@ class HttpMessage {
     return _opts._directCompressionMode;
   }
 
-  // Checks if the given trailer key is present (case-insensitive search per RFC 7230).
-  [[nodiscard]] bool hasTrailer(std::string_view key) const noexcept;
+  // Checks if the given lower-case trailer key is present.
+  [[nodiscard]] bool hasTrailer(LowerAsciiKey key) const noexcept;
 
-  // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
+  // Retrieves the value of the first occurrence of the given lower-case trailer key.
   // If the trailer is not found, returns std::nullopt.
-  [[nodiscard]] std::optional<std::string_view> trailerValue(std::string_view key) const noexcept;
+  [[nodiscard]] std::optional<std::string_view> trailerValue(LowerAsciiKey key) const noexcept;
 
   // Get the total size of all trailers, counting exactly one CRLF per trailer line.
   [[nodiscard]] std::size_t trailersSize() const noexcept { return _opts._trailerLen; }
@@ -209,21 +211,20 @@ class HttpMessage {
   // Synonym for trailersSize().
   [[nodiscard]] std::size_t trailersLength() const noexcept { return trailersSize(); }
 
-  // Retrieves the value of the first occurrence of the given trailer key (case-insensitive search per RFC 7230).
+  // Retrieves the value of the first occurrence of the given lower-case trailer key.
   // If the trailer is not found, returns an empty string_view.
   // To distinguish between missing and present-but-empty trailer values, use trailerValue().
-  [[nodiscard]] std::string_view trailerValueOrEmpty(std::string_view key) const noexcept;
+  [[nodiscard]] std::string_view trailerValueOrEmpty(LowerAsciiKey key) const noexcept;
 
-  // Get a view of the current trailers stored in this HttpMessage, starting at the first
-  // trailer key (if any).
-  // Each trailer line is formatted as: name + ": " + value + CRLF.
+  // Get a view of the current trailers stored in this HttpMessage, starting at the first trailer key (if any).
+  // Trailer names are lower-case and each line is formatted as: name + ": " + value + CRLF.
   // If no trailers are present, it returns an empty view.
   [[nodiscard]] std::string_view trailersFlatView() const noexcept {
     return hasBodyCaptured() ? externalTrailers() : internalTrailers();
   }
 
   // Return a non-allocating, iterable view over trailer headers.
-  // Each element is a HeaderView with name and value string_views.
+  // Each element is a HeaderView with a lower-case name and a value string_view.
   // Usage example:
   //   for (const auto &[name, value] : response.headers()) {
   //       process(name, value);
@@ -253,7 +254,8 @@ class HttpMessage {
   // HEADER SETTERS /
   // ---------------/
 
-  // Append a header line (duplicates allowed, fastest path).
+  // Append a header line (duplicates allowed, fastest path). The name must be lower-case; literals are checked at
+  // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
@@ -263,54 +265,52 @@ class HttpMessage {
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
   // std::logic_error.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
-  void headerAddLineImpl(std::string_view key, std::string_view value);
+  void headerAddLineImpl(LowerAsciiKey key, std::string_view value);
 
   // Convenient overload adding a header whose value is numeric.
-  void headerAddLineImpl(std::string_view key, std::integral auto value) {
+  void headerAddLineImpl(LowerAsciiKey key, std::integral auto value) {
     headerAddLineImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
   // Append 'value' to an existing header value, separated with 'sep', or call headerAddLine(key, value) if header
   // is missing. Example, from an empty HttpMessage, calling successively
   //   headerAppendValueImpl("accept", "text/html", ", ")
-  //   headerAppendValueImpl("Accept", "application/json", ", ")
+  //   headerAppendValueImpl("accept", "application/json", ", ")
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  void headerAppendValueImpl(std::string_view key, std::string_view value, std::string_view sep = ", ");
+  void headerAppendValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // Convenient overload appending a numeric value.
-  void headerAppendValueImpl(std::string_view key, std::integral auto value, std::string_view sep = ", ") {
+  void headerAppendValueImpl(LowerAsciiKey key, std::integral auto value, std::string_view sep = ", ") {
     headerAppendValueImpl(key, IntegralCharBuffer<decltype(value)>(value), sep);
   }
 
   // Add or replace first header 'key' with 'value'.
-  // Performs a linear scan (slower than headerAddLine()) using case-insensitive comparison of header names per
-  // RFC 7230 (HTTP field names are case-insensitive). The original casing of the first occurrence is preserved in
-  // HTTP1.x, but in HTTP/2 header names will be lowercased during serialization.
+  // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications.
   // As for 'headerAddLine()', do not insert any reserved header.
-  void headerImpl(std::string_view key, std::string_view value);
+  void headerImpl(LowerAsciiKey key, std::string_view value);
 
   // Convenient overload setting a header to a numeric value.
-  void headerImpl(std::string_view key, std::integral auto value) {
+  void headerImpl(LowerAsciiKey key, std::integral auto value) {
     headerImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
-  // Remove the first occurrence of the header with the given key, search starting from backwards (case-insensitive
-  // search per RFC 7230). If the header is not found, the HttpMessage is not modified.
+  // Remove the last occurrence of the header with the given lower-case key. If the header is not found, the
+  // HttpMessage is not modified.
   // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
   // content.
-  void headerRemoveLineImpl(std::string_view key);
+  void headerRemoveLineImpl(LowerAsciiKey key);
 
-  // Remove the first 'value' from the header with the given key, search starting from backwards (case-insensitive
-  // search per RFC 7230). If the value is the only one for the header, the whole header line is removed. If there are
+  // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
+  // header, the whole header line is removed. If there are
   // multiple values for the header, only the first specified value is removed (starting from the beginning) and the
   // other values are kept, according to the split made by given 'sep'. If the header or value is not found, the
   // HttpMessage is not modified. Separator must not be empty, and should be the same as the one used in
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
-  void headerRemoveValueImpl(std::string_view key, std::string_view value, std::string_view sep = ", ");
+  void headerRemoveValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // -------------/
   // BODY SETTERS /
@@ -580,10 +580,10 @@ class HttpMessage {
 
   void fileImpl(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType = {});
 
-  void trailerAddLineImpl(std::string_view name, std::string_view value);
+  void trailerAddLineImpl(LowerAsciiKey name, std::string_view value);
 
   // Convenient overload adding a trailer whose value is numeric.
-  void trailerAddLineImpl(std::string_view key, std::integral auto value) {
+  void trailerAddLineImpl(LowerAsciiKey key, std::integral auto value) {
     trailerAddLineImpl(key, IntegralCharBuffer<decltype(value)>(value));
   }
 
@@ -633,7 +633,7 @@ class HttpMessage {
     _payloadVariant = HttpPayload(std::string_view(&HttpPayload::kSizeOnlySentinel, size));
   }
 
-  void headerAddLineUnchecked(std::string_view key, std::string_view value);
+  void headerAddLineUnchecked(LowerAsciiKey key, std::string_view value);
 
   // warning: this method should only be called if you are sure that the header already exists.
   void overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast, std::string_view newValue);

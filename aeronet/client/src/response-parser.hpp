@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/http-response.hpp"
@@ -24,10 +25,10 @@ struct DecompressionState;
 //
 // Status, header, chunk-metadata and trailer lines require CRLF framing, matching the server parser.
 //
-// Only Content-Type, Content-Length and Transfer-Encoding are consumed locally rather than stored
-// verbatim: HttpResponse reconstructs Content-Type and the decoded Content-Length via body(), and
-// chunked framing is de-framed away. Connection is additionally inspected for keep-alive decisions but
-// is still stored.
+// Only Content-Type, Content-Length and Transfer-Encoding are consumed locally rather than stored:
+// HttpResponse reconstructs Content-Type and the decoded Content-Length via body(), and chunked framing is
+// de-framed away. Connection is additionally inspected for keep-alive decisions but is still stored. Other
+// header values are preserved while field names are normalized to lower-case in the receive buffer before insertion.
 class ResponseParser {
  public:
   enum class Status : uint8_t {
@@ -60,8 +61,9 @@ class ResponseParser {
   // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body).
   void reset(bool headRequest) noexcept;
 
-  // Parse as much as possible. On Complete, `resp` is fully populated.
-  Status parse(std::string_view buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
+  // Parse as much as possible. Header names are normalized in-place in `buffer`. On Complete, `resp` is fully
+  // populated.
+  Status parse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
 
   // Whether the parsed response permits connection reuse (keep-alive and bounded framing).
   [[nodiscard]] bool keepAlive() const noexcept { return _keepAlive; }

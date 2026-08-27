@@ -923,7 +923,7 @@ Trailers are HTTP headers that appear after the final zero-size chunk. They allo
 **aeronet behavior**: Trailer headers are **fully supported**. Trailers are:
 
 - Parsed from the chunk stream after the `0\r\n` terminator
-- Exposed via `HttpRequestView::trailers()` (case-insensitive map)
+- Exposed via `HttpRequestView::trailers()` with normalized lower-case, case-sensitive keys
 - Subject to the same size limit as regular headers (`maxHeaderBytes`)
 - Validated for forbidden headers (security-sensitive headers cannot appear as trailers)
 
@@ -945,7 +945,7 @@ router.setPath(http::Method::GET, "/upload", [](const HttpRequestView& req) {
   std::string_view body = req.body();
   
   // Access trailer headers (if any)
-  auto checksum = req.trailers().find("X-Checksum");
+  auto checksum = req.trailers().find("x-checksum");
   if (checksum != req.trailers().end()) {
     std::string checksumValue = std::string(checksum->second);
     // Validate checksum against body...
@@ -990,7 +990,8 @@ aeronet's chunked decoder implements the full decoding algorithm specified in §
 - **Buffer management**: Chunk data is appended to `bodyAndTrailersBuffer` as chunks are decoded; trailer text is appended after the final chunk with `trailerLen` marking the length of the trailer data at the end of the buffer
 - **Zero-copy trailers**: Trailer name/value pairs are stored as `string_view` references into `bodyAndTrailersBuffer`, avoiding string copies
 - **Whitespace trimming**: Trailer values have leading/trailing whitespace (OWS per RFC 7230 §3.2) automatically trimmed
-- **Case-insensitive trailer lookup**: Trailer map uses the same case-insensitive hash/equality comparator as regular headers
+- **Normalized trailer lookup**: Trailer names are lower-case, so the map uses ordinary case-sensitive lookup without
+  repeated case folding
 
 ### Configuration
 
@@ -1028,8 +1029,8 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
   HttpResponse resp("response data");
   
   // Add trailers after body (required)
-  resp.trailerAddLine("X-Checksum", "abc123");
-  resp.trailerAddLine("X-Timestamp", "2025-10-20T12:00:00Z");
+  resp.trailerAddLine("x-checksum", "abc123");
+  resp.trailerAddLine("x-timestamp", "2025-10-20T12:00:00Z");
   
   return resp;
 });
@@ -1049,14 +1050,14 @@ This conversion is **transparent** to application code - simply set the body and
 
 ```text
 HTTP/1.1 200 OK
-Content-Type: text/plain
-Transfer-Encoding: chunked
+content-type: text/plain
+transfer-encoding: chunked
 
 d\r\n
 response data\r\n
 0\r\n
-X-Checksum: abc123\r\n
-X-Timestamp: 2025-10-20T12:00:00Z\r\n
+x-checksum: abc123\r\n
+x-timestamp: 2025-10-20T12:00:00Z\r\n
 \r\n
 ```
 
@@ -1077,10 +1078,10 @@ X-Timestamp: 2025-10-20T12:00:00Z\r\n
 
 ```cpp
 HttpResponse(200)
-    .header("X-Custom", "value")
+    .header("x-custom", "value")
     .body("data")
-    .trailerAddLine("X-Checksum", "xyz")
-    .trailerAddLine("X-Signature", "sig123");
+    .trailerAddLine("x-checksum", "xyz")
+    .trailerAddLine("x-signature", "sig123");
 ```
 
 [Trailer header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Trailer) can be added in normal handler (not yet supported in `HttpResponseWriter` streaming responses):
@@ -1103,8 +1104,8 @@ router.setPath(http::Method::GET, "/stream",
   w.writeBody("chunk2");
   
   // Add trailers during streaming
-  w.trailerAddLine("X-Checksum", "computed-hash");
-  w.trailerAddLine("X-Row-Count", "12345");
+  w.trailerAddLine("x-checksum", "computed-hash");
+  w.trailerAddLine("x-row-count", "12345");
   
   w.end();  // Trailers emitted in final chunk
 });
@@ -1121,15 +1122,15 @@ router.setPath(http::Method::GET, "/stream",
 
 ```text
 HTTP/1.1 200 OK
-Transfer-Encoding: chunked
+transfer-encoding: chunked
 
 6\r\n
 chunk1\r\n
 6\r\n
 chunk2\r\n
 0\r\n
-X-Checksum: computed-hash\r\n
-X-Row-Count: 12345\r\n
+x-checksum: computed-hash\r\n
+x-row-count: 12345\r\n
 \r\n
 ```
 
@@ -1290,9 +1291,11 @@ Managed: `Date`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Trailer`,
 
 User attempts to override are ignored (release) / asserted (debug) except via sanctioned APIs (e.g. `contentLength`).
 
+`HttpMessage` stores header and trailer field names in lower-case. Every API taking one field name, including `headerAddLine()` and `trailerAddLine()`, takes `LowerAsciiKey`; it checks literals at compile time and requires dynamic names to be normalized before wrapping. Lookup, replacement and removal therefore perform ordinary case-sensitive searches over normalized storage. Iterators, flat views and HTTP/1.x output also expose lower-case names. Values retain their supplied casing and bytes after the API's normal whitespace handling. Lower-case names are valid in HTTP/1.x and mandatory in HTTP/2, so verbatim HTTP/1.x title casing is not preserved.
+
 ### Request Header Duplicate Handling (Detailed)
 
-Incoming request headers are parsed into a flat buffer and exposed through case‑insensitive lookups on `HttpRequestView`. aeronet applies a deterministic, allocation‑free in‑place policy when a duplicate request header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well‑known header names (case‑insensitive) to one of the following behaviors:
+Incoming request header names are normalized to lower-case in the flat buffer and exposed through case-sensitive, lower-case lookups on `HttpRequestView`. aeronet applies a deterministic, allocation-free in-place policy when a duplicate request header field name is encountered while parsing. The policy is driven by a constexpr classification table that maps well-known header names to one of the following behaviors:
 
 | Policy Code | Meaning | Examples |
 | ------------- | --------- | ---------- |
@@ -1550,7 +1553,7 @@ router.addRequestMiddleware([isAuthenticated](HttpRequestView& req) {
 });
 
 router.addResponseMiddleware([](const HttpRequestView&, HttpResponse& resp) {
-  resp.header("X-Powered-By", "aeronet");
+  resp.header("x-powered-by", "aeronet");
 });
 
 auto renderMetrics = [] { return std::string{}; };  // user-defined
@@ -1567,7 +1570,7 @@ entry.before([](HttpRequestView& req) {
 });
 
 entry.after([](const HttpRequestView&, HttpResponse& resp) {
-  resp.header("Cache-Control", "no-store");
+  resp.header("cache-control", "no-store");
 });
 
 SingleHttpServer server(HttpServerConfig{}, std::move(router));
@@ -2413,7 +2416,7 @@ Example:
 Router router;
 router.setDefault([](const HttpRequestView&, HttpResponseWriter& w){
   w.status(200);
-  w.header("Content-Type", "text/plain");
+  w.contentType("text/plain");
   for (int i=0;i<5;++i) {
     if (!w.writeBody("chunk-" + std::to_string(i) + "\n")) break;
   }
