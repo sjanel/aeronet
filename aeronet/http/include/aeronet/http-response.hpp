@@ -782,13 +782,13 @@ class HttpResponse final : public HttpMessage {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpMessage instance.
   // So this instance must not be used anymore after this call.
-  HttpMessageData finalizeForHttp1(SysTimePoint tp, http::Version version, Options opts,
+  HttpMessageData finalizeForHttp1(const char* cachedDateHeader, http::Version version, Options opts,
                                    const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize) {
     // Write the Http version (1.0 or 1.1)
     version.writeFull(_data.data());
 
     // Write date header
-    WriteCRLFDateHeader(tp, _data.data() + dateHeaderStartPos());
+    CopyCRLFDateHeader(cachedDateHeader, _data.data() + dateHeaderStartPos());
 
     HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
 

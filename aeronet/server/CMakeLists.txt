@@ -61,6 +61,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    date-header-cache_test
+    test/date-header-cache_test.cpp
+    LIBRARIES
+    aeronet_server
+)
+
+AeronetAddUnitTest(
     http-parser_test
     test/http-parser_test.cpp
     LIBRARIES
