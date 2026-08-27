@@ -579,10 +579,24 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
 
 TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
 
+TEST_F(HttpRequestViewTest, TrailingRequestLineCRNeedsMoreData) { EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.1\r")), 0); }
+
+TEST_F(HttpRequestViewTest, BareRequestLineCRIsRejectedImmediately) {
+  EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.1\rX")), http::StatusCodeBadRequest);
+}
+
 TEST_F(HttpRequestViewTest, NotEnoughDataOnlyFirstLine) { EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n")), 0); }
 
 TEST_F(HttpRequestViewTest, NotEnoughDataNoEndOfHeaders) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP/1.1", "Server: aeronet", false)), 0);
+}
+
+TEST_F(HttpRequestViewTest, TrailingHeaderCRNeedsMoreData) {
+  EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.0\r\nKey: value\r")), 0);
+}
+
+TEST_F(HttpRequestViewTest, BareHeaderCRIsRejectedImmediately) {
+  EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.0\r\nKey: value\rX")), http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestViewTest, InvalidHttpVersion) {

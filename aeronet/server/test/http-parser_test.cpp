@@ -44,6 +44,17 @@ std::string SendSplit(uint16_t targetPort, std::string_view head, std::string_vi
 
 }  // namespace
 
+TEST(HttpParserRequestHead, BareCRIsRejectedWithoutWaitingForAnotherLineTerminator) {
+  const std::string resp = test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: bad\rX");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
+TEST(HttpParserRequestHead, WaitsWhenHeaderCRIsLastBufferedByte) {
+  InstallEchoHandler();
+  const std::string resp = SendSplit(port, "GET / HTTP/1.1\r\nHost: x\r", {}, "\nConnection: close\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
 // =============================================================================
 // Fixed-length body (decodeFixedLengthBody)
 // =============================================================================
