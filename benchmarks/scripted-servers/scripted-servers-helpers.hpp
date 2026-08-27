@@ -183,6 +183,8 @@ struct BenchConfig {
         keyFile = argv[++argPos];
       } else if (arg == "--h2") {
         h2Enabled = true;
+      } else if (arg == "--client-bench") {
+        clientBenchMode = true;
       } else if (arg == "--static" && argPos + 1 < argc) {
         staticDir = argv[++argPos];
       } else if (arg == "--routes" && argPos + 1 < argc) {
@@ -194,6 +196,7 @@ struct BenchConfig {
                   << "  --threads N   Worker threads (default: nproc/2, env: BENCH_THREADS)\n"
                   << "  --tls         Enable TLS (requires --cert and --key)\n"
                   << "  --h2          Enable HTTP/2 (h2c cleartext or h2 over TLS)\n"
+                  << "  --client-bench Enable prebuilt-response endpoints for client benchmarks\n"
                   << "  --cert FILE   TLS certificate file (PEM)\n"
                   << "  --key FILE    TLS private key file (PEM)\n"
                   << "  --static DIR  Directory for static file serving\n"
@@ -207,6 +210,7 @@ struct BenchConfig {
   uint16_t port;
   bool tlsEnabled{false};
   bool h2Enabled{false};
+  bool clientBenchMode{false};
   uint32_t numThreads;
   int routeCount{1000};  // Number of literal routes for routing stress test
   std::string_view certFile;

@@ -60,6 +60,12 @@ AERONET_ALWAYS_INLINE SearchResult SearchCRLFMemchrRestart(const char* begin, co
   return end;
 }
 
+AERONET_ALWAYS_INLINE SearchResult SearchCRLFStringViewFind(const char* begin, const char* end) noexcept {
+  const std::string_view haystack(begin, static_cast<std::size_t>(end - begin));
+  const auto pos = haystack.find("\r\n", 0, 2);
+  return pos == std::string_view::npos ? end : begin + pos;
+}
+
 #ifdef AERONET_BENCH_HAS_SSE2
 AERONET_ALWAYS_INLINE SearchResult SearchCRLFSse2Until(const char* begin, const char* end,
                                                        const char* sseEnd) noexcept {
@@ -302,11 +308,11 @@ void RunBenchmark(benchmark::State& state, const Corpus& corpus) {
 template <auto SearchFn>
 void RunFixedLineLengthBenchmark(benchmark::State& state) {
   const auto lineLength = static_cast<std::size_t>(state.range(0));
-  std::string line(lineLength - 2U, 'x');
-  line.append("\r\n");
+  std::string line(lineLength, 'x');
+  line.replace(line.end() - 2U, line.end(), "\r\n");
   const char* const begin = line.data();
   const char* const end = begin + line.size();
-  if (SearchFn(begin, end) != begin + lineLength) {
+  if (SearchFn(begin, end) != begin + (lineLength - 2U)) {
     state.SkipWithError("candidate did not find CRLF at the expected position");
     return;
   }
@@ -339,6 +345,11 @@ void BM_SearchCRLF_SSE2_FixedLineLength(benchmark::State& state) { RunFixedLineL
 BENCHMARK(BM_SearchCRLF_SSE2_FixedLineLength)->AERONET_FIXED_LINE_LENGTHS;
 #endif
 
+void BM_SearchCRLF_StringViewFind_FixedLineLength(benchmark::State& state) {
+  RunFixedLineLengthBenchmark<SearchCRLFStringViewFind>(state);
+}
+BENCHMARK(BM_SearchCRLF_StringViewFind_FixedLineLength)->AERONET_FIXED_LINE_LENGTHS;
+
 #undef AERONET_FIXED_LINE_LENGTHS
 
 void BM_SearchCRLF_MemchrRestart_TypicalRequests(benchmark::State& state) {
@@ -361,6 +372,16 @@ void BM_SearchCRLF_Production_LongHeaders(benchmark::State& state) {
 }
 BENCHMARK(BM_SearchCRLF_Production_LongHeaders);
 
+void BM_SearchCRLF_StringViewFind_TypicalRequests(benchmark::State& state) {
+  RunBenchmark<SearchCRLFStringViewFind>(state, TypicalCorpus());
+}
+BENCHMARK(BM_SearchCRLF_StringViewFind_TypicalRequests);
+
+void BM_SearchCRLF_StringViewFind_LongHeaders(benchmark::State& state) {
+  RunBenchmark<SearchCRLFStringViewFind>(state, LongHeaderCorpus());
+}
+BENCHMARK(BM_SearchCRLF_StringViewFind_LongHeaders);
+
 #ifdef AERONET_BENCH_HAS_SSE2
 template <std::size_t SsePrefixBytes>
 void BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests(benchmark::State& state) {
@@ -376,16 +397,10 @@ BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 16);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 16);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 32);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 32);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 48);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 48);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 64);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 64);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 80);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 80);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 96);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 96);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 112);
-BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 112);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_TypicalRequests, 128);
 BENCHMARK_TEMPLATE(BM_SearchCRLF_SSE2ThenMemchr_LongHeaders, 128);
 

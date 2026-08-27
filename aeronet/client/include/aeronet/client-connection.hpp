@@ -105,6 +105,8 @@ class ClientConnection {
   // HTTP/2).
   [[nodiscard]] bool keepAlive() const noexcept { return _keepAlive; }
 
+  [[nodiscard]] bool isHttp2() const noexcept { return _type == Type::Http2; }
+
 #ifdef AERONET_ENABLE_HTTP2
   // Whether a pooled connection can host one more exchange. Always true for HTTP/1.1 (an idle pooled
   // connection is by definition free); for HTTP/2 the engine is consulted (no GOAWAY seen, stream ids not
@@ -112,12 +114,20 @@ class ClientConnection {
   // connection<->request assumption stays out of the pool itself.
   [[nodiscard]] bool canTakeAnotherStream() const noexcept;
 
+  // Consume any already-arrived HTTP/2 control frames before a pooled connection is reused. Returns false
+  // for a close, protocol error, GOAWAY, or incomplete frame, ensuring the caller can reconnect before any
+  // bytes of a possibly non-idempotent request are sent. HTTP/1.1 has no protocol-level idle traffic.
+  [[nodiscard]] bool prepareForReuse(Transport& transport, NativeHandle fd);
+
   void reset() noexcept;
 
   using trivially_relocatable = std::true_type;
 #else
   // NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- non-static to match the HTTP/2 build
   [[nodiscard]] bool canTakeAnotherStream() const noexcept { return true; }
+
+  // NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- non-static to match the HTTP/2 build
+  [[nodiscard]] bool prepareForReuse(Transport&, NativeHandle) const noexcept { return false; }
 
   void reset() noexcept { _type = Type::Empty; }
 #endif

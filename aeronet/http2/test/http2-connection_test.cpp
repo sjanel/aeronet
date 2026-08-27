@@ -1847,6 +1847,55 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
   EXPECT_EQ(res.errorCode, ErrorCode::FlowControlError);
 }
 
+TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
+  Http2Config config;
+  config.connectionWindowSize = 100000;
+  config.maxFrameSize = 40000;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  conn.setOnData([](uint32_t, std::span<const std::byte>, bool) {});
+
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(conn);
+
+  const auto feedData = [&conn](std::size_t size, bool endStream) {
+    vector<std::byte> payload(static_cast<vector<std::byte>::size_type>(size), std::byte{0x42});
+    const FrameHeader header{static_cast<uint32_t>(size), FrameType::Data,
+                             endStream ? FrameFlags::DataEndStream : FrameFlags::None, 1};
+    FeedConnection(conn, SerializeFrame(header, payload));
+  };
+
+  feedData(30000, false);
+  EXPECT_FALSE(conn.hasPendingOutput());
+  ASSERT_NE(conn.getStream(1), nullptr);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 35535);
+  EXPECT_EQ(conn.connectionRecvWindow(), 70000);
+
+  feedData(3000, false);
+  auto output = DrainPendingOutput(conn);
+  ASSERT_EQ(output.size(), FrameHeader::kSize + sizeof(uint32_t));
+  auto header = ParseFrameHeader(output);
+  EXPECT_EQ(header.type, FrameType::WindowUpdate);
+  EXPECT_EQ(header.streamId, 1U);
+  WindowUpdateFrame update{};
+  ASSERT_EQ(ParseWindowUpdateFrame(std::span<const std::byte>(output).subspan(FrameHeader::kSize), update),
+            FrameParseResult::Ok);
+  EXPECT_EQ(update.windowSizeIncrement, 33000U);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 65535);
+  EXPECT_EQ(conn.connectionRecvWindow(), 67000);
+
+  feedData(17000, true);
+  output = DrainPendingOutput(conn);
+  ASSERT_EQ(output.size(), FrameHeader::kSize + sizeof(uint32_t));
+  header = ParseFrameHeader(output);
+  EXPECT_EQ(header.type, FrameType::WindowUpdate);
+  EXPECT_EQ(header.streamId, 0U);
+  ASSERT_EQ(ParseWindowUpdateFrame(std::span<const std::byte>(output).subspan(FrameHeader::kSize), update),
+            FrameParseResult::Ok);
+  EXPECT_EQ(update.windowSizeIncrement, 50000U);
+  EXPECT_EQ(conn.connectionRecvWindow(), 100000);
+}
+
 TEST(Http2Connection, DataFrameOnResetStreamIsIgnored) {
   Http2Config config;
   Http2Connection conn(config, true);

@@ -35,9 +35,11 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport.hpp"
+#include "response-parser.hpp"
 
 namespace aeronet::internal {
 
@@ -162,6 +164,58 @@ class Http2ClientEngine {
     }
     const uint32_t maxStreams = _conn.localSettings().maxStreamsPerConnection;
     return maxStreams == 0 || (_nextStreamId - 1U) / 2U < maxStreams;
+  }
+
+  // Drain protocol input that arrived while this connection was idle. This is deliberately non-blocking:
+  // a ReadReady result means all currently available TLS/application data was consumed. Refuse reuse when
+  // a frame remains partial because it could be the prefix of GOAWAY; reconnecting before sending is the
+  // conservative choice for non-idempotent requests.
+  [[nodiscard]] bool prepareForReuse(Transport& transport, NativeHandle fd) {
+    if (!reusable()) {
+      return false;
+    }
+
+    // Most pool hits are quiet. Preserve the single raw socket probe used by HTTP/1.1 and avoid an
+    // additional read/EAGAIN syscall unless the engine, TLS layer, or socket actually has input.
+    if (_inBuf.empty() && !transport.hasPendingReadData() && !IsConnectionStale(fd)) {
+      return true;
+    }
+
+    for (;;) {
+      if (!_inBuf.empty()) {
+        const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
+        using Action = http2::Http2Connection::ProcessResult::Action;
+        if (processed.action == Action::Error) {
+          log::error("HTTP/2 client: protocol error while draining pooled connection: {} ({})",
+                     http2::ErrorCodeName(processed.errorCode), ConvertProcessResultErrorMsgToSv(processed.errorMsg));
+          return false;
+        }
+        if (processed.action == Action::Closed) {
+          return false;
+        }
+        if (processed.bytesConsumed != 0) {
+          _inBuf.erase_front(processed.bytesConsumed);
+          if (!reusable()) {
+            return false;
+          }
+          continue;
+        }
+      }
+
+      _inBuf.ensureAvailableCapacityExponential(kReadChunk);
+      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), kReadChunk);
+      if (res.bytesProcessed != 0) {
+        _inBuf.addSize(res.bytesProcessed);
+        continue;
+      }
+      if (res.want == TransportHint::ReadReady) {
+        // TlsTransport conservatively maps an unclean EOF with an empty OpenSSL error queue to
+        // ReadReady. The final raw probe distinguishes that EOF and rejects bytes that raced in after
+        // the drain.
+        return _inBuf.empty() && reusable() && !IsConnectionStale(fd);
+      }
+      return false;
+    }
   }
 
   // Flush the connection's pending output to the transport, pumping the event loop on would-block. Sets
@@ -343,6 +397,10 @@ void ClientConnection::reset() noexcept {
 
 bool ClientConnection::canTakeAnotherStream() const noexcept { return _type != Type::Http2 || _h2->reusable(); }
 
+bool ClientConnection::prepareForReuse(Transport& transport, NativeHandle fd) {
+  return _type == Type::Http2 && _h2->prepareForReuse(transport, fd);
+}
+
 HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transport& transport, NativeHandle fd,
                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
@@ -503,9 +561,9 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   }
   _keepAlive = flushedClean && engine.reusable();
 
-  // Install the (assembled) body, applying automatic decompression -- mirrors the HTTP/1.1 parser's
-  // installBody: decode straight from the accumulator into the codec's scratch buffer, drop the stale
-  // Content-Encoding header, and let body() reconstruct Content-Type / Content-Length.
+  // Install the assembled body using the HTTP/1.1 ownership-rotation path: suitably-sized accumulator or
+  // decompression allocations move into the response and receive an equal-capacity empty replacement;
+  // oversized scratch remains reusable and only the smaller body is copied.
   const std::string_view bodyView{bodyBuf};
   if (!bodyView.empty() || !engine.contentType().empty()) {
     const std::string_view contentType =
@@ -521,11 +579,15 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
           return std::unexpected(HttpClientErrc::malformedResponse);
         }
         resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
-        resp.body(decoded, contentType);
+        RawChars* decodedOwner = ResponseParser::WholeBufferOwner(decoded, client._codec.decompressOut);
+        if (decodedOwner == nullptr) {
+          decodedOwner = ResponseParser::WholeBufferOwner(decoded, bodyBuf);
+        }
+        ResponseParser::InstallBodyStorage(resp, decoded, contentType, decodedOwner);
         return resp;
       }
     }
-    resp.body(bodyView, contentType);
+    ResponseParser::InstallBodyStorage(resp, bodyView, contentType, &bodyBuf);
   }
   return resp;
 }

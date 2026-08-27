@@ -199,12 +199,12 @@ inline ScenarioSpec MakeScenario(const ClientBenchConfig& cfg) {
   sc.name = name;
   sc.method = "GET";
   if (name == "large-get") {
-    sc.path = "/body?size=" + std::to_string(cfg.bodySize);  // big response payload (transfer-bound)
+    sc.path = "/client-bench/large-get";  // prebuilt big response payload (transfer-bound)
     return sc;
   }
   if (name == "headers") {
     // Many request headers (client serialization) + many response headers (client parsing).
-    sc.path = "/headers?count=32&size=64";
+    sc.path = "/client-bench/headers";
     for (int i = 0; i < 24; ++i) {
       sc.requestHeaders.emplace_back("x-bench-req-" + std::to_string(i),
                                      "payload-value-for-bench-request-header-" + std::to_string(i));
@@ -213,18 +213,18 @@ inline ScenarioSpec MakeScenario(const ClientBenchConfig& cfg) {
   }
   if (name == "post") {
     sc.method = "POST";
-    sc.path = "/uppercase";
+    sc.path = "/client-bench/post";
     sc.body.assign(cfg.bodySize, 'a');
     return sc;
   }
   if (name == "json") {
-    sc.path = "/json?items=200";
+    sc.path = "/client-bench/json";
     return sc;
   }
   if (name == "compress") {
     // Highly compressible JSON: the server gzips it and the client must decode (aeronet natively, the
     // others via the shared zlib-ng helper). Measures content-coding throughput.
-    sc.path = "/json?items=800";
+    sc.path = "/client-bench/compress";
     sc.acceptEncoding = "gzip";
     sc.decode = true;
     return sc;
