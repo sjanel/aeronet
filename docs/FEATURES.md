@@ -114,7 +114,10 @@ Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 
 ### Status & error handling
 
-- [x] 400 Bad Request (parse errors, CL+TE conflict)
+- [x] 400 Bad Request (parse errors, CL+TE conflict); HTTP/1 request heads reject a bare CR as soon as its following
+  non-LF byte is buffered, while a CR at the buffer boundary remains an incomplete line. Tests:
+  `aeronet/http/test/http-request-view_test.cpp` (`*Bare*CR*`, `Trailing*CR*`) and
+  `aeronet/server/test/http-parser_test.cpp` (`BareCRIsRejectedWithoutWaitingForAnotherLineTerminator`).
 - [x] 400 on HTTP/1.0 requests carrying Transfer-Encoding
 - [x] 405 Method Not Allowed (enforced when path exists but method not in allow set)
 - [x] 406 Not Acceptable (identity rejected when no acceptable Accept-Encoding)

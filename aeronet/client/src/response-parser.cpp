@@ -363,13 +363,14 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
         // The three sub-states above each return or `continue`, so the only state left here is the trailer
         // block. Consume trailer lines until an empty line. Trailers are not surfaced.
         assert(_state == State::BodyChunkTrailers);
-        const char* const base = buffer.data();
-        const char* const end = base + buffer.size();
-        for (;;) {
+        for (const char *const base = buffer.data(), *end = base + buffer.size();;) {
           const char* const first = base + _pos;
           const char* const lineEnd = SearchCRLF(first, end);
           if (lineEnd == end) {
             return eof ? Status::Error : Status::NeedMore;
+          }
+          if (lineEnd[1] != '\n') {
+            return Status::Error;
           }
           _pos = static_cast<std::size_t>(lineEnd - base) + http::CRLF.size();
           if (lineEnd == first) {
@@ -398,6 +399,9 @@ ResponseParser::Status ResponseParser::parse(std::span<char> buffer, bool eof, H
         return Status::Error;
       }
       return eof ? Status::Error : Status::NeedMore;
+    }
+    if (lineEnd[1] != '\n') {
+      return Status::Error;
     }
     const std::string_view line(lineBegin, lineEnd);
     _pos = static_cast<std::size_t>(lineEnd - bufferBegin) + http::CRLF.size();

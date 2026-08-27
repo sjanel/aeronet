@@ -292,7 +292,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   if (lineLast == last) {
     return kStatusNeedMoreData;
   }
-  if (std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
+  if (lineLast[1] != '\n' || std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
     return http::StatusCodeBadRequest;
   }
 
@@ -302,7 +302,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   std::memcpy(&start, first, sizeof(start));
 
   const uint64_t spaceMask = SwarFindByte(start, ' ');
-  if (spaceMask == 0) [[unlikely]] {
+  if (spaceMask == 0) {
     char* realSep = std::find(first + 8, lineLast, ' ');
     return realSep == lineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
   }
@@ -350,8 +350,10 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   for (; first < last; first = lineLast + http::CRLF.size()) {
     lineLast = SearchCRLF(first, last);
     if (lineLast == last) {
-      // need more data - the headers are not complete yet
       return kStatusNeedMoreData;
+    }
+    if (lineLast[1] != '\n') {
+      return http::StatusCodeBadRequest;
     }
     if (lineLast == first) {
       // we are pointing to a CRLF (empty line) - end of headers

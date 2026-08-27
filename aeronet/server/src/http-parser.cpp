@@ -112,11 +112,12 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     if (lineEnd == last) {
       return BodyDecodeStatus::NeedMore;
     }
-    // ignore chunk extensions per RFC 7230 section 4.1.1
-    auto* sizeLineEnd = static_cast<const char*>(std::memchr(first, ';', static_cast<std::size_t>(lineEnd - first)));
-    if (sizeLineEnd == nullptr) {
-      sizeLineEnd = lineEnd;
+    if (lineEnd[1] != '\n') {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk size line");
+      return BodyDecodeStatus::Error;
     }
+    // ignore chunk extensions per RFC 7230 section 4.1.1
+    auto* sizeLineEnd = std::find(first, lineEnd, ';');
     std::size_t chunkSize = 0;
     for (auto* it = first; it != sizeLineEnd; ++it) {
       const int8_t digit = from_hex_digit(*it);
@@ -160,7 +161,10 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         if (lineEndIt == last) {
           return BodyDecodeStatus::NeedMore;
         }
-
+        if (lineEndIt[1] != '\n') {
+          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
+          return BodyDecodeStatus::Error;
+        }
         // Check total trailer size limit
         const std::size_t trailerSize = static_cast<std::size_t>((state.inBuffer.data() + tempPos) - trailerStart);
         if (trailerSize > _config.maxHeaderBytes) {
@@ -282,6 +286,7 @@ bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* buffer
     // Find line end
     char* lineEnd = SearchCRLF(first, last);
     assert(lineEnd != last);
+    assert(lineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
 
     // No check is made on header line format here
     const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
