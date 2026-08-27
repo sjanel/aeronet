@@ -46,14 +46,13 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/temp-file.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
 
 class HttpResponseTest : public ::testing::Test {
  protected:
-  static constexpr SysTimePoint kTp{};
+  static constexpr const char* const kDateHeader = "Thu, 01 Jan 1970 00:00:00 GMT";
   static constexpr bool kKeepAlive = false;
   static constexpr bool kIsHeadMethod = false;
   static constexpr bool kAddTrailerHeader = false;
@@ -139,7 +138,7 @@ class HttpResponseTest : public ::testing::Test {
       opts.setHeadMethod();
     }
 
-    return resp.finalizeForHttp1(kTp, http::HTTP_1_1, opts, &globalHeaders, minCapturedBodySize);
+    return resp.finalizeForHttp1(kDateHeader, http::HTTP_1_1, opts, &globalHeaders, minCapturedBodySize);
   }
 
   static HttpMessageData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,

@@ -1,15 +1,16 @@
 #pragma once
 
+#include <cassert>
 #include <concepts>
 #include <cstddef>
+#include <cstring>
 #include <string_view>
 
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
-#include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
+#include "aeronet/time-constants.hpp"
 
 namespace aeronet {
 
@@ -42,11 +43,15 @@ constexpr char* WriteCRLFHeader(std::string_view key, std::integral auto value, 
   return WriteHeader(key, value, AppendFixed<http::CRLF>(insertPtr));
 }
 
-// Write a Date HTTP header field to the given buffer, including a last CRLF.
-// Returns the pointer immediately after the last written byte.
-// Given buffer requires a size of at least "Date".size() + HeaderSep.size() + RFC7231DateStrLen + CRLF.size().
-inline char* WriteCRLFDateHeader(SysTimePoint tp, char* insertPtr) {
-  return TimeToStringRFC7231(tp, AppendFixed<http::CRLFDateHeaderSep>(insertPtr));
+// Copy a previously formatted Date HTTP header, including its leading CRLF.
+// Returns the pointer immediately after the copied bytes.
+inline char* CopyCRLFDateHeader(const char* cachedHeader, char* insertPtr) noexcept {
+  assert(cachedHeader != nullptr);
+  insertPtr = AppendFixed<http::CRLFDateHeaderSep>(insertPtr);
+
+  std::memcpy(insertPtr, cachedHeader, RFC7231DateStrLen);
+
+  return insertPtr + RFC7231DateStrLen;
 }
 
 inline char* WriteContentTypeContentLengthDoubleCRLF(std::string_view contentType, std::size_t bodySize, char* pData) {

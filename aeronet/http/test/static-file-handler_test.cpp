@@ -42,8 +42,8 @@
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {

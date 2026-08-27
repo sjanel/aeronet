@@ -55,7 +55,6 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -283,9 +282,9 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
         // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler =
-            http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
-                                              _telemetry, _sharedBuffers.buf, false, state.clientAddress());
+        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                                  _decompressionState, _telemetry, _sharedBuffers.buf,
+                                                                  false, _dateHeader.data(), state.clientAddress());
         installH2TunnelBridge(cnxIt->fd(), state);
         return processSpecialProtocolHandler(cnxIt);
       }
@@ -498,9 +497,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       state.inBuffer.erase_front(consumedBytesUpgrade);
 
       // Create HTTP/2 protocol handler using unified dispatch
-      state.protocolHandler =
-          http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
-                                            _telemetry, _sharedBuffers.buf, false, state.clientAddress());
+      state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                                _decompressionState, _telemetry, _sharedBuffers.buf,
+                                                                false, _dateHeader.data(), state.clientAddress());
       ++_connectionSweepState.http2Connections;
       state.protocol = ProtocolType::Http2;
       installH2TunnelBridge(cnxIt->fd(), state);
@@ -1100,6 +1099,7 @@ void SingleHttpServer::eventLoop() {
   // Update cached now time
   const auto now = std::chrono::steady_clock::now();
   _connections.now = now;
+  _dateHeader.refreshIfNeeded(now);
 
   // Publish the loop heartbeat (see internal::Lifecycle::loopHeartbeat): a single relaxed store of the 'now' we just
   // read. A dedicated probe listener (MultiHttpServer, see BuiltinProbesConfig::dedicatedPort) reads it to tell a loop
@@ -1364,7 +1364,7 @@ ServerStats SingleHttpServer::stats() const {
 }
 
 void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body) {
-  queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, _config.globalHeaders, body)));
+  queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, _config.globalHeaders, body, _dateHeader.data())));
 
   if (_callbacks.parserErr) {
     // Swallow exceptions from user callback to avoid destabilizing the server
@@ -1421,7 +1421,7 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consume
     opts.setHeadMethod();
   }
 
-  queueData(cnxIt, resp.finalizeForHttp1(SysClock::now(), request.version(), opts, &_config.globalHeaders,
+  queueData(cnxIt, resp.finalizeForHttp1(_dateHeader.data(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));
 
   state.inBuffer.erase_front(consumedBytes);
@@ -1763,9 +1763,9 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
                                             ConnectionState& state) {
   // Create HTTP/2 protocol handler with unified dispatcher
   // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler =
-      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
-                                        _telemetry, _sharedBuffers.buf, true, state.clientAddress());
+  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
+                                                            _decompressionState, _telemetry, _sharedBuffers.buf, true,
+                                                            _dateHeader.data(), state.clientAddress());
   ++_connectionSweepState.http2Connections;
   state.protocol = ProtocolType::Http2;
 

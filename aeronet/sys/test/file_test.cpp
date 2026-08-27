@@ -24,8 +24,8 @@
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
-#include "aeronet/timestring.hpp"
 
 namespace aeronet {
 

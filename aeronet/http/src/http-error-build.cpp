@@ -13,11 +13,11 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
-#include "aeronet/timedef.hpp"
 
 namespace aeronet {
 
-RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body) {
+RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body,
+                          const char* cachedDateHeader) {
   const std::string_view reason = http::ReasonPhraseFor(status);
 
   static constexpr std::size_t kStatusLen = 3U;
@@ -44,7 +44,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   pData = Append(reason, pData);
 
   // date: Wed, 21 Oct 2015 07:28:00 GMT
-  pData = WriteCRLFDateHeader(SysClock::now(), pData);
+  pData = CopyCRLFDateHeader(cachedDateHeader, pData);
 
   // connection: close
   pData = AppendFixed<kConnectionCloseStr>(pData);

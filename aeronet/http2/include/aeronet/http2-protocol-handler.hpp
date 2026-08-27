@@ -67,7 +67,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                        internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
-                       tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
+                       tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, const char* cachedDateHeader,
                        std::string_view clientAddress = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
@@ -335,6 +335,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   internal::DecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
+  const char* _pCachedDateHeader;
   std::string_view _clientAddress;
 
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
@@ -355,13 +356,11 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
 /// @return Unique pointer to the created handler
-std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, Router& router,
-                                                             HttpServerConfig& serverConfig,
-                                                             internal::CompressionState& compressionState,
-                                                             internal::DecompressionState& decompressionState,
-                                                             tracing::TelemetryContext& telemetryContext,
-                                                             RawChars& tmpBuffer, bool sendServerPrefaceForTls = false,
-                                                             std::string_view clientAddress = {});
+std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
+    const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
+    internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
+    tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, bool sendServerPrefaceForTls,
+    const char* cachedDateHeader, std::string_view clientAddress);
 
 }  // namespace http2
 }  // namespace aeronet
