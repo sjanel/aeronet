@@ -121,7 +121,11 @@ constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, s
     if (flatHeaders.substr(headerNamePos).starts_with(key) &&
         flatHeaders.substr(valuePos).starts_with(http::HeaderSep)) {
       const char* valueBegin = flatHeaders.data() + headerNamePos + key.size() + http::HeaderSep.size();
-      return {valueBegin, SearchCRLF(valueBegin, flatHeaders.data() + flatHeaders.size())};
+      const char* const flatEnd = flatHeaders.data() + flatHeaders.size();
+      const char* valueEnd = SearchCRLF(valueBegin, flatEnd);
+      assert(valueEnd != flatEnd);  // well-formed buffer guarantees a real CRLF before end
+      assert(valueEnd[1] == '\n');
+      return {valueBegin, valueEnd};
     }
 
     // CR is rare in a valid HTTP header block, so string_view::find can use an efficient memchr-like scan to jump
@@ -383,6 +387,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
       char* pContentTypeValuePtr = GetContentTypeValuePtr(getContentLengthHeaderLinePtr());
       const auto it = SearchCRLF(pContentTypeValuePtr, _data.end());
       assert(it != _data.end());
+      assert(it[1] == '\n');
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
 
       neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);

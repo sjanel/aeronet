@@ -19,12 +19,6 @@ TEST(MemoryUtilsSearchCRLF, FindsAndReportsAbsence) {
   ASSERT_NE(it, withCrlfEnd);
   EXPECT_EQ(static_cast<std::size_t>(it - withCrlfBeg), 3U);
 
-  // A lone CR (no following LF) must not be reported as a CRLF.
-  std::string_view loneCr = "abc\rdef";
-  const char* loneCrBeg = loneCr.data();
-  const char* loneCrEnd = loneCrBeg + loneCr.size();
-  EXPECT_EQ(SearchCRLF(loneCrBeg, loneCrEnd), loneCrEnd);
-
   std::string_view none = "no line break here";
   const char* noneBeg = none.data();
   const char* noneEnd = noneBeg + none.size();
@@ -43,7 +37,7 @@ TEST(MemoryUtilsSearchCRLF, FindsAndReportsAbsence) {
   EXPECT_EQ(SearchCRLF(vectorTrailingCrBegin, vectorTrailingCrEnd), vectorTrailingCrEnd);
 }
 
-TEST(MemoryUtilsSearchCRLF, FindsAcrossSimdPrefixAndFallbackBoundaries) {
+TEST(MemoryUtilsSearchCRLF, FindsAcrossLineLengths) {
   for (const std::size_t offset : {
            std::size_t{0},
            std::size_t{14},
@@ -72,27 +66,6 @@ TEST(MemoryUtilsSearchCRLF, FindsAcrossSimdPrefixAndFallbackBoundaries) {
   }
 }
 
-TEST(MemoryUtilsSearchCRLF, SkipsFalseCarriageReturnsBeforeFallbackMatch) {
-  std::string input(192, 'x');
-  for (const std::size_t offset : {
-           std::size_t{1},
-           std::size_t{5},
-           std::size_t{15},
-           std::size_t{31},
-           std::size_t{63},
-           std::size_t{95},
-           std::size_t{127},
-           std::size_t{140},
-       }) {
-    input[offset] = '\r';
-  }
-  input[150] = '\r';
-  input[151] = '\n';
-
-  const char* const begin = input.data();
-  EXPECT_EQ(SearchCRLF(begin, begin + input.size()), begin + 150);
-}
-
 TEST(MemoryUtilsSearchCRLF, ReportsLargeFallbackMissAndPreservesMutablePointer) {
   std::string noCrlf(4096, 'x');
   EXPECT_EQ(SearchCRLF(noCrlf.data(), noCrlf.data() + noCrlf.size()), noCrlf.data() + noCrlf.size());
@@ -101,6 +74,30 @@ TEST(MemoryUtilsSearchCRLF, ReportsLargeFallbackMissAndPreservesMutablePointer) 
   char* const begin = mutableInput.data();
   char* const result = SearchCRLF(begin, begin + mutableInput.size());
   EXPECT_EQ(result, begin + 13);
+}
+
+TEST(MemoryUtilsSearchCRLF, StrictSearchDistinguishesIncompleteAndMalformedLines) {
+  const std::string_view complete = "Header: value\r\nnext";
+  const auto completeResult = SearchCRLF(complete.data(), complete.data() + complete.size());
+  ASSERT_EQ(completeResult, complete.data() + 13);
+  EXPECT_EQ(completeResult[1], '\n');
+
+  const std::string_view noCr = "Header: value";
+  const auto noCrResult = SearchCRLF(noCr.data(), noCr.data() + noCr.size());
+  EXPECT_EQ(noCrResult, noCr.data() + noCr.size());
+
+  const std::string_view trailingCr = "Header: value\r";
+  const auto trailingCrResult = SearchCRLF(trailingCr.data(), trailingCr.data() + trailingCr.size());
+  EXPECT_EQ(trailingCrResult, trailingCr.data() + trailingCr.size());
+
+  const std::string_view malformed = "Header: bad\rvalue\r\n";
+  const auto malformedResult = SearchCRLF(malformed.data(), malformed.data() + malformed.size());
+  ASSERT_EQ(malformedResult, malformed.data() + 11);
+  EXPECT_EQ(malformedResult[1], 'v');
+
+  std::string mutableLine = "Header: value\r\n";
+  const auto mutableResult = SearchCRLF(mutableLine.data(), mutableLine.data() + mutableLine.size());
+  EXPECT_EQ(mutableResult, mutableLine.data() + 13);
 }
 
 }  // namespace aeronet

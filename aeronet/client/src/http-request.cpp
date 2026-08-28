@@ -340,6 +340,7 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   const auto* pHostHeaderEnd = SearchCRLF(
       _data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(), _data.end());
+  assert(pHostHeaderEnd != _data.end() && pHostHeaderEnd[1] == '\n');
   const auto oldHostHeaderEndPos = static_cast<uint64_t>(pHostHeaderEnd - _data.data());
 
   const auto portNbDigits = ndigits(res.port);
