@@ -316,6 +316,16 @@ configure_file(
 
 # Source script must be executable (chmod +x run_benchmarks.py)
 
+if(AERONET_BUILD_TESTS)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME scripted-server-runner_test
+      COMMAND ${Python3_EXECUTABLE} ${SCRIPTED_SERVERS_DIR}/run_benchmarks_test.py
+    )
+  endif()
+endif()
+
 # Add convenience target to run all scripted benchmarks
 add_custom_target(run-scripted-benchmarks
   COMMAND ${SCRIPTED_SERVERS_BUILD_DIR}/run_benchmarks.py
