@@ -2,15 +2,15 @@
 -- Scenario 6: Mixed realistic workload
 --
 -- Simulates realistic microservice traffic patterns with a mix of:
--- - Fast health checks (30%)
--- - JSON API calls (25%)
+-- - Fast health checks (5%)
+-- - JSON API calls (30%)
 -- - Medium body requests (25%)
 -- - Header-heavy requests (25%)
 -- - CPU-intensive operations (15%)
 --
 -- Configurable via:
---   - distribution: Comma-separated percentages (default: 30,25,25,25,15)
---   - close_ratio: Percentage of requests using "Connection: close"
+--   - --distribution: Comma-separated percentages (default: 5,25,25,15,30)
+--   - --close-ratio: Percentage of requests using "Connection: close"
 
 local close_ratio = 10
 
@@ -22,7 +22,7 @@ local request_types = {
   { path = "/ping", weight = 5, name = "ping" },
   { path = "/headers?count=50&size=128", weight = 25, name = "headers" },
   { path = "/body?size=4096", weight = 25, name = "body" },
-  { path = "/compute?complexity=25&hash_iters=500", weight = 15, name = "compute" }
+  { path = "/compute?complexity=25&hash_iters=500", weight = 15, name = "compute" },
   { path = "/json?items=10", weight = 30, name = "json" },
 }
 
