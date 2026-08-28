@@ -35,6 +35,9 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     if (endLine == last) {
       throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
     }
+    if (endLine[1] != '\n') {
+      throw std::invalid_argument("malformed CRLF (bare CR) in header value in concatenated headers");
+    }
 
     std::string_view headerValue(first, endLine);
     if (!http::IsValidHeaderValue(headerValue)) {

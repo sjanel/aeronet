@@ -63,8 +63,12 @@ class HeadersView {
         assert(colonPtr != nullptr);  // should not happen in well-formed headers
         const char* begValue = colonPtr + http::HeaderSep.size();
 
+        const char* valueEnd = SearchCRLF(begValue, _end);
+        assert(valueEnd != _end);     // a real CRLF always precedes _end in a well-formed block
+        assert(valueEnd[1] == '\n');  // should not happen in well-formed headers
+
         _nameLen = static_cast<uint32_t>(colonPtr - _cur);
-        _valueLen = static_cast<uint32_t>(SearchCRLF(begValue, _end) - begValue);
+        _valueLen = static_cast<uint32_t>(valueEnd - begValue);
       }
     }
 

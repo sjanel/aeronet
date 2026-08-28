@@ -1,11 +1,11 @@
 // Benchmark SearchCRLF implementations on realistic HTTP/1.1 request bytes.
 //
-// The parser calls SearchCRLF once for the request line and once per header, with
-// the end of the whole input buffer as the search limit. These benchmarks mirror
-// that access pattern and compare the current hybrid production implementation,
-// the previous std::memchr implementation, and SSE2/AVX2 prototypes. Bounded SSE2
-// variants scan only a short prefix before falling back to std::memchr; the request
-// corpora decide which prefix helps the actual parser access pattern.
+// HTTP parsers search once for the request/status line and once per header, with the
+// end of the whole input buffer as the search limit. These benchmarks mirror that
+// access pattern and compare the generic and strict libc-backed production paths
+// with SSE2/AVX2 prototypes retained for periodic evaluation on representative CPUs.
+// Bounded SSE2 variants scan only a short prefix before falling back to std::memchr;
+// the request corpora expose how strongly those fixed thresholds depend on line length.
 
 #include <benchmark/benchmark.h>
 
@@ -43,6 +43,10 @@ struct Corpus {
 };
 
 AERONET_ALWAYS_INLINE SearchResult SearchCRLFProduction(const char* begin, const char* end) noexcept {
+  return aeronet::SearchCRLF(begin, end);
+}
+
+AERONET_ALWAYS_INLINE SearchResult SearchCRLFStrictProduction(const char* begin, const char* end) noexcept {
   return aeronet::SearchCRLF(begin, end);
 }
 
@@ -312,7 +316,7 @@ void RunFixedLineLengthBenchmark(benchmark::State& state) {
   line.replace(line.end() - 2U, line.end(), "\r\n");
   const char* const begin = line.data();
   const char* const end = begin + line.size();
-  if (SearchFn(begin, end) != begin + (lineLength - 2U)) {
+  if (SearchFn(begin, end) != begin + lineLength - 2U) {
     state.SkipWithError("candidate did not find CRLF at the expected position");
     return;
   }
@@ -339,6 +343,11 @@ void BM_SearchCRLF_Production_FixedLineLength(benchmark::State& state) {
   RunFixedLineLengthBenchmark<SearchCRLFProduction>(state);
 }
 BENCHMARK(BM_SearchCRLF_Production_FixedLineLength)->AERONET_FIXED_LINE_LENGTHS;
+
+void BM_SearchCRLF_StrictProduction_FixedLineLength(benchmark::State& state) {
+  RunFixedLineLengthBenchmark<SearchCRLFStrictProduction>(state);
+}
+BENCHMARK(BM_SearchCRLF_StrictProduction_FixedLineLength)->AERONET_FIXED_LINE_LENGTHS;
 
 #ifdef AERONET_BENCH_HAS_SSE2
 void BM_SearchCRLF_SSE2_FixedLineLength(benchmark::State& state) { RunFixedLineLengthBenchmark<SearchCRLFSse2>(state); }
@@ -381,6 +390,16 @@ void BM_SearchCRLF_StringViewFind_LongHeaders(benchmark::State& state) {
   RunBenchmark<SearchCRLFStringViewFind>(state, LongHeaderCorpus());
 }
 BENCHMARK(BM_SearchCRLF_StringViewFind_LongHeaders);
+
+void BM_SearchCRLF_StrictProduction_TypicalRequests(benchmark::State& state) {
+  RunBenchmark<SearchCRLFStrictProduction>(state, TypicalCorpus());
+}
+BENCHMARK(BM_SearchCRLF_StrictProduction_TypicalRequests);
+
+void BM_SearchCRLF_StrictProduction_LongHeaders(benchmark::State& state) {
+  RunBenchmark<SearchCRLFStrictProduction>(state, LongHeaderCorpus());
+}
+BENCHMARK(BM_SearchCRLF_StrictProduction_LongHeaders);
 
 #ifdef AERONET_BENCH_HAS_SSE2
 template <std::size_t SsePrefixBytes>
