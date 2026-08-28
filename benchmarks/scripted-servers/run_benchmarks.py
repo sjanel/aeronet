@@ -76,6 +76,17 @@ class BenchmarkError(RuntimeError):
     pass
 
 
+def _run_wrk(command: Sequence[str]) -> str:
+    """Run wrk and reject diagnostics that wrk may otherwise report as success."""
+    result = subprocess.run(command, capture_output=True, text=True)
+    result.check_returncode()
+    if result.stderr.strip():
+        raise BenchmarkError(
+            "wrk reported an error:\n" + result.stderr.strip()
+        )
+    return result.stdout
+
+
 # ----------------------------- Runner class -------------------------------- #
 
 
@@ -937,9 +948,19 @@ class BenchmarkRunner:
                 str(lua_script),
                 url,
             ]
-            subprocess.run(
-                warmup_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
+            try:
+                _run_wrk(warmup_cmd)
+            except BenchmarkError as exc:
+                raise BenchmarkError(
+                    f"wrk warm-up failed for {server} / {scenario_name}:\n{exc}"
+                ) from exc
+            except subprocess.CalledProcessError as exc:
+                diagnostic = (exc.stderr or "").strip()
+                detail = f":\n{diagnostic}" if diagnostic else ""
+                raise BenchmarkError(
+                    f"wrk warm-up failed for {server} / {scenario_name} "
+                    f"(exit {exc.returncode}){detail}"
+                ) from exc
             if warmup_only:
                 return
         print(f">>> Running: {server} / {scenario_name}")
@@ -968,10 +989,12 @@ class BenchmarkRunner:
         for sample in range(self.repeat):
             recording = self._start_perf_profile(server, scenario_name, sample)
             try:
-                result = subprocess.run(
-                    bench_cmd, capture_output=True, text=True, check=True
-                )
-                outputs.append(result.stdout)
+                outputs.append(_run_wrk(bench_cmd))
+            except BenchmarkError as exc:
+                sample_note = f" (sample {sample + 1}/{self.repeat})" if self.repeat > 1 else ""
+                raise BenchmarkError(
+                    f"wrk failed for {server} / {scenario_name}{sample_note}:\n{exc}"
+                ) from exc
             except subprocess.CalledProcessError as exc:
                 last_fail_output = (exc.stdout or "") + (exc.stderr or "")
                 sample_note = f" [sample {sample + 1}/{self.repeat}]" if self.repeat > 1 else ""
