@@ -275,12 +275,16 @@ fn get_threads() -> usize {
     env::var("BENCH_THREADS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        })
 }
 
 fn main() {
     let threads = get_threads();
-    
+
     // Build a multi-threaded runtime with the specified number of worker threads
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(threads)
@@ -288,7 +292,7 @@ fn main() {
         .enable_all()
         .build()
         .expect("Failed to create Tokio runtime");
-    
+
     runtime.block_on(async_main(threads));
 }
 
@@ -367,43 +371,21 @@ async fn async_main(threads: usize) {
     let port = port_override.unwrap_or(port);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    let app_state = AppState { static_dir: static_dir.clone() };
-
-    let mut app = Router::new()
-        .route("/ping", get(ping))
-        .route("/headers", get(headers))
-        .route("/uppercase", post(uppercase))
-        .route("/body-codec", post(body_codec))
-        .route("/compute", get(compute))
-        .route("/json", get(json_endpoint))
-        .route("/delay", get(delay))
-        .route("/body", get(body))
-        .route("/status", get(status));
-
-    // Add static file serving if configured
-    if static_dir.is_some() {
-        app = app.route("/*file", get(static_file));
-    }
-
-    // Add routing stress routes if configured
-    if route_count > 0 {
-        for i in 0..route_count {
-            let path = format!("/r{}", i);
-            app = app.route(&path, get(move || async move { format!("route {}", i) }));
-        }
-        app = app
-            .route("/users/:user_id/posts/:post_id", get(user_post))
-            .route("/api/v1/resources/:resource/items/:item/actions/:action", get(api_pattern));
-    }
-
-    let app = app.with_state(app_state);
+    let app = build_app(static_dir.clone(), route_count);
 
     let protocol = if h2_enabled {
-        if tls_enabled { "h2-tls" } else { "h2c" }
+        if tls_enabled {
+            "h2-tls"
+        } else {
+            "h2c"
+        }
     } else {
         "http/1.1"
     };
-    println!("rust-axum benchmark server starting on port {} with {} threads [{}]", port, threads, protocol);
+    println!(
+        "rust-axum benchmark server starting on port {} with {} threads [{}]",
+        port, threads, protocol
+    );
     if let Some(ref dir) = static_dir {
         println!("Static files: {:?}", dir);
     }
@@ -432,7 +414,9 @@ async fn async_main(threads: usize) {
                 let svc = app.clone();
                 tokio::spawn(async move {
                     let hyper_service = hyper_util::service::TowerToHyperService::new(svc);
-                    let builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+                    let builder = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    );
                     if let Err(err) = builder.serve_connection(io, hyper_service).await {
                         eprintln!("h2c connection error: {}", err);
                     }
@@ -444,10 +428,44 @@ async fn async_main(threads: usize) {
     }
 }
 
-async fn static_file(
-    State(state): State<AppState>,
-    Path(file_path): Path<String>,
-) -> Response {
+fn build_app(static_dir: Option<PathBuf>, route_count: usize) -> Router {
+    let app_state = AppState {
+        static_dir: static_dir.clone(),
+    };
+    let mut app = Router::new()
+        .route("/ping", get(ping))
+        .route("/headers", get(headers))
+        .route("/uppercase", post(uppercase))
+        .route("/body-codec", post(body_codec))
+        .route("/compute", get(compute))
+        .route("/json", get(json_endpoint))
+        .route("/delay", get(delay))
+        .route("/body", get(body))
+        .route("/status", get(status));
+
+    // Add static file serving if configured
+    if static_dir.is_some() {
+        app = app.route("/{*file}", get(static_file));
+    }
+
+    // Add routing stress routes if configured
+    if route_count > 0 {
+        for i in 0..route_count {
+            let path = format!("/r{}", i);
+            app = app.route(&path, get(move || async move { format!("route {}", i) }));
+        }
+        app = app
+            .route("/users/{user_id}/posts/{post_id}", get(user_post))
+            .route(
+                "/api/v1/resources/{resource}/items/{item}/actions/{action}",
+                get(api_pattern),
+            );
+    }
+
+    app.with_state(app_state)
+}
+
+async fn static_file(State(state): State<AppState>, Path(file_path): Path<String>) -> Response {
     let base_dir = match &state.static_dir {
         Some(dir) => dir.clone(),
         None => return StatusCode::NOT_FOUND.into_response(),
@@ -467,7 +485,6 @@ async fn static_file(
         return StatusCode::FORBIDDEN.into_response();
     }
 
-
     match fs::read(&sanitized).await {
         Ok(content) => {
             let mime = match sanitized.extension().and_then(|ext| ext.to_str()) {
@@ -485,5 +502,70 @@ async fn static_file(
                 .unwrap()
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, http::Request};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::ServiceExt;
+
+    async fn get(app: Router, uri: &str) -> Response {
+        app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn body_text(response: Response) -> String {
+        String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn routing_stress_routes_use_axum_08_capture_syntax() {
+        let app = build_app(None, 1000);
+
+        let response = get(app.clone(), "/r500").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "route 500");
+
+        let response = get(app.clone(), "/users/42/posts/7").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_text(response).await, "user 42 post 7");
+
+        let response = get(app, "/api/v1/resources/books/items/9/actions/read").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_text(response).await,
+            "resource books item 9 action read"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_files_use_axum_08_wildcard_syntax() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let static_dir = std::env::temp_dir().join(format!(
+            "aeronet-rust-bench-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&static_dir).unwrap();
+        std::fs::write(static_dir.join("index.html"), b"<h1>benchmark</h1>").unwrap();
+
+        let response = get(build_app(Some(static_dir.clone()), 0), "/index.html").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "text/html");
+        assert_eq!(body_text(response).await, "<h1>benchmark</h1>");
+
+        std::fs::remove_dir_all(static_dir).unwrap();
     }
 }
