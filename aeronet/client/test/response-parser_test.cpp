@@ -48,6 +48,70 @@ TEST(ResponseParserTest, SimpleContentLength) {
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
 
+TEST(ResponseParserTest, LargeIdentityBodyTransfersReceiveAllocationAndPreservesCapacity) {
+  static constexpr std::size_t kBodySize = (1UL << 20U) + 123U;
+  const std::string payload(kBodySize, 'x');
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-type: application/test\r\ncontent-length: ";
+  raw.append(std::to_string(payload.size()));
+  raw.append("\r\n\r\n");
+  const std::size_t bodyOffset = raw.size();
+  raw.append(payload);
+
+  RawChars bodyBuf;
+  RawChars receiveBuffer(raw);
+  const char* const receiveAllocation = receiveBuffer.data();
+  const char* const bodyAllocation = receiveAllocation + bodyOffset;
+  const std::size_t receiveCapacity = receiveBuffer.capacity();
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  HttpResponse first;
+  ASSERT_EQ(parser.parse(receiveBuffer, false, first, raw.size()), ResponseParser::Status::Complete);
+  EXPECT_TRUE(first.hasBodyCaptured());
+  EXPECT_EQ(first.bodyInMemory(), payload);
+  EXPECT_EQ(first.bodyInMemory().data(), bodyAllocation);
+  EXPECT_EQ(first.headerValueOrEmpty(http::ContentType), "application/test");
+  EXPECT_TRUE(receiveBuffer.empty());
+  EXPECT_EQ(receiveBuffer.capacity(), receiveCapacity);
+  EXPECT_NE(receiveBuffer.data(), receiveAllocation);
+
+  // The equal-capacity replacement remains client-owned. It retains its large allocation for a later response,
+  // while a small body is copied so the response does not pin another high-water buffer.
+  static constexpr std::string_view kSmallRaw = "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
+  const char* const replacementAllocation = receiveBuffer.data();
+  receiveBuffer.assign(kSmallRaw);
+  parser.reset(false);
+  HttpResponse second;
+  ASSERT_EQ(parser.parse(receiveBuffer, false, second, kMax), ResponseParser::Status::Complete);
+  EXPECT_FALSE(second.hasBodyCaptured());
+  EXPECT_EQ(second.bodyInMemory(), "hello");
+  EXPECT_TRUE(receiveBuffer.empty());
+  EXPECT_EQ(receiveBuffer.data(), replacementAllocation);
+  EXPECT_EQ(receiveBuffer.capacity(), receiveCapacity);
+  EXPECT_EQ(first.bodyInMemory(), payload);
+
+  // Captured-suffix payloads retain normal HttpResponse copy and append semantics.
+  HttpResponse copy = first;
+  EXPECT_EQ(copy.bodyInMemory(), payload);
+  first.bodyAppend("tail");
+  EXPECT_EQ(first.bodyInMemory().size(), payload.size() + 4U);
+  EXPECT_TRUE(first.bodyInMemory().ends_with("tail"));
+  EXPECT_EQ(copy.bodyInMemory(), payload);
+}
+
+TEST(ResponseParserTest, EmptyIdentityBodyKeepsReceiveScratchReusable) {
+  static constexpr std::string_view kRaw = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
+  RawChars bodyBuf;
+  RawChars receiveBuffer(kRaw);
+  const char* const receiveAllocation = receiveBuffer.data();
+  ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  HttpResponse resp;
+  ASSERT_EQ(parser.parse(receiveBuffer, false, resp, kMax), ResponseParser::Status::Complete);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+  EXPECT_FALSE(resp.hasBodyCaptured());
+  EXPECT_EQ(receiveBuffer.data(), receiveAllocation);
+}
+
 TEST(ResponseParserTest, StoresNonReservedHeader) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-MiXeD: value\r\nLocation: /x\r\n\r\nhi", resp);
@@ -779,9 +843,17 @@ TEST(ResponseParserDecompress, IdentityEncodingPassesThroughAndDropsHeader) {
   parser.reset(false);
   parser.setDecodeContext(decode.ctx());
   HttpResponse resp;
-  const auto st = ParseCopy(parser, LengthFramed("identity", "hello"), false, resp, kMaxResponseBytes);
+  const std::string payload(256, 'i');
+  const std::string raw = LengthFramed("identity", payload);
+  const std::size_t bodyOffset = raw.size() - payload.size();
+  RawChars receiveBuffer(raw);
+  const char* const bodyAllocation = receiveBuffer.data() + bodyOffset;
+  const auto st = parser.parse(receiveBuffer, false, resp, kMaxResponseBytes);
   EXPECT_EQ(st, ResponseParser::Status::Complete);
-  EXPECT_EQ(resp.bodyInMemory(), "hello");
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+  EXPECT_TRUE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.bodyInMemory().data(), bodyAllocation);
+  EXPECT_TRUE(receiveBuffer.empty());
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
 }
 

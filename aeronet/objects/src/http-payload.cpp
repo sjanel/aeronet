@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,15 @@
 
 namespace aeronet {
 
+void HttpPayload::RawCharsSuffix::Free::operator()(char* ptr) const noexcept { std::free(ptr); }
+
+HttpPayload::RawCharsSuffix::RawCharsSuffix(RawChars rawChars, std::size_t suffixOffset) noexcept
+    : offset(suffixOffset) {
+  assert(offset <= rawChars.size());
+  size = rawChars.size() - offset;
+  buffer.reset(rawChars.release());
+}
+
 HttpPayload::HttpPayload(const HttpPayload& rhs) {
   std::visit(
       [this](const auto& val) {
@@ -28,6 +38,8 @@ HttpPayload::HttpPayload(const HttpPayload& rhs) {
                       std::is_same_v<T, std::vector<char>> || std::is_same_v<T, std::vector<std::byte>> ||
                       std::is_same_v<T, RawChars>) {
           _data = val;
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          _data = RawChars(val.view());
         } else if constexpr (std::is_same_v<T, CharBuffer>) {
           CharBuffer copy{std::make_unique_for_overwrite<char[]>(val.second), val.second};
           Copy(val.first.get(), val.second, copy.first.get());
@@ -65,6 +77,8 @@ std::size_t HttpPayload::size() const noexcept {
                       std::is_same_v<T, std::vector<char>> || std::is_same_v<T, std::vector<std::byte>> ||
                       std::is_same_v<T, RawChars>) {
           return val.size();
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          return val.size;
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           return val.second;
         } else {
@@ -82,6 +96,8 @@ char* HttpPayload::data() noexcept {
         if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                       std::is_same_v<T, RawChars>) {
           return val.data();
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          return val.size == 0 ? nullptr : val.buffer.get() + val.offset;
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
           return reinterpret_cast<char*>(val.data());
         } else if constexpr (std::is_same_v<T, CharBuffer>) {
@@ -107,6 +123,8 @@ std::string_view HttpPayload::view() const noexcept {
           return val;
         } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
           return val;
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          return val.view();
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           return std::string_view(val.data(), val.size());
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
@@ -131,6 +149,11 @@ void HttpPayload::append(const char* data, std::size_t size) {
           _data = RawChars(data, size);
         } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
           val.append(data, size);
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          RawChars body(val.size + size);
+          body.unchecked_append(val.view());
+          body.unchecked_append(data, size);
+          _data = std::move(body);
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           val.insert(val.end(), data, data + size);
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
@@ -166,6 +189,12 @@ void HttpPayload::append(const HttpPayload& other) {
           _data = RawChars(other.view());
         } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
           val.append(other.view());
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          const std::string_view otherView = other.view();
+          RawChars body(val.size + otherView.size());
+          body.unchecked_append(val.view());
+          body.unchecked_append(otherView);
+          _data = std::move(body);
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           const auto otherView = other.view();
           val.insert(val.end(), otherView.data(), otherView.data() + otherView.size());
@@ -208,6 +237,10 @@ void HttpPayload::ensureAvailableCapacity(std::size_t capa) {
           val.reserve(val.size() + capa);
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.ensureAvailableCapacity(capa);
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          RawChars body(val.size + capa);
+          body.unchecked_append(val.view());
+          _data = std::move(body);
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           // Switch to RawChars to simplify growth.
           const auto* beg = reinterpret_cast<const char*>(val.first.get());
@@ -245,6 +278,10 @@ void HttpPayload::ensureAvailableCapacityExponential(std::size_t capa) {
 #endif
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.ensureAvailableCapacityExponential(capa);
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          RawChars body(val.size + capa);
+          body.unchecked_append(val.view());
+          _data = std::move(body);
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           // Switch to RawChars to simplify growth.
           const auto* beg = reinterpret_cast<const char*>(val.first.get());
@@ -290,6 +327,14 @@ void HttpPayload::insert(std::size_t pos, std::string_view data) {
           char* base = val.data();
           std::memmove(base + pos + data.size(), base + pos, oldSize - pos);
           Copy(data, base + pos);
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          RawChars body(val.size + data.size());
+          char* bodyEnd = body.data();
+          bodyEnd = Append(val.view().substr(0, pos), bodyEnd);
+          bodyEnd = Append(data, bodyEnd);
+          bodyEnd = Append(val.view().substr(pos), bodyEnd);
+          body.setEnd(bodyEnd);
+          _data = std::move(body);
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           const auto* beg = reinterpret_cast<const char*>(val.first.get());
           RawChars buf(val.second + data.size());
@@ -342,6 +387,8 @@ void HttpPayload::clear() noexcept {
         if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                       std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
           val.clear();
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          val.size = 0;
         } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
           val.second = 0;
         } else {
@@ -353,11 +400,15 @@ void HttpPayload::clear() noexcept {
 
 void HttpPayload::shrink_to_fit() {
   std::visit(
-      [](auto& val) -> void {
+      [this](auto& val) -> void {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
                       std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
           val.shrink_to_fit();
+        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
+          RawChars body(val.view());
+          body.shrink_to_fit();
+          _data = std::move(body);
         }
         // do not do anything if CharBuffer or BytesBuffer, it does not provide such functionality
       },
