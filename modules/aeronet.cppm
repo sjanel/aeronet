@@ -335,7 +335,6 @@ using aeronet::http2::PriorityFrame;
 using aeronet::http2::RstStreamFrame;
 using aeronet::http2::SettingsEntry;
 using aeronet::http2::WindowUpdateFrame;
-using aeronet::http2::WriteContinuationFrame;
 using aeronet::http2::WriteDataFrame;
 using aeronet::http2::WriteFrame;
 using aeronet::http2::WriteFrameHeader;

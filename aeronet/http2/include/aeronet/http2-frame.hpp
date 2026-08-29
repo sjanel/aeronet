@@ -191,8 +191,4 @@ std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode 
 /// Write a WINDOW_UPDATE frame.
 std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t windowSizeIncrement);
 
-/// Write a CONTINUATION frame.
-std::size_t WriteContinuationFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock,
-                                   bool endHeaders);
-
 }  // namespace aeronet::http2

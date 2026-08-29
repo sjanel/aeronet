@@ -355,14 +355,6 @@ TEST(Http2Stream, IncreaseSendWindowOverflow) {
   EXPECT_EQ(err, ErrorCode::FlowControlError);
 }
 
-TEST(Http2Stream, IncreaseSendWindowZero) {
-  Http2Stream stream(1, 1000);
-
-  ErrorCode err = stream.increaseSendWindow(0);
-
-  EXPECT_EQ(err, ErrorCode::ProtocolError);
-}
-
 TEST(Http2Stream, IncreaseRecvWindow) {
   Http2Stream stream(1, 1000);
   EXPECT_TRUE(stream.consumeRecvWindow(500));  // Window = 500

@@ -41,13 +41,9 @@ HttpPayload::HttpPayload(const HttpPayload& rhs) {
         } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
           _data = RawChars(val.view());
         } else if constexpr (std::is_same_v<T, CharBuffer>) {
-          CharBuffer copy{std::make_unique_for_overwrite<char[]>(val.second), val.second};
-          Copy(val.first.get(), val.second, copy.first.get());
-          _data = std::move(copy);
+          _data = RawChars(val.first.get(), val.second);
         } else if constexpr (std::is_same_v<T, BytesBuffer>) {
-          BytesBuffer copy{std::make_unique_for_overwrite<std::byte[]>(val.second), val.second};
-          Copy(val.first.get(), val.second, copy.first.get());
-          _data = std::move(copy);
+          _data = RawChars(reinterpret_cast<char*>(val.first.get()), val.second);
         } else {
           static_assert(false, "Unhandled type in HttpPayload variant");
         }

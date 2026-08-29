@@ -240,7 +240,7 @@ std::size_t WritePriorityFrame(RawBytes& buffer, uint32_t streamId, uint32_t str
 
   uint32_t depWithExcl = streamDependency;
   if (exclusive) {
-    depWithExcl |= 0x80000000;
+    depWithExcl |= 0x80000000U;
   }
   Write32BE(buffer.end(), depWithExcl);
   buffer.end()[4] = static_cast<std::byte>(weight);
@@ -318,15 +318,6 @@ std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t
   const auto ret = WriteFrame(buffer, FrameType::WindowUpdate, FrameFlags::None, streamId, 4U);
   Write32BE(buffer.end(), windowSizeIncrement & kMaxWindowSize);  // Clear reserved bit
   buffer.addSize(4);
-  return ret;
-}
-
-std::size_t WriteContinuationFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock,
-                                   bool endHeaders) {
-  const uint8_t flags = endHeaders ? FrameFlags::ContinuationEndHeaders : FrameFlags::None;
-  const auto ret =
-      WriteFrame(buffer, FrameType::Continuation, flags, streamId, static_cast<uint32_t>(headerBlock.size()));
-  buffer.unchecked_append(headerBlock);
   return ret;
 }
 
