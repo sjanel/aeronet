@@ -20,7 +20,6 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/header-write.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -1395,12 +1394,23 @@ TEST(Http2ProtocolHandler, ParsesSupportedMethodsAndReturns501ForUnknown) {
   // TRACE in HTTP/2 returns 405 since there's no wire format to echo (per RFC 9113).
   // It gets handled by ProcessSpecialMethods and never reaches the default handler.
   // CONNECT also does not reach the handler; this loopback has no tunnel bridge and returns 405.
-  const std::array<MethodCase, 9> cases = {
-      MethodCase{1, "PUT", http::Method::PUT, true},       MethodCase{3, "DELETE", http::Method::DELETE, true},
-      MethodCase{5, "HEAD", http::Method::HEAD, true},     MethodCase{7, "OPTIONS", http::Method::OPTIONS, true},
-      MethodCase{9, "PATCH", http::Method::PATCH, true},   MethodCase{11, "CONNECT", http::Method::CONNECT, false},
-      MethodCase{13, "TRACE", http::Method::TRACE, false},  // HTTP/2 TRACE -> 405 before handler
-      MethodCase{15, "POST", http::Method::POST, true},    MethodCase{17, "BREW", http::kMethodInvalid, false},
+  const std::array cases{
+      MethodCase{1, "PUT", http::Method::PUT, true},           MethodCase{3, "PAT", http::kMethodInvalid, false},
+
+      MethodCase{5, "DELETE", http::Method::DELETE, true},     MethodCase{7, "DELATE", http::kMethodInvalid, false},
+
+      MethodCase{9, "HEAD", http::Method::HEAD, true},         MethodCase{11, "HEED", http::kMethodInvalid, false},
+
+      MethodCase{13, "OPTIONS", http::Method::OPTIONS, true},  MethodCase{15, "OPTIANS", http::kMethodInvalid, false},
+
+      MethodCase{17, "PATCH", http::Method::PATCH, true},      MethodCase{19, "POTCH", http::kMethodInvalid, false},
+
+      MethodCase{21, "CONNECT", http::Method::CONNECT, false}, MethodCase{23, "CONNACT", http::kMethodInvalid, false},
+
+      MethodCase{25, "TRACE", http::Method::TRACE, false},  // HTTP/2 TRACE -> 405 before handler
+      MethodCase{27, "TRYCE", http::kMethodInvalid, false},    MethodCase{29, "POST", http::Method::POST, true},
+      MethodCase{31, "GET", http::Method::GET, true},          MethodCase{33, "GAT", http::kMethodInvalid, false},
+      MethodCase{35, "PAST", http::kMethodInvalid, false},     MethodCase{37, "BREW", http::kMethodInvalid, false},
   };
 
   for (const auto& tc : cases) {
@@ -1431,7 +1441,8 @@ TEST(Http2ProtocolHandler, ParsesSupportedMethodsAndReturns501ForUnknown) {
     }
   }
 
-  const auto unknownMethodResponse = std::ranges::find(loop.clientHeaders, 17U, &HeaderEvent::streamId);
+  const auto unknownMethodResponse =
+      std::ranges::find(loop.clientHeaders, cases.back().streamId, &HeaderEvent::streamId);
   ASSERT_NE(unknownMethodResponse, loop.clientHeaders.end());
   EXPECT_EQ(GetHeaderValue(*unknownMethodResponse, ":status"), "501");
 }
@@ -1739,7 +1750,7 @@ TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
 TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   Router router;
   bool handlerCalled = false;
-  router.setDefault([&](const HttpRequestView&) {
+  router.setDefault([&handlerCalled](const HttpRequestView&) {
     handlerCalled = true;
     return HttpResponse(200);
   });
@@ -1753,58 +1764,65 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   };
 
   vector<MalformedCase> cases;
-  cases.reserve(10);
+
+  uint32_t streamId = 0;
 
   RawChars missingMethod;
   missingMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
   missingMethod.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({1, std::move(missingMethod)});
+  cases.push_back({++streamId, std::move(missingMethod)});
 
   RawChars missingScheme;
   missingScheme.append(MakeHttp1HeaderLine(":method", "GET"));
   missingScheme.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({3, std::move(missingScheme)});
+  cases.push_back({streamId += 2, std::move(missingScheme)});
 
   RawChars invalidMethod;
   invalidMethod.append(MakeHttp1HeaderLine(":method", "GE T"));
   invalidMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
   invalidMethod.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({5, std::move(invalidMethod)});
+  cases.push_back({streamId += 2, std::move(invalidMethod)});
 
   RawChars emptyScheme;
   emptyScheme.append(MakeHttp1HeaderLine(":method", "GET"));
   emptyScheme.append(MakeHttp1HeaderLine(":scheme", ""));
   emptyScheme.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({7, std::move(emptyScheme)});
+  cases.push_back({streamId += 2, std::move(emptyScheme)});
 
   RawChars emptyHttpPath;
   emptyHttpPath.append(MakeHttp1HeaderLine(":method", "GET"));
   emptyHttpPath.append(MakeHttp1HeaderLine(":scheme", "https"));
   emptyHttpPath.append(MakeHttp1HeaderLine(":path", ""));
-  cases.push_back({9, std::move(emptyHttpPath)});
+  cases.push_back({streamId += 2, std::move(emptyHttpPath)});
 
   RawChars missingConnectAuthority;
   missingConnectAuthority.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  cases.push_back({11, std::move(missingConnectAuthority)});
+  cases.push_back({streamId += 2, std::move(missingConnectAuthority)});
 
   RawChars connectWithScheme;
   connectWithScheme.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   connectWithScheme.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
   connectWithScheme.append(MakeHttp1HeaderLine(":scheme", "https"));
-  cases.push_back({13, std::move(connectWithScheme)});
+  cases.push_back({streamId += 2, std::move(connectWithScheme)});
+
+  RawChars connectWithPath;
+  connectWithPath.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  connectWithPath.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  connectWithPath.append(MakeHttp1HeaderLine(":path", "/"));
+  cases.push_back({streamId += 2, std::move(connectWithPath)});
 
   RawChars connectWithEmptyPath;
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":path", ""));
-  cases.push_back({15, std::move(connectWithEmptyPath)});
+  cases.push_back({streamId += 2, std::move(connectWithEmptyPath)});
 
   RawChars responsePseudoHeader;
   responsePseudoHeader.append(MakeHttp1HeaderLine(":method", "GET"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":scheme", "https"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":path", "/"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":status", "200"));
-  cases.push_back({17, std::move(responsePseudoHeader)});
+  cases.push_back({streamId += 2, std::move(responsePseudoHeader)});
 
   RawChars unsupportedExtendedConnect;
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -1812,7 +1830,7 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":scheme", "https"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":authority", "example.com"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":path", "/chat"));
-  cases.push_back({19, std::move(unsupportedExtendedConnect)});
+  cases.push_back({streamId += 2, std::move(unsupportedExtendedConnect)});
 
   for (const auto& malformedCase : cases) {
     ASSERT_EQ(

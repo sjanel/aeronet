@@ -157,6 +157,16 @@ TEST(ResponseParserTest, ChunkedDecoding) {
   EXPECT_EQ(resp.bodyInMemory(), "hello world");
 }
 
+TEST(ResponseParserTest, ChunkedWithExtensionAndInvalidTrailer) {
+  HttpResponse resp;
+  std::string raw =
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"
+      "4;foo=bar\r\nabcd\r\n"
+      "0\r\nx-trailer\r: v\r\n\r\n";
+  auto st = parseAll(raw, resp);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
 TEST(ResponseParserTest, ChunkedWithExtensionAndTrailer) {
   HttpResponse resp;
   std::string raw =
@@ -309,6 +319,12 @@ TEST(ResponseParserTest, MaxResponseBytesExceededIsError) {
 TEST(ResponseParserTest, InvalidContentLengthIsError) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: abc\r\n\r\n", resp);
+  EXPECT_EQ(st, ResponseParser::Status::Error);
+}
+
+TEST(ResponseParserTest, InvalidCRLFIsError) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 200 OK\rcontent-length: 4\r\n\r\nbody", resp);
   EXPECT_EQ(st, ResponseParser::Status::Error);
 }
 

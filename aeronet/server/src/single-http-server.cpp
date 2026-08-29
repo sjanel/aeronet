@@ -400,9 +400,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     if (state.isSendingFile() || !state.outBuffer.empty()) {
       break;
     }
-    // If we don't yet have a full request line (no '\n' observed) wait for more data
+    // If we don't have enough bytes for the minimum request line, wait for more data
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
-      break;  // need more bytes for at least the request line
+      break;
     }
     const auto statusCode =
         request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,

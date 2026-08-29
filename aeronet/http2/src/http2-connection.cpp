@@ -652,7 +652,7 @@ ErrorCode Http2Connection::prepareSendData(uint32_t streamId, std::size_t dataSi
   // the states onSendData() handles.
   [[maybe_unused]] const ErrorCode err = pStream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
-  return ErrorCode::NoError;
+  return err;
 }
 
 ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
@@ -660,49 +660,28 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   if (err != ErrorCode::NoError) {
     return err;
   }
-  if (data.empty()) {
-    if (endStream) {
-      WriteDataFrame(_outputBuffer, streamId, {}, true);
-      recordFrame(true, FrameType::Data, 0);
-    }
-    return ErrorCode::NoError;
-  }
 
   if (data.size() <= kMaxInlineDataFrameCopySize) {
     WriteDataFrame(_outputBuffer, streamId, data, endStream);
   } else {
-    RawBytes owner(data.size());
-    owner.unchecked_append(data);
-    queueDataBlock(std::move(owner), 0, data.size(), streamId, endStream);
+    queueDataBlock(RawBytes(data), 0, data.size(), streamId, endStream);
   }
   recordFrame(true, FrameType::Data, data.size(),
               (data.size() + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
 }
 
-ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& data, bool endStream) {
-  const std::size_t dataSize = data.size();
-  return sendData(streamId, std::move(data), 0, dataSize, endStream);
-}
-
 ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
                                     bool endStream) {
-  if (dataOffset > owner.size() || dataSize > owner.size() - dataOffset) [[unlikely]] {
-    return ErrorCode::ProtocolError;
-  }
+  assert(dataOffset <= owner.size());
+  assert(dataSize + dataOffset <= owner.size());
 
   const ErrorCode err = prepareSendData(streamId, dataSize, endStream);
   if (err != ErrorCode::NoError) {
     return err;
   }
-  if (dataSize == 0) {
-    if (endStream) {
-      WriteDataFrame(_outputBuffer, streamId, {}, true);
-      recordFrame(true, FrameType::Data, 0);
-    }
-    return ErrorCode::NoError;
-  }
 
+  assert(dataSize != 0);
   if (dataSize <= kMaxInlineDataFrameCopySize) {
     WriteDataFrame(_outputBuffer, streamId, std::span<const std::byte>(owner.data() + dataOffset, dataSize), endStream);
   } else {

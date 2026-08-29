@@ -100,7 +100,10 @@ void Http2ProtocolHandler::setupCallbacks() {
 
   _connection.setOnStreamClosed([this](uint32_t streamId) { onStreamClosed(streamId); });
 
-  _connection.setOnStreamReset([this](uint32_t streamId, ErrorCode errorCode) { onStreamReset(streamId, errorCode); });
+  _connection.setOnStreamReset([this](uint32_t streamId, ErrorCode errorCode) {
+    log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
+    onStreamClosed(streamId);
+  });
 
   _connection.setOnWindowUpdate([this](uint32_t streamId, uint32_t /*increment*/) {
     if (streamId == 0) {
@@ -164,36 +167,52 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
 namespace {
 
 http::Method ParseHttpMethod(std::string_view method) {
-  if (method == "GET") {
-    return http::Method::GET;
+  assert(!method.empty());
+  switch (method[0]) {
+    case 'C':
+      if (method == MethodToStr(http::Method::CONNECT)) {
+        return http::Method::CONNECT;
+      }
+      return http::kMethodInvalid;
+    case 'D':
+      if (method == MethodToStr(http::Method::DELETE)) {
+        return http::Method::DELETE;
+      }
+      return http::kMethodInvalid;
+    case 'G':
+      if (method == MethodToStr(http::Method::GET)) {
+        return http::Method::GET;
+      }
+      return http::kMethodInvalid;
+    case 'H':
+      if (method == MethodToStr(http::Method::HEAD)) {
+        return http::Method::HEAD;
+      }
+      return http::kMethodInvalid;
+    case 'O':
+      if (method == MethodToStr(http::Method::OPTIONS)) {
+        return http::Method::OPTIONS;
+      }
+      return http::kMethodInvalid;
+    case 'P':
+      if (method == MethodToStr(http::Method::POST)) {
+        return http::Method::POST;
+      }
+      if (method == MethodToStr(http::Method::PUT)) {
+        return http::Method::PUT;
+      }
+      if (method == MethodToStr(http::Method::PATCH)) {
+        return http::Method::PATCH;
+      }
+      return http::kMethodInvalid;
+    case 'T':
+      if (method == MethodToStr(http::Method::TRACE)) {
+        return http::Method::TRACE;
+      }
+      return http::kMethodInvalid;
+    default:
+      return http::kMethodInvalid;
   }
-  if (method == "POST") {
-    return http::Method::POST;
-  }
-  if (method == "PUT") {
-    return http::Method::PUT;
-  }
-  if (method == "DELETE") {
-    return http::Method::DELETE;
-  }
-  if (method == "HEAD") {
-    return http::Method::HEAD;
-  }
-  if (method == "OPTIONS") {
-    return http::Method::OPTIONS;
-  }
-  if (method == "PATCH") {
-    return http::Method::PATCH;
-  }
-  if (method == "CONNECT") {
-    return http::Method::CONNECT;
-  }
-  if (method == "TRACE") {
-    return http::Method::TRACE;
-  }
-  // Unknown extension methods are syntactically valid but unsupported by aeronet.
-  log::debug("Unknown HTTP method received: {}", method);
-  return http::kMethodInvalid;
 }
 
 }  // namespace
@@ -261,7 +280,17 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     return;
   }
 
-  const bool isConnect = methodValue == "CONNECT";
+  const http::Method parsedMethod = ParseHttpMethod(methodValue);
+  if (parsedMethod == http::kMethodInvalid) {
+    // Unknown extension methods are syntactically valid but unsupported by aeronet.
+    log::debug("Unknown HTTP method received: {}", methodValue);
+    (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotImplemented, "Unsupported HTTP method"),
+                       /*isHeadMethod=*/false);
+    releaseStreamAfterResponse(it);
+    return;
+  }
+
+  const bool isConnect = parsedMethod == http::Method::CONNECT;
   if (isConnect) {
     if (authorityValue.empty() || !schemeValue.empty() || !pathValue.empty()) {
       rejectMalformedRequest("CONNECT requires :authority and forbids :scheme and :path");
@@ -269,14 +298,6 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     }
   } else if (schemeValue.empty() || pathValue.empty()) {
     rejectMalformedRequest("missing or invalid :scheme or :path pseudo-header field");
-    return;
-  }
-
-  const http::Method parsedMethod = ParseHttpMethod(methodValue);
-  if (parsedMethod == http::kMethodInvalid) {
-    (void)sendResponse(streamId, HttpResponse(http::StatusCodeNotImplemented, "Unsupported HTTP method"),
-                       /*isHeadMethod=*/false);
-    releaseStreamAfterResponse(it);
     return;
   }
 
@@ -304,7 +325,8 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
       } else if (storedName == http::PseudoHeaderScheme) {
         req._pScheme = storedValue.data();
         req._schemeLength = SafeCast<decltype(req._schemeLength)>(storedValue.size());
-      } else if (storedName == ":path") {
+      } else {
+        assert(storedName == http::PseudoHeaderPath);  // validated above
         // Split :path at '?' to separate path from query string, mirroring HTTP/1.1 parsing.
         // The stored value lives in headerStorage which we own, so in-place decoding is safe.
         char* pathStart = const_cast<char*>(storedValue.data());
@@ -348,9 +370,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
     req._traceSpan->setAttribute("http.method", http::MethodToStr(req._method));
     req._traceSpan->setAttribute("http.target", req.path());
     req._traceSpan->setAttribute("http.scheme", req.scheme());
-    if (!req.authority().empty()) {
-      req._traceSpan->setAttribute("http.host", req.authority());
-    }
+    req._traceSpan->setAttribute("http.host", req.authority());
   }
 
   // CONNECT requests must be dispatched immediately after headers regardless of endStream,
@@ -471,17 +491,16 @@ void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
   if (it == _streams.end()) {
     return;
   }
-  cleanupTunnel(it);
-  _streams.erase(it);
-}
 
-void Http2ProtocolHandler::onStreamReset(uint32_t streamId, ErrorCode errorCode) {
-  log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
-  auto it = _streams.find(streamId);
-  if (it == _streams.end()) {
-    return;
+  // Clean up tunnel state for a given stream (using the consolidated StreamState).
+  const auto upstreamFd = it->second.tunnelUpstreamFd;
+  if (upstreamFd != kInvalidHandle) {
+    _tunnelUpstreams.erase(upstreamFd);
+    it->second.tunnelUpstreamFd = kInvalidHandle;
+
+    _tunnelBridge->closeTunnel(upstreamFd);
   }
-  cleanupTunnel(it);
+
   _streams.erase(it);
 }
 
@@ -511,7 +530,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
     const int32_t streamWin = pStream->sendWindow();
     const int32_t connWin = _connection.connectionSendWindow();
     if (streamWin <= 0 || connWin <= 0) {
-      return ErrorCode::NoError;  // wait for WINDOW_UPDATE
+      break;  // wait for WINDOW_UPDATE
     }
 
     const auto windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
@@ -800,12 +819,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Validate required pseudo-headers
-  if (request.path().empty()) {
-    log::error("HTTP/2 stream {} missing :path", streamId);
-    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    _streams.erase(streamId);
-    return;
-  }
+  assert(!request.path().empty() && "path should have been validated in onHeadersDecodedReceived");
 
   const Router::RoutingResult routingResult = _pRouter->match(request.method(), request.path());
 
@@ -1029,21 +1043,6 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
   _tunnelUpstreams[upstreamFd] = streamId;
 
   log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, target);
-}
-
-void Http2ProtocolHandler::cleanupTunnel(StreamsMap::iterator it) {
-  const auto upstreamFd = it->second.tunnelUpstreamFd;
-  if (upstreamFd == kInvalidHandle) {
-    return;
-  }
-  _tunnelUpstreams.erase(upstreamFd);
-  it->second.tunnelUpstreamFd = kInvalidHandle;
-
-  _tunnelBridge->closeTunnel(upstreamFd);
-}
-
-ErrorCode Http2ProtocolHandler::injectTunnelData(uint32_t streamId, std::span<const std::byte> data) {
-  return _connection.sendData(streamId, data, /*endStream=*/false);
 }
 
 void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
