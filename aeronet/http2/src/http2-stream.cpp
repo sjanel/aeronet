@@ -8,10 +8,13 @@
 namespace aeronet::http2 {
 
 Http2Stream::Http2Stream(uint32_t streamId, uint32_t initialWindowSize) noexcept
+    : Http2Stream(streamId, initialWindowSize, initialWindowSize) {}
+
+Http2Stream::Http2Stream(uint32_t streamId, uint32_t initialSendWindowSize, uint32_t initialRecvWindowSize) noexcept
     : _streamId(streamId),
-      _sendWindow(static_cast<int32_t>(initialWindowSize)),
-      _recvWindow(static_cast<int32_t>(initialWindowSize)),
-      _initialSendWindow(initialWindowSize) {}
+      _sendWindow(static_cast<int32_t>(initialSendWindowSize)),
+      _recvWindow(static_cast<int32_t>(initialRecvWindowSize)),
+      _initialSendWindow(initialSendWindowSize) {}
 
 // ============================
 // State transitions

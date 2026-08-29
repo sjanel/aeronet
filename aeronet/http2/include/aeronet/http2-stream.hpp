@@ -12,9 +12,12 @@ namespace aeronet::http2 {
 /// Manages stream state, flow control, and priority information.
 class Http2Stream {
  public:
-  /// Create a new stream with the given ID.
+  /// Create a new stream with the given ID and equal send/receive windows.
   /// Client-initiated streams have odd IDs, server-initiated have even IDs.
   explicit Http2Stream(uint32_t streamId, uint32_t initialWindowSize = kDefaultInitialWindowSize) noexcept;
+
+  /// Create a new stream with independently configured send and receive windows.
+  Http2Stream(uint32_t streamId, uint32_t initialSendWindowSize, uint32_t initialRecvWindowSize) noexcept;
 
   /// Get the stream identifier.
   [[nodiscard]] uint32_t id() const noexcept { return _streamId; }
