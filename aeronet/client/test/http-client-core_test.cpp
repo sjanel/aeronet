@@ -140,6 +140,11 @@ HttpResponse ReflectRequestHeaders(const HttpRequestView& req) {
   return resp;
 }
 
+const std::string& LargeIdentityResponseBody() {
+  static const std::string body = test::MakePatternedPayload((1UL << 20U) + 123U);
+  return body;
+}
+
 test::TestServer CreateTestServer() {
   // Generous server keep-alive idle timeout: a short one reaps a freshly-accepted connection whose client
   // is descheduled (heavy parallel-test load) between the TCP handshake and sending its request, which
@@ -154,6 +159,9 @@ test::TestServer CreateTestServer() {
   routerProxy.setPath(http::Method::GET | http::Method::POST, "/reflect", ReflectRequestHeaders);
   routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
+  });
+  routerProxy.setPath(http::Method::GET, "/large-identity", [](const HttpRequestView& req) {
+    return req.makeResponse(http::StatusCodeOK, LargeIdentityResponseBody(), "application/octet-stream");
   });
   routerProxy.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
@@ -240,6 +248,30 @@ TEST_F(HttpClientE2ETest, SimpleGet) {
   EXPECT_GE(resp.status(), 200);
   EXPECT_LT(resp.status(), 300);
   EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, LargeIdentityResponsesTransferReceiveOwnershipAndSurviveReuse) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http1_1).withDecompression(false);
+  HttpClient client(config);
+
+  auto first = client.get(Url("/large-identity")).value();
+  EXPECT_EQ(first.bodyInMemory(), LargeIdentityResponseBody());
+  EXPECT_TRUE(first.hasBodyCaptured());
+  const char* const firstAllocation = first.bodyInMemory().data();
+
+  // A small response copies out of the retained high-water scratch instead of transferring it too.
+  auto smallResponse = client.get(Url("/hello")).value();
+  EXPECT_EQ(smallResponse.bodyInMemory(), "world");
+  EXPECT_FALSE(smallResponse.hasBodyCaptured());
+  EXPECT_EQ(first.bodyInMemory(), LargeIdentityResponseBody());
+
+  // The replacement allocation is filled directly and transferred by the next large response.
+  auto second = client.get(Url("/large-identity")).value();
+  EXPECT_EQ(second.bodyInMemory(), LargeIdentityResponseBody());
+  EXPECT_TRUE(second.hasBodyCaptured());
+  EXPECT_NE(second.bodyInMemory().data(), firstAllocation);
+  EXPECT_EQ(first.bodyInMemory(), LargeIdentityResponseBody());
 }
 
 TEST_F(HttpClientE2ETest, Http11PartialScatterWriteContinuesWithBodyOnly) {

@@ -174,9 +174,9 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     }
   }
 
-  // The chunked-body reassembly buffer is borrowed from the client. Suitably-sized allocations move into the response
-  // and get an equal-capacity replacement; oversized scratch stays with the client while its small body is copied.
-  // Both paths preserve reuse without making a later request invalidate the returned response.
+  // The chunked-body reassembly and raw receive buffers are borrowed from the client. Suitably-sized allocations move
+  // into the response and get an equal-capacity replacement; oversized scratch stays with the client while its small
+  // body is copied. Both paths preserve reuse without making a later request invalidate the returned response.
   ResponseParser parser(client.bodyBuffer());
   parser.reset(req.method() == http::Method::HEAD);
   if (config.decompression.enable) {

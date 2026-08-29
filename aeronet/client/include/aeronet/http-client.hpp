@@ -314,8 +314,9 @@ class HttpClient {
   // without pinning two high-water allocations after a large-to-small response transition. Exposed through the
   // requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
   RawChars _reqBodyScratch;
-  // HTTP/1.1 raw receive bytes or the HTTP/2 DATA accumulator. A suitably-sized assembled HTTP/2 body
-  // rotates into the response with an equal-capacity replacement; oversized scratch stays reusable.
+  // HTTP/1.1 raw receive bytes or the HTTP/2 DATA accumulator. A suitably-sized HTTP/1.1 identity-body suffix or
+  // assembled HTTP/2 body rotates into the response with an equal-capacity replacement; oversized scratch stays
+  // reusable.
   RawChars _responseBuffer;
 #ifdef AERONET_ENABLE_HTTP2
   vector<std::string_view> _outputFragmentsScratch;  // reused by HTTP/2 gather writes across flushes

@@ -153,7 +153,10 @@ void ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view bod
     return;
   }
 
-  assert(WholeBufferOwner(body, *owner) != nullptr);
+  assert(body.data() >= owner->data());
+  const std::size_t bodyOffset = static_cast<std::size_t>(body.data() - owner->data());
+  assert(bodyOffset <= owner->size());
+  assert(body.size() == owner->size() - bodyOffset);
   if (owner->capacity() - body.size() > body.size()) {
     resp.body(body, contentType);
     owner->clear();
@@ -163,7 +166,11 @@ void ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view bod
   RawChars replacement(owner->capacity());
   resp.setBodyHeaders(contentType, body.size(), HttpMessage::BodySetContext::Captured);
   resp.setBodyInternal({});
-  resp.setCapturedPayload(std::move(*owner));
+  if (bodyOffset == 0) {
+    resp.setCapturedPayload(std::move(*owner));
+  } else {
+    resp.setCapturedPayload(std::move(*owner), bodyOffset);
+  }
   *owner = std::move(replacement);
 }
 
@@ -174,6 +181,7 @@ void ResponseParser::reset(bool headRequest) noexcept {
   _contentTypeOff = 0;
   _contentTypeLen = 0;
   _bodyRemaining = 0;
+  _receiveBuf = nullptr;
   _framing = Framing::None;
   _state = State::StatusLine;
   _statusCode = 0;
@@ -192,10 +200,17 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
   }
   const std::string_view contentType =
       _contentTypeLen == 0 ? http::ContentTypeApplicationOctetStream : buffer.substr(_contentTypeOff, _contentTypeLen);
-  // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are still contiguous in the
-  // receive buffer, so only the latter require an owning copy into the response.
+  // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are contiguous suffixes of the
+  // receive buffer. Either allocation can become the response's owner when it is suitably sized.
   const std::string_view body =
       _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+  RawChars* bodyOwner = nullptr;
+  if (_framing == Framing::Chunked) {
+    bodyOwner = _bodyBuf;
+  } else if (_receiveBuf != nullptr && buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size() &&
+             _pos == buffer.size()) {
+    bodyOwner = _receiveBuf;
+  }
 
   // Transfer a suitably-sized scratch allocation into the response and preserve an equal-capacity empty replacement.
   // If the scratch is over twice the body size, retain it and copy the small body instead of making both the response
@@ -219,12 +234,23 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
       if (decodedOwner == nullptr) {
         decodedOwner = WholeBufferOwner(decoded, *_bodyBuf);
       }
+      if (decodedOwner == nullptr && decoded.data() == body.data() && decoded.size() == body.size()) {
+        decodedOwner = bodyOwner;
+      }
       InstallBodyStorage(resp, decoded, contentType, decodedOwner);
       return Status::Complete;
     }
   }
-  InstallBodyStorage(resp, body, contentType, _framing == Framing::Chunked ? _bodyBuf : nullptr);
+  InstallBodyStorage(resp, body, contentType, bodyOwner);
   return Status::Complete;
+}
+
+ResponseParser::Status ResponseParser::parse(RawChars& buffer, bool eof, HttpResponse& resp,
+                                             std::size_t maxResponseBytes) {
+  _receiveBuf = &buffer;
+  const Status status = parse(std::span<char>(buffer.data(), buffer.size()), eof, resp, maxResponseBytes);
+  _receiveBuf = nullptr;
+  return status;
 }
 
 ResponseParser::Status ResponseParser::decideFraming() {
