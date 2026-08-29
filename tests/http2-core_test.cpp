@@ -802,7 +802,9 @@ TEST(Http2Core, ContinuationFrameOnWrongStreamIsProtocolError) {
 
   // Send CONTINUATION on a different stream.
   RawBytes cont;
-  WriteContinuationFrame(cont, 3, headerBlock, true);
+  WriteFrame(cont, FrameType::Continuation, FrameFlags::ContinuationEndHeaders, 3,
+             static_cast<uint32_t>(headerBlock.size()));
+  cont.unchecked_append(headerBlock);
 
   auto res2 = conn.processInput(AsSpan(cont));
   EXPECT_EQ(res2.action, Http2Connection::ProcessResult::Action::Error);
@@ -990,7 +992,8 @@ TEST(Http2Core, UnexpectedContinuationIsProtocolError) {
 
   RawBytes cont;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
-  WriteContinuationFrame(cont, 1, hb, true);
+  WriteFrame(cont, FrameType::Continuation, FrameFlags::ContinuationEndHeaders, 1, static_cast<uint32_t>(hb.size()));
+  cont.unchecked_append(hb);
 
   auto res = conn.processInput(AsSpan(cont));
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);

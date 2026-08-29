@@ -1,5 +1,6 @@
 #include "aeronet/http2-stream.hpp"
 
+#include <cassert>
 #include <cstdint>
 #include <utility>
 
@@ -157,11 +158,9 @@ bool Http2Stream::consumeRecvWindow(uint32_t bytes) noexcept {
 }
 
 ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
-  // Check for overflow: RFC 9113 §6.9 specifies max window size as 2^31-1
-  if (increment == 0) {
-    return ErrorCode::ProtocolError;
-  }
+  assert(increment != 0);
 
+  // Check for overflow: RFC 9113 §6.9 specifies max window size as 2^31-1
   const int64_t newWindow = static_cast<int64_t>(_sendWindow) + static_cast<int64_t>(increment);
   if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;

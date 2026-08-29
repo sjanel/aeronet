@@ -220,9 +220,6 @@ class Http2Connection {
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream);
 
-  /// Send DATA while transferring ownership of its backing allocation to the connection.
-  [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& data, bool endStream);
-
   /// Send a subrange of an owned allocation without copying it.
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
                                    bool endStream);

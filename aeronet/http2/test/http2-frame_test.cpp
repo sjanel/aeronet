@@ -518,20 +518,6 @@ TEST(Http2Frame, ParseContinuationFrame) {
   EXPECT_EQ(frame.headerBlockFragment.size(), 3U);
 }
 
-TEST(Http2Frame, WriteContinuationFrame) {
-  RawBytes buffer;
-  const std::byte headerBlock[]{std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
-
-  WriteContinuationFrame(buffer, 1, headerBlock, true);
-
-  auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
-  FrameHeader header = ParseFrameHeader(span);
-
-  EXPECT_EQ(header.type, FrameType::Continuation);
-  EXPECT_EQ(header.length, 3U);
-  EXPECT_TRUE(header.hasFlag(FrameFlags::ContinuationEndHeaders));
-}
-
 // ============================
 // Error Condition Tests
 // ============================
