@@ -13,6 +13,7 @@ config.withPort(8080)
     .withMaxHeaderBytes(16 * 1024)
     .withMaxBodyBytes(32ULL * 1024 * 1024)
     .withMaxOutboundBufferBytes(8ULL * 1024 * 1024)
+    .withMaxZerocopyPendingBytes(8ULL * 1024 * 1024)
     .withTcpNoDelayMode(aeronet::TcpNoDelayMode::Auto);
 ```
 
@@ -43,7 +44,8 @@ config.withPort(8080)
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `maxOutboundBufferBytes` / `withMaxOutboundBufferBytes()` | 4 MiB | Per-connection queue cap. Further writes are rejected and the connection closes after its queued data flushes. |
+| `maxOutboundBufferBytes` / `withMaxOutboundBufferBytes()` | 4 MiB | Per-connection retained-output cap. HTTP/1.1 drains then closes on overflow; HTTP/2 pauses wire-input processing at the queue high-water mark and rejects work that cannot fit its queued plus flow-control-deferred budget. |
+| `maxZerocopyPendingBytes` / `withMaxZerocopyPendingBytes()` | 4 MiB | Per-connection payload cap for delayed Linux `MSG_ZEROCOPY` completions. New sends fall back to copied writes at the limit. |
 | `minCapturedBodySize` / `withMinCapturedBodySize()` | 1 KiB | Fixed response bodies below this size are kept with the response head for locality. |
 | `pollInterval` / `withPollInterval()` | 500 ms | Maximum idle event-loop wait. Lower values improve stop responsiveness but increase wakeups. |
 | `pollIntervalMinFactor`, `pollIntervalMaxFactor` / `withPollIntervalFactors()` | 1.0, 1.0 | Adaptive poll bounds relative to `pollInterval`; `0.0, 2.0` permits a saturated spin and idle backoff. |
@@ -117,6 +119,7 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `settingsTimeout` | 5 s | Deadline for the peer SETTINGS acknowledgement. |
 | `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive and response deadline. |
 | `maxStreamsPerConnection` | 0 | Lifetime stream count before graceful GOAWAY; 0 is unlimited. |
+| `maxStreamPendingBytes` | 4 MiB | Per-stream cap for in-memory response body and trailer bytes waiting on peer flow-control credit. Oversized fixed responses receive 503; overflowing streaming responses are reset with `ENHANCE_YOUR_CALM`. |
 
 ## Compression, decompression, and files
 

@@ -2409,7 +2409,11 @@ Key semantics:
 Backpressure & buffering:
 
 - Unified outbound queue for both fixed & streaming; immediate write path used when queue empty, else bytes accumulate and event-driven write-readiness notification drives flushing.
-- Exceeding `maxOutboundBufferBytes` marks connection to close after pending data flush; additional queued chunks are rejected immediately so subsequent `write()` yields false without growing the buffer further.
+- HTTP/1.1 exceeding `maxOutboundBufferBytes` marks the connection to close after pending data flush; additional queued chunks are rejected immediately so subsequent `write()` yields false without growing the buffer further.
+- HTTP/2 counts queued wire output and flow-control-deferred bodies against `maxOutboundBufferBytes`. It pauses frame consumption while the wire queue is at the high-water mark and refuses new response work when the retained connection budget is exhausted. `Http2Config::maxStreamPendingBytes` (4 MiB by default) separately prevents one stream from retaining the whole budget. Oversized fixed responses become bounded 503 responses; a streaming writer returns false and resets the stream with `ENHANCE_YOUR_CALM`.
+- `maxZerocopyPendingBytes` bounds response payloads retained while Linux error-queue completions are delayed. Once retaining another payload would exceed the limit, zerocopy is disabled for that connection and later sends take the copied path; already-submitted buffers remain alive until completion.
+
+Slow-reader and delayed-completion coverage: `aeronet/http2/test/http2-connection_test.cpp` (`InputPausesAtOutputHighWaterMarkUntilSlowReaderDrains`), `aeronet/http2/test/http2-protocol-handler_test.cpp` (`FixedResponseOverPerStreamPendingLimitReturnsServiceUnavailable`, `StreamingHeadersOverConnectionLimitResetStream`, `StreamingResponseStopsRetainingAtPendingLimit`, `SlowReaderOutputPlateausAndLeavesInputUnconsumed`), and `aeronet/http/test/connection-state_test.cpp` (`DelayedCompletionsPlateauAndLaterWritesFallBackToCopy`).
 
 Limitations (current phase): compression integration limited to buffered activation decision; request body streaming (chunked delivery to handler as it arrives) not yet implemented.
 
@@ -3284,7 +3288,7 @@ Notes:
 
 ### Http2Config
 
-The `Http2Config` structure provides comprehensive HTTP/2 tuning.
+The `Http2Config` structure provides comprehensive HTTP/2 tuning. In addition to advertised protocol settings, `maxStreamPendingBytes` bounds the response payload and trailers retained for one stream while the peer withholds flow-control credit. The server's connection-wide `maxOutboundBufferBytes` remains the aggregate ceiling across queued HTTP/2 frames and all deferred streams.
 
 ### ALPN Protocol Negotiation (h2)
 

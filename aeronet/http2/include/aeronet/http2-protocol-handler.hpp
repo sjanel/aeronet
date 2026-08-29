@@ -117,6 +117,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     _tunnelUpstreams.clear();
 
     _streams.clear();
+    _deferredOutputBytes = 0;
 
     // Detach callbacks to avoid generating new outbound frames while the transport is closing.
     _connection.setOnHeadersDecoded({});
@@ -262,6 +263,14 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
   void onStreamClosed(uint32_t streamId);
 
+  [[nodiscard]] std::size_t retainedOutboundBytes() const noexcept {
+    return _connection.pendingOutputSize() + _deferredOutputBytes;
+  }
+
+  void releasePendingBytes(const StreamState& state) noexcept;
+
+  [[nodiscard]] bool responseExceedsPendingLimits(uint32_t streamId, const HttpResponse& response, bool isHeadMethod);
+
   /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
   void onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream);
 
@@ -327,6 +336,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   StreamsMap _streams;
 
   RawChars _fileSendBuffer;
+
+  // Bytes owned by flow-control-deferred in-memory response bodies and trailers across all streams.
+  std::size_t _deferredOutputBytes{0};
 
   HttpServerConfig* _pServerConfig;
   internal::CompressionState* _pCompressionState;

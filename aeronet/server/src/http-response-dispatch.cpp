@@ -213,35 +213,31 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
 
   // Plain TCP path: try immediate write optimization
+  const bool mayNeedZerocopyHold =
+      state.prepareZerocopyWrite(httpResponseData.retainedSize(), _config.maxZerocopyPendingBytes);
   const auto [written, want] = state.transportWrite(httpResponseData);
-  switch (want) {
-    case TransportHint::Error:
-      state.requestDrainAndClose();
-      return;
-    case TransportHint::ReadReady:
-      [[fallthrough]];
-    case TransportHint::WriteReady:
-      [[fallthrough]];
-    case TransportHint::None:
-      if (written == bufferedSz) {
-        _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-        _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-        // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
-        // asynchronously. We must keep the buffer alive until the kernel signals
-        // completion via the error queue, otherwise the allocator can reuse the
-        // freed pages while the kernel is still transmitting causing data corruption.
-        state.holdBufferIfZerocopyPending(std::move(httpResponseData));
-        if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
-          flushFilePayload(cnxIt);
-        }
-        return;
-      }
-      // partial write, capture the buffer in the connection state
-      httpResponseData.addOffset(static_cast<std::size_t>(written));
-      state.outBuffer = std::move(httpResponseData);
-      _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
-      break;
+  if (want == TransportHint::Error) {
+    state.requestDrainAndClose();
+    return;
   }
+  if (written == bufferedSz) {
+    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+    _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+    // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
+    // asynchronously. We must keep the buffer alive until the kernel signals
+    // completion via the error queue, otherwise the allocator can reuse the
+    // freed pages while the kernel is still transmitting causing data corruption.
+    state.holdBufferIfZerocopyPending(std::move(httpResponseData), mayNeedZerocopyHold);
+    if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+      flushFilePayload(cnxIt);
+    }
+    return;
+  }
+  // partial write, capture the buffer in the connection state
+  httpResponseData.addOffset(static_cast<std::size_t>(written));
+  state.outBuffer = std::move(httpResponseData);
+  state.outBufferMayNeedZerocopyHold = mayNeedZerocopyHold;
+  _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();
   _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
@@ -277,33 +273,29 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
 
   while (!state.outBuffer.empty()) {
+    if (!state.outBufferMayNeedZerocopyHold) {
+      state.outBufferMayNeedZerocopyHold =
+          state.prepareZerocopyWrite(state.outBuffer.retainedSize(), _config.maxZerocopyPendingBytes);
+    }
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
     want = stepWant;
     _stats.totalBytesWrittenFlush += written;
-    switch (want) {
-      case TransportHint::Error: {
-        auto savedErr = LastSystemError();
-        log::error("send/transportWrite failed fd # {} err={}", fd, savedErr);
-        state.requestDrainAndClose();
+    if (want == TransportHint::Error) {
+      const auto savedErr = LastSystemError();
+      log::error("send/transportWrite failed fd # {} err={}", fd, savedErr);
+      state.requestDrainAndClose();
+      state.outBuffer.clear();
+      state.outBufferMayNeedZerocopyHold = false;
+    } else if (written > 0) {
+      if (written == state.outBuffer.remainingSize()) {
+        // Hold buffer for zerocopy lifetime before clearing (see queueData comment).
+        state.holdBufferIfZerocopyPending(std::move(state.outBuffer), state.outBufferMayNeedZerocopyHold);
         state.outBuffer.clear();
+        state.outBufferMayNeedZerocopyHold = false;
         break;
       }
-      case TransportHint::ReadReady:
-        [[fallthrough]];
-      case TransportHint::WriteReady:
-        [[fallthrough]];
-      case TransportHint::None:
-        if (written > 0) {
-          if (written == state.outBuffer.remainingSize()) {
-            // Hold buffer for zerocopy lifetime before clearing (see queueData comment).
-            state.holdBufferIfZerocopyPending(std::move(state.outBuffer));
-            state.outBuffer.clear();
-            break;
-          }
-          state.outBuffer.addOffset(written);
-          continue;
-        }
-        break;
+      state.outBuffer.addOffset(written);
+      continue;
     }
   }
   if (state.protocolHandler != nullptr) {

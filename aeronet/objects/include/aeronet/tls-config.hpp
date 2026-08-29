@@ -393,6 +393,7 @@ class TLSConfig {
 #include <string>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+#include "aeronet/glaze-vector-sv-adapter.hpp"
 
 template <>
 struct glz::meta<aeronet::TLSConfig::KtlsMode> {
@@ -465,13 +466,7 @@ struct glz::meta<aeronet::TLSConfig> {
                     [](const T& self) { return self.keyLogFile(); }>,
              "alpnProtocols",
              custom<[](T& self, const ::aeronet::vector<std::string>& protos) { self.withTlsAlpnProtocols(protos); },
-                    [](const T& self) {
-                      ::aeronet::vector<std::string_view> result;
-                      for (auto sv : self.alpnProtocols()) {
-                        result.push_back(sv);
-                      }
-                      return result;
-                    }>,
+                    aeronet::glz_detail::ToStringViewVector<&T::alpnProtocols>>,
              "trustedClientCertsPem",
              custom<[](T& self, const ::aeronet::vector<std::string>& certs) {
                self.withoutTlsTrustedClientCert();
@@ -479,13 +474,7 @@ struct glz::meta<aeronet::TLSConfig> {
                  self.withTlsTrustedClientCert(cert);
                }
              },
-                    [](const T& self) {
-                      ::aeronet::vector<std::string_view> result;
-                      for (auto sv : self.trustedClientCertsPem()) {
-                        result.push_back(sv);
-                      }
-                      return result;
-                    }>,
+                    aeronet::glz_detail::ToStringViewVector<&T::trustedClientCertsPem>>,
              "sniCertificates",
              custom<[](T& self, const ::aeronet::vector<aeronet::TLSConfig::SniCertificate>& certs) {
                self.clearTlsSniCertificates();
