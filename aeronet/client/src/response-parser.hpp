@@ -21,8 +21,8 @@ struct DecompressionState;
 //
 // The caller accumulates raw bytes in a contiguous buffer and repeatedly calls parse() with the
 // full accumulated view plus an eof flag. Status line + non-reserved headers are written into the
-// HttpResponse as they are parsed; the decoded body (chunked already de-framed) is accumulated and
-// installed via HttpResponse::body() at completion.
+// HttpResponse as they are parsed; the decoded body (chunked already de-framed) is installed at completion.
+// Suitably-sized scratch allocations are transferred directly into the response.
 //
 // Status, header, chunk-metadata and trailer lines require CRLF framing, matching the server parser.
 //
@@ -66,6 +66,10 @@ class ResponseParser {
   // populated.
   Status parse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
 
+  // RawChars overload that permits a completed identity body occupying the initialized suffix of `buffer` to
+  // transfer that allocation into the response. The buffer receives an equal-capacity empty replacement.
+  Status parse(RawChars& buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
+
   // Whether the parsed response permits connection reuse (keep-alive and bounded framing).
   [[nodiscard]] bool keepAlive() const noexcept { return _keepAlive; }
 
@@ -93,7 +97,8 @@ class ResponseParser {
   // Return candidate when body covers exactly its initialized bytes, otherwise nullptr.
   static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept;
   // Install body by rotating a suitably-sized owner allocation into the response. A missing or oversized
-  // owner falls back to a copy, retaining oversized scratch for later reuse.
+  // owner falls back to a copy, retaining oversized scratch for later reuse. `body` may be the complete
+  // initialized owner or a suffix ending at owner->end().
   static void InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
                                  RawChars* owner);
   // Install the (de-framed) body into `resp`, applying automatic decompression when configured.
@@ -102,8 +107,9 @@ class ResponseParser {
 
   // Borrowed decoded-body accumulator (see the constructor). Only used for chunked framing, where the body
   // is interleaved with chunk metadata and must be reassembled. For Length / UntilClose framing the body is
-  // already contiguous in the caller's receive buffer, so it is installed as a view (no second copy here).
+  // already contiguous in the caller's receive buffer. The RawChars parse overload can transfer that allocation.
   RawChars* _bodyBuf;
+  RawChars* _receiveBuf{nullptr};
   std::size_t _pos{0};             // absolute cursor into the accumulated buffer
   std::size_t _bodyStart{0};       // absolute offset of the first body byte (Length / UntilClose framing)
   std::size_t _contentTypeOff{0};  // Content-Type value position within the accumulated buffer ...

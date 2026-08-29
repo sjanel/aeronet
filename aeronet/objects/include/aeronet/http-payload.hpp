@@ -14,6 +14,8 @@
 
 namespace aeronet {
 
+class HttpMessage;
+
 // Convenient wrapper of common user-types for HTTP body storage.
 // The data is captured by value (moved or copied) at construction time.
 // The body data is immutable after construction.
@@ -22,6 +24,38 @@ class HttpPayload {
  private:
   using CharBuffer = std::pair<std::unique_ptr<char[]>, std::size_t>;
   using BytesBuffer = std::pair<std::unique_ptr<std::byte[]>, std::size_t>;
+
+  // Owns a complete allocation while exposing only its initialized suffix. The HTTP/1.1 client uses this
+  // representation to adopt a receive buffer without moving the response body over its parsed wire head.
+  struct RawCharsSuffix {
+    struct Free {
+      void operator()(char* ptr) const noexcept;
+    };
+
+    RawCharsSuffix(RawChars rawChars, std::size_t suffixOffset) noexcept;
+
+    RawCharsSuffix(RawCharsSuffix&& rhs) noexcept
+        : buffer(std::move(rhs.buffer)), size(std::exchange(rhs.size, 0)), offset(std::exchange(rhs.offset, 0)) {}
+
+    RawCharsSuffix& operator=(RawCharsSuffix&& rhs) noexcept {
+      if (this != &rhs) {
+        buffer = std::move(rhs.buffer);
+        size = std::exchange(rhs.size, 0);
+        offset = std::exchange(rhs.offset, 0);
+      }
+      return *this;
+    }
+
+    [[nodiscard]] std::string_view view() const noexcept {
+      return size == 0 ? std::string_view{} : std::string_view(buffer.get() + offset, size);
+    }
+
+    std::unique_ptr<char, Free> buffer;
+    std::size_t size{0};
+    std::size_t offset;
+  };
+
+  static_assert(sizeof(RawCharsSuffix) <= sizeof(RawChars));
 
  public:
   constexpr HttpPayload() noexcept = default;
@@ -119,8 +153,14 @@ class HttpPayload {
   static constexpr char kSizeOnlySentinel{};
 
  private:
+  friend class HttpMessage;
+
+  // Takes ownership of `rawChars` while exposing [suffixOffset, rawChars.size()) as the payload.
+  HttpPayload(RawChars rawChars, std::size_t suffixOffset) noexcept
+      : _data(RawCharsSuffix(std::move(rawChars), suffixOffset)) {}
+
   std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>, std::vector<std::byte>,
-               CharBuffer, BytesBuffer, RawChars>
+               CharBuffer, BytesBuffer, RawChars, RawCharsSuffix>
       _data;
 };
 

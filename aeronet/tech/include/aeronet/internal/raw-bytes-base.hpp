@@ -215,6 +215,14 @@ class RawBytesBase {
   // Returns a const pointer to the buffer data.
   [[nodiscard]] const_pointer data() const noexcept { return _buf; }
 
+  // Releases the malloc-owned allocation. The caller must eventually pass it to std::free().
+  // Leaves this buffer empty with zero capacity.
+  [[nodiscard]] pointer release() noexcept {
+    _size = 0;
+    _capacity = 0;
+    return std::exchange(_buf, nullptr);
+  }
+
   // Returns a const iterator to the beginning of the buffer.
   [[nodiscard]] iterator begin() noexcept { return _buf; }
 

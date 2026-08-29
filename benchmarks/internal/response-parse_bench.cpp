@@ -1,8 +1,8 @@
-// Micro-benchmark for the HTTP/1.1 client ResponseParser chunked-body reassembly path.
+// Micro-benchmark for the HTTP/1.1 client ResponseParser body ownership paths.
 //
-// On completion, the parser transfers its chunked reassembly allocation into HttpResponse and installs an
-// equal-capacity empty replacement. This benchmark covers that steady-state rotation: the next keep-alive
-// exchange does not re-grow its scratch buffer, while the completed body avoids a second large copy.
+// On completion, the parser transfers a suitably-sized identity receive or chunked reassembly allocation into
+// HttpResponse and installs an equal-capacity empty replacement. These benchmarks cover that steady-state rotation:
+// the next keep-alive exchange does not re-grow its scratch buffer, while the completed body avoids a second copy.
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
@@ -38,6 +38,14 @@ std::string MakeChunkedResponse(std::size_t bodyBytes, std::size_t chunkBytes) {
   return raw;
 }
 
+std::string MakeIdentityResponse(std::size_t bodyBytes) {
+  std::string raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ";
+  raw.append(std::to_string(bodyBytes));
+  raw.append("\r\n\r\n");
+  raw.append(bodyBytes, 'x');
+  return raw;
+}
+
 // Build a bodyless response with repeated consumed headers, isolating status/header CRLF scanning without
 // response-header storage or body assembly dominating the measurement.
 std::string MakeHeadOnlyResponse(std::size_t headerCount, std::size_t valueBytes) {
@@ -67,6 +75,23 @@ void BM_ChunkedTransferBody(benchmark::State& state) {
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(response.size()));
 }
 BENCHMARK(BM_ChunkedTransferBody)->Args({256UL * 1024UL, 1024UL})->Args({64UL * 1024UL, 16UL});
+
+void BM_IdentityTransferBody(benchmark::State& state) {
+  const std::string response = MakeIdentityResponse(static_cast<std::size_t>(state.range(0)));
+  RawChars bodyBuf;
+  RawChars receiveBuffer(response.size());
+  for (auto _ : state) {
+    receiveBuffer.assign(response);
+    HttpResponse resp;
+    ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    auto status = parser.parse(receiveBuffer, false, resp, kMaxResponseBytes);
+    benchmark::DoNotOptimize(status);
+    benchmark::DoNotOptimize(resp.bodyInMemory().data());
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(response.size()));
+}
+BENCHMARK(BM_IdentityTransferBody)->Arg(256UL * 1024UL)->Arg((1UL << 20U) + 123U);
 
 void BM_ResponseHeadScan(benchmark::State& state) {
   std::string response =
