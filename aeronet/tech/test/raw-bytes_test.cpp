@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <list>
@@ -82,6 +83,23 @@ TYPED_TEST(RawBaseTest, MoveConstructor) {
   EXPECT_EQ(buf2.size(), data.size());
   // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   EXPECT_TRUE(std::equal(buf2View.data(), buf2View.data() + buf2View.size(), dataView.data()));
+}
+
+TYPED_TEST(RawBaseTest, ReleaseTransfersMallocAllocation) {
+  using RawT = TypeParam;
+  using Type = RawT::value_type;
+
+  RawT buf(16);
+  buf.append(reinterpret_cast<const Type*>("payload"), 7);
+  Type* const allocation = buf.data();
+  Type* const released = buf.release();
+
+  EXPECT_EQ(released, allocation);
+  EXPECT_EQ(std::memcmp(released, "payload", 7), 0);
+  EXPECT_EQ(buf.data(), nullptr);
+  EXPECT_TRUE(buf.empty());
+  EXPECT_EQ(buf.capacity(), 0U);
+  std::free(released);
 }
 
 TYPED_TEST(RawBaseTest, MoveAssignment) {
