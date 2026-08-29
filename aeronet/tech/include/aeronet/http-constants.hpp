@@ -64,6 +64,13 @@ inline constexpr LowerAsciiKey Trailer = "trailer";
 inline constexpr LowerAsciiKey Upgrade = "upgrade";
 inline constexpr LowerAsciiKey Expect = "expect";
 inline constexpr LowerAsciiKey Host = "host";
+inline constexpr LowerAsciiKey Authorization = "authorization";
+inline constexpr LowerAsciiKey Cookie = "cookie";
+inline constexpr LowerAsciiKey SetCookie = "set-cookie";
+inline constexpr LowerAsciiKey IfNoneMatch = "if-none-match";
+inline constexpr LowerAsciiKey IfRange = "if-range";
+inline constexpr LowerAsciiKey Expires = "expires";
+inline constexpr LowerAsciiKey ContentLocation = "content-location";
 
 inline constexpr LowerAsciiKey Server = "server";
 inline constexpr LowerAsciiKey Location = "location";

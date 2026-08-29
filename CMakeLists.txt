@@ -197,6 +197,7 @@ option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)
 option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
 option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ON)
 option(AERONET_ENABLE_HTTP_CLIENT "Enable the HTTP client (HttpClient)" ON)
+option(AERONET_ENABLE_RESPONSE_CACHE "Enable the per-route in-memory server response cache" ON)
 
 # JWT (JWS-profile) support reuses the OpenSSL crypto already linked for TLS and the glaze JSON
 # parser; it adds no new dependency. It is therefore not a standalone opt-in: it is available by
