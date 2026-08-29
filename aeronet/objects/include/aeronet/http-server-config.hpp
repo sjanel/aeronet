@@ -190,9 +190,17 @@ struct HttpServerConfig {
   // Outbound buffering & backpressure management
   // =============================================
   // Upper bound (bytes) for data queued but not yet written to the client socket for a single connection.
-  // Includes headers + body (streaming or aggregated). When exceeded further writes are rejected and the
-  // connection marked for closure after flushing what is already queued. Default: 4 MiB per connection.
+  // Includes HTTP/1 headers + body and HTTP/2 queued + flow-control-deferred payloads. When exceeded further
+  // writes are rejected and HTTP/1 connections are marked for closure after flushing what is already queued.
+  // HTTP/2 pauses frame processing while its wire-output queue is at the limit and rejects new response work when
+  // retained output has exhausted the connection budget. Default: 4 MiB per connection.
   std::size_t maxOutboundBufferBytes{4UL << 20U};  // 4 MiB
+
+  // Upper bound (bytes) for response buffers retained until Linux MSG_ZEROCOPY completion notifications arrive.
+  // Once retaining the next payload would exceed this limit, zerocopy is disabled for that connection and later
+  // writes use the copied send path. Already-submitted buffers remain alive until their completions arrive.
+  // Default: 4 MiB per connection.
+  uint32_t maxZerocopyPendingBytes{4U << 20U};  // 4 MiB
 
   // ===========================================
   // Event loop polling / responsiveness tuning
@@ -389,6 +397,9 @@ struct HttpServerConfig {
   // Adjust per-connection outbound queue cap
   HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
 
+  // Adjust per-connection MSG_ZEROCOPY retained-payload cap.
+  HttpServerConfig& withMaxZerocopyPendingBytes(uint32_t maxPending);
+
   // Adjust min payload size for zerocopy responses (when enabled).
   HttpServerConfig& withZerocopyMinBytes(std::uint32_t minBytes);
 
@@ -557,6 +568,7 @@ struct HttpServerConfig {
 #include <string>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+#include "aeronet/glaze-vector-sv-adapter.hpp"
 
 template <>
 struct glz::meta<aeronet::HttpServerConfig::TraceMethodPolicy> {
@@ -579,9 +591,10 @@ struct glz::meta<aeronet::HttpServerConfig> {
       &T::maxRequestsPerConnection, "maxCachedConnections", &T::maxCachedConnections, "maxAcceptBatchSize",
       &T::maxAcceptBatchSize, "keepAliveTimeout", &T::keepAliveTimeout, "maxHeaderBytes", &T::maxHeaderBytes,
       "maxBodyBytes", &T::maxBodyBytes, "minCapturedBodySize", &T::minCapturedBodySize, "maxOutboundBufferBytes",
-      &T::maxOutboundBufferBytes, "pollInterval", &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor,
-      "pollIntervalMaxFactor", &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout",
-      &T::bodyReadTimeout, "tls", &T::tls, "httpsRedirect", &T::httpsRedirect,
+      &T::maxOutboundBufferBytes, "maxZerocopyPendingBytes", &T::maxZerocopyPendingBytes, "pollInterval",
+      &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor, "pollIntervalMaxFactor",
+      &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout", &T::bodyReadTimeout,
+      "tls", &T::tls, "httpsRedirect", &T::httpsRedirect,
 #ifdef AERONET_ENABLE_HTTP2
       "http2", &T::http2,
 #endif
@@ -591,13 +604,7 @@ struct glz::meta<aeronet::HttpServerConfig> {
       custom<[](T& self, const aeronet::vector<std::string>& hosts) {
         self.withConnectAllowlist(hosts.begin(), hosts.end());
       },
-             [](const T& self) {
-               aeronet::vector<std::string_view> result;
-               for (auto sv : self.connectAllowlist()) {
-                 result.push_back(sv);
-               }
-               return result;
-             }>);
+             aeronet::glz_detail::ToStringViewVector<&T::connectAllowlist>>);
 };
 
 #endif

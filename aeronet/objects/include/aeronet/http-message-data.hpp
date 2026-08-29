@@ -31,6 +31,9 @@ class HttpMessageData {
 
   [[nodiscard]] std::size_t remainingSize() const noexcept { return _buf.size() + _capturedBody.size() - _offset; }
 
+  /// Logical bytes whose backing storage must stay alive if any part was submitted with MSG_ZEROCOPY.
+  [[nodiscard]] std::size_t retainedSize() const noexcept { return _buf.size() + _capturedBody.size(); }
+
   [[nodiscard]] bool empty() const noexcept { return remainingSize() == 0; }
 
   [[nodiscard]] const File& file() const noexcept { return _capturedBody.getIfFilePayload()->file; }

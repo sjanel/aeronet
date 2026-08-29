@@ -124,6 +124,7 @@ class TelemetryConfig {
 #include <string>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+#include "aeronet/glaze-vector-sv-adapter.hpp"
 
 template <>
 struct glz::meta<aeronet::TelemetryConfig> {
@@ -149,13 +150,7 @@ struct glz::meta<aeronet::TelemetryConfig> {
                  self.addDogStatsdTag(tag);
                }
              },
-                    [](const T& self) {
-                      ::aeronet::vector<std::string_view> result;
-                      for (auto sv : self.dogstatsdTags()) {
-                        result.push_back(sv);
-                      }
-                      return result;
-                    }>,
+                    aeronet::glz_detail::ToStringViewVector<&T::dogstatsdTags>>,
              // HTTP headers as array of "name:value" strings
              "httpHeaders",
              custom<[](T& self, const ::aeronet::vector<std::string>& headers) {
@@ -165,13 +160,7 @@ struct glz::meta<aeronet::TelemetryConfig> {
                  }
                }
              },
-                    [](const T& self) {
-                      ::aeronet::vector<std::string_view> result;
-                      for (auto sv : self.httpHeadersRange()) {
-                        result.push_back(sv);
-                      }
-                      return result;
-                    }>,
+                    aeronet::glz_detail::ToStringViewVector<&T::httpHeadersRange>>,
              // Histogram buckets as JSON object {"metric_name": [1.0, 5.0, 10.0]}
              "histogramBuckets",
              custom<[](T& self, std::map<std::string, ::aeronet::vector<double>> buckets) {

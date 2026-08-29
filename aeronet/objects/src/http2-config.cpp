@@ -38,6 +38,10 @@ void Http2Config::validate() const {
   if (maxPriorityTreeDepth == 0) {
     throw std::invalid_argument("Http2Config: maxPriorityTreeDepth must be greater than 0");
   }
+
+  if (maxStreamPendingBytes == 0) {
+    throw std::invalid_argument("Http2Config: maxStreamPendingBytes must be greater than 0");
+  }
 }
 
 }  // namespace aeronet

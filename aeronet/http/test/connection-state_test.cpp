@@ -566,7 +566,48 @@ class FakeTransport final : public TransportBackend<FakeTransport> {
   bool _handshakeDone{true};
   std::string _lastWrite;
 };
+
+class DelayedZerocopyTransport final : public TransportBackend<DelayedZerocopyTransport> {
+ public:
+  static TransportResult read(char*, std::size_t) { return {0U, TransportHint::ReadReady}; }
+  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _enabled; }
+  [[nodiscard]] bool hasZerocopyPending() const noexcept { return !_completed; }
+  std::size_t pollZerocopyCompletions() noexcept { return _completed ? 1U : 0U; }
+  void disableZerocopy() noexcept { _enabled = false; }
+  void complete() noexcept { _completed = true; }
+
+ private:
+  bool _enabled{true};
+  bool _completed{false};
+};
 }  // namespace
+
+TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBackToCopy) {
+  ConnectionState state;
+  auto delayed = std::make_unique<DelayedZerocopyTransport>();
+  DelayedZerocopyTransport* raw = delayed.get();
+  state.transport = std::move(delayed);
+
+  static constexpr uint32_t kLimit = 1024U;
+  ASSERT_TRUE(state.prepareZerocopyWrite(600, kLimit));
+  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(600, 'a')), true);
+  ASSERT_TRUE(state.prepareZerocopyWrite(400, kLimit));
+  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(400, 'b')), true);
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+  EXPECT_FALSE(state.prepareZerocopyWrite(25, kLimit));
+  EXPECT_FALSE(raw->isZerocopyEnabled());
+  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(25, 'c')), false);
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+  raw->complete();
+  state.releaseCompletedZerocopyBuffers();
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
+  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+}
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {
   ConnectionState state;
