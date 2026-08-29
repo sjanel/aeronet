@@ -15,6 +15,9 @@
 namespace aeronet {
 
 class CorsPolicy;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+class ResponseCache;
+#endif
 
 class OwnedCoroutineHandle {
  public:
@@ -83,6 +86,9 @@ struct AsyncHandlerState {
   // Per-route maximum body size override (MAX = use global limit only).
   std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
   const CorsPolicy* corsPolicy{nullptr};
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  ResponseCache* responseCache{nullptr};
+#endif
   const void* responseMiddleware{nullptr};
   std::optional<HttpResponse> pendingResponse;
   // Callback to post async work completion to the server's event loop.

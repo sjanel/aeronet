@@ -760,6 +760,8 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, Stre
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
                                            routingResult.preMiddlewareRange(), *_pTelemetryContext, streaming, {});
   if (globalResult.has_value()) {
+    ApplyResponseMiddleware(request, *globalResult, routingResult.postMiddlewareRange(),
+                            _pRouter->globalResponseMiddleware(), *_pTelemetryContext, streaming, {});
     const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
     if (pCorsPolicy != nullptr) {
       (void)pCorsPolicy->applyToResponse(request, *globalResult);
@@ -860,7 +862,47 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      if (startAsyncHandler(it, *asyncHandler, routingResult.corsPolicy(), routingResult.postMiddlewareRange())) {
+      const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
+      if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+        HttpResponse corsResponse = request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy");
+        ApplyResponseMiddleware(request, corsResponse, routingResult.postMiddlewareRange(),
+                                _pRouter->globalResponseMiddleware(), *_pTelemetryContext, false, {});
+        (void)pCorsPolicy->applyToResponse(request, corsResponse);
+        request.prefinalizeHttpResponse(corsResponse, *_pTelemetryContext);
+        corsResponse.finalizeHeadersAndBody();
+        err = sendResponse(streamId, std::move(corsResponse), isHead);
+        onRequestCompleted(request, http::StatusCodeForbidden);
+        releaseStreamAfterResponse(it);
+        return;
+      }
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+      ResponseCache* pResponseCache = routingResult.responseCache();
+      if (pResponseCache != nullptr) {
+        if (auto cachedResponse = pResponseCache->lookup(request)) {
+          ApplyResponseMiddleware(request, *cachedResponse, routingResult.postMiddlewareRange(),
+                                  _pRouter->globalResponseMiddleware(), *_pTelemetryContext, false, {});
+          if (pCorsPolicy != nullptr) {
+            (void)pCorsPolicy->applyToResponse(request, *cachedResponse);
+          }
+          request.prefinalizeHttpResponse(*cachedResponse, *_pTelemetryContext);
+          pResponseCache->applyConditional(request, *cachedResponse, &_pServerConfig->globalHeaders);
+          cachedResponse->finalizeHeadersAndBody();
+          respStatusCode = cachedResponse->status();
+          err = sendResponse(streamId, std::move(*cachedResponse), isHead);
+          onRequestCompleted(request, respStatusCode);
+          releaseStreamAfterResponse(it);
+          return;
+        }
+      }
+#endif
+
+      if (startAsyncHandler(it, *asyncHandler, pCorsPolicy, routingResult.postMiddlewareRange()
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                                                ,
+                            pResponseCache
+#endif
+                            )) {
         // Async handler is running; response will be sent later when it completes.
         return;
       }
@@ -881,9 +923,24 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
       return;
     }
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    ResponseCacheDispatch cacheDispatch;
+    HttpResponse resp = reply(request, routingResult, cacheDispatch);
+#else
     HttpResponse resp = reply(request, routingResult);
+#endif
 
     request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    if (cacheDispatch.cache != nullptr) {
+      if (cacheDispatch.hit) {
+        cacheDispatch.cache->applyConditional(request, resp, &_pServerConfig->globalHeaders);
+      } else if (cacheDispatch.candidate) {
+        cacheDispatch.cache->commit(request, std::move(cacheDispatch.candidate), resp, &_pServerConfig->globalHeaders);
+      }
+    }
+#endif
 
     resp.finalizeHeadersAndBody();
 
@@ -909,9 +966,23 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   releaseStreamAfterResponse(it);
 }
 
-HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult) {
+HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                         ,
+                                         ResponseCacheDispatch& cacheDispatch
+#endif
+) {
   // Determine active CORS policy for this route (if any)
   const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
+
+  // Apply response middleware and CORS exactly once to handler, cache-hit, and short-circuit responses.
+  auto finalizeResponse = [&, responseMiddlewareRange = routingResult.postMiddlewareRange()](HttpResponse& resp) {
+    ApplyResponseMiddleware(request, resp, responseMiddlewareRange, _pRouter->globalResponseMiddleware(),
+                            *_pTelemetryContext, false, {});
+    if (pCorsPolicy != nullptr) {
+      (void)pCorsPolicy->applyToResponse(request, resp);
+    }
+  };
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   // CONNECT is handled in dispatchRequest() before reply() is called
@@ -924,9 +995,7 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router:
     // So we pass empty requestData, which will result in 405 Method Not Allowed
     auto result = ProcessSpecialMethods(request, *_pRouter, config, pCorsPolicy, {});
     if (result) {
-      if (pCorsPolicy != nullptr) {
-        (void)pCorsPolicy->applyToResponse(request, *result);
-      }
+      finalizeResponse(*result);
       return std::move(*result);
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
@@ -939,26 +1008,36 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router:
   auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
                                            routingResult.preMiddlewareRange(), *_pTelemetryContext, false, {});
   if (globalResult.has_value()) {
-    if (pCorsPolicy != nullptr) {
-      (void)pCorsPolicy->applyToResponse(request, *globalResult);
-    }
+    finalizeResponse(*globalResult);
     return std::move(*globalResult);
   }
 
-  // Helper to apply response middleware and CORS
-  auto finalizeResponse = [&, responseMiddlewareRange = routingResult.postMiddlewareRange()](HttpResponse& resp) {
-    ApplyResponseMiddleware(request, resp, responseMiddlewareRange, _pRouter->globalResponseMiddleware(),
-                            *_pTelemetryContext, false, {});
-    if (pCorsPolicy != nullptr) {
-      (void)pCorsPolicy->applyToResponse(request, resp);
-    }
-  };
-
   request.finalizeBeforeHandlerCall(routingResult.pathParams());
+
+  if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+    HttpResponse response = request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy");
+    finalizeResponse(response);
+    return response;
+  }
 
   // Handle the request based on handler type
   if (const auto* reqHandler = routingResult.requestHandler(); reqHandler != nullptr) {
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    cacheDispatch.cache = routingResult.responseCache();
+    if (cacheDispatch.cache != nullptr) {
+      if (auto cachedResponse = cacheDispatch.cache->lookup(request)) {
+        cacheDispatch.hit = true;
+        finalizeResponse(*cachedResponse);
+        return std::move(*cachedResponse);
+      }
+    }
+#endif
     HttpResponse resp = (*reqHandler)(request);
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    if (cacheDispatch.cache != nullptr) {
+      cacheDispatch.candidate = cacheDispatch.cache->capture(request, resp);
+    }
+#endif
     finalizeResponse(resp);
     return resp;
   }
@@ -1193,7 +1272,12 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
 bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler,
                                              const CorsPolicy* pCorsPolicy,
-                                             std::span<const ResponseMiddleware> responseMiddleware) {
+                                             std::span<const ResponseMiddleware> responseMiddleware
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                             ,
+                                             ResponseCache* pResponseCache
+#endif
+) {
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
   const bool isHead = (state.request.request.method() == http::Method::HEAD);
@@ -1204,6 +1288,9 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   auto& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
   pendingRef.streamRequest = std::move(state.request);
   pendingRef.pCorsPolicy = pCorsPolicy;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  pendingRef.pResponseCache = pResponseCache;
+#endif
   pendingRef.pResponseMiddleware = responseMiddleware.data();
   pendingRef.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   pendingRef.isHead = isHead;
@@ -1290,6 +1377,11 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   try {
     HttpResponse resp = pAsync->task.runSynchronously();
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    auto cacheCandidate = pAsync->pResponseCache != nullptr ? pAsync->pResponseCache->capture(asyncRequest, resp)
+                                                            : ResponseCache::StoreCandidate{};
+#endif
+
     auto middlewareSpan =
         std::span<const ResponseMiddleware>(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
     ApplyResponseMiddleware(asyncRequest, resp, middlewareSpan, _pRouter->globalResponseMiddleware(),
@@ -1299,6 +1391,11 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     }
 
     asyncRequest.prefinalizeHttpResponse(resp, *_pTelemetryContext);
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    if (pAsync->pResponseCache != nullptr && cacheCandidate) {
+      pAsync->pResponseCache->commit(asyncRequest, std::move(cacheCandidate), resp, &_pServerConfig->globalHeaders);
+    }
+#endif
     resp.finalizeHeadersAndBody();
 
     respStatusCode = resp.status();

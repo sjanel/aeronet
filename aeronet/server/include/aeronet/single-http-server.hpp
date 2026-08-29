@@ -46,6 +46,10 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+#include "aeronet/response-cache.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
@@ -483,7 +487,13 @@ class SingleHttpServer {
   bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
   void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
-                                       const CorsPolicy* pCorsPolicy);
+                                       const CorsPolicy* pCorsPolicy
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                       ,
+                                       ResponseCache* pResponseCache = nullptr,
+                                       ResponseCache::StoreCandidate cacheCandidate = {}, bool responseCacheHit = false
+#endif
+  );
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
@@ -592,7 +602,12 @@ class SingleHttpServer {
 
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
                             bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
-                            std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
+                            std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                            ,
+                            ResponseCache* pResponseCache
+#endif
+  );
   void resumeAsyncHandler(ConnectionIt cnxIt);
   void handleAsyncBodyProgress(ConnectionIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionIt cnxIt);

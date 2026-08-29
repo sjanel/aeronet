@@ -214,6 +214,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     RequestTask<HttpResponse> task;
     StreamRequest streamRequest;  // Owns the HttpRequestView and header storage
     const CorsPolicy* pCorsPolicy{};
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    ResponseCache* pResponseCache{};
+#endif
     const ResponseMiddleware* pResponseMiddleware{};
     uint32_t responseMiddlewareCount{0};
     bool isHead{false};
@@ -292,7 +295,20 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequestView (already populated with HTTP/2 fields) and dispatches
   // to the appropriate handler (sync, async, or streaming).
-  HttpResponse reply(HttpRequestView& request, const Router::RoutingResult& routingResult);
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  struct ResponseCacheDispatch {
+    ResponseCache* cache{};
+    ResponseCache::StoreCandidate candidate;
+    bool hit{};
+  };
+#endif
+
+  HttpResponse reply(HttpRequestView& request, const Router::RoutingResult& routingResult
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                     ,
+                     ResponseCacheDispatch& cacheDispatch
+#endif
+  );
 
   /// Emit metrics and end trace span for a completed request.
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
@@ -305,7 +321,12 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// asynchronously (response will be sent later), false if it completed synchronously
   /// (response already sent).
   bool startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler, const CorsPolicy* pCorsPolicy,
-                         std::span<const ResponseMiddleware> responseMiddleware);
+                         std::span<const ResponseMiddleware> responseMiddleware
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                         ,
+                         ResponseCache* pResponseCache
+#endif
+  );
 
   /// Resume a pending async task's coroutine after suspension.
   void resumeAsyncTask(uint32_t streamId);

@@ -52,10 +52,8 @@ namespace aeronet {
 namespace http {
 
 namespace {
-constexpr LowerAsciiKey IfRange = "if-range";
 constexpr LowerAsciiKey IfModifiedSince = "if-modified-since";
 constexpr LowerAsciiKey IfUnmodifiedSince = "if-unmodified-since";
-constexpr LowerAsciiKey IfNoneMatch = "if-none-match";
 constexpr LowerAsciiKey IfMatch = "if-match";
 }  // namespace
 

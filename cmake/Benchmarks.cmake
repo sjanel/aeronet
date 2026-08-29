@@ -118,6 +118,7 @@ set(AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK ${AERONET_BENCH_ROOT}/internal/
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
 set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
 set(AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH ${AERONET_BENCH_ROOT}/internal/transport-dispatch_bench.cpp)
+set(AERONET_BENCH_INTERNAL_RESPONSE_CACHE ${AERONET_BENCH_ROOT}/internal/response-cache_bench.cpp)
 
 include(CheckIPOSupported)
 
@@ -177,6 +178,11 @@ set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "be
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-rate-limit ${AERONET_BENCH_INTERNAL_RATE_LIMIT} LIBRARIES aeronet_http)
 set_target_properties(aeronet-bench-internal-rate-limit PROPERTIES FOLDER "benchmarks/internal")
+
+if(AERONET_ENABLE_RESPONSE_CACHE AND AERONET_ENABLE_HTTP_CLIENT)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-response-cache ${AERONET_BENCH_INTERNAL_RESPONSE_CACHE})
+  set_target_properties(aeronet-bench-internal-response-cache PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
 set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")

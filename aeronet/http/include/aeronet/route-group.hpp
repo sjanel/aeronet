@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string_view>
 
 #include "aeronet/cors-policy.hpp"
@@ -11,6 +12,10 @@
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+#include "aeronet/response-cache.hpp"
+#endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
@@ -38,6 +43,10 @@ class Router;
 class RouteGroup {
  public:
   RouteGroup(Router& router, std::string_view prefix);
+  RouteGroup(const RouteGroup& rhs);
+  RouteGroup& operator=(const RouteGroup& rhs);
+  RouteGroup(RouteGroup&&) noexcept = default;
+  RouteGroup& operator=(RouteGroup&&) noexcept = default;
 
 #ifdef AERONET_ENABLE_HTTP2
   /// Set a shared HTTP/2 enable mode for all routes in this group.
@@ -61,6 +70,13 @@ class RouteGroup {
 
   /// Add a shared response middleware applied after each route handler in this group.
   RouteGroup& addResponseMiddleware(ResponseMiddleware middleware);
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  /// Copy this cache configuration into every route subsequently registered through the group.
+  RouteGroup& withResponseCache(const ResponseCache& responseCache);
+
+  RouteGroup& withResponseCache(ResponseCache&& responseCache);
+#endif
 
   /// Register a request handler at prefix + subpath.
   PathHandlerEntry& setPath(http::MethodBmp methods, std::string_view subpath, RequestHandler handler);
@@ -105,6 +121,9 @@ class RouteGroup {
   CorsPolicy _corsPolicy;
   vector<RequestMiddleware> _preMiddleware;
   vector<ResponseMiddleware> _postMiddleware;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  std::unique_ptr<ResponseCache> _responseCache;
+#endif
 };
 
 }  // namespace aeronet

@@ -56,4 +56,10 @@ constexpr bool asyncHandlersEnabled() { return true; }
 constexpr bool asyncHandlersEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+constexpr bool responseCacheEnabled() { return true; }
+#else
+constexpr bool responseCacheEnabled() { return false; }
+#endif
+
 }  // namespace aeronet

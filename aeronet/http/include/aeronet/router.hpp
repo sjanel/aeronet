@@ -212,6 +212,12 @@ class Router {
     // Access the active CORS policy, if any.
     [[nodiscard]] const CorsPolicy* corsPolicy() const noexcept { return _pCorsPolicy; }
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    [[nodiscard]] ResponseCache* responseCache() const noexcept {
+      return _pPathEntry == nullptr ? nullptr : _pPathEntry->responseCache();
+    }
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
     // Access the matched route's WebSocket endpoint, if any.
     [[nodiscard]] const WebSocketEndpoint* webSocketEndpoint() const noexcept {

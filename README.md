@@ -224,6 +224,7 @@ The landing page above plus the minimal examples are usually enough to evaluate 
 
 #### Middleware & content processing
 
+- [Response Caching](docs/FEATURES.md#response-caching)
 - [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware)
 - [CORS Support](docs/FEATURES.md#cors-support)
 - [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
@@ -725,12 +726,35 @@ This central rule lives in a single helper (`http::IsReservedResponseHeader`).
 
 ## Middleware & Cross-Cutting Features
 
+### Response Caching
+
+Build with `-DAERONET_ENABLE_RESPONSE_CACHE=ON` (the default), construct a bounded cache, and opt in only the
+routes whose handlers are safe to reuse:
+
+```cpp
+ResponseCache cache(ResponseCacheConfig{
+    .maxEntries = 2048,
+    .maxMemoryBytes = 128U * 1024U * 1024U,
+});
+
+Router router;
+
+router.setPath(http::Method::GET, "/reports/summary", [](const HttpRequestView& request) {
+  auto response = request.makeResponse();
+  // Expensive computation...
+  response.headerAddLine(http::CacheControl, "public, max-age=30");
+  response.headerAddLine(http::ETag, "\"report-v7\"");
+  return response;
+}).cache(cache);
+```
+
+Each route owns a synchronization-free LRU keyed by method, scheme, authority, decoded path/query, and the request fields named by the response's `Vary` header. It honors `s-maxage`/`max-age`, `no-store`, `no-cache`, and `private`, and answers matching `If-None-Match` requests with `304 Not Modified`. Request middleware always runs; cached handler prototypes still pass through response middleware, CORS, and compression on every hit. Buffered `200` GET/HEAD responses are eligible. Streaming, file, trailer, range, authenticated/cookie-bearing, and `Set-Cookie` responses are conservatively bypassed by default.
+
+`cache` is a configuration prototype: attaching it copies an empty cache into the route, and copying a router creates another independent empty cache for its `SingleHttpServer` thread. `RouteGroup::withResponseCache()` applies the same configuration to each subsequently registered route. Runtime `stats()`, `clear()`, and `invalidatePath()` calls must be made on the route-owned cache (for a running server, from a router-update callback).
+
 ### Rate Limiting Middleware
 
-`aeronet` provides a middleware-first rate limiting API that can be attached globally, per-route, or through route
-groups. Rejected requests receive `429 Too Many Requests` and a `Retry-After` header. It ships with an in-memory
-token bucket by default; a client-library-agnostic Redis sliding-window adapter (behind `-DAERONET_ENABLE_REDIS=ON`)
-is available for a distributed limit shared across multiple aeronet instances.
+`aeronet` provides a middleware-first rate limiting API that can be attached globally, per-route, or through route groups. Rejected requests receive `429 Too Many Requests` and a `Retry-After` header. It ships with an in-memory token bucket by default; a client-library-agnostic Redis sliding-window adapter (behind `-DAERONET_ENABLE_REDIS=ON`) is available for a distributed limit shared across multiple aeronet instances.
 
 ```cpp
 Router router;

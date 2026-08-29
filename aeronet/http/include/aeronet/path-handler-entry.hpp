@@ -5,9 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
@@ -15,9 +17,11 @@
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/vector.hpp"
 
-#ifdef AERONET_ENABLE_WEBSOCKET
-#include <memory>
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+#include "aeronet/response-cache.hpp"
+#endif
 
+#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
 #endif
 
@@ -77,6 +81,27 @@ class PathHandlerEntry {
   // Register middleware executed after the route handler produces a response. The middleware
   // can amend headers or body before the response is finalized.
   PathHandlerEntry& after(ResponseMiddleware middleware);
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  /// Enable response caching for this route by copying an empty, independently owned cache with
+  /// the supplied configuration. Router copies repeat that operation for each server thread.
+  PathHandlerEntry& cache(const ResponseCache& responseCache) {
+    _responseCache = std::make_unique<ResponseCache>(responseCache);
+    return *this;
+  }
+
+  PathHandlerEntry& cache(ResponseCache&& responseCache) {
+    _responseCache = std::make_unique<ResponseCache>(std::move(responseCache));
+    return *this;
+  }
+
+  /// Descriptive alias for cache().
+  PathHandlerEntry& responseCache(const ResponseCache& responseCache) { return cache(responseCache); }
+
+  PathHandlerEntry& responseCache(ResponseCache&& responseCache) { return cache(std::move(responseCache)); }
+
+  [[nodiscard]] ResponseCache* responseCache() const noexcept { return _responseCache.get(); }
+#endif
 
 #ifdef AERONET_ENABLE_HTTP2
   /// Configure whether HTTP/2 is allowed for this route.
@@ -219,6 +244,9 @@ class PathHandlerEntry {
   CorsPolicy _corsPolicy;
   vector<RequestMiddleware> _preMiddleware;
   vector<ResponseMiddleware> _postMiddleware;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  std::unique_ptr<ResponseCache> _responseCache;
+#endif
   // Per-path configuration for HTTP/2 and other options.
   PathEntryConfig _pathConfig;
 };

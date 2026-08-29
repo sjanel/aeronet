@@ -147,7 +147,7 @@ Growing in popularity as a lighter alternative to WebSocket for server → clien
 
 #### Response caching middleware (`AERONET_ENABLE_RESPONSE_CACHE`)
 
-In-memory LRU cache keyed by method + path + `Vary` headers. Respects `Cache-Control` directives (`max-age`, `no-store`, `no-cache`, `private`). Configurable max entries and memory budget. Per-route opt-in via middleware registration. ETag / `If-None-Match` validation for cached entries. Useful for APIs with expensive computation behind cacheable endpoints.
+Status: **Delivered**. A synchronization-free, per-server in-memory LRU is available per route or route group, keyed by method, scheme/authority, path/query, and `Vary` request fields. It enforces entry, byte, and variant budgets; honors `s-maxage`/`max-age`, `no-store`, `no-cache`, and `private`; validates cached ETags through weak `If-None-Match`; and uses the same middleware/CORS/compression lifecycle for HTTP/1.1, HTTP/2, and async handlers.
 
 #### Content negotiation (Accept header)
 

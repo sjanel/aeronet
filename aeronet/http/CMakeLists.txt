@@ -9,6 +9,10 @@ if(NOT AERONET_ENABLE_GLAZE)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/config-loader.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_RESPONSE_CACHE)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/response-cache.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_http
     ${AERONET_HTTP_SRC_LIST}
 )

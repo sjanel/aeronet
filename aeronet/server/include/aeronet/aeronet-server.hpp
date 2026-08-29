@@ -43,6 +43,9 @@
 #include "aeronet/signal-handler.hpp"         // IWYU pragma: export
 #include "aeronet/static-file-config.hpp"     // IWYU pragma: export
 #include "aeronet/tls-config.hpp"             // IWYU pragma: export
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+#include "aeronet/response-cache.hpp"  // IWYU pragma: export
+#endif
 
 // HTTP primitives
 #include "aeronet/http-json.hpp"             // IWYU pragma: export (opt-in JSON/YAML body helpers; no-op without Glaze)
