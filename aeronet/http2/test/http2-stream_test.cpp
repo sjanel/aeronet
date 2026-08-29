@@ -27,6 +27,13 @@ TEST(Http2Stream, InitialState) {
   EXPECT_FALSE(stream.isExclusive());
 }
 
+TEST(Http2Stream, IndependentInitialFlowControlWindows) {
+  Http2Stream stream(1, 1U << 20U, 32768U);
+
+  EXPECT_EQ(stream.sendWindow(), 1 << 20);
+  EXPECT_EQ(stream.recvWindow(), 32768);
+}
+
 // ============================
 // State Transition: Idle -> Open
 // ============================

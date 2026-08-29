@@ -378,6 +378,42 @@ TEST(Http2Connection, OnOutputWritten) {
   EXPECT_FALSE(conn.hasPendingOutput());
 }
 
+TEST(Http2Connection, SmallResponsesShareOneOutputFragment) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  static constexpr std::array<std::byte, 4> kBody{std::byte{'p'}, std::byte{'o'}, std::byte{'n'}, std::byte{'g'}};
+  for (const uint32_t streamId : {1U, 3U}) {
+    ASSERT_EQ(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+    RawBytes owner(kBody.size());
+    owner.unchecked_append(kBody);
+    ASSERT_EQ(connection.sendData(streamId, std::move(owner), true), ErrorCode::NoError);
+  }
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 1U);
+
+  const auto wire = std::as_bytes(std::span(fragments.front()));
+  std::size_t pos = 0;
+  for (const uint32_t streamId : {1U, 3U}) {
+    const FrameHeader headers = ParseFrameHeader(wire.subspan(pos));
+    EXPECT_EQ(headers.type, FrameType::Headers);
+    EXPECT_EQ(headers.streamId, streamId);
+    pos += FrameHeader::kSize + headers.length;
+
+    const FrameHeader data = ParseFrameHeader(wire.subspan(pos));
+    EXPECT_EQ(data.type, FrameType::Data);
+    EXPECT_EQ(data.streamId, streamId);
+    EXPECT_EQ(data.flags, FrameFlags::DataEndStream);
+    ASSERT_EQ(data.length, kBody.size());
+    EXPECT_TRUE(std::ranges::equal(wire.subspan(pos + FrameHeader::kSize, data.length), kBody));
+    pos += FrameHeader::kSize + data.length;
+  }
+  EXPECT_EQ(pos, wire.size());
+}
+
 TEST(Http2Connection, OwnedDataUsesGatherFragmentsAcrossPartialWrites) {
   Http2Config config;
   Http2Connection connection(config, true);
@@ -438,9 +474,10 @@ TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {
   (void)DrainPendingOutput(connection);
 
   constexpr std::size_t kBlockCount = 40;
+  constexpr std::size_t kPayloadSize = 512;
   for (std::size_t blockIndex = 0; blockIndex < kBlockCount; ++blockIndex) {
-    RawBytes owner(1);
-    owner.setSize(1);
+    RawBytes owner(kPayloadSize);
+    owner.setSize(kPayloadSize);
     owner[0] = static_cast<std::byte>(blockIndex);
     ASSERT_EQ(connection.sendData(1, std::move(owner), false), ErrorCode::NoError);
   }
@@ -453,7 +490,7 @@ TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {
   for (const std::string_view fragment : fragments) {
     pendingSize += fragment.size();
   }
-  EXPECT_EQ(pendingSize, kBlockCount * (FrameHeader::kSize + 1U));
+  EXPECT_EQ(pendingSize, kBlockCount * (FrameHeader::kSize + kPayloadSize));
 
   connection.onOutputWritten(pendingSize);
   EXPECT_FALSE(connection.hasPendingOutput());
@@ -488,6 +525,34 @@ TEST(Http2Connection, OversizedHeaderBlockGathersContinuationWithoutRecopy) {
   ASSERT_TRUE(decoded.decodeSuccess);
   EXPECT_TRUE(std::ranges::any_of(
       decoded.headers, [&](const auto& header) { return header.first == "x-large" && header.second == largeValue; }));
+}
+
+TEST(Http2Connection, OversizedHeaderBlockPreservesEarlierBatchedFrames) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+
+  const std::string largeValue(30000, 'Q');
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine("x-large", largeValue));
+  ASSERT_EQ(connection.sendHeaders(3, http::StatusCodeOK, HeadersView(headers), true), ErrorCode::NoError);
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_GE(fragments.size(), 5U);
+
+  const FrameHeader earlierHeaders = ParseFrameHeader(std::as_bytes(std::span(fragments[0])));
+  const FrameHeader largeHeaders = ParseFrameHeader(std::as_bytes(std::span(fragments[1])));
+  const FrameHeader continuation = ParseFrameHeader(std::as_bytes(std::span(fragments[3])));
+  EXPECT_EQ(earlierHeaders.type, FrameType::Headers);
+  EXPECT_EQ(earlierHeaders.streamId, 1U);
+  EXPECT_EQ(largeHeaders.type, FrameType::Headers);
+  EXPECT_EQ(largeHeaders.streamId, 3U);
+  EXPECT_EQ(continuation.type, FrameType::Continuation);
+  EXPECT_EQ(continuation.streamId, 3U);
+  EXPECT_EQ(fragments[2].data() + fragments[2].size(), fragments[4].data());
 }
 TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   Http2Config config;
@@ -1894,6 +1959,54 @@ TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
             FrameParseResult::Ok);
   EXPECT_EQ(update.windowSizeIncrement, 50000U);
   EXPECT_EQ(conn.connectionRecvWindow(), 100000);
+}
+
+TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
+  Http2Config config;
+  config.connectionWindowSize = 1U << 20U;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  conn.setOnData([](uint32_t, std::span<const std::byte>, bool) {});
+
+  static constexpr uint32_t kPeerInitialWindow = 1U << 30U;
+  RawBytes settings;
+  const std::array settingsEntries{
+      SettingsEntry{SettingsParameter::InitialWindowSize, kPeerInitialWindow},
+  };
+  WriteSettingsFrame(settings, settingsEntries);
+  FeedConnection(conn, std::span<const std::byte>(settings.data(), settings.size()));
+  (void)DrainPendingOutput(conn);
+  ASSERT_EQ(conn.state(), ConnectionState::Open);
+
+  HpackEncoder encoder(config.headerTableSize);
+  RawBytes headerBlock;
+  encoder.encode(headerBlock, ":method", "POST");
+  encoder.encode(headerBlock, ":scheme", "https");
+  encoder.encode(headerBlock, ":authority", "example.com");
+  encoder.encode(headerBlock, ":path", "/upload");
+
+  RawBytes headers;
+  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 1,
+             static_cast<uint32_t>(headerBlock.size()));
+  headers.unchecked_append(std::span<const std::byte>(headerBlock.data(), headerBlock.size()));
+  FeedConnection(conn, std::span<const std::byte>(headers.data(), headers.size()));
+
+  const Http2Stream* stream = conn.getStream(1);
+  ASSERT_NE(stream, nullptr);
+  EXPECT_EQ(stream->sendWindow(), static_cast<int32_t>(kPeerInitialWindow));
+  EXPECT_EQ(stream->recvWindow(), static_cast<int32_t>(config.initialWindowSize));
+
+  const std::array<std::byte, 16384> data{};
+  const FrameHeader dataHeader{static_cast<uint32_t>(data.size()), FrameType::Data, FrameFlags::None, 1};
+  FeedConnection(conn, SerializeFrame(dataHeader, data));
+  EXPECT_FALSE(conn.hasPendingOutput());
+
+  FeedConnection(conn, SerializeFrame(dataHeader, data));
+  const auto output = DrainPendingOutput(conn);
+  ASSERT_EQ(output.size(), FrameHeader::kSize + sizeof(uint32_t));
+  const auto outputHeader = ParseFrameHeader(output);
+  EXPECT_EQ(outputHeader.type, FrameType::WindowUpdate);
+  EXPECT_EQ(outputHeader.streamId, 1U);
 }
 
 TEST(Http2Connection, DataFrameOnResetStreamIsIgnored) {

@@ -1154,6 +1154,11 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         if (entireBody && bodyIsInline) {
           RawBytes owner(std::move(response._data));
           err = _connection.sendData(streamId, std::move(owner), bodyOffset, immediateSize, endStreamOnData);
+          if (err == ErrorCode::NoError && hasTrailers) {
+            // For small DATA frames sendData() copies from owner into the batched output buffer instead of
+            // retaining the allocation. Encode the trailer HEADERS while owner still keeps trailersView alive.
+            return _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
+          }
         } else {
           const std::string_view immediateView = bodyView.substr(0, immediateSize);
           const auto bytes = std::as_bytes(std::span<const char>(immediateView.data(), immediateView.size()));

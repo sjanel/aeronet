@@ -3,6 +3,7 @@
 // and connection-level flow control processing.
 #include <benchmark/benchmark.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -195,6 +196,59 @@ void BM_ConnectionQueueOwnedDataFragments(benchmark::State& state) {
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(payloadSize));
 }
 BENCHMARK(BM_ConnectionQueueOwnedDataFragments)->Arg(1024)->Arg(16384)->Arg(65535);
+
+// ---------------------------------------------------------------------------
+// Connection: batch small response HEADERS and DATA into one output fragment
+// ---------------------------------------------------------------------------
+
+void BM_ConnectionBatchSmallResponses(benchmark::State& state) {
+  const auto responseCount = static_cast<uint32_t>(state.range(0));
+
+  RawBytes clientInput;
+  clientInput.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+  WriteSettingsFrame(clientInput, {});
+  WriteSettingsAckFrame(clientInput);
+
+  HpackEncoder encoder;
+  for (uint32_t streamIndex = 0; streamIndex < responseCount; ++streamIndex) {
+    RawBytes hpackBlock;
+    encoder.encode(hpackBlock, ":method", "GET");
+    encoder.encode(hpackBlock, ":path", "/ping");
+    encoder.encode(hpackBlock, ":scheme", "https");
+    encoder.encode(hpackBlock, ":authority", "localhost");
+    WriteHeadersFrameWithPriority(clientInput, (streamIndex * 2U) + 1U,
+                                  std::span<const std::byte>(hpackBlock.begin(), hpackBlock.size()), 0, 16, false, true,
+                                  true);
+  }
+
+  static constexpr std::array<std::byte, 4> kBody{std::byte{'p'}, std::byte{'o'}, std::byte{'n'}, std::byte{'g'}};
+  vector<std::string_view> fragments;
+  for ([[maybe_unused]] auto iteration : state) {
+    state.PauseTiming();
+    Http2Connection connection(Http2Config{}, true);
+    auto input = std::span<const std::byte>(clientInput.begin(), clientInput.size());
+    while (!input.empty()) {
+      const auto result = connection.processInput(input);
+      input = input.subspan(result.bytesConsumed);
+    }
+    connection.onOutputWritten(connection.pendingOutputSize());
+    state.ResumeTiming();
+
+    for (uint32_t streamIndex = 0; streamIndex < responseCount; ++streamIndex) {
+      const uint32_t streamId = (streamIndex * 2U) + 1U;
+      benchmark::DoNotOptimize(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false));
+      RawBytes owner(kBody.size());
+      owner.unchecked_append(kBody);
+      benchmark::DoNotOptimize(connection.sendData(streamId, std::move(owner), true));
+    }
+    connection.getPendingOutputFragments(fragments);
+    benchmark::DoNotOptimize(fragments.data());
+    benchmark::DoNotOptimize(fragments.size());
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * responseCount);
+}
+BENCHMARK(BM_ConnectionBatchSmallResponses)->Arg(10)->Arg(100);
 
 // ---------------------------------------------------------------------------
 // Connection: process N DATA frames (simulated fast path)

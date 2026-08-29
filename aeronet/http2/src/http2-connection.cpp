@@ -50,6 +50,10 @@ constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
 constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
 
+// Copying a tiny body beside its frame header lets one transport write cover a batch of
+// responses. Larger bodies keep their owned allocation and gather-write without a copy.
+constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
+
 constexpr uint64_t HpackHeaderFieldSize(std::string_view name, std::string_view value) noexcept {
   constexpr uint64_t kEntryOverhead = 32;
   return name.size() + value.size() + kEntryOverhead;
@@ -537,7 +541,8 @@ void Http2Connection::pruneClosedStreams() {
 // ============================
 
 ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream) {
-  auto [it, inserted] = _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize);
+  auto [it, inserted] =
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
   if (inserted) {
     // Created new stream
     if (!canCreateStreams()) {
@@ -574,7 +579,6 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
     return err;
   }
 
-  sealOutputBuffer();
   _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 24UL));
 
   // Make the header block be written after the frame header
@@ -610,7 +614,6 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
     return err;
   }
 
-  sealOutputBuffer();
   _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4UL));
 
   // Make the header block be written after the frame header
@@ -665,9 +668,13 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
     return ErrorCode::NoError;
   }
 
-  RawBytes owner(data.size());
-  owner.unchecked_append(data);
-  queueDataBlock(std::move(owner), 0, data.size(), streamId, endStream);
+  if (data.size() <= kMaxInlineDataFrameCopySize) {
+    WriteDataFrame(_outputBuffer, streamId, data, endStream);
+  } else {
+    RawBytes owner(data.size());
+    owner.unchecked_append(data);
+    queueDataBlock(std::move(owner), 0, data.size(), streamId, endStream);
+  }
   recordFrame(true, FrameType::Data, data.size(),
               (data.size() + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
@@ -696,7 +703,11 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::si
     return ErrorCode::NoError;
   }
 
-  queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
+  if (dataSize <= kMaxInlineDataFrameCopySize) {
+    WriteDataFrame(_outputBuffer, streamId, std::span<const std::byte>(owner.data() + dataOffset, dataSize), endStream);
+  } else {
+    queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
+  }
   recordFrame(true, FrameType::Data, dataSize,
               (dataSize + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
@@ -943,7 +954,8 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Get or create stream
 
-  auto [it, inserted] = _streams.try_emplace(header.streamId, header.streamId, _peerSettings.initialWindowSize);
+  auto [it, inserted] = _streams.try_emplace(header.streamId, header.streamId, _peerSettings.initialWindowSize,
+                                             _localSettings.initialWindowSize);
   if (inserted) {
     // Validate stream ID
     if (_isServer) {
@@ -1395,15 +1407,25 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     return;
   }
   const uint64_t continuationBytes = headerBlockSize - _peerSettings.maxFrameSize;
-  // sendHeaders seals older output first, so this allocation contains only the reserved
-  // frame-header gap followed by the HPACK block. Transfer it intact and interleave frame
-  // headers with views over the original HPACK bytes.
-  assert(outputSizeBeforeHeaders == 0);
-  RawBytes owner(std::move(_outputBuffer));
-  _outputBuffer = {};
-  _outputWritePos = 0;
-  queueOutputBlock(OutputBlock::Headers(std::move(owner), oldSize, headerBlockSize, _peerSettings.maxFrameSize,
-                                        streamId, endStream));
+  if (outputSizeBeforeHeaders == 0) {
+    // Transfer the allocation intact and interleave frame headers with views over the
+    // original HPACK bytes.
+    RawBytes owner(std::move(_outputBuffer));
+    _outputBuffer = {};
+    _outputWritePos = 0;
+    queueOutputBlock(OutputBlock::Headers(std::move(owner), oldSize, headerBlockSize, _peerSettings.maxFrameSize,
+                                          streamId, endStream));
+  } else {
+    // Preserve older batched frames ahead of this oversized header block. Oversized
+    // fields are rare, so copying only this block is preferable to sealing every normal
+    // response into a separate transport fragment.
+    RawBytes owner(headerBlockSize);
+    owner.unchecked_append(
+        std::span<const std::byte>(_outputBuffer.data() + oldSize, static_cast<std::size_t>(headerBlockSize)));
+    _outputBuffer.setSize(outputSizeBeforeHeaders);
+    queueOutputBlock(
+        OutputBlock::Headers(std::move(owner), 0, headerBlockSize, _peerSettings.maxFrameSize, streamId, endStream));
+  }
   recordFrame(true, FrameType::Headers, _peerSettings.maxFrameSize);
   recordFrame(true, FrameType::Continuation, continuationBytes,
               (continuationBytes + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
