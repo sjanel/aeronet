@@ -127,7 +127,14 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 }
 
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
-                                                       std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
+                                                       std::size_t consumedBytes, const CorsPolicy* pCorsPolicy
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                                       ,
+                                                       ResponseCache* pResponseCache,
+                                                       ResponseCache::StoreCandidate cacheCandidate,
+                                                       bool responseCacheHit
+#endif
+) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   if (pCorsPolicy != nullptr) {
@@ -143,6 +150,16 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   state.headerStartTp = {};
 
   request.prefinalizeHttpResponse(resp, _telemetry);
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  if (pResponseCache != nullptr) {
+    if (responseCacheHit) {
+      pResponseCache->applyConditional(request, resp, &_config.globalHeaders);
+    } else if (cacheCandidate) {
+      pResponseCache->commit(request, std::move(cacheCandidate), resp, &_config.globalHeaders);
+    }
+  }
+#endif
 
   const bool keepAlive =
       request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());

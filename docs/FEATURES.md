@@ -26,6 +26,7 @@ references. This page remains the protocol and behavior reference.
 1. [Request Header Duplicate Handling (Detailed)](#request-header-duplicate-handling-detailed)
 1. [Path Handling](#path-handling)
 1. [Middleware Pipeline](#middleware-pipeline)
+1. [Response Caching](#response-caching)
 1. [Trailing Slash Policy](#trailing-slash-policy)
 1. [Construction Model (RAII & Ephemeral Ports)](#construction-model-raii--ephemeral-ports)
 1. [HttpServer Lifecycle](#httpserver-lifecycle)
@@ -1581,21 +1582,59 @@ SingleHttpServer server(HttpServerConfig{}, std::move(router));
 
 ### Middleware Metrics Callback
 
-- `SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback)` installs an opt-in hook that receives a
-  `MiddlewareMetrics` record for every middleware invocation. The record captures whether the middleware belongs to the
-  global or per-route chain, the execution phase (`Pre` or `Post`), the zero-based index within that chain, whether the
-  middleware short-circuited request processing, threw an exception, and how long the call lasted in nanoseconds.
-- Metrics are emitted for both buffered and streaming handlers; the `streaming` flag is set when the active route uses
-  `HttpResponseWriter`. Request method and the canonical request path are included to simplify downstream tagging.
-- When no callback is registered, the server skips the timing code paths entirely to keep the hot path allocation-free
-  and avoid the additional steady clock reads.
-- Tests: see `tests/http-routing_test.cpp` (`HttpMiddlewareMetrics.RecordsPreAndPostMetrics`,
-  `HttpMiddlewareMetrics.MarksShortCircuit`, `HttpMiddlewareMetrics.StreamingFlagPropagates`).
+- `SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback)` installs an opt-in hook that receives a `MiddlewareMetrics` record for every middleware invocation. The record captures whether the middleware belongs to the global or per-route chain, the execution phase (`Pre` or `Post`), the zero-based index within that chain, whether the middleware short-circuited request processing, threw an exception, and how long the call lasted in nanoseconds.
+- Metrics are emitted for both buffered and streaming handlers; the `streaming` flag is set when the active route uses `HttpResponseWriter`. Request method and the canonical request path are included to simplify downstream tagging.
+- When no callback is registered, the server skips the timing code paths entirely to keep the hot path allocation-free and avoid the additional steady clock reads.
+
+### Response Caching
+
+`AERONET_ENABLE_RESPONSE_CACHE` adds an opt-in, process-local response cache for expensive buffered API handlers. The feature is dependency-free and enabled by default. Each route owns its entries, LRU order, budgets, counters, and scratch buffers. There is no cache mutex: a route cache is used only by its owning `SingleHttpServer` thread. Attaching a `ResponseCache` copies its configuration into a new empty route-owned cache, and every router copy owned by `MultiHttpServer` receives another independent empty cache.
+
+```cpp
+ResponseCacheConfig config;
+config.maxEntries = 4096;
+config.maxMemoryBytes = 256U * 1024U * 1024U;
+config.maxEntryBytes = 4U * 1024U * 1024U;
+config.maxVariantsPerTarget = 16;
+config.defaultMaxAge = std::chrono::seconds{0}; // require explicit response freshness
+
+ResponseCache cache(config);
+
+Router router;
+router.setPath(http::Method::GET, "/catalog", [](const HttpRequestView& req) {
+  auto response = req.makeResponse("{}", http::ContentTypeApplicationJson);
+  // Expensive computation...
+  response.headerAddLine(http::CacheControl, "public, max-age=20");
+  response.headerAddLine(http::Vary, "Accept-Language");
+  response.headerAddLine(http::ETag, "W/\"catalog-42\"");
+  return response;
+}).cache(cache);
+
+auto api = router.group("/api").withResponseCache(cache);
+api.setPath(http::Method::GET, "/status", [](const HttpRequestView& req) { return req.makeResponse(); });
+```
+
+The `cache` value above is a configuration prototype, not the live cache used by the route. A route group copies that configuration separately into each route it registers. Operational calls such as `stats()`, `clear()`, and `invalidatePath()` act on the route-owned cache; when a server is running, invoke them from a router-update callback so they execute on the owning event-loop thread.
+
+Request identity consists of method, scheme, authority/Host, decoded path, and ordered decoded query parameters. Each stored representation additionally captures presence and exact value for every normalized request field named by `Vary`; missing and present-but-empty fields are distinct. `Vary: *`, malformed field names, and a target exceeding `maxVariantsPerTarget` cannot grow the cache without bound.
+
+Freshness and privacy rules:
+
+- Response `s-maxage` takes precedence over `max-age`; `defaultMaxAge` is used only when neither is present. A zero lifetime is not stored, and `maximumAge` can cap origin-provided lifetimes.
+- Response `no-store`, `no-cache`, or `private` prevents storage. A newly generated response with one of those directives also removes older variants for the same primary request target.
+- Request `no-cache` or `max-age=0` bypasses the hit and refreshes the representation. Request `no-store` bypasses both lookup and insertion.
+- Only configured GET/HEAD methods and buffered `200` responses are eligible. File payloads, trailers, streaming handlers, range/If-Range requests, and responses over `maxEntryBytes` bypass the cache.
+- Authorization, Cookie, and Set-Cookie bypasses default to on. They can be changed in `ResponseCacheConfig`, but doing so requires the application to provide an appropriate `Vary`/partitioning policy.
+
+The stored object is the handler's response prototype before response middleware. On every hit aeronet still runs the route/global response middleware, CORS policy, and content-encoding negotiation once. Request middleware also always runs and can short-circuit before lookup. This behavior is identical for HTTP/1.1, HTTP/2, synchronous handlers, and coroutine handlers; `HttpResponseWriter` streaming routes are intentionally bypassed.
+
+If a cached response has an ETag and `If-None-Match` weakly matches it (including a list or `*`), aeronet emits a bodyless `304 Not Modified` with cache validators and CORS metadata. The cache does not contact an origin for revalidation, which is why response `no-cache` is conservatively not stored.
+
+Operational APIs are `stats()` (hits, misses, stores, replacements, evictions, expirations, bypasses, current entries, and accounted bytes), `clear()`, and `invalidatePath(decodedPath)`. Accounted budgets cover resident keys, variant metadata, response headers/body, and entry bookkeeping. Cache entries have stable `ObjectPool` addresses, response prototypes have unique ownership, and lookup materializes a response from immutable views while holding the cache lock, so eviction has no hidden reference-counted lifetime.
 
 ### Rate Limiting Middleware
 
-`build()` builds a request middleware that enforces limits and short-circuits with
-`429 Too Many Requests` + `Retry-After` when over the quota.
+`build()` builds a request middleware that enforces limits and short-circuits with `429 Too Many Requests` + `Retry-After` when over the quota.
 
 In-memory token bucket example:
 
@@ -1613,8 +1652,7 @@ opts.keyStrategy = RateLimitClientKeyStrategy::PeerAddress;
 router.addRequestMiddleware(std::move(opts).build());
 ```
 
-The default in-memory store uses independently locked shards so requests for unrelated keys can proceed concurrently.
-Each shard reserves its share of `maxKeys` lazily on first use, while eviction maintains the configured global key cap.
+The default in-memory store uses independently locked shards so requests for unrelated keys can proceed concurrently. Each shard reserves its share of `maxKeys` lazily on first use, while eviction maintains the configured global key cap.
 
 Per-route / group scoping uses the standard middleware APIs:
 

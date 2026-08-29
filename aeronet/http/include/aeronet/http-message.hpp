@@ -37,6 +37,10 @@
 
 namespace aeronet {
 
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+class ResponseCache;
+#endif
+
 class EncoderContext;
 
 namespace internal {
@@ -609,6 +613,9 @@ class HttpMessage {
   friend class internal::HttpCodec;
   friend class SingleHttpServer;
   friend class StaticFileHandler;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  friend class ResponseCache;
+#endif
 #ifdef AERONET_ENABLE_HTTP2
   friend class internal::Http2ClientEngine;
   friend class http2::Http2WriterTransport;

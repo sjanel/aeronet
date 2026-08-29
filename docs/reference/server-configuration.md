@@ -118,6 +118,27 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive and response deadline. |
 | `maxStreamsPerConnection` | 0 | Lifetime stream count before graceful GOAWAY; 0 is unlimited. |
 
+## Per-route response cache
+
+The dependency-free response cache is a router attachment rather than an `HttpServerConfig` field. It requires
+`AERONET_ENABLE_RESPONSE_CACHE=ON` and is configured through `ResponseCacheConfig` before being attached with
+`PathHandlerEntry::cache()` / `responseCache()` or `RouteGroup::withResponseCache()`. Attachment copies the
+configuration into an empty route-owned cache. Router copies create independent caches for each `SingleHttpServer`,
+so cache access needs no cross-thread synchronization.
+
+| `ResponseCacheConfig` setting | Default | Purpose |
+| --- | --- | --- |
+| `maxEntries` | 1024 | Maximum resident variants in one route cache. |
+| `maxMemoryBytes` | 64 MiB | Accounted resident key, metadata, header, body, and entry budget. |
+| `maxEntryBytes` | 8 MiB | Maximum accounted size of one representation. |
+| `maxVariantsPerTarget` | 16 | Bound on `Vary` combinations for one primary method/target. |
+| `defaultMaxAge` | 0 s | Freshness used without `s-maxage`/`max-age`; zero requires an explicit lifetime. |
+| `maximumAge` | unlimited | Optional cap on response-provided freshness. |
+| `methods` | GET + HEAD | Eligible methods; only GET and HEAD are accepted. |
+| `bypassAuthorization`, `bypassCookie`, `bypassSetCookie` | true | Conservative shared-cache privacy defaults. |
+
+See [Response Caching](../FEATURES.md#response-caching) for directive, `Vary`, ETag, middleware, and bypass semantics.
+
 ## Compression, decompression, and files
 
 | Configuration | Defaults and decisions |

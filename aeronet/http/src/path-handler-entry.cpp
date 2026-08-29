@@ -28,6 +28,9 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
       _corsPolicy(rhs._corsPolicy),
       _preMiddleware(rhs._preMiddleware),
       _postMiddleware(rhs._postMiddleware),
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+      _responseCache(rhs._responseCache ? std::make_unique<ResponseCache>(*rhs._responseCache) : nullptr),
+#endif
       _pathConfig(rhs._pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     const HandlerStorage& rhsStorage = rhs._handlers[methodIdx];
@@ -56,6 +59,9 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
       _corsPolicy(std::move(rhs._corsPolicy)),
       _preMiddleware(std::move(rhs._preMiddleware)),
       _postMiddleware(std::move(rhs._postMiddleware)),
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+      _responseCache(std::move(rhs._responseCache)),
+#endif
       _pathConfig(rhs._pathConfig) {
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     HandlerStorage& rhsStorage = rhs._handlers[methodIdx];
@@ -91,6 +97,9 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
     _corsPolicy = rhs._corsPolicy;
     _preMiddleware = rhs._preMiddleware;
     _postMiddleware = rhs._postMiddleware;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    _responseCache = rhs._responseCache ? std::make_unique<ResponseCache>(*rhs._responseCache) : nullptr;
+#endif
     _pathConfig = rhs._pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
@@ -142,6 +151,9 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
     _corsPolicy = std::move(rhs._corsPolicy);
     _preMiddleware = std::move(rhs._preMiddleware);
     _postMiddleware = std::move(rhs._postMiddleware);
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    _responseCache = std::move(rhs._responseCache);
+#endif
     _pathConfig = rhs._pathConfig;
 
     for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {

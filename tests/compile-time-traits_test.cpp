@@ -74,4 +74,10 @@ TEST(CompileTimeTraits, Features) {
 #else
   EXPECT_FALSE(aeronet::asyncHandlersEnabled());
 #endif
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  EXPECT_TRUE(aeronet::responseCacheEnabled());
+#else
+  EXPECT_FALSE(aeronet::responseCacheEnabled());
+#endif
 }

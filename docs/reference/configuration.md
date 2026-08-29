@@ -30,6 +30,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_WEBSOCKET` | ON | RFC 6455 endpoints | `AERONET_ENABLE_ZLIB` additionally enables permessage-deflate |
 | `AERONET_ENABLE_HTTP_CLIENT` | ON | Synchronous `HttpClient`, pool, proxy, cache, retry | OpenSSL for HTTPS; HTTP/2 option for h2 client |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Coroutine routing APIs | No external dependency |
+| `AERONET_ENABLE_RESPONSE_CACHE` | ON | Per-route bounded in-memory server response cache | No external dependency |
 | `AERONET_ENABLE_ZLIB` | top-level | gzip and deflate encoders/decoders | zlib-ng is preferred by default |
 | `AERONET_ENABLE_ZLIBNG` | ON | Use zlib-ng in place of classic zlib | Meaningful only with zlib enabled |
 | `AERONET_ENABLE_ZSTD` | top-level | zstd encoders/decoders | zstd |
@@ -48,6 +49,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DAERONET_BUILD_TESTS=OFF \
   -DAERONET_ENABLE_OPENSSL=OFF -DAERONET_ENABLE_HTTP2=OFF \
   -DAERONET_ENABLE_WEBSOCKET=OFF -DAERONET_ENABLE_HTTP_CLIENT=OFF \
+  -DAERONET_ENABLE_RESPONSE_CACHE=OFF \
   -DAERONET_ENABLE_ZLIB=OFF -DAERONET_ENABLE_ZSTD=OFF \
   -DAERONET_ENABLE_BROTLI=OFF -DAERONET_ENABLE_SPDLOG=OFF \
   -DAERONET_ENABLE_GLAZE=OFF -DAERONET_ENABLE_OPENTELEMETRY=OFF
@@ -63,6 +65,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DAERONET_ENABLE_ASYNC_HANDLERS=ON -DAERONET_ENABLE_GLAZE=ON \
   -DAERONET_ENABLE_HTTP2=ON -DAERONET_ENABLE_WEBSOCKET=ON \
   -DAERONET_ENABLE_HTTP_CLIENT=ON -DAERONET_ENABLE_OPENSSL=ON \
+  -DAERONET_ENABLE_RESPONSE_CACHE=ON \
   -DAERONET_ENABLE_ZLIB=ON -DAERONET_ENABLE_ZSTD=ON \
   -DAERONET_ENABLE_BROTLI=ON -DAERONET_ENABLE_SPDLOG=ON \
   -DAERONET_ENABLE_OPENTELEMETRY=ON

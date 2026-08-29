@@ -34,6 +34,45 @@ RawChars FullPath(std::string_view prefix, std::string_view subpath) {
 
 RouteGroup::RouteGroup(Router& router, std::string_view prefix) : _router(&router), _prefix(prefix) {}
 
+RouteGroup::RouteGroup(const RouteGroup& rhs)
+    : _router(rhs._router),
+      _prefix(rhs._prefix),
+      _timeout(rhs._timeout),
+      _maxBodyBytes(rhs._maxBodyBytes),
+      _maxHeaderBytes(rhs._maxHeaderBytes),
+#ifdef AERONET_ENABLE_HTTP2
+      _http2Enable(rhs._http2Enable),
+#endif
+      _corsPolicy(rhs._corsPolicy),
+      _preMiddleware(rhs._preMiddleware),
+      _postMiddleware(rhs._postMiddleware)
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+      ,
+      _responseCache(rhs._responseCache ? std::make_unique<ResponseCache>(*rhs._responseCache) : nullptr)
+#endif
+{
+}
+
+RouteGroup& RouteGroup::operator=(const RouteGroup& rhs) {
+  if (this != &rhs) {
+    _router = rhs._router;
+    _prefix = rhs._prefix;
+    _timeout = rhs._timeout;
+    _maxBodyBytes = rhs._maxBodyBytes;
+    _maxHeaderBytes = rhs._maxHeaderBytes;
+#ifdef AERONET_ENABLE_HTTP2
+    _http2Enable = rhs._http2Enable;
+#endif
+    _corsPolicy = rhs._corsPolicy;
+    _preMiddleware = rhs._preMiddleware;
+    _postMiddleware = rhs._postMiddleware;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    _responseCache = rhs._responseCache ? std::make_unique<ResponseCache>(*rhs._responseCache) : nullptr;
+#endif
+  }
+  return *this;
+}
+
 RouteGroup& RouteGroup::withMaxHeaderBytes(uint32_t bytes) noexcept {
   _maxHeaderBytes = bytes;
   return *this;
@@ -73,6 +112,18 @@ RouteGroup& RouteGroup::addResponseMiddleware(ResponseMiddleware middleware) {
   _postMiddleware.push_back(std::move(middleware));
   return *this;
 }
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+RouteGroup& RouteGroup::withResponseCache(const ResponseCache& responseCache) {
+  _responseCache = std::make_unique<ResponseCache>(responseCache);
+  return *this;
+}
+
+RouteGroup& RouteGroup::withResponseCache(ResponseCache&& responseCache) {
+  _responseCache = std::make_unique<ResponseCache>(std::move(responseCache));
+  return *this;
+}
+#endif
 
 PathHandlerEntry& RouteGroup::setPath(http::MethodBmp methods, std::string_view subpath, RequestHandler handler) {
   auto& entry = _router->setPath(methods, FullPath(_prefix, subpath), std::move(handler));
@@ -125,6 +176,9 @@ RouteGroup RouteGroup::group(std::string_view subprefix) const {
   child._corsPolicy = _corsPolicy;
   child._preMiddleware = _preMiddleware;
   child._postMiddleware = _postMiddleware;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  child._responseCache = _responseCache ? std::make_unique<ResponseCache>(*_responseCache) : nullptr;
+#endif
   return child;
 }
 
@@ -136,6 +190,11 @@ void RouteGroup::applyGroupConfig(PathHandlerEntry& entry) const {
   for (const auto& mw : _postMiddleware) {
     entry.after(mw);
   }
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  if (_responseCache) {
+    entry.cache(*_responseCache);
+  }
+#endif
 #ifdef AERONET_ENABLE_HTTP2
   if (_http2Enable != PathEntryConfig::Http2Enable::Default) {
     entry.http2Enable(_http2Enable);

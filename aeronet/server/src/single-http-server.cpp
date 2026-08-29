@@ -643,14 +643,37 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
     const bool isStreaming = routingResult.streamingHandler() != nullptr;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    ResponseCache* pResponseCache = isStreaming ? nullptr : routingResult.responseCache();
+    enum class ResponseCacheAction : uint8_t { Bypass, Fill, Hit };
+#endif
 
     auto responseMiddlewareRange = routingResult.postMiddlewareRange();
 
-    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, &state, consumedBytes,
-                         pCorsPolicy](HttpResponse&& resp) {
+    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, &state, consumedBytes, pCorsPolicy
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                         ,
+                         pResponseCache
+#endif
+    ](HttpResponse&& resp
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                        ,
+                        ResponseCacheAction cacheAction = ResponseCacheAction::Bypass
+#endif
+                        ) {
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+      auto cacheCandidate = cacheAction == ResponseCacheAction::Fill && pResponseCache != nullptr
+                                ? pResponseCache->capture(state.request, resp)
+                                : ResponseCache::StoreCandidate{};
+#endif
       ApplyResponseMiddleware(state.request, resp, responseMiddlewareRange, _router.globalResponseMiddleware(),
                               _telemetry, isStreaming, _callbacks.middlewareMetrics);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), consumedBytes, pCorsPolicy
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                      ,
+                                      pResponseCache, std::move(cacheCandidate), cacheAction == ResponseCacheAction::Hit
+#endif
+      );
     };
 
     auto corsRejected = [pCorsPolicy, &request, &sendResponse] {
@@ -673,6 +696,24 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       continue;
     }
 
+    const bool hasBufferedHandler = routingResult.requestHandler() != nullptr
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                    || routingResult.asyncRequestHandler() != nullptr
+#endif
+        ;
+    if (hasBufferedHandler && corsRejected()) {
+      continue;
+    }
+
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+    if (hasBufferedHandler && pResponseCache != nullptr) {
+      if (auto cachedResponse = pResponseCache->lookup(request)) {
+        sendResponse(std::move(*cachedResponse), ResponseCacheAction::Hit);
+        continue;
+      }
+    }
+#endif
+
     if (routingResult.streamingHandler() != nullptr) {
       const bool streamingClose = callStreamingHandler(*routingResult.streamingHandler(), cnxIt, consumedBytes,
                                                        pCorsPolicy, responseMiddlewareRange);
@@ -681,26 +722,28 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (routingResult.asyncRequestHandler() != nullptr) {
-      if (corsRejected()) {
-        continue;
-      }
-
       const bool handlerActive = dispatchAsyncHandler(cnxIt, *routingResult.asyncRequestHandler(), bodyReady, isChunked,
                                                       found100Continue, consumedBytes, pCorsPolicy,
-                                                      responseMiddlewareRange, routingResult.pathConfig().maxBodyBytes);
+                                                      responseMiddlewareRange, routingResult.pathConfig().maxBodyBytes
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                                      ,
+                                                      pResponseCache
+#endif
+      );
       if (handlerActive) {
         return state.isAnyCloseRequested();
       }
 #endif
     } else if (routingResult.requestHandler() != nullptr) {
-      if (corsRejected()) {
-        continue;
-      }
-
       // normal handler
       try {
         // Use RVO on the HttpResponse in the nominal case
-        sendResponse((*routingResult.requestHandler())(request));
+        sendResponse((*routingResult.requestHandler())(request)
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                         ,
+                     ResponseCacheAction::Fill
+#endif
+        );
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
         sendResponse(HttpResponse(http::StatusCodeInternalServerError, ex.what()));
@@ -822,7 +865,12 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
                                             bool isChunked, bool expectContinue, std::size_t consumedBytes,
                                             const CorsPolicy* pCorsPolicy,
                                             std::span<const ResponseMiddleware> responseMiddleware,
-                                            std::size_t perRouteMaxBodyBytes) {
+                                            std::size_t perRouteMaxBodyBytes
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                            ,
+                                            ResponseCache* pResponseCache
+#endif
+) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   RequestTask<HttpResponse> task = handler(request);
@@ -865,6 +913,9 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
   asyncState.expectContinue = expectContinue;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.corsPolicy = pCorsPolicy;
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  asyncState.responseCache = pResponseCache;
+#endif
   asyncState.responseMiddleware = responseMiddleware.data();
   asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
@@ -1038,9 +1089,19 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
 
   auto middlewareSpan = std::span<const ResponseMiddleware>(
       static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+  auto cacheCandidate = async.responseCache != nullptr
+                            ? async.responseCache->capture(state.request, *async.pendingResponse)
+                            : ResponseCache::StoreCandidate{};
+#endif
   ApplyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
                           _telemetry, false, _callbacks.middlewareMetrics);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy);
+  finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), async.consumedBytes, async.corsPolicy
+#ifdef AERONET_ENABLE_RESPONSE_CACHE
+                                  ,
+                                  async.responseCache, std::move(cacheCandidate), false
+#endif
+  );
   *asyncState = {};
   state.lastActivity = std::chrono::steady_clock::now();
   refreshKeepAliveDeadline(cnxIt);
