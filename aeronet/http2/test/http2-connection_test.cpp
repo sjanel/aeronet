@@ -388,7 +388,7 @@ TEST(Http2Connection, SmallResponsesShareOneOutputFragment) {
     ASSERT_EQ(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
     RawBytes owner(kBody.size());
     owner.unchecked_append(kBody);
-    ASSERT_EQ(connection.sendData(streamId, std::move(owner), true), ErrorCode::NoError);
+    ASSERT_EQ(connection.sendData(streamId, std::move(owner), 0, kBody.size(), true), ErrorCode::NoError);
   }
 
   vector<std::string_view> fragments;
@@ -429,7 +429,7 @@ TEST(Http2Connection, OwnedDataUsesGatherFragmentsAcrossPartialWrites) {
   const char* payloadData = reinterpret_cast<const char*>(owner.data());
   const std::size_t maxFrameSize = connection.peerSettings().maxFrameSize;
 
-  ASSERT_EQ(connection.sendData(1, std::move(owner), true), ErrorCode::NoError);
+  ASSERT_EQ(connection.sendData(1, std::move(owner), 0, kPayloadSize, true), ErrorCode::NoError);
   EXPECT_EQ(connection.pendingOutputSize(), kPayloadSize + (2 * FrameHeader::kSize));
 
   vector<std::string_view> fragments;
@@ -479,7 +479,7 @@ TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {
     RawBytes owner(kPayloadSize);
     owner.setSize(kPayloadSize);
     owner[0] = static_cast<std::byte>(blockIndex);
-    ASSERT_EQ(connection.sendData(1, std::move(owner), false), ErrorCode::NoError);
+    ASSERT_EQ(connection.sendData(1, std::move(owner), 0, kPayloadSize, false), ErrorCode::NoError);
   }
 
   vector<std::string_view> fragments;
@@ -1753,6 +1753,16 @@ TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
 }
 
+namespace {
+
+void WriteContinuationFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock) {
+  WriteFrame(buffer, FrameType::Continuation, FrameFlags::ContinuationEndHeaders, streamId,
+             static_cast<uint32_t>(headerBlock.size()));
+  buffer.unchecked_append(headerBlock);
+}
+
+}  // namespace
+
 TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
   Http2Config config;
   Http2Connection conn(config, true);
@@ -1785,7 +1795,7 @@ TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
   // Now send a CONTINUATION frame for stream 1 (endHeaders = true) which should trigger
   // InternalError "Stream not found for CONTINUATION" because stream 1 has been pruned.
   RawBytes buffer;
-  WriteContinuationFrame(buffer, 1, hb_fragment, true);
+  WriteContinuationFrame(buffer, 1, hb_fragment);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   auto res = conn.processInput(span);
@@ -2419,7 +2429,7 @@ TEST(Http2Connection, MalformedContinuationFieldSectionResetsStreamWithoutClosin
 
   RawBytes continuationFrame;
   WriteContinuationFrame(continuationFrame, 1,
-                         std::span<const std::byte>(headerBlock.data() + 1U, headerBlock.size() - 1U), true);
+                         std::span<const std::byte>(headerBlock.data() + 1U, headerBlock.size() - 1U));
   const auto res = conn.processInput(continuationFrame);
 
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
@@ -2601,7 +2611,7 @@ TEST(Http2Connection, ContinuationHeaderBlockTooLargeIsEnhanceYourCalm) {
   // Send a CONTINUATION with a huge fragment that exceeds kMaxHeaderBlockAccumulationSize
   vector<std::byte> hugeBlock(257 * 1024, std::byte{0x00});
   RawBytes contBuf;
-  WriteContinuationFrame(contBuf, 1, std::span<const std::byte>(hugeBlock.data(), hugeBlock.size()), true);
+  WriteContinuationFrame(contBuf, 1, std::span<const std::byte>(hugeBlock.data(), hugeBlock.size()));
 
   auto contSpan = std::span<const std::byte>(reinterpret_cast<const std::byte*>(contBuf.data()), contBuf.size());
   auto res = conn.processInput(contSpan);
@@ -2639,8 +2649,7 @@ TEST(Http2Connection, ContinuationDecodedHeaderListOverLocalLimitResetsStream) {
 
   RawBytes continuationFrame;
   WriteContinuationFrame(continuationFrame, 1,
-                         std::span<const std::byte>(headerBlock.data() + splitPos, headerBlock.size() - splitPos),
-                         true);
+                         std::span<const std::byte>(headerBlock.data() + splitPos, headerBlock.size() - splitPos));
   const auto continuationInput = std::span<const std::byte>(continuationFrame.data(), continuationFrame.size());
   EXPECT_EQ(conn.processInput(continuationInput).action, Http2Connection::ProcessResult::Action::OutputReady);
   EXPECT_FALSE(headersCalled);
@@ -2680,7 +2689,7 @@ TEST(Http2Connection, ContinuationHpackDecodeFailedIsCompressionError) {
   // 0x82 is ":method GET" indexed field. Appending invalid HPACK after it.
   std::array<std::byte, 2> invalidHpack = {std::byte{0x7F}, std::byte{0x80}};
   RawBytes contBuf;
-  WriteContinuationFrame(contBuf, 1, invalidHpack, true);
+  WriteContinuationFrame(contBuf, 1, invalidHpack);
 
   auto contSpan = std::span<const std::byte>(reinterpret_cast<const std::byte*>(contBuf.data()), contBuf.size());
   auto res = conn.processInput(contSpan);
@@ -3019,7 +3028,7 @@ TEST(Http2Connection, ContinuationOnHalfClosedRemoteStreamIsStreamError) {
   // onRecvHeaders fails on HalfClosedRemote stream → stream error (RST_STREAM)
   std::array<std::byte, 1> contFragment = {std::byte{0x84}};  // index 4: ":path /"
   RawBytes contBuf;
-  WriteContinuationFrame(contBuf, 1, contFragment, true);
+  WriteContinuationFrame(contBuf, 1, contFragment);
 
   auto contSpan = std::span<const std::byte>(reinterpret_cast<const std::byte*>(contBuf.data()), contBuf.size());
   auto res = conn.processInput(contSpan);
@@ -3092,8 +3101,7 @@ TEST(Http2Connection, ContinuationCompletionWithEndStreamClosesStream) {
   RawBytes contBuf;
   WriteContinuationFrame(
       contBuf, 1,
-      std::span<const std::byte>(reinterpret_cast<const std::byte*>(contHeaderBlock.data()), contHeaderBlock.size()),
-      true);
+      std::span<const std::byte>(reinterpret_cast<const std::byte*>(contHeaderBlock.data()), contHeaderBlock.size()));
 
   auto contSpan = std::span<const std::byte>(reinterpret_cast<const std::byte*>(contBuf.data()), contBuf.size());
   auto res = conn.processInput(contSpan);

@@ -34,21 +34,13 @@ class HttpPayload {
 
     RawCharsSuffix(RawChars rawChars, std::size_t suffixOffset) noexcept;
 
-    RawCharsSuffix(RawCharsSuffix&& rhs) noexcept
-        : buffer(std::move(rhs.buffer)), size(std::exchange(rhs.size, 0)), offset(std::exchange(rhs.offset, 0)) {}
+    RawCharsSuffix(const RawCharsSuffix&) = delete;
+    RawCharsSuffix(RawCharsSuffix&&) noexcept = default;
 
-    RawCharsSuffix& operator=(RawCharsSuffix&& rhs) noexcept {
-      if (this != &rhs) {
-        buffer = std::move(rhs.buffer);
-        size = std::exchange(rhs.size, 0);
-        offset = std::exchange(rhs.offset, 0);
-      }
-      return *this;
-    }
+    RawCharsSuffix& operator=(const RawCharsSuffix&) = delete;
+    RawCharsSuffix& operator=(RawCharsSuffix&&) noexcept = default;
 
-    [[nodiscard]] std::string_view view() const noexcept {
-      return size == 0 ? std::string_view{} : std::string_view(buffer.get() + offset, size);
-    }
+    [[nodiscard]] std::string_view view() const noexcept { return {buffer.get() + offset, size}; }
 
     std::unique_ptr<char, Free> buffer;
     std::size_t size{0};

@@ -149,7 +149,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   /// Inject data received from an upstream tunnel fd into the corresponding HTTP/2 stream.
   /// Called by the server when an upstream fd becomes readable.
   /// @return ErrorCode::NoError on success, or an error if the stream is gone.
-  [[nodiscard]] ErrorCode injectTunnelData(uint32_t streamId, std::span<const std::byte> data);
+  [[nodiscard]] ErrorCode injectTunnelData(uint32_t streamId, std::span<const std::byte> data) {
+    return _connection.sendData(streamId, data, /*endStream=*/false);
+  }
 
   /// Notify the handler that a tunnel upstream fd was closed externally (e.g., upstream EOF).
   /// Sends an empty DATA frame with END_STREAM to gracefully close the tunnel stream.
@@ -259,7 +261,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   void onHeadersDecodedReceived(uint32_t streamId, const SvToSvMap& headers, bool endStream);
   void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
   void onStreamClosed(uint32_t streamId);
-  void onStreamReset(uint32_t streamId, ErrorCode errorCode);
 
   /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
   void onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream);
@@ -285,9 +286,6 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
   void handleConnectRequest(uint32_t streamId, HttpRequestView& request);
-
-  /// Clean up tunnel state for a given stream (using the consolidated StreamState).
-  void cleanupTunnel(StreamsMap::iterator it);
 
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequestView (already populated with HTTP/2 fields) and dispatches
