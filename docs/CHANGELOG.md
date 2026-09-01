@@ -41,6 +41,7 @@ All notable changes to aeronet are documented in this file.
 
 - **Asan is now OFF by default in Debug**. To activate it you will need to explicitly set `AERONET_ENABLE_ASAN=1`
 - **Clean-up glaze adapters**: instead of centralizing all glaze adapters in one file far from the objects definitions, move each object glaze adapter code into its own object header file.
+- **Fix test expectations in aeronet client when no compression library is available**.
 
 ## [1.5.0] - 2026-08-20
 

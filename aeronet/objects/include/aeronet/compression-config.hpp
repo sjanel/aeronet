@@ -128,7 +128,7 @@ struct CompressionConfig {
   //   • and overall compression latency for large responses.
   //
   // Default: 32 KiB. Must be strictly positive.
-  std::uint32_t initialCompressionBufferLimit{32U << 10};
+  std::uint32_t initialCompressionBufferLimit{32U << 10U};
 
   // Minimum uncompressed body size required before compression is considered.
   //
