@@ -163,7 +163,7 @@ Http2Config MakeLoopHttp2Config(uint32_t maxStreamPendingBytes, uint32_t initial
   return config;
 }
 
-HttpServerConfig MakeLoopServerConfig(std::size_t maxOutboundBufferBytes) {
+HttpServerConfig MakeLoopServerConfig(uint32_t maxOutboundBufferBytes) {
   HttpServerConfig config;
   config.maxOutboundBufferBytes = maxOutboundBufferBytes;
   return config;
@@ -180,7 +180,7 @@ RawChars MakeGetHeaders(std::string_view path) {
 
 class Http2ProtocolLoopback {
  public:
-  explicit Http2ProtocolLoopback(Router& router, std::size_t maxOutboundBufferBytes = 4U << 20U,
+  explicit Http2ProtocolLoopback(Router& router, uint32_t maxOutboundBufferBytes = 4U << 20U,
                                  uint32_t maxStreamPendingBytes = 4U << 20U, uint32_t clientInitialWindowSize = 65535U)
       : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes)),
         clientCfg(MakeLoopHttp2Config(1U << 20U, clientInitialWindowSize)),
