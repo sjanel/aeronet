@@ -24,13 +24,13 @@ class KeepAliveDeadlineQueue {
   void upsert(ConnectionState& state, NativeHandle fd, std::chrono::steady_clock::time_point expiresAt);
 
   /// Removes the deadline entry associated with state; no-op if none is registered.
-  void remove(ConnectionState& state);
+  void remove(ConnectionState& state) noexcept;
 
   /// Removes and returns the entry with the earliest deadline (the heap minimum).
-  Entry pop();
+  Entry pop() noexcept;
 
   /// Removes all entries and resets every associated ConnectionState index.
-  void clear();
+  void clear() noexcept;
 
   /// Returns the entry with the earliest deadline without removing it.
   [[nodiscard]] const Entry& top() const noexcept { return _heap.front(); }

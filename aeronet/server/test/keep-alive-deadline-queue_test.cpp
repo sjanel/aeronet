@@ -42,6 +42,19 @@ TEST(KeepAliveDeadlineQueue, PopsEarliestDeadlineFirst) {
   EXPECT_TRUE(queue.empty());
 }
 
+TEST(KeepAliveDeadlineQueue, EqualDeadlinesUseFileDescriptorAsTieBreaker) {
+  KeepAliveDeadlineQueue queue;
+  ConnectionState stateHighFd;
+  ConnectionState stateLowFd;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{10};
+
+  queue.upsert(stateHighFd, NativeHandle{51}, deadline);
+  queue.upsert(stateLowFd, NativeHandle{50}, deadline);
+
+  EXPECT_EQ(queue.pop().fd, NativeHandle{50});
+  EXPECT_EQ(queue.pop().fd, NativeHandle{51});
+}
+
 TEST(KeepAliveDeadlineQueue, UpsertMovesExistingEntryBothDirections) {
   KeepAliveDeadlineQueue queue;
   ConnectionState stateA;
@@ -83,6 +96,36 @@ TEST(KeepAliveDeadlineQueue, RemoveMiddleEntryPreservesHeap) {
   EXPECT_EQ(queue.pop().fd, NativeHandle{31});
   EXPECT_EQ(queue.pop().fd, NativeHandle{32});
   EXPECT_EQ(queue.pop().fd, NativeHandle{30});
+}
+
+TEST(KeepAliveDeadlineQueue, RemovingMiddleEntryCanSiftReplacementUp) {
+  KeepAliveDeadlineQueue queue;
+  ConnectionState stateA;
+  ConnectionState stateB;
+  ConnectionState stateC;
+  ConnectionState stateD;
+  ConnectionState stateE;
+  ConnectionState stateF;
+  const auto base = std::chrono::steady_clock::now();
+
+  queue.upsert(stateA, NativeHandle{60}, base + std::chrono::milliseconds{1});
+  queue.upsert(stateB, NativeHandle{61}, base + std::chrono::milliseconds{5});
+  queue.upsert(stateC, NativeHandle{62}, base + std::chrono::milliseconds{2});
+  queue.upsert(stateD, NativeHandle{63}, base + std::chrono::milliseconds{6});
+  queue.upsert(stateE, NativeHandle{64}, base + std::chrono::milliseconds{7});
+  queue.upsert(stateF, NativeHandle{65}, base + std::chrono::milliseconds{3});
+
+  ASSERT_EQ(stateD.keepAliveDeadlineIndex, 3U);
+  ASSERT_EQ(stateF.keepAliveDeadlineIndex, 5U);
+  queue.remove(stateD);
+
+  EXPECT_EQ(stateD.keepAliveDeadlineIndex, kNoIndex);
+  EXPECT_EQ(stateF.keepAliveDeadlineIndex, 1U);
+  EXPECT_EQ(queue.pop().fd, NativeHandle{60});
+  EXPECT_EQ(queue.pop().fd, NativeHandle{62});
+  EXPECT_EQ(queue.pop().fd, NativeHandle{65});
+  EXPECT_EQ(queue.pop().fd, NativeHandle{61});
+  EXPECT_EQ(queue.pop().fd, NativeHandle{64});
 }
 
 TEST(KeepAliveDeadlineQueue, ClearUnschedulesAllStates) {
