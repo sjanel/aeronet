@@ -33,10 +33,14 @@ namespace aeronet::http2 {
 class Http2WriterTransport final : public internal::IWriterTransport {
  public:
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders,
-                       const char* cachedDateHeader)
+                       const char* cachedDateHeader, std::size_t existingDeferredBytes,
+                       std::size_t maxConnectionPendingBytes, uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
         _pGlobalHeaders(pGlobalHeaders),
         _pCachedDateHeader(cachedDateHeader),
+        _existingDeferredBytes(existingDeferredBytes),
+        _maxConnectionPendingBytes(maxConnectionPendingBytes),
+        _maxStreamPendingBytes(maxStreamPendingBytes),
         _streamId(streamId) {}
 
   bool emitHeaders(HttpResponse& response, const HttpRequestView& /*request*/, bool /*compressionActivated*/,
@@ -53,6 +57,22 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     // However, if isHead is true, end() will be called but no body data is sent.
     // We delay END_STREAM to emitEnd() since the writer always calls end().
     static constexpr bool kEndStream = false;
+
+    std::size_t headerBytes = FrameHeader::kSize;
+    const auto addHeaderBytes = [this, &headerBytes](std::size_t size) {
+      if (headerBytes > _maxConnectionPendingBytes || size > _maxConnectionPendingBytes - headerBytes) {
+        return false;
+      }
+      headerBytes += size;
+      return true;
+    };
+    const std::size_t globalHeadersSize =
+        _pGlobalHeaders == nullptr ? 0 : _pGlobalHeaders->fullStringWithLastSep().size();
+    if (!addHeaderBytes(response.headersFlatViewWithDate().size()) || !addHeaderBytes(globalHeadersSize) ||
+        !hasConnectionCapacity(headerBytes)) {
+      markOverflow();
+      return false;
+    }
 
     const ErrorCode err = _pConnection->sendHeaders(
         _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), kEndStream, _pGlobalHeaders);
@@ -75,8 +95,17 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     // If we already have buffered data from a previous flow-control stall, just append.
     if (!_pendingBuffer.empty()) {
+      if (!canBuffer(data.size())) {
+        markOverflow();
+        return false;
+      }
       _pendingBuffer.append(data);
       return true;
+    }
+
+    if (!hasConnectionCapacity(framedDataSize(data.size()))) {
+      markOverflow();
+      return false;
     }
 
     // Try sending directly.
@@ -89,6 +118,10 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     if (err == ErrorCode::FlowControlError) {
       // Flow control window exhausted - buffer data for later flushing.
+      if (data.size() > _maxStreamPendingBytes) {
+        markOverflow();
+        return false;
+      }
       _pendingBuffer.append(data);
       return true;
     }
@@ -106,6 +139,10 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     if (!_pendingBuffer.empty()) {
       // We have buffered data that couldn't be sent due to flow control.
       // Store trailers for the protocol handler to send later.
+      if (!canBuffer(trailers.size())) {
+        markOverflow();
+        return false;
+      }
       _pendingTrailers = std::move(trailers);
       _pendingEnd = true;
       return true;
@@ -114,6 +151,10 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     // All data was sent inline - emit the stream end now.
     if (_isHead) {
       // HEAD: send empty DATA frame with END_STREAM
+      if (!hasConnectionCapacity(FrameHeader::kSize)) {
+        markOverflow();
+        return false;
+      }
       const ErrorCode err = _pConnection->sendData(_streamId, std::span<const std::byte>{}, /*endStream=*/true);
       if (err != ErrorCode::NoError) {
         log::error("HTTP/2 streaming: failed to send END_STREAM on stream {}: {}", _streamId, ErrorCodeName(err));
@@ -124,6 +165,10 @@ class Http2WriterTransport final : public internal::IWriterTransport {
 
     if (!trailers.empty()) {
       // Emit trailers as a HEADERS frame with END_STREAM
+      if (!hasConnectionCapacity(trailers.size() + FrameHeader::kSize)) {
+        markOverflow();
+        return false;
+      }
       const ErrorCode err =
           _pConnection->sendHeaders(_streamId, http::StatusCode{}, HeadersView(trailers), /*endStream=*/true);
       if (err != ErrorCode::NoError) {
@@ -134,6 +179,10 @@ class Http2WriterTransport final : public internal::IWriterTransport {
     }
 
     // No trailers - send empty DATA frame with END_STREAM
+    if (!hasConnectionCapacity(FrameHeader::kSize)) {
+      markOverflow();
+      return false;
+    }
     const ErrorCode err = _pConnection->sendData(_streamId, std::span<const std::byte>{}, /*endStream=*/true);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send END_STREAM on stream {}: {}", _streamId, ErrorCodeName(err));
@@ -154,6 +203,8 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   /// Whether a file payload was extracted from the response (needs PendingFileSend handling).
   [[nodiscard]] bool hasPendingFile() const noexcept { return _pendingFile; }
 
+  [[nodiscard]] bool overflowed() const noexcept { return _overflowed; }
+
   FilePayload extractPendingFile() noexcept {
     _pendingFile = false;
     return {std::move(_filePayload.file), _filePayload.offset, _filePayload.length};
@@ -163,15 +214,44 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   RawChars extractPendingTrailers() noexcept { return std::move(_pendingTrailers); }
 
  private:
+  [[nodiscard]] std::size_t framedDataSize(std::size_t payloadSize) const noexcept {
+    const std::size_t maxFrameSize = _pConnection->peerSettings().maxFrameSize;
+    const std::size_t frameCount = (payloadSize + maxFrameSize - 1U) / maxFrameSize;
+    return payloadSize + (frameCount * FrameHeader::kSize);
+  }
+
+  [[nodiscard]] bool hasConnectionCapacity(std::size_t additionalBytes) const noexcept {
+    const std::size_t retained =
+        _pConnection->pendingOutputSize() + _existingDeferredBytes + _pendingBuffer.size() + _pendingTrailers.size();
+    return additionalBytes <= _maxConnectionPendingBytes && retained <= _maxConnectionPendingBytes - additionalBytes;
+  }
+
+  [[nodiscard]] bool canBuffer(std::size_t additionalBytes) const noexcept {
+    const std::size_t streamPending = _pendingBuffer.size() + _pendingTrailers.size();
+    return additionalBytes <= _maxStreamPendingBytes && streamPending <= _maxStreamPendingBytes - additionalBytes &&
+           hasConnectionCapacity(additionalBytes);
+  }
+
+  void markOverflow() noexcept {
+    _overflowed = true;
+    _pendingBuffer.clear();
+    _pendingTrailers.clear();
+    _pendingEnd = false;
+  }
+
   Http2Connection* _pConnection;
   const ConcatenatedHeaders* _pGlobalHeaders;
   const char* _pCachedDateHeader;
+  std::size_t _existingDeferredBytes;
+  std::size_t _maxConnectionPendingBytes;
+  uint32_t _maxStreamPendingBytes;
   uint32_t _streamId;
   bool _isHead{false};
 
   // Flow-control buffering
   bool _pendingFile{false};
   bool _pendingEnd{false};
+  bool _overflowed{false};
   RawChars _pendingBuffer;
   RawChars _pendingTrailers;
 

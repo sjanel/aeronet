@@ -35,6 +35,7 @@ TEST(Http2Config, DefaultValues) {
 
   // Other defaults
   EXPECT_EQ(config.maxStreamsPerConnection, 0U);
+  EXPECT_EQ(config.maxStreamPendingBytes, 4U << 20U);
   EXPECT_TRUE(config.enableH2c);
   EXPECT_TRUE(config.enableH2cUpgrade);
   EXPECT_TRUE(config.enablePriority);
@@ -70,13 +71,15 @@ TEST(Http2Config, BuilderPatternConnection) {
                            .withSettingsTimeout(std::chrono::milliseconds{10000})
                            .withPingInterval(std::chrono::milliseconds{30000})
                            .withPingTimeout(std::chrono::milliseconds{5000})
-                           .withMaxStreamsPerConnection(1000);
+                           .withMaxStreamsPerConnection(1000)
+                           .withMaxStreamPendingBytes(2UL << 20U);
 
-  EXPECT_EQ(config.connectionWindowSize, 2UL << 20U);
+  EXPECT_EQ(config.connectionWindowSize, 2U << 20U);
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{10000});
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{5000});
   EXPECT_EQ(config.maxStreamsPerConnection, 1000U);
+  EXPECT_EQ(config.maxStreamPendingBytes, 2U << 20U);
 }
 
 TEST(Http2Config, BuilderPatternFeatures) {
@@ -172,6 +175,11 @@ TEST(Http2Config, ValidateZeroMaxHeaderListSize) {
 
 TEST(Http2Config, ValidateZeroMaxPriorityTreeDepth) {
   Http2Config config = Http2Config{}.withMaxPriorityTreeDepth(0);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(Http2Config, ValidateZeroMaxStreamPendingBytes) {
+  Http2Config config = Http2Config{}.withMaxStreamPendingBytes(0);
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

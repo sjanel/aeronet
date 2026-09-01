@@ -109,6 +109,7 @@ TEST(ConfigLoaderTest, BasicServerFields) {
       "minReadChunkBytes": 8192,
       "maxPerEventReadBytes": 65536,
       "zerocopyMinBytes": 4096,
+      "maxZerocopyPendingBytes": 4194304,
       "minCapturedBodySize": 2048,
       "maxOutboundBufferBytes": 8388608,
       "mergeUnknownRequestHeaders": false,
@@ -127,6 +128,7 @@ TEST(ConfigLoaderTest, BasicServerFields) {
   EXPECT_EQ(config.server.minReadChunkBytes, 8192U);
   EXPECT_EQ(config.server.maxPerEventReadBytes, 65536U);
   EXPECT_EQ(config.server.zerocopyMinBytes, 4096U);
+  EXPECT_EQ(config.server.maxZerocopyPendingBytes, 4194304U);
   EXPECT_EQ(config.server.minCapturedBodySize, 2048U);
   EXPECT_EQ(config.server.maxOutboundBufferBytes, 8388608U);
   EXPECT_FALSE(config.server.mergeUnknownRequestHeaders);
@@ -351,6 +353,7 @@ TEST(ConfigLoaderTest, Http2Config) {
         "pingInterval": "30s",
         "pingTimeout": "5s",
         "maxStreamsPerConnection": 1000,
+        "maxStreamPendingBytes": 1048576,
         "maxPriorityTreeDepth": 128,
         "headerTableSize": 8192,
         "enablePriority": false,
@@ -372,6 +375,7 @@ TEST(ConfigLoaderTest, Http2Config) {
   EXPECT_EQ(config.server.http2.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.server.http2.pingTimeout, std::chrono::milliseconds{5000});
   EXPECT_EQ(config.server.http2.maxStreamsPerConnection, 1000U);
+  EXPECT_EQ(config.server.http2.maxStreamPendingBytes, 1048576U);
   EXPECT_EQ(config.server.http2.maxPriorityTreeDepth, 128U);
   EXPECT_EQ(config.server.http2.headerTableSize, 8192U);
   EXPECT_FALSE(config.server.http2.enablePriority);

@@ -24,10 +24,6 @@
 Status: repository-wide source audit completed on 2026-07-22; the opportunities below are not yet implemented or
 proven faster. They are ordered by expected leverage, not by unverified percentage estimates.
 
-#### P1 - copies, allocations and asymptotic hot paths
-
-- **Bound deferred output and zerocopy retention** - audit per-stream HTTP/2 pending data and `ConnectionState::zerocopyPendingBuffers` under a peer that stops reading or delays error-queue completions. Add explicit high-water marks that pause reads, reject work, or fall back to copied writes rather than allowing retained payloads and already-computed responses to grow without a configured bound. Validate memory plateaus under slow-reader tests before measuring normal-load overhead.
-
 #### P2 - cache locality, dispatch and repeated scans
 
 - **HTTP/2 stream lookup and hot/cold layout** - extend the stream benchmark beyond insert/erase to randomized lookup, DATA/WINDOW_UPDATE processing and close/prune churn at 1, 100, 1,000 and 10,000 active streams. Use the profile to decide between the current flat hash map, a tiny recent-stream cache, denser indexing, or splitting frequently touched state from callbacks, header storage and other cold fields.
@@ -57,7 +53,6 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 | Response-size syscall counts, plain + TLS | TCP cork threshold |
 | Header lookup/mutation with 4 through 32 fields | Flat scan versus compact/lazy indexing |
 | JWT decode/verify with 1 through 1,000 JWKs | `kid` index and base64url decode strategy |
-| Slow-reader and delayed zerocopy-completion memory plateau | Deferred-output high-water marks |
 | Codec alternating-size sessions with allocation and peak-capacity counters | Scratch growth/shrink and context reuse |
 | Fragmented + compressed WebSocket message processing | End-to-end frame/reassembly path beyond mask-only throughput |
 | Hot-structure `sizeof` and 10 K-object random-access profile | Layout changes without speculative padding claims |

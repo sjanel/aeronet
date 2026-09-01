@@ -90,24 +90,18 @@ TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
 
 TransportResult ConnectionState::transportWrite(std::string_view data) {
   const auto res = transport.write(data);
-  if (!tlsEstablished && transport.handshakeDone()) {
-    tlsEstablished = true;
-  }
+  setTlsEstablished();
   return res;
 }
 TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
   const auto res = transport.write(buffers);
-  if (!tlsEstablished && transport.handshakeDone()) {
-    tlsEstablished = true;
-  }
+  setTlsEstablished();
   return res;
 }
 
 TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
   const auto res = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
-  if (!tlsEstablished && transport.handshakeDone()) {
-    tlsEstablished = true;
-  }
+  setTlsEstablished();
   return res;
 }
 
@@ -348,8 +342,9 @@ void ConnectionState::reset() {
   shrinkAndClear(outBuffer);
   // Release any buffers held for zerocopy lifetime - the fd is about to be closed
   // (or already closed), so the kernel will release page references regardless.
-  zerocopyPendingBuffers.clear();
   zerocopyPendingBuffers.shrink_to_fit();
+  zerocopyPendingBuffers.clear();
+  zerocopyPendingBytes = 0;
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
   transport.reset();
@@ -372,6 +367,7 @@ void ConnectionState::reset() {
   shutdownWritePending = false;
   eofReceived = false;
   corkable = false;
+  outBufferMayNeedZerocopyHold = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};
@@ -429,9 +425,27 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   zerocopyPendingBuffers.shrink_to_fit();
 }
 
-void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf) {
+bool ConnectionState::prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes) {
   assert(transport);
-  if (transport.hasZerocopyPending()) {
+  releaseCompletedZerocopyBuffers();
+  if (!transport.isZerocopyEnabled()) {
+    return false;
+  }
+  if (retainedSize > maxPendingBytes || zerocopyPendingBytes > maxPendingBytes - retainedSize) {
+    log::debug("Disabling zerocopy at retained-payload high-water mark: retained={} next={} limit={}",
+               zerocopyPendingBytes, retainedSize, maxPendingBytes);
+    transport.disableZerocopy();
+    return false;
+  }
+  return true;
+}
+
+void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf, bool mayNeedHold) {
+  assert(transport);
+  if (mayNeedHold && transport.hasZerocopyPending()) {
+    assert(std::cmp_less_equal(buf.retainedSize() + zerocopyPendingBytes,
+                               std::numeric_limits<decltype(zerocopyPendingBytes)>::max()));
+    zerocopyPendingBytes += buf.retainedSize();
     zerocopyPendingBuffers.push_back(std::move(buf));
   }
 }
@@ -444,7 +458,18 @@ void ConnectionState::releaseCompletedZerocopyBuffers() {
   transport.pollZerocopyCompletions();
   if (!transport.hasZerocopyPending()) {
     zerocopyPendingBuffers.clear();
+    zerocopyPendingBytes = 0;
   }
+}
+
+void ConnectionState::clearBuffers() {
+  outBuffer.clear();
+  outBufferMayNeedZerocopyHold = false;
+  if (protocolHandler != nullptr) {
+    protocolHandler->discardPendingOutput();
+  }
+  tunnelOrFileBuffer.clear();
+  requestDrainAndClose();
 }
 
 }  // namespace aeronet

@@ -228,34 +228,23 @@ bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
     ++_stats.deferredWriteEvents;
     return true;
   }
-  ++_stats.epollModFailures;
   // Cannot register for EPOLLOUT so buffered data will never be flushed.
   // Clear the write buffers so canCloseConnectionForDrain() can proceed;
   // without this, tunnel connections get stuck forever (exempt from keep-alive reaping).
-  state.outBuffer.clear();
-  if (state.protocolHandler != nullptr) {
-    state.protocolHandler->discardPendingOutput();
-  }
-  state.tunnelOrFileBuffer.clear();
-  state.requestDrainAndClose();
+  ++_stats.epollModFailures;
+  state.clearBuffers();
   return false;
 }
 
 bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(state.waitingWritable);
+  forgetWritableInterest(state);
   if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
-    forgetWritableInterest(state);
     return true;
   }
   ++_stats.epollModFailures;
-  forgetWritableInterest(state);
-  state.outBuffer.clear();
-  if (state.protocolHandler != nullptr) {
-    state.protocolHandler->discardPendingOutput();
-  }
-  state.tunnelOrFileBuffer.clear();
-  state.requestDrainAndClose();
+  state.clearBuffers();
   return false;
 }
 
@@ -341,12 +330,12 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
         [[fallthrough]];
       case ProtocolProcessResult::Action::ResponseReady:
         // ResponseReady was already handled above via getPendingOutput
-        // If no bytes consumed, we need more data — flush and return
+        // If no bytes were consumed, flush before deciding whether the socket can accept more input.
         if (result.bytesConsumed == 0) {
           if (hasAccumulatedOutput) {
             flushOutbound(cnxIt);
           }
-          return pState->isAnyCloseRequested();
+          return pState->isAnyCloseRequested() || pState->hasPendingOutput();
         }
         break;
 
@@ -379,7 +368,9 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     flushOutbound(cnxIt);
   }
 
-  return pState->isAnyCloseRequested();
+  // A blocked output transport is also a signal to stop this readable-event loop. This keeps additional
+  // HTTP/2 frames in the socket while the peer is not draining responses.
+  return pState->isAnyCloseRequested() || pState->hasPendingOutput();
 }
 
 bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {

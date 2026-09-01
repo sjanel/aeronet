@@ -20,15 +20,16 @@ config.withPort(8080)
     .withHeaderReadTimeout(10s)
     .withBodyReadTimeout(30s)
     .withMaxHeaderBytes(16 * 1024)
-    .withMaxBodyBytes(16ULL * 1024 * 1024)
-    .withMaxOutboundBufferBytes(2ULL * 1024 * 1024)
+    .withMaxBodyBytes(16U * 1024 * 1024)
+    .withMaxOutboundBufferBytes(2U * 1024 * 1024)
+    .withMaxZerocopyPendingBytes(2U * 1024 * 1024)
     .withMaxRequestsPerConnection(10'000)
     .withMaxAcceptBatchSize(64)
     .withPollInterval(100ms)
     .withTcpNoDelay(true);
 ```
 
-`maxOutboundBufferBytes` is per connection: budget it alongside connection count. Set `maxPerEventReadBytes` lower if many clients need fairness or higher only when a small number of large request bodies should maximize throughput.
+`maxOutboundBufferBytes` and `maxZerocopyPendingBytes` are per connection: budget them alongside connection count. For HTTP/2, also set `http2.maxStreamPendingBytes` no higher than the response memory one stream may retain while waiting for flow-control credit. Set `maxPerEventReadBytes` lower if many clients need fairness or higher only when a small number of large request bodies should maximize throughput.
 
 ## TLS and HTTP/2 edge listener
 
@@ -43,6 +44,7 @@ using namespace std::chrono_literals;
 
 aeronet::Http2Config http2;
 http2.withMaxConcurrentStreams(128)
+    .withMaxStreamPendingBytes(2U << 20U)
     .withConnectionWindowSize(1U << 20U)
     .withPingInterval(30s)
     .withPingTimeout(10s)

@@ -130,6 +130,10 @@ class Http2Connection {
   /// @return ProcessResult indicating next action and bytes consumed
   [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data);
 
+  /// Process input until `outputHighWaterMark` queued wire bytes are reached.
+  /// The caller should drain output before passing the unconsumed input again.
+  [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data, std::size_t outputHighWaterMark);
+
   /// Check if there's pending output to write.
   [[nodiscard]] bool hasPendingOutput() const noexcept {
     return _outputBlockReadPos < _outputBlocks.size() || _outputWritePos < _outputBuffer.size();
@@ -363,7 +367,7 @@ class Http2Connection {
   // ============================
 
   ProcessResult processPreface(std::span<const std::byte> data);
-  ProcessResult processFrames(std::span<const std::byte> data);
+  ProcessResult processFrames(std::span<const std::byte> data, std::size_t outputHighWaterMark);
   ProcessResult processFrame(FrameHeader header, std::span<const std::byte> payload);
 
   ProcessResult handleDataFrame(FrameHeader header, std::span<const std::byte> payload);
@@ -462,6 +466,7 @@ class Http2Connection {
   // Output buffer
   vector<OutputBlock> _outputBlocks;
   RawBytes _outputBuffer;
+  std::size_t _outputBlocksSize{0};
   vector<OutputBlock>::size_type _outputBlockReadPos{0};
   std::size_t _outputWritePos{0};
 

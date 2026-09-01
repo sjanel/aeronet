@@ -100,6 +100,12 @@ struct Http2Config {
   /// Default: 10 seconds.
   std::chrono::milliseconds pingTimeout{std::chrono::milliseconds{10000}};
 
+  /// Maximum response payload bytes retained for one stream while peer flow-control windows are exhausted.
+  /// A fixed or streaming response that would retain more is rejected instead of being kept until WINDOW_UPDATE.
+  /// The connection-wide HttpServerConfig::maxOutboundBufferBytes limit still applies across all streams.
+  /// Default: 4 MiB.
+  uint32_t maxStreamPendingBytes{4U << 20U};
+
   /// Maximum number of streams that can be created over the lifetime of a connection.
   /// After this limit, the connection will be gracefully closed with GOAWAY.
   /// Default: 0 (unlimited).
@@ -175,6 +181,11 @@ struct Http2Config {
 
   Http2Config& withMaxStreamsPerConnection(uint32_t maxStreams) {
     maxStreamsPerConnection = maxStreams;
+    return *this;
+  }
+
+  Http2Config& withMaxStreamPendingBytes(uint32_t maxPending) {
+    maxStreamPendingBytes = maxPending;
     return *this;
   }
 
