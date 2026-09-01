@@ -35,6 +35,7 @@
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -95,6 +96,20 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 
   handle.stop();
   handle.rethrowIfError();
+}
+
+TEST(MultiHttpServer, ManagedStartIsStoppedByServer) {
+  HttpServerConfig cfg;
+  cfg.withNbThreads(1U).withPollInterval(1ms);
+  MultiHttpServer multi(std::move(cfg));
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Managed"); });
+
+  multi.start();
+  const auto resp = test::simpleGet(multi.port(), "/managed");
+  EXPECT_TRUE(resp.contains("Managed")) << resp;
+
+  multi.stop();
+  EXPECT_FALSE(multi.isRunning());
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -544,6 +559,51 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   hC.rethrowIfError();
 }
 
+TEST(MultiHttpServer, SelfAssignmentsAreNoOps) {
+  HttpServerConfig cfg;
+  cfg.withNbThreads(1U).withPollInterval(1ms);
+  MultiHttpServer multi(std::move(cfg));
+  const auto originalPort = multi.port();
+
+  auto& copyAlias = multi;
+  multi = copyAlias;
+  auto& moveAlias = multi;
+  multi = std::move(moveAlias);
+
+  EXPECT_EQ(multi.port(), originalPort);
+  auto handle = multi.startDetached();
+  auto& handleAlias = handle;
+  handle = std::move(handleAlias);
+  EXPECT_TRUE(handle.started());
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+TEST(MultiHttpServer, WorkerErrorsAreRetainedAfterStop) {
+  HttpServerConfig cfg;
+  cfg.withReusePort().withNbThreads(2U).withPollInterval(1ms);
+  MultiHttpServer multi(std::move(cfg));
+  std::atomic<int> predicateCalls{0};
+  std::atomic<bool> errorThrown{false};
+
+  auto handle = multi.startDetachedAndStopWhen([&predicateCalls, &errorThrown]() -> bool {
+    predicateCalls.fetch_add(1, std::memory_order_relaxed);
+    if (!errorThrown.exchange(true, std::memory_order_relaxed)) {
+      throw std::runtime_error("worker predicate failure");
+    }
+    return false;
+  });
+
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (predicateCalls.load(std::memory_order_relaxed) < 2 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_GE(predicateCalls.load(std::memory_order_relaxed), 2);
+
+  handle.stop();
+  EXPECT_THROW(handle.rethrowIfError(), std::runtime_error);
+}
+
 TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   // Test AggregatedStats::json_str()
   MultiHttpServer::AggregatedStats stats;
@@ -859,6 +919,33 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
   handle.stop();
   handle.rethrowIfError();
 }
+
+TEST(MultiHttpServer, DefaultStopTokenDoesNotRequestStop) {
+  HttpServerConfig cfg;
+  cfg.withNbThreads(1U).withPollInterval(1ms);
+  MultiHttpServer multi(std::move(cfg));
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("No token"); });
+
+  auto handle = multi.startDetachedWithStopToken(std::stop_token{});
+  const auto resp = test::simpleGet(multi.port(), "/no-token");
+
+  EXPECT_TRUE(resp.contains("No token")) << resp;
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+#ifdef AERONET_ENABLE_GLAZE
+TEST(MultiHttpServer, SaveConfigRejectsDirectoryPath) {
+  test::ScopedTempDir tmpDir;
+  const auto directoryPath = tmpDir.dirPath() / "not-a-file.json";
+  ASSERT_TRUE(std::filesystem::create_directory(directoryPath));
+  HttpServerConfig cfg;
+  cfg.withNbThreads(1U);
+  MultiHttpServer multi(std::move(cfg));
+
+  EXPECT_THROW(multi.saveConfig(directoryPath), std::runtime_error);
+}
+#endif
 
 // On Windows, SO_REUSEADDR (always set) allows rebinding to an in-use port,
 // so the port-availability pre-check via tryBind() is ineffective.

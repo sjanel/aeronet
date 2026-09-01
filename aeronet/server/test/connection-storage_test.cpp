@@ -79,6 +79,15 @@ TestCoroutine makeTestCoroutine() { co_return; }
 
 }  // namespace
 
+TEST(ConnectionStorage, ShrinkToFitOnEmptyStorageIsNoOp) {
+  ConnectionStorage storage;
+
+  storage.shrink_to_fit();
+
+  EXPECT_TRUE(storage.empty());
+  EXPECT_EQ(storage.size(), 0U);
+}
+
 TEST(ConnectionStorage, SweepCachedConnectionsRemovesExpired) {
   ConnectionStorage storage;
 

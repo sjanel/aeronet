@@ -699,7 +699,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
       // normal handler
       try {
-        // Use RVO on the HttpResponse in the nominal case
         sendResponse((*routingResult.requestHandler())(request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());

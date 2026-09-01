@@ -443,7 +443,7 @@ class SingleHttpServer {
   void initListener(NativeHandle listenFd = kInvalidHandle);
   void beginStartup();
   [[nodiscard]] bool prepareRun();
-  void runStarted();
+
   void runUntilStarted(const std::function<bool()>& predicate);
   static PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
 
@@ -517,7 +517,7 @@ class SingleHttpServer {
   void restartKeepAliveIdleWindow(NativeHandle fd);
   bool closeExpiredKeepAliveConnections();
   void rebuildKeepAliveDeadlines();
-  void forgetConnectionMaintenance(ConnectionState& state);
+  void forgetConnectionMaintenance(ConnectionState& state) noexcept;
   void clearRequestDeadline(ConnectionState& state) noexcept;
   void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
   void forgetWritableInterest(ConnectionState& state) noexcept;

@@ -28,6 +28,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -71,6 +72,15 @@ TEST(SingleHttpServer, ConfigPathAndRouterConstructorKeepsProvidedRoutes) {
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("ok"));
+}
+
+TEST(SingleHttpServer, SaveConfigRejectsDirectoryPath) {
+  test::ScopedTempDir tmpDir;
+  const auto directoryPath = tmpDir.dirPath() / "not-a-file.json";
+  ASSERT_TRUE(std::filesystem::create_directory(directoryPath));
+  SingleHttpServer server(HttpServerConfig{});
+
+  EXPECT_THROW(server.saveConfig(directoryPath), std::runtime_error);
 }
 #endif
 
@@ -343,6 +353,16 @@ TEST(HttpServerCopy, CopyAssignWhileStopped) {
 
     launchSomeQueries(destination, "source");
   }
+}
+
+TEST(HttpServerCopy, SelfCopyAssignmentIsNoOp) {
+  SingleHttpServer server(HttpServerConfig{});
+  const auto originalPort = server.port();
+  auto& alias = server;
+
+  server = alias;
+
+  EXPECT_EQ(server.port(), originalPort);
 }
 
 TEST(HttpServerCopy, CopyAssignWhileRunningThrows) {
@@ -782,12 +802,26 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   SingleHttpServer::AsyncHandle handle2(std::move(handle1));
   EXPECT_TRUE(handle2.started());
   EXPECT_FALSE(handle1.started());  // NOLINT(bugprone-use-after-move)
+  EXPECT_NO_THROW(handle1.rethrowIfError());  // NOLINT(bugprone-use-after-move)
 
   auto resp = test::simpleGet(port, "/");
   EXPECT_TRUE(resp.contains("move-test"));
 
   handle2.stop();
   EXPECT_NO_THROW(handle2.rethrowIfError());
+}
+
+TEST(SingleHttpServer, RunUntilDoesNotStartWhenPredicateIsInitiallyTrue) {
+  SingleHttpServer server(HttpServerConfig{});
+  bool predicateCalled = false;
+
+  server.runUntil([&predicateCalled] {
+    predicateCalled = true;
+    return true;
+  });
+
+  EXPECT_TRUE(predicateCalled);
+  EXPECT_FALSE(server.isRunning());
 }
 
 TEST(HttpServerAsyncHandle, RestartAfterStop) {
@@ -919,6 +953,23 @@ TEST(SingleHttpServer, BuiltinStartupProbeReturnsOKWhenRunning) {
   EXPECT_TRUE(drainResp.ends_with("Not Ready")) << drainResp;
 
   handle.stop();
+}
+
+TEST(SingleHttpServer, DedicatedProbePortIsIgnoredOutsideMultiServer) {
+  HttpServerConfig cfg;
+  BuiltinProbesConfig probes;
+  probes.enabled = true;
+  probes.withDedicatedPort(12345);
+  cfg.withBuiltinProbes(probes).withPollInterval(1ms);
+  SingleHttpServer server(std::move(cfg));
+  auto handle = server.startDetached();
+  ASSERT_TRUE(test::WaitForServer(server, true));
+
+  const auto resp = test::simpleGet(server.port(), "/readyz");
+
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  handle.stop();
+  handle.rethrowIfError();
 }
 
 }  // namespace aeronet

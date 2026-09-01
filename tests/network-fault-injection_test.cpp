@@ -170,6 +170,18 @@ TEST_F(NetworkFaultTest, ResetDuringResponseWrite) {
   (void)response;
 }
 
+TEST_F(NetworkFaultTest, ResetOnInitialResponseWriteClosesConnection) {
+  test::FaultPolicy policy;
+  policy.resetOnNextWrite = true;
+  enableFaults(policy);
+
+  test::ClientConnection cc(ts.port());
+  test::sendAll(cc.fd(), "GET /hello HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+
+  const auto response = test::recvUntilClosed(cc.fd());
+  EXPECT_TRUE(response.empty()) << response;
+}
+
 // --- Combined faults ---
 
 TEST_F(NetworkFaultTest, PartialReadsAndWritesCombined) {
