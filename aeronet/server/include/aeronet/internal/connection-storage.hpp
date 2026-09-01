@@ -70,7 +70,7 @@ class ConnectionStorage {
 
  private:
 #ifndef AERONET_WINDOWS
-  [[nodiscard]] static ConnectionIdx ConnectionItToIdx(ConnectionIt it) {
+  [[nodiscard]] static ConnectionIdx ConnectionItToIdx(ConnectionIt it) noexcept {
     return static_cast<ConnectionIdx>(it->fd() - 1);
   }
 #endif
@@ -166,7 +166,7 @@ class ConnectionStorage {
 #endif
   }
 
-  ConnectionState& connectionState(ConnectionIt cnxIt) {
+  ConnectionState& connectionState(ConnectionIt cnxIt) noexcept {
 #ifdef AERONET_WINDOWS
     return *cnxIt._it->second;
 #else
@@ -174,7 +174,7 @@ class ConnectionStorage {
 #endif
   }
 
-  ConnectionState* pConnectionState(ConnectionIt cnxIt) {
+  ConnectionState* pConnectionState(ConnectionIt cnxIt) noexcept {
 #ifdef AERONET_WINDOWS
     return cnxIt._it->second;
 #else
@@ -182,7 +182,7 @@ class ConnectionStorage {
 #endif
   }
 
-  ConnectionState* pConnectionState(NativeHandle fd) {
+  ConnectionState* pConnectionState(NativeHandle fd) noexcept {
 #ifdef AERONET_WINDOWS
     auto it = _activeConnections.find(fd);
     return it != _activeConnections.end() ? it->second : nullptr;

@@ -211,6 +211,46 @@ TEST_F(HttpConnectDefaultConfig, ForwardsTunnelDataCoalescedWithConnectHead) {
   EXPECT_TRUE(received.ends_with(payload)) << received;
 }
 
+TEST_F(HttpConnectDefaultConfig, CoalescedDataWriteErrorClosesTunnel) {
+  test::QueueResetGuard connectActionsGuard(test::g_connect_actions);
+  AllowConnectHost(ts, "127.0.0.1");
+
+  // Report a successful upstream connect without actually connecting the socket. The coalesced tunnel payload then
+  // reaches the direct forwarding path and deterministically fails with ENOTCONN.
+  test::PushConnectAction({0, 0});
+  const std::string request =
+      "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\ncoalesced-write-error";
+  test::sendAll(fd, request, 1s);
+
+  const std::string response = test::recvWithTimeout(fd, 1s);
+  EXPECT_TRUE(response.empty() || response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
+}
+
+TEST(HttpConnectTunnelCleanup, ClientTransportReadErrorClosesTunnel) {
+  test::QueueResetGuard readActionsGuard(test::g_read_actions);
+  gPauseNextAcceptedWrite.store(false, std::memory_order_release);
+  gAcceptedFd.store(kInvalidHandle, std::memory_order_release);
+  test::ScopedTransportDecorator decorator(&PauseAcceptedWriteCompletion);
+  test::TestServer server;
+  AllowConnectHost(server, "127.0.0.1");
+  auto echoSrv = test::startEchoServer();
+  test::ClientConnection tunnelClient(server.port());
+
+  const std::string request =
+      "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  test::sendAll(tunnelClient.fd(), request, 1s);
+  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
+  ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+
+  const NativeHandle serverClientFd = gAcceptedFd.load(std::memory_order_acquire);
+  ASSERT_NE(serverClientFd, kInvalidHandle);
+  test::SetReadActions(serverClientFd, {{-1, ECONNRESET}});
+  test::sendAll(tunnelClient.fd(), "trigger-read-error", 1s);
+
+  EXPECT_TRUE(test::WaitForPeerClose(tunnelClient.fd(), 2s));
+}
+
 // A large tunnel payload creates natural upstream backpressure and partial writes.
 // The server must buffer every unwritten suffix, request writable events, and
 // eventually forward the complete payload.
