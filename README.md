@@ -386,7 +386,8 @@ SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then serve
 
 - **431** is returned if the header section exceeds `maxHeaderBytes`.
 - **413** is returned if the declared `content-length` exceeds `maxBodyBytes`.
-- Connections exceeding `maxOutboundBufferBytes` (buffered pending write bytes) are marked to close after flush (default 4MB) to prevent unbounded memory growth if peers stop reading.
+- `maxOutboundBufferBytes` (default 4 MiB) bounds retained output per connection. HTTP/1.1 closes after draining an overflow; HTTP/2 pauses input at the wire-queue high-water mark, refuses new work when the connection budget is exhausted, and applies `Http2Config::maxStreamPendingBytes` to each flow-control-deferred response.
+- `maxZerocopyPendingBytes` (default 4 MiB) bounds payloads retained for delayed Linux `MSG_ZEROCOPY` completions. Once reached, that connection falls back to copied writes.
 - Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
 
 ###### Performance / Metrics & Backpressure
@@ -400,7 +401,7 @@ SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then serve
 - `flushCycles` – number of flush attempts triggered by writable events
 - `maxConnectionOutboundBuffer` – high-water mark of any single connection's buffered bytes
 
-Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. When a connection's pending buffer would exceed the configured maximum, it is marked for closure once existing data flushes, preventing unbounded memory growth under slow-reader scenarios.
+Use these to gauge backpressure behavior and tune `maxOutboundBufferBytes`. HTTP/1.1 closes after an overflow drains. HTTP/2 stops consuming additional frames while its wire queue is at the high-water mark and rejects responses that would retain more flow-control-deferred payload than the per-stream or connection budget.
 
 ###### Metrics Callback (Scaffold)
 

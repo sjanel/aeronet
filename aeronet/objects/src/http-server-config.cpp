@@ -84,6 +84,11 @@ HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOu
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withMaxZerocopyPendingBytes(uint32_t maxPending) {
+  maxZerocopyPendingBytes = maxPending;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withZerocopyMinBytes(std::uint32_t minBytes) {
   this->zerocopyMinBytes = minBytes;
   return *this;
@@ -421,6 +426,9 @@ void HttpServerConfig::validate() {
   }
   if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
     throw std::invalid_argument("maxOutboundBufferBytes must be >= 1024");
+  }
+  if (std::cmp_less(maxZerocopyPendingBytes, 1024)) {
+    throw std::invalid_argument("maxZerocopyPendingBytes must be >= 1024");
   }
 }
 

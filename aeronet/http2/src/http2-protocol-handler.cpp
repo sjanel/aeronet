@@ -125,7 +125,7 @@ void Http2ProtocolHandler::setupCallbacks() {
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
                                                          [[maybe_unused]] ::aeronet::ConnectionState& state) {
-  auto result = _connection.processInput(data);
+  auto result = _connection.processInput(data, _pServerConfig->maxOutboundBufferBytes);
 
   // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
   // Only do this when we don't already have pending output to avoid unbounded buffering.
@@ -222,6 +222,14 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
   if (!inserted) {
     // A second HEADERS block on a stream that already has one carries request trailers (RFC 9113 §8.1).
     onTrailersReceived(it, headers, endStream);
+    return;
+  }
+  if (retainedOutboundBytes() >= _pServerConfig->maxOutboundBufferBytes) {
+    log::debug("Rejecting HTTP/2 stream {} at connection outbound high-water mark: retained={} limit={}", streamId,
+               retainedOutboundBytes(), _pServerConfig->maxOutboundBufferBytes);
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, ErrorCode::RefusedStream);
+    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
     return;
   }
   StreamState& state = it->second;
@@ -500,21 +508,33 @@ void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
 
     _tunnelBridge->closeTunnel(upstreamFd);
   }
-
+  releasePendingBytes(it->second);
   _streams.erase(it);
+}
+
+void Http2ProtocolHandler::releasePendingBytes(const StreamState& state) noexcept {
+  const PendingStreamingSend* pending = state.streamingSend();
+  if (pending == nullptr) {
+    return;
+  }
+  const std::size_t retained = pending->buffer.size() - pending->offset + pending->trailersData.size();
+  assert(retained <= _deferredOutputBytes);
+  _deferredOutputBytes -= retained;
 }
 
 void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {
   assert(it != _streams.end());
   if (it->second.pending) {
     it->second.request = {};
+    it->second.requestDeadline = {};
   } else {
+    const uint32_t streamId = it->first;
     _streams.erase(it);
 
     // Sending END_STREAM transitions a half-closed-remote stream to Closed, but send-path closure is finalized
     // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. At this point our state has
     // already been released, so close accounting and the callback are safe.
-    _connection.finalizeSendClosedStream(it->first);
+    _connection.finalizeSendClosedStream(streamId);
   }
 }
 
@@ -590,9 +610,8 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     const ErrorCode err = sendPendingFileBody(streamId, pending.filePayload, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
+      it = _streams.erase(it);
       _connection.sendRstStream(streamId, err);
-      it->second.pending.reset();
-      ++it;
       continue;
     }
 
@@ -669,6 +688,8 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
         err = _connection.sendData(streamId, bytes, endStream);
         pending.offset += chunkSize;
       }
+      assert(chunkSize <= _deferredOutputBytes);
+      _deferredOutputBytes -= chunkSize;
       // sendData cannot fail: stream is valid and chunkSize is bounded by both flow-control windows.
       assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
     }
@@ -681,12 +702,15 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
 
     // Body fully sent. Send trailers if present.
     if (!pending.trailersData.empty()) {
+      const std::size_t trailersSize = pending.trailersData.size();
       HeadersView tv(std::string_view{pending.trailersData.data(), pending.trailersData.size()});
       // sendHeaders cannot fail: stream is valid (asserted) and in correct state
       // (we just successfully sent DATA on it).
       [[maybe_unused]] const auto sendErr =
           _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
       assert(sendErr == ErrorCode::NoError && "sendHeaders failed for trailers on a valid stream");
+      assert(trailersSize <= _deferredOutputBytes);
+      _deferredOutputBytes -= trailersSize;
     }
 
     it->second.pending.reset();
@@ -731,7 +755,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
       _pServerConfig->globalHeaders.empty() ? nullptr : &_pServerConfig->globalHeaders;
 
   // Create H2 transport and writer
-  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders, _pCachedDateHeader);
+  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders, _pCachedDateHeader, _deferredOutputBytes,
+                                 _pServerConfig->maxOutboundBufferBytes,
+                                 _connection.localSettings().maxStreamPendingBytes);
 
   // Negotiate compression has been done in onHeadersDecodedReceived.
   HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
@@ -756,6 +782,14 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   // Emit metrics for the streaming request (matching HTTP/1 behavior with StatusCodeOK)
   onRequestCompleted(request, http::StatusCodeOK);
 
+  if (transport.overflowed()) {
+    log::warn("HTTP/2 streaming response exceeded pending-output limit on stream {}", streamId);
+    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, ErrorCode::EnhanceYourCalm);
+    return;
+  }
+
   // Transfer any pending data from the transport to the stream's deferred-send state.
   if (transport.hasPendingFile()) {
     PendingFileSend pendingFile;
@@ -764,10 +798,13 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     pendingFile.trailersView = HeadersView(pendingFile.trailersData);
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingFile));
   } else if (transport.hasPendingData()) {
+    RawChars pendingBuffer = transport.extractPendingBuffer();
+    RawChars pendingTrailers = transport.extractPendingTrailers();
+    _deferredOutputBytes += pendingBuffer.size() + pendingTrailers.size();
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(PendingStreamingSend{
-        .buffer = transport.extractPendingBuffer(),
+        .buffer = std::move(pendingBuffer),
         .offset = 0,
-        .trailersData = transport.extractPendingTrailers(),
+        .trailersData = std::move(pendingTrailers),
     });
   }
 
@@ -1086,7 +1123,69 @@ Http2ProtocolHandler::TunnelUpstreamsMap Http2ProtocolHandler::drainTunnelUpstre
   return ret;
 }
 
+bool Http2ProtocolHandler::responseExceedsPendingLimits(uint32_t streamId, const HttpResponse& response,
+                                                        bool isHeadMethod) {
+  const bool hasFile = !isHeadMethod && response.hasBodyFile();
+  const std::string_view body = !isHeadMethod && !hasFile ? response.bodyInMemory() : std::string_view{};
+  const std::string_view trailers = !isHeadMethod ? response.trailersFlatView() : std::string_view{};
+
+  if (!body.empty()) {
+    Http2Stream* pStream = _connection.getStream(streamId);
+    assert(pStream != nullptr);
+    const auto windowLimit =
+        static_cast<std::size_t>(std::max(std::min(pStream->sendWindow(), _connection.connectionSendWindow()), 0));
+    const std::size_t deferredBodySize = body.size() - std::min(body.size(), windowLimit);
+    const std::size_t deferredTrailersSize = deferredBodySize != 0 ? trailers.size() : 0;
+    const auto streamLimit = _connection.localSettings().maxStreamPendingBytes;
+    if (deferredBodySize > streamLimit || deferredTrailersSize > streamLimit - deferredBodySize) {
+      return true;
+    }
+  }
+
+  const auto limit = _pServerConfig->maxOutboundBufferBytes;
+  const std::size_t retained = retainedOutboundBytes();
+  if (retained > limit) {
+    return true;
+  }
+  std::size_t available = limit - retained;
+  const auto consumeBudget = [&available](std::size_t size) {
+    if (size > available) {
+      return false;
+    }
+    available -= size;
+    return true;
+  };
+
+  // Raw header bytes are a conservative proxy for HPACK output and also account for the already-computed
+  // response storage that exists until sendResponse returns. Global headers are encoded separately.
+  const std::size_t globalHeadersSize =
+      response._opts.isPrepared() ? 0 : _pServerConfig->globalHeaders.fullStringWithLastSep().size();
+  if (!consumeBudget(FrameHeader::kSize) || !consumeBudget(response.headersFlatViewWithDate().size()) ||
+      !consumeBudget(globalHeadersSize)) {
+    return true;
+  }
+
+  if (!body.empty()) {
+    const std::size_t maxFrameSize = _connection.peerSettings().maxFrameSize;
+    const std::size_t frameCount = 1U + ((body.size() - 1U) / maxFrameSize);
+    if (!consumeBudget(body.size()) || !consumeBudget(frameCount * FrameHeader::kSize)) {
+      return true;
+    }
+  }
+  return !trailers.empty() && (!consumeBudget(trailers.size()) || !consumeBudget(FrameHeader::kSize));
+}
+
 ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod) {
+  if (responseExceedsPendingLimits(streamId, response, isHeadMethod)) {
+    log::warn(
+        "Rejecting HTTP/2 response on stream {} at pending-output limit: response={} retained={} "
+        "connection-limit={} stream-limit={}",
+        streamId, response.bodyInMemory().size(), retainedOutboundBytes(), _pServerConfig->maxOutboundBufferBytes,
+        _connection.localSettings().maxStreamPendingBytes);
+    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
+    response = HttpResponse(http::StatusCodeServiceUnavailable);
+  }
+
   FilePayload* pFilePayload = response.filePayloadPtr();
 
   // Finalize Date header
@@ -1173,6 +1272,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         if (hasTrailers) {
           pendingSend.trailersData.assign(response.trailersFlatView());
         }
+        _deferredOutputBytes += pendingSend.buffer.size() + pendingSend.trailersData.size();
         _streams[streamId].pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingSend));
         return ErrorCode::NoError;  // trailers (if any) ride with the pending send
       }

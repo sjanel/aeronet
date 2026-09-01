@@ -378,6 +378,30 @@ TEST(Http2Connection, OnOutputWritten) {
   EXPECT_FALSE(conn.hasPendingOutput());
 }
 
+TEST(Http2Connection, InputPausesAtOutputHighWaterMarkUntilSlowReaderDrains) {
+  Http2Connection connection(Http2Config{}, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  RawBytes input;
+  WritePingFrame(input, PingFrame{});
+  WritePingFrame(input, PingFrame{});
+  const auto bytes = std::span<const std::byte>(input.data(), input.size());
+  static constexpr std::size_t kPingFrameSize = FrameHeader::kSize + 8U;
+
+  const auto first = connection.processInput(bytes, kPingFrameSize);
+  EXPECT_EQ(first.bytesConsumed, kPingFrameSize);
+  EXPECT_EQ(connection.pendingOutputSize(), kPingFrameSize);
+
+  const auto stalled = connection.processInput(bytes.subspan(first.bytesConsumed), kPingFrameSize);
+  EXPECT_EQ(stalled.bytesConsumed, 0U);
+  EXPECT_EQ(connection.pendingOutputSize(), kPingFrameSize);
+
+  connection.onOutputWritten(kPingFrameSize);
+  const auto resumed = connection.processInput(bytes.subspan(first.bytesConsumed), kPingFrameSize);
+  EXPECT_EQ(resumed.bytesConsumed, kPingFrameSize);
+  EXPECT_EQ(connection.pendingOutputSize(), kPingFrameSize);
+}
+
 TEST(Http2Connection, SmallResponsesShareOneOutputFragment) {
   Http2Config config;
   Http2Connection connection(config, true);

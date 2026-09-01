@@ -116,14 +116,28 @@ struct ConnectionState {
 
   void reclaimMemoryFromOversizedBuffers();
 
+  /// Disable zerocopy before a write when retaining its payload would exceed `maxPendingBytes`.
+  /// Returns whether the write may submit bytes through MSG_ZEROCOPY and therefore needs lifetime tracking.
+  [[nodiscard]] bool prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes);
+
   /// Hold the given buffer alive until all pending MSG_ZEROCOPY sends complete.
   /// MSG_ZEROCOPY pins user-space pages and the kernel DMA's from them asynchronously;
   /// freeing the buffer before the completion notification arrives causes data corruption.
-  /// If no zerocopy sends are pending, the buffer is released immediately (goes out of scope).
-  void holdBufferIfZerocopyPending(HttpMessageData buf);
+  /// If this write could not use zerocopy or no sends are pending, the buffer is released immediately.
+  void holdBufferIfZerocopyPending(HttpMessageData buf, bool mayNeedHold);
 
   /// Poll the kernel error queue and release held zerocopy buffers whose sends have completed.
   void releaseCompletedZerocopyBuffers();
+
+  [[nodiscard]] uint32_t zerocopyRetainedBytes() const noexcept { return zerocopyPendingBytes; }
+
+  void clearBuffers();
+
+  void setTlsEstablished() {
+    if (!tlsEstablished && transport.handshakeDone()) {
+      tlsEstablished = true;
+    }
+  }
 
   struct AggregatedBodyStreamContext {
     std::string_view body;
@@ -142,9 +156,9 @@ struct ConnectionState {
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
   HttpMessageData outBuffer;
-  // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals
-  // completion via the error queue. Without this, the allocator can reuse the freed
-  // pages while the kernel is still DMA-ing from them, causing data corruption.
+  // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals completion via the error queue.
+  // Without this, the allocator can reuse the freed pages while the kernel is still DMA-ing from them, causing data
+  // corruption.
   vector<HttpMessageData> zerocopyPendingBuffers;
   Transport transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
@@ -180,6 +194,8 @@ struct ConnectionState {
   uint32_t generation{0};
 #endif
 
+  uint32_t zerocopyPendingBytes{0};
+
   char clientAddressBuffer[kFormattedAddressCapacity];
 
   // Connection close lifecycle.
@@ -206,6 +222,7 @@ struct ConnectionState {
   bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
   bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
   bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
+  bool outBufferMayNeedZerocopyHold : 1 {false};
 
   // Whether the connection should attempt to enable MSG_ZEROCOPY when possible.
   // Determined at accept time based on server configuration and peer/local addresses.

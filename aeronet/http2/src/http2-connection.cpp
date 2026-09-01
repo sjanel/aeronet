@@ -327,6 +327,11 @@ void Http2Connection::recordStreamClosed(uint32_t streamId, ErrorCode errorCode)
 // ============================
 
 Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std::byte> data) {
+  return processInput(data, std::numeric_limits<std::size_t>::max());
+}
+
+Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std::byte> data,
+                                                             std::size_t outputHighWaterMark) {
   if (data.empty()) {
     return ProcessResult{ProcessResult::Action::Continue};
   }
@@ -342,7 +347,7 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
     case ConnectionState::GoAwaySent:
       [[fallthrough]];
     case ConnectionState::GoAwayReceived:
-      return processFrames(data);
+      return processFrames(data, outputHighWaterMark);
 
     default:
       assert(_state == ConnectionState::Closed);
@@ -380,12 +385,7 @@ void Http2Connection::getPendingOutputFragments(vector<std::string_view>& fragme
 }
 
 std::size_t Http2Connection::pendingOutputSize() const noexcept {
-  std::size_t sz = _outputBuffer.size() - _outputWritePos;
-  for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
-    const OutputBlock& block = _outputBlocks[blockIndex];
-    sz += block.remainingSize();
-  }
-  return sz;
+  return _outputBlocksSize + _outputBuffer.size() - _outputWritePos;
 }
 
 void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
@@ -395,6 +395,7 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
     OutputBlock& block = _outputBlocks[_outputBlockReadPos];
     const std::size_t consumed = std::min(bytesWritten, block.remainingSize());
     block.consume(consumed);
+    _outputBlocksSize -= consumed;
     bytesWritten -= consumed;
     if (block.empty()) {
       block.release();
@@ -418,6 +419,7 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
 
 void Http2Connection::discardPendingOutput() noexcept {
   _outputBlocks.clear();
+  _outputBlocksSize = 0;
   _outputBlockReadPos = 0;
   _outputBuffer.clear();
   _outputWritePos = 0;
@@ -430,6 +432,7 @@ void Http2Connection::sealOutputBuffer() {
     return;
   }
   if (!_outputBuffer.empty()) {
+    _outputBlocksSize += _outputBuffer.size() - _outputWritePos;
     _outputBlocks.emplace_back(std::move(_outputBuffer), _outputWritePos);
     _outputBuffer = {};
     _outputWritePos = 0;
@@ -438,6 +441,7 @@ void Http2Connection::sealOutputBuffer() {
 
 void Http2Connection::queueOutputBlock(OutputBlock block) {
   sealOutputBuffer();
+  _outputBlocksSize += block.remainingSize();
   _outputBlocks.push_back(std::move(block));
 }
 
@@ -767,10 +771,14 @@ Http2Connection::ProcessResult Http2Connection::processPreface(std::span<const s
   return ProcessResult{ProcessResult::Action::Continue};
 }
 
-Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const std::byte> data) {
+Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const std::byte> data,
+                                                              std::size_t outputHighWaterMark) {
   std::size_t totalConsumed = 0;
 
   while (data.size() >= FrameHeader::kSize) {
+    if (pendingOutputSize() >= outputHighWaterMark) {
+      break;
+    }
     const FrameHeader header = ParseFrameHeader(data);
 
     // Check frame size limits

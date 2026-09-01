@@ -156,10 +156,36 @@ template <class OutputSource>
   return output;
 }
 
+Http2Config MakeLoopHttp2Config(uint32_t maxStreamPendingBytes, uint32_t initialWindowSize = 65535U) {
+  Http2Config config;
+  config.maxStreamPendingBytes = maxStreamPendingBytes;
+  config.initialWindowSize = initialWindowSize;
+  return config;
+}
+
+HttpServerConfig MakeLoopServerConfig(std::size_t maxOutboundBufferBytes) {
+  HttpServerConfig config;
+  config.maxOutboundBufferBytes = maxOutboundBufferBytes;
+  return config;
+}
+
+RawChars MakeGetHeaders(std::string_view path) {
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "GET"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", path));
+  return headers;
+}
+
 class Http2ProtocolLoopback {
  public:
-  explicit Http2ProtocolLoopback(Router& router)
-      : compressionState(serverConfig.compression),
+  explicit Http2ProtocolLoopback(Router& router, std::size_t maxOutboundBufferBytes = 4U << 20U,
+                                 uint32_t maxStreamPendingBytes = 4U << 20U, uint32_t clientInitialWindowSize = 65535U)
+      : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes)),
+        clientCfg(MakeLoopHttp2Config(1U << 20U, clientInitialWindowSize)),
+        serverConfig(MakeLoopServerConfig(maxOutboundBufferBytes)),
+        compressionState(serverConfig.compression),
         handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer,
                 kCachedDate, {}),
         client(clientCfg, false) {
@@ -317,6 +343,115 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
                                             telemetry, tmpBuffer, false, kCachedDate, {});
 
   EXPECT_FALSE(handler->hasPendingOutput());
+}
+
+TEST(Http2ProtocolHandler, FixedResponseOverPerStreamPendingLimitReturnsServiceUnavailable) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, std::string(4096, 'x')); });
+
+  Http2ProtocolLoopback loop(router, 64UL * 1024UL, 1024U, 512U);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/large");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "503");
+}
+
+TEST(Http2ProtocolHandler, HeaderOnlyResponseOverConnectionLimitReturnsServiceUnavailable) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) {
+    HttpResponse response(http::StatusCodeOK);
+    response.headerAddLine("x-large", std::string(2048, 'h'));
+    return response;
+  });
+
+  Http2ProtocolLoopback loop(router, 1024U);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/large-header");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "503");
+}
+
+TEST(Http2ProtocolHandler, StreamingHeadersOverConnectionLimitResetStream) {
+  Router router;
+  router.setPath(http::Method::GET, "/stream-header-limit",
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.headerAddLine("x-large", std::string(2048, 'h'));
+                   writer.end();
+                 }});
+
+  static constexpr std::size_t kConnectionLimit = 1024;
+  Http2ProtocolLoopback loop(router, kConnectionLimit);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/stream-header-limit");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  EXPECT_LE(loop.handler.pendingOutputSize(), kConnectionLimit);
+
+  loop.pumpServerToClient();
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back(), std::make_pair(1U, ErrorCode::EnhanceYourCalm));
+}
+
+TEST(Http2ProtocolHandler, StreamingResponseStopsRetainingAtPendingLimit) {
+  Router router;
+  router.setPath(http::Method::GET, "/stream-limit",
+                 ::aeronet::StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                   const std::string chunk(800, 's');
+                   EXPECT_TRUE(writer.writeBody(chunk));
+                   EXPECT_FALSE(writer.writeBody(chunk));
+                 }});
+
+  static constexpr std::size_t kConnectionLimit = 2048;
+  Http2ProtocolLoopback loop(router, kConnectionLimit, 1024U, 1U);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/stream-limit");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  EXPECT_LE(loop.handler.pendingOutputSize(), kConnectionLimit);
+
+  loop.pumpServerToClient();
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back(), std::make_pair(1U, ErrorCode::EnhanceYourCalm));
+}
+
+TEST(Http2ProtocolHandler, SlowReaderOutputPlateausAndLeavesInputUnconsumed) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, std::string(900, 'p')); });
+
+  static constexpr std::size_t kConnectionLimit = 4096;
+  Http2ProtocolLoopback loop(router, kConnectionLimit, kConnectionLimit, 4096U);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/plateau");
+  for (uint32_t streamId = 1; streamId < 200; streamId += 2) {
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  }
+  const auto requests = DrainPendingOutput(loop.client, 128);
+  ASSERT_FALSE(requests.empty());
+
+  const auto first = loop.handler.processInput(requests, loop.state);
+  EXPECT_GT(first.bytesConsumed, 0U);
+  EXPECT_LT(first.bytesConsumed, requests.size());
+  EXPECT_GE(loop.handler.pendingOutputSize(), kConnectionLimit);
+  EXPECT_LE(loop.handler.pendingOutputSize(), kConnectionLimit + 1024U);
+
+  const std::size_t plateauBytes = loop.handler.pendingOutputSize();
+  const auto stalled =
+      loop.handler.processInput(std::span<const std::byte>(requests).subspan(first.bytesConsumed), loop.state);
+  EXPECT_EQ(stalled.bytesConsumed, 0U);
+  EXPECT_EQ(loop.handler.pendingOutputSize(), plateauBytes);
 }
 
 TEST(Http2ProtocolHandler, ConnectionPreface) {

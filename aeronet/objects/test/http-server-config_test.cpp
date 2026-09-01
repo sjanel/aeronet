@@ -375,7 +375,18 @@ TEST(HttpServerConfigTest, ZerocopyModeDefault) {
   HttpServerConfig config;
   // Default should be Opportunistic
   EXPECT_EQ(config.zerocopyMode, ZerocopyMode::Opportunistic);
+  EXPECT_EQ(config.maxZerocopyPendingBytes, 4U << 20U);
   EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ZerocopyPendingLimit) {
+  HttpServerConfig config;
+  config.withMaxZerocopyPendingBytes(8U << 20U);
+  EXPECT_EQ(config.maxZerocopyPendingBytes, 8U << 20U);
+  EXPECT_NO_THROW(config.validate());
+
+  config.withMaxZerocopyPendingBytes(1023);
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, ZerocopyModeDisabled) {

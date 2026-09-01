@@ -806,7 +806,15 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
     return CloseStatus::Close;
   }
   flushOutbound(cnxIt);
-  return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+
+  // HTTP/2 output backpressure can leave complete frames in the user-space input buffer. Once EPOLLOUT drains
+  // the high-water mark, resume those frames directly: edge-triggered polling may not deliver another read event.
+  ConnectionState* pState = _connections.pConnectionState(fd);
+  if (pState != nullptr && !pState->hasPendingOutput() && pState->protocolHandler && !pState->inBuffer.empty()) {
+    (void)processSpecialProtocolHandler(_connections.iterator(fd));
+    pState = _connections.pConnectionState(fd);
+  }
+  return pState == nullptr || pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt) {
