@@ -28,7 +28,7 @@ struct Lifecycle {
         lastLoopNs(other.lastLoopNs.exchange(0, std::memory_order_relaxed)),
         wakeupFd(std::move(other.wakeupFd)),
         state(other.state.exchange(State::Idle, std::memory_order_relaxed)),
-        drainDeadlineEnabled(std::exchange(other.drainDeadlineEnabled, false)) {}
+        drainDeadlineEnabled(other.drainDeadlineEnabled.exchange(false, std::memory_order_relaxed)) {}
 
   Lifecycle& operator=(const Lifecycle&) = delete;
 
@@ -38,21 +38,28 @@ struct Lifecycle {
       lastLoopNs.store(other.lastLoopNs.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
       wakeupFd = std::move(other.wakeupFd);
       state.store(other.state.exchange(State::Idle, std::memory_order_relaxed), std::memory_order_relaxed);
-      drainDeadlineEnabled = std::exchange(other.drainDeadlineEnabled, false);
+      drainDeadlineEnabled.store(other.drainDeadlineEnabled.exchange(false, std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
     }
     return *this;
   }
 
   ~Lifecycle() = default;
 
+  // Note on memory order: state uses acquire/release (not relaxed) because it also gates visibility of the
+  // non-atomic socket/event-loop teardown performed by whichever thread transitions to Idle (see closeListener()
+  // calls guarded by "if previous state was already Idle" in SingleHttpServer::stop()). A thread that observes
+  // State::Idle - whether via a failed CAS here or a plain load - must see the writes that preceded the release
+  // store in reset(), otherwise it can race with the event-loop thread's own in-flight teardown (caught by TSan:
+  // stop()'s controller-thread closeListener() racing with runUntilStarted()'s event-loop-thread closeListener()).
   void reset() noexcept {
     // Use CAS to ensure only one thread transitions to Idle and writes the non-atomic fields.
     // This avoids a data race when both SingleHttpServer::stop() and the event-loop thread call reset()
     // concurrently (e.g. during rapid stop cycles in multi-server mode).
-    for (State expected = state.load(std::memory_order_relaxed); expected != State::Idle;) {
-      if (state.compare_exchange_weak(expected, State::Idle, std::memory_order_relaxed)) {
+    for (State expected = state.load(std::memory_order_acquire); expected != State::Idle;) {
+      if (state.compare_exchange_weak(expected, State::Idle, std::memory_order_release, std::memory_order_acquire)) {
         drainDeadline = {};
-        drainDeadlineEnabled = false;
+        drainDeadlineEnabled.store(false, std::memory_order_relaxed);
         lastLoopNs.store(0, std::memory_order_relaxed);
         return;
       }
@@ -64,21 +71,23 @@ struct Lifecycle {
   // is inspecting the router.
   [[nodiscard]] bool tryEnterStarting() noexcept {
     State expected = State::Idle;
-    return state.compare_exchange_strong(expected, State::Starting, std::memory_order_relaxed);
+    return state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel,
+                                         std::memory_order_acquire);
   }
 
   void enterRunning() noexcept {
-    state.store(State::Running, std::memory_order_relaxed);
-    drainDeadlineEnabled = false;
+    state.store(State::Running, std::memory_order_release);
+    drainDeadlineEnabled.store(false, std::memory_order_relaxed);
   }
 
   // Transitions from Starting only, preserving a concurrent Stopping request.
   [[nodiscard]] bool tryEnterRunning() noexcept {
     State expected = State::Starting;
-    if (!state.compare_exchange_strong(expected, State::Running, std::memory_order_relaxed)) {
+    if (!state.compare_exchange_strong(expected, State::Running, std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
       return false;
     }
-    drainDeadlineEnabled = false;
+    drainDeadlineEnabled.store(false, std::memory_order_relaxed);
     return true;
   }
 
@@ -87,61 +96,64 @@ struct Lifecycle {
   State exchangeStopping() noexcept {
     State expected = State::Starting;
     // Use strong compare_exchange to change Starting -> Stopping atomically.
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
-      drainDeadlineEnabled = false;
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
       return expected;
     }
     // Also handle Running -> Stopping.
     expected = State::Running;
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
-      drainDeadlineEnabled = false;
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
       return expected;
     }
     // Also handle Draining -> Stopping (e.g. stop() called after beginDrain()).
     expected = State::Draining;
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_relaxed)) {
-      drainDeadlineEnabled = false;
+    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
     }
     return expected;
   }
 
   void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
     drainDeadline = deadline;
-    state.store(State::Draining, std::memory_order_relaxed);
-    drainDeadlineEnabled = enabled;
+    state.store(State::Draining, std::memory_order_release);
+    drainDeadlineEnabled.store(enabled, std::memory_order_relaxed);
   }
 
   void shrinkDeadline(std::chrono::steady_clock::time_point deadline) noexcept {
-    if (!drainDeadlineEnabled || deadline < drainDeadline) {
+    if (!drainDeadlineEnabled.load(std::memory_order_relaxed) || deadline < drainDeadline) {
       drainDeadline = deadline;
-      drainDeadlineEnabled = true;
+      drainDeadlineEnabled.store(true, std::memory_order_relaxed);
     }
     wakeupFd.send();
   }
 
-  [[nodiscard]] bool isIdle() const noexcept { return state.load(std::memory_order_relaxed) == State::Idle; }
-  [[nodiscard]] bool isRunning() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
-  [[nodiscard]] bool isStarting() const noexcept { return state.load(std::memory_order_relaxed) == State::Starting; }
-  [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_relaxed) == State::Draining; }
-  [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_relaxed) == State::Stopping; }
-  [[nodiscard]] State currentState() const noexcept { return state.load(std::memory_order_relaxed); }
-  [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_relaxed) != State::Idle; }
+  [[nodiscard]] bool isIdle() const noexcept { return state.load(std::memory_order_acquire) == State::Idle; }
+  [[nodiscard]] bool isRunning() const noexcept { return state.load(std::memory_order_acquire) == State::Running; }
+  [[nodiscard]] bool isStarting() const noexcept { return state.load(std::memory_order_acquire) == State::Starting; }
+  [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_acquire) == State::Draining; }
+  [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_acquire) == State::Stopping; }
+  [[nodiscard]] State currentState() const noexcept { return state.load(std::memory_order_acquire); }
+  [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_acquire) != State::Idle; }
   [[nodiscard]] bool cannotBeginDraining() const noexcept {
-    const State current = state.load(std::memory_order_relaxed);
+    const State current = state.load(std::memory_order_acquire);
     return current == State::Idle || current == State::Starting || current == State::Stopping;
   }
 
-  [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled; }
+  [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled.load(std::memory_order_relaxed); }
   [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
 
   // Probe status derived from state (no need for separate atomics):
   // - started: true once server initialization has completed (state != Idle/Starting)
   // - ready: true when server is accepting normal traffic (state == Running)
   [[nodiscard]] bool started() const noexcept {
-    const State current = state.load(std::memory_order_relaxed);
+    const State current = state.load(std::memory_order_acquire);
     return current != State::Idle && current != State::Starting;
   }
-  [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_relaxed) == State::Running; }
+  [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_acquire) == State::Running; }
 
   // Loop heartbeat used by a dedicated probe listener to detect a wedged event loop.
   // Published once per iteration at the top of the loop (see SingleHttpServer::eventLoop): if the loop is stuck
@@ -168,7 +180,8 @@ struct Lifecycle {
   // Wakeup fd (eventfd) used to interrupt epoll_wait promptly when stop() is invoked from another thread.
   EventFd wakeupFd;
   std::atomic<State> state{State::Idle};
-  bool drainDeadlineEnabled{false};
+  // reset() runs on the event-loop thread while stop() can transition the lifecycle from a controller thread.
+  std::atomic<bool> drainDeadlineEnabled{false};
 };
 
 }  // namespace aeronet::internal

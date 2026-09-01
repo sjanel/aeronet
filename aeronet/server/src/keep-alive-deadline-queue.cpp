@@ -89,7 +89,7 @@ void KeepAliveDeadlineQueue::upsert(ConnectionState& state, NativeHandle fd,
   }
 }
 
-void KeepAliveDeadlineQueue::remove(ConnectionState& state) {
+void KeepAliveDeadlineQueue::remove(ConnectionState& state) noexcept {
   if (state.keepAliveDeadlineIndex == ConnectionState::kNoKeepAliveDeadlineIndex) {
     return;
   }
@@ -109,13 +109,13 @@ void KeepAliveDeadlineQueue::remove(ConnectionState& state) {
   }
 }
 
-KeepAliveDeadlineQueue::Entry KeepAliveDeadlineQueue::pop() {
+KeepAliveDeadlineQueue::Entry KeepAliveDeadlineQueue::pop() noexcept {
   Entry entry = _heap.front();
   remove(*entry.pState);
   return entry;
 }
 
-void KeepAliveDeadlineQueue::clear() {
+void KeepAliveDeadlineQueue::clear() noexcept {
   for (Entry& entry : _heap) {
     entry.pState->keepAliveDeadlineIndex = ConnectionState::kNoKeepAliveDeadlineIndex;
   }

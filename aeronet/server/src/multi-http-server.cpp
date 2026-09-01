@@ -468,7 +468,7 @@ void MultiHttpServer::ensureNextServersBuilt() {
 
   // On restart, bind the first server before copying it so every worker gets a fresh listener and event loop. Do this
   // on the controller thread before launching workers to avoid concurrent listener initialization.
-  if (_servers.size() > 1UL) {
+  if (_servers.size() > 1U) {
     firstServer.closeListener();
     firstServer.initListener();
   }

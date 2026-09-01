@@ -231,7 +231,7 @@ void SingleHttpServer::forgetWritableInterest(ConnectionState& state) noexcept {
   --_connectionSweepState.writableConnections;
 }
 
-void SingleHttpServer::forgetConnectionMaintenance(ConnectionState& state) {
+void SingleHttpServer::forgetConnectionMaintenance(ConnectionState& state) noexcept {
   _keepAliveDeadlines.remove(state);
   clearRequestDeadline(state);
   forgetWritableInterest(state);
@@ -664,12 +664,14 @@ void SingleHttpServer::acceptNewConnections() {
 void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   const auto cfd = cnxIt->fd();
   ConnectionState& state = _connections.connectionState(cnxIt);
+
   log::debug("closeConnection called for fd # {}", cfd);
+
   forgetConnectionMaintenance(state);
 
   // If this is a tunnel endpoint (CONNECT), ensure we tear down the peer too.
-  // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing
-  // spurious epoll_ctl failures and incorrect forwarding.
+  // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing spurious epoll_ctl failures and
+  // incorrect forwarding.
   const auto peerFd = state.peerFd;
   if (peerFd != kInvalidHandle) {
     auto peerIt = _connections.iterator(peerFd);

@@ -1465,6 +1465,11 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
 }
 
 TEST(SingleHttpServer, EpollPollFailure) {
+  // Stop the shared background server so it cannot race this test for the process-wide epoll hooks.
+  ts.stop();
+
+  SingleHttpServer server(TestServerConfig());
+
   test::EventLoopHookGuard guard;
   test::SetEpollWaitActions({
       test::WaitError(error::kInterrupted),
@@ -1475,22 +1480,9 @@ TEST(SingleHttpServer, EpollPollFailure) {
       test::WaitError(EBADF),
   });
 
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(1024UL * 1024, 'Y')); });
-
-  // The server may have already stopped due to injected epoll_wait errors before
-  // the client can connect or send. Both outcomes are valid: the test verifies
-  // that the server stops and the client receives no complete response.
-  try {
-    test::ClientConnection clientConnection(ts.port());
-    NativeHandle fd = clientConnection.fd();
-    test::sendAll(fd, "GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
-
-    auto data = test::recvWithTimeout(fd, 50ms);
-
-    EXPECT_TRUE(data.empty());
-  } catch (const std::runtime_error&) {
-    return;
-  }
+  // A fatal poll error must stop the event loop and make the synchronous run return.
+  server.run();
+  EXPECT_FALSE(server.isRunning());
 }
 
 TEST(SingleHttpServer, EpollRdhupWithoutInTriggersClose) {

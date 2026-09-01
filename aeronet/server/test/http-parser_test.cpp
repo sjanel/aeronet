@@ -203,6 +203,16 @@ TEST(HttpParserChunked, NeedMore_NoChunkSizeCRLF) {
   ASSERT_TRUE(resp.contains("Hello")) << resp;
 }
 
+TEST(HttpParserChunked, BareCarriageReturnInChunkSizeLineIsRejected) {
+  const std::string req =
+      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+      "5\rX";
+
+  const std::string resp = test::sendAndCollect(port, req);
+
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
 // NeedMore path (line 132): chunk-size line is complete but chunk data is incomplete.
 // The server knows how many bytes to expect but has not received them all yet.
 TEST(HttpParserChunked, NeedMore_PartialChunkData) {
@@ -345,8 +355,9 @@ TEST(HttpParserChunkedTrailers, InvalidTrailerHeaderValue) {
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
       "3\r\nfoo\r\n"
       "0\r\n"
-      "x-trailer: \r\r\n"
-      "\r\n";
+      "x-trailer: ";
+  req.push_back('\x01');
+  req.append("\r\n\r\n");
   std::string resp = test::sendAndCollect(port, req);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
