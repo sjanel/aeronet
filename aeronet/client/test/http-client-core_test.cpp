@@ -2690,7 +2690,11 @@ TEST(HttpClientConfigTest, DecompressionHelper) {
 TEST(HttpClientConfigTest, RequestCompressionHelpers) {
   HttpClientConfig cfg;
   cfg.withRequestCompression(true);  // enable with the default compiled-in codec
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_TRUE(cfg.requestCompression.enabled());
+#else
+  EXPECT_FALSE(cfg.requestCompression.enabled());
+#endif
   EXPECT_EQ(cfg.requestCompression.encoding, internal::DefaultRequestEncoding());
 
   cfg.withRequestCompression(Encoding::gzip);  // selects a specific codec

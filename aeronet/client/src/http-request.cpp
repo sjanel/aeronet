@@ -468,8 +468,9 @@ HttpRequest HttpRequest::clone() const {
 // Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.
 // After calling this function, the HttpRequest object is still valid and can be reused to build another request,
 // but the HttpMessageData has been created by copy. To avoid the copy, use the rvalue overload below.
-[[nodiscard]] HttpRequest HttpRequest::finalizeHeadersAndBody(internal::HttpClientCodec& clientCodec,
-                                                              const DecompressionConfig& decompressionConfig) const {
+[[nodiscard]] HttpRequest HttpRequest::finalizeHeadersAndBody(
+    [[maybe_unused]] internal::HttpClientCodec& clientCodec,
+    [[maybe_unused]] const DecompressionConfig& decompressionConfig) const {
   HttpRequest copy = clone();
 
   copy.HttpMessage::finalizeHeadersAndBody();

@@ -128,11 +128,15 @@ inline std::string_view FinalizeDecompressedBody(SvToSvMap& headersMap, SvToSvMa
 }
 
 inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] DecompressionState& decompressionState,
-                                                       [[maybe_unused]] auto&& runDecoder, double maxExpansionRatio,
-                                                       std::string_view& src, std::string_view contentEncoding,
-                                                       std::size_t compressedSize, RawChars& bodyAndTrailersBuffer,
-                                                       RawChars& tmpBuffer) {
+                                                       [[maybe_unused]] auto&& runDecoder,
+                                                       [[maybe_unused]] double maxExpansionRatio, std::string_view& src,
+                                                       std::string_view contentEncoding,
+                                                       [[maybe_unused]] std::size_t compressedSize,
+                                                       RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   RawChars* dst = &tmpBuffer;
+  bool stageOk{};
+#endif
 
   http::StatusCode decompressStatus = http::StatusCodeNotModified;
 
@@ -144,7 +148,6 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
     }
 
-    bool stageOk = false;
     if (CaseInsensitiveEqual(encoding, http::identity)) {
       continue;
 #ifdef AERONET_ENABLE_ZLIB
@@ -169,7 +172,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
     } else {
       return {.status = http::StatusCodeUnsupportedMediaType, .message = "Unsupported Content-Encoding"};
     }
-
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (!stageOk) {
       return {.status = http::StatusCodeBadRequest, .message = "Decompression failed"};
     }
@@ -185,6 +188,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
 
     src = *dst;
     dst = dst == &bodyAndTrailersBuffer ? &tmpBuffer : &bodyAndTrailersBuffer;
+#endif
   }
 
   if (src.data() == tmpBuffer.data()) {
@@ -211,6 +215,8 @@ inline bool UseStreamingDecompression(const SvToSvMap& headersMap, std::size_t s
   return false;
 }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+
 // Decode a single contiguous compressed `src` with one decoder, either in one-shot mode or, when
 // `useStreaming` is set, by feeding fixed-size chunks into a streaming context (bounded intermediate
 // memory for large payloads). Appends the decompressed bytes to `dst` (cleared first). Returns false on
@@ -236,6 +242,8 @@ bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, co
   }
   return true;
 }
+
+#endif
 
 constexpr CompressResponseResult ConvertEncoderResultErrorToCompressResponseResult(EncoderResult encoderResult) {
   assert(encoderResult.hasError());

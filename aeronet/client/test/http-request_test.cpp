@@ -380,7 +380,11 @@ TEST_F(HttpRequestTest, LvalueFluentSetters) {
   EXPECT_EQ(req.method(), http::Method::PUT);
   EXPECT_EQ(req.host(), "h");
   EXPECT_EQ(req.bodyInMemory(), "payload");
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   EXPECT_EQ(req.directCompressionMode(), DirectCompressionMode::Auto);
+#else
+  EXPECT_EQ(req.directCompressionMode(), DirectCompressionMode::Off);
+#endif
   EXPECT_EQ(req.target(), "/p");
   req.body(std::string_view{});
   req.contentEncoding("custom-codec");
