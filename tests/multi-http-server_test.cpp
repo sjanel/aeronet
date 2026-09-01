@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <stdexcept>
@@ -586,7 +587,7 @@ TEST(MultiHttpServer, WorkerErrorsAreRetainedAfterStop) {
   std::atomic<int> predicateCalls{0};
   std::atomic<bool> errorThrown{false};
 
-  auto handle = multi.startDetachedAndStopWhen([&predicateCalls, &errorThrown]() -> bool {
+  auto handle = multi.startDetachedAndStopWhen([&predicateCalls, &errorThrown] {
     predicateCalls.fetch_add(1, std::memory_order_relaxed);
     if (!errorThrown.exchange(true, std::memory_order_relaxed)) {
       throw std::runtime_error("worker predicate failure");

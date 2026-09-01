@@ -16,6 +16,7 @@
 #include "aeronet/connection.hpp"
 
 #ifdef AERONET_POSIX
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/native-handle.hpp"
 #endif
 

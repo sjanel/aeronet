@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "aeronet/http-server-config.hpp"
 
@@ -20,7 +21,8 @@ namespace {
 constexpr std::string_view kDummyCertPem = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n";
 constexpr std::string_view kDummyKeyPem = "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----\n";
 
-TlsRevocationStatus NoRevocationOpinion(TlsPeerCertificateView, void*) noexcept {
+TlsRevocationStatus NoRevocationOpinion([[maybe_unused]] TlsPeerCertificateView view,
+                                        [[maybe_unused]] void* ptr) noexcept {
   return TlsRevocationStatus::NoOpinion;
 }
 
