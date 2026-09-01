@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -10,6 +11,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/secure-zero.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -115,6 +117,7 @@ void TLSConfig::scrubSensitiveData() noexcept {
 
 void TLSConfig::swap(TLSConfig& other) noexcept {
   using std::swap;
+
   swap(sessionTickets, other.sessionTickets);
   swap(handshakeTimeout, other.handshakeTimeout);
   swap(revocationCallback, other.revocationCallback);

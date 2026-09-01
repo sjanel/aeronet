@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"

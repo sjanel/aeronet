@@ -10,6 +10,8 @@
 #include <system_error>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
+
+#include "aeronet/metric-label.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"

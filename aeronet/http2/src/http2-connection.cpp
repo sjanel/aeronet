@@ -22,6 +22,7 @@
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"

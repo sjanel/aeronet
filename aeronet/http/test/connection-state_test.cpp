@@ -17,6 +17,7 @@
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <stdexcept>
@@ -569,11 +570,13 @@ class FakeTransport final : public TransportBackend<FakeTransport> {
 
 class DelayedZerocopyTransport final : public TransportBackend<DelayedZerocopyTransport> {
  public:
-  static TransportResult read(char*, std::size_t) { return {0U, TransportHint::ReadReady}; }
+  static TransportResult read([[maybe_unused]] char* ptr, [[maybe_unused]] std::size_t sz) {
+    return {0U, TransportHint::ReadReady};
+  }
   static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
   [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _enabled; }
   [[nodiscard]] bool hasZerocopyPending() const noexcept { return !_completed; }
-  std::size_t pollZerocopyCompletions() noexcept { return _completed ? 1U : 0U; }
+  [[nodiscard]] std::size_t pollZerocopyCompletions() const noexcept { return _completed ? 1U : 0U; }
   void disableZerocopy() noexcept { _enabled = false; }
   void complete() noexcept { _completed = true; }
 

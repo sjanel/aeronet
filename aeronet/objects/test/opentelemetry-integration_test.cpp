@@ -6,6 +6,7 @@
 #endif
 
 #include <chrono>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
