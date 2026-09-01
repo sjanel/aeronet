@@ -2559,6 +2559,147 @@ TEST(Http2Connection, PriorityFrameFloodOnIdleStreamsIsEnhanceYourCalm) {
 }
 
 // ============================
+// PRIORITY tree depth limiting
+// ============================
+
+TEST(Http2Connection, PriorityChainWithinDepthLimitIsNotClamped) {
+  Http2Config config;
+  config.maxPriorityTreeDepth = 3;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  for (uint32_t streamId : {1U, 3U, 5U, 7U}) {
+    ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  }
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
+
+  const auto sendPriority = [&](uint32_t streamId, uint32_t dependency) {
+    RawBytes buf;
+    WritePriorityFrame(buf, streamId, dependency, 16, false);
+    auto span = std::span<const std::byte>(buf.data(), buf.size());
+    ASSERT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
+  };
+
+  // Chain 3->1, 5->3, 7->5. Ancestor walk from 7 hits exactly the configured
+  // limit (3), so nothing should be clamped.
+  sendPriority(3, 1);
+  sendPriority(5, 3);
+  sendPriority(7, 5);
+
+  EXPECT_EQ(conn.getStream(7)->streamDependency(), 5U);
+  EXPECT_EQ(conn.getStream(5)->streamDependency(), 3U);
+  EXPECT_EQ(conn.getStream(3)->streamDependency(), 1U);
+}
+
+TEST(Http2Connection, PriorityChainExceedingDepthLimitIsClampedToRoot) {
+  Http2Config config;
+  config.maxPriorityTreeDepth = 3;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  for (uint32_t streamId : {1U, 3U, 5U, 7U, 9U}) {
+    ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  }
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
+
+  const auto sendPriority = [&](uint32_t streamId, uint32_t dependency) {
+    RawBytes buf;
+    WritePriorityFrame(buf, streamId, dependency, 16, false);
+    auto span = std::span<const std::byte>(buf.data(), buf.size());
+    ASSERT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
+  };
+
+  sendPriority(3, 1);
+  sendPriority(5, 3);
+  sendPriority(7, 5);
+
+  // One link further: 9 -> 7 would put stream 9 at depth 4, past the limit of 3.
+  // It should be silently clamped to the root, not rejected.
+  sendPriority(9, 7);
+
+  EXPECT_EQ(conn.getStream(9)->streamDependency(), 0U);
+  EXPECT_TRUE(conn.isOpen());  // policy clamp, not a connection error
+}
+
+TEST(Http2Connection, PriorityViaHeadersFrameExceedingDepthLimitIsClampedToRoot) {
+  Http2Config config;
+  config.maxPriorityTreeDepth = 1;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // Both ancestor streams must actually exist as real (HEADERS-created) streams.
+  // PRIORITY frames targeting a non-existent stream ID are accepted but discarded
+  // (see the idle-stream branch in handlePriorityFrame) -- they persist no
+  // dependency state for the ancestor walk to traverse.
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(3, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
+
+  RawBytes buf;
+  WritePriorityFrame(buf, 3, 1, 16, false);
+  {
+    auto span = std::span<const std::byte>(buf.data(), buf.size());
+    ASSERT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
+  }
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
+  ASSERT_EQ(conn.getStream(3)->streamDependency(), 1U);
+
+  // A new stream created via HEADERS carrying a priority block, depending on
+  // stream 3, would sit two ancestors deep (5 -> 3 -> 1) -- one past the
+  // configured limit of 1.
+  RawBytes hb;
+  std::array<std::byte, 1> fragment = {std::byte{0x82}};
+  WriteHeadersFrameWithPriority(hb, 5, fragment, 3, 16, false, false, true);
+  auto span = std::span<const std::byte>(hb.data(), hb.size());
+  EXPECT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
+
+  EXPECT_EQ(conn.getStream(5)->streamDependency(), 0U);
+}
+
+TEST(Http2Connection, PriorityDependencyCycleTerminatesAndClampsInsteadOfLooping) {
+  Http2Config config;
+  config.maxPriorityTreeDepth = 5;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  for (uint32_t streamId : {1U, 3U, 5U}) {
+    ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  }
+  if (conn.hasPendingOutput()) {
+    conn.onOutputWritten(conn.getPendingOutput().size());
+  }
+
+  const auto sendPriority = [&](uint32_t streamId, uint32_t dependency) {
+    RawBytes buf;
+    WritePriorityFrame(buf, streamId, dependency, 16, false);
+    auto span = std::span<const std::byte>(buf.data(), buf.size());
+    ASSERT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
+  };
+
+  // 3 depends on 1 (fine), then 1 is re-parented onto 3 -- forming a 1<->3 cycle.
+  // Neither update is illegal in isolation (only literal self-dependency is
+  // rejected outright), so the cycle is allowed to form.
+  sendPriority(3, 1);
+  sendPriority(1, 3);
+
+  // Attach a third stream to the cyclic pair. Without the depth cap this
+  // ancestor walk spins between 1 and 3 forever; with it, the walk gives up
+  // once maxPriorityTreeDepth is exceeded and the new stream is clamped.
+  sendPriority(5, 1);
+
+  EXPECT_EQ(conn.getStream(5)->streamDependency(), 0U);
+  EXPECT_TRUE(conn.isOpen());
+}
+
+// ============================
 // RST_STREAM frame error path coverage
 // ============================
 

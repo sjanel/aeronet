@@ -34,7 +34,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
  public:
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders,
                        const char* cachedDateHeader, std::size_t existingDeferredBytes,
-                       std::size_t maxConnectionPendingBytes, uint32_t maxStreamPendingBytes)
+                       uint32_t maxConnectionPendingBytes, uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
         _pGlobalHeaders(pGlobalHeaders),
         _pCachedDateHeader(cachedDateHeader),
@@ -243,7 +243,7 @@ class Http2WriterTransport final : public internal::IWriterTransport {
   const ConcatenatedHeaders* _pGlobalHeaders;
   const char* _pCachedDateHeader;
   std::size_t _existingDeferredBytes;
-  std::size_t _maxConnectionPendingBytes;
+  uint32_t _maxConnectionPendingBytes;
   uint32_t _maxStreamPendingBytes;
   uint32_t _streamId;
   bool _isHead{false};

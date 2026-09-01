@@ -306,7 +306,7 @@ TEST(HttpTlsBasic, LargePayload) {
   std::string largeBody(1UL << 25U, 'a');
   // Prepare config with in-memory self-signed cert/key
   ts.server.postConfigUpdate([&](HttpServerConfig& cfg) {
-    cfg.withMaxOutboundBufferBytes(largeBody.size() + 64);  // +64 for headers
+    cfg.withMaxOutboundBufferBytes(static_cast<uint32_t>(largeBody.size()) + 64U);  // +64 for headers
     cfg.withKeepAliveTimeout(std::chrono::hours(1));
   });
   ts.setDefault([&largeBody]([[maybe_unused]] const HttpRequestView& req) { return req.makeResponse(largeBody); });
