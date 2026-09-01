@@ -147,7 +147,7 @@ TEST(HttpHeadersCustom, LowercaseReplacementKeepsSingleLine) {
   ts.router().setDefault([](const HttpRequestView&) {
     HttpResponse resp;
     resp.header("x-case", "one");
-    resp.header("x-case", "two");  // should replace value only
+    resp.header("x-case", "two");    // should replace value only
     resp.header("x-case", "three");  // replace again
     resp.body("b");
     return resp;
@@ -3033,6 +3033,7 @@ void raw(auto port, std::string_view verb, std::string& out) {
   out = test::recvUntilClosed(fd);
 }
 
+#ifdef AERONET_ENABLE_ZLIB
 void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, std::string& out) {
   test::ClientConnection sock(port);
   auto fd = sock.fd();
@@ -3043,6 +3044,7 @@ void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, st
   test::sendAll(fd, req);
   out = test::recvUntilClosed(fd);
 }
+#endif
 }  // namespace
 
 TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
