@@ -323,6 +323,23 @@ void Http2Connection::recordStreamClosed(uint32_t streamId, ErrorCode errorCode)
   _pTelemetryContext->histogram("aeronet.http2.streams.active", static_cast<double>(_activeStreamCount));
 }
 
+// Returns true if walking up from `parentId` toward the root would exceed
+// maxPriorityTreeDepth (or never terminates, i.e. a cycle).
+bool Http2Connection::priorityDepthExceeded(uint32_t id) const noexcept {
+  uint32_t depth = 0;
+  while (id != 0) {
+    if (++depth > _localSettings.maxPriorityTreeDepth) {
+      return true;
+    }
+    const auto it = _streams.find(id);
+    if (it == _streams.end()) {
+      break;  // ancestor not tracked (idle/pruned) -> chain ends here
+    }
+    id = it->second.streamDependency();  // needs this accessor on Http2Stream
+  }
+  return false;
+}
+
 // ============================
 // Connection lifecycle
 // ============================
@@ -976,7 +993,8 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     if (frame.streamDependency == header.streamId) [[unlikely]] {
       return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
     }
-    pStream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
+    const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
+    pStream->setPriority(effectiveDependency, frame.weight, frame.exclusive);
   }
 
   // Accumulate header block
@@ -1039,7 +1057,8 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
 
   Http2Stream* pStream = getStream(header.streamId);
   if (pStream != nullptr) {
-    pStream->setPriority(frame.streamDependency, frame.weight, frame.exclusive);
+    const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
+    pStream->setPriority(effectiveDependency, frame.weight, frame.exclusive);
   } else {
     // Security hardening: rate-limit PRIORITY frames on non-existent streams to
     // prevent a flood of cheap PRIORITY frames from starving real request processing.

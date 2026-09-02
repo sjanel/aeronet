@@ -118,7 +118,7 @@ struct Http2Config {
   /// Maximum depth of the priority dependency tree.
   /// Limits resource usage for malicious deep dependency chains.
   /// Default: 256.
-  uint32_t maxPriorityTreeDepth{256};
+  uint16_t maxPriorityTreeDepth{256};
 
   // ============================
   // Builder-style setters
@@ -204,7 +204,7 @@ struct Http2Config {
     return *this;
   }
 
-  Http2Config& withMaxPriorityTreeDepth(uint32_t depth) {
+  Http2Config& withMaxPriorityTreeDepth(uint16_t depth) {
     maxPriorityTreeDepth = depth;
     return *this;
   }

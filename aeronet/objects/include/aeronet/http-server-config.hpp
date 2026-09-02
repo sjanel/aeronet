@@ -194,7 +194,7 @@ struct HttpServerConfig {
   // writes are rejected and HTTP/1 connections are marked for closure after flushing what is already queued.
   // HTTP/2 pauses frame processing while its wire-output queue is at the limit and rejects new response work when
   // retained output has exhausted the connection budget. Default: 4 MiB per connection.
-  std::size_t maxOutboundBufferBytes{4UL << 20U};  // 4 MiB
+  uint32_t maxOutboundBufferBytes{4U << 20U};  // 4 MiB
 
   // Upper bound (bytes) for response buffers retained until Linux MSG_ZEROCOPY completion notifications arrive.
   // Once retaining the next payload would exceed this limit, zerocopy is disabled for that connection and later
@@ -395,7 +395,7 @@ struct HttpServerConfig {
   HttpServerConfig& withMinCapturedBodySize(std::size_t bytes);
 
   // Adjust per-connection outbound queue cap
-  HttpServerConfig& withMaxOutboundBufferBytes(std::size_t maxOutbound);
+  HttpServerConfig& withMaxOutboundBufferBytes(uint32_t maxOutbound);
 
   // Adjust per-connection MSG_ZEROCOPY retained-payload cap.
   HttpServerConfig& withMaxZerocopyPendingBytes(uint32_t maxPending);

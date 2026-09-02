@@ -3180,10 +3180,10 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
 
 TEST(StreamingBackpressure, LargeBodyQueues) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.enableKeepAlive = false;                                       // simplicity
-    cfg.maxOutboundBufferBytes = static_cast<std::size_t>(64 * 1024);  // assume default maybe larger
+    cfg.enableKeepAlive = false;              // simplicity
+    cfg.maxOutboundBufferBytes = 64U * 1024;  // assume default maybe larger
   });
-  std::size_t total = static_cast<std::size_t>(512 * 1024);  // 512 KB
+  std::size_t total = 512UL * 1024;  // 512 KB
   ts.router().setDefault([&]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     std::string chunk(8192, 'x');
