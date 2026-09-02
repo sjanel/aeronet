@@ -31,18 +31,18 @@ struct DecompressionConfig {
 
   // Absolute cap on the decompressed size (in bytes). If exceeded during inflation, decompression
   // aborts and the request is rejected (413). Default: 4 GiB.
-  std::size_t maxDecompressedBytes{4ULL * 1024 * 1024 * 1024};
+  std::size_t maxDecompressedBytes{4ULL << 30U};
 
   // Minimal chunk size of buffer growths during decompression.
   // Prefer a large size if you expect big payloads in average, prefer a small size if you want to limit memory
   // overhead.
   // Note that the growth will be exponential anyway.
-  std::size_t decoderChunkSize{32UL * 1024UL};
+  std::size_t decoderChunkSize{32U << 10U};
 
   // When Content-Length is greater or equal to this threshold (bytes), inbound decompression switches to streaming
   // contexts to avoid allocating full intermediate buffers for large payloads. 0 => always use aggregated mode.
   // Defaults to 16 MiB.
-  std::size_t streamingDecompressionThresholdBytes{1 << 24};
+  std::size_t streamingDecompressionThresholdBytes{1U << 24U};
 
   // Ratio guard: if decompressed_size > compressed_size * maxExpansionRatio the request is
   // rejected (413) even if maxDecompressedBytes is not exceeded. This quickly rejects "compression

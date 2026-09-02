@@ -118,7 +118,7 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `maxHeaderListSize` | 8192 | Advertised decoded header-list ceiling. |
 | `settingsTimeout` | 5 s | Deadline for the peer SETTINGS acknowledgement. |
 | `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive and response deadline. |
-| `maxStreamsPerConnection` | 0 | Lifetime stream count before graceful GOAWAY; 0 is unlimited. |
+| `maxStreamsPerConnection` | 1000000 | Lifetime stream count before graceful GOAWAY. |
 | `maxStreamPendingBytes` | 4 MiB | Per-stream cap for in-memory response body and trailer bytes waiting on peer flow-control credit. Oversized fixed responses receive 503; overflowing streaming responses are reset with `ENHANCE_YOUR_CALM`. |
 
 ## Compression, decompression, and files
