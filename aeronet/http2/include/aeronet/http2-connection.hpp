@@ -426,6 +426,8 @@ class Http2Connection {
 
   void recordStreamClosed(uint32_t streamId, ErrorCode errorCode) const noexcept;
 
+  [[nodiscard]] bool priorityDepthExceeded(uint32_t id) const noexcept;
+
   // ============================
   // Error handling
   // ============================

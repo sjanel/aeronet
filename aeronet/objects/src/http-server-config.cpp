@@ -79,7 +79,7 @@ HttpServerConfig& HttpServerConfig::withMaxBodyBytes(std::size_t bytes) {
   return *this;
 }
 
-HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(std::size_t maxOutbound) {
+HttpServerConfig& HttpServerConfig::withMaxOutboundBufferBytes(uint32_t maxOutbound) {
   this->maxOutboundBufferBytes = maxOutbound;
   return *this;
 }

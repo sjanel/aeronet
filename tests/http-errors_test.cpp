@@ -337,7 +337,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 1UL << 20U; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 1U << 20U; });
 
   // Generate a large response to ensure buffering
   std::string largeBody(64UL * 1024, 'L');
