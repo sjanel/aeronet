@@ -306,23 +306,6 @@ struct HttpServerConfig {
   // std::numeric_limits<uint32_t>::max().
   std::uint32_t maxPerEventReadBytes{128U << 10U};
 
-  // Check whether the per-event fairness cap has been reached after reading.
-  [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesReadThisEvent) const {
-    return bytesReadThisEvent >= maxPerEventReadBytes;
-  }
-
-  // Compute the read chunk size for a connection, accounting for the per-event fairness cap.
-  // Returns 0 when the fairness budget is exhausted (caller should break).
-  [[nodiscard]] std::size_t computeReadChunkSize(std::size_t bytesReadThisEvent) const {
-    assert(bytesReadThisEvent < maxPerEventReadBytes);
-    const std::size_t remainingBudget = maxPerEventReadBytes - bytesReadThisEvent;
-    if (remainingBudget < minReadChunkBytes) {
-      // Fairness budget is almost exhausted; cap to remaining budget to avoid over-reading.
-      return minReadChunkBytes;
-    }
-    return remainingBudget;
-  }
-
   // Hard limit to avoid pathological cases with excessive global headers, which would bloat response size
   // and waste CPU serializing them.
   static constexpr uint32_t kMaxGlobalHeaders = 256;
@@ -354,6 +337,23 @@ struct HttpServerConfig {
   ConcatenatedStrings32 _connectAllowlist;
 
  public:
+  // Check whether the per-event fairness cap has been reached after reading.
+  [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesReadThisEvent) const {
+    return bytesReadThisEvent >= maxPerEventReadBytes;
+  }
+
+  // Compute the read chunk size for a connection, accounting for the per-event fairness cap.
+  // Returns 0 when the fairness budget is exhausted (caller should break).
+  [[nodiscard]] std::size_t computeReadChunkSize(std::size_t bytesReadThisEvent) const {
+    assert(bytesReadThisEvent < maxPerEventReadBytes);
+    const std::size_t remainingBudget = maxPerEventReadBytes - bytesReadThisEvent;
+    if (remainingBudget < minReadChunkBytes) {
+      // Fairness budget is almost exhausted; cap to remaining budget to avoid over-reading.
+      return minReadChunkBytes;
+    }
+    return remainingBudget;
+  }
+
   // Allowlist for CONNECT targets. Empty disables CONNECT; "*" allows every target; other entries match exact hosts.
   [[nodiscard]] const ConcatenatedStrings32& connectAllowlist() const { return _connectAllowlist; }
 

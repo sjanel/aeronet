@@ -8,6 +8,7 @@ All notable changes to aeronet are documented in this file.
 
 - **`HttpMessage` header and trailer names are now stored in lower-case**: this applies to `HttpRequest`, `HttpResponse`, `HttpResponseWriter`, received client responses, flat views, iterators and HTTP/1.x serialization. All APIs taking one header or trailer name (`hasHeader`, `headerValue*`, `headerAddLine`, `header`, `headerAppendValue`, `headerRemove*`, `hasTrailer`, `trailerValue*`, `trailerAddLine`) now take `LowerAsciiKey`, so uppercase literals fail to compile and dynamic keys must be normalized before wrapping. Preserving title-case field names on HTTP/1.x is no longer supported; lower-case field names are valid in HTTP/1.x and required by HTTP/2.
 - **StaticFileConfig.maxMultipartRanges** zero value has no more special value meaning 'unlimited'. All queries containing ranges will be rejected with HTTP error 416. Also, the order of the configuration fields in `StaticFileConfig` slightly changed to decrease padding, beware if you used the aggregate constructor.
+- **Http2Config.maxStreamsPerConnection** default value changed from 0 to 1000000, and 0 does not have special **unlimited** behavior anymore.
 
 ## Bug Fixes
 

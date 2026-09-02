@@ -108,8 +108,8 @@ struct Http2Config {
 
   /// Maximum number of streams that can be created over the lifetime of a connection.
   /// After this limit, the connection will be gracefully closed with GOAWAY.
-  /// Default: 0 (unlimited).
-  uint32_t maxStreamsPerConnection{0};
+  /// Default: 1,000,000 streams.
+  uint32_t maxStreamsPerConnection{1000000};
 
   // ============================
   // Priority (RFC 9218 / RFC 9113 §5.3)
@@ -118,7 +118,7 @@ struct Http2Config {
   /// Maximum depth of the priority dependency tree.
   /// Limits resource usage for malicious deep dependency chains.
   /// Default: 256.
-  uint16_t maxPriorityTreeDepth{256};
+  uint16_t maxPriorityTreeDepth{256U};
 
   // ============================
   // Builder-style setters
