@@ -1,11 +1,18 @@
 #include <gtest/gtest.h>
+#include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/obj_mac.h>
 #include <openssl/ocsp.h>
 #include <openssl/pem.h>
+#include <openssl/prov_ssl.h>
 #include <openssl/ssl.h>
 #include <openssl/sslerr.h>
+#include <openssl/tls1.h>
 #include <openssl/types.h>
+#include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -19,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <new>
@@ -191,10 +199,9 @@ std::string MakeCrlPem(const std::pair<std::string, std::string>& issuer, bool r
     if (!revoked || !revokedAt || ::X509_gmtime_adj(revokedAt.get(), -30) == nullptr ||
         ::X509_REVOKED_set_serialNumber(revoked.get(), ::X509_get_serialNumber(certificate.get())) != 1 ||
         ::X509_REVOKED_set_revocationDate(revoked.get(), revokedAt.get()) != 1 ||
-        ::X509_CRL_add0_revoked(crl.get(), revoked.get()) != 1) {
+        ::X509_CRL_add0_revoked(crl.get(), revoked.release()) != 1) {
       throw std::runtime_error("Failed to add test CRL entry");
     }
-    static_cast<void>(revoked.release());
     if (::X509_CRL_sort(crl.get()) != 1) {
       throw std::runtime_error("Failed to sort test CRL");
     }
@@ -395,7 +402,7 @@ TEST(TlsContextTest, StaplesCachedOcspResponseWhenClientRequestsIt) {
   ASSERT_TRUE(PerformHandshake(pair));
 
   const unsigned char* stapled = nullptr;
-  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), &stapled);
+  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), static_cast<void*>(&stapled));
   ASSERT_EQ(stapledSize, static_cast<long>(responseDer.size()));
   ASSERT_NE(stapled, nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
@@ -437,7 +444,7 @@ TEST(TlsContextTest, SniRouteCachesItsOwnOcspResponse) {
   ASSERT_TRUE(PerformHandshake(pair));
 
   const unsigned char* stapled = nullptr;
-  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), &stapled);
+  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), static_cast<void*>(&stapled));
   ASSERT_EQ(stapledSize, static_cast<long>(responseDer.size()));
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
 }

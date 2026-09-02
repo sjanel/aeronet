@@ -14,6 +14,7 @@
 
 #include "aeronet/dogstatsd.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "dogstatsd-metrics.hpp"
@@ -48,9 +49,7 @@
 // Detect metrics SDK support for MeterProvider
 #if __has_include(<opentelemetry/sdk/metrics/meter_provider.h>)
 #define AERONET_HAVE_METRICS_SDK 1
-#include <opentelemetry/common/key_value_iterable.h>
 #include <opentelemetry/metrics/sync_instruments.h>
-#include <opentelemetry/nostd/function_ref.h>
 #include <opentelemetry/nostd/unique_ptr.h>
 #include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_options.h>

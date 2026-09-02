@@ -30,7 +30,7 @@ TEST(Http2Stream, InitialState) {
 TEST(Http2Stream, IndependentInitialFlowControlWindows) {
   Http2Stream stream(1, 1U << 20U, 32768U);
 
-  EXPECT_EQ(stream.sendWindow(), 1 << 20);
+  EXPECT_EQ(stream.sendWindow(), 1U << 20U);
   EXPECT_EQ(stream.recvWindow(), 32768);
 }
 

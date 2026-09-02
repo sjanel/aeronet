@@ -15,6 +15,7 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error-message.hpp"

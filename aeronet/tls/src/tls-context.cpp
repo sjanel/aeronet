@@ -1,5 +1,6 @@
 #include "aeronet/tls-context.hpp"
 
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>  // EVP_PKEY_free
 #include <openssl/ocsp.h>
@@ -8,6 +9,7 @@
 #include <openssl/ssl.h>       // SSL_*, SSL_read/write, handshake, shutdown, SSL_CTX, SSL_get_error
 #include <openssl/tls1.h>      // TLS1_2_VERSION (for OpenSSL < 3.0, safe to include anyway)
 #include <openssl/types.h>     // SSL, SSL_CTX forward declarations
+#include <openssl/x509.h>
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
 
 #include <algorithm>
@@ -17,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <ios>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -34,6 +37,8 @@
 
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tls-config.hpp"
@@ -238,8 +243,9 @@ std::span<const std::byte> LoadOcspResponse(ObjectArrayPool<char>& charStorage, 
   if (!file) {
     throw std::runtime_error("Failed to open TLS OCSP response file: " + std::string(path));
   }
-  const std::streampos endPos = file.tellg();
-  if (endPos <= 0 || endPos > static_cast<std::streamoff>(kMaxOcspResponseBytes)) {
+
+  const std::streamoff endPos = file.tellg();
+  if (endPos <= 0 || std::cmp_greater(endPos, kMaxOcspResponseBytes)) {
     throw std::runtime_error("TLS OCSP response file is empty or exceeds 1 MiB: " + std::string(path));
   }
   const auto size = static_cast<std::size_t>(endPos);
