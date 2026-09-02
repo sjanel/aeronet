@@ -107,7 +107,7 @@ std::size_t B64UrlDecode(std::string_view in, char* out) noexcept {
     accumulator = (accumulator << 6U) | static_cast<uint32_t>(val);
     bitsCollected += 6U;
     if (bitsCollected >= 8U) {
-      bitsCollected -= 8U;
+      bitsCollected = static_cast<uint8_t>(bitsCollected - 8U);
       *out++ = static_cast<char>((accumulator >> bitsCollected) & 0xFFU);
     }
   }

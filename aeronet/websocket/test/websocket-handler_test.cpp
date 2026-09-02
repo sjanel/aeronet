@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-constants.hpp"

@@ -12,6 +12,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/otlp_test_collector.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -215,8 +216,9 @@ TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
       gaugeFound |= MetricsContainLabel(proto, "aeronet.test.labeled_gauge", "protocol", "h2");
       histogramFound |= MetricsContainLabel(proto, "aeronet.test.labeled_histogram", "protocol", "h2");
       timingFound |= MetricsContainLabel(proto, "aeronet.test.labeled_timing", "protocol", "h2");
-    } catch (const std::exception&) {
+    } catch (const std::exception& ex) {
       // Periodic exports are asynchronous. Keep polling until the overall deadline.
+      log::warn("timed out waiting for a single request; loop and check overall deadline: {}", ex.what());
     }
   }
 
