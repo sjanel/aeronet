@@ -163,7 +163,7 @@ class Http2ClientEngine {
       return false;
     }
     const uint32_t maxStreams = _conn.localSettings().maxStreamsPerConnection;
-    return maxStreams == 0 || (_nextStreamId - 1U) / 2U < maxStreams;
+    return (_nextStreamId - 1U) / 2U < maxStreams;
   }
 
   // Drain protocol input that arrived while this connection was idle. This is deliberately non-blocking:

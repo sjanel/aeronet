@@ -34,7 +34,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{10000});
 
   // Other defaults
-  EXPECT_EQ(config.maxStreamsPerConnection, 0U);
+  EXPECT_EQ(config.maxStreamsPerConnection, 1000000U);
   EXPECT_EQ(config.maxStreamPendingBytes, 4U << 20U);
   EXPECT_TRUE(config.enableH2c);
   EXPECT_TRUE(config.enableH2cUpgrade);
