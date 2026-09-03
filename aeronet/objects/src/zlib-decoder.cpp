@@ -1,6 +1,7 @@
 #include "aeronet/zlib-decoder.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/decoder-buffer-manager.hpp"
@@ -12,7 +13,7 @@
 namespace aeronet {
 
 bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                                         std::size_t decoderChunkSize, RawChars& out) {
+                                         uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
     return true;
   }
@@ -34,11 +35,11 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
       return stream.avail_in == 0;
     }
     if (ret != Z_OK) [[unlikely]] {
-      log::debug("decompressChunk - inflate failed with error {}", ret);
+      log::debug("ZlibDecoderContext::decompressChunk - inflate failed with error {}", ret);
       return false;
     }
     if (forceEnd) {
-      log::debug("decompressChunk - reached max decompressed size of {}", maxDecompressedBytes);
+      log::debug("ZlibDecoderContext::decompressChunk - reached max decompressed size of {}", maxDecompressedBytes);
       return false;
     }
 

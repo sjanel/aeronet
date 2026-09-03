@@ -20,7 +20,7 @@ class EncoderResult {
 
   [[nodiscard]] constexpr bool hasError() const noexcept { return _written < 0; }
 
-  [[nodiscard]] constexpr std::size_t written() const noexcept {
+  [[nodiscard]] constexpr std::size_t writtenIfNoError() const noexcept {
     assert(!hasError());
     return static_cast<std::size_t>(_written);
   }

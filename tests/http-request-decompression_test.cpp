@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ios>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <random>
@@ -142,7 +143,10 @@ TEST(HttpRequestDecompression, SingleNoContentEncoding) {
 }
 
 TEST(HttpRequestDecompression, SingleLargePayloadWithHeadersCheck) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.decompression = {};
+    cfg.decompression.maxExpansionRatio = 1000;
+  });
   const std::string plain(10000, 'A');
 
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -321,7 +325,7 @@ TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
 TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulatively) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
-    cfg.decompression.maxCompressedBytes = 0;
+    cfg.decompression.maxCompressedBytes = std::numeric_limits<std::size_t>::max();
   });
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
@@ -403,6 +407,7 @@ TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};
     cfg.decompression.decoderChunkSize = 16;
+    cfg.decompression.maxExpansionRatio = 1000;
   });
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
@@ -416,7 +421,9 @@ TEST(HttpRequestDecompression, StreamingThresholdLargeBody) {
     EXPECT_EQ(resp.status, http::StatusCodeOK);
 
     // disable streaming
-    ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = 0; });
+    ts.postConfigUpdate([](HttpServerConfig& cfg) {
+      cfg.decompression.streamingDecompressionThresholdBytes = std::numeric_limits<std::size_t>::max();
+    });
 
     resp = RawPost(ts.port(), "/stream", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
@@ -495,7 +502,7 @@ void ExpectTrailers(vector<Encoding> encodings, bool insertBadTrailer = false, b
   } else {
     const auto maxCompressedBytes = ts.server.config().decompression.maxCompressedBytes;
     const auto maxBodyBytes = ts.server.config().maxBodyBytes;
-    if (comp.size() > maxBodyBytes || (maxCompressedBytes != 0 && comp.size() > maxCompressedBytes)) {
+    if (comp.size() > maxBodyBytes || comp.size() > maxCompressedBytes) {
       EXPECT_TRUE(resp.starts_with("HTTP/1.1 413"))
           << "Failed for encoding: " << contentEncodingValue << ", response: " << resp;
     } else {

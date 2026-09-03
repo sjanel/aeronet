@@ -866,7 +866,7 @@ std::size_t GetWrittenOrThrow(const EncoderResult& result, const char* pMsg) {
     // encoder error)
     throw std::runtime_error(pMsg);
   }
-  return result.written();
+  return result.writtenIfNoError();
 }
 
 }  // namespace

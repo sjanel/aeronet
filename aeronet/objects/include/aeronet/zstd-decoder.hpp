@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/buffer-cache.hpp"
@@ -23,7 +24,7 @@ class ZstdDecoderContext {
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   bool decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk, std::size_t maxDecompressedBytes,
-                       std::size_t decoderChunkSize, RawChars& out);
+                       uint32_t decoderChunkSize, RawChars& out);
 
   void init();
 
@@ -37,7 +38,7 @@ class ZstdDecoder {
   // Attempts to fully decompress input into out (append). Returns true on success; false on error
   // or if decompressed size would exceed maxDecompressedBytes. Uses an adaptive growth strategy
   // since the uncompressed size may be unknown (no content size header present in frame).
-  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                       RawChars& out);
 
   ZstdDecoderContext* makeContext() {
