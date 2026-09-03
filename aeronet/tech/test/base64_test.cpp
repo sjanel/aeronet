@@ -133,6 +133,7 @@ TEST(Base64Url, DecodeToleratesPadding) {
 
 TEST(Base64Url, DecodeRejectsInvalidAlphabet) {
   EXPECT_THROW(Decode("Zg+v"), std::invalid_argument);  // '+' is standard base64, not base64url
+  EXPECT_THROW(Decode("{"), std::invalid_argument);
   EXPECT_THROW(Decode("Zg/v"), std::invalid_argument);  // '/' likewise
   EXPECT_THROW(Decode("Z m8"), std::invalid_argument);  // space
 }

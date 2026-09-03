@@ -1,52 +1,14 @@
 #pragma once
 
-#include <algorithm>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-trim.hpp"
 
 namespace aeronet {
-
-constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
-  const char* first = concatenatedHeaders.data();
-  const char* last = first + concatenatedHeaders.size();
-
-  while (first < last) {
-    const char* headerNameEnd = std::search(first, last, http::HeaderSep.begin(), http::HeaderSep.end());
-    if (headerNameEnd == last) {
-      throw std::invalid_argument("header missing http::HeaderSep separator in concatenated headers");
-    }
-
-    std::string_view headerName(first, headerNameEnd);
-    if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument("Invalid header name in concatenated headers");
-    }
-    if (std::ranges::any_of(headerName, [](char ch) { return ch >= 'A' && ch <= 'Z'; })) {
-      throw std::invalid_argument("Header names should be normalized to lower case in concatenated headers");
-    }
-    first += headerName.size() + http::HeaderSep.size();
-
-    const char* endLine = SearchCRLF(first, last);
-    if (endLine == last) {
-      throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
-    }
-    if (endLine[1] != '\n') {
-      throw std::invalid_argument("malformed CRLF (bare CR) in header value in concatenated headers");
-    }
-
-    std::string_view headerValue(first, endLine);
-    if (!http::IsValidHeaderValue(headerValue)) {
-      throw std::invalid_argument("Invalid header value in concatenated headers");
-    }
-
-    first = endLine + http::CRLF.size();
-  }
-}
 
 constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view& contentType) {
   contentType = TrimOws(contentType);

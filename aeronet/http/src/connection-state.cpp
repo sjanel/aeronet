@@ -446,7 +446,7 @@ void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf, bool mayN
   if (mayNeedHold && transport.hasZerocopyPending()) {
     assert(std::cmp_less_equal(buf.retainedSize() + zerocopyPendingBytes,
                                std::numeric_limits<decltype(zerocopyPendingBytes)>::max()));
-    zerocopyPendingBytes += buf.retainedSize();
+    zerocopyPendingBytes += static_cast<decltype(zerocopyPendingBytes)>(buf.retainedSize());
     zerocopyPendingBuffers.push_back(std::move(buf));
   }
 }

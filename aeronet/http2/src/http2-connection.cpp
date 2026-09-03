@@ -108,10 +108,11 @@ Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffs
       _maxFrameSize(maxFrameSize),
       _framed(true) {
   assert(dataOffset <= _payload.size());
+  assert(dataSize != 0);
   assert(dataSize <= _payload.size() - dataOffset);
   assert(maxFrameSize != 0);
 
-  const auto frameCount = static_cast<uint32_t>(dataSize == 0 ? 1 : ((dataSize + maxFrameSize - 1U) / maxFrameSize));
+  const auto frameCount = static_cast<uint32_t>((dataSize + maxFrameSize - 1U) / maxFrameSize);
   _remainingSize = dataSize + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
   if (frameCount > 1U) {
     const std::size_t continuationHeadersSize = (static_cast<std::size_t>(frameCount) - 1U) * FrameHeader::kSize;
