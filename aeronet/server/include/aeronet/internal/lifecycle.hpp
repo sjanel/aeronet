@@ -138,6 +138,7 @@ struct Lifecycle {
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_acquire) == State::Stopping; }
   [[nodiscard]] State currentState() const noexcept { return state.load(std::memory_order_acquire); }
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_acquire) != State::Idle; }
+
   [[nodiscard]] bool cannotBeginDraining() const noexcept {
     const State current = state.load(std::memory_order_acquire);
     return current == State::Idle || current == State::Starting || current == State::Stopping;

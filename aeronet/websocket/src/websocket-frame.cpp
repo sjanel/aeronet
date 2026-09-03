@@ -220,6 +220,18 @@ namespace detail {
 
 namespace {
 
+std::size_t ApplyMaskSse2(std::byte* bytes, std::size_t sz, MaskingKey maskingKey) {
+  std::size_t idx = 0;
+  if (sz >= 16) {
+    const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
+    for (; idx + 16 <= sz; idx += 16) {
+      __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
+    }
+  }
+  return idx;
+}
+
 // AVX2 path: 32-byte XOR loop with SSE2 residue for 16-byte remainder.
 // The target attribute makes GCC/Clang emit AVX2 instructions for this
 // function only, without requiring -mavx2 for the whole TU.
@@ -236,26 +248,8 @@ std::size_t ApplyMaskAvx2(std::byte* bytes, std::size_t sz, MaskingKey maskingKe
       _mm256_storeu_si256(reinterpret_cast<__m256i*>(bytes + idx), _mm256_xor_si256(chunk, mask256));
     }
   }
-  // Handle 16-byte remainder with SSE2 (always available on x86-64)
-  if (idx + 16 <= sz) {
-    const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
-    for (; idx + 16 <= sz; idx += 16) {
-      __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
-      _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
-    }
-  }
-  return idx;
-}
-
-std::size_t ApplyMaskSse2(std::byte* bytes, std::size_t sz, MaskingKey maskingKey) {
-  std::size_t idx = 0;
-  if (sz >= 16) {
-    const __m128i mask128 = _mm_set1_epi32(static_cast<int>(maskingKey));
-    for (; idx + 16 <= sz; idx += 16) {
-      __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes + idx));
-      _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes + idx), _mm_xor_si128(chunk, mask128));
-    }
-  }
+  // Handle remainder (< 32 bytes) with SSE2, always available on x86-64.
+  idx += ApplyMaskSse2(bytes + idx, sz - idx, maskingKey);
   return idx;
 }
 

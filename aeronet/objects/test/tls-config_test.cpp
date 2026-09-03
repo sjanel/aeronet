@@ -59,6 +59,8 @@ TEST(TLSConfigTest, SniOcspStapleIsAssociatedWithExistingNormalizedRoute) {
 
   ASSERT_EQ(cfg.sniCertificates().size(), 1U);
   EXPECT_EQ(cfg.sniCertificates().front().ocspResponseFile(), "api.ocsp.der");
+  EXPECT_STREQ(cfg.sniCertificates().front().ocspResponseFileCstr(), "api.ocsp.der");
+  EXPECT_STREQ(cfg.sniCertificates().front().ocspResponseFileCstr(), "api.ocsp.der");
   EXPECT_THROW(cfg.withTlsSniOcspStapleFile("missing.example.com", "missing.der"), std::invalid_argument);
   EXPECT_THROW(cfg.withTlsSniOcspStapleFile("api.example.com", ""), std::invalid_argument);
 }
@@ -101,6 +103,7 @@ TEST(HttpServerConfigTest, AdvancedTlsConvenienceBuildersEnableTlsAndForwardSett
   EXPECT_EQ(cfg.tls.revocationCallback, &NoRevocationOpinion);
   EXPECT_EQ(cfg.tls.revocationUserContext, &context);
   EXPECT_EQ(cfg.tls.keyLogFile(), "debug.keys");
+  EXPECT_STREQ(cfg.tls.keyLogFileCstr(), "debug.keys");
 
   cfg.tls.withoutTlsOcspStaple().withoutTlsCrl();
   EXPECT_TRUE(cfg.tls.ocspResponseFile().empty());
