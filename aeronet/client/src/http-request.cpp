@@ -502,7 +502,7 @@ HttpRequest HttpRequest::clone() const {
     if (result.hasError()) {
       throw std::runtime_error("Failed to restore encoder state during finalize() of HttpRequest");
     }
-    const_cast<HttpRequest&>(*this)._data.setSize(bodyStartPos + result.written());
+    const_cast<HttpRequest&>(*this)._data.setSize(bodyStartPos + result.writtenIfNoError());
   }
 #endif
 

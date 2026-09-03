@@ -181,7 +181,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
       _state = State::Failed;
       return false;
     }
-    const auto written = result.written();
+    const auto written = result.writtenIfNoError();
     if (written > 0) {
       _compressedBuffer.setSize(written);
       if (!_head && !_transport->emitData(_compressedBuffer)) {
@@ -263,7 +263,7 @@ void HttpResponseWriter::end() {
         _state = State::Failed;
         return;
       }
-      const auto written = result.written();
+      const auto written = result.writtenIfNoError();
       if (written == 0) {
         break;
       }
@@ -338,7 +338,7 @@ bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
     return false;
   }
 
-  const auto written = result.written();
+  const auto written = result.writtenIfNoError();
 
   _compressedBuffer.setSize(written);
 

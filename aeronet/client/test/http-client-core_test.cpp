@@ -882,7 +882,10 @@ TEST_F(HttpClientE2ETest, FileBodyOverKeepAliveConnection) {
   test::ScopedTempFile tmpFirst(tmpDir, first);
   test::ScopedTempFile tmpSecond(tmpDir, second);
 
-  HttpClient client;  // keep-alive on by default
+  HttpClientConfig cfg;
+  cfg.decompression.maxExpansionRatio = 1000;
+  cfg.keepAlive = true;
+  HttpClient client(std::move(cfg));
   {
     File file(tmpFirst.filePath().string());
     ASSERT_TRUE(file);
@@ -991,7 +994,9 @@ TEST_F(HttpClientE2ETest, AlternatingOriginsSwapLoopRegistration) {
 // same-fd re-arm branch (interest change without a full re-register) and round-trips the payload intact
 // across the partial-write / event-loop pump.
 TEST_F(HttpClientE2ETest, LargePostBlocksWriteThenReadsBack) {
-  HttpClient client;
+  HttpClientConfig cfg;
+  cfg.decompression.maxExpansionRatio = 100000;
+  HttpClient client(std::move(cfg));
   const std::string body(16UL << 20U, 'x');  // 16 MiB: far exceeds socket buffers, so the write must block
   auto resp = client.post(Url("/echo"), body, "application/test").value();
   EXPECT_EQ(resp.status(), 200);
@@ -1580,6 +1585,7 @@ TEST_F(HttpClientTrailerE2ETest, SendsMultipleRequestTrailers) {
 TEST_F(HttpClientTrailerE2ETest, SendsLargeCapturedBodyWithTrailer) {
   HttpClientConfig cfg;
   cfg.minCapturedBodySize = 0;
+  cfg.decompression.maxExpansionRatio = 1000000;
   HttpClient client(cfg);
   const std::string payload(1UL << 20U, 'x');
   auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));

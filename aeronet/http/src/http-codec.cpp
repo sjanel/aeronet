@@ -177,11 +177,10 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
       return {.status = http::StatusCodeBadRequest, .message = "Decompression failed"};
     }
 
-    if (maxExpansionRatio > 0.0) {
-      const double ratio = static_cast<double>(dst->size()) / static_cast<double>(compressedSize);
-      if (ratio > maxExpansionRatio) {
-        return {.status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
-      }
+    assert(compressedSize > 0);
+    const double ratio = static_cast<double>(dst->size()) / static_cast<double>(compressedSize);
+    if (ratio > maxExpansionRatio) {
+      return {.status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
     }
 
     decompressStatus = http::StatusCodeOK;
@@ -200,17 +199,15 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
 }
 
 inline bool UseStreamingDecompression(const SvToSvMap& headersMap, std::size_t streamingDecompressionThresholdBytes) {
-  if (streamingDecompressionThresholdBytes > 0) {
-    const auto contentLenIt = headersMap.find(http::ContentLength);
-    if (contentLenIt != headersMap.end()) {
-      const std::string_view contentLenValue = contentLenIt->second;
-      std::size_t declaredLen{};
-      [[maybe_unused]] const auto ret =
-          std::from_chars(contentLenValue.data(), contentLenValue.data() + contentLenValue.size(), declaredLen);
-      assert(ret.ec == std::errc());  // Content-Length is guaranteed to be a valid integer by the HTTP parser
+  const auto contentLenIt = headersMap.find(http::ContentLength);
+  if (contentLenIt != headersMap.end()) {
+    const std::string_view contentLenValue = contentLenIt->second;
+    std::size_t declaredLen{};
+    [[maybe_unused]] const auto ret =
+        std::from_chars(contentLenValue.data(), contentLenValue.data() + contentLenValue.size(), declaredLen);
+    assert(ret.ec == std::errc());  // Content-Length is guaranteed to be a valid integer by the HTTP parser
 
-      return declaredLen >= streamingDecompressionThresholdBytes;
-    }
+    return declaredLen >= streamingDecompressionThresholdBytes;
   }
   return false;
 }
@@ -233,7 +230,7 @@ bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, co
   assert(!src.empty());
   for (std::size_t processed = 0; processed < src.size();) {
     const std::size_t remaining = src.size() - processed;
-    const std::size_t chunkLen = std::min(cfg.decoderChunkSize, remaining);
+    const std::size_t chunkLen = std::min<std::size_t>(cfg.decoderChunkSize, remaining);
     const std::string_view chunk(src.data() + processed, chunkLen);
     processed += chunkLen;
     if (!ctx->decompressChunk(chunk, processed == src.size(), cfg.maxDecompressedBytes, cfg.decoderChunkSize, dst)) {
@@ -471,7 +468,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       // compression failed or did not fit in maxCompressedBytes - abort compression and leave the response unmodified.
       return ConvertEncoderResultErrorToCompressResponseResult(result);
     }
-    totalCompSize = result.written();
+    totalCompSize = result.writtenIfNoError();
   } else {
     std::size_t totalCompCapa = std::min<std::size_t>(maxCompressedBytes, msg._data.capacity() - bodyCompStartPos);
     const std::size_t maxCapacity = initialNeededCapacity + (maxCompressedBytes - initialCompressedBytes);
@@ -529,7 +526,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       }
       // TODO: abort compression if compression ratio of first chunk is catastrophic?
       // Pre-sizing based on historical compression ratio per route?
-      totalCompSize += result.written();
+      totalCompSize += result.writtenIfNoError();
       assert(totalCompSize <= maxCompressedBytes);
       offsetBody += chunkSize;
     }
@@ -543,11 +540,11 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
-      if (result.written() == 0) {
+      if (result.writtenIfNoError() == 0) {
         // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
         break;
       }
-      totalCompSize += result.written();
+      totalCompSize += result.writtenIfNoError();
       assert(totalCompSize <= maxCompressedBytes);
     }
   }
@@ -664,8 +661,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
   }
 
   const std::size_t compressedSize = request.body().size();
-  assert(compressedSize > 0);
-  if (decompressionConfig.maxCompressedBytes != 0 && compressedSize > decompressionConfig.maxCompressedBytes) {
+  if (compressedSize > decompressionConfig.maxCompressedBytes) {
     return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
 
@@ -796,13 +792,12 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& dec
     // Strict RFC compliance: empty Content-Encoding header is malformed.
     return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
   }
-  if (decompressionConfig.maxCompressedBytes != 0 && compressedBody.size() > decompressionConfig.maxCompressedBytes) {
+  if (compressedBody.size() > decompressionConfig.maxCompressedBytes) {
     return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
 
   std::string_view src = compressedBody;
-  const bool useStreaming = decompressionConfig.streamingDecompressionThresholdBytes > 0 &&
-                            compressedBody.size() >= decompressionConfig.streamingDecompressionThresholdBytes;
+  const bool useStreaming = compressedBody.size() >= decompressionConfig.streamingDecompressionThresholdBytes;
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,

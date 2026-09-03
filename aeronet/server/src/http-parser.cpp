@@ -224,8 +224,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       compressedChunks.emplace_back(state.inBuffer.data() + pos, chunkSize);
       totalCompressedSize += chunkSize;
 
-      if (totalCompressedSize > maxBodyBytes || (_config.decompression.maxCompressedBytes != 0 &&
-                                                 totalCompressedSize > _config.decompression.maxCompressedBytes)) {
+      if (totalCompressedSize > maxBodyBytes || totalCompressedSize > _config.decompression.maxCompressedBytes) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }

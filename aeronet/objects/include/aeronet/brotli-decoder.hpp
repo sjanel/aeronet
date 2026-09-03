@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/buffer-cache.hpp"
@@ -23,7 +24,7 @@ class BrotliDecoderContext {
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                       std::size_t decoderChunkSize, RawChars& out);
+                       uint32_t decoderChunkSize, RawChars& out);
 
   void init();
 
@@ -34,7 +35,7 @@ class BrotliDecoderContext {
 
 class BrotliDecoder {
  public:
-  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                       RawChars& out) {
     _ctx.init();  // Reset decoder before decompression
     return _ctx.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);

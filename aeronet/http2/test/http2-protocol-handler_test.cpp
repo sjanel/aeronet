@@ -2539,17 +2539,19 @@ TEST(Http2ProtocolHandler, PostWithInvalidGzipBodyReturnsError) {
   loop.serverConfig.decompression.enable = true;
   loop.connect();
 
+  const std::string_view invalidGzip = "this is not valid gzip data!!!";
+
   RawChars hdrs;
   hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
   hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs.append(MakeHttp1HeaderLine(":path", "/submit"));
+  hdrs.append(MakeHttp1HeaderLine("content-length", std::to_string(invalidGzip.size())));
   hdrs.append(MakeHttp1HeaderLine("content-encoding", "gzip"));
   ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
   loop.pumpClientToServer();
 
   // Send invalid gzip data → should trigger decompression failure
-  const std::string_view invalidGzip = "this is not valid gzip data!!!";
   ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(invalidGzip.data(), invalidGzip.size())), true),
             ErrorCode::NoError);
   loop.pumpClientToServer();
