@@ -1,6 +1,5 @@
 #include "aeronet/decompression-config.hpp"
 
-#include <cstddef>
 #include <stdexcept>
 
 namespace aeronet {
@@ -11,20 +10,24 @@ void DecompressionConfig::validate() const {
   }
 #if !defined(AERONET_ENABLE_ZLIB) && !defined(AERONET_ENABLE_BROTLI) && !defined(AERONET_ENABLE_ZSTD)
   throw std::invalid_argument("Cannot enable automatic decompression when no decoder is compiled in");
-#endif
+#else
+  if (maxCompressedBytes == 0) {
+    throw std::invalid_argument("DecompressionConfig: maxCompressedBytes must be > 0");
+  }
+  if (maxCompressedBytes > (128ULL << 30U)) {
+    // Cap insane compressed size to catch likely misconfiguration
+    throw std::invalid_argument("DecompressionConfig: maxCompressedBytes is unreasonably large");
+  }
   if (decoderChunkSize == 0) {
-    throw std::invalid_argument("decoderChunkSize must be > 0");
+    throw std::invalid_argument("DecompressionConfig: decoderChunkSize must be > 0");
   }
   if (maxDecompressedBytes < decoderChunkSize) {
-    throw std::invalid_argument("maxDecompressedBytes must be >= decoderChunkSize");
+    throw std::invalid_argument("DecompressionConfig: maxDecompressedBytes must be >= decoderChunkSize");
   }
-  if (maxExpansionRatio < 0.0) {
-    throw std::invalid_argument("maxExpansionRatio must be >= 0");
+  if (maxExpansionRatio <= 0.0) {
+    throw std::invalid_argument("DecompressionConfig: maxExpansionRatio must be > 0");
   }
-  if (maxCompressedBytes != 0 && maxCompressedBytes > (static_cast<std::size_t>(128) * 1024UL * 1024UL * 1024UL)) {
-    // Cap insane compressed size to catch likely misconfiguration
-    throw std::invalid_argument("maxCompressedBytes is unreasonably large");
-  }
+#endif
 }
 
 }  // namespace aeronet

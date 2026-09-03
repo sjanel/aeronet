@@ -783,10 +783,10 @@ Supported: `gzip`, `deflate`, `zstd`, `br`, `identity` (skip). Order: decode rev
 
 | Field | Meaning |
 | ------- | --------- |
-| `maxCompressedBytes` | Cap on original compressed size (0 = unlimited) |
-| `maxDecompressedBytes` | Cap on expanded size (0 = unlimited) |
-| `maxExpansionRatio` | Per-layer `(expanded / originalTotalCompressed)` bound (0 = disabled) |
-| `streamingDecompressionThresholdBytes` | Enable streaming inflaters when `Content-Length >= threshold` (0 = disabled) |
+| `maxCompressedBytes` | Cap on original compressed size |
+| `maxDecompressedBytes` | Cap on expanded size |
+| `maxExpansionRatio` | Per-layer `(expanded / originalTotalCompressed)` bound |
+| `streamingDecompressionThresholdBytes` | Enable streaming inflaters when `Content-Length >= threshold` |
 
 Breaches ⇒ 413. Malformed ⇒ 400. Unknown coding ⇒ 415. Disabled feature passes body through.
 
@@ -821,17 +821,14 @@ Configuration:
 
 ```cpp
 DecompressionConfig cfg; cfg.enable = true;
-cfg.maxCompressedBytes = 0;        // 0 => unlimited (still bounded by global body limit)
-cfg.maxDecompressedBytes = 0;      // 0 => unlimited
-cfg.maxExpansionRatio = 0.0;       // 0 => disabled ratio guard
+cfg.maxCompressedBytes = 256U << 20U;
+cfg.maxDecompressedBytes = 4ULL << 30U;
+cfg.maxExpansionRatio = 100.0;
 cfg.streamingDecompressionThresholdBytes = 512 * 1024;  // switch to streaming inflaters when CL >= 512 KiB
 HttpServerConfig scfg; scfg.withRequestDecompression(cfg);
 ```
 
-When `streamingDecompressionThresholdBytes` is non-zero, aeronet automatically routes large encoded payloads through
-streaming decoder contexts (per codec) instead of materializing every intermediate stage at once. Each stage consumes the
-compressed data in `decoderChunkSize` slices and appends the decoded bytes to the alternating buffers already used for
-the aggregated path, so handlers still see a single contiguous `req.body()`.
+When a body is larger than `streamingDecompressionThresholdBytes`, aeronet automatically routes large encoded payloads through streaming decoder contexts (per codec) instead of materializing every intermediate stage at once. Each stage consumes the compressed data in `decoderChunkSize` slices and appends the decoded bytes to the alternating buffers already used for the aggregated path, so handlers still see a single contiguous `req.body()`.
 
 Security / robustness notes:
 

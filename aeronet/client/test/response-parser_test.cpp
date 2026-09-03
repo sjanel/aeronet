@@ -792,6 +792,7 @@ TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars compressed = test::Compress(enc, payload);
     Decode decode;
+    decode.config.maxExpansionRatio = 1000;
     const std::size_t decodeScratchCapacity = payload.size();
     decode.tmp = RawChars(decodeScratchCapacity);
     const char* decodedAllocation = decode.tmp.data();

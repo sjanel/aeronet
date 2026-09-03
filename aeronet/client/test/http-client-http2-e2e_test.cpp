@@ -42,7 +42,6 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -83,13 +82,20 @@ void Observe(const HttpRequestView& req) {
   lastSeenHttp2.store(req.version() == http::HTTP_2_0, std::memory_order_relaxed);
 }
 
-HttpClient MakeHttp2Client() { return HttpClient(HttpClientConfig{}.withHttpVersion(HttpVersionMode::Http2)); }
+HttpClient MakeHttp2Client() {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  cfg.decompression.maxExpansionRatio = 10000;
+  return HttpClient(std::move(cfg));
+}
 
 test::TestServer CreateTestServer() {
-  test::TestServer testServer(HttpServerConfig{}
-                                  .withPort(0)
-                                  .withKeepAliveTimeout(std::chrono::seconds{5})
-                                  .withPollInterval(std::chrono::milliseconds{20}));
+  HttpServerConfig cfg;
+  cfg.withPort(0);
+  cfg.withKeepAliveTimeout(std::chrono::seconds{5});
+  cfg.withPollInterval(std::chrono::milliseconds{20});
+  cfg.decompression.maxExpansionRatio = 10000;
+  test::TestServer testServer(std::move(cfg));
 
   auto routerProxy = testServer.router();
   routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
@@ -790,9 +796,11 @@ TEST(HttpClientHttp2E2ETest, RequestBodyCompression) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withRequestCompression(true);
   cfg.requestCompression.codec.minBytes = 16;
-  HttpClient client(cfg);
+  cfg.decompression.maxExpansionRatio = 10000;
+  HttpClient client(std::move(cfg));
   auto resp = client.post(Url("/echo"), payload, "application/octet-stream").value();
   EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemorySize(), payload.size());
   EXPECT_EQ(resp.bodyInMemory(), payload);
 }
 
@@ -999,6 +1007,7 @@ HttpClientConfig TlsClientConfig(HttpVersionMode mode) {
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // ephemeral self-signed test certificate
   cfg.withHttpVersion(mode);
+  cfg.decompression.maxExpansionRatio = 10000;
   return cfg;
 }
 

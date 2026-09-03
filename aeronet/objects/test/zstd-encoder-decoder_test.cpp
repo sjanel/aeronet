@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -25,7 +26,7 @@ namespace aeronet {
 
 namespace {
 
-constexpr std::size_t kDecoderChunkSize = 512;
+constexpr uint32_t kDecoderChunkSize = 512;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 4UL * 1024 * 1024;
 
@@ -44,7 +45,7 @@ void EncodeFull(ZstdEncoder& encoder, std::string_view payload, RawChars& out, s
   out.reserve(ZSTD_compressBound(payload.size()) + extraCapacity);
   const auto result = encoder.encodeFull(payload, out.capacity(), out.data());
   ASSERT_FALSE(result.hasError());
-  out.setSize(result.written());
+  out.setSize(result.writtenIfNoError());
 }
 
 void ExpectOneShotRoundTrip(std::string_view payload) {
@@ -144,7 +145,7 @@ TEST(ZstdEncoderContext, MoveConstructor) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(ctx1, "some-data", chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -159,7 +160,7 @@ TEST(ZstdEncoderContext, MoveConstructor) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(ctx2, "more-data", chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -226,16 +227,16 @@ TEST(ZstdEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   RawChars chunkOut(maxChunk);
   auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
-  EXPECT_LE(result.written(), maxChunk);
+  EXPECT_LE(result.writtenIfNoError(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
   while (true) {
     result = ctx->end(tailOut.capacity(), tailOut.data());
     ASSERT_FALSE(result.hasError());
-    if (result.written() == 0) {
+    if (result.writtenIfNoError() == 0) {
       break;
     }
-    EXPECT_LE(result.written(), tailOut.capacity());
+    EXPECT_LE(result.writtenIfNoError(), tailOut.capacity());
   }
 }
 
@@ -306,7 +307,7 @@ TEST(ZstdEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -336,7 +337,7 @@ TEST(ZstdEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIteratio
     RawChars chunkOut;
     const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -388,9 +389,9 @@ TEST(ZstdEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   if (!result.hasError()) {
     // If zstd has not reported an error at encodeChunk time, it should report an error at end() time since the stream
     // can't be finalized with pending input.
-    const auto endResult1 = ctx->end(sizeof(tiny) - result.written(), tiny);
+    const auto endResult1 = ctx->end(sizeof(tiny) - result.writtenIfNoError(), tiny);
     if (!endResult1.hasError()) {
-      const auto endResult2 = ctx->end(sizeof(tiny) - result.written() - endResult1.written(), tiny);
+      const auto endResult2 = ctx->end(sizeof(tiny) - result.writtenIfNoError() - endResult1.writtenIfNoError(), tiny);
       EXPECT_TRUE(endResult2.hasError());
     }
   }

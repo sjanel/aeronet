@@ -8,7 +8,11 @@ All notable changes to aeronet are documented in this file.
 
 - **`HttpMessage` header and trailer names are now stored in lower-case**: this applies to `HttpRequest`, `HttpResponse`, `HttpResponseWriter`, received client responses, flat views, iterators and HTTP/1.x serialization. All APIs taking one header or trailer name (`hasHeader`, `headerValue*`, `headerAddLine`, `header`, `headerAppendValue`, `headerRemove*`, `hasTrailer`, `trailerValue*`, `trailerAddLine`) now take `LowerAsciiKey`, so uppercase literals fail to compile and dynamic keys must be normalized before wrapping. Preserving title-case field names on HTTP/1.x is no longer supported; lower-case field names are valid in HTTP/1.x and required by HTTP/2.
 - **StaticFileConfig.maxMultipartRanges** zero value has no more special value meaning 'unlimited'. All queries containing ranges will be rejected with HTTP error 416. Also, the order of the configuration fields in `StaticFileConfig` slightly changed to decrease padding, beware if you used the aggregate constructor.
-- **Http2Config.maxStreamsPerConnection** default value changed from 0 to 1000000, and 0 does not have special **unlimited** behavior anymore.
+- **Http2Config.maxStreamsPerConnection** default value changed from `0` to `1000000`, and `0` does not have special **unlimited** meaning anymore.
+- **DecompressionConfig.decoderChunkSize** is now a `uint32_t` and has been moved as the second field of `DecompressionConfig`.
+- **DecompressionConfig.maxCompressedBytes** default value changed from 0 to `128MiB`, and `0` does not have special **unlimied** meaning anymore.
+- **DecompressionConfig.maxExpansionRatio** default value changed from `0.0` to `1000.0`, and `0` does not have special **unlimited** meaning anymore.
+- **DecompressionConfig.streamingDecompressionThresholdBytes**'s `0` value is not special anymore (previous meaning was "always use aggregated mode"). So a value of `0` will now use streaming decompression for all bodies.
 
 ## Bug Fixes
 

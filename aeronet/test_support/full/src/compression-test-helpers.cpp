@@ -112,7 +112,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
       if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
-      compressed.setSize(result.written());
+      compressed.setSize(result.writtenIfNoError());
       break;
     }
     case Encoding::deflate: {
@@ -122,7 +122,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
       if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
-      compressed.setSize(result.written());
+      compressed.setSize(result.writtenIfNoError());
       break;
     }
 #endif
@@ -133,7 +133,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
       if (result.hasError()) {
         throw std::runtime_error("ZstdEncoder error");
       }
-      compressed.setSize(result.written());
+      compressed.setSize(result.writtenIfNoError());
       break;
     }
 #endif
@@ -144,7 +144,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
       if (result.hasError()) {
         throw std::runtime_error("BrotliEncoder error");
       }
-      compressed.setSize(result.written());
+      compressed.setSize(result.writtenIfNoError());
       break;
     }
 #endif
@@ -234,7 +234,7 @@ EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& 
   out.reserve(ctx.minEncodeChunkCapacity(data.size()));
   const auto result = ctx.encodeChunk(data, out.capacity(), out.data());
   if (!result.hasError()) {
-    out.setSize(result.written());
+    out.setSize(result.writtenIfNoError());
   }
   return result;
 }
@@ -247,10 +247,10 @@ void EndStream(EncoderContext& ctx, RawChars& out) {
       out.clear();
       break;
     }
-    if (result.written() == 0) {
+    if (result.writtenIfNoError() == 0) {
       break;
     }
-    out.addSize(result.written());
+    out.addSize(result.writtenIfNoError());
   }
 }
 
@@ -273,7 +273,7 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
       throw std::runtime_error("Encoding chunk failed");
     }
 
-    compressed.addSize(result.written());
+    compressed.addSize(result.writtenIfNoError());
   }
 
   test::EndStream(ctx, compressed);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/raw-chars.hpp"
@@ -16,7 +17,7 @@ class ZlibDecoderContext {
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                       std::size_t decoderChunkSize, RawChars& out);
+                       uint32_t decoderChunkSize, RawChars& out);
 
   /// Initialize (or reinitialize) the decompression context with given parameters.
   /// Reuses internal zlib state if already initialized.
@@ -32,7 +33,7 @@ class ZlibDecoder {
  public:
   explicit ZlibDecoder(ZStreamRAII::Variant variant = ZStreamRAII::Variant::gzip) noexcept : _variant(variant) {}
 
-  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+  bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                       RawChars& out) {
     return makeContext()->decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
   }
