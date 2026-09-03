@@ -49,6 +49,21 @@ TEST(LifecycleTest, ResetClearsState) {
   EXPECT_FALSE(lifecycle.ready());
 }
 
+TEST(LifecycleTest, CannotBeginDraining) {
+  Lifecycle lifecycle;
+
+  EXPECT_TRUE(lifecycle.cannotBeginDraining());
+  EXPECT_TRUE(lifecycle.tryEnterStarting());
+  EXPECT_TRUE(lifecycle.cannotBeginDraining());
+  EXPECT_TRUE(lifecycle.tryEnterRunning());
+  EXPECT_FALSE(lifecycle.cannotBeginDraining());
+
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Running);
+  EXPECT_TRUE(lifecycle.cannotBeginDraining());
+
+  EXPECT_FALSE(lifecycle.tryEnterRunning());
+}
+
 TEST(LifecycleTest, StartingStateIsActiveButNotReady) {
   Lifecycle lifecycle;
 

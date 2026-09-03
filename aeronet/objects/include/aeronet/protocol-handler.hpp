@@ -77,10 +77,7 @@ class IProtocolHandler {
   virtual void getPendingOutputFragments(vector<std::string_view>& fragments) const {
     fragments.clear();
     const auto pending = getPendingOutput();
-    if (pending.empty()) {
-      return;
-    }
-    fragments.reserve(1);
+    assert(!pending.empty());
     fragments.emplace_back(reinterpret_cast<const char*>(pending.data()), pending.size());
   }
 

@@ -13,7 +13,7 @@ using B64Table = std::array<char, 64>;
 
 // Build one of the two 64-symbol base64 alphabets from the 62 characters shared between
 // standard base64 (RFC 4648 §4) and base64url (§5), plus the two symbols where they diverge.
-constexpr B64Table MakeB64Table(char sym62, char sym63) noexcept {
+consteval B64Table MakeB64Table(char sym62, char sym63) noexcept {
   B64Table table;
   std::size_t idx = 0;
   for (char ch = 'A'; ch <= 'Z'; ++ch) {
@@ -90,9 +90,7 @@ namespace {
 
 std::size_t B64UrlDecode(std::string_view in, char* out) noexcept {
   // Trim optional padding so the remaining length drives the bit accounting.
-  while (!in.empty() && in.back() == '=') {
-    in.remove_suffix(1);
-  }
+  in = in.substr(0, in.find_last_not_of('=') + 1);
   if (in.size() % 4U == 1) {
     return static_cast<std::size_t>(-1);  // a single leftover character carries only 6 bits - never valid
   }
