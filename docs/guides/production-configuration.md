@@ -126,7 +126,7 @@ aeronet::HttpServerConfig config;
 config.withCompression(std::move(compression)).withRequestDecompression(std::move(decompression));
 ```
 
-An enabled decompressor still enforces each codec's build availability. `maxCompressedBytes = 0` and `maxExpansionRatio = 0` mean unlimited, so set positive values for public endpoints.
+An enabled decompressor still enforces each codec's build availability.
 
 ## Trusted proxy and CONNECT boundaries
 

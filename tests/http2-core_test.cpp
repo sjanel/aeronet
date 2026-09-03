@@ -2536,7 +2536,7 @@ TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
 
   RawChars out;
   ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
-  ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32UL * 1024UL, out));
+  ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32U * 1024U, out));
   EXPECT_EQ(std::string_view(out), plainBody);
 }
 
@@ -2564,7 +2564,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   RawChars compressed(64UL + plain.size());
   const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
   ASSERT_FALSE(result.hasError());
-  compressed.setSize(result.written());
+  compressed.setSize(result.writtenIfNoError());
   const std::string compressedBody(compressed.data(), compressed.size());
 
   test::TlsHttp2Client client(ts.port());

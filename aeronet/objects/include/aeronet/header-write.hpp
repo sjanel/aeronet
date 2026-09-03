@@ -30,8 +30,8 @@ constexpr char* WriteHeader(std::string_view key, std::integral auto value, char
 // Returns the pointer immediately after the last written byte.
 // Header key must not be empty, but header value may be empty.
 constexpr char* WriteHeaderCRLF(std::string_view key, std::string_view value, char* insertPtr) {
-  char* pData = WriteHeader(key, value, insertPtr);
-  return AppendFixed<http::CRLF>(pData);
+  insertPtr = WriteHeader(key, value, insertPtr);
+  return AppendFixed<http::CRLF>(insertPtr);
 }
 
 // Same as above, but CRLF is first

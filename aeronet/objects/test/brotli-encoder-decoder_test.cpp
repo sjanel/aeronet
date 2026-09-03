@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -26,7 +27,7 @@ namespace aeronet {
 
 namespace {
 
-constexpr std::size_t kDecoderChunkSize = 256;
+constexpr uint32_t kDecoderChunkSize = 256;
 constexpr std::size_t kExtraCapacity = 0;
 constexpr std::size_t kMaxPlainBytes = 2UL * 1024 * 1024;
 
@@ -45,7 +46,7 @@ void EncodeFull(BrotliEncoder& encoder, std::string_view payload, RawChars& out,
   out.reserve(BrotliEncoderMaxCompressedSize(payload.size()) + extraCapacity);
   const auto result = encoder.encodeFull(payload, out.capacity(), out.data());
   ASSERT_FALSE(result.hasError());
-  out.setSize(result.written());
+  out.setSize(result.writtenIfNoError());
 }
 
 void ExpectOneShotRoundTrip(BrotliEncoder& encoder, std::string_view payload) {
@@ -150,7 +151,7 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(ctx1, "some-data", chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -169,7 +170,7 @@ TEST(BrotliEncoderDecoderTest, MoveConstructor) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(ctx2, "more-data", chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       produced.append(chunkOut);
     }
   }
@@ -240,16 +241,16 @@ TEST(BrotliEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   RawChars chunkOut(maxChunk);
   const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
-  EXPECT_LE(result.written(), maxChunk);
+  EXPECT_LE(result.writtenIfNoError(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
   while (true) {
     const auto tailResult = ctx->end(tailOut.capacity(), tailOut.data());
     ASSERT_FALSE(tailResult.hasError());
-    if (tailResult.written() == 0) {
+    if (tailResult.writtenIfNoError() == 0) {
       break;
     }
-    EXPECT_LE(tailResult.written(), tailOut.capacity());
+    EXPECT_LE(tailResult.writtenIfNoError(), tailOut.capacity());
   }
 }
 
@@ -323,7 +324,7 @@ TEST(BrotliEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
       RawChars chunkOut;
       const auto result = test::EncodeChunk(*ctx, chunk, chunkOut);
       ASSERT_FALSE(result.hasError());
-      if (result.written() > 0) {
+      if (result.writtenIfNoError() > 0) {
         streamingCompressed.append(chunkOut);
       }
     }
@@ -362,7 +363,7 @@ TEST(BrotliEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
     RawChars chunkOut;
     const auto result = test::EncodeChunk(*ctx, std::string_view(payload), chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -391,7 +392,7 @@ TEST(BrotliEncoderDecoderTest, StreamingRandomIncompressibleForcesMultipleIterat
     RawChars chunkOut;
     const auto result = test::EncodeChunk(*ctx, payload, chunkOut);
     ASSERT_FALSE(result.hasError());
-    if (result.written() > 0) {
+    if (result.writtenIfNoError() > 0) {
       compressed.append(chunkOut);
     }
   }
@@ -442,9 +443,9 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   if (!result.hasError()) {
     // If brotli has not reported an error at encodeChunk time, it should report an error at end() time since the stream
     // can't be finalized with pending input.
-    const auto endResult1 = ctx->end(sizeof(tiny) - result.written(), tiny);
+    const auto endResult1 = ctx->end(sizeof(tiny) - result.writtenIfNoError(), tiny);
     if (!endResult1.hasError()) {
-      const auto endResult2 = ctx->end(sizeof(tiny) - result.written() - endResult1.written(), tiny);
+      const auto endResult2 = ctx->end(sizeof(tiny) - result.writtenIfNoError() - endResult1.writtenIfNoError(), tiny);
       EXPECT_TRUE(endResult2.hasError());
     }
   }

@@ -63,8 +63,7 @@ void ZstdDecoderContext::init() {
 }
 
 bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk,
-                                         std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
-                                         RawChars& out) {
+                                         std::size_t maxDecompressedBytes, uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
     return true;
   }
@@ -94,7 +93,7 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]
   return true;
 }
 
-bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes, std::size_t decoderChunkSize,
+bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                                  RawChars& out) {
   const auto decompressedSize = ZSTD_getFrameContentSize(input.data(), input.size());
   switch (decompressedSize) {

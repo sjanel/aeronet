@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 
 namespace aeronet {
@@ -16,7 +17,7 @@ class DecoderBufferManager {
   /// @param buf Reference to the buffer being filled with decompressed data
   /// @param decoderChunkSize Size of chunks processed at a time
   /// @param maxDecompressedBytes Maximum allowed decompressed size (0 = unlimited)
-  DecoderBufferManager(ByteBuffer& buf, std::size_t decoderChunkSize, std::size_t maxDecompressedBytes)
+  DecoderBufferManager(ByteBuffer& buf, uint32_t decoderChunkSize, std::size_t maxDecompressedBytes)
       : _buf(buf),
         _decoderChunkSize(decoderChunkSize),
         _maxDecompressedBytes(maxDecompressedBytes),
@@ -29,7 +30,7 @@ class DecoderBufferManager {
   /// Reserve space for the next chunk and check if we should stop.
   /// @return true if the next chunk would exceed the size limit, false otherwise
   bool nextReserve() {
-    const auto alreadyDecompressed = _buf.size() - _initialSize;
+    const std::size_t alreadyDecompressed = _buf.size() - _initialSize;
     const bool forceEnd = alreadyDecompressed + _decoderChunkSize > _maxDecompressedBytes;
     const std::size_t desired = _buf.size() + _decoderChunkSize;
 
@@ -48,9 +49,9 @@ class DecoderBufferManager {
 
  private:
   ByteBuffer& _buf;
-  std::size_t _decoderChunkSize;
+  uint32_t _decoderChunkSize;
   std::size_t _maxDecompressedBytes;
-  std::size_t _initialSize;
+  ByteBuffer::size_type _initialSize;
 };
 
 }  // namespace aeronet
