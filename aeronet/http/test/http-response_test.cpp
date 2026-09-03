@@ -284,6 +284,7 @@ TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
       "Invalid Header Name!: Value\r\n",
       "NotNormalized: Value\r\n",
       "valid-header: Invalid\x01Value\r\n",
+      "valid-header: Invalid\rValue\r\n",
   };
 
   for (std::string_view badHeaders : kBadConcatenatedHeaders) {

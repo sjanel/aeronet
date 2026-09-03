@@ -26,6 +26,7 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-raii.hpp"
 
 namespace aeronet {
 namespace {
@@ -94,6 +95,21 @@ class HttpClientTlsE2ETest : public ::testing::Test {
   std::string _certPem;
   uint16_t _port{0};
 };
+
+std::string MakeMismatchedAlgorithmKeyPem(std::string_view certPem) {
+  auto certBio = MakeBio(::BIO_new_mem_buf(certPem.data(), static_cast<int>(certPem.size())));
+  auto cert = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+
+  auto* pub = ::X509_get0_pubkey(cert.get());
+  const int certKeyType = ::EVP_PKEY_get_base_id(pub);
+
+  auto newKey = MakePKey((certKeyType == EVP_PKEY_RSA) ? ::EVP_EC_gen("P-256") : ::EVP_RSA_gen(2048));
+  auto outBio = MakeBio(::BIO_new(::BIO_s_mem()));
+  ::PEM_write_bio_PrivateKey(outBio.get(), newKey.get(), nullptr, nullptr, 0, nullptr, nullptr);
+  char* data = nullptr;
+  const long len = ::BIO_get_mem_data(outBio.get(), &data);
+  return {data, static_cast<std::size_t>(len)};
+}
 
 }  // namespace
 
@@ -341,29 +357,70 @@ TEST(HttpClientTlsErrorTest, CaPathMustBeDirectory) {
   EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
 }
 
+TEST(HttpClientTlsErrorTest, MismatchedKeyAlgorithmCaughtByExplicitCheck) {
+  auto [cert, unusedKey] = test::MakeEphemeralCertKey("client");
+  const std::string mismatchedKey = MakeMismatchedAlgorithmKeyPem(cert);
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.withTlsClientCertKeyMemory(cert, mismatchedKey);
+
+  // Both SSL_CTX_use_certificate and SSL_CTX_use_PrivateKey succeed here (different algorithm slots),
+  // so only SSL_CTX_check_private_key() catches the mismatch.
+  EXPECT_THROW(internal::HttpClientTlsContext context(cfg), HttpClientException);
+}
+
+TEST(HttpClientTlsErrorTest, DefaultTrustStoreAugmentedWhenEnvNotConfigured) {
+  // Force SystemTrustStoreConfiguredViaEnv() to false regardless of the ambient environment, so
+  // construction takes the well-known-bundle augmentation branch (LoadExistingCaBundles) instead of
+  // relying solely on SSL_CTX_set_default_verify_paths().
+  test::ScopedEnvVar noCertFileEnv(::X509_get_default_cert_file_env(), "");
+  test::ScopedEnvVar noCertDirEnv(::X509_get_default_cert_dir_env(), "");
+
+  // Skip on a machine with no CA material anywhere aeronet knows to look — nothing to augment with,
+  // and the assertion below would legitimately fail through no fault of the code under test.
+  if (!std::filesystem::exists("/etc/ssl/certs/ca-certificates.crt") &&
+      !std::filesystem::is_directory("/etc/ssl/certs")) {
+    GTEST_SKIP() << "No well-known CA bundle location present on this platform.";
+  }
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;  // no explicit CA file/path/proxy CA -> system-trust-store branch
+
+  internal::HttpClientTlsContext context(cfg);
+  EXPECT_FALSE(context.empty());
+}
+
 TEST(HttpClientTlsTrustStoreTest, LoadExistingCaBundlesLoadsExistingLocationsAndSkipsMissing) {
   // Injected-path unit test of the well-known-CA loader used to augment the default trust store: an
   // existing bundle file and an existing directory each load, while non-existent paths are skipped.
   auto [cert, key] = test::MakeEphemeralCertKey("localhost");
   const TempPemWriter caPath(cert, "wellknown-ca");
   const std::string caPathStr = caPath.string();
-  const auto caDir = std::filesystem::temp_directory_path() / "aeronet-castore-dir-test";
-  std::filesystem::create_directory(caDir);
-  const std::string caDirStr = caDir.string();
+  test::ScopedTempDir caDir("castore");
+  const std::string caDirStr = caDir.dirPath().string();
 
-  auto* ctx = ::SSL_CTX_new(::TLS_client_method());
+  SslCtxPtr ctx(::SSL_CTX_new(TLS_method()), ::SSL_CTX_free);
   ASSERT_NE(ctx, nullptr);
 
   const std::vector<const char*> existingFile{caPathStr.c_str()};
   const std::vector<const char*> existingDir{caDirStr.c_str()};
   const std::vector<const char*> missing{"/nonexistent/aeronet-no-such-ca.pem"};
 
-  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx, existingFile, {}));   // existing bundle file loads
-  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx, {}, existingDir));    // existing directory loads
-  EXPECT_FALSE(internal::LoadExistingCaBundles(ctx, missing, missing));  // nothing exists -> nothing loaded
+  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx.get(), existingFile, {}));   // existing bundle file loads
+  EXPECT_TRUE(internal::LoadExistingCaBundles(ctx.get(), {}, existingDir));    // existing directory loads
+  EXPECT_FALSE(internal::LoadExistingCaBundles(ctx.get(), missing, missing));  // nothing exists -> nothing loaded
+}
 
-  ::SSL_CTX_free(ctx);
-  std::filesystem::remove(caDir);
+TEST(HttpClientTlsTrustStoreTest, LoadExistingCaBundlesSkipsFileThatExistsButHasNoValidCerts) {
+  const TempPemWriter garbagePath("this is not a certificate", "garbage-ca");
+  const std::string garbagePathStr = garbagePath.string();
+
+  SslCtxPtr ctx(::SSL_CTX_new(TLS_method()), ::SSL_CTX_free);
+  ASSERT_NE(ctx.get(), nullptr);
+
+  const std::vector<const char*> garbageFile{garbagePathStr.c_str()};
+  EXPECT_FALSE(internal::LoadExistingCaBundles(ctx.get(), garbageFile, {}));  // file exists, but nothing loads
 }
 
 TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwnership) {

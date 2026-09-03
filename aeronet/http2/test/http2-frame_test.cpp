@@ -276,6 +276,47 @@ TEST(Http2Frame, WriteHeadersFrame) {
   EXPECT_TRUE(header.hasFlag(FrameFlags::HeadersEndHeaders));
 }
 
+TEST(Http2Frame, ParseHeadersFrameWithPriorityTooShort) {
+  // PRIORITY flag set, but only 4 bytes present (need 5: 4 for dependency + 1 for weight).
+  const std::byte payload[]{
+      std::byte{0x00},
+      std::byte{0x00},
+      std::byte{0x00},
+      std::byte{0x00},
+  };
+
+  FrameHeader header{};
+  header.length = static_cast<uint32_t>(sizeof(payload));
+  header.type = FrameType::Headers;
+  header.flags = FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders;
+  header.streamId = 1;
+
+  HeadersFrame frame;
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+
+  EXPECT_EQ(result, FrameParseResult::FrameSizeError);
+}
+
+TEST(Http2Frame, ParseHeadersFrameWithPaddingAndPriorityTooShort) {
+  // PADDED + PRIORITY: offset=1 after pad-length byte, then only 4 more bytes
+  // (need offset + 5 = 6, have 5) -> FrameSizeError.
+  const std::byte payload[]{
+      std::byte{0x00},                                                     // pad length
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // 4 bytes, missing weight byte
+  };
+
+  FrameHeader header{};
+  header.length = static_cast<uint32_t>(sizeof(payload));
+  header.type = FrameType::Headers;
+  header.flags = FrameFlags::HeadersPadded | FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders;
+  header.streamId = 1;
+
+  HeadersFrame frame;
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+
+  EXPECT_EQ(result, FrameParseResult::FrameSizeError);
+}
+
 // ============================
 // PRIORITY Frame Tests
 // ============================
