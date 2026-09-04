@@ -39,7 +39,8 @@ class AccessLogWriter {
 
   RawChars32 _buffer;
   BaseFd _fileFd;  // Valid if sink == File, ignored otherwise
-  AccessLogConfig::Format _format = AccessLogConfig::Format::CLF;
+  uint32_t _flushThresholdInBytes{};
+  AccessLogConfig::Format _format{};
   AccessLogConfig::Sink _sink = AccessLogConfig::Sink::None;
 };
 

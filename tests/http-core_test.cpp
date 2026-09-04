@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <ranges>
 #include <regex>
@@ -313,10 +315,38 @@ TEST(HttpBasic, SimpleGet) {
     return resp;
   });
   std::string resp = httpGet("/abc");
-  ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("You requested: /abc"));
   ASSERT_TRUE(resp.contains("x-test=abc123"));
+}
+
+TEST(HttpBasic, AccessLogWriterFile) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("OK"); });
+
+  test::ScopedTempDir tmpDir;
+
+  std::string logFilePath = tmpDir.dirPath().string() + "/log.txt";
+
+  ts.postConfigUpdate([&logFilePath](HttpServerConfig& cfg) {
+    cfg.accessLog.sink = AccessLogConfig::Sink::File;
+    cfg.accessLog.filePath = logFilePath;
+    cfg.accessLog.flushThresholdInBytes = 0;
+  });
+
+  std::string resp = httpGet("/my-path");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+
+  resp = httpGet("/other/path");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+
+  // load contents of logFilePath
+  std::ifstream ifs(logFilePath);
+  std::string logFileContent((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.accessLog.sink = AccessLogConfig::Sink::None; });
+
+  EXPECT_TRUE(logFileContent.contains(R"(GET /my-path HTTP/1.1" 200 0 )"));
+  EXPECT_TRUE(logFileContent.contains(R"(GET /other/path HTTP/1.1" 200 0 )"));
 }
 
 TEST(HttpKeepAlive, MultipleSequentialRequests) {
