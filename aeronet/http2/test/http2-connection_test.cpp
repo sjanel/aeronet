@@ -642,12 +642,12 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
 
   RawChars headers;
   headers.append(MakeHttp1HeaderLine(":status", "200"));
-  headers.append(MakeHttp1HeaderLine("content-type", "text/plain"));
+  headers.append(MakeHttp1HeaderLine(http::ContentType, "text/plain"));
   headers.append(MakeHttp1HeaderLine("x-custom", "original"));
   headers.append(MakeHttp1HeaderLine("x-another", "anothervalue"));
   headers.append(MakeHttp1HeaderLine("x-global", "gvalue"));
-  headers.append(MakeHttp1HeaderLine("date", std::string_view{dateBuf.data(), RFC7231DateStrLen}));
-  headers.append(MakeHttp1HeaderLine("content-length", "1"));
+  headers.append(MakeHttp1HeaderLine(http::Date, std::string_view{dateBuf.data(), RFC7231DateStrLen}));
+  headers.append(MakeHttp1HeaderLine(http::ContentLength, "1"));
 
   ASSERT_EQ(server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
 
@@ -663,12 +663,12 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
     HpackEncoder expectedEncoder(4096);
     RawBytes expectedBlock;
     expectedEncoder.encode(expectedBlock, ":status", "200");
-    expectedEncoder.encode(expectedBlock, "content-type", "text/plain");
+    expectedEncoder.encode(expectedBlock, http::ContentType, "text/plain");
     expectedEncoder.encode(expectedBlock, "x-custom", "original");
     expectedEncoder.encode(expectedBlock, "x-another", "anothervalue");
     expectedEncoder.encode(expectedBlock, "x-global", "gvalue");
-    expectedEncoder.encode(expectedBlock, "date", std::string_view{dateBuf.data(), RFC7231DateStrLen});
-    expectedEncoder.encode(expectedBlock, "content-length", "1");
+    expectedEncoder.encode(expectedBlock, http::Date, std::string_view{dateBuf.data(), RFC7231DateStrLen});
+    expectedEncoder.encode(expectedBlock, http::ContentLength, "1");
 
     ASSERT_EQ(wire.headerBlockBytes.size(), expectedBlock.size()) << "Server HPACK block size differs from expected";
     ASSERT_TRUE(std::equal(wire.headerBlockBytes.begin(), wire.headerBlockBytes.end(), expectedBlock.begin()))
@@ -721,9 +721,9 @@ TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
 
   RawChars headers;
   headers.append(MakeHttp1HeaderLine(":status", "200"));
-  headers.append(MakeHttp1HeaderLine("content-type", "application/json"));
+  headers.append(MakeHttp1HeaderLine(http::ContentType, "application/json"));
   // Trailing OWS, exactly as the compression codec's padded Content-Length arrives here.
-  headers.append(MakeHttp1HeaderLine("content-length", "5979   "));
+  headers.append(MakeHttp1HeaderLine(http::ContentLength, "5979   "));
   // Both-sides OWS to exercise the leading trim as well.
   headers.append(MakeHttp1HeaderLine("x-padded", "  value  "));
 
@@ -744,9 +744,9 @@ TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
     ADD_FAILURE() << "header '" << name << "' not found in wire-decoded HEADERS";
     return {};
   };
-  EXPECT_EQ(valueOf("content-length"), "5979");
+  EXPECT_EQ(valueOf(http::ContentLength), "5979");
   EXPECT_EQ(valueOf("x-padded"), "value");
-  EXPECT_EQ(valueOf("content-type"), "application/json");  // untouched: no surrounding OWS
+  EXPECT_EQ(valueOf(http::ContentType), "application/json");  // untouched: no surrounding OWS
 }
 
 // ============================

@@ -364,7 +364,7 @@ TEST_F(HttpClientE2ETest, PostEchoesBody) {
   auto resp = client.post(Url("/echo"), "payload-data", "application/test").value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "payload-data");
-  EXPECT_EQ(resp.headerValueOrEmpty("content-type"), "application/test");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "application/test");
 }
 
 TEST_F(HttpClientE2ETest, HeadHasNoBody) {

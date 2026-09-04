@@ -4,7 +4,9 @@
 
 #include <cstddef>
 
-#include "aeronet/ascii-lower-mask.hpp"
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include "aeronet/avx2.hpp"
+#endif
 
 namespace aeronet {
 
@@ -80,7 +82,7 @@ TEST(ToLowerStrTest, ToLowerNonAscii) {
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 TEST(ToLowerStrTest, ToLowerUsesAvx2ThirtyTwoBytePath) {
-  if (!HasAvx2ForToLower()) {
+  if (!HasAvx2()) {
     GTEST_SKIP() << "AVX2 not available on this CPU";
   }
 

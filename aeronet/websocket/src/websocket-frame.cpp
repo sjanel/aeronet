@@ -7,6 +7,10 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/avx2.hpp"
+#include "aeronet/raw-bytes.hpp"
+#include "aeronet/websocket-constants.hpp"
+
 // On x86-64, always include the full intrinsic header so both SSE2 and AVX2
 // code paths can be compiled.  The AVX2 path is gated by a target attribute
 // and selected at runtime via __builtin_cpu_supports, so -mavx2 is NOT needed
@@ -20,15 +24,12 @@
 #include <arm_neon.h>
 #endif
 
-#include "aeronet/raw-bytes.hpp"
-#include "aeronet/websocket-constants.hpp"
-
 namespace aeronet::websocket {
 
 std::size_t FrameHeader::headerSize() const noexcept {
   std::size_t sz = kMinFrameHeaderSize;  // 2 bytes minimum
 
-  if (payloadLength > 0xFFFF) {
+  if (payloadLength > 0xFFFFU) {
     sz += 8;  // 64-bit extended length (payloadLen > 65535)
   } else if (payloadLength >= static_cast<uint64_t>(kPayloadLen16)) {
     sz += 2;  // 16-bit extended length (payloadLen >= 126)
@@ -269,16 +270,7 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
   std::size_t idx = 0;
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__GNUC__) || defined(__clang__)
-  static const bool kHasAvx2 = __builtin_cpu_supports("avx2");
-#else
-  static const bool kHasAvx2 = [] {
-    int cpuInfo[4];
-    __cpuidex(cpuInfo, 7, 0);
-    return (cpuInfo[1] & (1 << 5)) != 0;
-  }();
-#endif
-  if (kHasAvx2) {
+  if (HasAvx2()) {
     idx = detail::ApplyMaskAvx2(bytes, sz, maskingKey);
   } else {
     idx = detail::ApplyMaskSse2(bytes, sz, maskingKey);

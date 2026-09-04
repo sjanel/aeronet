@@ -9,7 +9,7 @@
 namespace aeronet::http {
 
 TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
-  EXPECT_TRUE(IsReservedResponseHeader("content-length"));
+  EXPECT_TRUE(IsReservedResponseHeader(http::ContentLength));
   EXPECT_TRUE(IsReservedResponseHeader("date"));
   EXPECT_TRUE(IsReservedResponseHeader(http::Connection));
   EXPECT_TRUE(IsReservedResponseHeader("transfer-encoding"));
@@ -39,7 +39,7 @@ TEST(ReservedHeadersTest, ReservedResponseHeaderHandlesEmptyAndLong) {
 
 TEST(ForbiddenTrailersTest, ForbiddenTrailerBasic) {
   EXPECT_TRUE(IsForbiddenTrailerHeader("transfer-encoding"));
-  EXPECT_TRUE(IsForbiddenTrailerHeader("content-length"));
+  EXPECT_TRUE(IsForbiddenTrailerHeader(http::ContentLength));
   EXPECT_TRUE(IsForbiddenTrailerHeader("host"));
   EXPECT_TRUE(IsForbiddenTrailerHeader("trailer"));
   EXPECT_TRUE(IsForbiddenTrailerHeader("te"));
