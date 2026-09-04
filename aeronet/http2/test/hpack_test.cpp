@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/city-hash.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
@@ -1314,7 +1315,7 @@ TEST(HpackRoundTrip, DateHeaderValue) {
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
   encoder.encode(encoded, "date", kDate);
-  encoder.encode(encoded, "content-length", "1");
+  encoder.encode(encoded, http::ContentLength, "1");
 
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());
@@ -1340,7 +1341,7 @@ TEST(HpackRoundTrip, CurrentDateHeaderValue) {
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
   encoder.encode(encoded, "date", dateSv);
-  encoder.encode(encoded, "content-length", "1");
+  encoder.encode(encoded, http::ContentLength, "1");
 
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());
@@ -1376,12 +1377,12 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
 
   RawBytes encoded;
   encoder.encode(encoded, ":status", "200");
-  encoder.encode(encoded, "content-type", "text/plain");
+  encoder.encode(encoded, http::ContentType, "text/plain");
   encoder.encode(encoded, "x-custom", "original");
   encoder.encode(encoded, "x-another", "anothervalue");
   encoder.encode(encoded, "x-global", "gvalue");
-  encoder.encode(encoded, "date", dateSv);
-  encoder.encode(encoded, "content-length", "1");
+  encoder.encode(encoded, http::Date, dateSv);
+  encoder.encode(encoded, http::ContentLength, "1");
 
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());

@@ -2546,8 +2546,8 @@ TEST(Http2ProtocolHandler, PostWithInvalidGzipBodyReturnsError) {
   hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
   hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
   hdrs.append(MakeHttp1HeaderLine(":path", "/submit"));
-  hdrs.append(MakeHttp1HeaderLine("content-length", std::to_string(invalidGzip.size())));
-  hdrs.append(MakeHttp1HeaderLine("content-encoding", "gzip"));
+  hdrs.append(MakeHttp1HeaderLine(http::ContentLength, std::to_string(invalidGzip.size())));
+  hdrs.append(MakeHttp1HeaderLine(http::ContentEncoding, "gzip"));
   ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
   loop.pumpClientToServer();
 

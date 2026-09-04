@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "aeronet/avx2.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -177,7 +178,7 @@ inline bool Avx2Lower32Equal(const char* a, const char* b) {
 // out-of-line target("avx2") call (it cannot be inlined into generic code) -- that is the structural cost the
 // benchmark exposes; everything else is inlined like the other candidates for a fair comparison.
 [[gnu::always_inline]] inline bool CIEqualAvx2(std::string_view lhs, std::string_view rhs) noexcept {
-  static const bool kHasAvx2 = HasAvx2ForToLower();
+  static const bool kHasAvx2 = HasAvx2();
   const std::size_t len = lhs.size();
   if (len != rhs.size()) {
     return false;
