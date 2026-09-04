@@ -21,6 +21,8 @@ struct AccessLogConfig {
     JSON,  // JSON format (requires AERONET_ENABLE_GLAZE at build time)
   };
 
+  bool operator==(const AccessLogConfig&) const = default;
+
   // Output sink. Default: None (disabled).
   Sink sink{Sink::None};
 
@@ -30,6 +32,9 @@ struct AccessLogConfig {
   // When true, use the first IP from X-Forwarded-For header (if present) instead of the direct peer IP.
   // Use this when the server is behind a trusted reverse proxy.
   bool useForwardedFor{false};
+
+  // Data will be flushed to sink once the internal buffer of the writer exceeds this size.
+  uint32_t flushThresholdInBytes{8192U};
 
   // File path for the access log when sink == File. Ignored otherwise.
   std::string filePath;

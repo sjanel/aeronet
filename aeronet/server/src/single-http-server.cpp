@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "aeronet/accept-encoding-negotiation.hpp"
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/event-loop.hpp"
@@ -871,7 +872,8 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
 
   refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
-  return asyncState.active;
+
+  return true;
 }
 
 void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
@@ -1546,6 +1548,8 @@ void SingleHttpServer::applyPendingUpdates() {
     const TLSConfig tlsBefore = _config.tls;
 #endif
 
+    AccessLogConfig accessLogConfigBefore = _config.accessLog;
+
     ApplyPendingUpdates(_updates.lock, _updates.config, _updates.hasConfig, _config, "config");
 
     // Reinitialize components dependent on config values.
@@ -1567,6 +1571,9 @@ void SingleHttpServer::applyPendingUpdates() {
       }
     }
 #endif
+    if (_config.accessLog != accessLogConfigBefore) {
+      _accessLog = AccessLogWriter(_config.accessLog);
+    }
   }
   if (_updates.hasRouter.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
