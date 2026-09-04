@@ -109,6 +109,8 @@ TEST(MultiHttpServer, ManagedStartIsStoppedByServer) {
   const auto resp = test::simpleGet(multi.port(), "/managed");
   EXPECT_TRUE(resp.contains("Managed")) << resp;
 
+  EXPECT_TRUE(multi.isRunning());
+
   multi.stop();
   EXPECT_FALSE(multi.isRunning());
 }

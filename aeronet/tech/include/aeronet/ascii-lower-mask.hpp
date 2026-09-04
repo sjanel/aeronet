@@ -18,18 +18,6 @@
 
 namespace aeronet {
 
-#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
-inline bool HasAvx2ForToLower() { return __builtin_cpu_supports("avx2"); }
-#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-inline bool HasAvx2ForToLower() {
-  int cpuInfo[4];
-  __cpuidex(cpuInfo, 7, 0);
-  return (cpuInfo[1] & (1 << 5)) != 0;
-}
-#else
-constexpr bool HasAvx2ForToLower() { return false; }
-#endif
-
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #define AERONET_HAS_ASCII_LOWER_MASK4 1
 #endif

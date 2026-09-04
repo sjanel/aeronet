@@ -65,7 +65,7 @@ TEST(MergeableHeaders, OverrideHeadersReturnO) {
 }
 
 TEST(MergeableHeaders, DisallowedDuplicateHeadersReturnNull) {
-  for (std::string_view hdr : {"content-length", "host"}) {
+  for (std::string_view hdr : {http::ContentLength, http::Host}) {
     EXPECT_EQ('\0', http::ReqHeaderValueSeparator(hdr, true)) << hdr;
     EXPECT_EQ('\0', http::ReqHeaderValueSeparator(hdr, false)) << hdr << " (strict)";
   }
