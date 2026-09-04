@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
@@ -20,7 +21,7 @@ namespace aeronet::http {
 //     static_assert(!aeronet::http::IsReservedResponseHeader("Content-Length")); // Not OK
 constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
   static constexpr std::string_view kHeaders[]{
-      "connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade",
+      "connection", http::ContentLength, http::ContentType, "date", "te", "trailer", "transfer-encoding", "upgrade",
   };
   return std::ranges::any_of(kHeaders,
                              [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
@@ -29,7 +30,7 @@ constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
 // Same as IsReservedResponseHeader but for request headers.
 constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcept {
   static constexpr std::string_view kHeaders[]{
-      "content-length", "content-type", "expect", "host", "te", "trailer", "transfer-encoding", "upgrade",
+      http::ContentLength, http::ContentType, "expect", "host", "te", "trailer", "transfer-encoding", "upgrade",
   };
   return std::ranges::any_of(kHeaders,
                              [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
@@ -50,9 +51,9 @@ constexpr bool IsForbiddenTrailerHeader(std::string_view trailerNameLowerCase) n
       "authorization",
       "cache-control",
       "content-encoding",
-      "content-length",
+      http::ContentLength,
       "content-range",
-      "content-type",
+      http::ContentType,
       "cookie",
       "expect",
       "expires",

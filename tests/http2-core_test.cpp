@@ -20,6 +20,7 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -54,7 +55,6 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include <limits>
 
-#include "aeronet/http-constants.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
@@ -661,7 +661,7 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
   constexpr uint32_t streamId = 2;
 
   RawChars hdrs2;
-  hdrs2.append(MakeHttp1HeaderLine("content-type", "text/plain"));
+  hdrs2.append(MakeHttp1HeaderLine(http::ContentType, "text/plain"));
   hdrs2.append(MakeHttp1HeaderLine("x-srv", "abc"));
   ErrorCode err = h2.server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(hdrs2), false);
   ASSERT_EQ(err, ErrorCode::NoError);
@@ -679,7 +679,7 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
   const auto& ev = h2.clientHeaders[0];
   EXPECT_EQ(ev.streamId, streamId);
   EXPECT_TRUE(HasHeader(ev, ":status", "200"));
-  EXPECT_TRUE(HasHeader(ev, "content-type", "text/plain"));
+  EXPECT_TRUE(HasHeader(ev, http::ContentType, "text/plain"));
   EXPECT_TRUE(HasHeader(ev, "x-srv", "abc"));
 }
 
@@ -1771,7 +1771,7 @@ TEST(Http2Streaming, SimpleWriteBodyAndEnd) {
   auto response = client.get("/stream");
   EXPECT_EQ(response.statusCode, 200);
   EXPECT_EQ(response.body, "hello world");
-  EXPECT_EQ(response.header("content-type"), "text/plain");
+  EXPECT_EQ(response.header(http::ContentType), "text/plain");
   EXPECT_EQ(response.header("x-custom"), "streaming-value");
 }
 
@@ -1895,7 +1895,7 @@ TEST(Http2Streaming, MultipleCustomHeaders) {
 
   auto response = client.get("/multi-hdr");
   EXPECT_EQ(response.statusCode, 200);
-  EXPECT_EQ(response.header("content-type"), "application/json");
+  EXPECT_EQ(response.header(http::ContentType), "application/json");
   EXPECT_EQ(response.header("x-request-id"), "abc-123");
   EXPECT_EQ(response.header("x-trace-id"), "trace-456");
   EXPECT_EQ(response.header("cache-control"), "no-cache");
@@ -2503,7 +2503,7 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   std::string receivedContentType;
   ts.setDefault([&](const HttpRequestView& req) {
     receivedBody = std::string(req.body());
-    receivedContentType = std::string(req.headerValueOrEmpty("content-type"));
+    receivedContentType = std::string(req.headerValueOrEmpty(http::ContentType));
     return req.makeResponse("received: " + receivedBody);
   });
 
@@ -2552,7 +2552,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
     receivedContentEncoding = std::string(req.headerValueOrEmpty("content-encoding"));
     receivedOriginalEncoding = std::string(req.headerValueOrEmpty(http::OriginalEncodingHeaderName));
     receivedOriginalEncodedLen = std::string(req.headerValueOrEmpty(http::OriginalEncodedLengthHeaderName));
-    receivedContentLen = std::string(req.headerValueOrEmpty("content-length"));
+    receivedContentLen = std::string(req.headerValueOrEmpty(http::ContentLength));
     return req.makeResponse("ok");
   });
 

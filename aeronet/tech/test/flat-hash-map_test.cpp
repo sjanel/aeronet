@@ -18,6 +18,7 @@
 #include <utility>
 
 #include "aeronet/city-hash.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
 
@@ -588,11 +589,11 @@ TEST(flat_hash_map, rehash_and_shrink_to_fit_preserve_entries) {
 TEST(flat_hash_map, StringViewKeysStableAcrossRehash) {
   using KeyMap = flat_hash_map<std::string_view, std::string_view, CityHash>;
 
-  vector<std::pair<std::string_view, std::string_view>> headers = {
-      {":status", "200"},       {"content-type", "text/plain"},
-      {"x-custom", "original"}, {"x-another", "anothervalue"},
-      {"x-global", "gvalue"},   {"date", "Sun, 04 Jan 2026 10:38:25 GMT"},
-      {"content-length", "1"},
+  vector<std::pair<std::string_view, std::string_view>> headers{
+      {":status", "200"},         {"content-type", "text/plain"},
+      {"x-custom", "original"},   {"x-another", "anothervalue"},
+      {"x-global", "gvalue"},     {"date", "Sun, 04 Jan 2026 10:38:25 GMT"},
+      {http::ContentLength, "1"},
   };
 
   KeyMap map;

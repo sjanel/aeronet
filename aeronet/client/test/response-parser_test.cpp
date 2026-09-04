@@ -808,8 +808,8 @@ TEST(ResponseParserDecompress, DecodesEachSupportedEncodingLengthFramed) {
     EXPECT_EQ(resp.bodyInMemory().data(), decodedAllocation) << GetEncodingStr(enc);
     EXPECT_EQ(decode.out.capacity(), decodeScratchCapacity) << GetEncodingStr(enc);
     EXPECT_NE(decode.out.data(), decodedAllocation) << GetEncodingStr(enc);
-    EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty()) << GetEncodingStr(enc);
-    EXPECT_EQ(resp.headerValueOrEmpty("content-type"), "text/plain") << GetEncodingStr(enc);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty()) << GetEncodingStr(enc);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/plain") << GetEncodingStr(enc);
   }
 }
 

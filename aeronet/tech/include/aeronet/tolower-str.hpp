@@ -9,6 +9,10 @@
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/toupperlower.hpp"
 
+#ifdef AERONET_HAS_ASCII_LOWER_MASK4
+#include "aeronet/avx2.hpp"
+#endif
+
 namespace aeronet {
 
 // Inplace optimized tolower for ASCII characters
@@ -39,7 +43,7 @@ constexpr void tolower(char* buf, std::size_t len) {
   }
 
 #ifdef AERONET_HAS_ASCII_LOWER_MASK4
-  if (HasAvx2ForToLower()) {
+  if (HasAvx2()) {
     // Process 32 bytes at a time when AVX2 is available.
     for (; charPos + 32 <= len; charPos += 32) {
       auto* chunk = reinterpret_cast<uint64_t*>(buf + charPos);

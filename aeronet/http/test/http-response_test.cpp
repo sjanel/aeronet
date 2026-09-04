@@ -4352,8 +4352,8 @@ TEST_F(HttpResponseTest, FinalizeHeadersAndBody_DirectCompressionPreservesNormal
 
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("x-custom-header", "ValuePreserved")));
     EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("cache-control", "max-age=3600")));
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-encoding", GetEncodingStr(enc))));
-    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine("content-type", "application/json")));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentEncoding, GetEncodingStr(enc))));
+    EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
 
     // Verify compression still works
     auto decompressed = test::Decompress(enc, resp.bodyInMemory());
