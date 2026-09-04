@@ -10,9 +10,9 @@ namespace aeronet::http {
 
 TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
   EXPECT_TRUE(IsReservedResponseHeader(http::ContentLength));
-  EXPECT_TRUE(IsReservedResponseHeader("date"));
+  EXPECT_TRUE(IsReservedResponseHeader(http::Date));
   EXPECT_TRUE(IsReservedResponseHeader(http::Connection));
-  EXPECT_TRUE(IsReservedResponseHeader("transfer-encoding"));
+  EXPECT_TRUE(IsReservedResponseHeader(http::TransferEncoding));
   EXPECT_TRUE(IsReservedResponseHeader("te"));
   EXPECT_TRUE(IsReservedResponseHeader("trailer"));
   EXPECT_TRUE(IsReservedResponseHeader("upgrade"));

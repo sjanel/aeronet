@@ -34,7 +34,8 @@
 
 namespace aeronet {
 
-AccessLogWriter::AccessLogWriter(const AccessLogConfig& config) : _format(config.format), _sink(config.sink) {
+AccessLogWriter::AccessLogWriter(const AccessLogConfig& config)
+    : _flushThresholdInBytes(config.flushThresholdInBytes), _format(config.format), _sink(config.sink) {
   if (_sink == AccessLogConfig::Sink::None) {
     return;
   }
@@ -69,9 +70,7 @@ void AccessLogWriter::log(const RequestMetrics& metrics) {
     formatJSON(metrics);
   }
 
-  static constexpr decltype(_buffer)::size_type kFlushThreshold = 8192;
-
-  if (_buffer.size() >= kFlushThreshold) {
+  if (_buffer.size() >= _flushThresholdInBytes) {
     flush();
   }
 }

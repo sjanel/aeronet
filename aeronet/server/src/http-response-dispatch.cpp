@@ -164,7 +164,6 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   queueData(cnxIt, resp.finalizeForHttp1(_dateHeader.data(), request.version(), opts, &_config.globalHeaders,
                                          _config.minCapturedBodySize));
 
-  state.inBuffer.erase_front(consumedBytes);
   if (!keepAlive) {
     // Always request drain+close for non-keep-alive connections. The actual close
     // only triggers once outBuffer is empty (checked by canCloseConnectionForDrain),
@@ -174,6 +173,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   if (_callbacks.metrics || _accessLog) {
     emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
+
+  state.inBuffer.erase_front(consumedBytes);
 
   // End the span after response is finalized
   request.end(respStatusCode);
