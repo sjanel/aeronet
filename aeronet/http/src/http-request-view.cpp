@@ -519,7 +519,7 @@ void HttpRequestView::shrinkAndMaybeClear() {
   shrinkMap(_pathParams);
 }
 
-void HttpRequestView::end(http::StatusCode respStatusCode) {
+void HttpRequestView::end(http::StatusCode respStatusCode) noexcept {
   // End the span after response is finalized
   if (_traceSpan) {
     const auto reqEnd = std::chrono::steady_clock::now();

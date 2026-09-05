@@ -50,7 +50,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
     auto result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
     if (result) {
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result), consumedBytes, pCorsPolicy);
+      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result), pCorsPolicy);
       return LoopAction::Continue;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
@@ -59,13 +59,13 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
   // CONNECT requires protocol-specific handling (TCP tunnel setup)
   if (request.method() == http::Method::CONNECT) {
-    return processConnectMethod(cnxIt, consumedBytes, pCorsPolicy);
+    return processConnectMethod(cnxIt, pCorsPolicy);
   }
 
   return LoopAction::Nothing;
 }
 
-SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt& cnxIt, std::size_t consumedBytes,
+SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt& cnxIt,
                                                                     const CorsPolicy* pCorsPolicy) {
   HttpRequestView& request = _connections.connectionState(cnxIt).request;
 
@@ -112,7 +112,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
   ConnectionState& state = _connections.connectionState(cnxIt);
   assert(cnxIt != _connections.end() && "Client connection cannot vanish during connection insertion");
 
-  finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), consumedBytes, pCorsPolicy);
+  finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), pCorsPolicy);
 
   // Enter tunneling mode: link client -> upstream (upstream -> client is set by setupTunnelConnection).
   state.peerFd = upstreamFd;
@@ -127,15 +127,12 @@ SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt
 }
 
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
-                                                       std::size_t consumedBytes, const CorsPolicy* pCorsPolicy) {
+                                                       const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   if (pCorsPolicy != nullptr) {
     (void)pCorsPolicy->applyToResponse(request, resp);
   }
-
-  ++state.requestsServed;
-  ++_stats.totalRequestsServed;
 
   // Clear per-route request deadline and headerStartTp now that a response is being sent.
   // Resetting headerStartTp to epoch allows transportRead to re-arm it for the next keep-alive request.
@@ -165,16 +162,13 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
                                          _config.minCapturedBodySize));
 
   if (!keepAlive) {
-    // Always request drain+close for non-keep-alive connections. The actual close
-    // only triggers once outBuffer is empty (checked by canCloseConnectionForDrain),
-    // so it is safe to call this before a large response finishes flushing.
+    // Always request drain+close for non-keep-alive connections. The actual close only triggers once outBuffer is empty
+    // (checked by canCloseConnectionForDrain), so it is safe to call this before a large response finishes flushing.
     state.requestDrainAndClose();
   }
   if (_callbacks.metrics || _accessLog) {
     emitRequestMetrics(request, respStatusCode, request.body().size(), state.requestsServed > 0);
   }
-
-  state.inBuffer.erase_front(consumedBytes);
 
   // End the span after response is finalized
   request.end(respStatusCode);

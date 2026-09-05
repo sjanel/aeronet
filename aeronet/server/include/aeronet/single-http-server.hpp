@@ -482,8 +482,7 @@ class SingleHttpServer {
                                      std::size_t& consumedBytes);
   bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
-  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, std::size_t consumedBytes,
-                                       const CorsPolicy* pCorsPolicy);
+  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy);
   // Handle Expect header tokens other than the built-in 100-continue.
   // Returns true if processing should stop for this request (response already queued/sent).
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
@@ -499,7 +498,7 @@ class SingleHttpServer {
   // Build & queue an automatic HTTP -> HTTPS redirect response (used when config.httpsRedirect.enabled()).
   // Derives the target from the request Host header + config.httpsRedirect, then closes the connection.
   // consumedBytes is the number of bytes of the current request to consume from the inbound buffer.
-  void emitHttpsRedirect(ConnectionIt cnxIt, std::size_t consumedBytes);
+  void emitHttpsRedirect(ConnectionIt cnxIt);
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
   void flushOutbound(ConnectionIt cnxIt);
@@ -524,19 +523,12 @@ class SingleHttpServer {
 
   [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
 
-  // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
-  // the request (either because the client requested it or keep-alive limits reached). The HttpRequestView is
-  // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
-  // to mutate transient fields (target normalization already complete at this point).
-  bool callStreamingHandler(const StreamingHandler& streamingHandler, ConnectionIt cnxIt, std::size_t consumedBytes,
-                            const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> postMiddleware);
-
   enum class LoopAction : uint8_t { Nothing, Continue, Break, SwitchProtocol };
 
   LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
   // HTTP/1.1-specific CONNECT handling (TCP tunnel setup).
-  LoopAction processConnectMethod(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
+  LoopAction processConnectMethod(ConnectionIt& cnxIt, const CorsPolicy* pCorsPolicy);
 
   // Shared CONNECT tunnel helpers used by both HTTP/1.1 and HTTP/2 paths.
 

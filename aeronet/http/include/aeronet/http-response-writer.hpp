@@ -33,6 +33,9 @@ struct CompressionState;
 //  - Protocol-agnostic: delegates transport operations (framing, sending) to an IWriterTransport.
 class HttpResponseWriter {
  public:
+  // Get the current status code stored in this HttpResponseWriter.
+  [[nodiscard]] http::StatusCode status() const { return _statusCode; }
+
   // Replaces the status code. Must be a 3 digits integer.
   void status(http::StatusCode code);
 
@@ -56,7 +59,7 @@ class HttpResponseWriter {
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void header(LowerAsciiKey name, std::string_view value);
 
-  // Inserts or replaces the Content-Type header.
+  // Inserts or replaces the Content-Type header value.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void contentType(std::string_view ct);
 
@@ -218,6 +221,9 @@ class HttpResponseWriter {
   State _state{State::Opened};
   Encoding _encoding;
   bool _compressionActivated{false};
+  // needed along with fixedResponse because once headers emitted, the buffer will be empty, and it is impossible to
+  // access status code from it.
+  http::StatusCode _statusCode{http::StatusCodeOK};
 
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
