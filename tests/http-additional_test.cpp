@@ -231,6 +231,22 @@ TEST(Http10, BasicVersionEcho) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
+TEST(Http10, StreamingHandlerCannotBePickedInHttp10) {
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.end();
+  });
+
+  std::string req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
+  std::string resp = test::sendAndCollect(ts.port(), req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.0 404"));
+
+  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return req.makeResponse("A"); });
+  req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
+  resp = test::sendAndCollect(ts.port(), req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
+}
+
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("B"); });
   // Expect ignored in HTTP/1.0

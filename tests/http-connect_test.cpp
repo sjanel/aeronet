@@ -218,8 +218,7 @@ TEST_F(HttpConnectDefaultConfig, CoalescedDataWriteErrorClosesTunnel) {
   // Report a successful upstream connect without actually connecting the socket. The coalesced tunnel payload then
   // reaches the direct forwarding path and deterministically fails with ENOTCONN.
   test::PushConnectAction({0, 0});
-  const std::string request =
-      "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\ncoalesced-write-error";
+  const std::string request = "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\ncoalesced-write-error";
   test::sendAll(fd, request, 1s);
 
   const std::string response = test::recvWithTimeout(fd, 1s);
@@ -348,7 +347,7 @@ TEST_F(HttpConnectDefaultConfig, ExplicitAllowlistRejectsTarget) {
 
 TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
   // Missing ':' in authority form -> should return 400 Bad Request
-  std::string req = "CONNECT malformed-target HTTP/1.1\r\nHost: malformed-target\r\n\r\n";
+  std::string_view req = "CONNECT malformed-target HTTP/1.1\r\nHost: malformed-target\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
@@ -360,6 +359,24 @@ TEST_F(HttpConnectDefaultConfig, NonNumericConnectPortReturns400) {
   // the resolver, which would otherwise map it via /etc/services).
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com:https HTTP/1.1\r\nHost: example.com\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
+TEST_F(HttpConnectDefaultConfig, PortZeroIsInvalid) {
+  // authority-form requires a numeric port; a service name is rejected up front with 400 (not handed to
+  // the resolver, which would otherwise map it via /etc/services).
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, "CONNECT example.com:0 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
+}
+
+TEST_F(HttpConnectDefaultConfig, PartialNumericPortIsInvalid) {
+  // authority-form requires a numeric port; a service name is rejected up front with 400 (not handed to
+  // the resolver, which would otherwise map it via /etc/services).
+  ASSERT_GT(fd, 0);
+  test::sendAll(fd, "CONNECT example.com:509a HTTP/1.1\r\nHost: example.com\r\n\r\n");
   auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }

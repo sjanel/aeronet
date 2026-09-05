@@ -255,7 +255,7 @@ std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
         }
         if (recvErr == error::kTimedOut) {
           // SO_RCVTIMEO expired (WSAETIMEDOUT on Windows, EAGAIN on Linux handled above).
-          // Return what we have — caller will detect no progress and break.
+          // Return what we have - caller will detect no progress and break.
           return oldSize;
         }
         ThrowSystemError("Error from blocking recv");

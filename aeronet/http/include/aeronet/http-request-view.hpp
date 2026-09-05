@@ -585,7 +585,7 @@ class HttpRequestView {
 
   void shrinkAndMaybeClear();
 
-  void end(http::StatusCode respStatusCode);
+  void end(http::StatusCode respStatusCode) noexcept;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void markAwaitingBody() const noexcept;
