@@ -3875,6 +3875,37 @@ TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << "Expected 400 Bad Request for malformed CRLF, got: " << resp;
 }
 
+TEST(HttpStreaming, EmptyContentTypeIsForbidden) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stream", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.contentType("");
+    writer.writeBody("data");
+    writer.end();
+  });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/stream";
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeInternalServerError);
+}
+
+TEST(HttpStreaming, ThrowingNonStdExceptionShouldReturnError500) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stream",
+                                 // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
+                                 [](const HttpRequestView&, [[maybe_unused]] HttpResponseWriter& writer) { throw 42; });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/stream";
+
+  auto raw = test::requestOrThrow(ts.port(), opt);
+  auto parsed = test::parseResponseOrThrow(raw);
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeInternalServerError);
+}
+
 TEST(HttpStreaming, ChunkedRequestPayloadTooLargeNoDecompression) {
   ts.router() = Router();
   ts.postConfigUpdate([](HttpServerConfig& cfg) {

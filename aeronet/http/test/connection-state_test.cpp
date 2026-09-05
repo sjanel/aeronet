@@ -587,29 +587,41 @@ class DelayedZerocopyTransport final : public TransportBackend<DelayedZerocopyTr
 }  // namespace
 
 TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBackToCopy) {
-  ConnectionState state;
-  auto delayed = std::make_unique<DelayedZerocopyTransport>();
-  DelayedZerocopyTransport* raw = delayed.get();
-  state.transport = std::move(delayed);
+  for (uint32_t maxPendingBytes : {100U, 1024U}) {
+    ConnectionState state;
+    auto delayed = std::make_unique<DelayedZerocopyTransport>();
+    DelayedZerocopyTransport* raw = delayed.get();
+    state.transport = std::move(delayed);
 
-  static constexpr uint32_t kLimit = 1024U;
-  ASSERT_TRUE(state.prepareZerocopyWrite(600, kLimit));
-  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(600, 'a')), true);
-  ASSERT_TRUE(state.prepareZerocopyWrite(400, kLimit));
-  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(400, 'b')), true);
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+    std::size_t retainedSize = 600U;
 
-  EXPECT_FALSE(state.prepareZerocopyWrite(25, kLimit));
-  EXPECT_FALSE(raw->isZerocopyEnabled());
-  state.holdBufferIfZerocopyPending(HttpMessageData(std::string(25, 'c')), false);
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+    if (maxPendingBytes < retainedSize) {
+      EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
+    } else {
+      ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
+      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'a')), true);
 
-  raw->complete();
-  state.releaseCompletedZerocopyBuffers();
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
-  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+      retainedSize = 400U;
+
+      ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
+      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'b')), true);
+      EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+      EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+      retainedSize = 25U;
+
+      EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
+      EXPECT_FALSE(raw->isZerocopyEnabled());
+      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'c')), false);
+      EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+      EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+      raw->complete();
+      state.releaseCompletedZerocopyBuffers();
+      EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
+      EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+    }
+  }
 }
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {

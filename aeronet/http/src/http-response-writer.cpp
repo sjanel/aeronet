@@ -15,6 +15,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
@@ -54,6 +55,7 @@ void HttpResponseWriter::status(http::StatusCode code) {
     log::warn("Streaming: cannot set status after headers sent");
     return;
   }
+  _statusCode = code;
   _fixedResponse.status(code);
 }
 
@@ -86,6 +88,7 @@ void HttpResponseWriter::contentType(std::string_view ct) {
     log::warn("Streaming: cannot set content-type after headers sent");
     return;
   }
+  ct = CheckContentType(false, ct);
 
   std::string_view oldCT = _fixedResponse.headerValueOrEmpty(http::ContentType);
   assert(!oldCT.empty());
@@ -273,15 +276,13 @@ void HttpResponseWriter::end() {
       _state = State::Failed;
       return;
     }
-  } else {
+  } else if (!_head && !_preCompressBuffer.empty()) {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
-    if (!_head && !_preCompressBuffer.empty()) {
-      if (!_transport->emitData(_preCompressBuffer)) {
-        _state = State::Failed;
-        return;
-      }
-      _preCompressBuffer.clear();
+    if (!_transport->emitData(_preCompressBuffer)) {
+      _state = State::Failed;
+      return;
     }
+    _preCompressBuffer.clear();
   }
 
   if (!_transport->emitEnd(std::move(_trailers))) {
