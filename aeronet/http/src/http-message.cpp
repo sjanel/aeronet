@@ -110,31 +110,29 @@ struct HeaderSearchResult {
 // Performs a linear search for the header 'key' in the headers block defined by flatHeaders.
 // flatHeaders should start at the start of the first header, without any leading CRLF.
 // flatHeaders should end immediately after the last header CRLF.
-// Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
+// flatHeaders is supposed to contain a valid (well-formed) flat array of header lines, with http::HeaderSep as key
+// value separator, and http::CRLF as line separator. Returns {nullptr, nullptr} if the header is not found, or a value
+// {valueFirst, valueLast} (may be empty) otherwise.
 constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
   if (key.empty()) {
     return {};
   }
 
+  const auto* pEnd = flatHeaders.data() + flatHeaders.size();
   for (std::size_t headerNamePos = 0; headerNamePos < flatHeaders.size();) {
-    const std::size_t valuePos = headerNamePos + key.size();
     if (flatHeaders.substr(headerNamePos).starts_with(key) &&
-        flatHeaders.substr(valuePos).starts_with(http::HeaderSep)) {
-      const char* valueBegin = flatHeaders.data() + headerNamePos + key.size() + http::HeaderSep.size();
-      const char* const flatEnd = flatHeaders.data() + flatHeaders.size();
-      const char* valueEnd = SearchCRLF(valueBegin, flatEnd);
-      assert(valueEnd != flatEnd);  // well-formed buffer guarantees a real CRLF before end
-      assert(valueEnd[1] == '\n');
-      return {valueBegin, valueEnd};
+        flatHeaders.substr(headerNamePos + key.size()).starts_with(http::HeaderSep)) {
+      const char* pValueBeg = flatHeaders.data() + headerNamePos + key.size() + http::HeaderSep.size();
+      const char* pValueEnd = SearchCRLF(pValueBeg, pEnd);
+      // well-formed buffer guarantees a real CRLF before end
+      assert(pValueEnd != pEnd && pValueEnd[1] == '\n');
+      return {pValueBeg, pValueEnd};
     }
 
-    // CR is rare in a valid HTTP header block, so string_view::find can use an efficient memchr-like scan to jump
-    // directly to the next line instead of examining header values byte by byte.
-    const std::size_t endLinePos = flatHeaders.find(http::CRLF, headerNamePos);
-    if (endLinePos == std::string_view::npos) {
-      return {};
-    }
-    headerNamePos = endLinePos + http::CRLF.size();
+    const char* pValueEnd = SearchCRLF(flatHeaders.data() + headerNamePos + http::HeaderSep.size(), pEnd);
+    assert(pValueEnd != pEnd && pValueEnd[1] == '\n');
+
+    headerNamePos = static_cast<decltype(headerNamePos)>(pValueEnd - flatHeaders.data()) + http::CRLF.size();
   }
   return {};
 }

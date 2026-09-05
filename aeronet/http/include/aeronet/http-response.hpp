@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -165,6 +166,7 @@ class HttpResponse final : public HttpMessage {
 
   // Get the current status code stored in this HttpResponse.
   [[nodiscard]] http::StatusCode status() const noexcept {
+    assert(_data.data() != nullptr);
     return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
   }
 
