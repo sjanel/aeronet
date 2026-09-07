@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <utility>
@@ -28,18 +29,30 @@ struct Lifecycle {
         lastLoopNs(other.lastLoopNs.exchange(0, std::memory_order_relaxed)),
         wakeupFd(std::move(other.wakeupFd)),
         state(other.state.exchange(State::Idle, std::memory_order_relaxed)),
-        drainDeadlineEnabled(other.drainDeadlineEnabled.exchange(false, std::memory_order_relaxed)) {}
+        drainDeadlineEnabled(other.drainDeadlineEnabled.exchange(false, std::memory_order_relaxed)) {
+    // PRECONDITION: other must be Idle (enforced by callers today - see SingleHttpServer's move ctor/assignment,
+    // which check isIdle()/stop() before moving). Asserted here (not thrown) because a violation means a waiter
+    // in exchangeStopping() could already be permanently stuck by the time we'd detect it - there is no safe
+    // recovery, only prevention. notify_all() is defensive insurance for the (contract-violating) case where a
+    // waiter is present despite the precondition.
+    assert(state.load(std::memory_order_relaxed) != State::Starting);
+    other.state.notify_all();
+    state.notify_all();
+  }
 
   Lifecycle& operator=(const Lifecycle&) = delete;
 
   Lifecycle& operator=(Lifecycle&& other) noexcept {
     if (this != &other) {
+      assert(state.load(std::memory_order_relaxed) != State::Starting);  // *this* must also be Idle
       drainDeadline = std::exchange(other.drainDeadline, {});
       lastLoopNs.store(other.lastLoopNs.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
       wakeupFd = std::move(other.wakeupFd);
       state.store(other.state.exchange(State::Idle, std::memory_order_relaxed), std::memory_order_relaxed);
       drainDeadlineEnabled.store(other.drainDeadlineEnabled.exchange(false, std::memory_order_relaxed),
                                  std::memory_order_relaxed);
+      other.state.notify_all();
+      state.notify_all();
     }
     return *this;
   }
@@ -70,8 +83,8 @@ struct Lifecycle {
   // Atomically reserve the lifecycle for startup before creating the event-loop thread.
   // This prevents mutations from taking the pre-start direct-update path while prepareRun()
   // is inspecting the router.
-  // PRECONDITION: any successful tryEnterStarting() MUST eventually be followed - from some thread -
-  // by either tryEnterRunning() or reset(). exchangeStopping() blocks indefinitely on State::Starting
+  // PRECONDITION: any successful enterStarting() MUST eventually be followed - from some thread -
+  // by either enterRunning() or reset(). exchangeStopping() blocks indefinitely on State::Starting
   // until one of those fires; a Starting state with no such follow-up call will hang stop() forever.
   // All production call sites (SingleHttpServer::run/runUntil/launchDetached) already guarantee this.
   void enterStarting() {
@@ -130,11 +143,15 @@ struct Lifecycle {
   }
 
   [[nodiscard]] bool isIdle() const noexcept { return state.load(std::memory_order_acquire) == State::Idle; }
+
   [[nodiscard]] bool isRunning() const noexcept { return state.load(std::memory_order_acquire) == State::Running; }
+
   [[nodiscard]] bool isStarting() const noexcept { return state.load(std::memory_order_acquire) == State::Starting; }
+
   [[nodiscard]] bool isDraining() const noexcept { return state.load(std::memory_order_acquire) == State::Draining; }
+
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_acquire) == State::Stopping; }
-  [[nodiscard]] State currentState() const noexcept { return state.load(std::memory_order_acquire); }
+
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_acquire) != State::Idle; }
 
   [[nodiscard]] bool cannotBeginDraining() const noexcept {
@@ -143,6 +160,7 @@ struct Lifecycle {
   }
 
   [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled.load(std::memory_order_relaxed); }
+
   [[nodiscard]] std::chrono::steady_clock::time_point deadline() const noexcept { return drainDeadline; }
 
   // Probe status derived from state (no need for separate atomics):
@@ -152,6 +170,7 @@ struct Lifecycle {
     const State current = state.load(std::memory_order_acquire);
     return current != State::Idle && current != State::Starting;
   }
+
   [[nodiscard]] bool ready() const noexcept { return state.load(std::memory_order_acquire) == State::Running; }
 
   // Loop heartbeat used by a dedicated probe listener to detect a wedged event loop.

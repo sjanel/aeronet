@@ -1,4 +1,9 @@
 #include <gtest/gtest.h>
+#include <openssl/bio.h>
+#include <openssl/ec.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 

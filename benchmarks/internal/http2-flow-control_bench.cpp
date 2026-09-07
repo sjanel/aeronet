@@ -225,7 +225,7 @@ void BM_ConnectionBatchSmallResponses(benchmark::State& state) {
   vector<std::string_view> fragments;
   for ([[maybe_unused]] auto iteration : state) {
     state.PauseTiming();
-    Http2Connection connection(Http2Config{}, true);
+    Http2Connection connection(Http2Config(), true);
     auto input = std::span<const std::byte>(clientInput.begin(), clientInput.size());
     while (!input.empty()) {
       const auto result = connection.processInput(input);

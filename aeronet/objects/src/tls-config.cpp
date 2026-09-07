@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdint>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -11,7 +10,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/secure-zero.hpp"
 #include "aeronet/tolower-str.hpp"
-#include "aeronet/vector.hpp"
 
 namespace aeronet {
 
@@ -25,122 +23,9 @@ auto NormalizeHostname(std::string_view host) {
 
 }  // namespace
 
-TLSConfig::SniCertificate::SniCertificate(const SniCertificate& other) {
-  try {
-    _strings = other._strings;
-    isWildcard = other.isWildcard;
-  } catch (...) {
-    scrubSensitiveData();
-    throw;
-  }
-}
-
-TLSConfig::SniCertificate& TLSConfig::SniCertificate::operator=(const SniCertificate& other) {
-  if (this != &other) {
-    SniCertificate copy(other);
-    swap(copy);
-  }
-  return *this;
-}
-
-TLSConfig::SniCertificate& TLSConfig::SniCertificate::operator=(SniCertificate&& other) noexcept {
-  if (this != &other) {
-    SniCertificate moved(std::move(other));
-    swap(moved);
-  }
-  return *this;
-}
-
-TLSConfig::SniCertificate::~SniCertificate() { scrubSensitiveData(); }
-
-void TLSConfig::SniCertificate::swap(SniCertificate& other) noexcept {
-  using std::swap;
-  swap(_strings, other._strings);
-  swap(isWildcard, other.isWildcard);
-}
-
-TLSConfig::TLSConfig(const TLSConfig& other) {
-  try {
-    sessionTickets = other.sessionTickets;
-    handshakeTimeout = other.handshakeTimeout;
-    revocationCallback = other.revocationCallback;
-    revocationUserContext = other.revocationUserContext;
-    enabled = other.enabled;
-    requestClientCert = other.requestClientCert;
-    requireClientCert = other.requireClientCert;
-    alpnMustMatch = other.alpnMustMatch;
-    logHandshake = other.logHandshake;
-    disableCompression = other.disableCompression;
-    crlCheckAll = other.crlCheckAll;
-    cipherPolicy = other.cipherPolicy;
-    ktlsMode = other.ktlsMode;
-    minVersion = other.minVersion;
-    maxVersion = other.maxVersion;
-    maxConcurrentHandshakes = other.maxConcurrentHandshakes;
-    handshakeRateLimitPerSecond = other.handshakeRateLimitPerSecond;
-    handshakeRateLimitBurst = other.handshakeRateLimitBurst;
-    _alpnProtocols = other._alpnProtocols;
-    _trustedClientCertsPem = other._trustedClientCertsPem;
-    _tlsStrings = other._tlsStrings;
-    _sniCertificates = other._sniCertificates;
-    _staticTicketKeys = other._staticTicketKeys;
-  } catch (...) {
-    scrubSensitiveData();
-    throw;
-  }
-}
-
-TLSConfig& TLSConfig::operator=(const TLSConfig& other) {
-  if (this != &other) {
-    TLSConfig copy(other);
-    swap(copy);
-  }
-  return *this;
-}
-
-TLSConfig& TLSConfig::operator=(TLSConfig&& other) noexcept {
-  if (this != &other) {
-    TLSConfig moved(std::move(other));
-    swap(moved);
-  }
-  return *this;
-}
-
-TLSConfig::~TLSConfig() { scrubSensitiveData(); }
-
 void TLSConfig::scrubSensitiveData() noexcept {
   _tlsStrings.secureClearPart(kKeyPem);
-  for (auto& key : _staticTicketKeys) {
-    SecureZero(key.data(), key.size());
-  }
-}
-
-void TLSConfig::swap(TLSConfig& other) noexcept {
-  using std::swap;
-
-  swap(sessionTickets, other.sessionTickets);
-  swap(handshakeTimeout, other.handshakeTimeout);
-  swap(revocationCallback, other.revocationCallback);
-  swap(revocationUserContext, other.revocationUserContext);
-  swap(enabled, other.enabled);
-  swap(requestClientCert, other.requestClientCert);
-  swap(requireClientCert, other.requireClientCert);
-  swap(alpnMustMatch, other.alpnMustMatch);
-  swap(logHandshake, other.logHandshake);
-  swap(disableCompression, other.disableCompression);
-  swap(crlCheckAll, other.crlCheckAll);
-  swap(cipherPolicy, other.cipherPolicy);
-  swap(ktlsMode, other.ktlsMode);
-  swap(minVersion, other.minVersion);
-  swap(maxVersion, other.maxVersion);
-  swap(maxConcurrentHandshakes, other.maxConcurrentHandshakes);
-  swap(handshakeRateLimitPerSecond, other.handshakeRateLimitPerSecond);
-  swap(handshakeRateLimitBurst, other.handshakeRateLimitBurst);
-  swap(_tlsStrings, other._tlsStrings);
-  swap(_alpnProtocols, other._alpnProtocols);
-  swap(_trustedClientCertsPem, other._trustedClientCertsPem);
-  swap(_sniCertificates, other._sniCertificates);
-  swap(_staticTicketKeys, other._staticTicketKeys);
+  clearTlsSessionTicketKeys();
 }
 
 void TLSConfig::validate() {
@@ -234,35 +119,41 @@ void TLSConfig::validate() {
 }
 
 TLSConfig& TLSConfig::withTlsSessionTicketKey(SessionTicketKey keyMaterial) {
-  try {
-    // Avoid leaving an abandoned key copy behind when the vector grows: relocate through a pre-reserved replacement,
-    // scrub the old inline elements, then publish the replacement.
-    if (_staticTicketKeys.size() == _staticTicketKeys.capacity()) {
-      vector<SessionTicketKey> replacement;
-      replacement.reserve(std::max<std::uint32_t>(1U, _staticTicketKeys.size() * 2U));
-      for (const auto& key : _staticTicketKeys) {
-        replacement.push_back(key);
-      }
-      for (auto& key : _staticTicketKeys) {
-        SecureZero(key.data(), key.size());
-      }
-      _staticTicketKeys.swap(replacement);
+  struct KeyMaterialGuard {
+    explicit KeyMaterialGuard(SessionTicketKey& key) : key(key) {}
+
+    KeyMaterialGuard(const KeyMaterialGuard&) = delete;
+    KeyMaterialGuard(KeyMaterialGuard&&) = delete;
+    KeyMaterialGuard& operator=(const KeyMaterialGuard&) = delete;
+    KeyMaterialGuard& operator=(KeyMaterialGuard&&) = delete;
+
+    ~KeyMaterialGuard() { SecureZero(key.data(), key.size()); }
+
+    SessionTicketKey& key;
+  } guard(keyMaterial);
+
+  // Avoid leaving an abandoned key copy behind when the vector grows: relocate through a pre-reserved replacement,
+  // scrub the old inline elements, then publish the replacement.
+  if (_staticTicketKeys.size() == _staticTicketKeys.capacity()) {
+    decltype(_staticTicketKeys) replacement;
+    replacement.reserve((_staticTicketKeys.size() * 2U) + 1U);
+    for (const auto& key : _staticTicketKeys) {
+      replacement.push_back(key);
     }
-    _staticTicketKeys.push_back(keyMaterial);
-  } catch (...) {
-    SecureZero(keyMaterial.data(), keyMaterial.size());
-    throw;
+    clearTlsSessionTicketKeys();
+    _staticTicketKeys.swap(replacement);
   }
-  SecureZero(keyMaterial.data(), keyMaterial.size());
+  _staticTicketKeys.push_back(keyMaterial);
+
   sessionTickets.enabled = true;
   return *this;
 }
 
-TLSConfig& TLSConfig::clearTlsSessionTicketKeys() {
-  for (auto& key : _staticTicketKeys) {
-    SecureZero(key.data(), key.size());
+TLSConfig& TLSConfig::clearTlsSessionTicketKeys() noexcept {
+  if (!_staticTicketKeys.empty()) {
+    SecureZero(_staticTicketKeys[0].data(), _staticTicketKeys.size() * sizeof(SessionTicketKey));
+    _staticTicketKeys.clear();
   }
-  _staticTicketKeys.clear();
   return *this;
 }
 

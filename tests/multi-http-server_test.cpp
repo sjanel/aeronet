@@ -43,6 +43,7 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_tls_client.hpp"
+#include "aeronet/tls-handshake-callback.hpp"
 #endif
 
 using namespace aeronet;
@@ -123,17 +124,22 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
   cfg.withTlsCertKeyMemory(certPem, keyPem);
   cfg.withTlsAlpnProtocols({"http/1.1"});
   cfg.withNbThreads(1U);
+
+  std::atomic_bool callbackInvoked{false};
+
   MultiHttpServer multi(std::move(cfg));
-  multi.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("TLS");
-    return resp;
+  multi.setTlsHandshakeCallback([&callbackInvoked]([[maybe_unused]] const TlsHandshakeEvent& event) {
+    callbackInvoked.store(true, std::memory_order_release);
+    callbackInvoked.notify_all();
   });
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("TLS"); });
   auto handle = multi.startDetachedAndStopWhen({});
   test::TlsClient::Options opts;
   opts.alpn = {"http/1.1"};
   test::TlsClient client(multi.port(), opts);
   ASSERT_TRUE(client.handshakeOk());
+  callbackInvoked.wait(false);  // blocks until the store above happens, with implicit acquire semantics
+  EXPECT_TRUE(callbackInvoked.load(std::memory_order_acquire));
   auto response = client.get("/alpn");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200"));
   auto stats = multi.stats();

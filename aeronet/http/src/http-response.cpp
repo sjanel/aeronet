@@ -9,6 +9,7 @@
 
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-status-code.hpp"

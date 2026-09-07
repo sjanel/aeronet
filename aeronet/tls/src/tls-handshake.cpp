@@ -165,6 +165,7 @@ void EmitTlsHandshakeEvent(const TLSInfo& tlsInfo, const TlsHandshakeCallback& c
     ev.negotiatedCipher = tlsInfo.negotiatedCipher();
     ev.negotiatedVersion = tlsInfo.negotiatedVersion();
     ev.peerSubject = tlsInfo.peerSubject();
+
     try {
       cb(ev);
     } catch (const std::exception& ex) {
