@@ -36,6 +36,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -1059,9 +1060,9 @@ TEST_F(HttpClientE2ETest, HeadFollowsRedirectWithoutMethodRewrite) {
 TEST_F(HttpClientE2ETest, KeepAliveWithoutExpiryReusesConnection) {
   HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{0}));
   auto first = client.get(Url("/hello")).value();
-  EXPECT_EQ(first.status(), 200);
+  EXPECT_EQ(first.status(), http::StatusCodeOK);
   auto second = client.get(Url("/hello")).value();  // reuses the pooled connection (no expiry check)
-  EXPECT_EQ(second.status(), 200);
+  EXPECT_EQ(second.status(), http::StatusCodeOK);
   EXPECT_EQ(second.bodyInMemory(), "world");
 }
 
@@ -1072,25 +1073,25 @@ class HttpClientCacheE2ETest : public ::testing::Test {
   void SetUp() override {
     auto router = ts.resetRouterAndGet();
     // GET/HEAD counter: body is the running hit count so a cached response is identifiable by its value.
-    router.setPath(http::Method::GET | http::Method::HEAD, "/counter", [this](const HttpRequestView&) {
+    router.setPath(http::Method::GET | http::Method::HEAD, "/counter", [this](const HttpRequestView& req) {
       const int nth = _counterHits.fetch_add(1, std::memory_order_relaxed) + 1;
-      return HttpResponse(http::StatusCodeOK, std::to_string(nth), "text/plain");
+      return req.makeResponse(http::StatusCodeOK, std::to_string(nth));
     });
-    router.setPath(http::Method::GET, "/error", [this](const HttpRequestView&) {
+    router.setPath(http::Method::GET, "/error", [this](const HttpRequestView& req) {
       _errorHits.fetch_add(1, std::memory_order_relaxed);
-      return HttpResponse(http::StatusCodeInternalServerError, "err", "text/plain");
+      return req.makeResponse(http::StatusCodeInternalServerError, "err");
     });
-    router.setPath(http::Method::GET, "/a", [this](const HttpRequestView&) {
+    router.setPath(http::Method::GET, "/a", [this](const HttpRequestView& req) {
       _aHits.fetch_add(1, std::memory_order_relaxed);
-      return HttpResponse(http::StatusCodeOK, "a", "text/plain");
+      return req.makeResponse(http::StatusCodeOK, "a");
     });
-    router.setPath(http::Method::GET, "/b", [this](const HttpRequestView&) {
+    router.setPath(http::Method::GET, "/b", [this](const HttpRequestView& req) {
       _bHits.fetch_add(1, std::memory_order_relaxed);
-      return HttpResponse(http::StatusCodeOK, "b", "text/plain");
+      return req.makeResponse(http::StatusCodeOK, "b");
     });
     router.setPath(http::Method::POST, "/echo", [this](const HttpRequestView& req) {
       _echoHits.fetch_add(1, std::memory_order_relaxed);
-      return HttpResponse(http::StatusCodeOK, req.body(), "application/test");
+      return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
     });
   }
 
@@ -1141,8 +1142,8 @@ TEST_F(HttpClientCacheE2ETest, CachesForeverWithMaxDuration) {
 
 TEST_F(HttpClientCacheE2ETest, NonSuccessResponsesNotCached) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
-  EXPECT_EQ(client.get(Url("/error")).value().status(), 500);
-  EXPECT_EQ(client.get(Url("/error")).value().status(), 500);
+  EXPECT_EQ(client.get(Url("/error")).value().status(), http::StatusCodeInternalServerError);
+  EXPECT_EQ(client.get(Url("/error")).value().status(), http::StatusCodeInternalServerError);
   EXPECT_EQ(_errorHits.load(), 2);  // a 500 is never stored, so every request hits the server
 }
 
@@ -2635,6 +2636,78 @@ TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+namespace {
+
+// --- minimal raw HTTP/2 frame + HPACK helpers, just enough to hand-craft a canned response ---
+
+constexpr uint8_t kFrameData = 0x0;
+constexpr uint8_t kFrameHeaders = 0x1;
+constexpr uint8_t kFrameSettings = 0x4;
+constexpr uint8_t kFlagAck = 0x1;
+constexpr uint8_t kFlagEndStream = 0x1;
+constexpr uint8_t kFlagEndHeaders = 0x4;
+
+void AppendH2Frame(std::string& out, uint8_t type, uint8_t flags, uint32_t streamId, std::string_view payload) {
+  const auto len = payload.size();
+  out.push_back(static_cast<char>((len >> 16U) & 0xFFU));
+  out.push_back(static_cast<char>((len >> 8U) & 0xFFU));
+  out.push_back(static_cast<char>(len & 0xFFU));
+  out.push_back(static_cast<char>(type));
+  out.push_back(static_cast<char>(flags));
+  out.push_back(static_cast<char>((streamId >> 24U) & 0x7FU));  // top (reserved) bit must be 0
+  out.push_back(static_cast<char>((streamId >> 16U) & 0xFFU));
+  out.push_back(static_cast<char>((streamId >> 8U) & 0xFFU));
+  out.push_back(static_cast<char>(streamId & 0xFFU));
+  out.append(payload);
+}
+
+// HPACK "Literal Header Field without Indexing, indexed name": reuses static-table entry #8 (":status")
+// for the name, with a literal (uncompressed) value. Works for any status, including ones like 103 that
+// have no dedicated static-table entry.
+std::string HpackStatusLiteral(std::string_view status) {
+  std::string out;
+  out.push_back(static_cast<char>(0x08U));          // 0000 1000: literal w/o indexing, name index 8
+  out.push_back(static_cast<char>(status.size()));  // H=0, 7-bit length
+  out.append(status);
+  return out;
+}
+
+}  // namespace
+
+// A genuine 103 Early Hints interim response precedes the real 200 on the same stream. The client must
+// surface only the final response up through requestProcess/cacheStore -- mirroring the HTTP/1.1 parser's
+// 1xx-discard behaviour -- so a cached client only ever sees, and stores, the 200.
+TEST(HttpClientErrorE2ETest, Http2InformationalResponseNotCached) {
+  std::atomic<int> hits{0};
+  RawServer server([&hits](NativeHandle fd, int) {
+    DrainRequest(fd);
+    const int nth = hits.fetch_add(1, std::memory_order_relaxed) + 1;
+    const std::string body = std::to_string(nth);
+
+    std::string out;
+    AppendH2Frame(out, kFrameSettings, 0, 0, {});                                      // server SETTINGS (announce)
+    AppendH2Frame(out, kFrameSettings, kFlagAck, 0, {});                               // ack client's SETTINGS
+    AppendH2Frame(out, kFrameHeaders, kFlagEndHeaders, 1, HpackStatusLiteral("103"));  // interim
+    AppendH2Frame(out, kFrameHeaders, kFlagEndHeaders, 1, "\x88");  // final :status 200 (static idx 8)
+    AppendH2Frame(out, kFrameData, kFlagEndStream, 1, body);
+    SendAll(fd, out);
+  });
+
+  HttpClientConfig cfg = Http2RawConfig();
+  cfg.withCache(std::chrono::seconds{30});
+  HttpClient client(cfg);
+
+  auto first = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->status(), http::StatusCodeOK);
+  EXPECT_EQ(first->bodyInMemory(), "1");
+
+  auto second = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->bodyInMemory(), "1");  // cache hit: server never sees a second request
+  EXPECT_EQ(hits.load(), 1);
 }
 
 #endif  // AERONET_ENABLE_HTTP2

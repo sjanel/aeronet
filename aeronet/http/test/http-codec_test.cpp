@@ -25,6 +25,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/is-header-whitespace.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
