@@ -629,7 +629,7 @@ TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
 
   // Response slightly above zerocopy threshold
   std::string body(ts.server.server.config().zerocopyMinBytes + 1024, 'Z');
-  ts.setDefault([&body](const HttpRequestView&) { return HttpResponse(body); });
+  ts.setDefault([&body](const HttpRequestView& req) { return req.makeResponse(body); });
 
   test::TlsClient client(port);
   ASSERT_TRUE(client.handshakeOk());

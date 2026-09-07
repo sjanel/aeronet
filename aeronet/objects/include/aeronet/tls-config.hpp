@@ -56,12 +56,12 @@ class TLSConfig {
   struct SniCertificate {
     SniCertificate() = default;
 
-    SniCertificate(const SniCertificate& other);
+    SniCertificate(const SniCertificate& other) = default;
     SniCertificate(SniCertificate&&) noexcept = default;
-    SniCertificate& operator=(const SniCertificate& other);
-    SniCertificate& operator=(SniCertificate&& other) noexcept;
+    SniCertificate& operator=(const SniCertificate& other) = default;
+    SniCertificate& operator=(SniCertificate&& other) noexcept = default;
 
-    ~SniCertificate();
+    ~SniCertificate() { _strings.secureClearPart(kKeyPem); }
 
     [[nodiscard]] std::string_view pattern() const noexcept { return _strings[kPattern]; }
     void setPattern(std::string_view value) { _strings.set(kPattern, value); }
@@ -95,9 +95,6 @@ class TLSConfig {
     bool isWildcard{false};
 
    private:
-    void scrubSensitiveData() noexcept { _strings.secureClearPart(kKeyPem); }
-    void swap(SniCertificate& other) noexcept;
-
     enum : uint8_t {
       kPattern,
       kCertFile,
@@ -113,12 +110,12 @@ class TLSConfig {
 
   TLSConfig() = default;
 
-  TLSConfig(const TLSConfig& other);
+  TLSConfig(const TLSConfig& other) = default;
   TLSConfig(TLSConfig&&) noexcept = default;
-  TLSConfig& operator=(const TLSConfig& other);
-  TLSConfig& operator=(TLSConfig&& other) noexcept;
+  TLSConfig& operator=(const TLSConfig& other) = default;
+  TLSConfig& operator=(TLSConfig&& other) noexcept = default;
 
-  ~TLSConfig();
+  ~TLSConfig() { scrubSensitiveData(); }
 
   void validate();
 
@@ -250,7 +247,7 @@ class TLSConfig {
 
   TLSConfig& withTlsSessionTicketKey(SessionTicketKey keyMaterial);
 
-  TLSConfig& clearTlsSessionTicketKeys();
+  TLSConfig& clearTlsSessionTicketKeys() noexcept;
 
   TLSConfig& withTlsSniCertificateFiles(std::string_view hostname, std::string_view certPath, std::string_view keyPath);
 
@@ -377,7 +374,6 @@ class TLSConfig {
   vector<SessionTicketKey> _staticTicketKeys;
 
   void scrubSensitiveData() noexcept;
-  void swap(TLSConfig& other) noexcept;
 
  public:
   [[nodiscard]] std::span<const SniCertificate> sniCertificates() const noexcept { return _sniCertificates; }

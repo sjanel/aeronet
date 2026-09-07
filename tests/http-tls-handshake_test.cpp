@@ -838,7 +838,7 @@ TEST(HttpTlsFileCertKey, HandshakeSucceedsUsingFileBasedCertAndKey) {
   cfg.withTlsCertKey(certFile.filePath().string(), keyFile.filePath().string());  // file-based path (not memory)
   cfg.withTlsAlpnProtocols({"http/1.1"});
   // Use plain TestServer since we manually set config
-  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  test::TestServer server(cfg, RouterConfig(), std::chrono::milliseconds{50});
   server.router().setDefault([](const HttpRequestView& req) {
     return HttpResponse(std::string("FILETLS-") + std::string(req.alpnProtocol().empty() ? "-" : req.alpnProtocol()));
   });
@@ -885,7 +885,7 @@ TEST(HttpTlsSniCertificates, ExactHostPicksAlternateCertificate) {
   cfg.withTlsAlpnProtocols({"http/1.1"});
   cfg.tls.withTlsSniCertificateMemory("api.example.test", sniPair.first, sniPair.second);
 
-  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  test::TestServer server(cfg, RouterConfig(), std::chrono::milliseconds{50});
   server.router().setDefault([](const HttpRequestView&) { return HttpResponse("SNI-EXACT"); });
 
   test::TlsClient::Options sniOpts;
@@ -944,7 +944,7 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   cfg.withTlsAlpnProtocols({"http/1.1"});
   cfg.tls.withTlsSniCertificateMemory("*.svc.test", wildcardPair.first, wildcardPair.second);
 
-  test::TestServer server(cfg, RouterConfig{}, std::chrono::milliseconds{50});
+  test::TestServer server(cfg, RouterConfig(), std::chrono::milliseconds{50});
   server.router().setDefault([](const HttpRequestView&) { return HttpResponse("SNI-WILDCARD"); });
 
   test::TlsClient::Options wildcardOpts;

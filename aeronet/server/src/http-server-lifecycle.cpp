@@ -434,7 +434,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<boo
     // indeterminately sequenced: MSVC may move the shared_ptr first, leaving the worker's lambda with a null errorPtr
     // when its predicate throws.
     std::jthread thread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
-      const auto captureError = [&errorPtr]() {
+      const auto captureError = [&errorPtr] {
         if (!*errorPtr) {
           *errorPtr = std::current_exception();
         }
@@ -443,7 +443,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<boo
       // A throwing predicate is treated as a normal stop request instead of letting the exception unwind
       // across this thread's runUntilStarted() RAII guards (LifecycleResetterRAII, LifecycleTrackerGuard):
       // captured here, at the call site, and surfaced later via rethrowIfError().
-      auto safePredicate = [&st, &pred, &captureError]() -> bool {
+      auto safePredicate = [&st, &pred, &captureError] -> bool {
         if (st.stop_requested()) {
           return true;
         }

@@ -337,7 +337,7 @@ class TlsContext::KeyLogWriter {
 #ifdef AERONET_POSIX
     const int fd = ::open(ownedPath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, S_IRUSR | S_IWUSR);
     if (fd >= 0) {
-      _file = ::fdopen(fd, "ab");
+      _file = ::fdopen(fd, "ab");  // NOLINT(misc-include-cleaner) in <cstdio>
       if (_file == nullptr) {
         ::close(fd);
       }

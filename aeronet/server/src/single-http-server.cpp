@@ -659,14 +659,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), pCorsPolicy);
     };
 
-    auto corsRejected = [pCorsPolicy, &request, &sendResponse] {
-      if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-        sendResponse(HttpResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"));
-        return true;
-      }
-      return false;
-    };
-
     auto shortCircuitedResponse =
         RunRequestMiddleware(request, _router.globalRequestMiddleware(), routingResult.preMiddlewareRange(), _telemetry,
                              isStreaming, _callbacks.middlewareMetrics);
@@ -676,11 +668,19 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       continue;
     }
 
+    auto corsRejected = [pCorsPolicy, &request, &sendResponse] {
+      if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+        sendResponse(request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"));
+        return true;
+      }
+      return false;
+    };
+
     if (isStreaming) {
-      // Invoke a registered streaming handler. Returns true if the connection should be closed after handling
-      // the request (either because the client requested it or keep-alive limits reached). The HttpRequestView is
-      // non-const because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect
-      // to mutate transient fields (target normalization already complete at this point).
+      // Invoke a registered streaming handler. Returns true if the connection should be closed after handling the
+      // request (either because the client requested it or keep-alive limits reached). The HttpRequestView is non-const
+      // because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect to mutate
+      // transient fields (target normalization already complete at this point).
 
       if (corsRejected()) {
         continue;
@@ -698,11 +698,11 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         (*routingResult.streamingHandler())(request, writer);
       } catch (const std::exception& ex) {
         log::error("Exception in streaming handler: {}", ex.what());
-        sendResponse(HttpResponse(http::StatusCodeInternalServerError, ex.what()));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, ex.what()));
         continue;
       } catch (...) {
         log::error("Unknown exception in streaming handler");
-        sendResponse(HttpResponse(http::StatusCodeInternalServerError, "Unknown error"));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, "Unknown error"));
         continue;
       }
       if (!writer.finished()) {
@@ -746,18 +746,18 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         sendResponse((*routingResult.requestHandler())(request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
-        sendResponse(HttpResponse(http::StatusCodeInternalServerError, ex.what()));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, ex.what()));
       } catch (...) {
         log::error("Unknown exception in path handler");
-        sendResponse(HttpResponse(http::StatusCodeInternalServerError, "Unknown error"));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, "Unknown error"));
       }
     } else if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
       // Emit 301 redirect to canonical form.
       static constexpr std::string_view kRedirecting = "Redirecting";
       const std::string_view reqPath = request.path();
-      HttpResponse resp(
-          HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), reqPath.size() + 1U),
-          http::StatusCodeMovedPermanently);
+      const std::size_t additionalCapacity =
+          HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), reqPath.size() + 1U);
+      auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
       if (routingResult.redirectSlashMode() == Router::RoutingResult::RedirectSlashMode::AddSlash) {
         resp.headerAddLine(http::Location, reqPath);
         resp.headerAppendValue(http::Location, '/', "");
@@ -769,9 +769,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
       sendResponse(std::move(resp));
     } else if (routingResult.methodNotAllowed()) {
-      sendResponse(HttpResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
+      sendResponse(request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
     } else {
-      sendResponse(HttpResponse(http::StatusCodeNotFound));
+      sendResponse(request.makeResponse(http::StatusCodeNotFound));
     }
 
   } while (!state.isAnyCloseRequested());
@@ -844,6 +844,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncReque
     const char* sharedEnd = sharedBeg + _sharedBuffers.decompressedBody.size();
     const char* bodyBeg = bodyView.data();
     const char* bodyEnd = bodyBeg + bodyView.size();
+
     usesSharedDecompressedBody = sharedBeg <= bodyBeg && bodyEnd <= sharedEnd;
   }
 

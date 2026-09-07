@@ -135,7 +135,8 @@ HttpClient::HttpClient(HttpClientConfig config)
     }
     if (!acceptEncoding.empty() && std::ranges::none_of(_config.globalHeaders, [](std::string_view part) {
           const auto colon = part.find(':');
-          return colon != std::string_view::npos && CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
+          assert(colon != std::string_view::npos);  // validated in config.validate() above
+          return CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
         })) {
       RawChars line(http::AcceptEncoding.size() + http::HeaderSep.size() + acceptEncoding.size());
       line.unchecked_append(http::AcceptEncoding);
@@ -180,7 +181,11 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   }
   HttpClientResult result = requestUncached(std::move(req));
   // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
-  if (isCacheEligible && result && result->status() >= 200 && result->status() < 300) {
+  // Both HTTP/1.1 (ResponseParser::decideFraming(), gated on _statusCode >= 200) and HTTP/2 (interim HEADERS are
+  // consumed before a final response completes the exchange) guarantee a completed exchange never surfaces status() <
+  // 200 here; asserted rather than left as a permanently-uncovered branch.
+  assert(!result || result->status() >= 200);
+  if (isCacheEligible && result && result->status() < 300) {
     cacheStore(cacheKey, *result);
   }
 
@@ -189,8 +194,8 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
 
 bool HttpClient::armLoop(NativeHandle fd, EventBmp interest) {
   if (_loopFd == fd) {
-    // Same connection as the last wait: reuse the registration, re-arming only if the interest changed
-    // (the common response-read path keeps EventIn, so this is a no-op -- no syscall).
+    // Same connection as the last wait: reuse the registration, re-arming only if the interest changed (the common
+    // response-read path keeps EventIn, so this is a no-op - no syscall).
     if (_loopInterest == interest) {
       return true;
     }
@@ -200,8 +205,8 @@ bool HttpClient::armLoop(NativeHandle fd, EventBmp interest) {
     _loopInterest = interest;
     return true;
   }
-  // Switching to a different fd: drop the previous registration (a connection was pooled or closed) and
-  // register this one. Only ever one fd is watched at a time, so the poll loop never sees a foreign fd.
+  // Switching to a different fd: drop the previous registration (a connection was pooled or closed) and register this
+  // one. Only ever one fd is watched at a time, so the poll loop never sees a foreign fd.
   if (_loopFd != kInvalidHandle) {
     _loop.del(_loopFd);
   }

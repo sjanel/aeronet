@@ -47,6 +47,7 @@ All notable changes to aeronet are documented in this file.
 - `Http2Config::maxPriorityTreeDepth` is now enforced - stream priority dependencies exceeding the configured depth (or forming a cycle) are clamped to the root instead of being applied.
 - `AccessLogConfig` now has a new parameter `flushThresholdInBytes`, with default value `8192` (was previously hardcoded to this value).
 - **Simpler lifecycle state machine**: state enum changes are only allowed in one direction, and starting / stopping servers code is easier.
+- **Also include global headers for server error responses**: In some cases, errors returned an `HttpResponse` without the configured global headers, if any. Now uses `HttpRequestView.makeResponse` to automatically include them.
 
 ## Others
 

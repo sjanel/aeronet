@@ -63,6 +63,7 @@ TEST(TLSConfigTest, SniOcspStapleIsAssociatedWithExistingNormalizedRoute) {
   EXPECT_STREQ(cfg.sniCertificates().front().ocspResponseFileCstr(), "api.ocsp.der");
   EXPECT_THROW(cfg.withTlsSniOcspStapleFile("missing.example.com", "missing.der"), std::invalid_argument);
   EXPECT_THROW(cfg.withTlsSniOcspStapleFile("api.example.com", ""), std::invalid_argument);
+  EXPECT_THROW(cfg.withTlsSniOcspStapleFile("", "api.ocsp.der"), std::invalid_argument);
 }
 
 TEST(TLSConfigTest, AdvancedTlsSettingsSurviveCopyAndMove) {
