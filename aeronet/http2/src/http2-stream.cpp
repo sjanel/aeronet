@@ -27,10 +27,6 @@ ErrorCode Http2Stream::onSendHeaders(bool endStream) noexcept {
       _state = endStream ? StreamState::HalfClosedLocal : StreamState::Open;
       return ErrorCode::NoError;
 
-    case StreamState::ReservedLocal:
-      _state = endStream ? StreamState::Closed : StreamState::HalfClosedRemote;
-      return ErrorCode::NoError;
-
     case StreamState::Open:
       // Sending headers or trailers
       if (endStream) {
@@ -46,6 +42,7 @@ ErrorCode Http2Stream::onSendHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
+      assert(_state != StreamState::ReservedLocal);  // TODO: Not implemented yet
       return ErrorCode::StreamClosed;
   }
 }
@@ -54,10 +51,6 @@ ErrorCode Http2Stream::onRecvHeaders(bool endStream) noexcept {
   switch (_state) {
     case StreamState::Idle:
       _state = endStream ? StreamState::HalfClosedRemote : StreamState::Open;
-      return ErrorCode::NoError;
-
-    case StreamState::ReservedRemote:
-      _state = endStream ? StreamState::Closed : StreamState::HalfClosedLocal;
       return ErrorCode::NoError;
 
     case StreamState::Open:
@@ -77,6 +70,7 @@ ErrorCode Http2Stream::onRecvHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
+      assert(_state != StreamState::ReservedRemote);  // TODO: Not implemented yet
       return ErrorCode::StreamClosed;
   }
 }

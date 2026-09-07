@@ -109,7 +109,7 @@ FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte
       return FrameParseResult::FrameSizeError;
     }
     uint32_t depAndExcl = Read32BE(payload.data() + offset);
-    out.exclusive = (depAndExcl & 0x80000000) != 0;
+    out.exclusive = (depAndExcl & 0x80000000U) != 0;
     out.streamDependency = depAndExcl & kMaxWindowSize;
     // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
     out.weight = static_cast<uint8_t>(payload[offset + 4]) + 1;
@@ -132,7 +132,7 @@ FrameParseResult ParsePriorityFrame(FrameHeader /*header*/, std::span<const std:
   }
 
   uint32_t depAndExcl = Read32BE(payload.data());
-  out.exclusive = (depAndExcl & 0x80000000) != 0;
+  out.exclusive = (depAndExcl & 0x80000000U) != 0;
   out.streamDependency = depAndExcl & kMaxWindowSize;
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
   out.weight = static_cast<uint8_t>(payload[4]) + 1;
@@ -165,7 +165,7 @@ FrameParseResult ParsePingFrame(FrameHeader header, std::span<const std::byte> p
 
 FrameParseResult ParseGoAwayFrame(FrameHeader /*header*/, std::span<const std::byte> payload,
                                   GoAwayFrame& out) noexcept {
-  if (payload.size() < 8) {
+  if (payload.size() < 8U) {
     return FrameParseResult::FrameSizeError;
   }
 

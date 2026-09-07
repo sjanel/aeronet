@@ -240,8 +240,8 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
   cfg.withNbThreads(2U);
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
   MultiHttpServer multi(cfg);
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("S"); });
   for (int statePos = 0; statePos < 100; ++statePos) {
-    multi.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("S"); });
     auto handle = multi.startDetached();
     ASSERT_TRUE(handle.started());
     handle.stop();
@@ -586,25 +586,35 @@ TEST(MultiHttpServer, WorkerErrorsAreRetainedAfterStop) {
   HttpServerConfig cfg;
   cfg.withReusePort().withNbThreads(2U).withPollInterval(1ms);
   MultiHttpServer multi(std::move(cfg));
-  std::atomic<int> predicateCalls{0};
-  std::atomic<bool> errorThrown{false};
+  for (int i = 0; i < 2; ++i) {
+    std::atomic<int> predicateCalls{0};
+    std::atomic<bool> errorThrown{false};
 
-  auto handle = multi.startDetachedAndStopWhen([&predicateCalls, &errorThrown] {
-    predicateCalls.fetch_add(1, std::memory_order_relaxed);
-    if (!errorThrown.exchange(true, std::memory_order_relaxed)) {
-      throw std::runtime_error("worker predicate failure");
+    auto handle = multi.startDetachedAndStopWhen([&predicateCalls, &errorThrown, i] {
+      predicateCalls.fetch_add(1, std::memory_order_relaxed);
+      if (!errorThrown.exchange(true, std::memory_order_relaxed)) {
+        if (i == 0) {
+          throw std::runtime_error("worker error");
+        }
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
+        throw 42;
+      }
+      return false;
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (predicateCalls.load(std::memory_order_relaxed) < 2 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(1ms);
     }
-    return false;
-  });
+    EXPECT_GE(predicateCalls.load(std::memory_order_relaxed), 2);
 
-  const auto deadline = std::chrono::steady_clock::now() + 1s;
-  while (predicateCalls.load(std::memory_order_relaxed) < 2 && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(1ms);
+    handle.stop();
+    if (i == 0) {
+      EXPECT_THROW(handle.rethrowIfError(), std::runtime_error);
+    } else {
+      EXPECT_THROW(handle.rethrowIfError(), int);
+    }
   }
-  EXPECT_GE(predicateCalls.load(std::memory_order_relaxed), 2);
-
-  handle.stop();
-  EXPECT_THROW(handle.rethrowIfError(), std::runtime_error);
 }
 
 TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {

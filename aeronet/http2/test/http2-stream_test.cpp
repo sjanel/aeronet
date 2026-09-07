@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 
 #include "aeronet/http2-frame-types.hpp"
 
@@ -360,9 +361,14 @@ TEST(Http2Stream, IncreaseRecvWindow) {
   EXPECT_TRUE(stream.consumeRecvWindow(500));  // Window = 500
   ASSERT_EQ(stream.recvWindow(), 500);
 
-  (void)stream.increaseRecvWindow(300);
+  EXPECT_EQ(stream.increaseRecvWindow(300), ErrorCode::NoError);
 
-  EXPECT_EQ(stream.recvWindow(), 800);
+  const uint32_t expectedSz = 500 + 300;
+  EXPECT_EQ(stream.recvWindow(), expectedSz);
+
+  // Check for overflow
+  const uint32_t tooBig = static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) - expectedSz + 1U;
+  EXPECT_EQ(stream.increaseRecvWindow(tooBig), ErrorCode::FlowControlError);
 }
 
 TEST(Http2Stream, UpdateInitialWindowSize) {
