@@ -932,7 +932,7 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
       if (segment == "..") {
         return ResolveResult::NotFound;
       }
-      relative /= std::filesystem::path(segment);
+      relative /= segment;
     }
     if (slashPos == std::string_view::npos) {
       break;
@@ -1046,7 +1046,8 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
     static constexpr std::string_view kAllowedMethods = "GET, HEAD";
-    resp = HttpResponse(http::HeaderSize(http::Allow.size(), kAllowedMethods.size()), http::StatusCodeMethodNotAllowed);
+    resp = request.makeResponse(http::HeaderSize(http::Allow.size(), kAllowedMethods.size()),
+                                http::StatusCodeMethodNotAllowed);
     resp.headerAddLineUnchecked(http::Allow, kAllowedMethods);
     return resp;
   }
@@ -1057,14 +1058,14 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   std::filesystem::path targetPath;
   const auto resolveResult = resolveTarget(request, targetPath);
   if (resolveResult == ResolveResult::NotFound) {
-    resp = HttpResponse(http::StatusCodeNotFound);
+    resp = request.makeResponse(http::StatusCodeNotFound);
     return resp;
   }
 
   // resolveTarget already validated the target via symlink_status; no need to stat again.
   if (resolveResult == ResolveResult::Directory) {
     if (!_config.enableDirectoryIndex) {
-      resp = HttpResponse(http::StatusCodeNotFound);
+      resp = request.makeResponse(http::StatusCodeNotFound);
       return resp;
     }
 
@@ -1078,7 +1079,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
           http::HeaderSize(http::CacheControl.size(), kNoCache.size()) +               // "no-cache"
           http::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
 
-      resp = HttpResponse(additionalSize, http::StatusCodeMovedPermanently);
+      resp = request.makeResponse(additionalSize, http::StatusCodeMovedPermanently);
       resp.headerAddLineUnchecked(http::Location, requestPath);
       if (appendSlash != 0) {
         resp.headerAppendValue(http::Location, "/", "");
@@ -1091,14 +1092,14 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
     auto listing = CollectDirectoryListing(targetPath, _config);
     if (!listing.isValid) {
-      resp = HttpResponse(http::StatusCodeInternalServerError);
+      resp = request.makeResponse(http::StatusCodeInternalServerError);
       return resp;
     }
 
     static constexpr std::size_t kHeadersAdditionalSize = http::HeaderSize(http::CacheControl.size(), kNoCache.size()) +
                                                           http::HeaderSize(http::XDirectoryListingTruncated.size(), 1U);
 
-    resp = HttpResponse(kHeadersAdditionalSize + (128UL * listing.entries.size()), http::StatusCodeOK);
+    resp = request.makeResponse(kHeadersAdditionalSize + (128UL * listing.entries.size()), http::StatusCodeOK);
     resp.headerAddLine(http::CacheControl, kNoCache);
     resp.headerAddLine(http::XDirectoryListingTruncated, listing.truncated ? "1" : "0");
 
@@ -1126,7 +1127,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   if (!file) {
     // resolveTarget already confirmed the file exists, so failure here is a system error (e.g. EMFILE), not "not
     // found"
-    resp = HttpResponse(http::StatusCodeServiceUnavailable, "Unable to open file\n");
+    resp = request.makeResponse(http::StatusCodeServiceUnavailable, "Unable to open file\n");
     return resp;
   }
 
@@ -1148,7 +1149,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   const std::size_t additionalCapacity = 96UL + (useSmallFilesOptimization ? HttpResponse::BodySize(fileSize) : 0UL);
 
-  resp = HttpResponse(additionalCapacity, http::StatusCodeNotFound);
+  resp = request.makeResponse(additionalCapacity, http::StatusCodeNotFound);
 
   resp.headerAddLine(http::AcceptRanges, _config.enableRange ? kBytes : "none");
   if (_config.addEtag) {
