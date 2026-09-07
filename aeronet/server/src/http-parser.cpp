@@ -157,7 +157,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       // First pass: validate trailers and find the end position
       std::size_t tempPos = pos;
       while (true) {
-        auto lineEndIt = SearchCRLF(state.inBuffer.begin() + tempPos, last);
+        const auto lineEndIt = SearchCRLF(state.inBuffer.begin() + tempPos, last);
         if (lineEndIt == last) {
           return BodyDecodeStatus::NeedMore;
         }

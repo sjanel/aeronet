@@ -379,7 +379,7 @@ TEST(Http2Connection, OnOutputWritten) {
 }
 
 TEST(Http2Connection, InputPausesAtOutputHighWaterMarkUntilSlowReaderDrains) {
-  Http2Connection connection(Http2Config{}, true);
+  Http2Connection connection(Http2Config(), true);
   AdvanceToOpenAndDrainSettingsAck(connection);
 
   RawBytes input;
@@ -1959,8 +1959,12 @@ TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
 
   const auto feedData = [&conn](std::size_t size, bool endStream) {
     vector<std::byte> payload(static_cast<vector<std::byte>::size_type>(size), std::byte{0x42});
-    const FrameHeader header{static_cast<uint32_t>(size), FrameType::Data,
-                             endStream ? FrameFlags::DataEndStream : FrameFlags::None, 1};
+    const FrameHeader header{
+        static_cast<uint32_t>(size),
+        FrameType::Data,
+        endStream ? FrameFlags::DataEndStream : FrameFlags::None,
+        1,
+    };
     FeedConnection(conn, SerializeFrame(header, payload));
   };
 
