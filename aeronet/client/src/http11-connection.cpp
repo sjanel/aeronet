@@ -21,6 +21,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "response-parser.hpp"
 

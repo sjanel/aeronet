@@ -25,6 +25,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
@@ -421,14 +422,19 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // outBuffer: grows when TCP writes can't keep up and responses queue.
   outBuffer.shrink_to_fit();
 
+#ifdef AERONET_LINUX
   // zerocopyPendingBuffers: release completed entries and reclaim capacity.
   releaseCompletedZerocopyBuffers();
   zerocopyPendingBuffers.shrink_to_fit();
+#endif
 }
 
+#ifdef AERONET_LINUX
 bool ConnectionState::prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes) {
   assert(transport);
+
   releaseCompletedZerocopyBuffers();
+
   if (!transport.isZerocopyEnabled()) {
     return false;
   }
@@ -462,6 +468,7 @@ void ConnectionState::releaseCompletedZerocopyBuffers() {
     zerocopyPendingBytes = 0;
   }
 }
+#endif
 
 void ConnectionState::clearBuffers() {
   outBuffer.clear();

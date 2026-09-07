@@ -24,6 +24,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_POSIX
@@ -428,7 +429,9 @@ TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
   EXPECT_FALSE(transport.hasPendingReadData());
   EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_FALSE(transport.hasZerocopyPending());
+#ifdef AERONET_LINUX
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+#endif
   transport.disableZerocopy();
   EXPECT_FALSE(transport.supportsSendfile());
   File file;  // ignored by the default sendFile()
@@ -457,7 +460,9 @@ TEST(TransportTest, CustomBackendDispatchesProvidedOperations) {
   EXPECT_TRUE(transport.hasPendingReadData());
   EXPECT_TRUE(transport.isZerocopyEnabled());
   EXPECT_TRUE(transport.hasZerocopyPending());
+#ifdef AERONET_LINUX
   EXPECT_EQ(transport.pollZerocopyCompletions(), 7U);
+#endif
 
   File file;
   std::size_t offset = 2;
@@ -511,7 +516,9 @@ TEST(PlainTransport, SupportsSendfile) {
   EXPECT_FALSE(transport.hasPendingReadData());
   EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_FALSE(transport.hasZerocopyPending());
+#ifdef AERONET_LINUX
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+#endif
   transport.disableZerocopy();
 }
 

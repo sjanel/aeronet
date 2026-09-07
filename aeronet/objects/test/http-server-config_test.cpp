@@ -359,6 +359,20 @@ TEST(HttpServerConfigTest, MaxAcceptBatchSizeShouldNotBeZero) {
   EXPECT_THROW(config.validate(), std::invalid_argument);  // 0 is not a valid value for maxAcceptBatchSize
 }
 
+TEST(HttpServerConfigTest, ZeroCopyMinBytesShouldNotBeZero) {
+  HttpServerConfig config;
+  config.zerocopyMinBytes = 0;
+
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+
+  config.zerocopyMinBytes = 1;
+  config.validate();
+
+  config.zerocopyMinBytes = 0;
+  config.withZerocopyMode(ZerocopyMode::Disabled);
+  config.validate();
+}
+
 TEST(HttpServerConfigTest, MaxPerEventReadBytesShouldNotBeZero) {
   HttpServerConfig config;
   EXPECT_THROW(config.withMaxPerEventReadBytes(0), std::invalid_argument);

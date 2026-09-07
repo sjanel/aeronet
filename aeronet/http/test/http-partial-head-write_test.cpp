@@ -7,6 +7,7 @@
 
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {

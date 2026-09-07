@@ -29,6 +29,7 @@
 #include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport-test-hook.hpp"
 #include "aeronet/transport.hpp"
 
