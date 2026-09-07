@@ -30,6 +30,7 @@
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-info.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 

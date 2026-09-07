@@ -1023,7 +1023,7 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
   const auto [appPort, probePort] = GrabTwoFreePorts();
 
   Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse("APP"); });
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse("APP"); });
 
   HttpServerConfig cfg;
   cfg.withPort(appPort).withReusePort().withNbThreads(2U);
@@ -1044,8 +1044,8 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
   EXPECT_TRUE(test::simpleGet(probePort, "/startupz").starts_with("HTTP/1.1 200"));
 
   // The probe endpoints are NOT exposed on the (contended) application port: they hit the default app handler.
-  EXPECT_TRUE(test::simpleGet(appPort, "/livez").contains("APP"));
-  EXPECT_TRUE(test::simpleGet(appPort, "/readyz").contains("APP"));
+  EXPECT_TRUE(test::simpleGet(appPort, "/livez").ends_with("APP"));
+  EXPECT_TRUE(test::simpleGet(appPort, "/readyz").ends_with("APP"));
 
   handle.stop();
   handle.rethrowIfError();
@@ -1059,7 +1059,7 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
     if (req.path() == "/slow") {
       std::this_thread::sleep_for(1000ms);  // monopolises the single worker event loop
     }
-    return HttpResponse("APP");
+    return req.makeResponse("APP");
   });
 
   // Single worker on purpose (the scenario where a big query would starve inline probes), generous liveness

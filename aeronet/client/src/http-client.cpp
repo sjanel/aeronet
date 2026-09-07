@@ -44,6 +44,7 @@
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"

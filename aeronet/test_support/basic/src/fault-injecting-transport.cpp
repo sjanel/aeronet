@@ -2,11 +2,11 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <memory>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/fault-policy.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet::test {

@@ -13,6 +13,7 @@ All notable changes to aeronet are documented in this file.
 - **DecompressionConfig.maxCompressedBytes** default value changed from 0 to `128MiB`, and `0` does not have special **unlimied** meaning anymore.
 - **DecompressionConfig.maxExpansionRatio** default value changed from `0.0` to `1000.0`, and `0` does not have special **unlimited** meaning anymore.
 - **DecompressionConfig.streamingDecompressionThresholdBytes**'s `0` value is not special anymore (previous meaning was "always use aggregated mode"). So a value of `0` will now use streaming decompression for all bodies.
+- **HttpServerConfig.zerocopyMinBytes** cannot be `0` anymore. The recommended value is to be `10KB` at minimum anyway when used.
 
 ## Bug Fixes
 

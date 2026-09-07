@@ -62,8 +62,10 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
  private:
   TransportHint handshake(TransportHint want);
 
+#ifdef AERONET_LINUX
   /// Internal write using zerocopy when kTLS + zerocopy are both enabled.
   TransportResult writeZerocopy(std::string_view data);
+#endif
 
   SslPtr _ssl;
   bool _handshakeDone{false};

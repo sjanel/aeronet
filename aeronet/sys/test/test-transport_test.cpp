@@ -9,7 +9,7 @@
 
 #include "aeronet/fault-policy.hpp"
 #include "aeronet/test-pipe.hpp"
-#include "aeronet/transport.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::test {

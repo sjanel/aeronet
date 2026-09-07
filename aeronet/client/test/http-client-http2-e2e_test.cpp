@@ -46,6 +46,7 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL

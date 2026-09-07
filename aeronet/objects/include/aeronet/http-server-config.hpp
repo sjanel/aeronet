@@ -147,6 +147,7 @@ struct HttpServerConfig {
   //   guidance recommends not expecting guaranteed wins below ~1 MB.
   //
   // Linux kernel docs suggest ~10KB as a minimum; we use 128KB as a reasonable default with expected gains.
+  // 0 is an invalid value.
   std::uint32_t zerocopyMinBytes{128U << 10U};
 
   // Maximum number of HTTP requests to serve over a single persistent connection before forcing close.
