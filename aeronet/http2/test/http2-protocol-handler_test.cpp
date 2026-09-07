@@ -21,6 +21,7 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-codec.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -496,13 +497,15 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   internal::DecompressionState decompressionState;
   auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
                                                 telemetry, tmpBuffer, true, kCachedDate, {});
-  auto* handler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
-  ASSERT_NE(handler, nullptr);
+  auto* pHandler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
+  ASSERT_NE(pHandler, nullptr);
 
-  ASSERT_TRUE(handler->hasPendingOutput());
-  const auto out = handler->getPendingOutput();
+  ASSERT_TRUE(pHandler->hasPendingOutput());
+  const auto out = pHandler->getPendingOutput();
   ASSERT_GE(out.size(), FrameHeader::kSize);
   EXPECT_EQ(ParseFrameHeader(out).type, FrameType::Settings);
+
+  pHandler->discardPendingOutput();
 }
 
 TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {

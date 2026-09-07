@@ -61,6 +61,7 @@ struct Lifecycle {
         drainDeadline = {};
         drainDeadlineEnabled.store(false, std::memory_order_relaxed);
         lastLoopNs.store(0, std::memory_order_relaxed);
+        state.notify_all();
         return;
       }
     }
@@ -69,58 +70,55 @@ struct Lifecycle {
   // Atomically reserve the lifecycle for startup before creating the event-loop thread.
   // This prevents mutations from taking the pre-start direct-update path while prepareRun()
   // is inspecting the router.
-  [[nodiscard]] bool tryEnterStarting() noexcept {
+  // PRECONDITION: any successful tryEnterStarting() MUST eventually be followed - from some thread -
+  // by either tryEnterRunning() or reset(). exchangeStopping() blocks indefinitely on State::Starting
+  // until one of those fires; a Starting state with no such follow-up call will hang stop() forever.
+  // All production call sites (SingleHttpServer::run/runUntil/launchDetached) already guarantee this.
+  void enterStarting() {
     State expected = State::Idle;
-    return state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel,
-                                         std::memory_order_acquire);
-  }
-
-  void enterRunning() noexcept {
-    state.store(State::Running, std::memory_order_release);
-    drainDeadlineEnabled.store(false, std::memory_order_relaxed);
+    if (!state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel,
+                                       std::memory_order_acquire)) {
+      throw std::logic_error("Lifecycle::enterStarting() called when not in Idle state");
+    }
+    state.notify_all();
   }
 
   // Transitions from Starting only, preserving a concurrent Stopping request.
-  [[nodiscard]] bool tryEnterRunning() noexcept {
+  void enterRunning() {
     State expected = State::Starting;
     if (!state.compare_exchange_strong(expected, State::Running, std::memory_order_acq_rel,
                                        std::memory_order_acquire)) {
-      return false;
+      throw std::logic_error("Lifecycle::enterRunning() called when not in Starting state");
     }
     drainDeadlineEnabled.store(false, std::memory_order_relaxed);
-    return true;
+    state.notify_all();
   }
 
-  // Atomically set state to Stopping if current state is Starting, Running, or Draining.
-  // Returns the previous state.
+  // Blocks while the server is still starting up, then requests a stop if it reached Running/Draining.
+  // This makes stop() briefly slower when called immediately after start() (bounded by however long
+  // prepareRun() takes), but in exchange guarantees prepareRun() can only ever observe State::Starting.
   State exchangeStopping() noexcept {
-    State expected = State::Starting;
-    // Use strong compare_exchange to change Starting -> Stopping atomically.
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
-                                      std::memory_order_acquire)) {
-      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
-      return expected;
+    State current = state.load(std::memory_order_acquire);
+    while (current == State::Starting) {
+      state.wait(current, std::memory_order_acquire);
+      current = state.load(std::memory_order_acquire);
     }
-    // Also handle Running -> Stopping.
-    expected = State::Running;
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
-                                      std::memory_order_acquire)) {
-      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
-      return expected;
+    while (current == State::Running || current == State::Draining) {
+      if (state.compare_exchange_weak(current, State::Stopping, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        drainDeadlineEnabled.store(false, std::memory_order_relaxed);
+        state.notify_all();
+        return current;
+      }
+      // compare_exchange_weak updated `current` to the observed value; loop re-checks it.
     }
-    // Also handle Draining -> Stopping (e.g. stop() called after beginDrain()).
-    expected = State::Draining;
-    if (state.compare_exchange_strong(expected, State::Stopping, std::memory_order_acq_rel,
-                                      std::memory_order_acquire)) {
-      drainDeadlineEnabled.store(false, std::memory_order_relaxed);
-    }
-    return expected;
+    return current;  // Idle (never started) or Stopping (someone else is already stopping it).
   }
 
   void enterDraining(std::chrono::steady_clock::time_point deadline, bool enabled) noexcept {
     drainDeadline = deadline;
     state.store(State::Draining, std::memory_order_release);
     drainDeadlineEnabled.store(enabled, std::memory_order_relaxed);
+    state.notify_all();
   }
 
   void shrinkDeadline(std::chrono::steady_clock::time_point deadline) noexcept {

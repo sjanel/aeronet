@@ -368,14 +368,8 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
   _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
 }
 
-bool SingleHttpServer::prepareRun() {
-  const internal::Lifecycle::State state = _lifecycle.currentState();
-  if (state == internal::Lifecycle::State::Stopping || state == internal::Lifecycle::State::Idle) {
-    return false;
-  }
-  if (state != internal::Lifecycle::State::Starting) {
-    throw std::logic_error("Server is already running");
-  }
+void SingleHttpServer::prepareRun() {
+  assert(_lifecycle.isStarting());
   if (!_listenSocket) {
     initListener();
   }
@@ -390,38 +384,22 @@ bool SingleHttpServer::prepareRun() {
   // Initialize access log writer if configured
   _accessLog = AccessLogWriter(_config.accessLog);
 
-  // Pre-clamp per-route limits against the global server limits so the hot path
-  // only needs a single comparison (no runtime std::min).
+  // Pre-clamp per-route limits against the global server limits so the hot path only needs a single comparison (no
+  // runtime std::min).
   _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
 
-  return _lifecycle.tryEnterRunning();
-}
-
-void SingleHttpServer::beginStartup() {
-  if (!_lifecycle.tryEnterStarting()) {
-    throw std::logic_error("Server is already running");
-  }
+  _lifecycle.enterRunning();
 }
 
 void SingleHttpServer::run() {
-  beginStartup();
+  _lifecycle.enterStarting();
   runUntilStarted([] { return false; });
 }
 
 void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
   LifecycleResetterRAII resetter(_lifecycle);
 
-  // Check the predicate before initializing resources. When used inside MultiHttpServer, the stop flag is set before
-  // server.stop() calls closeListener(). Without this early check, a late-scheduled thread could be inside
-  // initListener() (creating socket / event loop) while the main thread concurrently calls closeListener(), causing a
-  // data race.
-  if (predicate()) {
-    return;
-  }
-  if (!prepareRun()) {
-    closeListener();
-    return;
-  }
+  prepareRun();
 
   LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
 
@@ -442,60 +420,66 @@ void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
 void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
   if (!predicate()) {
-    beginStartup();
+    _lifecycle.enterStarting();
     runUntilStarted(predicate);
   }
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<bool()> extraPredicate) {
-  beginStartup();
-
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
-  // Construct the thread before moving errorPtr into AsyncHandle. The evaluations of the constructor arguments are
-  // indeterminately sequenced: MSVC may move the shared_ptr first, leaving the worker's lambda with a null errorPtr
-  // when its predicate throws.
-  std::jthread thread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
-    const auto captureError = [&errorPtr]() {
-      if (!*errorPtr) {
-        *errorPtr = std::current_exception();
-      }
-    };
+  _lifecycle.enterStarting();
+  try {
+    // Construct the thread before moving errorPtr into AsyncHandle. The evaluations of the constructor arguments are
+    // indeterminately sequenced: MSVC may move the shared_ptr first, leaving the worker's lambda with a null errorPtr
+    // when its predicate throws.
+    std::jthread thread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
+      const auto captureError = [&errorPtr]() {
+        if (!*errorPtr) {
+          *errorPtr = std::current_exception();
+        }
+      };
 
-    // A throwing predicate is treated as a normal stop request instead of letting the exception unwind
-    // across this thread's runUntilStarted() RAII guards (LifecycleResetterRAII, LifecycleTrackerGuard):
-    // captured here, at the call site, and surfaced later via rethrowIfError().
-    auto safePredicate = [&st, &pred, &captureError]() -> bool {
-      if (st.stop_requested()) {
-        return true;
-      }
-      if (!pred) {
-        return false;
-      }
+      // A throwing predicate is treated as a normal stop request instead of letting the exception unwind
+      // across this thread's runUntilStarted() RAII guards (LifecycleResetterRAII, LifecycleTrackerGuard):
+      // captured here, at the call site, and surfaced later via rethrowIfError().
+      auto safePredicate = [&st, &pred, &captureError]() -> bool {
+        if (st.stop_requested()) {
+          return true;
+        }
+        if (!pred) {
+          return false;
+        }
+        try {
+          return pred();
+        } catch (const std::exception& ex) {
+          log::error("Worker predicate exiting due to exception: {}", ex.what());
+          captureError();
+          return true;
+        } catch (...) {
+          log::error("Worker predicate exiting due to unknown exception");
+          captureError();
+          return true;
+        }
+      };
       try {
-        return pred();
+        runUntilStarted(safePredicate);
       } catch (const std::exception& ex) {
-        log::error("Worker predicate exiting due to exception: {}", ex.what());
+        log::error("Event loop thread exiting due to exception: {}", ex.what());
         captureError();
-        return true;
       } catch (...) {
-        log::error("Worker predicate exiting due to unknown exception");
+        log::error("Event loop thread exiting due to unknown exception");
         captureError();
-        return true;
       }
-    };
-    try {
-      runUntilStarted(safePredicate);
-    } catch (const std::exception& ex) {
-      log::error("Event loop thread exiting due to exception: {}", ex.what());
-      captureError();
-    } catch (...) {
-      log::error("Event loop thread exiting due to unknown exception");
-      captureError();
-    }
-  });
+    });
 
-  return {std::move(thread), std::move(errorPtr)};
+    return {std::move(thread), std::move(errorPtr)};
+  } catch (...) {
+    // No thread will ever run prepareRun()/reset() to move us out of Starting - do it here so a concurrent stop()
+    // (which now blocks on Starting) doesn't wait forever, then rethrow.
+    _lifecycle.reset();
+    throw;
+  }
 }
 
 SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedAndStopWhen(std::function<bool()> predicate) {
@@ -508,8 +492,8 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
 
 void SingleHttpServer::stop() noexcept {
   const auto prevState = _lifecycle.exchangeStopping();
-  if (prevState == internal::Lifecycle::State::Starting || prevState == internal::Lifecycle::State::Running ||
-      prevState == internal::Lifecycle::State::Draining) {
+  assert(prevState != internal::Lifecycle::State::Starting);
+  if (prevState == internal::Lifecycle::State::Running || prevState == internal::Lifecycle::State::Draining) {
     // Wake the event loop immediately so it notices the Stopping state and exits
     // before we close the listen socket.  On Windows, closing the listen socket
     // while WSAPoll holds it can cause WSAPoll to hang indefinitely.
