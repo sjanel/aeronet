@@ -151,8 +151,8 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
 
   std::ranges::for_each(_serverHandles, [](auto& handle) { handle.stop(); });
 
-  // Collect any stored errors before clearing the handles so rethrowIfError()
-  // can still report them after stop() returns.
+  // Collect any stored errors before clearing the handles so rethrowIfError() can still report them after stop()
+  // returns.
   for (auto& handle : _serverHandles) {
     try {
       handle.rethrowIfError();
@@ -215,7 +215,7 @@ MultiHttpServer::MultiHttpServer(HttpServerConfig cfg, Router router) {
     }
 
     cfg.reusePort = true;  // enforce reusePort for multi-threaded servers
-    log::debug("HttpServer: Enabling reusePort for multi-threaded server");
+    log::debug("MultiHttpServer: Enabling reusePort for multi-threaded server");
   }
 
   cfg.nbThreads = 1;  // will be applied for each SingleHttpServer.
@@ -660,8 +660,8 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   // Per-start shared state. Its stop callback stops every server of the group, guarded by serversAlive so a stale
   // callback outliving the _servers buffer becomes a no-op instead of dereferencing dangling pointers.
   auto state = std::make_shared<HandleState>();
-  // The warning refers to copying `serverPtrs` into the lambda's captures during
-  // closure construction. The callback itself is noexcept and does not throw.
+  // The warning refers to copying `serverPtrs` into the lambda's captures during closure construction. The callback
+  // itself is noexcept and does not throw.
   // NOLINTNEXTLINE(bugprone-exception-escape)
   state->onStop = [serverPtrs, serversAlive] noexcept {
     if (serversAlive && serversAlive->load(std::memory_order_acquire)) {

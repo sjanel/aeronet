@@ -350,6 +350,17 @@ TEST(HttpParserChunkedTrailers, InvalidTrailerHeaderName) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
+TEST(HttpParserChunkedTrailers, InvalidTrailerCR) {
+  std::string req =
+      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+      "3\r\nfoo\r\n"
+      "0\r\n"
+      "x-traile\r: test\r\n"
+      "\r\n";
+  std::string resp = test::sendAndCollect(port, req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
 TEST(HttpParserChunkedTrailers, InvalidTrailerHeaderValue) {
   std::string req =
       "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"

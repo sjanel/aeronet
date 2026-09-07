@@ -6,10 +6,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
+#include <type_traits>
 
 #include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/raw-bytes.hpp"
 
@@ -308,7 +311,8 @@ TEST(Http2Frame, ParseHeadersFrameWithPaddingAndPriorityTooShort) {
   FrameHeader header{};
   header.length = static_cast<uint32_t>(sizeof(payload));
   header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersPadded | FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders;
+  header.flags =
+      static_cast<uint8_t>(FrameFlags::HeadersPadded | FrameFlags::HeadersPriority) | FrameFlags::HeadersEndHeaders;
   header.streamId = 1;
 
   HeadersFrame frame;
@@ -675,6 +679,17 @@ TEST(Http2Frame, RoundTripDataFrame) {
   EXPECT_EQ(frame.data.size(), 10U);
   for (int idx = 0; idx < 10; ++idx) {
     EXPECT_EQ(frame.data[static_cast<std::size_t>(idx)], static_cast<std::byte>(idx));
+  }
+}
+
+TEST(Http2Frame, ErrorMsg) {
+  using T = std::underlying_type_t<ErrorMsg>;
+  static_assert(sizeof(T) < sizeof(uint32_t));
+
+  for (uint32_t errorIdx = 0; errorIdx < std::numeric_limits<T>::max(); ++errorIdx) {
+    ErrorMsg errorMsg = static_cast<ErrorMsg>(errorIdx);
+
+    EXPECT_FALSE(ConvertProcessResultErrorMsgToSv(errorMsg).empty());
   }
 }
 

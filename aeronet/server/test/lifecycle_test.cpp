@@ -3,12 +3,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <thread>
 #include <utility>
 
 namespace aeronet::internal {
 
 TEST(LifecycleTest, MoveConstructorCopiesState) {
   Lifecycle original;
+  original.enterStarting();
   original.enterRunning();
   original.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   original.drainDeadlineEnabled = true;
@@ -22,6 +24,7 @@ TEST(LifecycleTest, MoveConstructorCopiesState) {
 
 TEST(LifecycleTest, MoveAssignmentCopiesState) {
   Lifecycle original;
+  original.enterStarting();
   original.enterRunning();
   original.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   original.drainDeadlineEnabled = true;
@@ -36,6 +39,7 @@ TEST(LifecycleTest, MoveAssignmentCopiesState) {
 
 TEST(LifecycleTest, ResetClearsState) {
   Lifecycle lifecycle;
+  lifecycle.enterStarting();
   lifecycle.enterRunning();
   lifecycle.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   lifecycle.drainDeadlineEnabled = true;
@@ -53,22 +57,22 @@ TEST(LifecycleTest, CannotBeginDraining) {
   Lifecycle lifecycle;
 
   EXPECT_TRUE(lifecycle.cannotBeginDraining());
-  EXPECT_TRUE(lifecycle.tryEnterStarting());
+  lifecycle.enterStarting();
   EXPECT_TRUE(lifecycle.cannotBeginDraining());
-  EXPECT_TRUE(lifecycle.tryEnterRunning());
+  lifecycle.enterRunning();
   EXPECT_FALSE(lifecycle.cannotBeginDraining());
 
   EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Running);
   EXPECT_TRUE(lifecycle.cannotBeginDraining());
 
-  EXPECT_FALSE(lifecycle.tryEnterRunning());
+  EXPECT_THROW(lifecycle.enterRunning(), std::logic_error);
 }
 
 TEST(LifecycleTest, StartingStateIsActiveButNotReady) {
   Lifecycle lifecycle;
 
-  EXPECT_TRUE(lifecycle.tryEnterStarting());
-  EXPECT_FALSE(lifecycle.tryEnterStarting());
+  lifecycle.enterStarting();
+  EXPECT_THROW(lifecycle.enterStarting(), std::logic_error);
   EXPECT_TRUE(lifecycle.isActive());
   EXPECT_TRUE(lifecycle.isStarting());
   EXPECT_FALSE(lifecycle.isRunning());
@@ -76,16 +80,9 @@ TEST(LifecycleTest, StartingStateIsActiveButNotReady) {
   EXPECT_FALSE(lifecycle.ready());
 }
 
-TEST(LifecycleTest, StopTransitionsStartingState) {
-  Lifecycle lifecycle;
-  ASSERT_TRUE(lifecycle.tryEnterStarting());
-
-  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Starting);
-  EXPECT_TRUE(lifecycle.isStopping());
-}
-
 TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
   Lifecycle lifecycle;
+  lifecycle.enterStarting();
   lifecycle.enterRunning();
   lifecycle.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   lifecycle.drainDeadlineEnabled = true;
@@ -130,6 +127,30 @@ TEST(LifecycleTest, ShrinkDeadlineDoesNotUpdateIfLater) {
   lifecycle.shrinkDeadline(laterDeadline);
 
   EXPECT_EQ(lifecycle.drainDeadline, originalDeadline);
+}
+
+TEST(LifecycleTest, StopWaitsForStartingThenTransitionsFromRunning) {
+  Lifecycle lifecycle;
+  lifecycle.enterStarting();
+
+  // Simulates the worker thread finishing prepareRun() concurrently with exchangeStopping()'s wait.
+  // Whichever order these two threads interleave in, exchangeStopping() must observe Running -
+  // never Starting - and transition it to Stopping.
+  std::jthread completer([&lifecycle] { lifecycle.enterRunning(); });
+
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Running);
+  EXPECT_TRUE(lifecycle.isStopping());
+}
+
+TEST(LifecycleTest, StopWaitsForStartingThenReturnsIdleOnFailedStartup) {
+  Lifecycle lifecycle;
+  lifecycle.enterStarting();
+
+  // Simulates prepareRun() throwing (e.g. bind failure) and LifecycleResetterRAII unwinding to Idle.
+  std::jthread completer([&lifecycle] { lifecycle.reset(); });
+
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Idle);
+  EXPECT_FALSE(lifecycle.isStopping());  // Idle case: exchangeStopping() must not stomp it to Stopping.
 }
 
 }  // namespace aeronet::internal
