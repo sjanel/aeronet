@@ -383,6 +383,10 @@ void HttpServerConfig::validate() {
     }
   }
 
+  if (zerocopyMode != ZerocopyMode::Disabled && zerocopyMinBytes == 0) {
+    throw std::invalid_argument("HttpServerConfig.zerocopyMinBytes cannot be zero");
+  }
+
   builtinProbes.validate();
   accessLog.validate();
 

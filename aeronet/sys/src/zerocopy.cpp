@@ -1,17 +1,21 @@
 #include "aeronet/zerocopy.hpp"
 
+#include <cassert>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <ctime>
+#include <string_view>
+
+// Ensure timespec is defined before including linux/errqueue.h
 #include <linux/errqueue.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
 
-#include <cassert>
-#include <cerrno>
-#include <cstddef>
-#include <cstdint>
-#include <string_view>
-
+#include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/transport-result.hpp"
 
 namespace aeronet {
 
@@ -30,61 +34,76 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
   return ZeroCopyEnableResult::Enabled;
 }
 
-int64_t ZerocopySend(int fd, std::string_view data, ZeroCopyState& state) noexcept {
-  assert(state.enabled());
+TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::uint32_t minBytesForZerocopy,
+                                               std::string_view firstBuffer, std::string_view secondBuffer) {
+  const std::size_t size = firstBuffer.size() + secondBuffer.size();
+  assert(size > 0);
 
-  // Use sendmsg with MSG_ZEROCOPY for large payloads
-  // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
-  // NOLINTNEXTLINE(misc-include-cleaner)
-  iovec iov{const_cast<char*>(data.data()), data.size()};
+  TransportResult res{};
 
-  msghdr msg{};
-  msg.msg_iov = &iov;
-  msg.msg_iovlen = 1;
-
-  const auto sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
-  if (sent > 0) {
-    // Track the pending completion - kernel will notify via error queue.
-    // The kernel assigns monotonically increasing sequence numbers starting from 0;
-    // seqHi tracks the next expected sequence so PollZeroCopyCompletions can determine
-    // when all outstanding sends have completed.
-    ++state.seqHi;
+  if (!enabled() || size < minBytesForZerocopy) {
+    return res;
   }
 
-  return static_cast<int64_t>(sent);
-}
+  assert(minBytesForZerocopy > 0);
 
-int64_t ZerocopySend(int fd, std::string_view firstBuf, std::string_view secondBuf, ZeroCopyState& state) noexcept {
-  // Use sendmsg with MSG_ZEROCOPY for large payloads
-  // MSG_ZEROCOPY tells the kernel to DMA from user pages directly
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  iovec iov[]{
-      {const_cast<char*>(firstBuf.data()), firstBuf.size()},
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      {
-          const_cast<char*>(secondBuf.data()),
-          secondBuf.size(),
-      },
-  };
+  // Drain pending completion notifications before issuing a new zerocopy send.
+  // Prevents the kernel error queue from growing unbounded, avoids kNoBufferSpace, and releases pinned pages promptly
+  // - critical for virtual devices (veth in K8s).
+  pollZeroCopyCompletions(fd);
+
+  assert(enabled());
+
+  iovec iov[2];  // NOLINT(misc-include-cleaner) it's in sys/uio.h (included)
 
   msghdr msg{};
   msg.msg_iov = iov;
-  msg.msg_iovlen = secondBuf.empty() ? 1 : 2;
 
-  const auto sent = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
-  if (sent > 0) {
-    ++state.seqHi;
+  iov[0] = {const_cast<char*>(firstBuffer.data()), firstBuffer.size()};
+
+  if (secondBuffer.empty()) {
+    msg.msg_iovlen = 1;
+  } else {
+    iov[1] = {const_cast<char*>(secondBuffer.data()), secondBuffer.size()};
+    msg.msg_iovlen = 2;
   }
 
-  return static_cast<int64_t>(sent);
+  // Use sendmsg with MSG_ZEROCOPY for large payloads. MSG_ZEROCOPY tells the kernel to DMA from user pages directly
+  const auto nbWritten = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
+
+  if (nbWritten <= 0) {
+    assert(nbWritten != 0);
+    // consider failure - normally, a decent system cannot return 0 for a successful call of a non-empty buffer send.
+    const int zcErr = LastSystemError();
+
+    if (error::IsNotSupported(zcErr)) {
+      // Disable zerocopy for this transport
+      setEnabled(false);
+    } else if (zcErr == error::kWouldBlock) {
+      res.want = TransportHint::WriteReady;
+    } else if (zcErr == error::kInterrupted || zcErr == error::kNoBufferSpace) {
+      // Interrupted, or kernel can't pin more pages (transient) - fall through to regular write path.
+    } else {
+      res.want = TransportHint::Error;
+    }
+  } else {
+    // Track the pending completion - kernel will notify via error queue.
+    // The kernel assigns monotonically increasing sequence numbers starting from 0; seqHi tracks the next expected
+    // sequence so pollZeroCopyCompletions can determine when all outstanding sends have completed.
+    ++seqHi;
+
+    res.bytesProcessed = static_cast<std::size_t>(nbWritten);
+  }
+
+  return res;
 }
 
-std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
-  if (!state.pendingCompletions()) {
-    return 0;
-  }
-
+std::size_t ZeroCopyState::pollZeroCopyCompletions(int fd) noexcept {
   std::size_t completions = 0;
+
+  if (!pendingCompletions()) {
+    return completions;
+  }
 
   // Buffer for recvmsg to read error queue entries
   // We need space for the extended error structure plus its associated data
@@ -115,7 +134,7 @@ std::size_t PollZeroCopyCompletions(int fd, ZeroCopyState& state) noexcept {
           // Update completion tracking
           // serr->ee_info is the sequence number of the first completed send
           // serr->ee_data is the sequence number of the last completed send
-          state.seqLo = serr->ee_data + 1;
+          seqLo = serr->ee_data + 1;
           ++completions;
 
           // serr->ee_code indicates whether the kernel actually used zerocopy:

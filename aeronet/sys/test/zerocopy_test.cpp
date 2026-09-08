@@ -14,11 +14,13 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace aeronet {
@@ -91,7 +93,7 @@ TEST(ZeroCopyTest, PollZerocopyCompletionsReturnsZeroWhenNoPending) {
   ZeroCopyState state(0UL);
 
   // Should return 0 when no completions pending
-  EXPECT_EQ(PollZeroCopyCompletions(sv[0], state), 0U);
+  EXPECT_EQ(state.pollZeroCopyCompletions(sv[0]), 0U);
 }
 
 TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
@@ -149,7 +151,7 @@ TEST(ZeroCopyTest, EnableZerocopyReturnsErrorOnOtherErrno) {
 
 #endif  // AERONET_LINUX
 
-// PollZeroCopyCompletions tests moved to zerocopy_completions_test.cpp
+// pollZeroCopyCompletions tests moved to zerocopy_completions_test.cpp
 
 // Tests for PlainTransport zerocopy integration
 TEST(PlainTransportZeroCopy, EnableZerocopyOnTransport) {
@@ -559,7 +561,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
   test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
 }
@@ -577,7 +579,7 @@ TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
   test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
 }
@@ -595,7 +597,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
   test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 1U);
   EXPECT_EQ(state.seqLo, 43U);
   EXPECT_FALSE(state.pendingCompletions());
@@ -617,7 +619,7 @@ TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 1U);
   EXPECT_EQ(state.seqLo, 43U);
   EXPECT_FALSE(state.pendingCompletions());
@@ -639,7 +641,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 7U);
@@ -661,7 +663,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 2U);
@@ -683,7 +685,7 @@ TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 4U);
@@ -705,7 +707,7 @@ TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
   test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
   test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
 
-  const auto comps = PollZeroCopyCompletions(sv[0], state);
+  const auto comps = state.pollZeroCopyCompletions(sv[0]);
   EXPECT_EQ(comps, 0U);
   EXPECT_TRUE(state.pendingCompletions());
   EXPECT_EQ(state.seqLo, 9U);

@@ -47,6 +47,7 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_POSIX

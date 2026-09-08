@@ -836,7 +836,7 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 TEST(ZerocopyMode, ForcedModeSmallPayload) {
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
-    cfg.withZerocopyMinBytes(0);
+    cfg.withZerocopyMinBytes(1U);
   });
 
   const std::string payload = "ForcedZerocopySmall";
@@ -858,7 +858,7 @@ TEST(ZerocopyMode, StressLargePayloadDataIntegrity) {
   // Reproduces data corruption seen under sustained zerocopy with virtual network devices (K8s).
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
-    cfg.withZerocopyMinBytes(0);
+    cfg.withZerocopyMinBytes(1U);
   });
 
   // 1 MB payload with deterministic pattern to verify data integrity
@@ -947,7 +947,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
   // Forces zerocopy even for small payloads to stress the zerocopy completion mechanism.
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
-    cfg.withZerocopyMinBytes(0);
+    cfg.withZerocopyMinBytes(1U);
   });
 
   // Payloads of different sizes to exercise edge cases
@@ -979,7 +979,7 @@ TEST(ZerocopyMode, StressKeepAliveBackpressure) {
   // This exercises the flushOutbound / outBuffer append paths with zerocopy.
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
-    cfg.withZerocopyMinBytes(0);
+    cfg.withZerocopyMinBytes(1U);
     cfg.withKeepAliveMode(true);
     cfg.withMaxRequestsPerConnection(10000);
   });

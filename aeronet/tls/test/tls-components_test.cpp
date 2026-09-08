@@ -53,6 +53,7 @@
 #include "aeronet/tls-metrics.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 using namespace aeronet;
@@ -1256,7 +1257,9 @@ TEST(TlsTransportTest, ErasedTransportCachesTlsKindAndBackend) {
   EXPECT_FALSE(transport.hasPendingReadData());
   EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_FALSE(transport.hasZerocopyPending());
+#ifdef AERONET_LINUX
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
+#endif
   transport.disableZerocopy();
 }
 
@@ -1533,6 +1536,7 @@ TEST(TlsTransportTest, DisableZerocopyClearsState) {
   EXPECT_FALSE(transport.hasZerocopyPending());
 }
 
+#ifdef AERONET_LINUX
 TEST(TlsTransportTest, PollZerocopyCompletionsNoFdReturnsZero) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
@@ -1552,6 +1556,7 @@ TEST(TlsTransportTest, PollZerocopyCompletionsWithFdNoCompletions) {
   // With fd set but nothing pending, should return 0
   EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
 }
+#endif
 
 TEST(TlsContextTest, NoCertOrKeyConfigThrows) {
   TLSConfig cfg;

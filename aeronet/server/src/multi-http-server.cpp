@@ -478,11 +478,12 @@ void MultiHttpServer::ensureNextServersBuilt() {
 #ifdef AERONET_ENABLE_OPENSSL
   // Set up shared session ticket key store on firstServer BEFORE duplication.
   // This ensures all copied servers will have the shared store when their TLS contexts are built.
-  if (firstServer._config.tls.sessionTickets.enabled && !firstServer._tls.sharedTicketKeyStore) {
-    firstServer._tls.sharedTicketKeyStore = std::make_shared<TlsTicketKeyStore>(
-        firstServer._config.tls.sessionTickets.lifetime, firstServer._config.tls.sessionTickets.maxKeys);
-    if (!firstServer._config.tls.sessionTicketKeys().empty()) {
-      firstServer._tls.sharedTicketKeyStore->loadStaticKeys(firstServer._config.tls.sessionTicketKeys());
+  const TLSConfig& tlsConfig = firstServer._config.tls;
+  if (tlsConfig.sessionTickets.enabled && !firstServer._tls.sharedTicketKeyStore) {
+    firstServer._tls.sharedTicketKeyStore =
+        std::make_shared<TlsTicketKeyStore>(tlsConfig.sessionTickets.lifetime, tlsConfig.sessionTickets.maxKeys);
+    if (!tlsConfig.sessionTicketKeys().empty()) {
+      firstServer._tls.sharedTicketKeyStore->loadStaticKeys(tlsConfig.sessionTicketKeys());
     }
   }
 #endif
@@ -555,31 +556,29 @@ void MultiHttpServer::buildProbeServerIfEnabled() {
   HttpServerConfig probeCfg;
   probeCfg.port = probesCfg.dedicatedPort;
   probeCfg.nbThreads = 1;
-  probeCfg.enableKeepAlive = false;                 // probes are single-shot; never hold an idle connection open
-  probeCfg.maxCachedConnections = 1U;               // one recycled ConnectionState is plenty (requests never overlap)
-  probeCfg.maxAcceptBatchSize = 4U;                 // a prober never opens a burst of connections
-  probeCfg.maxHeaderBytes = 1024U;                  // a probe request is a few hundred bytes at most (floor is 128)
-  probeCfg.maxBodyBytes = 1024U;                    // probes carry no body; bound anything unexpected sent to this port
+  probeCfg.enableKeepAlive = false;    // probes are single-shot; never hold an idle connection open
+  probeCfg.maxCachedConnections = 1U;  // one recycled ConnectionState is plenty (requests never overlap)
+  probeCfg.maxAcceptBatchSize = 4U;    // a prober never opens a burst of connections
+  probeCfg.maxHeaderBytes = 512U;      // a probe request is a few hundred bytes at most (floor is 128)
+  probeCfg.maxBodyBytes = 128U;        // probes carry tiny bodies; bound anything unexpected sent to this port
   probeCfg.pollInterval = std::chrono::seconds{2};  // almost always idle: block in poll for seconds, not ms
   probeCfg.pollIntervalMaxFactor = 4.0F;            // back off up to ~8s between wakeups while idle
   probeCfg.builtinProbes.enabled = false;
+
   _probeServer = std::make_unique<SingleHttpServer>(std::move(probeCfg));
   SingleHttpServer& probeServer = *_probeServer;
 
   // Register the three probe routes reading the aggregated worker view (mirrors the inline probe responses).
-  const auto liveness = probesCfg.livenessPath();
-  const auto readiness = probesCfg.readinessPath();
-  const auto startup = probesCfg.startupPath();
-  probeServer._router.setPath(http::Method::GET, liveness, [probeState](const HttpRequestView& req) {
+  probeServer._router.setPath(http::Method::GET, probesCfg.livenessPath(), [probeState](const HttpRequestView& req) {
     const bool live = probeState->live();
     return req.makeResponse(live ? http::StatusCodeOK : http::StatusCodeServiceUnavailable, live ? "OK" : "Unhealthy");
   });
-  probeServer._router.setPath(http::Method::GET, readiness, [probeState](const HttpRequestView& req) {
+  probeServer._router.setPath(http::Method::GET, probesCfg.readinessPath(), [probeState](const HttpRequestView& req) {
     const bool ready = probeState->ready();
     return req.makeResponse(ready ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             ready ? "OK" : "Not Ready");
   });
-  probeServer._router.setPath(http::Method::GET, startup, [probeState](const HttpRequestView& req) {
+  probeServer._router.setPath(http::Method::GET, probesCfg.startupPath(), [probeState](const HttpRequestView& req) {
     const bool started = probeState->started();
     return req.makeResponse(started ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             started ? "OK" : "Starting");
@@ -592,9 +591,7 @@ vector<SingleHttpServer*> MultiHttpServer::collectServerPointers() {
   // Every background-thread server: the workers plus, when configured, the dedicated probe listener.
   vector<SingleHttpServer*> serverPtrs;
   serverPtrs.reserve(_servers.size() + (_probeServer ? 1U : 0U));
-  for (SingleHttpServer& server : _servers) {
-    serverPtrs.push_back(&server);
-  }
+  std::ranges::transform(_servers, std::back_inserter(serverPtrs), [](SingleHttpServer& server) { return &server; });
   if (_probeServer) {
     serverPtrs.push_back(_probeServer.get());
   }
