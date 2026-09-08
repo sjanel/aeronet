@@ -63,6 +63,10 @@ void HttpClientConfig::validate() const {
       throw std::invalid_argument("cache.methods must be a non-empty subset of GET / HEAD / OPTIONS");
     }
   }
+
+  if (minReadChunkBytes == 0) {
+    throw std::invalid_argument("minReadChunkBytes must be > 0");
+  }
 }
 
 }  // namespace aeronet

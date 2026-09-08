@@ -539,7 +539,7 @@ std::expected<void, HttpClientErrc> HttpClient::ensureProtocolHandler(ActiveConn
   switch (conn.protocol) {
     case ClientProtocol::Http2:
 #ifdef AERONET_ENABLE_HTTP2
-      conn.proto = internal::ClientConnection(_config.http2);
+      conn.proto = internal::ClientConnection(_config);
       return {};
 #else
       // Unreachable in practice: without HTTP/2 support "h2" is never advertised (so ALPN cannot select

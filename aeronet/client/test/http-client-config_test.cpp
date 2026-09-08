@@ -105,4 +105,11 @@ TEST(HttpClientConfigTest, GlobalHeaderShouldContainHeaderSep2) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpClientConfigTest, MinReadChunkBytesCannotBeZero) {
+  HttpClientConfig config;
+  config.minReadChunkBytes = 0;
+
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 }  // namespace aeronet

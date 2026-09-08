@@ -46,9 +46,6 @@ namespace aeronet::internal {
 
 namespace {
 
-// Transport read granularity (mirrors the HTTP/1.1 engine).
-constexpr std::size_t kReadChunk = 16384;
-
 // Upper bound on the DATA bytes encoded into the output buffer per flush while uploading a request body.
 // Flow-control windows can be large (the peer may grant hundreds of megabytes); without a cap the whole
 // window would be copied into the output buffer at once. 64 KiB keeps memory bounded while amortizing the
@@ -79,7 +76,8 @@ class Http2ClientEngine {
     StreamRefused,  // peer sent GOAWAY with lastStreamId below our stream (request not processed)
   };
 
-  explicit Http2ClientEngine(const Http2Config& config) : _conn(config, /*isServer=*/false) {
+  Http2ClientEngine(const Http2Config& config, uint32_t minReadChunkBytes)
+      : _conn(config, /*isServer=*/false), _minReadChunkBytes(minReadChunkBytes) {
     _conn.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       onHeaders(streamId, headers, endStream);
     });
@@ -203,8 +201,8 @@ class Http2ClientEngine {
         }
       }
 
-      _inBuf.ensureAvailableCapacityExponential(kReadChunk);
-      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), kReadChunk);
+      _inBuf.ensureAvailableCapacityExponential(_minReadChunkBytes);
+      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), _minReadChunkBytes);
       if (res.bytesProcessed != 0) {
         _inBuf.addSize(res.bytesProcessed);
         continue;
@@ -273,8 +271,8 @@ class Http2ClientEngine {
         }
         // Only a partial frame is buffered: fall through and read more.
       }
-      _inBuf.ensureAvailableCapacityExponential(kReadChunk);
-      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), kReadChunk);
+      _inBuf.ensureAvailableCapacityExponential(_minReadChunkBytes);
+      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), _minReadChunkBytes);
       if (res.bytesProcessed > 0) {
         _inBuf.addSize(res.bytesProcessed);
         continue;  // process what we just buffered
@@ -374,6 +372,7 @@ class Http2ClientEngine {
   std::size_t _maxResponseBytes{0};
   uint32_t _streamId{0};      // stream id of the in-flight exchange
   uint32_t _nextStreamId{1};  // next client-initiated (odd) stream id
+  uint32_t _minReadChunkBytes;
   Failure _failure{Failure::None};
   bool _streamClosed{false};
   bool _finalHeadersSeen{false};  // a non-interim (>= 200) response HEADERS block was received
@@ -383,8 +382,8 @@ class Http2ClientEngine {
 
 ClientConnection::ClientConnection(Type type) noexcept : _type(type) {}
 
-ClientConnection::ClientConnection(const Http2Config& http2Config)
-    : _h2(std::make_unique<Http2ClientEngine>(http2Config)), _type(Type::Http2) {}
+ClientConnection::ClientConnection(const HttpClientConfig& config)
+    : _h2(std::make_unique<Http2ClientEngine>(config.http2, config.minReadChunkBytes)), _type(Type::Http2) {}
 
 ClientConnection::ClientConnection(ClientConnection&&) noexcept = default;
 ClientConnection& ClientConnection::operator=(ClientConnection&&) noexcept = default;
