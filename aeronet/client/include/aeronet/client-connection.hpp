@@ -9,6 +9,7 @@
 #include <type_traits>
 #endif
 
+#include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/native-handle.hpp"
@@ -20,10 +21,6 @@ namespace aeronet {
 class HttpClient;
 class HttpRequest;
 struct FilePayload;
-
-#ifdef AERONET_ENABLE_HTTP2
-struct Http2Config;
-#endif
 
 // Result of an HttpClient request: the HttpResponse on success, or an HttpClientErrc on failure. The
 // success state carries a normal HttpResponse even for non-2xx statuses; only transport/protocol failures
@@ -62,7 +59,7 @@ class ClientConnection {
 
   // Construct the HTTP/2 engine (Type::Http2) with the client's HTTP/2 SETTINGS. The engine allocation is
   // the only per-connection setup cost.
-  explicit ClientConnection(const Http2Config& http2Config);
+  explicit ClientConnection(const HttpClientConfig& config);
 
   ClientConnection(const ClientConnection&) = delete;
   ClientConnection& operator=(const ClientConnection&) = delete;

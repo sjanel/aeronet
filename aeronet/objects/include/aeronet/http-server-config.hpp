@@ -173,18 +173,15 @@ struct HttpServerConfig {
 
   // Maximum allowed size (in bytes) of the aggregate HTTP request head (request line + all headers + CRLFCRLF).
   // If exceeded while parsing, the server replies 431/400 and closes the connection. Default: 8 KiB.
-  // uint32_t is sufficient - no sane HTTP implementation needs to accept >4 GiB of headers.
   std::uint32_t maxHeaderBytes{8192};
 
-  // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding
-  // this limit result in a 413 (Payload Too Large) HTTP error and closure.
-  // Default: 256 MiB.
+  // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding this
+  // limit result in a 413 (Payload Too Large) HTTP error and closure. Default: 256 MiB.
   std::size_t maxBodyBytes{1UL << 28U};  // 256 MiB
 
   // For responses with captured bodies smaller than this threshold, HttpResponse will concatenate the captured body
-  // contents with the head in the same buffer. This can be efficient for small
-  // bodies because it improves cache locality. Only used in HTTP/1.1.
-  // Larger bodies will be kept separate. Default: 1 KiB.
+  // contents with the head in the same buffer. This can be efficient for small bodies because it improves cache
+  // locality. Only used in HTTP/1.1. Larger bodies will be kept separate. Default: 1 KiB.
   std::size_t minCapturedBodySize{1024};  // 1 KiB
 
   // =============================================

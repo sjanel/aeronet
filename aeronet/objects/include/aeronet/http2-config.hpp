@@ -13,6 +13,99 @@ namespace aeronet {
 ///
 /// Default values follow RFC 9113 recommendations for a balanced server profile.
 struct Http2Config {
+  /// Validates the configuration.
+  /// Throws std::invalid_argument if any setting is out of valid range.
+  void validate() const;
+
+  // ============================
+  // Builder-style setters
+  // ============================
+
+  Http2Config& withHeaderTableSize(uint32_t size) {
+    headerTableSize = size;
+    return *this;
+  }
+
+  Http2Config& withEnablePush(bool on) {
+    enablePush = on;
+    return *this;
+  }
+
+  Http2Config& withMergeUnknownRequestHeaders(bool on) {
+    this->mergeUnknownRequestHeaders = on;
+    return *this;
+  }
+
+  Http2Config& withMaxConcurrentStreams(uint32_t maxStreams) {
+    maxConcurrentStreams = maxStreams;
+    return *this;
+  }
+
+  Http2Config& withInitialWindowSize(uint32_t size) {
+    initialWindowSize = size;
+    return *this;
+  }
+
+  Http2Config& withMaxFrameSize(uint32_t size) {
+    maxFrameSize = size;
+    return *this;
+  }
+
+  Http2Config& withMaxHeaderListSize(uint32_t size) {
+    maxHeaderListSize = size;
+    return *this;
+  }
+
+  Http2Config& withConnectionWindowSize(uint32_t size) {
+    connectionWindowSize = size;
+    return *this;
+  }
+
+  Http2Config& withSettingsTimeout(std::chrono::milliseconds timeout) {
+    settingsTimeout = timeout;
+    return *this;
+  }
+
+  Http2Config& withPingInterval(std::chrono::milliseconds interval) {
+    pingInterval = interval;
+    return *this;
+  }
+
+  Http2Config& withPingTimeout(std::chrono::milliseconds timeout) {
+    pingTimeout = timeout;
+    return *this;
+  }
+
+  Http2Config& withMaxStreamsPerConnection(uint32_t maxStreams) {
+    maxStreamsPerConnection = maxStreams;
+    return *this;
+  }
+
+  Http2Config& withMaxStreamPendingBytes(uint32_t maxPending) {
+    maxStreamPendingBytes = maxPending;
+    return *this;
+  }
+
+  Http2Config& withEnableH2c(bool on) {
+    enableH2c = on;
+    return *this;
+  }
+
+  Http2Config& withEnableH2cUpgrade(bool on) {
+    enableH2cUpgrade = on;
+    return *this;
+  }
+
+  Http2Config& withEnablePriority(bool on) {
+    enablePriority = on;
+    return *this;
+  }
+
+  Http2Config& withMaxPriorityTreeDepth(uint16_t depth) {
+    maxPriorityTreeDepth = depth;
+    return *this;
+  }
+
   // ============================
   // RFC 9113 SETTINGS parameters
   // ============================
@@ -119,99 +212,6 @@ struct Http2Config {
   /// Limits resource usage for malicious deep dependency chains.
   /// Default: 256.
   uint16_t maxPriorityTreeDepth{256U};
-
-  // ============================
-  // Builder-style setters
-  // ============================
-
-  Http2Config& withHeaderTableSize(uint32_t size) {
-    headerTableSize = size;
-    return *this;
-  }
-
-  Http2Config& withEnablePush(bool on) {
-    enablePush = on;
-    return *this;
-  }
-
-  Http2Config& withMergeUnknownRequestHeaders(bool on) {
-    this->mergeUnknownRequestHeaders = on;
-    return *this;
-  }
-
-  Http2Config& withMaxConcurrentStreams(uint32_t maxStreams) {
-    maxConcurrentStreams = maxStreams;
-    return *this;
-  }
-
-  Http2Config& withInitialWindowSize(uint32_t size) {
-    initialWindowSize = size;
-    return *this;
-  }
-
-  Http2Config& withMaxFrameSize(uint32_t size) {
-    maxFrameSize = size;
-    return *this;
-  }
-
-  Http2Config& withMaxHeaderListSize(uint32_t size) {
-    maxHeaderListSize = size;
-    return *this;
-  }
-
-  Http2Config& withConnectionWindowSize(uint32_t size) {
-    connectionWindowSize = size;
-    return *this;
-  }
-
-  Http2Config& withSettingsTimeout(std::chrono::milliseconds timeout) {
-    settingsTimeout = timeout;
-    return *this;
-  }
-
-  Http2Config& withPingInterval(std::chrono::milliseconds interval) {
-    pingInterval = interval;
-    return *this;
-  }
-
-  Http2Config& withPingTimeout(std::chrono::milliseconds timeout) {
-    pingTimeout = timeout;
-    return *this;
-  }
-
-  Http2Config& withMaxStreamsPerConnection(uint32_t maxStreams) {
-    maxStreamsPerConnection = maxStreams;
-    return *this;
-  }
-
-  Http2Config& withMaxStreamPendingBytes(uint32_t maxPending) {
-    maxStreamPendingBytes = maxPending;
-    return *this;
-  }
-
-  Http2Config& withEnableH2c(bool on) {
-    enableH2c = on;
-    return *this;
-  }
-
-  Http2Config& withEnableH2cUpgrade(bool on) {
-    enableH2cUpgrade = on;
-    return *this;
-  }
-
-  Http2Config& withEnablePriority(bool on) {
-    enablePriority = on;
-    return *this;
-  }
-
-  Http2Config& withMaxPriorityTreeDepth(uint16_t depth) {
-    maxPriorityTreeDepth = depth;
-    return *this;
-  }
-
-  /// Validates the configuration.
-  /// Throws std::invalid_argument if any setting is out of valid range.
-  void validate() const;
 };
 
 }  // namespace aeronet
