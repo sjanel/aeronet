@@ -19,7 +19,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/aeronet.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"

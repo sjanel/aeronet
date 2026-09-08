@@ -62,10 +62,14 @@ class HttpClientConfig {
   // Hard cap on the total response size (headers + decoded body) accepted before aborting.
   std::size_t maxResponseBytes{64UL * 1024UL * 1024UL};
 
+  // Maximum number of automatic redirections performed.
   uint32_t maxRedirects{5};
 
   // Maximum idle connections retained per origin in the pool.
   uint32_t maxIdleConnectionsPerHost{8};
+
+  // Minimum number of bytes read by the client per syscall and event.
+  uint32_t minReadChunkBytes{16384};
 
   // Will add all the headers defined here in all client requests, if not explicitly set by the user for a given
   // response. Defaults to a list of one entry "user-agent: aeronet".
