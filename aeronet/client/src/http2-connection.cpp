@@ -38,6 +38,7 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "response-parser.hpp"
 

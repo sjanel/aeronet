@@ -30,6 +30,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
@@ -596,28 +597,38 @@ TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBac
     std::size_t retainedSize = 600U;
 
     if (maxPendingBytes < retainedSize) {
+#ifdef AERONET_LINUX
       EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
+#endif
     } else {
+#ifdef AERONET_LINUX
       ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
       state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'a')), true);
+#endif
 
       retainedSize = 400U;
 
+#ifdef AERONET_LINUX
       ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
       state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'b')), true);
+#endif
       EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
       EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
 
       retainedSize = 25U;
 
+#ifdef AERONET_LINUX
       EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
       EXPECT_FALSE(raw->isZerocopyEnabled());
       state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'c')), false);
+#endif
       EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
       EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
 
       raw->complete();
+#ifdef AERONET_LINUX
       state.releaseCompletedZerocopyBuffers();
+#endif
       EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
       EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
     }

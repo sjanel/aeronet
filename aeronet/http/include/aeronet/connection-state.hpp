@@ -116,6 +116,7 @@ struct ConnectionState {
 
   void reclaimMemoryFromOversizedBuffers();
 
+#ifdef AERONET_LINUX
   /// Disable zerocopy before a write when retaining its payload would exceed `maxPendingBytes`.
   /// Returns whether the write may submit bytes through MSG_ZEROCOPY and therefore needs lifetime tracking.
   [[nodiscard]] bool prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes);
@@ -128,6 +129,7 @@ struct ConnectionState {
 
   /// Poll the kernel error queue and release held zerocopy buffers whose sends have completed.
   void releaseCompletedZerocopyBuffers();
+#endif
 
   [[nodiscard]] uint32_t zerocopyRetainedBytes() const noexcept { return zerocopyPendingBytes; }
 

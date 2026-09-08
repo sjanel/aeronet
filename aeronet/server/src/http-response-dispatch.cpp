@@ -24,6 +24,7 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-cork-guard.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
@@ -180,8 +181,10 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     return;
   }
 
+#ifdef AERONET_LINUX
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
+#endif
 
   // Extract file payload early so we can move the File once and avoid double-moves
   // when the response writes immediately.
@@ -209,7 +212,11 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
 
   // Plain TCP path: try immediate write optimization
   const bool mayNeedZerocopyHold =
+#ifdef AERONET_LINUX
       state.prepareZerocopyWrite(httpResponseData.retainedSize(), _config.maxZerocopyPendingBytes);
+#else
+      false;
+#endif
   const auto [written, want] = state.transportWrite(httpResponseData);
   if (want == TransportHint::Error) {
     state.requestDrainAndClose();
@@ -218,11 +225,13 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   if (written == bufferedSz) {
     _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
     _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+#ifdef AERONET_LINUX
     // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
     // asynchronously. We must keep the buffer alive until the kernel signals
     // completion via the error queue, otherwise the allocator can reuse the
     // freed pages while the kernel is still transmitting causing data corruption.
     state.holdBufferIfZerocopyPending(std::move(httpResponseData), mayNeedZerocopyHold);
+#endif
     if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
       flushFilePayload(cnxIt);
     }
@@ -259,8 +268,10 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   TransportHint want = TransportHint::None;
   ConnectionState& state = _connections.connectionState(cnxIt);
 
+#ifdef AERONET_LINUX
   // Release zerocopy buffers whose kernel completions have arrived.
   state.releaseCompletedZerocopyBuffers();
+#endif
 
   const NativeHandle fd = cnxIt->fd();
 
@@ -268,10 +279,12 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
 
   while (!state.outBuffer.empty()) {
+#ifdef AERONET_LINUX
     if (!state.outBufferMayNeedZerocopyHold) {
       state.outBufferMayNeedZerocopyHold =
           state.prepareZerocopyWrite(state.outBuffer.retainedSize(), _config.maxZerocopyPendingBytes);
     }
+#endif
     const auto [written, stepWant] = state.transportWrite(state.outBuffer);
     want = stepWant;
     _stats.totalBytesWrittenFlush += written;
@@ -283,8 +296,10 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
       state.outBufferMayNeedZerocopyHold = false;
     } else if (written > 0) {
       if (written == state.outBuffer.remainingSize()) {
+#ifdef AERONET_LINUX
         // Hold buffer for zerocopy lifetime before clearing (see queueData comment).
         state.holdBufferIfZerocopyPending(std::move(state.outBuffer), state.outBufferMayNeedZerocopyHold);
+#endif
         state.outBuffer.clear();
         state.outBufferMayNeedZerocopyHold = false;
         break;

@@ -12,27 +12,13 @@
 #include <variant>
 
 #include "aeronet/native-handle.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
 
 class File;
-
-// Indicates what the transport layer needs to proceed after a non-blocking I/O operation returns EAGAIN/WANT.
-enum class TransportHint : uint8_t {
-  None,        // No special action needed (operation completed or fatal error)
-  ReadReady,   // Need socket readable before operation can proceed (SSL_ERROR_WANT_READ)
-  WriteReady,  // Need socket writable before operation can proceed (SSL_ERROR_WANT_WRITE)
-  Error,
-};
-
-struct TransportResult {
-  std::size_t bytesProcessed;  // bytes read for read operations, or written for write operations
-  TransportHint want;          // socket readiness needed before the operation can proceed
-};
-
-enum class TransportKind : uint8_t { Empty, Plain, Tls, Custom };
 
 // Backend feature detection, hoisted to namespace-scope concepts rather than inline requires-expressions
 // inside the OperationsFor() generic lambdas: MSVC has been observed to misevaluate a requires-expression
@@ -51,8 +37,10 @@ concept HasSupportsSendfile = requires(const Backend& backend) {
 /// Shared non-virtual state for socket-backed transports.
 class SocketTransportState {
  public:
+#ifdef AERONET_LINUX
   /// Poll for zerocopy completion notifications from the kernel error queue.
-  std::size_t pollZerocopyCompletions() noexcept { return PollZeroCopyCompletions(_fd, _zerocopyState); }
+  std::size_t pollZerocopyCompletions() noexcept { return _zerocopyState.pollZeroCopyCompletions(_fd); }
+#endif
 
   /// Check if zerocopy is enabled on this transport.
   [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _zerocopyState.enabled(); }
@@ -238,6 +226,7 @@ class Transport final {
     return _storage.index() != kPlainIndex && operations().hasPendingReadData(erasedBackend());
   }
 
+#ifdef AERONET_LINUX
   std::size_t pollZerocopyCompletions() noexcept {
     assert(*this);
     if (_storage.index() == kPlainIndex) [[likely]] {
@@ -245,6 +234,7 @@ class Transport final {
     }
     return operations().pollZerocopyCompletions(erasedBackend());
   }
+#endif
 
   [[nodiscard]] bool isZerocopyEnabled() const noexcept {
     assert(*this);
