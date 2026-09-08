@@ -22,7 +22,6 @@
 #include <sys/socket.h>
 #endif
 
-#include "aeronet/aeronet.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
@@ -352,7 +351,7 @@ TEST(HttpClientHttp2TransportTest, PeerResetAndGoAwayAbortCurrentExchange) {
     HttpRequest req = MakeFinalizedHttp2Request(client);
 
     ScriptedHttp2Transport transport(action);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
 
     auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -376,7 +375,7 @@ TEST(HttpClientHttp2TransportTest, WriteFailureAndReadinessTimeoutBeforeSending)
        }) {
     HttpRequest req = MakeFinalizedHttp2Request(client);
     ScriptedHttp2Transport transport(action);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
 
     auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -398,7 +397,7 @@ TEST(HttpClientHttp2TransportTest, ReadCloseAndWriteReadinessAreReported) {
     HttpRequest req = MakeFinalizedHttp2Request(client);
 
     ScriptedHttp2Transport transport(action);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
 
     auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -419,7 +418,7 @@ TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses)
        {LoopbackHttp2Transport::ResponseMode::MissingStatus, LoopbackHttp2Transport::ResponseMode::InvalidStatus}) {
     HttpRequest req = MakeFinalizedHttp2Request(client);
     LoopbackHttp2Transport transport(config.http2, mode);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
 
     auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -440,7 +439,7 @@ TEST(HttpClientHttp2TransportTest, InterimHeadersAndEmptyDataCompleteSuccessfull
     HttpRequest req = MakeFinalizedHttp2Request(client);
 
     LoopbackHttp2Transport transport(config.http2, mode);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
 
     auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -458,7 +457,7 @@ TEST(HttpClientHttp2TransportTest, MissingContentTypeDefaultsToOctetStream) {
   HttpClient client(config);
   HttpRequest req = MakeFinalizedHttp2Request(client);
   LoopbackHttp2Transport transport(config.http2, LoopbackHttp2Transport::ResponseMode::NoContentType);
-  internal::ClientConnection connection(config.http2);
+  internal::ClientConnection connection(config);
   bool requestSent = false;
 
   auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -477,7 +476,7 @@ TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
   req.body(std::string(1UL << 20U, 'x'), "application/octet-stream");
   HttpRequestTest::Finalize(req);
   LoopbackHttp2Transport transport(config.http2, LoopbackHttp2Transport::ResponseMode::EarlyResponse);
-  internal::ClientConnection connection(config.http2);
+  internal::ClientConnection connection(config);
   bool requestSent = false;
 
   auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
@@ -496,7 +495,7 @@ TEST(HttpClientHttp2TransportTest, PooledReuseDrainsPingAndRejectsGoAway) {
   for (const bool queueGoAway : {false, true}) {
     HttpRequest req = MakeFinalizedHttp2Request(client);
     LoopbackHttp2Transport backend(config.http2, LoopbackHttp2Transport::ResponseMode::EmptyData);
-    internal::ClientConnection connection(config.http2);
+    internal::ClientConnection connection(config);
     bool requestSent = false;
     auto result = connection.exchange(client, backend, kInvalidHandle, req, SteadyClock::now(), requestSent);
     ASSERT_TRUE(result);
@@ -664,7 +663,7 @@ TEST(HttpClientHttp2E2ETest, PostFileBodyReadErrorFailsExchange) {
   // CloseOnRead accepts all writes (preface + HEADERS) and never feeds a response; the exchange fails at
   // the first file read, before any transport read.
   ScriptedHttp2Transport transport(ScriptedHttp2Transport::Action::CloseOnRead);
-  internal::ClientConnection connection(client.config().http2);
+  internal::ClientConnection connection(client.config());
   bool requestSent = false;
 
   auto result = connection.exchange(client, transport, kInvalidHandle, req,

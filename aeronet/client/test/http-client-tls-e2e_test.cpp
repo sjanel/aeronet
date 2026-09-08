@@ -19,7 +19,6 @@
 #include <utility>
 #include <vector>
 
-#include "aeronet/aeronet.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -27,7 +26,9 @@
 #include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/scoped-env-var.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"

@@ -194,11 +194,12 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   RawChars& responseBuffer = client.responseBuffer();
   responseBuffer.clear();  // reuse the buffer's allocation across requests
   bool eof = false;
-  static constexpr std::size_t kReadChunk = 16384;  // TODO: make this configurable
+  const auto minReadChunkBytes = config.minReadChunkBytes;
 
   for (;;) {
-    responseBuffer.ensureAvailableCapacityExponential(kReadChunk);
-    const TransportResult transportRes = transport.read(responseBuffer.data() + responseBuffer.size(), kReadChunk);
+    responseBuffer.ensureAvailableCapacityExponential(minReadChunkBytes);
+    const TransportResult transportRes =
+        transport.read(responseBuffer.data() + responseBuffer.size(), minReadChunkBytes);
     if (transportRes.bytesProcessed > 0) {
       responseBuffer.addSize(transportRes.bytesProcessed);
     } else if (transportRes.want == TransportHint::ReadReady) {
