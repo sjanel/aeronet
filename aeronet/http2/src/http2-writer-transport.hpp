@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -24,27 +23,26 @@
 namespace aeronet::http2 {
 
 /// HTTP/2 transport backend for HttpResponseWriter.
-/// Emits HEADERS and DATA frames on an HTTP/2 stream, buffering data when
-/// flow-control windows are exhausted.
+/// Emits HEADERS and DATA frames on an HTTP/2 stream, buffering data when flow-control windows are exhausted.
 ///
 /// After the streaming handler returns, the caller must check hasPendingData()
 /// and transfer any remaining buffer/trailers/file into the protocol handler's
 /// pending-send maps for deferred flushing.
 class Http2WriterTransport final : public IWriterTransport {
  public:
-  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders,
+  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders& globalHeaders,
                        const char* cachedDateHeader, std::size_t existingDeferredBytes,
                        uint32_t maxConnectionPendingBytes, uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
-        _pGlobalHeaders(pGlobalHeaders),
+        _globalHeaders(globalHeaders),
         _pCachedDateHeader(cachedDateHeader),
         _existingDeferredBytes(existingDeferredBytes),
         _maxConnectionPendingBytes(maxConnectionPendingBytes),
         _maxStreamPendingBytes(maxStreamPendingBytes),
         _streamId(streamId) {}
 
-  bool emitHeaders(HttpResponse& response, const HttpRequestView& /*request*/, bool /*compressionActivated*/,
-                   Encoding /*compressionFormat*/, std::size_t /*declaredLength*/, bool isHead) override {
+  bool emitHeaders(HttpResponse& response, [[maybe_unused]] const HttpRequestView& req,
+                   [[maybe_unused]] std::size_t declaredLength, bool isHead) override {
     _isHead = isHead;
 
     response.finalizeHeadersAndBody();
@@ -52,39 +50,33 @@ class Http2WriterTransport final : public IWriterTransport {
     // Finalize Date header (same as sendResponse path).
     CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
 
+    const std::size_t globalHeadersSize = _globalHeaders.fullStringWithLastSep().size();
+    const std::size_t headerBytes = FrameHeader::kSize + response.headersFlatViewWithDate().size() + globalHeadersSize;
+    if (headerBytes > _maxConnectionPendingBytes || !hasConnectionCapacity(headerBytes)) {
+      markOverflow();
+      return false;
+    }
+
     // Determine END_STREAM: headers-only response if HEAD request, or no body expected and no trailers.
     // For streaming, we generally do NOT set END_STREAM on HEADERS because body follows.
     // However, if isHead is true, end() will be called but no body data is sent.
     // We delay END_STREAM to emitEnd() since the writer always calls end().
     static constexpr bool kEndStream = false;
 
-    std::size_t headerBytes = FrameHeader::kSize;
-    const auto addHeaderBytes = [this, &headerBytes](std::size_t size) {
-      if (headerBytes > _maxConnectionPendingBytes || size > _maxConnectionPendingBytes - headerBytes) {
-        return false;
-      }
-      headerBytes += size;
-      return true;
-    };
-    const std::size_t globalHeadersSize =
-        _pGlobalHeaders == nullptr ? 0 : _pGlobalHeaders->fullStringWithLastSep().size();
-    if (!addHeaderBytes(response.headersFlatViewWithDate().size()) || !addHeaderBytes(globalHeadersSize) ||
-        !hasConnectionCapacity(headerBytes)) {
-      markOverflow();
-      return false;
-    }
-
     const ErrorCode err = _pConnection->sendHeaders(
-        _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), kEndStream, _pGlobalHeaders);
+        _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), kEndStream, &_globalHeaders);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send headers on stream {}: {}", _streamId, ErrorCodeName(err));
       return false;
     }
 
     // If the response carries a file payload, extract it for deferred sending.
-    if (auto* fp = response.filePayloadPtr(); fp != nullptr && !isHead) {
-      _pendingFile = true;
-      _filePayload = std::move(*fp);
+    if (!isHead) {
+      auto* fp = response.filePayloadPtr();
+      if (fp != nullptr) {
+        _pendingFile = true;
+        _filePayload = std::move(*fp);
+      }
     }
 
     return true;
@@ -240,7 +232,7 @@ class Http2WriterTransport final : public IWriterTransport {
   }
 
   Http2Connection* _pConnection;
-  const ConcatenatedHeaders* _pGlobalHeaders;
+  const ConcatenatedHeaders& _globalHeaders;
   const char* _pCachedDateHeader;
   std::size_t _existingDeferredBytes;
   uint32_t _maxConnectionPendingBytes;

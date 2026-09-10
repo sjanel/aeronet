@@ -51,6 +51,10 @@ void BrotliEncoderContext::init(int quality, int window) {
   assert(res == BROTLI_TRUE);
 }
 
+void BrotliEncoderContext::BrotliStateDeleter::operator()(BrotliEncoderState* ptr) const noexcept {
+  BrotliEncoderDestroyInstance(ptr);
+}
+
 EncoderResult BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
   assert(!data.empty());
 

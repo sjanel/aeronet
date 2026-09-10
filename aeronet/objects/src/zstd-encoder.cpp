@@ -62,6 +62,8 @@ void ZstdEncoderContext::init(int level, int windowLog) {
   _endDone = false;
 }
 
+void ZstdEncoderContext::ZstdCtxDeleter::operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
+
 namespace {
 
 inline EncoderResult ZstdConvertError(ZSTD_ErrorCode code) {
@@ -91,6 +93,8 @@ EncoderResult ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t
 std::size_t ZstdEncoderContext::minEncodeChunkCapacity([[maybe_unused]] std::size_t chunkSize) const {
   return ZSTD_CStreamOutSize();
 }
+
+std::size_t ZstdEncoderContext::endChunkSize() const { return ZSTD_CStreamOutSize(); }
 
 EncoderResult ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
   if (_endDone) {

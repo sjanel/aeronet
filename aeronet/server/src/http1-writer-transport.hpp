@@ -10,7 +10,6 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/decimal-writer.hpp"
-#include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -35,14 +34,14 @@ class Http1WriterTransport final : public IWriterTransport {
  public:
   Http1WriterTransport(SingleHttpServer& server, NativeHandle fd, bool requestConnClose, const CorsPolicy* pCorsPolicy,
                        std::span<const ResponseMiddleware> routeResponseMiddleware)
-      : _server(&server),
+      : _server(server),
         _fd(fd),
         _requestConnClose(requestConnClose),
         _pCorsPolicy(pCorsPolicy),
         _routeResponseMiddleware(routeResponseMiddleware) {}
 
-  bool emitHeaders(HttpResponse& response, const HttpRequestView& request, [[maybe_unused]] bool compressionActivated,
-                   [[maybe_unused]] Encoding compressionFormat, std::size_t declaredLength, bool isHead) override {
+  bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
+                   bool isHead) override {
     const bool chunked = !isHead && (declaredLength == 0) && !response.hasBodyFile();
 
     // Add Connection: close if requested
@@ -55,12 +54,14 @@ class Http1WriterTransport final : public IWriterTransport {
     // Transfer-Encoding or Content-Length header
     if (chunked) {
       const std::size_t needed = http::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
+
       response._data.ensureAvailableCapacity(needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
       _chunked = true;
     } else if (!response.hasBodyFile()) {
       const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
+
       response._data.ensureAvailableCapacity(needed);
       char declaredLenBuf[std::numeric_limits<decltype(declaredLength)>::digits10 + 1];
       std::string_view declaredLenStr(declaredLenBuf,
@@ -69,8 +70,8 @@ class Http1WriterTransport final : public IWriterTransport {
       _chunked = false;
     }
 
-    ApplyResponseMiddleware(request, response, _routeResponseMiddleware, _server->_router.globalResponseMiddleware(),
-                            _server->_telemetry, true, _server->_callbacks.middlewareMetrics);
+    ApplyResponseMiddleware(request, response, _routeResponseMiddleware, _server._router.globalResponseMiddleware(),
+                            _server._telemetry, true, _server._callbacks.middlewareMetrics);
 
     if (_pCorsPolicy != nullptr) {
       (void)_pCorsPolicy->applyToResponse(request, response);
@@ -81,10 +82,10 @@ class Http1WriterTransport final : public IWriterTransport {
     // buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a Content-Length: 0.
     response._opts.setStreamingBody();
 
-    auto cnxIt = _server->_connections.iterator(_fd);
-    _server->queueData(cnxIt, response.finalizeForHttp1(_server->_dateHeader.data(), http::HTTP_1_1, response._opts,
-                                                        nullptr, _server->config().minCapturedBodySize));
-    ConnectionState& cnx = _server->_connections.connectionState(cnxIt);
+    auto cnxIt = _server._connections.iterator(_fd);
+    _server.queueData(cnxIt, response.finalizeForHttp1(_server._dateHeader.data(), http::HTTP_1_1, response._opts,
+                                                       nullptr, _server.config().minCapturedBodySize));
+    ConnectionState& cnx = _server._connections.connectionState(cnxIt);
     if (cnx.isAnyCloseRequested()) {
       log::error("Http1WriterTransport: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
                  SystemErrorMessage(LastSystemError()));
@@ -151,20 +152,20 @@ class Http1WriterTransport final : public IWriterTransport {
 
  private:
   bool enqueue(HttpMessageData responseData) {
-    auto cnxIt = _server->_connections.iterator(_fd);
+    auto cnxIt = _server._connections.iterator(_fd);
 #ifdef AERONET_WINDOWS
-    if (cnxIt == _server->_connections.end()) {
+    if (cnxIt == _server._connections.end()) {
 #else
     if (!*cnxIt) {
 #endif
       return false;
     }
-    _server->queueData(cnxIt, std::move(responseData));
-    ConnectionState& state = _server->_connections.connectionState(cnxIt);
+    _server.queueData(cnxIt, std::move(responseData));
+    ConnectionState& state = _server._connections.connectionState(cnxIt);
     return !state.isAnyCloseRequested();
   }
 
-  SingleHttpServer* _server;
+  SingleHttpServer& _server;
   NativeHandle _fd;
   bool _requestConnClose;
   bool _connCloseEmitted{false};
