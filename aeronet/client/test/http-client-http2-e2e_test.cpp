@@ -33,11 +33,14 @@
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
+#include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -238,13 +241,13 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
 
   LoopbackHttp2Transport(const Http2Config& config, ResponseMode responseMode)
       : _server(config, /*isServer=*/true), _responseMode(responseMode) {
-    _server.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap&, bool) {
+    _serverSink.onHeadersDecodedFn = ([this](uint32_t streamId, const SvToSvMap&, bool) {
       if (!_responded) {
         _responded = true;
         respond(streamId);
       }
     });
-    _server.setOnStreamReset([this](uint32_t, http2::ErrorCode) { _sawReset = true; });
+    _serverSink.onStreamResetFn = ([this](uint32_t, http2::ErrorCode) { _sawReset = true; });
   }
 
   TransportResult read(char* buf, std::size_t len) {
@@ -326,6 +329,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
   }
 
   http2::Http2Connection _server;
+  http2::RecordingEventSink _serverSink{_server};
   ResponseMode _responseMode;
   RawChars _clientInput;
   std::size_t _bytesWritten{0};

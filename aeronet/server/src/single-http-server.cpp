@@ -689,7 +689,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       bool wantClose = request.wantClose();
 
       // Create the protocol-specific transport backend and the protocol-agnostic writer
-      internal::Http1WriterTransport transport(*this, cnxFd, wantClose, pCorsPolicy, responseMiddlewareRange);
+      Http1WriterTransport transport(*this, cnxFd, wantClose, pCorsPolicy, responseMiddlewareRange);
       HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
                                 _compressionState, _config.globalHeaders.fullStringWithLastSep(),
                                 _config.addTrailerHeader);
@@ -788,8 +788,8 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePe
   RawChars& decompressedBuffer =
       usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : _sharedBuffers.decompressedBody;
 
-  const auto res = internal::HttpCodec::MaybeDecompressRequestBody(_decompressionState, _config.decompression, request,
-                                                                   decompressedBuffer, _sharedBuffers.buf);
+  const auto res = HttpCodec::MaybeDecompressRequestBody(_decompressionState, _config.decompression, request,
+                                                         decompressedBuffer, _sharedBuffers.buf);
 
   if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, res.message);

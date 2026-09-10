@@ -40,6 +40,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/temp-file.hpp"

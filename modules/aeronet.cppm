@@ -301,11 +301,9 @@ namespace http2 {
 // Core types
 using aeronet::http2::ConnectionState;
 using aeronet::http2::CreateHttp2ProtocolHandler;
-using aeronet::http2::DataCallback;
 using aeronet::http2::Http2Connection;
 using aeronet::http2::Http2ProtocolHandler;
 using aeronet::http2::Http2Stream;
-using aeronet::http2::StreamEventCallback;
 
 // Enums
 using aeronet::http2::ErrorCode;

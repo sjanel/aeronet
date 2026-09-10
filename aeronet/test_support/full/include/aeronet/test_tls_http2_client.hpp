@@ -12,6 +12,7 @@
 
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/test_tls_client.hpp"
 
@@ -158,6 +159,7 @@ class TlsHttp2Client {
   uint16_t _port;
   TlsClient _tlsClient;
   std::unique_ptr<http2::Http2Connection> _http2Connection;
+  http2::RecordingEventSink _connectionSink;
   bool _connected{false};
   uint32_t _nextStreamId{1};  // Client streams are odd-numbered
 

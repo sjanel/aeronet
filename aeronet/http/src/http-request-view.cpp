@@ -197,7 +197,7 @@ bool HttpRequestView::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequ
   return !CaseInsensitiveEqual(connVal, http::close);
 }
 
-void HttpRequestView::init(const HttpServerConfig& config, internal::CompressionState& compressionState) {
+void HttpRequestView::init(const HttpServerConfig& config, CompressionState& compressionState) {
   _pGlobalHeaders = &config.globalHeaders;
   _addTrailerHeader = config.addTrailerHeader;
   _addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;
@@ -434,20 +434,19 @@ void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::T
   const Encoding encoding = responsePossibleEncoding();
 
   if (response.hasBodyInMemory() && encoding != Encoding::none) {
-    const internal::CompressResponseResult result =
-        internal::HttpCodec::TryCompressBody(*_pCompressionState, encoding, response);
+    const CompressResponseResult result = HttpCodec::TryCompressBody(*_pCompressionState, encoding, response);
 
     switch (result) {
-      case internal::CompressResponseResult::Uncompressed:
+      case CompressResponseResult::Uncompressed:
         break;
-      case internal::CompressResponseResult::Compressed:
+      case CompressResponseResult::Compressed:
         telemetryContext.counterAdd("aeronet.http_responses.compression.total", 1);
         break;
-      case internal::CompressResponseResult::ExceedsMaxRatio:
+      case CompressResponseResult::ExceedsMaxRatio:
         telemetryContext.counterAdd("aeronet.http_responses.compression.exceeds_max_ratio_total", 1);
         break;
       default:
-        assert(result == internal::CompressResponseResult::Error);
+        assert(result == CompressResponseResult::Error);
         telemetryContext.counterAdd("aeronet.http_responses.compression.errors_total", 1);
         break;
     }

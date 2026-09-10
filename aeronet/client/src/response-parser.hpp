@@ -12,9 +12,9 @@
 namespace aeronet {
 
 struct DecompressionConfig;
+struct DecompressionState;
 namespace internal {
 class ClientConnection;
-struct DecompressionState;
 }  // namespace internal
 
 // Incremental, allocation-light HTTP/1.x response parser that populates an HttpResponse.
@@ -50,7 +50,7 @@ class ResponseParser {
   // into `out` (with `tmp` as ping-pong scratch for stacked encodings) and the Content-Encoding header is
   // dropped. All pointers are borrowed and must outlive the parse() call(s).
   struct DecodeContext {
-    internal::DecompressionState* state{nullptr};
+    DecompressionState* state{nullptr};
     const DecompressionConfig* config{nullptr};
     RawChars* out{nullptr};
     RawChars* tmp{nullptr};

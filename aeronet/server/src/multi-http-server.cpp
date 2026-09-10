@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -45,8 +46,10 @@
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
+
 #endif
 
 namespace aeronet {

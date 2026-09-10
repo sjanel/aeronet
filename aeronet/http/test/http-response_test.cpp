@@ -61,7 +61,7 @@ class HttpResponseTest : public ::testing::Test {
   const RawChars kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
   CompressionConfig cfg;
-  internal::CompressionState compressionState{cfg};
+  CompressionState compressionState{cfg};
 
   struct PreparedOptions {
     bool head = false;

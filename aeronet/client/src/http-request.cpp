@@ -485,9 +485,9 @@ HttpRequest HttpRequest::clone() const {
     // Then, we need to decompress the compressed data in the copy and restore the encoder state to what it was before
     // finalizeInlineBody() was called
     std::string_view decoded;
-    const auto decodeRes = internal::HttpCodec::DecompressFullBody(
-        clientCodec.decompressionState, decompressionConfig, headerValueOrEmpty(http::ContentEncoding),
-        copy.bodyInMemory(), clientCodec.decompressOut, clientCodec.decompressTmp, decoded);
+    const auto decodeRes = HttpCodec::DecompressFullBody(clientCodec.decompressionState, decompressionConfig,
+                                                         headerValueOrEmpty(http::ContentEncoding), copy.bodyInMemory(),
+                                                         clientCodec.decompressOut, clientCodec.decompressTmp, decoded);
     if (decodeRes.status != http::StatusCodeOK) {
       // Should not happen, it would either be a logic bug in the HTTP client code or a bad allocation.
       throw std::runtime_error("Failed to decompress body during finalize() of HttpRequest");

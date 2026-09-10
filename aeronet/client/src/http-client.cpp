@@ -838,20 +838,19 @@ void HttpClient::maybeCompressBody(HttpRequest& req) {
     return;
   }
   if (IsEncodingEnabled(rc.encoding)) {
-    const internal::CompressResponseResult result =
-        internal::HttpCodec::TryCompressBody(_codec.compressionState, rc.encoding, req);
+    const CompressResponseResult result = HttpCodec::TryCompressBody(_codec.compressionState, rc.encoding, req);
 
     switch (result) {
-      case internal::CompressResponseResult::Uncompressed:
+      case CompressResponseResult::Uncompressed:
         break;
-      case internal::CompressResponseResult::Compressed:
+      case CompressResponseResult::Compressed:
         _telemetry.counterAdd("aeronet.http_requests.compression.total", 1);
         break;
-      case internal::CompressResponseResult::ExceedsMaxRatio:
+      case CompressResponseResult::ExceedsMaxRatio:
         _telemetry.counterAdd("aeronet.http_requests.compression.exceeds_max_ratio_total", 1);
         break;
       default:
-        assert(result == internal::CompressResponseResult::Error);
+        assert(result == CompressResponseResult::Error);
         _telemetry.counterAdd("aeronet.http_requests.compression.errors_total", 1);
         break;
     }

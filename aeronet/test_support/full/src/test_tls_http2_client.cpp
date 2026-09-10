@@ -58,8 +58,8 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
                      .trustedServerCertPem = {},
                      .serverName = {},
                  }),
-      _http2Connection(std::make_unique<http2::Http2Connection>(config, false))  // client side
-{
+      _http2Connection(std::make_unique<http2::Http2Connection>(config, false)),  // client side
+      _connectionSink(*_http2Connection) {
   if (!_tlsClient.handshakeOk()) {
     log::error("TLS handshake failed for HTTP/2 client");
     return;
@@ -71,7 +71,7 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
   }
 
   // Set up callbacks for response handling
-  _http2Connection->setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+  _connectionSink.onHeadersDecodedFn = [this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     auto& streamResp = _streamResponses[streamId];
     streamResp.headersReceived = true;
 
@@ -89,9 +89,9 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
     if (endStream) {
       streamResp.complete = true;
     }
-  });
+  };
 
-  _http2Connection->setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+  _connectionSink.onDataFn = ([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
     auto& streamResp = _streamResponses[streamId];
     streamResp.response.body.append(reinterpret_cast<const char*>(data.data()), data.size());
     if (endStream) {

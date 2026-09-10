@@ -66,10 +66,7 @@ class ServerLifecycleTracker;
 
 class HttpResponseWriter;
 class CorsPolicy;
-
-namespace internal {
 class Http1WriterTransport;
-}  // namespace internal
 
 // SingleHttpServer
 //  - Single-threaded event loop by design: one instance == one epoll/reactor running in the
@@ -433,8 +430,8 @@ class SingleHttpServer {
   void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
-  friend class HttpResponseWriter;              // allow streaming writer to access queueData and connection storage
-  friend class internal::Http1WriterTransport;  // HTTP/1.1 transport backend for streaming writer
+  friend class HttpResponseWriter;    // allow streaming writer to access queueData and connection storage
+  friend class Http1WriterTransport;  // HTTP/1.1 transport backend for streaming writer
   friend class MultiHttpServer;
   friend class H2TunnelBridge;  // allow tunnel bridge to access connection management internals
 
@@ -643,8 +640,8 @@ class SingleHttpServer {
 
   HttpServerConfig _config;
 
-  internal::CompressionState _compressionState;
-  internal::DecompressionState _decompressionState;
+  CompressionState _compressionState;
+  DecompressionState _decompressionState;
 
   Socket _listenSocket;
   TimerFd _maintenanceTimer;

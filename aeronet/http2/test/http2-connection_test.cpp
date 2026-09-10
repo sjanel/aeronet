@@ -23,6 +23,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
+#include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
@@ -210,6 +211,7 @@ constexpr auto kClosedStreamsMaxRetainedForTest = 16U;
 TEST(Http2Connection, InitialState) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   EXPECT_EQ(conn.state(), ConnectionState::AwaitingPreface);
   EXPECT_FALSE(conn.isOpen());
@@ -226,6 +228,7 @@ TEST(Http2Connection, InitialState) {
 TEST(Http2Connection, ProcessValidPreface) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   auto result = conn.processInput(preface);
@@ -238,6 +241,7 @@ TEST(Http2Connection, ProcessValidPreface) {
 TEST(Http2Connection, ProcessPartialPreface) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   // Only send half of the preface
@@ -251,6 +255,7 @@ TEST(Http2Connection, ProcessPartialPreface) {
 TEST(Http2Connection, ProcessInvalidPreface) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   std::array<std::byte, 24> invalidPreface{};  // All zeros
   auto result = conn.processInput(invalidPreface);
@@ -269,6 +274,7 @@ TEST(Http2Connection, ServerSendsSettingsAfterPreface) {
   config.initialWindowSize = 32768;
 
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
@@ -294,6 +300,7 @@ TEST(Http2Connection, ClientCanCreateStreamBeforeServerSettings) {
   // for the server's SETTINGS (the peer settings hold the RFC defaults until they arrive).
   Http2Config config;
   Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
 
   EXPECT_FALSE(client.canCreateStreams());  // preface not sent yet
   client.sendClientPreface();
@@ -314,6 +321,7 @@ TEST(Http2Connection, SequentialExchangesReleaseActiveStreamsOnBothSides) {
   Http2Config config;
   Http2Connection server(config, true);
   Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
 
   client.sendClientPreface();
   const auto pump = [&] {
@@ -364,6 +372,7 @@ TEST(Http2Connection, ServerCannotCreateStreamBeforeSettings) {
 TEST(Http2Connection, OnOutputWritten) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
@@ -578,10 +587,12 @@ TEST(Http2Connection, OversizedHeaderBlockPreservesEarlierBatchedFrames) {
   EXPECT_EQ(continuation.streamId, 3U);
   EXPECT_EQ(fragments[2].data() + fragments[2].size(), fragments[4].data());
 }
+
 TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   Http2Config config;
   Http2Connection server(config, true);
   Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
 
   // Complete minimal HTTP/2 preface + SETTINGS exchange.
   client.sendClientPreface();
@@ -627,7 +638,7 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   // Capture decoded response headers.
   SvToSvMap decoded;
   bool gotHeaders = false;
-  client.setOnHeadersDecoded([&](uint32_t /*streamId*/, const SvToSvMap& headers, bool /*endStream*/) {
+  clientSink.onHeadersDecodedFn = ([&](uint32_t /*streamId*/, const SvToSvMap& headers, bool /*endStream*/) {
     decoded = headers;
     gotHeaders = true;
   });
@@ -756,6 +767,7 @@ TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
 TEST(Http2Connection, GetStreamNotFound) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   EXPECT_EQ(conn.getStream(1), nullptr);
 }
@@ -763,12 +775,13 @@ TEST(Http2Connection, GetStreamNotFound) {
 TEST(Http2Connection, SendRstStreamClosesAndDecrementsActiveStreamCount) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   uint32_t closedCount = 0;
   uint32_t resetCount = 0;
-  conn.setOnStreamClosed([&closedCount](uint32_t) { ++closedCount; });
-  conn.setOnStreamReset([&resetCount](uint32_t, ErrorCode) { ++resetCount; });
+  connSink.onStreamClosedFn = ([&closedCount](uint32_t) { ++closedCount; });
+  connSink.onStreamResetFn = ([&resetCount](uint32_t, ErrorCode) { ++resetCount; });
 
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCode{}, HeadersView(std::string{}), false), ErrorCode::NoError);
   // Drain any output produced by sendHeaders so we can observe the RST_STREAM from WINDOW_UPDATE
@@ -787,12 +800,13 @@ TEST(Http2Connection, SendRstStreamClosesAndDecrementsActiveStreamCount) {
 TEST(Http2Connection, RecvRstStreamClosesAndDecrementsActiveStreamCount) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   uint32_t closedCount = 0;
   uint32_t resetCount = 0;
-  conn.setOnStreamClosed([&closedCount](uint32_t) { ++closedCount; });
-  conn.setOnStreamReset([&resetCount](uint32_t, ErrorCode) { ++resetCount; });
+  connSink.onStreamClosedFn = ([&closedCount](uint32_t) { ++closedCount; });
+  connSink.onStreamResetFn = ([&resetCount](uint32_t, ErrorCode) { ++resetCount; });
 
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView(std::string{}), false), ErrorCode::NoError);
   EXPECT_EQ(conn.activeStreamCount(), 1U);
@@ -822,12 +836,13 @@ TEST(Http2Connection, RecvRstStreamClosesAndDecrementsActiveStreamCount) {
 TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   uint32_t closedCount = 0;
   uint32_t resetCount = 0;
-  conn.setOnStreamClosed([&](uint32_t) { ++closedCount; });
-  conn.setOnStreamReset([&](uint32_t, ErrorCode) { ++resetCount; });
+  connSink.onStreamClosedFn = ([&](uint32_t) { ++closedCount; });
+  connSink.onStreamResetFn = ([&](uint32_t, ErrorCode) { ++resetCount; });
 
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView(std::string{}), false), ErrorCode::NoError);
   EXPECT_EQ(conn.activeStreamCount(), 1U);
@@ -871,6 +886,7 @@ TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
 TEST(Http2Connection, ClosedStreamsArePrunedFromMapAfterRetentionLimit) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Close more streams than the retention FIFO keeps.
@@ -899,6 +915,7 @@ TEST(Http2Connection, ClosedStreamsArePrunedFromMapAfterRetentionLimit) {
 TEST(Http2Connection, InitiateGoAway) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   // First establish connection
   auto preface = MakePreface();
@@ -923,6 +940,7 @@ TEST(Http2Connection, InitiateGoAway) {
 TEST(Http2Connection, DoubleGoAwayIgnored) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
@@ -951,6 +969,7 @@ TEST(Http2Connection, LocalSettings) {
   config.maxFrameSize = 32768;
 
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   const auto& localSettings = conn.localSettings();
   EXPECT_EQ(localSettings.maxConcurrentStreams, 200U);
@@ -961,6 +980,7 @@ TEST(Http2Connection, LocalSettings) {
 TEST(Http2Connection, DefaultPeerSettings) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   const auto& peerSettings = conn.peerSettings();
   EXPECT_EQ(peerSettings.headerTableSize, 4096U);
@@ -979,6 +999,7 @@ TEST(Http2Connection, ConnectionFlowControl) {
   config.connectionWindowSize = 1048576;  // 1MB
 
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   // Initial send window is the RFC default (65535)
   EXPECT_EQ(conn.connectionSendWindow(), 65535);
@@ -994,6 +1015,7 @@ TEST(Http2Connection, ConnectionFlowControl) {
 TEST(Http2Connection, SetCallbacks) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   bool headersCalled = false;
   bool dataCalled = false;
@@ -1001,11 +1023,11 @@ TEST(Http2Connection, SetCallbacks) {
   bool closedCalled = false;
   bool goawayCalled = false;
 
-  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
-  conn.setOnData([&](uint32_t, std::span<const std::byte>, bool) { dataCalled = true; });
-  conn.setOnStreamReset([&](uint32_t, ErrorCode) { resetCalled = true; });
-  conn.setOnStreamClosed([&](uint32_t) { closedCalled = true; });
-  conn.setOnGoAway([&](uint32_t, ErrorCode, std::string_view) { goawayCalled = true; });
+  connSink.onHeadersDecodedFn = ([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+  connSink.onDataFn = ([&](uint32_t, std::span<const std::byte>, bool) { dataCalled = true; });
+  connSink.onStreamResetFn = ([&](uint32_t, ErrorCode) { resetCalled = true; });
+  connSink.onStreamClosedFn = ([&](uint32_t) { closedCalled = true; });
+  connSink.onGoAwayFn = ([&](uint32_t, ErrorCode, std::string_view) { goawayCalled = true; });
 
   // Callbacks are set but not called yet
   EXPECT_FALSE(headersCalled);
@@ -1022,6 +1044,7 @@ TEST(Http2Connection, SetCallbacks) {
 TEST(Http2Connection, SendPing) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   // First establish connection
   auto preface = MakePreface();
@@ -1057,6 +1080,7 @@ TEST(Http2Connection, SendPing) {
 TEST(Http2Connection, SendWindowUpdate) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
@@ -1076,6 +1100,7 @@ TEST(Http2Connection, SendWindowUpdate) {
 TEST(Http2Connection, SendRstStream) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto preface = MakePreface();
   (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
@@ -1101,6 +1126,7 @@ TEST(Http2Connection, SendRstStream) {
 TEST(Http2Connection, ProcessEmptyInput) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   auto result = conn.processInput(std::span<const std::byte>{});
 
@@ -1115,6 +1141,7 @@ TEST(Http2Connection, ProcessEmptyInput) {
 TEST(Http2Connection, SettingsFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   FrameHeader header;
@@ -1148,6 +1175,7 @@ TEST(Http2Connection, SettingsFrameInvalidLengthIsFrameSizeError) {
   // Les entrées SETTINGS font 6 octets chacune ; 5 octets est invalide.
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array payload{std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x10}};
@@ -1168,6 +1196,7 @@ TEST(Http2Connection, SettingsFrameInvalidLengthIsFrameSizeError) {
 TEST(Http2Connection, SettingsFrameInvalidEnablePushIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // ENABLE_PUSH must be 0 or 1.
@@ -1191,6 +1220,7 @@ TEST(Http2Connection, SettingsFrameInvalidEnablePushIsProtocolError) {
 TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // MAX_FRAME_SIZE must be in [16384, 16777215]. Provide 16383.
@@ -1214,6 +1244,7 @@ TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
 TEST(Http2Connection, SettingsInitialWindowSizeTooLargeIsFlowControlError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // SETTINGS_INITIAL_WINDOW_SIZE (0x04) with value 0x80000000 (> 0x7FFFFFFF)
@@ -1251,6 +1282,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooLargeIsFlowControlError) {
 TEST(Http2Connection, UnknownSettingsParameterIsIgnored) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // Use an unknown SETTINGS parameter ID (0xFFFF) with an arbitrary value=1
@@ -1293,6 +1325,7 @@ TEST(Http2Connection, UnknownSettingsParameterIsIgnored) {
 TEST(Http2Connection, SettingsFrameEmptyAckIsAcceptedAndNoResponseSent) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   FrameHeader header{};
@@ -1313,6 +1346,7 @@ TEST(Http2Connection, SettingsAckFrameWithPayloadIsFrameSizeError) {
   // Un ACK doit avoir un payload vide (RFC 9113 §6.5).
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array payload{
@@ -1337,6 +1371,7 @@ TEST(Http2Connection, SettingsFrameWithEntriesAppliesSettingsAndSendsAck) {
   // 3 entrées, on vérifie l'acceptation et l'ACK renvoyé.
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array<std::byte, 18> payload = {
@@ -1372,6 +1407,7 @@ TEST(Http2Connection, SettingsFrameWithEntriesAppliesSettingsAndSendsAck) {
 TEST(Http2Connection, SettingsFrameInitialWindowSizeTooLargeIsFlowControlError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array payload{std::byte{0x00}, std::byte{0x04}, std::byte{0x80},
@@ -1393,6 +1429,7 @@ TEST(Http2Connection, SettingsFrameInitialWindowSizeTooLargeIsFlowControlError) 
 TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   constexpr std::array payload{
@@ -1413,6 +1450,7 @@ TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
 TEST(Http2Connection, PingFrameInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   constexpr std::array payload{
@@ -1433,6 +1471,7 @@ TEST(Http2Connection, PingFrameInvalidLengthIsFrameSizeError) {
 TEST(Http2Connection, PingAckFrameIsAcceptedAndNoResponseSent) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array payload{
@@ -1457,6 +1496,7 @@ TEST(Http2Connection, PingAckFrameIsAcceptedAndNoResponseSent) {
 TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   const std::byte payload[]{
@@ -1477,6 +1517,7 @@ TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
 TEST(Http2Connection, GoAwayFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // Minimal valid GOAWAY payload is 8 bytes (last-stream-id + error-code) optionally with debug data
@@ -1498,6 +1539,7 @@ TEST(Http2Connection, GoAwayFrameOnNonZeroStreamIsProtocolError) {
 TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array<std::byte, 3> payload = {std::byte{0}, std::byte{0}, std::byte{1}};
@@ -1516,6 +1558,7 @@ TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
 TEST(Http2Connection, WindowUpdateConnectionOverflowIsFlowControlError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // WINDOW_UPDATE payload is 4 bytes. Use increment 0x7FFFFFFF to cause newWindow > 0x7FFFFFFF
@@ -1561,6 +1604,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
   config.connectionWindowSize = 1048576;  // large connection window to allow sending
 
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream by sending headers
@@ -1609,6 +1653,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeTooSmallCausesStreamOverflow) {
 TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream
@@ -1671,6 +1716,7 @@ TEST(Http2Connection, SettingsInitialWindowSizeStreamWindowOverflow) {
 TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
@@ -1700,6 +1746,7 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
 TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream
@@ -1762,6 +1809,7 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
 TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array<std::byte, 1> payload = {std::byte{0x00}};
@@ -1790,6 +1838,7 @@ void WriteContinuationFrame(RawBytes& buffer, uint32_t streamId, std::span<const
 TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream by sending a HEADERS frame WITH endHeaders=false so CONTINUATION is expected.
@@ -1847,6 +1896,7 @@ TEST(Http2Connection, ContinuationForPrunedStreamIsInternalError) {
 TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
@@ -1869,6 +1919,7 @@ TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {
 TEST(Http2Connection, UnknownFrameTypeIsIgnored) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Frame type 0xFE is unknown and should be silently ignored per RFC 9113 §4.1
@@ -1892,6 +1943,7 @@ TEST(Http2Connection, UnknownFrameTypeIsIgnored) {
 TEST(Http2Connection, DataFrameWithInvalidPaddingIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream first
@@ -1920,10 +1972,11 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
   // Use a small connection window to make the test feasible.
   config.connectionWindowSize = 100;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Disable the onData callback to prevent automatic WINDOW_UPDATE
-  conn.setOnData(nullptr);
+  connSink.onDataFn = (nullptr);
 
   // Create a stream
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
@@ -1951,8 +2004,9 @@ TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
   config.connectionWindowSize = 100000;
   config.maxFrameSize = 40000;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
-  conn.setOnData([](uint32_t, std::span<const std::byte>, bool) {});
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
 
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
   (void)DrainPendingOutput(conn);
@@ -2003,8 +2057,9 @@ TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
   Http2Config config;
   config.connectionWindowSize = 1U << 20U;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
-  conn.setOnData([](uint32_t, std::span<const std::byte>, bool) {});
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
 
   static constexpr uint32_t kPeerInitialWindow = 1U << 30U;
   RawBytes settings;
@@ -2050,6 +2105,7 @@ TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
 TEST(Http2Connection, DataFrameOnResetStreamIsIgnored) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create stream and close it via RST_STREAM
@@ -2087,6 +2143,7 @@ TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
   config.connectionWindowSize = 1U << 20U;  // Large connection window (1MB)
   config.maxFrameSize = 100000;             // Allow frames up to 100KB
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream (default stream recv window = _peerSettings.initialWindowSize = 65535)
@@ -2117,6 +2174,7 @@ TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
 TEST(Http2Connection, DataFrameOnHalfClosedRemoteIsStreamError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Have client send HEADERS with END_STREAM for stream 1 → HalfClosedRemote on server
@@ -2165,6 +2223,7 @@ TEST(Http2Connection, DataFrameOnHalfClosedRemoteIsStreamError) {
 TEST(Http2Connection, HeadersFrameWithInvalidPaddingIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Build a HEADERS frame with PADDED flag where pad length exceeds payload.
@@ -2311,6 +2370,7 @@ TEST(Http2Connection, HeadersMaxConcurrentStreamsExceededIsProtocolError) {
 TEST(Http2Connection, HeadersStreamDependsOnItselfIsStreamError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Build a HEADERS frame with PRIORITY flag where streamDependency == streamId
@@ -2334,6 +2394,7 @@ TEST(Http2Connection, HeadersBlockTooLargeIsEnhanceYourCalm) {
   Http2Config config;
   config.maxFrameSize = 300000;  // Allow large frames to pass frame-size check
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Build a HEADERS frame without END_HEADERS so the header block is accumulated.
@@ -2355,10 +2416,11 @@ TEST(Http2Connection, DecodedHeaderListOverLocalLimitResetsStream) {
   Http2Config config;
   config.maxHeaderListSize = 200;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   bool headersCalled = false;
-  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+  connSink.onHeadersDecodedFn = ([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
 
   HpackEncoder encoder(config.headerTableSize);
   RawBytes headerBlock;
@@ -2386,6 +2448,7 @@ TEST(Http2Connection, DecodedHeaderListOverLocalLimitResetsStream) {
 TEST(Http2Connection, HeadersHpackDecodingFailedIsCompressionError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create invalid HPACK data — a dynamic table reference with index beyond what exists
@@ -2406,10 +2469,11 @@ TEST(Http2Connection, HeadersHpackDecodingFailedIsCompressionError) {
 TEST(Http2Connection, MalformedFieldSectionResetsStreamWithoutClosingConnection) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   bool headersCalled = false;
-  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+  connSink.onHeadersDecodedFn = ([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
 
   HpackEncoder encoder(config.headerTableSize);
   RawBytes headerBlock;
@@ -2439,10 +2503,11 @@ TEST(Http2Connection, MalformedFieldSectionResetsStreamWithoutClosingConnection)
 TEST(Http2Connection, MalformedContinuationFieldSectionResetsStreamWithoutClosingConnection) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   bool headersCalled = false;
-  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+  connSink.onHeadersDecodedFn = ([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
 
   HpackEncoder encoder(config.headerTableSize);
   RawBytes headerBlock;
@@ -2480,6 +2545,7 @@ TEST(Http2Connection, MalformedContinuationFieldSectionResetsStreamWithoutClosin
 TEST(Http2Connection, PriorityFrameOnStreamZeroIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   RawBytes buf;
@@ -2495,6 +2561,7 @@ TEST(Http2Connection, PriorityFrameOnStreamZeroIsProtocolError) {
 TEST(Http2Connection, PriorityFrameInvalidSizeIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // PRIORITY frame must be exactly 5 bytes. Send 3 bytes.
@@ -2514,6 +2581,7 @@ TEST(Http2Connection, PriorityFrameInvalidSizeIsFrameSizeError) {
 TEST(Http2Connection, PriorityFrameSelfDependencyIsStreamError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream first
@@ -2540,6 +2608,7 @@ TEST(Http2Connection, PriorityFrameSelfDependencyIsStreamError) {
 TEST(Http2Connection, PriorityFrameFloodOnIdleStreamsIsEnhanceYourCalm) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Send > 10000 PRIORITY frames on non-existent (idle) streams
@@ -2570,6 +2639,7 @@ TEST(Http2Connection, PriorityChainWithinDepthLimitIsNotClamped) {
   Http2Config config;
   config.maxPriorityTreeDepth = 3;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   for (uint32_t streamId : {1U, 3U, 5U, 7U}) {
@@ -2601,6 +2671,7 @@ TEST(Http2Connection, PriorityChainExceedingDepthLimitIsClampedToRoot) {
   Http2Config config;
   config.maxPriorityTreeDepth = 3;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   for (uint32_t streamId : {1U, 3U, 5U, 7U, 9U}) {
@@ -2633,6 +2704,7 @@ TEST(Http2Connection, PriorityViaHeadersFrameExceedingDepthLimitIsClampedToRoot)
   Http2Config config;
   config.maxPriorityTreeDepth = 1;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Both ancestor streams must actually exist as real (HEADERS-created) streams.
@@ -2672,6 +2744,7 @@ TEST(Http2Connection, PriorityDependencyCycleTerminatesAndClampsInsteadOfLooping
   Http2Config config;
   config.maxPriorityTreeDepth = 5;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   for (uint32_t streamId : {1U, 3U, 5U}) {
@@ -2710,6 +2783,7 @@ TEST(Http2Connection, PriorityDependencyCycleTerminatesAndClampsInsteadOfLooping
 TEST(Http2Connection, RstStreamFrameInvalidSizeIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // RST_STREAM payload must be exactly 4 bytes. Send 3 bytes.
@@ -2733,6 +2807,7 @@ TEST(Http2Connection, RstStreamFrameInvalidSizeIsFrameSizeError) {
 TEST(Http2Connection, SettingsMaxFrameSizeTooLargeIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // MAX_FRAME_SIZE must be <= 16777215. Provide 16777216 (0x01000000).
@@ -2761,6 +2836,7 @@ TEST(Http2Connection, ContinuationHeaderBlockTooLargeIsEnhanceYourCalm) {
   Http2Config config;
   config.maxFrameSize = 300000;  // Allow large frames to pass frame-size check
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Send HEADERS without END_HEADERS with a small fragment
@@ -2792,10 +2868,11 @@ TEST(Http2Connection, ContinuationDecodedHeaderListOverLocalLimitResetsStream) {
   Http2Config config;
   config.maxHeaderListSize = 200;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   bool headersCalled = false;
-  conn.setOnHeadersDecoded([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
+  connSink.onHeadersDecodedFn = ([&](uint32_t, const SvToSvMap&, bool) { headersCalled = true; });
 
   HpackEncoder encoder(config.headerTableSize);
   RawBytes headerBlock;
@@ -2837,6 +2914,7 @@ TEST(Http2Connection, ContinuationDecodedHeaderListOverLocalLimitResetsStream) {
 TEST(Http2Connection, ContinuationHpackDecodeFailedIsCompressionError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Send HEADERS without END_HEADERS with a small valid-looking fragment
@@ -2873,6 +2951,7 @@ TEST(Http2Connection, ContinuationHpackDecodeFailedIsCompressionError) {
 TEST(Http2Connection, SendDataConnectionWindowRestoresStreamWindowOnOverflow) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream
@@ -2907,6 +2986,7 @@ TEST(Http2Connection, SendDataConnectionWindowRestoresStreamWindowOnOverflow) {
 TEST(Http2Connection, ProcessInputInGoAwaySentState) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Initiate GOAWAY
@@ -2939,6 +3019,7 @@ TEST(Http2Connection, ProcessInputInGoAwaySentState) {
 TEST(Http2Connection, SendServerPrefaceDoesNothingIfAlreadySent) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
 
   // First call sends SETTINGS
   conn.sendServerPreface();
@@ -2986,6 +3067,7 @@ TEST(Http2Connection, SendClientPrefaceDoesNothingForServer) {
 TEST(Http2Connection, ProcessInputInClosedStateReturnsClosed) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Force connection to closed state via a connection error
@@ -3016,6 +3098,7 @@ TEST(Http2Connection, ProcessInputInClosedStateReturnsClosed) {
 TEST(Http2Connection, SendHeadersOnHalfClosedLocalReturnsStreamClosed) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Send HEADERS with END_STREAM → stream 1 goes Idle → HalfClosedLocal
@@ -3035,6 +3118,7 @@ TEST(Http2Connection, SendHeadersOnHalfClosedLocalReturnsStreamClosed) {
 TEST(Http2Connection, HeadersOnHalfClosedRemoteStreamIsStreamError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   HpackEncoder encoder(4096);
@@ -3094,6 +3178,7 @@ TEST(Http2Connection, HeadersOnHalfClosedRemoteStreamIsStreamError) {
 TEST(Http2Connection, DataFrameWithPaddedFlagButEmptyPayloadIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // First create stream 1 with a valid HEADERS frame
@@ -3133,6 +3218,7 @@ TEST(Http2Connection, DataFrameWithPaddedFlagButEmptyPayloadIsFrameSizeError) {
 TEST(Http2Connection, HeadersFrameWithPaddedFlagButEmptyPayloadIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Send HEADERS frame with PADDED flag but zero-length payload → FrameSizeError from ParseHeadersFrame
@@ -3155,6 +3241,7 @@ TEST(Http2Connection, HeadersFrameWithPaddedFlagButEmptyPayloadIsFrameSizeError)
 TEST(Http2Connection, ContinuationOnHalfClosedRemoteStreamIsStreamError) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Step 1: Client sends HEADERS on stream 1 with END_HEADERS + END_STREAM → HalfClosedRemote
@@ -3213,6 +3300,7 @@ TEST(Http2Connection, ContinuationOnHalfClosedRemoteStreamIsStreamError) {
 TEST(Http2Connection, ContinuationCompletionWithEndStreamClosesStream) {
   Http2Config config;
   Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Step 1: Client sends HEADERS on stream 1 with END_HEADERS (no END_STREAM) → Open

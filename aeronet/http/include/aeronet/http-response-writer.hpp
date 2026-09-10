@@ -19,11 +19,8 @@ namespace aeronet {
 class HttpRequestView;
 class CorsPolicy;
 struct CompressionConfig;
-
-namespace internal {
 class IWriterTransport;
 struct CompressionState;
-}  // namespace internal
 
 // HttpResponseWriter
 //  - Used to stream HTTP responses in a backpressure-aware manner.
@@ -204,8 +201,8 @@ class HttpResponseWriter {
   /// @param compressionState   Shared compression state (encoder pool).
   /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
   /// @param addTrailerHeader   Whether to auto-add the Trailer header.
-  HttpResponseWriter(internal::IWriterTransport& transport, const HttpRequestView& request, Encoding encoding,
-                     const CompressionConfig& compressionConfig, internal::CompressionState& compressionState,
+  HttpResponseWriter(IWriterTransport& transport, const HttpRequestView& request, Encoding encoding,
+                     const CompressionConfig& compressionConfig, CompressionState& compressionState,
                      std::string_view globalHeadersStr, bool addTrailerHeader);
 
   void ensureHeadersSent();
@@ -215,7 +212,7 @@ class HttpResponseWriter {
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
 
-  internal::IWriterTransport* _transport;
+  IWriterTransport* _transport;
   const HttpRequestView* _request;
   bool _head;
   State _state{State::Opened};
@@ -237,7 +234,7 @@ class HttpResponseWriter {
   RawChars _compressedBuffer;                    // reusable output buffer for compression (never freed between chunks)
   RawChars _trailers;                            // Trailer headers buffered until end()
   const CompressionConfig* _pCompressionConfig;  // compression thresholds, etc.
-  internal::CompressionState* _pCompressionState;  // encoder pool
+  CompressionState* _pCompressionState;          // encoder pool
 };
 
 }  // namespace aeronet

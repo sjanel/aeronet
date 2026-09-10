@@ -797,7 +797,7 @@ void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value)
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 
-HttpMessage::Options::Options(internal::CompressionState& compressionState, Encoding expectedEncoding)
+HttpMessage::Options::Options(CompressionState& compressionState, Encoding expectedEncoding)
     : _pCompressionState(&compressionState),
       _pickedEncoding(expectedEncoding),
       _directCompressionMode(compressionState.pCompressionConfig->defaultDirectCompressionMode) {}
