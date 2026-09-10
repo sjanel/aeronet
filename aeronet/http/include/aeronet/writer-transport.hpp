@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <string_view>
 
-#include "aeronet/encoding.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -31,13 +30,11 @@ class IWriterTransport {
   /// @param response  The HttpResponse containing accumulated headers/status.
   ///                  The transport may mutate it (e.g. add protocol-specific headers).
   /// @param request   The originating request (needed for middleware / CORS).
-  /// @param compressionActivated  Whether streaming compression was activated.
-  /// @param compressionFormat     The negotiated compression encoding.
   /// @param declaredLength  The declared Content-Length (0 = chunked/unknown).
   /// @param isHead    Whether the request is a HEAD request.
   /// @return true on success, false if the connection/stream is dead.
-  virtual bool emitHeaders(HttpResponse& response, const HttpRequestView& request, bool compressionActivated,
-                           Encoding compressionFormat, std::size_t declaredLength, bool isHead) = 0;
+  virtual bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
+                           bool isHead) = 0;
 
   /// Emit a body data chunk.
   /// The transport applies the appropriate framing (HTTP/1.1 chunked encoding, HTTP/2 DATA frames).

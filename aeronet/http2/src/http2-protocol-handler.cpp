@@ -735,12 +735,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     return;
   }
 
-  const ConcatenatedHeaders* pGlobalHeaders =
-      _pServerConfig->globalHeaders.empty() ? nullptr : &_pServerConfig->globalHeaders;
-
   // Create H2 transport and writer
-  Http2WriterTransport transport(_connection, streamId, pGlobalHeaders, _pCachedDateHeader, _deferredOutputBytes,
-                                 _pServerConfig->maxOutboundBufferBytes,
+  Http2WriterTransport transport(_connection, streamId, _pServerConfig->globalHeaders, _pCachedDateHeader,
+                                 _deferredOutputBytes, _pServerConfig->maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
 
   // Negotiate compression has been done in onHeadersDecoded.

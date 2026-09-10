@@ -9,16 +9,14 @@
 
 namespace aeronet {
 
-/// Pure-virtual interface for CONNECT tunnel integration between the HTTP/2
-/// protocol handler and the server's event loop / connection manager.
+/// Pure-virtual interface for CONNECT tunnel integration between the HTTP/2 protocol handler and the server's event
+/// loop / connection manager.
 ///
-/// The server implements a concrete bridge (e.g. H2TunnelBridge inside
-/// SingleHttpServer) and hands a non-owning pointer to the HTTP/2 handler.
-/// This breaks the circular dependency: aeronet_http2 depends only on this
-/// interface in aeronet_objects, while the main server module provides the
-/// implementation.
+/// The server implements a concrete bridge (e.g. H2TunnelBridge inside SingleHttpServer) and hands a non-owning pointer
+/// to the HTTP/2 handler. This breaks the circular dependency: aeronet_http2 depends only on this interface in
+/// aeronet_objects, while the main server module provides the implementation.
 ///
-/// Thread safety: NOT thread-safe — called on the single-threaded event loop.
+/// Thread safety: NOT thread-safe - called on the single-threaded event loop.
 class ITunnelBridge {
  public:
   virtual ~ITunnelBridge() = default;
