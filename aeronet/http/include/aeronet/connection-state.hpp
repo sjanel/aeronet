@@ -42,7 +42,7 @@ class TlsContext;
 
 struct ConnectionState {
   void initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
-                                    internal::CompressionState& compressionState);
+                                    CompressionState& compressionState);
 
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }

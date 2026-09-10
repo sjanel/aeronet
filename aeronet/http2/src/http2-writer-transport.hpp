@@ -30,7 +30,7 @@ namespace aeronet::http2 {
 /// After the streaming handler returns, the caller must check hasPendingData()
 /// and transfer any remaining buffer/trailers/file into the protocol handler's
 /// pending-send maps for deferred flushing.
-class Http2WriterTransport final : public internal::IWriterTransport {
+class Http2WriterTransport final : public IWriterTransport {
  public:
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders* pGlobalHeaders,
                        const char* cachedDateHeader, std::size_t existingDeferredBytes,

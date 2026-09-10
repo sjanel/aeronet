@@ -225,8 +225,8 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
     const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
     if (!contentEncoding.empty()) {
       std::string_view decoded;
-      const auto res = internal::HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
-                                                               *_decode.out, *_decode.tmp, decoded);
+      const auto res = HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
+                                                     *_decode.out, *_decode.tmp, decoded);
       if (res.status != http::StatusCodeOK) {
         return Status::Error;
       }

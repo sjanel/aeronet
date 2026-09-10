@@ -34,6 +34,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"
@@ -194,7 +195,7 @@ class Http2ProtocolLoopback {
     static constexpr std::array<std::string_view, 1> kConnectAllowlist = {"example.com"};
     serverConfig.withConnectAllowlist(kConnectAllowlist.begin(), kConnectAllowlist.end());
 
-    client.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+    clientSink.onHeadersDecodedFn = ([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -204,7 +205,7 @@ class Http2ProtocolLoopback {
       clientHeaders.push_back(std::move(ev));
     });
 
-    client.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+    clientSink.onDataFn = ([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
       DataEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -212,8 +213,8 @@ class Http2ProtocolLoopback {
       clientData.push_back(std::move(ev));
     });
 
-    client.setOnStreamReset(
-        [this](uint32_t streamId, ErrorCode errorCode) { streamResets.emplace_back(streamId, errorCode); });
+    clientSink.onStreamResetFn =
+        ([this](uint32_t streamId, ErrorCode errorCode) { streamResets.emplace_back(streamId, errorCode); });
   }
 
   void connect() {
@@ -298,11 +299,12 @@ class Http2ProtocolLoopback {
   Http2Config clientCfg;
 
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState;
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState;
+  DecompressionState decompressionState;
 
   Http2ProtocolHandler handler;
   Http2Connection client;
+  RecordingEventSink clientSink{client};
   ::aeronet::ConnectionState state;
 
   vector<HeaderEvent> clientHeaders;
@@ -318,8 +320,8 @@ TEST(Http2ProtocolHandler, Creation) {
   bool handlerCalled = false;
 
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
 
   router.setDefault([&handlerCalled](const HttpRequestView& /*req*/) {
     handlerCalled = true;
@@ -338,8 +340,8 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   Http2Config config;
   Router router;
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
                                             telemetry, tmpBuffer, false, kCachedDate, {});
 
@@ -459,8 +461,8 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   Http2Config config;
   Router router;
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
                                             telemetry, tmpBuffer, false, kCachedDate, {});
 
@@ -473,12 +475,12 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   config.initialWindowSize = 32768;
 
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
+  CompressionState compressionState(serverConfig.compression);
 
   Router router;
   router.setDefault([](const HttpRequestView& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
-  internal::DecompressionState decompressionState;
+  DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
                                             telemetry, tmpBuffer, false, kCachedDate, {});
 
@@ -492,9 +494,9 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
+  CompressionState compressionState(serverConfig.compression);
 
-  internal::DecompressionState decompressionState;
+  DecompressionState decompressionState;
   auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
                                                 telemetry, tmpBuffer, true, kCachedDate, {});
   auto* pHandler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
@@ -512,8 +514,8 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
   Http2Config config;
   Router router;
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
   Http2ProtocolHandler handler(config, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer,
                                kCachedDate, {});
   ::aeronet::ConnectionState st;
@@ -533,8 +535,8 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2Config config;
   Router router;
   HttpServerConfig serverConfig;
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
   Http2ProtocolHandler original(config, router, serverConfig, compressionState, decompressionState, telemetry,
                                 tmpBuffer, kCachedDate, {});
 
@@ -2288,16 +2290,17 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   // Configure server with NO supported encodings
   serverConfig.compression.preferredFormats.clear();
 
-  internal::CompressionState compressionState(serverConfig.compression);
-  internal::DecompressionState decompressionState;
+  CompressionState compressionState(serverConfig.compression);
+  DecompressionState decompressionState;
 
   Http2ProtocolHandler handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry,
                                tmpBuffer, kCachedDate, {});
   Http2Connection client(clientCfg, false);
+  RecordingEventSink clientSink(client);
   ::aeronet::ConnectionState state;
 
   vector<HeaderEvent> clientHeaders;
-  client.setOnHeadersDecoded([&clientHeaders](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+  clientSink.onHeadersDecodedFn = ([&clientHeaders](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
     HeaderEvent ev;
     ev.streamId = streamId;
     ev.endStream = endStream;
@@ -4716,6 +4719,7 @@ TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
   Http2Config clientCfg;
   Http2Connection server(serverCfg, true);
   Http2Connection client(clientCfg, false);
+  RecordingEventSink clientSink(client);
 
   // Establish connection
   client.sendClientPreface();

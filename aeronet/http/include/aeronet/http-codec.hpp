@@ -32,7 +32,7 @@
 #include "aeronet/zstd-encoder.hpp"
 #endif
 
-namespace aeronet::internal {
+namespace aeronet {
 
 // All decoders / encoders use custom allocators (BufferCache or ObjectArrayPool) to reuse memory across sessions.
 
@@ -127,4 +127,4 @@ class HttpCodec {
                                                        RawChars& tmpBuffer, std::string_view& outDecompressed);
 };
 
-}  // namespace aeronet::internal
+}  // namespace aeronet
