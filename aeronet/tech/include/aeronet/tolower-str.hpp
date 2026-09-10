@@ -124,10 +124,6 @@ constexpr void tolower_n(const char* from, std::size_t len, char* AERONET_RESTRI
   }
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-
 #ifdef AERONET_HAS_ASCII_LOWER_MASK4
 #undef AERONET_HAS_ASCII_LOWER_MASK4
 #endif

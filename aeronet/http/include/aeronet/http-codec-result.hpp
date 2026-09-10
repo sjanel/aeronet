@@ -4,7 +4,7 @@
 
 #include "aeronet/http-status-code.hpp"
 
-namespace aeronet::internal {
+namespace aeronet {
 
 struct RequestDecompressionResult {
   http::StatusCode status{http::StatusCodeOK};
@@ -16,7 +16,7 @@ enum class CompressResponseResult : std::uint8_t {
   Compressed,       // response was compressed and modified in-place
   ExceedsMaxRatio,  // response was compressed but did not meet the compression ratio requirement in config - response
                     // is left unmodified
-  Error             // compression was attempted but failed (e.g. encoder error)
+  Error,            // compression was attempted but failed (e.g. encoder error)
 };
 
-}  // namespace aeronet::internal
+}  // namespace aeronet

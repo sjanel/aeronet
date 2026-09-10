@@ -34,6 +34,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
+#include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -178,7 +179,7 @@ class Http2Loopback {
         _serverCfg(std::move(serverCfg)),
         client(_clientCfg, false),
         server(_serverCfg, true) {
-    client.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+    clientSink.onHeadersDecodedFn = ([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -188,7 +189,7 @@ class Http2Loopback {
       clientHeaders.push_back(std::move(ev));
     });
 
-    server.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+    serverSink.onHeadersDecodedFn = ([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
       HeaderEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -198,7 +199,7 @@ class Http2Loopback {
       serverHeaders.push_back(std::move(ev));
     });
 
-    client.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+    clientSink.onDataFn = ([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
       DataEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -206,7 +207,7 @@ class Http2Loopback {
       clientData.push_back(std::move(ev));
     });
 
-    server.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+    serverSink.onDataFn = ([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
       DataEvent ev;
       ev.streamId = streamId;
       ev.endStream = endStream;
@@ -214,7 +215,7 @@ class Http2Loopback {
       serverData.push_back(std::move(ev));
     });
 
-    client.setOnGoAway([this](uint32_t lastStreamId, ErrorCode code, std::string_view debugData) {
+    clientSink.onGoAwayFn = ([this](uint32_t lastStreamId, ErrorCode code, std::string_view debugData) {
       GoAwayEvent ev;
       ev.lastStreamId = lastStreamId;
       ev.errorCode = code;
@@ -222,7 +223,7 @@ class Http2Loopback {
       clientGoAway.push_back(std::move(ev));
     });
 
-    server.setOnGoAway([this](uint32_t lastStreamId, ErrorCode code, std::string_view debugData) {
+    serverSink.onGoAwayFn = ([this](uint32_t lastStreamId, ErrorCode code, std::string_view debugData) {
       GoAwayEvent ev;
       ev.lastStreamId = lastStreamId;
       ev.errorCode = code;
@@ -312,6 +313,9 @@ class Http2Loopback {
 
   Http2Connection client;
   Http2Connection server;
+
+  RecordingEventSink clientSink{client};
+  RecordingEventSink serverSink{server};
 
   vector<HeaderEvent> clientHeaders;
   vector<HeaderEvent> serverHeaders;
@@ -473,9 +477,10 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   // hand so the test controls exactly when the client reads - and therefore when WINDOW_UPDATEs go out.
   Http2Config clientCfg;
   Http2Connection client(clientCfg, false);
+  RecordingEventSink clientSink(client);
   std::string receivedBody;
   bool endStreamSeen = false;
-  client.setOnData([&](uint32_t, std::span<const std::byte> data, bool endStream) {
+  clientSink.onDataFn = ([&](uint32_t, std::span<const std::byte> data, bool endStream) {
     receivedBody.append(reinterpret_cast<const char*>(data.data()), data.size());
     endStreamSeen = endStreamSeen || endStream;
   });
@@ -1190,7 +1195,7 @@ TEST(Http2Core, RstStreamFromPeerTriggersStreamResetCallback) {
 
   bool resetCalled = false;
   ErrorCode resetCode = ErrorCode::NoError;
-  h2.server.setOnStreamReset([&](uint32_t id, ErrorCode code) {
+  h2.serverSink.onStreamResetFn = ([&](uint32_t id, ErrorCode code) {
     resetCalled = true;
     EXPECT_EQ(id, 1U);
     resetCode = code;
@@ -1421,6 +1426,7 @@ TEST(Http2Core, SettingsAckOnNonZeroStreamIsProtocolError) {
 TEST(Http2Core, SettingsAckTransitionsAwaitingSettingsToOpen) {
   Http2Config cfg;
   Http2Connection server(cfg, true);
+  RecordingEventSink serverSink(server);
 
   auto preface = MakePreface();
   auto resPreface = server.processInput(preface);

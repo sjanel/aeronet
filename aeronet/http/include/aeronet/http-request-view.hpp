@@ -39,10 +39,10 @@ namespace aeronet {
 
 namespace internal {
 class ConnectionStorage;
-class HttpCodec;
-struct CompressionState;
 }  // namespace internal
 
+class HttpCodec;
+struct CompressionState;
 struct ConnectionState;
 struct HttpServerConfig;
 
@@ -556,7 +556,7 @@ class HttpRequestView {
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif
-  friend class internal::HttpCodec;
+  friend class HttpCodec;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
@@ -567,7 +567,7 @@ class HttpRequestView {
   [[nodiscard]] bool isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
                                          bool isServerRunning) const;
 
-  void init(const HttpServerConfig& config, internal::CompressionState& compressionState);
+  void init(const HttpServerConfig& config, CompressionState& compressionState);
 
   // Attempts to set this HttpRequestView (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
@@ -666,7 +666,7 @@ class HttpRequestView {
   const BodyAccessBridge* _pBodyAccessBridge{nullptr};
   void* _pBodyAccessContext{nullptr};
   ConnectionState* _pOwnerState{nullptr};
-  internal::CompressionState* _pCompressionState{nullptr};
+  CompressionState* _pCompressionState{nullptr};
 
   std::chrono::steady_clock::time_point _reqStart;
   std::size_t _headSpanSize{0};

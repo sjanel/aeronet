@@ -538,8 +538,8 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
   --_activeStreamCount;
   recordStreamClosed(streamId, errorCode);
 
-  if (_onStreamClosed) {
-    _onStreamClosed(streamId);
+  if (_sink != nullptr) {
+    _sink->onStreamClosed(streamId);
   }
 
   // Don't remove immediately - keep for a short time for late frames.
@@ -724,8 +724,8 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
     it->second.onSendRstStream();
     it->second.setErrorCode(errorCode);
     closeStream(it, errorCode);
-    if (_onStreamReset) {
-      _onStreamReset(streamId, errorCode);
+    if (_sink != nullptr) {
+      _sink->onStreamReset(streamId, errorCode);
     }
   }
 }
@@ -910,23 +910,23 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   assert(err == ErrorCode::NoError);
 
   // Invoke callback
-  if (_onData) {
-    _onData(header.streamId, frame.data, frame.endStream);
-  }
+  if (_sink != nullptr) {
+    _sink->onData(header.streamId, frame.data, frame.endStream);
 
-  // Replenish a receive window only after half its configured credit has been consumed. Restoring the
-  // full credit at once keeps large transfers moving while avoiding two tiny WINDOW_UPDATE frames for
-  // every DATA frame. A stream-level update is useless after END_STREAM, but connection-level credit is
-  // retained for later streams on the same connection.
-  if (_onData && payloadSize > 0) {
-    const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-    if (!frame.endStream && it->second.recvWindow() <= initialStreamWindow / 2) {
-      sendWindowUpdate(header.streamId, static_cast<uint32_t>(initialStreamWindow - it->second.recvWindow()));
-    }
+    // Replenish a receive window only after half its configured credit has been consumed. Restoring the
+    // full credit at once keeps large transfers moving while avoiding two tiny WINDOW_UPDATE frames for
+    // every DATA frame. A stream-level update is useless after END_STREAM, but connection-level credit is
+    // retained for later streams on the same connection.
+    if (payloadSize > 0) {
+      const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
+      if (!frame.endStream && it->second.recvWindow() <= initialStreamWindow / 2) {
+        sendWindowUpdate(header.streamId, static_cast<uint32_t>(initialStreamWindow - it->second.recvWindow()));
+      }
 
-    const int32_t initialConnectionWindow = static_cast<int32_t>(_localSettings.connectionWindowSize);
-    if (_connectionRecvWindow <= initialConnectionWindow / 2) {
-      sendWindowUpdate(0, static_cast<uint32_t>(initialConnectionWindow - _connectionRecvWindow));
+      const int32_t initialConnectionWindow = static_cast<int32_t>(_localSettings.connectionWindowSize);
+      if (_connectionRecvWindow <= initialConnectionWindow / 2) {
+        sendWindowUpdate(0, static_cast<uint32_t>(initialConnectionWindow - _connectionRecvWindow));
+      }
     }
   }
 
@@ -1090,8 +1090,8 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     it->second.onRecvRstStream();
     it->second.setErrorCode(frame.errorCode);
     closeStream(it, frame.errorCode);
-    if (_onStreamReset) {
-      _onStreamReset(header.streamId, frame.errorCode);
+    if (_sink != nullptr) {
+      _sink->onStreamReset(header.streamId, frame.errorCode);
     }
   }
 
@@ -1229,9 +1229,9 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(FrameHeader he
   _state = ConnectionState::GoAwayReceived;
   _goAwayLastStreamId = frame.lastStreamId;
 
-  if (_onGoAway) {
+  if (_sink != nullptr) {
     std::string_view debugData(reinterpret_cast<const char*>(frame.debugData.data()), frame.debugData.size());
-    _onGoAway(frame.lastStreamId, frame.errorCode, debugData);
+    _sink->onGoAway(frame.lastStreamId, frame.errorCode, debugData);
   }
 
   return ProcessResult{ProcessResult::Action::GoAway};
@@ -1270,8 +1270,8 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     }
   }
 
-  if (_onWindowUpdate) {
-    _onWindowUpdate(header.streamId, frame.windowSizeIncrement);
+  if (_sink != nullptr) {
+    _sink->onWindowUpdate(header.streamId, frame.windowSizeIncrement);
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
@@ -1459,8 +1459,8 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   }
 
   // Call the decoded-headers callback if set (owned strings)
-  if (static_cast<bool>(_onHeadersDecoded)) {
-    _onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
+  if (_sink != nullptr) {
+    _sink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
   }
 
   return ErrorCode::NoError;

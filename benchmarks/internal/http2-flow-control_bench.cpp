@@ -294,8 +294,6 @@ void BM_ConnectionProcessDataFrames(benchmark::State& state) {
 
   for ([[maybe_unused]] auto iter : state) {
     Http2Connection conn(Http2Config{}, /*isServer=*/true);
-    conn.setOnHeadersDecoded([](uint32_t, const SvToSvMap&, bool) {});
-    conn.setOnData([](uint32_t, std::span<const std::byte>, bool) {});
     auto result = conn.processInput(fullInput);
     benchmark::DoNotOptimize(result);
   }

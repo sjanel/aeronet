@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -16,11 +15,11 @@
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_HTTP_CLIENT
@@ -48,12 +47,6 @@ enum class ConnectionState : uint8_t {
   /// Connection closed.
   Closed,
 };
-
-/// Callback for handling stream data.
-using DataCallback = std::function<void(uint32_t streamId, std::span<const std::byte> data, bool endStream)>;
-
-/// Callback for stream events.
-using StreamEventCallback = std::function<void(uint32_t streamId)>;
 
 /// HTTP/2 connection manager (RFC 9113).
 ///
@@ -279,34 +272,8 @@ class Http2Connection {
   /// Get the connection-level receive window.
   [[nodiscard]] int32_t connectionRecvWindow() const noexcept { return _connectionRecvWindow; }
 
-  // ============================
-  // Callbacks
-  // ============================
-
-  using OnHeadersCb = std::function<void(uint32_t streamId, const SvToSvMap& headers, bool endStream)>;
-  using GoAwayCb = std::function<void(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData)>;
-  using OnStreamCb = std::function<void(uint32_t streamId, ErrorCode errorCode)>;
-
-  /// Alternative callback that receives decoded headers as an owned vector.
-  /// This avoids the callback-of-callback pattern and is simpler for consumers.
-  void setOnHeadersDecoded(OnHeadersCb cb) { _onHeadersDecoded = std::move(cb); }
-
-  /// Set callback for when data is received on a stream.
-  void setOnData(DataCallback callback) { _onData = std::move(callback); }
-
-  /// Set callback for when a stream is reset.
-  void setOnStreamReset(OnStreamCb callback) { _onStreamReset = std::move(callback); }
-
-  /// Set callback for when a stream is closed.
-  void setOnStreamClosed(StreamEventCallback callback) { _onStreamClosed = std::move(callback); }
-
-  /// Set callback for GOAWAY received.
-  void setOnGoAway(GoAwayCb callback) { _onGoAway = std::move(callback); }
-
-  /// Set callback for WINDOW_UPDATE received.
-  void setOnWindowUpdate(std::function<void(uint32_t streamId, uint32_t increment)> callback) {
-    _onWindowUpdate = std::move(callback);
-  }
+  /// Install (or clear, with nullptr) the event sink. Not owned.
+  void setEventSink(EventSink* sink) noexcept { _sink = sink; }
 
  private:
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
@@ -473,12 +440,7 @@ class Http2Connection {
   std::size_t _outputWritePos{0};
 
   // Callbacks
-  OnHeadersCb _onHeadersDecoded;
-  DataCallback _onData;
-  OnStreamCb _onStreamReset;
-  StreamEventCallback _onStreamClosed;
-  GoAwayCb _onGoAway;
-  std::function<void(uint32_t streamId, uint32_t increment)> _onWindowUpdate;
+  EventSink* _sink{nullptr};
   tracing::TelemetryContext* _pTelemetryContext;
 
   ConnectionState _state{ConnectionState::AwaitingPreface};

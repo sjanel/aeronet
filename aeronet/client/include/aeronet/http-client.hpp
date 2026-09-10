@@ -31,11 +31,11 @@
 
 namespace aeronet {
 
-namespace internal {
 #ifdef AERONET_ENABLE_HTTP2
+namespace http2::internal {
 class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 client engine)
+}  // namespace http2::internal
 #endif
-}  // namespace internal
 
 // Synchronous HTTP/1.1 + HTTP/2 client built on aeronet's non-blocking transport + event-loop bricks.
 //
@@ -244,7 +244,7 @@ class HttpClient {
   // exchange, so they are friends.
   friend class internal::ClientConnection;
 #ifdef AERONET_ENABLE_HTTP2
-  friend class internal::Http2ClientEngine;
+  friend class http2::internal::Http2ClientEngine;
 #endif
 
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.

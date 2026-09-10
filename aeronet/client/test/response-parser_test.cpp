@@ -766,7 +766,7 @@ constexpr std::size_t kMaxResponseBytes = 8UL * 1024UL * 1024UL;
 
 // Reusable decode plumbing for one parse() call.
 struct Decode {
-  internal::DecompressionState state;
+  DecompressionState state;
   DecompressionConfig config;
   RawChars out;
   RawChars tmp;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <brotli/encode.h>
+#include <brotli/encode.h>  // TODO: avoid brotli include in the header
 
 #include <cstddef>
 #include <memory>

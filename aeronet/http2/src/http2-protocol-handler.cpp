@@ -69,8 +69,7 @@ namespace aeronet::http2 {
 // ============================
 
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                                           internal::CompressionState& compressionState,
-                                           internal::DecompressionState& decompressionState,
+                                           CompressionState& compressionState, DecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
                                            const char* cachedDateHeader, std::string_view clientAddress)
     : _connection(config, true, &telemetryContext),
@@ -90,40 +89,6 @@ Http2ProtocolHandler::~Http2ProtocolHandler() = default;
 
 Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = default;
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
-
-void Http2ProtocolHandler::setupCallbacks() {
-  _connection.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
-    onHeadersDecodedReceived(streamId, headers, endStream);
-  });
-
-  _connection.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-    onDataReceived(streamId, data, endStream);
-  });
-
-  _connection.setOnStreamClosed([this](uint32_t streamId) { onStreamClosed(streamId); });
-
-  _connection.setOnStreamReset([this](uint32_t streamId, ErrorCode errorCode) {
-    log::debug("HTTP/2 stream {} reset with error: {}", streamId, ErrorCodeName(errorCode));
-    onStreamClosed(streamId);
-  });
-
-  _connection.setOnWindowUpdate([this](uint32_t streamId, uint32_t /*increment*/) {
-    if (streamId == 0) {
-      // Connection-level window update: notify all tunnel streams
-      for (const auto& [id, state] : _streams) {
-        if (state.tunnelUpstreamFd != kInvalidHandle) {
-          _tunnelBridge->onTunnelWindowUpdate(state.tunnelUpstreamFd);
-        }
-      }
-    } else {
-      // Stream-level window update
-      auto it = _streams.find(streamId);
-      if (it != _streams.end() && it->second.tunnelUpstreamFd != kInvalidHandle) {
-        _tunnelBridge->onTunnelWindowUpdate(it->second.tunnelUpstreamFd);
-      }
-    }
-  });
-}
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
                                                          [[maybe_unused]] ::aeronet::ConnectionState& state) {
@@ -219,7 +184,7 @@ http::Method ParseHttpMethod(std::string_view method) {
 
 }  // namespace
 
-void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& headers, bool endStream) {
   auto [it, inserted] = _streams.try_emplace(streamId);
   if (!inserted) {
     // A second HEADERS block on a stream that already has one carries request trailers (RFC 9113 §8.1).
@@ -390,7 +355,7 @@ void Http2ProtocolHandler::onHeadersDecodedReceived(uint32_t streamId, const SvT
   }
 }
 
-void Http2ProtocolHandler::onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
   const auto it = _streams.find(streamId);
   if (it == _streams.end()) [[unlikely]] {
     log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
@@ -436,8 +401,8 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
   streamReq.request._body = streamReq.bodyBuffer;
 
   if (!streamReq.request._body.empty()) {
-    const auto res = internal::HttpCodec::MaybeDecompressRequestBody(
-        *_pDecompressionState, _pServerConfig->decompression, streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
+    const auto res = HttpCodec::MaybeDecompressRequestBody(*_pDecompressionState, _pServerConfig->decompression,
+                                                           streamReq.request, streamReq.bodyBuffer, *_pTmpBuffer);
     if (res.message != nullptr) {
       (void)sendResponse(streamId, HttpResponse(res.status, res.message), /*isHeadMethod=*/false);
       releaseStreamAfterResponse(it);
@@ -512,6 +477,23 @@ void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
   }
   releasePendingBytes(it->second);
   _streams.erase(it);
+}
+
+void Http2ProtocolHandler::onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) {
+  if (streamId == 0) {
+    // Connection-level window update: notify all tunnel streams
+    for (const auto& [id, state] : _streams) {
+      if (state.tunnelUpstreamFd != kInvalidHandle) {
+        _tunnelBridge->onTunnelWindowUpdate(state.tunnelUpstreamFd);
+      }
+    }
+  } else {
+    // Stream-level window update
+    auto it = _streams.find(streamId);
+    if (it != _streams.end() && it->second.tunnelUpstreamFd != kInvalidHandle) {
+      _tunnelBridge->onTunnelWindowUpdate(it->second.tunnelUpstreamFd);
+    }
+  }
 }
 
 void Http2ProtocolHandler::releasePendingBytes(const StreamState& state) noexcept {
@@ -761,7 +743,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
                                  _pServerConfig->maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
 
-  // Negotiate compression has been done in onHeadersDecodedReceived.
+  // Negotiate compression has been done in onHeadersDecoded.
   HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
                             *_pCompressionState, _pServerConfig->globalHeaders.fullStringWithLastSep(),
                             _pServerConfig->addTrailerHeader);
@@ -858,7 +840,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Validate required pseudo-headers
-  assert(!request.path().empty() && "path should have been validated in onHeadersDecodedReceived");
+  assert(!request.path().empty() && "path should have been validated in onHeadersDecoded");
 
   const Router::RoutingResult routingResult = _pRouter->match(request.method(), request.path());
 
@@ -1493,10 +1475,9 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
 }
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-    internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
-    tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, bool sendServerPrefaceForTls,
-    const char* cachedDateHeader, std::string_view clientAddress) {
+    const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
+    DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
+    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress) {
   auto protocolHandler =
       std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState, decompressionState,
                                              telemetryContext, tmpBuffer, cachedDateHeader, clientAddress);

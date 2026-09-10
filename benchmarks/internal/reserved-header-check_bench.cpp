@@ -31,8 +31,12 @@ constexpr bool IsReservedHeaderImpl(std::string_view name) noexcept {
   }
 
   char lowerCaseName[kMaxLenReserved];
-  tolower_n(name.data(), name.size(), lowerCaseName);
-  return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, name.size()});
+  // Redundant after the check above, but makes the bound visible to GCC's
+  // -Wstringop-overflow object-size analysis (which otherwise can't fully
+  // trace it through the inlined, vectorized body of the generic tolower_n).
+  const std::size_t len = std::min(name.size(), kMaxLenReserved);
+  tolower_n(name.data(), len, lowerCaseName);
+  return std::ranges::binary_search(kReservedOrderedLowerCaseHeaders, std::string_view{lowerCaseName, len});
 }
 
 constexpr std::string_view kHeaders[]{"authorization",

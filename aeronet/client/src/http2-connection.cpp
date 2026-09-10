@@ -28,6 +28,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-error-code-name.hpp"
+#include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
@@ -42,7 +43,7 @@
 #include "aeronet/transport.hpp"
 #include "response-parser.hpp"
 
-namespace aeronet::internal {
+namespace aeronet::http2::internal {
 
 namespace {
 
@@ -65,7 +66,7 @@ constexpr uint32_t kMaxStreamId = 0x7FFFFFFFU;
 // in flight per exchange (the connection still multiplexes housekeeping frames -- SETTINGS, PING,
 // WINDOW_UPDATE, GOAWAY -- freely). Callbacks are installed once at construction and route into the
 // per-exchange state below; the engine address is stable (heap-allocated behind ClientConnection).
-class Http2ClientEngine {
+class Http2ClientEngine : private EventSink {
  public:
   // First failure observed on the current exchange (first error wins; None when the exchange is healthy).
   enum class Failure : uint8_t {
@@ -78,34 +79,10 @@ class Http2ClientEngine {
 
   Http2ClientEngine(const Http2Config& config, uint32_t minReadChunkBytes)
       : _conn(config, /*isServer=*/false), _minReadChunkBytes(minReadChunkBytes) {
-    _conn.setOnHeadersDecoded([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
-      onHeaders(streamId, headers, endStream);
-    });
-    _conn.setOnData([this](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
-      onData(streamId, data, endStream);
-    });
-    _conn.setOnStreamReset([this](uint32_t streamId, http2::ErrorCode errorCode) {
-      if (streamId == _streamId && _resp != nullptr) {
-        log::error("HTTP/2 client: stream {} reset by peer ({})", streamId, http2::ErrorCodeName(errorCode));
-        setFailure(Failure::StreamReset);
-      }
-    });
-    _conn.setOnStreamClosed([this](uint32_t streamId) {
-      if (streamId == _streamId) {
-        _streamClosed = true;
-      }
-    });
-    _conn.setOnGoAway([this](uint32_t lastStreamId, http2::ErrorCode errorCode, std::string_view debugData) {
-      _goAwayReceived = true;
-      if (_streamId > lastStreamId && !_streamClosed && _resp != nullptr) {
-        log::warn("HTTP/2 client: stream {} refused by GOAWAY ({}{}{})", _streamId, http2::ErrorCodeName(errorCode),
-                  debugData.empty() ? "" : ": ", debugData);
-        setFailure(Failure::StreamRefused);
-      }
-    });
+    _conn.setEventSink(this);
   }
 
-  [[nodiscard]] http2::Http2Connection& conn() noexcept { return _conn; }
+  [[nodiscard]] Http2Connection& conn() noexcept { return _conn; }
 
   // Prepare the per-exchange state and allocate the next (odd) stream id.
   uint32_t beginExchange(HttpResponse& resp, RawChars& bodyBuf, std::size_t maxResponseBytes) noexcept {
@@ -148,7 +125,7 @@ class Http2ClientEngine {
 
   // Send-side flow-control budget for `streamId`: min(stream window, connection window), never negative.
   [[nodiscard]] std::size_t sendWindow(uint32_t streamId) noexcept {
-    const http2::Http2Stream* pStream = _conn.getStream(streamId);
+    const Http2Stream* pStream = _conn.getStream(streamId);
     if (pStream == nullptr) {
       return 0;
     }
@@ -183,10 +160,10 @@ class Http2ClientEngine {
     for (;;) {
       if (!_inBuf.empty()) {
         const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
-        using Action = http2::Http2Connection::ProcessResult::Action;
+        using Action = Http2Connection::ProcessResult::Action;
         if (processed.action == Action::Error) {
           log::error("HTTP/2 client: protocol error while draining pooled connection: {} ({})",
-                     http2::ErrorCodeName(processed.errorCode), ConvertProcessResultErrorMsgToSv(processed.errorMsg));
+                     ErrorCodeName(processed.errorCode), ConvertProcessResultErrorMsgToSv(processed.errorMsg));
           return false;
         }
         if (processed.action == Action::Closed) {
@@ -255,9 +232,9 @@ class Http2ClientEngine {
     for (;;) {
       if (!_inBuf.empty()) {
         const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
-        using Action = http2::Http2Connection::ProcessResult::Action;
+        using Action = Http2Connection::ProcessResult::Action;
         if (processed.action == Action::Error) {
-          log::error("HTTP/2 client: protocol error: {} ({})", http2::ErrorCodeName(processed.errorCode),
+          log::error("HTTP/2 client: protocol error: {} ({})", ErrorCodeName(processed.errorCode),
                      ConvertProcessResultErrorMsgToSv(processed.errorMsg));
           return std::unexpected(HttpClientErrc::malformedResponse);
         }
@@ -301,7 +278,7 @@ class Http2ClientEngine {
     }
   }
 
-  void onHeaders(uint32_t streamId, const SvToSvMap& headers, bool endStream) {
+  void onHeadersDecoded(uint32_t streamId, const SvToSvMap& headers, bool endStream) override {
     if (streamId != _streamId || _resp == nullptr) {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
     }
@@ -346,7 +323,7 @@ class Http2ClientEngine {
     }
   }
 
-  void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+  void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) override {
     if (streamId != _streamId || _bodyBuf == nullptr) {
       return;
     }
@@ -364,7 +341,31 @@ class Http2ClientEngine {
     _bodyBuf->append(std::string_view{reinterpret_cast<const char*>(data.data()), data.size()});
   }
 
-  http2::Http2Connection _conn;
+  void onStreamReset(uint32_t streamId, ErrorCode errorCode) override {
+    if (streamId == _streamId && _resp != nullptr) {
+      log::error("HTTP/2 client: stream {} reset by peer ({})", streamId, ErrorCodeName(errorCode));
+      setFailure(Failure::StreamReset);
+    }
+  }
+
+  void onStreamClosed(uint32_t streamId) override {
+    if (streamId == _streamId) {
+      _streamClosed = true;
+    }
+  }
+
+  void onGoAway(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData) override {
+    _goAwayReceived = true;
+    if (_streamId > lastStreamId && !_streamClosed && _resp != nullptr) {
+      log::warn("HTTP/2 client: stream {} refused by GOAWAY ({}{}{})", _streamId, ErrorCodeName(errorCode),
+                debugData.empty() ? "" : ": ", debugData);
+      setFailure(Failure::StreamRefused);
+    }
+  }
+
+  void onWindowUpdate([[maybe_unused]] uint32_t streamId, [[maybe_unused]] uint32_t increment) override {}
+
+  Http2Connection _conn;
   HttpResponse* _resp{nullptr};  // response of the in-flight exchange (null between exchanges)
   RawChars* _bodyBuf{nullptr};   // borrowed body accumulator (HttpClient::responseBuffer())
   RawChars _inBuf;               // frame input accumulator; persists so a partial frame survives exchanges
@@ -380,10 +381,15 @@ class Http2ClientEngine {
   bool _goAwayReceived{false};
 };
 
+}  // namespace aeronet::http2::internal
+
+namespace aeronet::internal {
+
 ClientConnection::ClientConnection(Type type) noexcept : _type(type) {}
 
 ClientConnection::ClientConnection(const HttpClientConfig& config)
-    : _h2(std::make_unique<Http2ClientEngine>(config.http2, config.minReadChunkBytes)), _type(Type::Http2) {}
+    : _h2(std::make_unique<http2::internal::Http2ClientEngine>(config.http2, config.minReadChunkBytes)),
+      _type(Type::Http2) {}
 
 ClientConnection::ClientConnection(ClientConnection&&) noexcept = default;
 ClientConnection& ClientConnection::operator=(ClientConnection&&) noexcept = default;
@@ -405,8 +411,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
                                                     const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                     bool& requestSent) {
   assert(_h2 != nullptr);
-  Http2ClientEngine& engine = *_h2;
-  http2::Http2Connection& conn = engine.conn();
+  auto& engine = *_h2;
+  auto& conn = engine.conn();
   const HttpClientConfig& config = client.config();
   _keepAlive = false;
 
@@ -443,12 +449,11 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   const std::string_view target = req.target();
   const std::string_view authority = req.hostHeaderValue();
 
-  const http2::ErrorCode headersErr =
+  const auto headersErr =
       conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority, HeadersView(req.headersFlatView()),
                               endStreamSent, &config.globalHeaders);
   if (headersErr != http2::ErrorCode::NoError) {
-    log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(),
-               http2::ErrorCodeName(headersErr));
+    log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(), ErrorCodeName(headersErr));
     engine.endExchange();
     return std::unexpected(HttpClientErrc::connectionClosed);
   }
@@ -460,7 +465,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   // the upload; the leftover half-open stream is aborted below.
   auto ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
   std::size_t bodyOff = 0;
-  while (ioRes && bodyOff < bodyLen && engine.failure() == Http2ClientEngine::Failure::None &&
+  while (ioRes && bodyOff < bodyLen && engine.failure() == http2::internal::Http2ClientEngine::Failure::None &&
          !engine.responseComplete()) {
     const std::size_t window = engine.sendWindow(streamId);
     if (window == 0) {
@@ -468,7 +473,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
       ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
       continue;
     }
-    const std::size_t attempt = std::min({bodyLen - bodyOff, window, kMaxDataBytesPerFlush});
+    const std::size_t attempt = std::min({bodyLen - bodyOff, window, http2::internal::kMaxDataBytesPerFlush});
     std::span<const std::byte> chunk;
     std::size_t chunkSize = attempt;
     if (isFileBody) {
@@ -491,9 +496,9 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     }
     // Hold END_STREAM back for the trailing HEADERS block when trailers follow the body.
     const bool endStream = (bodyOff + chunkSize == bodyLen) && !hasTrailers;
-    const http2::ErrorCode dataErr = conn.sendData(streamId, chunk, endStream);
+    const auto dataErr = conn.sendData(streamId, chunk, endStream);
     if (dataErr != http2::ErrorCode::NoError) {
-      log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, http2::ErrorCodeName(dataErr));
+      log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, ErrorCodeName(dataErr));
       engine.endExchange();
       return std::unexpected(HttpClientErrc::writeError);
     }
@@ -504,13 +509,12 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
 
   // Ship the request trailers once the whole body has gone out. Skipped when the exchange already failed
   // or the server answered early (RFC 9113 §8.1) -- the half-open stream is then aborted with RST_STREAM.
-  if (hasTrailers && ioRes && bodyOff == bodyLen && engine.failure() == Http2ClientEngine::Failure::None &&
-      !engine.responseComplete()) {
-    const http2::ErrorCode trailerErr = conn.sendRequestHeaders(
-        streamId, method, isTlsRequest, {}, {}, HeadersView(req.trailersFlatView()), /*endStream=*/true);
+  if (hasTrailers && ioRes && bodyOff == bodyLen &&
+      engine.failure() == http2::internal::Http2ClientEngine::Failure::None && !engine.responseComplete()) {
+    const auto trailerErr = conn.sendRequestHeaders(streamId, method, isTlsRequest, {}, {},
+                                                    HeadersView(req.trailersFlatView()), /*endStream=*/true);
     if (trailerErr != http2::ErrorCode::NoError) {
-      log::error("HTTP/2 client: sending trailers on stream {} failed ({})", streamId,
-                 http2::ErrorCodeName(trailerErr));
+      log::error("HTTP/2 client: sending trailers on stream {} failed ({})", streamId, ErrorCodeName(trailerErr));
       engine.endExchange();
       return std::unexpected(HttpClientErrc::writeError);
     }
@@ -520,7 +524,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
 
   // Await the response: pump frames until it is fully received (or the exchange fails).
   while (ioRes) {
-    if (engine.failure() != Http2ClientEngine::Failure::None) {
+    if (engine.failure() != http2::internal::Http2ClientEngine::Failure::None) {
       engine.endExchange();
       return std::unexpected(engine.failureErrc());
     }
