@@ -50,12 +50,14 @@ All notable changes to aeronet are documented in this file.
 - **Simpler lifecycle state machine**: state enum changes are only allowed in one direction, and starting / stopping servers code is easier.
 - **Also include global headers for server error responses**: In some cases, errors returned an `HttpResponse` without the configured global headers, if any. Now uses `HttpRequestView.makeResponse` to automatically include them.
 - **Added client configurable chunk size HttpClientConfig.minReadChunkBytes**: with default value 16KB, which was the default hardcoded value.
+- **Decreased Http2Connection size from 728 to 524 bytes** by replacing several `std::function` based callbacks into a unique sink object.
 
 ## Others
 
 - **Asan is now OFF by default in Debug**. To activate it you will need to explicitly set `AERONET_ENABLE_ASAN=1`
 - **Clean-up glaze adapters**: instead of centralizing all glaze adapters in one file far from the objects definitions, move each object glaze adapter code into its own object header file.
 - **Fix test expectations in aeronet client when no compression library is available**.
+- **Removed zstd.h and brotli/encode.h includes from .hpp internal header files**
 
 ## [1.5.0] - 2026-08-20
 

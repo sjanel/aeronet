@@ -5,7 +5,7 @@
 
 namespace aeronet {
 
-constexpr auto B64EncodedLen(auto binDataLen) { return static_cast<std::size_t>((binDataLen + 2) / 3) * 4; }
+constexpr auto B64EncodedLen(auto binDataLen) noexcept { return static_cast<std::size_t>((binDataLen + 2) / 3) * 4; }
 
 // Encode `binData` into `out`, which must have room for B64EncodedLen(binData.size()) chars.
 // Pads with '=' until 'endOut.

@@ -387,7 +387,7 @@ TEST(Http2ProtocolHandler, HeaderOnlyResponseOverConnectionLimitReturnsServiceUn
 TEST(Http2ProtocolHandler, StreamingHeadersOverConnectionLimitResetStream) {
   Router router;
   router.setPath(http::Method::GET, "/stream-header-limit",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.headerAddLine("x-large", std::string(2048, 'h'));
                    writer.end();
                  }});
@@ -409,7 +409,7 @@ TEST(Http2ProtocolHandler, StreamingHeadersOverConnectionLimitResetStream) {
 TEST(Http2ProtocolHandler, StreamingResponseStopsRetainingAtPendingLimit) {
   Router router;
   router.setPath(http::Method::GET, "/stream-limit",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    const std::string chunk(800, 's');
                    EXPECT_TRUE(writer.writeBody(chunk));
                    EXPECT_FALSE(writer.writeBody(chunk));
@@ -1617,7 +1617,7 @@ TEST(Http2ProtocolHandler, SetsPathParamsFromRouterMatch) {
 TEST(Http2ProtocolHandler, PerRouteHttp2DisableReturns404) {
   Router router;
   router.setPath(http::Method::GET, "/h1only", [](const HttpRequestView&) { return HttpResponse(200); })
-      .http2Enable(::aeronet::PathEntryConfig::Http2Enable::Disable);
+      .http2Enable(PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -1758,7 +1758,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerInvalidTaskReturns500) {
 TEST(Http2ProtocolHandler, StreamingHandlerSendsDataOverHttp2) {
   Router router;
   router.setPath(http::Method::GET, "/stream",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView& /*req*/, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("hello from streaming");
                    writer.end();
@@ -2697,7 +2697,7 @@ TEST(Http2ProtocolHandler, HeadRequestWithFilePayloadSendsNoBody) {
 TEST(Http2ProtocolHandler, StreamingHandlerExceptionStillSendsResponse) {
   Router router;
   router.setPath(http::Method::GET, "/stream-boom",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    throw std::runtime_error("streaming crash");
                  }});
@@ -2722,7 +2722,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerExceptionStillSendsResponse) {
 TEST(Http2ProtocolHandler, StreamingHandlerUnknownExceptionStillEnds) {
   Router router;
   router.setPath(http::Method::GET, "/stream-boom2",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    throw 42;  // NOLINT
                  }});
@@ -2751,7 +2751,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCorsRejectionReturns403) {
 
   router
       .setPath(http::Method::POST, "/stream-cors",
-               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+               StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("should not reach here");
                  writer.end();
@@ -2784,7 +2784,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRequestMiddlewareShortCircuit) {
   router.addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::ShortCircuit(HttpResponse(401)); });
 
   router.setPath(http::Method::GET, "/stream-mw",
-                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    writer.writeBody("ok");
@@ -2814,12 +2814,12 @@ TEST(Http2ProtocolHandler, StreamingHandlerHttp2DisableReturns404) {
 
   router
       .setPath(http::Method::GET, "/h1only-stream",
-               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+               StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("data");
                  writer.end();
                }})
-      .http2Enable(::aeronet::PathEntryConfig::Http2Enable::Disable);
+      .http2Enable(PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -2845,14 +2845,13 @@ TEST(Http2ProtocolHandler, StreamingHandlerFilePayloadDeferred) {
 
   Router router;
   const auto filePath = tmpFile.filePath().string();
-  router.setPath(
-      http::Method::GET, "/stream-file",
-      ::aeronet::StreamingHandler{[&filePath](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
-        File fd(filePath);
-        writer.status(http::StatusCode{200});
-        writer.file(std::move(fd));
-        writer.end();
-      }});
+  router.setPath(http::Method::GET, "/stream-file",
+                 StreamingHandler{[&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+                   File fd(filePath);
+                   writer.status(http::StatusCode{200});
+                   writer.file(std::move(fd));
+                   writer.end();
+                 }});
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3065,7 +3064,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRejectsIdentityForbiddenWithNoAlterna
   Router router;
 
   router.setPath(http::Method::GET, "/stream-enc",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -3096,7 +3095,7 @@ TEST(Http2ProtocolHandler, OutputWrittenFlushesRemainingPendingStreamingSends) {
   Router router;
   // Streaming handler that produces enough data to require deferred flushing
   router.setPath(http::Method::GET, "/stream-large",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    // Write a substantial amount of data likely to hit flow control
                    const std::string chunk(8192, 'E');
@@ -3323,7 +3322,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerHttp2DisableReturns404) {
   router
       .setPath(http::Method::GET, "/async-h1",
                [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(200); })
-      .http2Enable(::aeronet::PathEntryConfig::Http2Enable::Disable);
+      .http2Enable(PathEntryConfig::Http2Enable::Disable);
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
@@ -3513,7 +3512,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerMiddlewareShortCircuitWithCors) {
   // Register streaming handler with CORS + per-route middleware that short-circuits
   router
       .setPath(http::Method::POST, "/stream-cors-mw",
-               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+               StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("should not reach");
                  writer.end();
@@ -3576,7 +3575,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithTrailersViaWriter) {
   Router router;
 
   router.setPath(http::Method::GET, "/stream-trailers",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("streamed-data");
                    writer.trailerAddLine("x-trailer-hash", "deadbeef");
@@ -3622,7 +3621,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerLargeDataWithTrailersDeferred) {
 
   // Streaming handler that produces data and trailers, potentially requiring deferred flushing
   router.setPath(http::Method::GET, "/stream-large-trailers",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    const std::string chunk(8192, 'G');
                    for (int idx = 0; idx < 10; ++idx) {
@@ -3673,7 +3672,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerLargeDataWithTrailersDeferred) {
 TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestEmitsEndStream) {
   Router router;
   router.setPath(http::Method::GET, "/stream-head",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView& req, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView& req, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // writeBody is a no-op for HEAD (writer skips emitData for _head=true)
@@ -3713,7 +3712,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestEmitsEndStream) {
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write >1024 bytes (default minBytes) to trigger compression activation
@@ -3766,7 +3765,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedAboveThreshold) {
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedBelowThresholdFallsBackToIdentity) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress-small",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write < 1024 bytes (default minBytes) — compression stays inactive,
@@ -3809,7 +3808,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedBelowThresholdFallsBackToId
 TEST(Http2ProtocolHandler, StreamingHandlerCompressedMultiChunkAboveThreshold) {
   Router router;
   router.setPath(http::Method::GET, "/stream-compress-multi",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.contentType("text/plain");
                    // Write multiple chunks — first two accumulate in pre-compress buffer (total 1024),
@@ -3852,7 +3851,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerCompressedMultiChunkAboveThreshold) {
 TEST(Http2ProtocolHandler, StreamingHandlerContentLengthAfterHeadersSentIgnored) {
   Router router;
   router.setPath(http::Method::GET, "/stream-late-cl",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("first");
                    // These should be ignored (headers already sent)
@@ -3889,7 +3888,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerContentLengthAfterHeadersSentIgnored)
 TEST(Http2ProtocolHandler, StreamingHandlerDoubleEndIsNoOp) {
   Router router;
   router.setPath(http::Method::GET, "/stream-double-end",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -3930,7 +3929,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerDoubleEndIsNoOp) {
 TEST(Http2ProtocolHandler, StreamingHandlerEmptyWriteIsNoOp) {
   Router router;
   router.setPath(http::Method::GET, "/stream-empty-write",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("");
                    writer.writeBody("real data");
@@ -3962,7 +3961,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithResponseMiddleware) {
 
   router
       .setPath(http::Method::GET, "/stream-resp-mw",
-               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+               StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("stream-resp-data");
                  writer.end();
@@ -3996,7 +3995,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerWithCorsApplied) {
 
   router
       .setPath(http::Method::GET, "/stream-cors-ok",
-               ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+               StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                  writer.status(http::StatusCode{200});
                  writer.writeBody("cors-data");
                  writer.end();
@@ -4072,14 +4071,14 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestSendsNoBody) {
   bool handlerCalled = false;
 
   router.setPath(http::Method::HEAD, "/stream-head",
-                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    writer.writeBody("should be suppressed for HEAD");
                    writer.end();
                  }});
   router.setPath(http::Method::GET, "/stream-head",
-                 StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    writer.writeBody("data");
                    writer.end();
@@ -4431,7 +4430,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerRstDuringDeferredSendCleansUp) {
 
   // Streaming handler that writes data exceeding flow control window to force deferred sends.
   router.setPath(http::Method::GET, "/stream-deferred-rst",
-                 ::aeronet::StreamingHandler{[](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
                    writer.status(http::StatusCode{200});
                    // Write much more than 65535 bytes to force deferred sending.
                    const std::string chunk(16384, 'R');
@@ -4675,7 +4674,7 @@ TEST(Http2ProtocolHandler, ResumeAsyncTaskByHandleWithNonAsyncStreamSkips) {
   // while the stream is still active (has pending streaming data).
   bool handlerCalled = false;
   router.setPath(http::Method::GET, "/sync",
-                 StreamingHandler{[&handlerCalled](const HttpRequestView&, ::aeronet::HttpResponseWriter& writer) {
+                 StreamingHandler{[&handlerCalled](const HttpRequestView&, HttpResponseWriter& writer) {
                    handlerCalled = true;
                    writer.status(http::StatusCode{200});
                    // Write enough data to trigger flow-control buffering so the stream stays alive

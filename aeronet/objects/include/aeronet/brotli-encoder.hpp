@@ -1,7 +1,5 @@
 #pragma once
 
-#include <brotli/encode.h>  // TODO: avoid brotli include in the header
-
 #include <cstddef>
 #include <memory>
 #include <string_view>
@@ -10,6 +8,9 @@
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/object-array-pool.hpp"
+
+extern "C" struct BrotliEncoderStateStruct;
+using BrotliEncoderState = BrotliEncoderStateStruct;
 
 namespace aeronet {
 
@@ -70,7 +71,7 @@ class BrotliEncoderContext final : public EncoderContext {
   friend class BrotliEncoder;
 
   struct BrotliStateDeleter {
-    void operator()(BrotliEncoderState* ptr) const { BrotliEncoderDestroyInstance(ptr); }
+    void operator()(BrotliEncoderState* ptr) const noexcept;
   };
 
   BrotliScratch* _scratch{nullptr};

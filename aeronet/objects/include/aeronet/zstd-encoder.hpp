@@ -1,7 +1,5 @@
 #pragma once
 
-#include <zstd.h>
-
 #include <cstddef>
 #include <memory>
 #include <string_view>
@@ -10,6 +8,9 @@
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
+
+extern "C" struct ZSTD_CCtx_s;
+using ZSTD_CCtx = ZSTD_CCtx_s;
 
 namespace aeronet {
 
@@ -26,7 +27,7 @@ class ZstdEncoderContext final : public EncoderContext {
 
   [[nodiscard]] std::size_t minEncodeChunkCapacity(std::size_t chunkSize) const override;
 
-  [[nodiscard]] std::size_t endChunkSize() const override { return ZSTD_CStreamOutSize(); }
+  [[nodiscard]] std::size_t endChunkSize() const override;
 
   EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
 
@@ -40,7 +41,7 @@ class ZstdEncoderContext final : public EncoderContext {
   friend class ZstdEncoder;
 
   struct ZstdCtxDeleter {
-    void operator()(ZSTD_CCtx* ctx) const noexcept { ZSTD_freeCCtx(ctx); }
+    void operator()(ZSTD_CCtx* ctx) const noexcept;
   };
 
   internal::BufferCache _cache;

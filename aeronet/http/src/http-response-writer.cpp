@@ -139,7 +139,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
   }
 
-  if (!_transport->emitHeaders(_fixedResponse, *_request, _compressionActivated, _encoding, _declaredLength, _head)) {
+  if (!_transport->emitHeaders(_fixedResponse, *_request, _declaredLength, _head)) {
     _state = State::Failed;
     log::error("Streaming: failed to emit headers {}", _transport->logId());
   } else {

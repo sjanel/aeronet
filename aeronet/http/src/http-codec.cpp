@@ -532,8 +532,9 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     }
 
     // finalization flush(es)
+    const auto endChunkSz = encoder->endChunkSize();
     while (true) {
-      if (!ensureEnoughCapacity(encoder->endChunkSize())) {
+      if (!ensureEnoughCapacity(endChunkSz)) {
         return CompressResponseResult::ExceedsMaxRatio;
       }
       const auto result = encoder->end(totalCompCapa - totalCompSize, pCompBody + totalCompSize);
