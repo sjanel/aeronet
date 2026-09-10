@@ -37,6 +37,7 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_http2
     aeronet_basic_test_support
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(
@@ -52,6 +53,7 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_http2
     aeronet_basic_test_support
+    aeronet_test_support
 )
 
 AeronetAddUnitTest(

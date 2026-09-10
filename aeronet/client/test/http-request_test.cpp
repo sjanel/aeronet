@@ -66,8 +66,8 @@ class HttpRequestTest : public ::testing::Test {
             makeRequestOptions(), body,   contentType};
   }
 
-  static internal::CompressionState CreateResponseCompressionState(CompressionConfig* config) {
-    internal::CompressionState ret{*config};
+  static CompressionState CreateResponseCompressionState(CompressionConfig* config) {
+    CompressionState ret{*config};
     ret.pCompressionConfig = config;
     return ret;
   }
@@ -115,7 +115,7 @@ class HttpRequestTest : public ::testing::Test {
 
   ConcatenatedHeaders globalHeaders{{"user-agent: aeronet"}};
   HttpClientConfig config{};
-  internal::CompressionState compressionState = CreateResponseCompressionState(&config.requestCompression.codec);
+  CompressionState compressionState = CreateResponseCompressionState(&config.requestCompression.codec);
 };
 
 TEST_F(HttpRequestTest, InvalidUrl) {

@@ -94,7 +94,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   state.trailerLen = 0;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
-  const http::StatusCode decompressCode = internal::HttpCodec::WillDecompress(_config.decompression, request.headers());
+  const http::StatusCode decompressCode = HttpCodec::WillDecompress(_config.decompression, request.headers());
   if (decompressCode == http::StatusCodeBadRequest) {
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed Content-Encoding");
     return BodyDecodeStatus::Error;
@@ -253,9 +253,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     _sharedBuffers.trailers.assign(bodyAndTrailers);
 
-    const auto res = internal::HttpCodec::DecompressChunkedBody(_decompressionState, _config.decompression, request,
-                                                                compressedChunks, totalCompressedSize, bodyAndTrailers,
-                                                                _sharedBuffers.buf);
+    const auto res =
+        HttpCodec::DecompressChunkedBody(_decompressionState, _config.decompression, request, compressedChunks,
+                                         totalCompressedSize, bodyAndTrailers, _sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, res.message);
       return BodyDecodeStatus::Error;

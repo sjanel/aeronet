@@ -44,7 +44,7 @@
 namespace aeronet {
 
 void ConnectionState::initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
-                                                   internal::CompressionState& compressionState) {
+                                                   CompressionState& compressionState) {
   request.init(config, compressionState);
   const bool isIpAddress = peerAddress.ss_family == AF_INET || peerAddress.ss_family == AF_INET6;
   if (isIpAddress) {

@@ -129,7 +129,7 @@ class HttpRequestViewTest : public ::testing::Test {
 
   void setResponsePossibleEncoding(Encoding encoding) { req._responsePossibleEncoding = encoding; }
 
-  void setCompressionState(internal::CompressionState* state) { req._pCompressionState = state; }
+  void setCompressionState(CompressionState* state) { req._pCompressionState = state; }
 
   void prefinalizeResponse(HttpResponse& resp, tracing::TelemetryContext& telemetryContext) {
     req.prefinalizeHttpResponse(resp, telemetryContext);
@@ -246,7 +246,7 @@ class HttpRequestViewTest : public ::testing::Test {
 
   ConcatenatedHeaders globalHeaders;
   CompressionConfig compressionConfig;
-  internal::CompressionState compressionState;
+  CompressionState compressionState;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncHandlerStatePool asyncStatePoolStorage;
 #endif
@@ -264,7 +264,7 @@ TEST_F(HttpRequestViewTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
 TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetric) {
   compressionConfig.minBytes = 1U;
   compressionConfig.maxCompressRatio = 0.01F;
-  compressionState = internal::CompressionState(compressionConfig);
+  compressionState = CompressionState(compressionConfig);
   setCompressionState(&compressionState);
 
   for (Encoding encoding : test::SupportedEncodings()) {

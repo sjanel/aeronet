@@ -13,8 +13,6 @@ namespace aeronet {
 
 class HttpRequestView;
 
-namespace internal {
-
 /// Abstract transport backend for HttpResponseWriter.
 ///
 /// The writer delegates all protocol-specific operations (header serialization,
@@ -61,5 +59,4 @@ class IWriterTransport {
   IWriterTransport() = default;
 };
 
-}  // namespace internal
 }  // namespace aeronet

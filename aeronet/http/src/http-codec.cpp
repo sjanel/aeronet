@@ -48,7 +48,7 @@
 #include <zstd.h>
 #endif
 
-namespace aeronet::internal {
+namespace aeronet {
 
 namespace {
 
@@ -815,4 +815,4 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& dec
   return res;
 }
 
-}  // namespace aeronet::internal
+}  // namespace aeronet

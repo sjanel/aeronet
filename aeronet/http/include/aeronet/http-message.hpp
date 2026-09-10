@@ -38,11 +38,11 @@
 namespace aeronet {
 
 class EncoderContext;
+class Http1WriterTransport;
+class HttpCodec;
+struct CompressionState;
 
 namespace internal {
-class HttpCodec;
-class Http1WriterTransport;
-struct CompressionState;
 #ifdef AERONET_ENABLE_HTTP_CLIENT
 class ClientConnection;
 #endif
@@ -52,10 +52,10 @@ class ClientConnection;
 namespace http2 {
 class Http2WriterTransport;
 class Http2ProtocolHandler;
-}  // namespace http2
 namespace internal {
 class Http2ClientEngine;
 }
+}  // namespace http2
 #endif
 
 // Internal base class for HttpResponse and HttpRequest, providing common functionality for both request and response
@@ -600,17 +600,17 @@ class HttpMessage {
 #endif
 
  private:
-  friend class internal::Http1WriterTransport;
+  friend class Http1WriterTransport;
   friend class HttpRequest;
   friend class HttpRequestView;
   friend class HttpResponseTest;
   friend class HttpResponse;
   friend class HttpResponseWriter;
-  friend class internal::HttpCodec;
+  friend class HttpCodec;
   friend class SingleHttpServer;
   friend class StaticFileHandler;
 #ifdef AERONET_ENABLE_HTTP2
-  friend class internal::Http2ClientEngine;
+  friend class http2::internal::Http2ClientEngine;
   friend class http2::Http2WriterTransport;
   friend class http2::Http2ProtocolHandler;
 #endif
@@ -706,7 +706,7 @@ class HttpMessage {
     Options() noexcept = default;
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    Options(internal::CompressionState& compressionState, Encoding expectedEncoding);
+    Options(CompressionState& compressionState, Encoding expectedEncoding);
 #endif
 
     [[nodiscard]] constexpr bool isClose() const noexcept { return (_optionsBitmap & Close) != 0; }
@@ -787,10 +787,10 @@ class HttpMessage {
     friend class HttpMessage;
     friend class HttpRequest;
     friend class HttpResponse;
-    friend class internal::HttpCodec;
+    friend class HttpCodec;
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    internal::CompressionState* _pCompressionState{nullptr};
+    CompressionState* _pCompressionState{nullptr};
 #endif
 
     std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing

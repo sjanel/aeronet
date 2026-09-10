@@ -16,6 +16,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -38,11 +39,8 @@ namespace aeronet {
 
 struct ConnectionState;
 struct HttpServerConfig;
-
-namespace internal {
 struct CompressionState;
 struct DecompressionState;
-}  // namespace internal
 
 namespace http2 {
 
@@ -60,13 +58,13 @@ namespace http2 {
 /// The server then routes all I/O through this handler instead of HTTP/1.1 parsing.
 ///
 /// Thread safety: NOT thread-safe. Executes on the single-threaded event loop.
-class Http2ProtocolHandler final : public IProtocolHandler {
+class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
  public:
   /// Create an HTTP/2 protocol handler with a request dispatcher.
   /// @param config HTTP/2 configuration
   /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                       internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
+                       CompressionState& compressionState, DecompressionState& decompressionState,
                        tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, const char* cachedDateHeader,
                        std::string_view clientAddress = {});
 
@@ -120,11 +118,7 @@ class Http2ProtocolHandler final : public IProtocolHandler {
     _deferredOutputBytes = 0;
 
     // Detach callbacks to avoid generating new outbound frames while the transport is closing.
-    _connection.setOnHeadersDecoded({});
-    _connection.setOnData({});
-    _connection.setOnStreamReset({});
-    _connection.setOnStreamClosed({});
-    _connection.setOnGoAway({});
+    _connection.setEventSink(nullptr);
   }
 
   // ============================
@@ -258,10 +252,15 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 
   using StreamsMap = flat_hash_map<uint32_t, StreamState>;
 
-  void setupCallbacks();
-  void onHeadersDecodedReceived(uint32_t streamId, const SvToSvMap& headers, bool endStream);
-  void onDataReceived(uint32_t streamId, std::span<const std::byte> data, bool endStream);
-  void onStreamClosed(uint32_t streamId);
+  void setupCallbacks() { _connection.setEventSink(this); }
+
+  void onHeadersDecoded(uint32_t streamId, const SvToSvMap& headers, bool endStream) override;
+  void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) override;
+  void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) override {}
+  void onStreamClosed(uint32_t streamId) override;
+  void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
+                [[maybe_unused]] std::string_view debugData) override {}
+  void onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) override;
 
   [[nodiscard]] std::size_t retainedOutboundBytes() const noexcept {
     return _connection.pendingOutputSize() + _deferredOutputBytes;
@@ -341,8 +340,8 @@ class Http2ProtocolHandler final : public IProtocolHandler {
   std::size_t _deferredOutputBytes{0};
 
   HttpServerConfig* _pServerConfig;
-  internal::CompressionState* _pCompressionState;
-  internal::DecompressionState* _pDecompressionState;
+  CompressionState* _pCompressionState;
+  DecompressionState* _pDecompressionState;
   RawChars* _pTmpBuffer;
   tracing::TelemetryContext* _pTelemetryContext;
   const char* _pCachedDateHeader;
@@ -367,10 +366,9 @@ class Http2ProtocolHandler final : public IProtocolHandler {
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
 /// @return Unique pointer to the created handler
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-    internal::CompressionState& compressionState, internal::DecompressionState& decompressionState,
-    tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, bool sendServerPrefaceForTls,
-    const char* cachedDateHeader, std::string_view clientAddress);
+    const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
+    DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
+    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress);
 
 }  // namespace http2
 }  // namespace aeronet

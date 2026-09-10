@@ -22,16 +22,18 @@ class HttpClient;
 class HttpRequest;
 struct FilePayload;
 
+#ifdef AERONET_ENABLE_HTTP2
+namespace http2::internal {
+class Http2ClientEngine;  // defined in http2-connection.cpp (client module): Http2Connection + exchange state
+}
+#endif
+
 // Result of an HttpClient request: the HttpResponse on success, or an HttpClientErrc on failure. The
 // success state carries a normal HttpResponse even for non-2xx statuses; only transport/protocol failures
 // land in the error state.
 using HttpClientResult = std::expected<HttpResponse, HttpClientErrc>;
 
 namespace internal {
-
-#ifdef AERONET_ENABLE_HTTP2
-class Http2ClientEngine;  // defined in http2-connection.cpp (client module): Http2Connection + exchange state
-#endif
 
 // Per-connection protocol engine: the seam between HttpClient's (protocol-agnostic) connection
 // management -- DNS/connect, pooling, redirects, retries -- and the wire protocol. One instance lives
@@ -160,7 +162,7 @@ class ClientConnection {
                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                   bool& requestSent);
 
-  std::unique_ptr<Http2ClientEngine> _h2;  // engaged iff _type == Type::Http2
+  std::unique_ptr<http2::internal::Http2ClientEngine> _h2;  // engaged iff _type == Type::Http2
 #endif
   Type _type{Type::Empty};
   bool _keepAlive{false};

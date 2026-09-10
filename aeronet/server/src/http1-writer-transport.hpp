@@ -27,7 +27,7 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/writer-transport.hpp"
 
-namespace aeronet::internal {
+namespace aeronet {
 
 /// HTTP/1.1 transport backend for HttpResponseWriter.
 /// Emits chunked transfer-encoding or fixed-length framed data over a TCP connection.
@@ -173,4 +173,4 @@ class Http1WriterTransport final : public IWriterTransport {
   std::span<const ResponseMiddleware> _routeResponseMiddleware;
 };
 
-}  // namespace aeronet::internal
+}  // namespace aeronet
