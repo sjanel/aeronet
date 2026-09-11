@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "aeronet/http2-frame-types.hpp"
@@ -102,7 +103,7 @@ class Http2Stream {
   /// Consume bytes from the send window (when sending DATA).
   /// @param bytes Number of bytes to consume
   /// @return True if there was sufficient window, false otherwise
-  [[nodiscard]] bool consumeSendWindow(uint32_t bytes) noexcept;
+  [[nodiscard]] bool consumeSendWindow(std::size_t bytes) noexcept;
 
   /// Consume bytes from the receive window (when receiving DATA).
   /// @param bytes Number of bytes to consume

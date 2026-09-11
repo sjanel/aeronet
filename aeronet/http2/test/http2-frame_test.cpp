@@ -140,13 +140,13 @@ TEST(Http2Frame, ParseDataFrameWithPadding) {
   EXPECT_EQ(static_cast<char>(frame.data[1]), 'B');
 }
 
-TEST(Http2Frame, WriteDataFrame) {
+TEST(Http2Frame, PrepareDataFrameGetStartPtr) {
   RawBytes buffer;
   const std::byte data[]{std::byte{'h'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
 
-  std::size_t written = WriteDataFrame(buffer, 1, data, true);
+  std::byte* pData = PrepareDataFrameGetStartPtr(buffer, 1, static_cast<uint32_t>(std::size(data)), true);
 
-  EXPECT_EQ(written, FrameHeader::kSize + 5);
+  EXPECT_EQ(pData, buffer.end() - std::size(data));
   EXPECT_EQ(buffer.size(), FrameHeader::kSize + 5);
 
   // Parse it back
@@ -666,7 +666,8 @@ TEST(Http2Frame, RoundTripDataFrame) {
     data[static_cast<std::size_t>(idx)] = static_cast<std::byte>(idx);
   }
 
-  WriteDataFrame(buffer, 7, data, true);
+  std::byte* pData = PrepareDataFrameGetStartPtr(buffer, 7, static_cast<uint32_t>(data.size()), true);
+  Copy(data.data(), data.size(), pData);
 
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);

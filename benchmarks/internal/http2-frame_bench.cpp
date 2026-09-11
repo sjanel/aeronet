@@ -1,6 +1,6 @@
 // HTTP/2 frame parsing and writing micro-benchmarks.
 // Measures ParseFrameHeader, ParseDataFrame, ParseHeadersFrame,
-// WriteDataFrame, WriteHeadersFrame, and bulk processFrames throughput.
+// PrepareDataFrameGetStartPtr, WriteHeadersFrame, and bulk processFrames throughput.
 #include <benchmark/benchmark.h>
 
 #include <array>
@@ -14,6 +14,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {
@@ -46,14 +47,14 @@ void BM_ParseDataFrame(benchmark::State& state) {
 
   RawBytes buf;
   // Write a DATA frame with the specified payload size
-  [[maybe_unused]] auto totalWritten =
-      WriteDataFrame(buf, /*streamId=*/1, std::span<const std::byte>(reinterpret_cast<const std::byte*>(""), 0),
-                     /*endStream=*/false);
+  PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, 0, /*endStream=*/false);
+
   // Overwrite with actual payload
   buf.clear();
   std::string payload(payloadSize, 'X');
   auto payloadBytes = std::span<const std::byte>(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
-  WriteDataFrame(buf, /*streamId=*/1, payloadBytes, /*endStream=*/true);
+  std::byte* pData = PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/true);
+  Copy(payloadBytes.data(), payloadBytes.size(), pData);
 
   // Parse just the payload portion (after 9-byte header)
   FrameHeader fh{};
@@ -114,7 +115,7 @@ void BM_ParseHeadersFrame(benchmark::State& state) {
 BENCHMARK(BM_ParseHeadersFrame);
 
 // ---------------------------------------------------------------------------
-// WriteDataFrame: various payload sizes
+// PrepareDataFrameGetStartPtr: various payload sizes
 // ---------------------------------------------------------------------------
 
 void BM_WriteDataFrame(benchmark::State& state) {
@@ -124,8 +125,9 @@ void BM_WriteDataFrame(benchmark::State& state) {
 
   for ([[maybe_unused]] auto iter : state) {
     RawBytes buf;
-    auto written = WriteDataFrame(buf, /*streamId=*/1, payloadBytes, /*endStream=*/false);
-    benchmark::DoNotOptimize(written);
+    std::byte* pData = PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/false);
+    Copy(payloadBytes.data(), payloadBytes.size(), pData);
+    benchmark::DoNotOptimize(pData);
     benchmark::DoNotOptimize(buf.data());
   }
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(payloadSize + 9));
@@ -231,7 +233,9 @@ void BM_BulkParseDataFrames(benchmark::State& state) {
   // Build contiguous buffer with N DATA frames
   RawBytes bulkBuf;
   for (int ii = 0; ii < frameCount; ++ii) {
-    WriteDataFrame(bulkBuf, /*streamId=*/1, payloadBytes, /*endStream=*/(ii == frameCount - 1));
+    std::byte* pData =
+        PrepareDataFrameGetStartPtr(bulkBuf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/(ii == frameCount - 1));
+    Copy(payloadBytes.data(), payloadBytes.size(), pData);
   }
 
   auto bufSpan = std::span<const std::byte>(bulkBuf.begin(), bulkBuf.size());

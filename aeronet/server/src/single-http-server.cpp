@@ -346,7 +346,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
         break;
 
       case ProtocolProcessResult::Action::Close:
-        // Protocol wants to close gracefully — flush GOAWAY etc. before closing
+        // Protocol wants to close gracefully - flush GOAWAY etc. before closing
         if (hasAccumulatedOutput) {
           flushOutbound(cnxIt);
         }
@@ -354,11 +354,11 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
         return true;
 
       case ProtocolProcessResult::Action::CloseImmediate:
-        // Protocol error — flush any error frames then close immediately
+        // Protocol error - flush any error frames then close immediately
         if (hasAccumulatedOutput) {
           flushOutbound(cnxIt);
         }
-        log::warn("Protocol handler reported error");
+        log::debug("Protocol handler reported error");
         pState->requestDrainAndClose();
         return true;
     }
