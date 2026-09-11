@@ -53,7 +53,10 @@ constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX
 
 // Copying a tiny body beside its frame header lets one transport write cover a batch of
 // responses. Larger bodies keep their owned allocation and gather-write without a copy.
+// TODO: make this configurable?
 constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
+
+static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
 constexpr uint64_t HpackHeaderFieldSize(std::string_view name, std::string_view value) noexcept {
   constexpr uint64_t kEntryOverhead = 32;
@@ -657,24 +660,22 @@ ErrorCode Http2Connection::prepareSendData(uint32_t streamId, std::size_t dataSi
   if (!pStream->canSend()) {
     return ErrorCode::StreamClosed;
   }
-  if (dataSize > static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+  if (std::cmp_less(_connectionSendWindow, dataSize)) {
+    return ErrorCode::FlowControlError;
+  }
+  if (!pStream->consumeSendWindow(dataSize)) {
     return ErrorCode::FlowControlError;
   }
 
-  const auto flowControlledSize = static_cast<uint32_t>(dataSize);
-  if (!pStream->consumeSendWindow(flowControlledSize)) {
-    return ErrorCode::FlowControlError;
-  }
-  if (std::cmp_less(_connectionSendWindow, flowControlledSize)) {
-    (void)pStream->increaseSendWindow(flowControlledSize);
-    return ErrorCode::FlowControlError;
-  }
-  _connectionSendWindow -= static_cast<int32_t>(flowControlledSize);
+  _connectionSendWindow -= static_cast<int32_t>(dataSize);
 
-  // canSend() above ensures the stream is Open or HalfClosedRemote, which are exactly
-  // the states onSendData() handles.
-  [[maybe_unused]] const ErrorCode err = pStream->onSendData(endStream);
+  // canSend() above ensures the stream is Open or HalfClosedRemote, which are exactly the states onSendData() handles.
+  const ErrorCode err = pStream->onSendData(endStream);
   assert(err == ErrorCode::NoError);
+
+  recordFrame(true, FrameType::Data, dataSize,
+              (dataSize + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
+
   return err;
 }
 
@@ -685,12 +686,12 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
   }
 
   if (data.size() <= kMaxInlineDataFrameCopySize) {
-    WriteDataFrame(_outputBuffer, streamId, data, endStream);
+    std::byte* pData =
+        PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(data.size()), endStream);
+    Copy(data.data(), data.size(), pData);
   } else {
     queueDataBlock(RawBytes(data), 0, data.size(), streamId, endStream);
   }
-  recordFrame(true, FrameType::Data, data.size(),
-              (data.size() + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
 }
 
@@ -706,17 +707,28 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::si
 
   assert(dataSize != 0);
   if (dataSize <= kMaxInlineDataFrameCopySize) {
-    WriteDataFrame(_outputBuffer, streamId, std::span<const std::byte>(owner.data() + dataOffset, dataSize), endStream);
+    std::byte* pData = PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(dataSize), endStream);
+    Copy(owner.data() + dataOffset, dataSize, pData);
   } else {
     queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
   }
-  recordFrame(true, FrameType::Data, dataSize,
-              (dataSize + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
   return ErrorCode::NoError;
+}
+
+[[nodiscard]] std::pair<std::byte*, ErrorCode> Http2Connection::sendDataInline(uint32_t streamId, std::size_t dataSize,
+                                                                               bool endStream) {
+  const ErrorCode err = prepareSendData(streamId, dataSize, endStream);
+  if (err != ErrorCode::NoError) {
+    return {nullptr, err};
+  }
+
+  return {PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(dataSize), endStream),
+          ErrorCode::NoError};
 }
 
 void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
+
   recordFrame(true, FrameType::RstStream, sizeof(uint32_t));
 
   const auto it = _streams.find(streamId);
@@ -1254,7 +1266,7 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
 
   if (header.streamId == 0) {
     // Connection-level
-    int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
+    const int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
     if (std::cmp_greater(newWindow, kMaxWindowSize)) {
       return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionWindowOverflow);
     }

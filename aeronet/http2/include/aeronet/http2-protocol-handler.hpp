@@ -171,6 +171,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// The callback receives a coroutine handle and optional pre-resume work function.
   /// Must be called before any async handlers are dispatched.
   using AsyncPostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+
   void setAsyncPostCallback(AsyncPostCallbackFn fn) noexcept { _asyncPostCallback = std::move(fn); }
 
   /// Resume a pending async task identified by its coroutine handle.
@@ -333,8 +334,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Unified per-stream state map (replaces _streamRequests, _pendingFileSends,
   /// _pendingStreamingSends, _pendingAsyncTasks, and _tunnelStreams).
   StreamsMap _streams;
-
-  RawChars _fileSendBuffer;
 
   // Bytes owned by flow-control-deferred in-memory response bodies and trailers across all streams.
   std::size_t _deferredOutputBytes{0};

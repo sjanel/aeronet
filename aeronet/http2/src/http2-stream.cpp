@@ -135,7 +135,7 @@ ErrorCode Http2Stream::onRecvPushPromise() noexcept {
 // Flow control
 // ============================
 
-bool Http2Stream::consumeSendWindow(uint32_t bytes) noexcept {
+bool Http2Stream::consumeSendWindow(std::size_t bytes) noexcept {
   if (std::cmp_less(_sendWindow, bytes)) {
     return false;
   }
@@ -166,8 +166,8 @@ ErrorCode Http2Stream::increaseSendWindow(uint32_t increment) noexcept {
 
 ErrorCode Http2Stream::increaseRecvWindow(uint32_t increment) noexcept {
   // Check for overflow. RFC 9113 §6.9.1 mandates that a window
-  // size must never exceed 2^31-1 (kMaxWindowSize). Without this check, a bug or
-  // double-increment could silently overflow the int32_t window.
+  // size must never exceed 2^31-1 (kMaxWindowSize). Without this check, a bug or double-increment could silently
+  // overflow the int32_t window.
   const int64_t newWindow = static_cast<int64_t>(_recvWindow) + static_cast<int64_t>(increment);
   if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;

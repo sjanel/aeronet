@@ -162,7 +162,7 @@ constexpr uint8_t ComputeHeaderFrameFlags(bool endStream, bool endHeaders, uint8
 }
 
 /// Write a DATA frame.
-std::size_t WriteDataFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> data, bool endStream);
+std::byte* PrepareDataFrameGetStartPtr(RawBytes& buffer, uint32_t streamId, uint32_t dataSz, bool endStream);
 
 /// Write a HEADERS frame with priority.
 std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock,
