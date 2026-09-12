@@ -18,6 +18,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
@@ -287,7 +288,10 @@ void BM_ConnectionProcessDataFrames(benchmark::State& state) {
   std::string payload(kPayloadSize, 'D');
   auto payloadBytes = std::span<const std::byte>(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
   for (int ii = 0; ii < frameCount; ++ii) {
-    WriteDataFrame(clientInput, /*streamId=*/1, payloadBytes, /*endStream=*/(ii == frameCount - 1));
+    std::byte* pData =
+        PrepareDataFrameGetStartPtr(clientInput, /*streamId=*/1, static_cast<uint32_t>(payloadBytes.size()),
+                                    /*endStream=*/(ii == frameCount - 1));
+    Copy(payloadBytes.data(), payloadBytes.size(), pData);
   }
 
   auto fullInput = std::span<const std::byte>(clientInput.begin(), clientInput.size());

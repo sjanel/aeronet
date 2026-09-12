@@ -158,10 +158,14 @@ template <class OutputSource>
   return output;
 }
 
-Http2Config MakeLoopHttp2Config(uint32_t maxStreamPendingBytes, uint32_t initialWindowSize = 65535U) {
+Http2Config MakeLoopHttp2Config(uint32_t maxStreamPendingBytes, uint32_t initialWindowSize = 65535U,
+                                uint32_t maxConcurrentStreams = 0) {
   Http2Config config;
   config.maxStreamPendingBytes = maxStreamPendingBytes;
   config.initialWindowSize = initialWindowSize;
+  if (maxConcurrentStreams != 0) {
+    config.maxConcurrentStreams = maxConcurrentStreams;
+  }
   return config;
 }
 
@@ -183,8 +187,9 @@ RawChars MakeGetHeaders(std::string_view path) {
 class Http2ProtocolLoopback {
  public:
   explicit Http2ProtocolLoopback(Router& router, uint32_t maxOutboundBufferBytes = 4U << 20U,
-                                 uint32_t maxStreamPendingBytes = 4U << 20U, uint32_t clientInitialWindowSize = 65535U)
-      : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes)),
+                                 uint32_t maxStreamPendingBytes = 4U << 20U, uint32_t clientInitialWindowSize = 65535U,
+                                 uint32_t serverMaxConcurrentStreams = 0)
+      : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes, 65535U, serverMaxConcurrentStreams)),
         clientCfg(MakeLoopHttp2Config(1U << 20U, clientInitialWindowSize)),
         serverConfig(MakeLoopServerConfig(maxOutboundBufferBytes)),
         compressionState(serverConfig.compression),
@@ -192,7 +197,7 @@ class Http2ProtocolLoopback {
                 kCachedDate, {}),
         client(clientCfg, false) {
     // Most tests exercise tunnel lifecycle, so explicitly authorize their common target.
-    static constexpr std::array<std::string_view, 1> kConnectAllowlist = {"example.com"};
+    static constexpr std::array<std::string_view, 1> kConnectAllowlist{"example.com"};
     serverConfig.withConnectAllowlist(kConnectAllowlist.begin(), kConnectAllowlist.end());
 
     clientSink.onHeadersDecodedFn = ([this](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
@@ -431,7 +436,8 @@ TEST(Http2ProtocolHandler, StreamingResponseStopsRetainingAtPendingLimit) {
 
 TEST(Http2ProtocolHandler, SlowReaderOutputPlateausAndLeavesInputUnconsumed) {
   Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, std::string(900, 'p')); });
+  router.setDefault(
+      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, std::string(900, 'p')); });
 
   static constexpr std::size_t kConnectionLimit = 4096;
   Http2ProtocolLoopback loop(router, kConnectionLimit, kConnectionLimit, 4096U);
@@ -455,6 +461,42 @@ TEST(Http2ProtocolHandler, SlowReaderOutputPlateausAndLeavesInputUnconsumed) {
       loop.handler.processInput(std::span<const std::byte>(requests).subspan(first.bytesConsumed), loop.state);
   EXPECT_EQ(stalled.bytesConsumed, 0U);
   EXPECT_EQ(loop.handler.pendingOutputSize(), plateauBytes);
+}
+
+TEST(Http2ProtocolHandler, NewStreamRejectedAtOutboundHighWaterMark) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, std::string(8000, 'x')); });
+
+  static constexpr uint32_t kMaxOutboundBufferBytes = 20000;
+  static constexpr uint32_t kMaxStreamPendingBytes = 1U << 20U;
+  static constexpr uint32_t kClientWindow = 0;  // never lets DATA be framed - deferred backlog is permanent
+  // Streams never close under kClientWindow == 0 (no END_STREAM is ever sent), so each iteration below
+  // consumes one concurrent-stream slot permanently. Give ourselves generous headroom above the ~450 or so
+  // streams we actually need, so the client's own concurrent-stream bookkeeping never gets in the way of what
+  // we're testing: the server-side outbound-byte high-water mark.
+  static constexpr uint32_t kServerMaxConcurrentStreams = 5000;
+
+  Http2ProtocolLoopback loop(router, kMaxOutboundBufferBytes, kMaxStreamPendingBytes, kClientWindow,
+                             kServerMaxConcurrentStreams);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/junk");
+
+  // Deliberately never drain server->client output during this loop (see rationale below).
+  for (uint32_t streamId = 1; streamId < 1201; streamId += 2) {
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+  }
+
+  // Drain everything the server produced in one go and see what the client observed.
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::RefusedStream);
+
+  const bool saw503 = std::ranges::any_of(loop.clientHeaders,
+                                          [](const HeaderEvent& ev) { return GetHeaderValue(ev, ":status") == "503"; });
+  EXPECT_TRUE(saw503);
 }
 
 TEST(Http2ProtocolHandler, ConnectionPreface) {
@@ -5112,6 +5154,219 @@ TEST(Http2ProtocolHandler, RequestTrailersSurfacedToHandler) {
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
   EXPECT_TRUE(loop.streamResets.empty());
+}
+
+TEST(Http2ProtocolHandler, DataFrameOnStreamWithReleasedRequestIsIgnored) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&handlerCalled](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  // A zero-byte client window forces the (non-empty) error-response body to be fully deferred: the stream
+  // survives in _streams (holding the deferred send) even though its HttpRequestView has already been reset.
+  static constexpr uint32_t kClientWindow = 0;
+  Http2ProtocolLoopback loop(router, 4U << 20U, 4U << 20U, kClientWindow);
+  loop.connect();
+
+  // An unsupported method is rejected with a (non-empty-body) 501 purely from the headers, before any body is
+  // read - regardless of endStream. Send it with endStream=false, as if the client still intended to follow up
+  // with a request body.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "BREW"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/whatever"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "501");
+  EXPECT_FALSE(loop.clientHeaders.back().endStream);
+
+  const std::size_t headersSeenBeforeData = loop.clientHeaders.size();
+
+  // The client's original HEADERS had endStream=false, so it's entitled to still send request-body DATA on
+  // this stream. The server, however, already rejected and released the request object before reading any
+  // body (releaseStreamAfterResponse() reset it to {} once the deferred send was recorded), so this DATA
+  // arrives for a stream that is present in _streams but has no active request: onData()'s
+  // `!state.hasRequest()` branch should fire and the frame should be silently ignored.
+  const std::string_view payload = "trailing-body-after-reject";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(payload.data(), payload.size())), true),
+            ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // Ignored: no crash, no additional response frames, no stream reset, no dispatch to the router.
+  EXPECT_EQ(loop.clientHeaders.size(), headersSeenBeforeData);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_FALSE(handlerCalled);
+
+  // The connection itself is unaffected by the ignored DATA: a brand-new, well-formed request on a fresh
+  // stream still works normally.
+  RawChars okHdrs = MakeGetHeaders("/ok");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(okHdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  const auto okResp = std::ranges::find(loop.clientHeaders, 3U, &HeaderEvent::streamId);
+  ASSERT_NE(okResp, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*okResp, ":status"), "200");
+  EXPECT_TRUE(handlerCalled);
+}
+
+TEST(Http2ProtocolHandler, TrailingHeadersOnStreamWithReleasedRequestRejected) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&handlerCalled](const HttpRequestView& req) {
+    handlerCalled = true;
+    return req.makeResponse(http::StatusCodeOK);
+  });
+
+  // Zero client window: the (non-empty) 501 response body can't be framed at all, so it's fully deferred -
+  // the stream survives in _streams (holding the deferred send) even though releaseStreamAfterResponse()
+  // already reset its HttpRequestView to {} once the deferred send was recorded.
+  static constexpr uint32_t kClientWindow = 0;
+  Http2ProtocolLoopback loop(router, 4U << 20U, 4U << 20U, kClientWindow);
+  loop.connect();
+
+  // Unsupported method → rejected with a 501 purely from the headers, before any body is read. Sent with
+  // endStream=false, as if the client still intended to follow up with a request body/trailers.
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "BREW"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/whatever"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "501");
+
+  // The client's original HEADERS had endStream=false, so it's entitled to still send a trailing, well-formed
+  // HEADERS block (no pseudo-headers, END_STREAM set). But the server already released the request object
+  // before this arrived: onTrailersReceived's `!state.hasRequest()` check should catch it and reject with
+  // RST_STREAM(ProtocolError), never reaching the router.
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc123"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(handlerCalled);
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ProtocolError);
+}
+
+TEST(Http2ProtocolHandler, ConnectionWindowAloneStallsFileSendWhileStreamWindowRemains) {
+  test::ScopedTempDir tmpDir;
+  // Comfortably bigger than any plausible default connection-level window.
+  const std::string fileContent(4'000'000, 'F');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  Router router;
+  const auto filePath = tmpFile.filePath().string();
+  router.setPath(http::Method::GET, "/big", [&filePath](const HttpRequestView&) {
+    return HttpResponse(200).file(File(filePath), "application/octet-stream");
+  });
+
+  // Give the client a per-stream initial window far bigger than the (default) connection
+  // window, so it's the connection window - not the per-stream one - that runs dry first.
+  static constexpr uint32_t kHugeStreamWindow = 16U << 20U;  // 16 MiB
+  static constexpr uint32_t kGenerousLimits = 16U << 20U;
+  Http2ProtocolLoopback loop(router, kGenerousLimits, kGenerousLimits, kHugeStreamWindow);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/big");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();  // sendPendingFileBody runs synchronously here and stalls out
+                              // mid-file once the connection window is exhausted.
+
+  Http2Stream* pStream = loop.handler.connection().getStream(1);
+  ASSERT_NE(pStream, nullptr);
+
+  EXPECT_EQ(loop.handler.connection().connectionSendWindow(), 0);
+  EXPECT_GT(pStream->sendWindow(), 0);  // streamWin > 0 while connWin == 0.
+}
+
+TEST(Http2ProtocolHandler, StreamingDeferredSendStallsOnConnectionWindowAloneWhileStreamWindowRemains) {
+  Router router;
+  router.setPath(http::Method::GET, "/stream-huge",
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCode{200});
+                   const std::string chunk(65536, 'S');
+                   for (int idx = 0; idx < 100; ++idx) {  // ~6.4 MB total
+                     writer.writeBody(chunk);
+                   }
+                   writer.end();
+                 }});
+
+  // Per-stream window far larger than any connection-level default, so it's the
+  // connection window - not the per-stream one - that runs dry first.
+  static constexpr uint32_t kHugeStreamWindow = 16U << 20U;  // 16 MiB
+  static constexpr uint32_t kGenerousLimits = 32U << 20U;    // avoid tripping outbound/stream-pending caps
+  Http2ProtocolLoopback loop(router, kGenerousLimits, kGenerousLimits, kHugeStreamWindow);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/stream-huge");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  // Handler runs synchronously here: whatever fits in the (still-default) connection
+  // window goes out immediately, the remainder is buffered as a PendingStreamingSend.
+  loop.pumpClientToServer();
+
+  // Draining that queued output is what triggers onOutputWritten() -> flushPendingStreamingSends().
+  // By now connWin is already 0 (from the synchronous burst above) while streamWin is still huge,
+  // so the flush's very first window check breaks via the connWin<=0 operand alone.
+  loop.pumpServerToClient();
+
+  Http2Stream* pStream = loop.handler.connection().getStream(1);
+  ASSERT_NE(pStream, nullptr);
+
+  EXPECT_EQ(loop.handler.connection().connectionSendWindow(), 0);
+  EXPECT_GT(pStream->sendWindow(), 0);
+}
+
+TEST(Http2ProtocolHandler, FilePayloadShortReadReturnsInternalErrorAndResetsStream) {
+  test::ScopedTempDir tmpDir;
+  const std::string fileContent(200000, 'Q');  // > 65535, forces at least 2 send rounds
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+
+  Router router;
+  const auto filePath = tmpFile.filePath().string();
+  router.setPath(http::Method::GET, "/shrinking", [&filePath](const HttpRequestView&) {
+    File fd(filePath);
+    return HttpResponse(200).file(std::move(fd), "application/octet-stream");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/shrinking");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // synchronous first burst, capped by the 65535-byte stream window
+  loop.pumpServerToClient();  // client receives DATA, queues WINDOW_UPDATE for stream 1
+
+  // Shrink the file below what's already been "promised" by pending.length, so the next
+  // readAt() at the current pending.offset lands past the (new) end of file.
+  std::filesystem::resize_file(filePath, 100);
+
+  // Delivers the client's WINDOW_UPDATE -> flushPendingFileSends() -> sendPendingFileBody()
+  // resumes at pending.offset (~134 KB in), which is now well past EOF -> readCount == 0.
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
 }
 
 TEST(Http2ProtocolHandler, RequestTrailersWithoutBodyDispatchesEmptyBody) {

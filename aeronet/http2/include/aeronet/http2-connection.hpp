@@ -58,8 +58,7 @@ enum class ConnectionState : uint8_t {
 /// - HPACK compression state
 /// - Error handling and GOAWAY
 ///
-/// Thread safety: NOT thread-safe. The connection is managed on the
-/// single-threaded event loop.
+/// Thread safety: NOT thread-safe. The connection is managed on the single-threaded event loop.
 class Http2Connection {
  public:
   /// Result of processing incoming data.
@@ -220,6 +219,9 @@ class Http2Connection {
   /// Send a subrange of an owned allocation without copying it.
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
                                    bool endStream);
+
+  [[nodiscard]] std::pair<std::byte*, ErrorCode> sendDataInline(uint32_t streamId, std::size_t dataSize,
+                                                                bool endStream);
 
   /// Send RST_STREAM frame.
   /// @param streamId Stream ID

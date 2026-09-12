@@ -55,11 +55,14 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "http2-header-is-valid.hpp"
 #include "http2-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
+#endif
+
+#ifndef NDEBUG
+#include "http2-header-is-valid.hpp"
 #endif
 
 namespace aeronet::http2 {
@@ -74,7 +77,6 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
                                            const char* cachedDateHeader, std::string_view clientAddress)
     : _connection(config, true, &telemetryContext),
       _pRouter(&router),
-      _fileSendBuffer(64UL * 1024UL),
       _pServerConfig(&serverConfig),
       _pCompressionState(&compressionState),
       _pDecompressionState(&decompressionState),
@@ -422,7 +424,10 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
   // second HEADERS block on a tunnel stream, on a stream whose request was already dispatched, or one that
   // fails to close the stream. sendRstStream fires onStreamReset, which erases the stream entry (and cleans
   // up any tunnel); the follow-up erase-by-key is a harmless no-op that keeps the intent explicit.
-  if (!state.hasRequest() || state.tunnelUpstreamFd != kInvalidHandle || !endStream) {
+  // No need to add a || state.tunnelUpstreamFd != kInvalidHandle because for successfull CONNECT request,
+  // state.hasRequest() == false.
+  assert(state.tunnelUpstreamFd == kInvalidHandle || !state.hasRequest());
+  if (!state.hasRequest() || !endStream) {
     _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
     _streams.erase(streamId);
     return;
@@ -435,11 +440,14 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
   // the decoded views, which are only valid for the duration of this callback.
   std::size_t trailersTotalLen = 0U;
   for (const auto& [name, value] : trailers) {
-    if (name.empty() || name.front() == ':' || !IsValidHTTP2HeaderName(name) || !IsValidHTTP2HeaderValue(value)) {
+    assert(!name.empty());
+    if (name.front() == ':') {  // pseudo headers are forbidden in trailers
       _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
       _streams.erase(streamId);
       return;
     }
+    // Already validated
+    assert(IsValidHTTP2HeaderName(name) && IsValidHTTP2HeaderValue(value));
     trailersTotalLen += name.size() + value.size();
   }
 
@@ -453,16 +461,17 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, const SvT
     std::string_view storedValue(buf, value.size());
     buf = Append(value, buf);
 
-    // Trailers count toward the request head-size budget, combined with the initial headers.
-    req._headSpanSize += storedName.size() + storedValue.size();
     req._trailers[storedName] = storedValue;
   }
+
+  // Trailers count toward the request head-size budget, combined with the initial headers.
+  req._headSpanSize += trailersTotalLen;
 
   finalizeRequestBodyAndDispatch(it);
 }
 
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
-  auto it = _streams.find(streamId);
+  const auto it = _streams.find(streamId);
   if (it == _streams.end()) {
     return;
   }
@@ -542,31 +551,28 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
         pending.length,
         windowLimit,
         static_cast<std::size_t>(peerMaxFrame),
-        static_cast<std::size_t>(_fileSendBuffer.capacity()),
     });
+
     // All min() inputs are > 0: pending.remaining (loop condition), windowLimit (checked > 0),
-    // peerMaxFrame (>= 16384 per HTTP/2), fileSendBuffer capacity (always > 0).
+    // peerMaxFrame (>= 16384 per HTTP/2).
     assert(chunkSize != 0 && "chunkSize cannot be 0 when all inputs are positive");
 
-    _fileSendBuffer.clear();
-    _fileSendBuffer.ensureAvailableCapacityExponential(chunkSize);
+    RawBytes buf(chunkSize);
 
-    const std::size_t readCount = pending.file.readAt(
-        std::span<std::byte>(reinterpret_cast<std::byte*>(_fileSendBuffer.data()), chunkSize), pending.offset);
+    const std::size_t readCount = pending.file.readAt(std::span<std::byte>(buf.data(), chunkSize), pending.offset);
     if (readCount == 0 || readCount == File::kError) [[unlikely]] {
       log::error("HTTP/2 file payload short read at offset {}", pending.offset);
       return ErrorCode::InternalError;
     }
 
-    _fileSendBuffer.setSize(readCount);
+    buf.setSize(readCount);
+
     const bool lastBodyChunk = (readCount >= pending.length);
     const bool endStream = lastBodyChunk && endStreamAfterBody;
 
-    const auto bytes =
-        std::span<const std::byte>(reinterpret_cast<const std::byte*>(_fileSendBuffer.data()), _fileSendBuffer.size());
     // sendData cannot fail here: stream is valid (asserted above), flow control windows
     // are sufficient (chunkSize bounded by both), and stream state allows sending.
-    [[maybe_unused]] const ErrorCode err = _connection.sendData(streamId, bytes, endStream);
+    [[maybe_unused]] const ErrorCode err = _connection.sendData(streamId, std::move(buf), 0UL, readCount, endStream);
     assert(err == ErrorCode::NoError && "sendData failed despite valid stream and sufficient flow control");
 
     pending.offset += readCount;
@@ -578,7 +584,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
 
 void Http2ProtocolHandler::flushPendingFileSends() {
   for (auto it = _streams.begin(); it != _streams.end();) {
-    auto* pFileSend = it->second.fileSend();
+    PendingFileSend* pFileSend = it->second.fileSend();
     if (pFileSend == nullptr) {
       ++it;
       continue;
@@ -1210,9 +1216,9 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         _streams[streamId].pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pending));
       } else {
         // File payload fully sent inline. Send trailers if present.
-        // Note: hasFile && hasTrailers is currently unreachable via the public HttpResponse API
-        // (trailerAddLine requires an in-memory body, which file() clears), but kept for
-        // forward-compatibility if the API is relaxed in the future.
+        // Note: hasFile && hasTrailers is currently unreachable via the public HttpResponse API (trailerAddLine
+        // requires an in-memory body, which file() clears), but kept for forward-compatibility if the API is relaxed in
+        // the future.
         assert(!hasTrailers && "file + trailers is not supported by the current HttpResponse API");
       }
     } else {

@@ -196,11 +196,12 @@ void ParseContinuationFrame(FrameHeader header, std::span<const std::byte> paylo
 // Frame writing functions
 // ============================
 
-std::size_t WriteDataFrame(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+std::byte* PrepareDataFrameGetStartPtr(RawBytes& buffer, uint32_t streamId, uint32_t dataSz, bool endStream) {
   uint8_t flags = endStream ? FrameFlags::DataEndStream : FrameFlags::None;
-  const auto ret = WriteFrame(buffer, FrameType::Data, flags, streamId, static_cast<uint32_t>(data.size()));
-  buffer.unchecked_append(data);
-  return ret;
+  WriteFrame(buffer, FrameType::Data, flags, streamId, dataSz);
+  std::byte* pData = buffer.end();
+  buffer.addSize(dataSz);
+  return pData;
 }
 
 std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, std::span<const std::byte> headerBlock,

@@ -181,28 +181,37 @@ char* File::appendIdentityData(char* pData) const noexcept {
 }
 
 std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
-  for (;;) {
+  std::size_t totalRead = 0;
+  while (totalRead < dst.size()) {
+    const std::span<std::byte> remaining = dst.subspan(totalRead);
+    const std::size_t curOffset = offset + totalRead;
 #ifdef AERONET_POSIX
-    const auto readResult = ::pread(_fd.fd(), dst.data(), dst.size(), static_cast<off_t>(offset));
+    const auto readResult = ::pread(_fd.fd(), remaining.data(), remaining.size(), static_cast<off_t>(curOffset));
 #elifdef AERONET_WINDOWS
     // Windows has no pread(); emulate by seeking + reading (file descriptors are not shared across threads here).
-    if (_lseeki64(static_cast<int>(_fd.fd()), static_cast<__int64>(offset), SEEK_SET) == -1) {
-      log::error("Unable to seek file (fd {}, offset {}): error {}: {}", static_cast<int>(_fd.fd()), offset, errno,
+    if (_lseeki64(static_cast<int>(_fd.fd()), static_cast<__int64>(curOffset), SEEK_SET) == -1) {
+      log::error("Unable to seek file (fd {}, offset {}): error {}: {}", static_cast<int>(_fd.fd()), curOffset, errno,
                  SystemErrorMessage(errno));
       return kError;
     }
-    const auto readResult = _read(static_cast<int>(_fd.fd()), dst.data(), static_cast<unsigned int>(dst.size()));
+    const auto readResult =
+        _read(static_cast<int>(_fd.fd()), remaining.data(), static_cast<unsigned int>(remaining.size()));
 #endif
-    if (readResult >= 0) {
-      return static_cast<std::size_t>(readResult);
+    if (readResult < 0) {
+      if (errno == error::kInterrupted) {
+        continue;  // retry the same (unadvanced) remaining span
+      }
+      log::error("Unable to pread file (fd {}, offset {}, len {}): error {}: {}", _fd.fd(), curOffset, remaining.size(),
+                 errno, SystemErrorMessage(errno));
+      return kError;
     }
-    if (errno == error::kInterrupted) {
-      continue;
+    if (readResult == 0) {
+      // End of file reached before filling dst entirely.
+      break;
     }
-    log::error("Unable to pread file (fd {}, offset {}, len {}): error {}: {}", _fd.fd(), offset, dst.size(), errno,
-               SystemErrorMessage(errno));
-    return kError;
+    totalRead += static_cast<std::size_t>(readResult);
   }
+  return totalRead;
 }
 
 std::string_view File::detectedContentType() const {
