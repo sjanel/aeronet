@@ -14,6 +14,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 
 namespace aeronet::http2 {

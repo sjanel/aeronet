@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <list>
+#include <random>
 
 namespace aeronet {
 
@@ -40,6 +41,26 @@ TYPED_TEST(ToUpperLowerTest, ToLowerTest) {
 
   EXPECT_EQ(tolower(static_cast<T>('o')), static_cast<T>('o'));
   EXPECT_EQ(tolower(static_cast<T>('2')), static_cast<T>('2'));
+}
+
+TYPED_TEST(ToUpperLowerTest, Random) {
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
+  std::mt19937 rng(20251115);
+  std::uniform_int_distribution<int> charDist(0, 127);
+
+  for (int i = 0; i < 1000; ++i) {
+    const char ch = static_cast<char>(charDist(rng));
+    if (ch >= 'a' && ch <= 'z') {
+      EXPECT_EQ(tolower(ch), ch);
+      EXPECT_EQ(toupper(ch) - 'A', ch - 'a');
+    } else if (ch >= 'A' && ch <= 'Z') {
+      EXPECT_EQ(tolower(ch) - 'a', ch - 'A');
+      EXPECT_EQ(toupper(ch), ch);
+    } else {
+      EXPECT_EQ(tolower(ch), ch);
+      EXPECT_EQ(toupper(ch), ch);
+    }
+  }
 }
 
 }  // namespace aeronet

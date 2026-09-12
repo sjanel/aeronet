@@ -30,7 +30,7 @@ class ClientConnection;
 // HttpResponse reconstructs Content-Type and the decoded Content-Length via body(), and chunked framing is
 // de-framed away. Connection is additionally inspected for keep-alive decisions but is still stored. Other
 // header values are preserved while field names are normalized to lower-case in the receive buffer before insertion.
-class ResponseParser {
+class Http1ResponseParser {
  public:
   enum class Status : uint8_t {
     NeedMore,  // not enough bytes yet (read more, unless eof)
@@ -43,7 +43,7 @@ class ResponseParser {
   // body is transferred into the response and replaced with an equal-capacity empty allocation; an oversized
   // scratch is instead retained while the small body is copied. It must outlive the parser and stay distinct
   // from the receive buffer fed to parse() (de-framing reads from that buffer while writing into this one).
-  explicit ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(&bodyBuf) {}
+  explicit Http1ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(&bodyBuf) {}
 
   // Optional automatic response-body decompression. When `state` is non-null and the response carries a
   // (non-identity) Content-Encoding, the body is decoded at install time directly from the receive buffer

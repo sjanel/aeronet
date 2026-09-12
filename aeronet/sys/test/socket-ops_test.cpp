@@ -392,6 +392,33 @@ TEST_F(SocketOpsTest, TcpCorkGuardCorksAndUncorks) {
   CloseSocket(fd);
 }
 
+TEST_F(SocketOpsTest, IsConnectionStaleRetriesOnEintrThenQuiet) {
+  test::g_recv_actions.reset();
+  test::QueueResetGuard guard(test::g_recv_actions);
+
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  BaseFd endB(sockets[1]);
+  test::PushRecvAction(endA.fd(), {-1, EINTR});
+  test::PushRecvAction(endA.fd(), {-1, EAGAIN});
+  EXPECT_FALSE(IsConnectionStale(endA.fd()));
+}
+
+TEST_F(SocketOpsTest, IsConnectionStaleRetriesOnEintrThenDead) {
+  test::g_recv_actions.reset();
+  test::QueueResetGuard guard(test::g_recv_actions);
+
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  BaseFd endB(sockets[1]);
+  test::PushRecvAction(endA.fd(), {-1, EINTR});
+  test::PushRecvAction(endA.fd(), {-1, EINTR});
+  test::PushRecvAction(endA.fd(), {-1, ECONNRESET});
+  EXPECT_TRUE(IsConnectionStale(endA.fd()));
+}
+
 #endif  // AERONET_LINUX
 
 TEST_F(SocketOpsTest, TcpCorkGuardNoOpOnInvalidHandle) {

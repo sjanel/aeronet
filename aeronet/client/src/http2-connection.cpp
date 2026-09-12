@@ -41,7 +41,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-#include "response-parser.hpp"
+#include "http1-response-parser.hpp"
 
 namespace aeronet::http2::internal {
 
@@ -586,15 +586,15 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
           return std::unexpected(HttpClientErrc::malformedResponse);
         }
         resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
-        RawChars* decodedOwner = ResponseParser::WholeBufferOwner(decoded, client._codec.decompressOut);
+        RawChars* decodedOwner = Http1ResponseParser::WholeBufferOwner(decoded, client._codec.decompressOut);
         if (decodedOwner == nullptr) {
-          decodedOwner = ResponseParser::WholeBufferOwner(decoded, bodyBuf);
+          decodedOwner = Http1ResponseParser::WholeBufferOwner(decoded, bodyBuf);
         }
-        ResponseParser::InstallBodyStorage(resp, decoded, contentType, decodedOwner);
+        Http1ResponseParser::InstallBodyStorage(resp, decoded, contentType, decodedOwner);
         return resp;
       }
     }
-    ResponseParser::InstallBodyStorage(resp, bodyView, contentType, &bodyBuf);
+    Http1ResponseParser::InstallBodyStorage(resp, bodyView, contentType, &bodyBuf);
   }
   return resp;
 }
