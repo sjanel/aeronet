@@ -599,7 +599,6 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     const bool endStreamAfterBody = pending.trailersData.empty();
     const ErrorCode err = sendPendingFileBody(streamId, pending.filePayload, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
-      log::error("HTTP/2 failed to continue file payload on stream {}: {}", streamId, ErrorCodeName(err));
       it = _streams.erase(it);
       _connection.sendRstStream(streamId, err);
       continue;
@@ -616,16 +615,24 @@ void Http2ProtocolHandler::flushPendingFileSends() {
 
     it->second.pending.reset();
 
+    // Every call site that leaves a PendingFileSend queued (dispatchRequest, onAsyncTaskCompleted,
+    // handleStreamingRequest) immediately follows up with releaseStreamAfterResponse(it), so it->second.hasRequest()
+    // is impossible.
+    assert(!it->second.hasRequest());
+
+    // CONNECT tunnels never populate pending with a PendingFileSend in the first place — tunnel bytes flow through
+    // injectTunnelData() → _connection.sendData() directly, bypassing the deferred-send machinery entirely. So a stream
+    // can never simultaneously be "a tunnel" (tunnelUpstreamFd set) and have fileSend() != nullptr (which is the
+    // precondition for even entering this loop body — see the if (pFileSend == nullptr) { ++it; continue; } guard right
+    // above).
+    assert(it->second.tunnelUpstreamFd == kInvalidHandle);
+
     // If the stream has no other active state, remove the entry entirely.
-    if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
-      it = _streams.erase(it);
-      // The file send completed outside frame processing (from onOutputWritten): finalize the stream's
-      // connection-level lifecycle (active-stream accounting + retention). Our per-stream state is
-      // already erased, so the stream-closed callback finds nothing to re-enter.
-      _connection.finalizeSendClosedStream(streamId);
-    } else {
-      ++it;
-    }
+    it = _streams.erase(it);
+    // The file send completed outside frame processing (from onOutputWritten): finalize the stream's
+    // connection-level lifecycle (active-stream accounting + retention). Our per-stream state is
+    // already erased, so the stream-closed callback finds nothing to re-enter.
+    _connection.finalizeSendClosedStream(streamId);
   }
 }
 
@@ -705,16 +712,15 @@ void Http2ProtocolHandler::flushPendingStreamingSends() {
 
     it->second.pending.reset();
 
-    // If the stream has no other active state, remove the entry entirely.
-    if (!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle) {
-      it = _streams.erase(it);
-      // The deferred body (and trailers) completed outside frame processing (from onOutputWritten):
-      // finalize the stream's connection-level lifecycle (active-stream accounting + retention). Our
-      // per-stream state is already erased, so the stream-closed callback finds nothing to re-enter.
-      _connection.finalizeSendClosedStream(streamId);
-    } else {
-      ++it;
-    }
+    // handleStreamingRequest() is the only place that populates a PendingStreamingSend, and releaseStreamAfterResponse
+    // is called.
+    assert(!it->second.hasRequest() && it->second.tunnelUpstreamFd == kInvalidHandle);
+
+    it = _streams.erase(it);
+    // The deferred body (and trailers) completed outside frame processing (from onOutputWritten):
+    // finalize the stream's connection-level lifecycle (active-stream accounting + retention). Our
+    // per-stream state is already erased, so the stream-closed callback finds nothing to re-enter.
+    _connection.finalizeSendClosedStream(streamId);
   }
 }
 
@@ -811,7 +817,7 @@ bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, Stre
     globalResult->finalizeHeadersAndBody();
     const auto middlewareStatus = globalResult->status();
     const auto streamId = it->first;
-    ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
+    const ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
     onRequestCompleted(request, middlewareStatus);
     if (err != ErrorCode::NoError) [[unlikely]] {
       log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));

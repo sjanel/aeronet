@@ -1,4 +1,4 @@
-#include "response-parser.hpp"
+#include "http1-response-parser.hpp"
 
 #include <cassert>
 #include <charconv>
@@ -144,12 +144,12 @@ constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, boo
 
 }  // namespace
 
-RawChars* ResponseParser::WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
+RawChars* Http1ResponseParser::WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
   return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
 }
 
-void ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
-                                        RawChars* owner) {
+void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
+                                             RawChars* owner) {
   if (owner == nullptr || body.empty()) {
     resp.body(body, contentType);
     return;
@@ -176,7 +176,7 @@ void ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view bod
   *owner = std::move(replacement);
 }
 
-void ResponseParser::reset(bool headRequest) noexcept {
+void Http1ResponseParser::reset(bool headRequest) noexcept {
   _bodyBuf->clear();
   _pos = 0;
   _bodyStart = 0;
@@ -196,7 +196,7 @@ void ResponseParser::reset(bool headRequest) noexcept {
   _chunked = false;
 }
 
-ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::string_view buffer) const {
+Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp, std::string_view buffer) const {
   if (_framing == Framing::None) {
     return Status::Complete;  // bodyless response (HEAD / 204 / 304 / 1xx)
   }
@@ -247,15 +247,15 @@ ResponseParser::Status ResponseParser::installBody(HttpResponse& resp, std::stri
   return Status::Complete;
 }
 
-ResponseParser::Status ResponseParser::parse(RawChars& buffer, bool eof, HttpResponse& resp,
-                                             std::size_t maxResponseBytes) {
+Http1ResponseParser::Status Http1ResponseParser::parse(RawChars& buffer, bool eof, HttpResponse& resp,
+                                                       std::size_t maxResponseBytes) {
   _receiveBuf = &buffer;
   const Status status = parse(std::span<char>(buffer.data(), buffer.size()), eof, resp, maxResponseBytes);
   _receiveBuf = nullptr;
   return status;
 }
 
-ResponseParser::Status ResponseParser::decideFraming() {
+Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
   // Connection persistence: HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to close.
   bool keepAlive = _http11;
   if (_connectionCloseSeen) {
@@ -301,7 +301,8 @@ ResponseParser::Status ResponseParser::decideFraming() {
   return Status::NeedMore;
 }
 
-ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes) {
+Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buffer, bool eof,
+                                                           std::size_t maxResponseBytes) {
   switch (_framing) {
     case Framing::Length: {
       const std::size_t available = buffer.size() - _pos;
@@ -411,8 +412,8 @@ ResponseParser::Status ResponseParser::parseBody(std::string_view buffer, bool e
   }
 }
 
-ResponseParser::Status ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
-                                             std::size_t maxResponseBytes) {
+Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
+                                                       std::size_t maxResponseBytes) {
   // --- Status line + headers ---
   const char* const bufferBegin = buffer.data();
   const char* const bufferEnd = bufferBegin + buffer.size();
@@ -521,6 +522,7 @@ ResponseParser::Status ResponseParser::parse(std::span<char> buffer, bool eof, H
       if (name == http::Connection) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
       }
+      // TODO: header names and values should be checked
       resp.headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
   }

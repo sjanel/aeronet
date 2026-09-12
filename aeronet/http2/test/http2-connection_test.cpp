@@ -1976,7 +1976,7 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Disable the onData callback to prevent automatic WINDOW_UPDATE
-  connSink.onDataFn = (nullptr);
+  connSink.onDataFn = {};
 
   // Create a stream
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);

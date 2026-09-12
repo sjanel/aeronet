@@ -618,7 +618,7 @@ class HttpMessage {
   friend class internal::ClientConnection;
   friend class HttpClient;
   friend class HttpRequest;
-  friend class ResponseParser;
+  friend class Http1ResponseParser;
   friend class HttpRequestTest;
 #endif
 

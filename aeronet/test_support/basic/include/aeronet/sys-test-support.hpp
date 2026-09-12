@@ -565,6 +565,7 @@ inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_accept_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
 inline ActionQueue<std::pair<int64_t, int>> g_send_actions;  // (ret, errno)
+inline KeyedActionQueue<int, IoAction> g_recv_actions;
 
 #ifdef AERONET_POSIX
 inline thread_local vector<std::string>* g_send_capture = nullptr;
@@ -751,6 +752,10 @@ inline void PushListenAction(SyscallAction action) { g_listen_actions.push(actio
 inline void PushAcceptAction(SyscallAction action) { g_accept_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
 inline void PushSendAction(std::pair<int64_t, int> action) { g_send_actions.push(action); }
+// NEW
+inline void SetRecvActions(int fd, std::initializer_list<IoAction> actions) { g_recv_actions.setActions(fd, actions); }
+inline void PushRecvAction(int fd, IoAction action) { g_recv_actions.push(fd, action); }
+
 #if AERONET_WANT_SYS_OVERRIDES
 inline void PushEpollCtlAction(EpollCtlAction action) { g_epoll_ctl_actions.push(action); }
 inline void PushEpollCtlAddAction(EpollCtlAction action) { g_epoll_ctl_add_actions.push(action); }
@@ -766,6 +771,7 @@ using ListenFn = int (*)(int, int);
 using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
 using SendFn = ssize_t (*)(int, const void*, size_t, int);
+using RecvFn = ssize_t (*)(int, void*, size_t, int);
 #if AERONET_WANT_SYS_OVERRIDES
 using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);
 using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
@@ -846,6 +852,16 @@ inline SendFn ResolveRealSend() {
   fn = aeronet::test::ResolveNext<SendFn>("send");
   return fn;
 }
+
+inline RecvFn ResolveRealRecv() {
+  static RecvFn fn = nullptr;
+  if (fn != nullptr) {
+    return fn;
+  }
+  fn = aeronet::test::ResolveNext<RecvFn>("recv");
+  return fn;
+}
+
 #endif  // AERONET_POSIX
 
 #if AERONET_WANT_SYS_OVERRIDES
@@ -963,6 +979,7 @@ inline ConnectFn ResolveRealConnect() {
 inline void ResetIoActions() {
   g_read_actions.reset();
   g_write_actions.reset();
+  g_recv_actions.reset();
 }
 
 inline void SetReadActions(int fd, std::initializer_list<IoAction> actions) { g_read_actions.setActions(fd, actions); }
@@ -1418,6 +1435,39 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, cons
   auto real = aeronet::test::ResolveRealSend();
   return real(sockfd, buf, len, flags);
 }
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t recv(int sockfd, void* buf, size_t len, int flags) {
+  auto act = aeronet::test::g_recv_actions.pop(sockfd);
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // Real recv(2) never returns more than 'len'. Clamp for caller invariants.
+      ret = std::min<int64_t>(ret, static_cast<int64_t>(len));
+      if (buf != nullptr && ret > 0) {
+        std::memset(buf, 'R', static_cast<size_t>(ret));
+      }
+      return static_cast<ssize_t>(ret);
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealRecv();
+  return real(sockfd, buf, len, flags);
+}
+
+#ifdef __GLIBC__
+// Ubuntu's gcc packages enable _FORTIFY_SOURCE by default whenever any
+// optimization is requested (-O1+), even without the build asking for it.
+// That can turn a `recv(fd, buf, n, flags)` call site with a compile-time-
+// known destination size into a call to the internal __recv_chk symbol
+// instead of plain `recv`, silently bypassing the override above in
+// optimized builds. Intercept it too and funnel it through the same mock.
+extern "C" __attribute__((no_sanitize("address"))) ssize_t __recv_chk(int sockfd, void* buf, size_t len,
+                                                                      size_t /*buflen*/, int flags) {
+  return recv(sockfd, buf, len, flags);
+}
+#endif  // __GLIBC__
 
 #if AERONET_WANT_SYS_OVERRIDES
 // NOLINTNEXTLINE

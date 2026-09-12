@@ -837,8 +837,8 @@ TEST(Http2Core, MissingContinuationThenOtherFrameIsProtocolError) {
 
   // Now send DATA frame instead of CONTINUATION.
   RawBytes data;
-  std::array<std::byte, 1> payload = {std::byte{'x'}};
-  PrepareDataFrameGetStartPtr(data, 1, payload.size(), false);
+  std::array<std::byte, 1> payload{std::byte{'x'}};
+  PrepareDataFrameGetStartPtr(data, 1, static_cast<uint32_t>(payload.size()), false);
 
   auto res2 = conn.processInput(AsSpan(data));
   EXPECT_EQ(res2.action, Http2Connection::ProcessResult::Action::Error);
@@ -963,8 +963,8 @@ TEST(Http2Core, DataOnStreamZeroIsProtocolError) {
   (void)conn.processInput(preface);
 
   RawBytes data;
-  std::array<std::byte, 1> payload = {std::byte{'x'}};
-  PrepareDataFrameGetStartPtr(data, 0, payload.size(), false);
+  std::array<std::byte, 1> payload{std::byte{'x'}};
+  PrepareDataFrameGetStartPtr(data, 0, static_cast<uint32_t>(payload.size()), false);
 
   auto res = conn.processInput(AsSpan(data));
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
@@ -1506,8 +1506,8 @@ TEST(Http2Core, StreamClosedRejectsDataAfterEndStream) {
   // (stream exists but peer has already ended). The implementation may simply ignore
   // late DATA on half-closed streams without raising an error.
   RawBytes data;
-  std::array<std::byte, 1> payload = {std::byte{'x'}};
-  PrepareDataFrameGetStartPtr(data, streamId, payload.size(), false);
+  std::array<std::byte, 1> payload{std::byte{'x'}};
+  PrepareDataFrameGetStartPtr(data, streamId, static_cast<uint32_t>(payload.size()), false);
 
   auto res = h2.server.processInput(AsSpan(data));
   // Per implementation: DATA on half-closed-remote stream is silently ignored (no error).

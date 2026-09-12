@@ -709,13 +709,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         writer.end();
       }
 
-      const auto statusCode = writer.status();
+      const auto httpWriterStatusCode = writer.status();
 
       if (_callbacks.metrics || _accessLog) {
-        emitRequestMetrics(request, statusCode, request.body().size(), state.requestsServed > 1);
+        emitRequestMetrics(request, httpWriterStatusCode, request.body().size(), state.requestsServed > 1);
       }
 
-      request.end(statusCode);
+      request.end(httpWriterStatusCode);
 
       assert(request.version() == http::HTTP_1_1);
       if (!_config.enableKeepAlive || wantClose || state.requestsServed + 1 >= _config.maxRequestsPerConnection ||

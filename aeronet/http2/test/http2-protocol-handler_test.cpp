@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <span>
@@ -34,6 +35,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-stream.hpp"
 #include "aeronet/http2-test-helpers.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -782,34 +784,35 @@ TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
   EXPECT_FALSE(setupCalled);
 }
 
-TEST(Http2ProtocolHandler, ConnectOutOfRangePortReturns400) {
+TEST(Http2ProtocolHandler, ConnectInvalidAuthority) {
   Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
-  loop.connect();
+  for (std::string_view authority : {"example.com:99999", "example.com:0", "example.com:36y"}) {
+    Http2ProtocolLoopback loop(router);
+    loop.connect();
 
-  bool setupCalled = false;
-  MockTunnelBridge bridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
-    setupCalled = true;
-    return kInvalidHandle;
-  };
-  loop.handler.setTunnelBridge(&bridge);
+    bool setupCalled = false;
+    MockTunnelBridge bridge;
+    bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
+      setupCalled = true;
+      return kInvalidHandle;
+    };
+    loop.handler.setTunnelBridge(&bridge);
 
-  // Port > 65535 does not fit in a uint16_t → 400.
-  RawChars conn;
-  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  conn.append(MakeHttp1HeaderLine(":authority", "example.com:99999"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
+    RawChars conn;
+    conn.assign(MakeHttp1HeaderLine(":method", "CONNECT"));
+    conn.append(MakeHttp1HeaderLine(":authority", authority));
+    const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+    ASSERT_EQ(ok, ErrorCode::NoError);
 
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
 
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
-  EXPECT_FALSE(setupCalled);
+    ASSERT_FALSE(loop.clientHeaders.empty());
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+    EXPECT_FALSE(setupCalled);
+  }
 }
 
 TEST(Http2ProtocolHandler, ConnectEmptyAllowlistBlocksTarget) {
@@ -1165,6 +1168,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
 
   // Async connect failed → handler sends RST_STREAM with CONNECT_ERROR.
   loop.handler.tunnelConnectFailed(1);
+  loop.handler.tunnelConnectFailed(42);  // should do nothing
   EXPECT_FALSE(loop.handler.isTunnelStream(1));
 
   loop.pumpServerToClient();
@@ -5467,5 +5471,109 @@ TEST(Http2ProtocolHandler, RequestTrailersWithPseudoHeaderRejected) {
   EXPECT_EQ(loop.streamResets.back().first, 1U);
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ProtocolError);
 }
+
+TEST(Http2ProtocolHandler, MiddlewareShortCircuitFileSendFailureLogsAndReleasesStream) {
+  test::ScopedTempDir tmpDir;
+  const std::string fileContent(1000, 'M');
+  test::ScopedTempFile tmpFile(tmpDir, fileContent);
+  const auto filePath = tmpFile.filePath().string();
+
+  Router router;
+  router.addRequestMiddleware([filePath](HttpRequestView&) {
+    File fd(filePath);
+    // Shrink the file out from under the just-opened fd. HttpResponse::file() captures the
+    // length at construction time; the bytes actually available on disk are now smaller, so
+    // the synchronous readAt() inside sendResponse() hits EOF (readCount == 0) immediately.
+    std::filesystem::resize_file(filePath, 10);
+    return MiddlewareResult::ShortCircuit(HttpResponse(200).file(std::move(fd), "application/octet-stream"));
+  });
+
+  bool handlerCalled = false;
+  router.setPath(http::Method::GET, "/test", [&handlerCalled](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/test");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();  // middleware short-circuits -> sendResponse -> short read -> InternalError
+                              // -> applyRequestMiddleware's [[unlikely]] log::error branch fires.
+
+  EXPECT_FALSE(handlerCalled);  // short-circuited before reaching the route handler
+  loop.pumpServerToClient();    // drain whatever partial output was queued before the failure
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLimit) {
+  Router router;
+  std::coroutine_handle<> capturedHandle;
+  std::atomic<bool> callbackFired{false};
+
+  router.setPath(http::Method::GET, "/async-slow2", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const int result = co_await req.deferWork([] { return 7; });
+    co_return HttpResponse(200, std::to_string(result));
+  });
+
+  static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
+  Http2ProtocolLoopback loop(router, kMaxOutboundBufferBytes);
+
+  loop.handler.setAsyncPostCallback(
+      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
+        capturedHandle = handle;
+        callbackFired.store(true, std::memory_order_release);
+      });
+
+  loop.connect();
+
+  // Establish a CONNECT tunnel on stream 1 so injectTunnelData() is usable.
+  constexpr NativeHandle kFakeUpstreamFd = 42;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_TRUE(loop.handler.isTunnelStream(1));
+
+  // Start the async GET on stream 3; it suspends on deferWork.
+  RawChars hdrs = MakeGetHeaders("/async-slow2");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!callbackFired.load(std::memory_order_acquire)) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  // Inject tunnel data DIRECTLY - bypassing processInput's per-frame outputHighWaterMark
+  // throttle entirely - to push pendingOutputSize() well past the tiny cap, undrained.
+  const std::string payload(150, 'T');
+  for (int i = 0; i < 5; ++i) {
+    ASSERT_EQ(loop.handler.injectTunnelData(1, std::as_bytes(std::span<const char>(payload.data(), payload.size()))),
+              ErrorCode::NoError);
+  }
+  ASSERT_GT(loop.handler.pendingOutputSize(), kMaxOutboundBufferBytes);
+
+  // Resume directly too - onAsyncTaskCompleted()'s sendResponse() -> responseExceedsPendingLimits()
+  // now sees `retained` already over the limit purely from unread tunnel bytes, before this
+  // response's own (tiny) size ever enters the calculation: `retained > limit` fires immediately.
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+
+  loop.pumpServerToClient();
+
+  const auto resp = std::ranges::find(loop.clientHeaders, 3U, &HeaderEvent::streamId);
+  ASSERT_NE(resp, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*resp, ":status"), "503");
+}
+#endif
 
 }  // namespace aeronet::http2

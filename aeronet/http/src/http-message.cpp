@@ -186,7 +186,7 @@ void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
 
   CheckContentTypeLengthEncoding(key, hasBody());
 
-  overrideHeaderUnchecked(first, last, value);
+  overrideHeaderUnchecked(first, last, TrimOws(value));
 }
 
 void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context) {
@@ -517,8 +517,8 @@ void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view val
     CopyFixed<http::DoubleCRLF>(pData + headerLineSize);
   } else {
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
-    // so we insert new headers before them. Of course, this code takes time, but it should be rare to add headers
-    // after setting the body, so we can consider this as a 'slow' path.
+    // so we insert new headers before them. Of course, this code has a runtime cost, but it should be discouraged to
+    // add headers after setting the body, so we can consider this as a 'slow' path.
     pData = getContentTypeHeaderLinePtr();
     std::memmove(pData + headerLineSize, pData, static_cast<std::size_t>(_data.end() - pData));
   }
@@ -531,8 +531,6 @@ void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view val
 
 void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast,
                                           std::string_view newValue) {
-  newValue = TrimOws(newValue);
-
   char* valueFirst = _data.data() + (oldValueFirst - _data.data());
   const std::size_t oldHeaderValueSz = static_cast<std::size_t>(oldValueLast - oldValueFirst);
 

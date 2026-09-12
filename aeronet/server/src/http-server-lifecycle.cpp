@@ -552,7 +552,11 @@ void SingleHttpServer::registerBuiltInProbes() {
   if (!_config.builtinProbes.enabled) {
     return;
   }
-  if (probesAreDedicated()) {
+  // True when this server is a MultiHttpServer worker whose probes are served by a dedicated probe listener.
+  // Such workers skip registering the inline probe routes (they live on the dedicated port); the probe listener reads
+  // their loop heartbeat (see internal::Lifecycle::loopHeartbeat, published by every event loop) to detect a wedge.
+  // A standalone SingleHttpServer ignores dedicatedPort: it has no worker pool to isolate probes from.
+  if (_config.builtinProbes.dedicatedPort != 0 && isInMultiHttpServer()) {
     // Probes are answered by MultiHttpServer's dedicated probe listener on its own port/thread; registering them
     // inline here too would just re-expose them on the (contended) application port, defeating the isolation.
     return;
