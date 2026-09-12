@@ -171,7 +171,7 @@ TEST(FileTest, ReadAtRetriesOnEintr) {
 
   std::byte buf[4]{};
   const auto readBytes = fileObj.readAt(buf, 0);
-  EXPECT_EQ(readBytes, 3U);
+  EXPECT_EQ(readBytes, sizeof(buf));
 }
 
 TEST(FileTest, AppendIdentityShouldBeDifferentBetweenTwoFiles) {

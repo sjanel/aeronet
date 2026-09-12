@@ -433,10 +433,6 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   const std::size_t bodyLen = req.bodyLength();
   const std::string_view body = isFileBody ? std::string_view{} : req.bodyInMemory();
   const FilePayload* filePayload = isFileBody ? req.filePayloadPtr() : nullptr;
-  RawChars& fileChunkBuf = client.bodyBuffer();  // idle during the send phase; only used for a file body
-  if (isFileBody) {
-    fileChunkBuf.clear();
-  }
 
   // Request trailers (RFC 9113 §8.1) ride in a trailing HEADERS block that carries END_STREAM. When they
   // are present, END_STREAM must be withheld from the initial HEADERS and from the final DATA frame so the
@@ -473,35 +469,41 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
       ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
       continue;
     }
-    const std::size_t attempt = std::min({bodyLen - bodyOff, window, http2::internal::kMaxDataBytesPerFlush});
-    std::span<const std::byte> chunk;
-    std::size_t chunkSize = attempt;
+    const std::size_t chunkSize = std::min({
+        bodyLen - bodyOff,
+        window,
+        http2::internal::kMaxDataBytesPerFlush,
+        static_cast<std::size_t>(conn.peerSettings().maxFrameSize),
+    });
+    // Hold END_STREAM back for the trailing HEADERS block when trailers follow the body.
+    const bool endStream = (bodyOff + chunkSize == bodyLen) && !hasTrailers;
     if (isFileBody) {
-      // The span overload gives the connection an owned payload allocation, so this scratch buffer
-      // remains reusable. A short read (< attempt) is fine; only a 0-length read / error before the whole
-      // payload was sent breaks the declared Content-Length.
-      fileChunkBuf.ensureAvailableCapacityExponential(attempt);
-      const std::size_t nread = filePayload->file.readAt(
-          std::as_writable_bytes(std::span<char>(fileChunkBuf.data(), attempt)), filePayload->offset + bodyOff);
+      const auto [pData, err] = conn.sendDataInline(streamId, chunkSize, endStream);
+      if (err != http2::ErrorCode::NoError) {
+        log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, ErrorCodeName(err));
+        engine.endExchange();
+        return std::unexpected(HttpClientErrc::writeError);
+      }
+      const std::size_t nread =
+          filePayload->file.readAt(std::span<std::byte>(pData, chunkSize), filePayload->offset + bodyOff);
+
       if (nread == 0 || nread == File::kError) {
         log::error("HTTP/2 client: reading request file body on stream {} failed (offset={}, remaining={})", streamId,
                    filePayload->offset + bodyOff, bodyLen - bodyOff);
         engine.endExchange();
         return std::unexpected(HttpClientErrc::writeError);
       }
-      chunkSize = nread;
-      chunk = std::as_bytes(std::span<const char>(fileChunkBuf.data(), nread));
+      assert(nread == chunkSize);
     } else {
-      chunk = std::as_bytes(std::span<const char>(body.data() + bodyOff, attempt));
+      std::span<const std::byte> chunk = std::as_bytes(std::span<const char>(body.data() + bodyOff, chunkSize));
+      const auto dataErr = conn.sendData(streamId, chunk, endStream);
+      if (dataErr != http2::ErrorCode::NoError) {
+        log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, ErrorCodeName(dataErr));
+        engine.endExchange();
+        return std::unexpected(HttpClientErrc::writeError);
+      }
     }
-    // Hold END_STREAM back for the trailing HEADERS block when trailers follow the body.
-    const bool endStream = (bodyOff + chunkSize == bodyLen) && !hasTrailers;
-    const auto dataErr = conn.sendData(streamId, chunk, endStream);
-    if (dataErr != http2::ErrorCode::NoError) {
-      log::error("HTTP/2 client: sending DATA on stream {} failed ({})", streamId, ErrorCodeName(dataErr));
-      engine.endExchange();
-      return std::unexpected(HttpClientErrc::writeError);
-    }
+
     endStreamSent = endStreamSent || endStream;
     bodyOff += chunkSize;
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
@@ -538,6 +540,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
       ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
     }
   }
+
   engine.endExchange();
   if (!ioRes) {
     return std::unexpected(ioRes.error());

@@ -103,7 +103,6 @@ class Http2WriterTransport final : public IWriterTransport {
     // Try sending directly.
     const auto bytes = std::span<const std::byte>(reinterpret_cast<const std::byte*>(data.data()), data.size());
     const ErrorCode err = _pConnection->sendData(_streamId, bytes, /*endStream=*/false);
-
     if (err == ErrorCode::NoError) {
       return true;
     }

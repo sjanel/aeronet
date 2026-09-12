@@ -51,6 +51,7 @@ All notable changes to aeronet are documented in this file.
 - **Also include global headers for server error responses**: In some cases, errors returned an `HttpResponse` without the configured global headers, if any. Now uses `HttpRequestView.makeResponse` to automatically include them.
 - **Added client configurable chunk size HttpClientConfig.minReadChunkBytes**: with default value 16KB, which was the default hardcoded value.
 - **Decreased Http2Connection size from 728 to 524 bytes** by replacing several `std::function` based callbacks into a unique sink object.
+- **Removed a copy in the HttpClient for HTTP/2 send file**: file content is now directly loaded into the data frame without scratch buffer.
 
 ## Others
 
