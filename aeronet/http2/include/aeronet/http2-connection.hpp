@@ -345,7 +345,7 @@ class Http2Connection {
   ProcessResult handleRstStreamFrame(FrameHeader header, std::span<const std::byte> payload);
   ProcessResult handleSettingsFrame(FrameHeader header, std::span<const std::byte> payload);
   ProcessResult handlePingFrame(FrameHeader header, std::span<const std::byte> payload);
-  ProcessResult handleGoAwayFrame(FrameHeader header, std::span<const std::byte> payload);
+  ProcessResult handleGoAwayFrame(std::span<const std::byte> payload);
   ProcessResult handleWindowUpdateFrame(FrameHeader header, std::span<const std::byte> payload);
   ProcessResult handleContinuationFrame(FrameHeader header, std::span<const std::byte> payload);
 

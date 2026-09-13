@@ -921,4 +921,47 @@ TEST(ResponseParserDecompress, GarbageCompressedBodyIsError) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
+// Any non-Connection header name containing a byte outside the HTTP token charset (RFC 9110 §5.1) is
+// rejected. Header validation was previously a no-op (see the removed TODO); this exercises the new
+// IsValidHeaderName check.
+TEST(ResponseParserTest, RejectsInvalidHeaderName) {
+  HttpResponse spaceResp;
+  EXPECT_EQ(parseAll("HTTP/1.1 200 OK\r\nX Bad: value\r\n\r\n", spaceResp, /*head=*/false, /*eof=*/true),
+            Http1ResponseParser::Status::Error);
+
+  HttpResponse controlResp;
+  std::string raw = "HTTP/1.1 200 OK\r\nX";
+  raw.push_back('\x01');
+  raw.append("Bad: value\r\n\r\n");
+  EXPECT_EQ(parseAll(raw, controlResp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+}
+
+// Any non-Connection header value containing a disallowed control byte is rejected. This exercises the new
+// IsValidHeaderValue check (previously a no-op for every header, Connection included).
+TEST(ResponseParserTest, RejectsInvalidHeaderValue) {
+  HttpResponse controlResp;
+  std::string rawControl = "HTTP/1.1 200 OK\r\nX-Test: bad";
+  rawControl.push_back('\x01');
+  rawControl.append("value\r\n\r\n");
+  EXPECT_EQ(parseAll(rawControl, controlResp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+
+  HttpResponse delResp;
+  std::string rawDel = "HTTP/1.1 200 OK\r\nX-Test: bad";
+  rawDel.push_back('\x7f');
+  rawDel.append("value\r\n\r\n");
+  EXPECT_EQ(parseAll(rawDel, delResp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+}
+
+// The Connection header is no longer exempt from the general header-value grammar: ScanConnectionTokens
+// only decides which *recognized* connection-options (close / keep-alive) apply — an unrecognized-but-valid
+// token like "Upgrade" is still ignored (see Http10ConnectionTokenListEnablesReuse) — but a value containing
+// a byte outside the header-value grammar is a malformed message like any other invalid header value.
+TEST(ResponseParserTest, RejectsInvalidConnectionHeaderValue) {
+  HttpResponse resp;
+  std::string raw = "HTTP/1.1 200 OK\r\nconnection: close,";
+  raw.push_back('\x01');
+  raw.append("\r\ncontent-length: 0\r\n\r\n");
+  EXPECT_EQ(parseAll(raw, resp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+}
+
 }  // namespace aeronet
