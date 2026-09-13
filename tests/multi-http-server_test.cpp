@@ -9,11 +9,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -46,8 +48,19 @@
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
 
-using namespace aeronet;
+namespace aeronet {
+
 using namespace std::chrono_literals;
+
+namespace {
+
+HttpServerConfig MakeConfig(uint32_t nbThreads = HttpServerConfig{}.port) {
+  HttpServerConfig cfg;
+  cfg.withReusePort().withNbThreads(nbThreads).withPollInterval(1ms);
+  return cfg;
+}
+
+}  // namespace
 
 TEST(MultiHttpServer, ConstructorChecks) {
   EXPECT_NO_THROW(MultiHttpServer(HttpServerConfig{}));
@@ -79,7 +92,7 @@ TEST(MultiHttpServer, EmptyChecks) {
 
 TEST(MultiHttpServer, BasicStartAndServe) {
   const uint16_t threads = 4;
-  MultiHttpServer multi(HttpServerConfig{}.withReusePort().withNbThreads(threads));
+  MultiHttpServer multi(MakeConfig(threads));
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Hello"); });
   auto handle = multi.startDetached();
 
@@ -101,9 +114,7 @@ TEST(MultiHttpServer, BasicStartAndServe) {
 }
 
 TEST(MultiHttpServer, ManagedStartIsStoppedByServer) {
-  HttpServerConfig cfg;
-  cfg.withNbThreads(1U).withPollInterval(1ms);
-  MultiHttpServer multi(std::move(cfg));
+  MultiHttpServer multi(MakeConfig(1U));
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Managed"); });
 
   multi.start();
@@ -119,11 +130,9 @@ TEST(MultiHttpServer, ManagedStartIsStoppedByServer) {
 #ifdef AERONET_ENABLE_OPENSSL
 TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
   auto [certPem, keyPem] = test::MakeEphemeralCertKey();
-  HttpServerConfig cfg;
-  cfg.withReusePort();
+  HttpServerConfig cfg = MakeConfig(1U);
   cfg.withTlsCertKeyMemory(certPem, keyPem);
   cfg.withTlsAlpnProtocols({"http/1.1"});
-  cfg.withNbThreads(1U);
 
   std::atomic_bool callbackInvoked{false};
 
@@ -156,12 +165,12 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
 // and accept at least one connection each. It does not attempt to assert load distribution.
 
 TEST(HttpMultiReusePort, TwoServersBindSamePort) {
-  SingleHttpServer serverA(HttpServerConfig{}.withReusePort());
+  SingleHttpServer serverA(MakeConfig());
   serverA.router().setDefault([](const HttpRequestView&) { return HttpResponse("AAAA"); });
 
   const auto port = serverA.port();
 
-  SingleHttpServer serverB(HttpServerConfig{}.withPort(port).withReusePort());
+  SingleHttpServer serverB(MakeConfig().withPort(port));
   serverB.router().setDefault([](const HttpRequestView&) { return HttpResponse("BBBB"); });
 
   serverA.start();
@@ -204,10 +213,8 @@ TEST(HttpMultiReusePort, TwoServersBindSamePort) {
 }
 
 TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
-  HttpServerConfig cfg;
+  HttpServerConfig cfg = MakeConfig(2U);
   cfg.enableKeepAlive = true;
-  cfg.withReusePort();
-  cfg.withNbThreads(2U);
   MultiHttpServer multi(std::move(cfg));
   const auto port = multi.port();
 
@@ -241,11 +248,8 @@ TEST(MultiHttpServer, BeginDrainClosesKeepAliveConnections) {
 }
 
 TEST(MultiHttpServer, RapidStartStopCycles) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(2U);
   // Keep cycles modest to avoid lengthening normal test runtime too much; adjust if needed.
-  MultiHttpServer multi(cfg);
+  MultiHttpServer multi(MakeConfig(2U));
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("S"); });
   for (int statePos = 0; statePos < 100; ++statePos) {
     auto handle = multi.startDetached();
@@ -257,9 +261,7 @@ TEST(MultiHttpServer, RapidStartStopCycles) {
 }
 
 TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(1U);
+  HttpServerConfig cfg = MakeConfig(1U);
   MultiHttpServer multi(cfg);
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Predicate"); });
 
@@ -301,10 +303,7 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
 // Verifies that MultiHttpServer can be stopped and started again (restart) while reusing the same port by default.
 // SingleHttpServer itself remains single-shot; restart creates fresh SingleHttpServer instances internally.
 TEST(MultiHttpServer, RestartBasicSamePort) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(2U);
-  MultiHttpServer multi(cfg);
+  MultiHttpServer multi(MakeConfig(2U));
   multi.router().setDefault([](const HttpRequestView&) { return HttpResponse("Phase1"); });
   auto handle1 = multi.startDetached();
   const auto p1 = multi.port();
@@ -333,15 +332,8 @@ TEST(MultiHttpServer, RestartBasicSamePort) {
 }
 
 TEST(MultiHttpServerCopy, CopyConstructWhileStopped) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(2U);
-  MultiHttpServer original(cfg);
-  original.router().setDefault([]([[maybe_unused]] const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("COPY-CONST");
-    return resp;
-  });
+  MultiHttpServer original(MakeConfig(2U));
+  original.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("COPY-CONST"); });
 
   const auto expectedThreads = original.nbThreads();
   const auto expectedPort = original.port();
@@ -360,11 +352,9 @@ TEST(MultiHttpServerCopy, CopyConstructWhileStopped) {
 }
 
 TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
-  HttpServerConfig cfg;
   MultiHttpServer assigned;
   {
-    cfg.withNbThreads(2U);
-    MultiHttpServer source(cfg);
+    MultiHttpServer source(MakeConfig(2U));
     source.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("COPY-ASSIGN"); });
     assigned = source;
   }
@@ -380,9 +370,7 @@ TEST(MultiHttpServerCopy, CopyAssignWhileStopped) {
 }
 
 TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
-  HttpServerConfig cfg;
-  cfg.withNbThreads(2U);
-  MultiHttpServer original(cfg);
+  MultiHttpServer original(MakeConfig(2U));
   original.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("RUN"); });
 
   auto handle = original.startDetached();
@@ -397,10 +385,8 @@ TEST(MultiHttpServerCopy, CopyConstructWhileRunningThrows) {
 }
 
 TEST(MultiHttpServerCopy, CopyAssignWhileRunningThrows) {
-  HttpServerConfig cfg;
-  cfg.withNbThreads(2U);
-  MultiHttpServer target(cfg);
-  MultiHttpServer source(cfg);
+  MultiHttpServer target(MakeConfig(2U));
+  MultiHttpServer source(MakeConfig(2U));
 
   source.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("RUN"); });
 
@@ -416,11 +402,7 @@ TEST(MultiHttpServerCopy, CopyAssignWhileRunningThrows) {
 }
 
 TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withPollInterval(std::chrono::milliseconds{1});
-  cfg.withNbThreads(1U);
-  MultiHttpServer multi(cfg);
+  MultiHttpServer multi(MakeConfig(1U));
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("R1"); });
 
   auto port = multi.port();
@@ -468,9 +450,7 @@ TEST(MultiHttpServer, MoveThenRestartDifferentConfig) {
 }
 
 TEST(MultiHttpServer, MoveWhileRunning) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  MultiHttpServer multi(cfg);
+  MultiHttpServer multi(MakeConfig());
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("BeforeMove"); });
   auto handle = multi.startDetached();
   auto port = multi.port();
@@ -490,20 +470,14 @@ TEST(MultiHttpServer, MoveWhileRunning) {
 }
 
 TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
-  HttpServerConfig cfgA;
-  cfgA.port = 0;
-  cfgA.withReusePort();
-  HttpServerConfig cfgB;
-  cfgB.port = 0;
-  cfgB.withReusePort();
   // Source server
-  MultiHttpServer src(cfgA);
+  MultiHttpServer src(MakeConfig());
   src.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("SrcBody"); });
   auto srcHandle = src.startDetached();
   auto srcPort = src.port();
   ASSERT_GT(srcPort, 0);
   // Destination server already running with a different body
-  MultiHttpServer dst(cfgB);
+  MultiHttpServer dst(MakeConfig());
   dst.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("DstOriginal"); });
   auto dstHandle = dst.startDetached();
   auto dstPort = dst.port();
@@ -529,10 +503,7 @@ TEST(MultiHttpServer, MoveAssignmentWhileRunning) {
 }
 
 TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
-  HttpServerConfig cfgA;
-  cfgA.withReusePort();
-  cfgA.withNbThreads(1U);
-  MultiHttpServer multiA(cfgA);
+  MultiHttpServer multiA(MakeConfig(1U));
   multiA.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("MA"); });
 
   // start and obtain a handle
@@ -546,10 +517,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   EXPECT_FALSE(hA.started());  // NOLINT(bugprone-use-after-move)
 
   // Start another server to provide a second handle for move-assignment
-  HttpServerConfig cfgB;
-  cfgB.withReusePort();
-  cfgB.withNbThreads(1U);
-  MultiHttpServer multiB(cfgB);
+  MultiHttpServer multiB(MakeConfig(1U));
   multiB.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("MB"); });
   auto hC = multiB.startDetached();
   ASSERT_TRUE(hC.started());
@@ -569,9 +537,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
 }
 
 TEST(MultiHttpServer, SelfAssignmentsAreNoOps) {
-  HttpServerConfig cfg;
-  cfg.withNbThreads(1U).withPollInterval(1ms);
-  MultiHttpServer multi(std::move(cfg));
+  MultiHttpServer multi(MakeConfig(1U));
   const auto originalPort = multi.port();
 
   auto& copyAlias = multi;
@@ -589,9 +555,7 @@ TEST(MultiHttpServer, SelfAssignmentsAreNoOps) {
 }
 
 TEST(MultiHttpServer, WorkerErrorsAreRetainedAfterStop) {
-  HttpServerConfig cfg;
-  cfg.withReusePort().withNbThreads(2U).withPollInterval(1ms);
-  MultiHttpServer multi(std::move(cfg));
+  MultiHttpServer multi(MakeConfig(2U));
   for (int i = 0; i < 2; ++i) {
     std::atomic<int> predicateCalls{0};
     std::atomic<bool> errorThrown{false};
@@ -645,22 +609,14 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
   }
   EXPECT_GE(objs, 2U);
 
-  // Test setters: they should be callable before start() and throw while running
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-
   Router router;
 
-  auto& testCbHandler = router.setPath(http::Method::GET, "/test-cb", [](const HttpRequestView&) {
-    HttpResponse resp;
-    resp.body("Cool");
-    return resp;
-  });
+  auto& testCbHandler = router.setPath(http::Method::GET, "/test-cb",
+                                       [](const HttpRequestView& req) { return req.makeResponse("Cool"); });
 
   testCbHandler.after([](const HttpRequestView&, HttpResponse& resp) { resp.headerAddLine("x-after-cb", "Yes"); });
 
-  cfg.withNbThreads(8U);
-  MultiHttpServer multi(cfg, std::move(router));
+  MultiHttpServer multi(MakeConfig(8U), std::move(router));
 
   std::atomic<int> errorsCount{0};
   multi.setParserErrorCallback([&](http::StatusCode) { errorsCount.fetch_add(1, std::memory_order_relaxed); });
@@ -725,9 +681,7 @@ TEST(MultiHttpServer, AggregatedStatsJsonAndSetters) {
 }
 
 TEST(MultiHttpServer, AutoThreadCountConstructor) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();  // auto thread count may be >1 -> must explicitly enable reusePort
-  MultiHttpServer multi(cfg);
+  MultiHttpServer multi(MakeConfig());
   // Port should be resolved immediately at construction time.
   EXPECT_GT(multi.port(), 0);
 
@@ -745,9 +699,8 @@ TEST(MultiHttpServer, AutoThreadCountConstructor) {
 }
 
 TEST(MultiHttpServer, MoveConstruction) {
-  HttpServerConfig cfg;
-  MultiHttpServer original(cfg);  // auto threads
-  EXPECT_GT(original.port(), 0);  // resolved at construction
+  MultiHttpServer original(HttpServerConfig{});  // auto threads
+  EXPECT_GT(original.port(), 0);                 // resolved at construction
   original.router().setDefault([](const HttpRequestView&) { return HttpResponse("Move"); });
   auto port = original.port();
   ASSERT_GT(port, 0);
@@ -764,9 +717,7 @@ TEST(MultiHttpServer, MoveConstruction) {
 }
 
 TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  MultiHttpServer source(cfg);  // not started yet
+  MultiHttpServer source(MakeConfig());  // not started yet
   EXPECT_GT(source.port(), 0);
   source.router().setDefault([](const HttpRequestView&) { return HttpResponse("MoveAssign"); });
   const auto originalPort = source.port();
@@ -795,11 +746,7 @@ TEST(MultiHttpServer, DefaultConstructorAndMoveAssignment) {
 
 TEST(MultiHttpServer, BlockingRunMethod) {
   // Test the blocking run() method which should start servers and block until completion
-
-  HttpServerConfig _cfg;
-  _cfg.withReusePort();
-  _cfg.withNbThreads(2U);
-  MultiHttpServer multi(_cfg);
+  MultiHttpServer multi(MakeConfig(2U));
 
   multi.router().setDefault(
       [](const HttpRequestView& req) { return HttpResponse("Blocking:" + std::string(req.path())); });
@@ -830,11 +777,7 @@ TEST(MultiHttpServer, BlockingRunMethod) {
 
 TEST(MultiHttpServer, RunStopAndRestart) {
   // Test that run() properly cleans up and allows restart
-
-  HttpServerConfig _cfg;
-  _cfg.withReusePort().withPollInterval(std::chrono::milliseconds{1});
-  _cfg.withNbThreads(2U);
-  MultiHttpServer multi(_cfg);
+  MultiHttpServer multi(MakeConfig(2U));
 
   multi.router().setDefault([](const HttpRequestView&) { return HttpResponse("First"); });
 
@@ -849,13 +792,8 @@ TEST(MultiHttpServer, RunStopAndRestart) {
   EXPECT_TRUE(resp1.contains("First"));
 
   // Update handler for second run
-  multi.postRouterUpdate([](Router& router) {
-    router.setDefault([](const HttpRequestView&) {
-      HttpResponse resp;
-      resp.body("Second");
-      return resp;
-    });
-  });
+  multi.postRouterUpdate(
+      [](Router& router) { router.setDefault([](const HttpRequestView& req) { return req.makeResponse("Second"); }); });
 
   std::this_thread::sleep_for(2ms);  // allow update to propagate
 
@@ -883,11 +821,8 @@ TEST(MultiHttpServer, RunStopAndRestart) {
 }
 
 TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(2U);
-  MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequestView&) { return HttpResponse("RunUntil"); });
+  MultiHttpServer multi(MakeConfig(2U));
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("RunUntil"); });
 
   std::atomic<bool> done = false;
   std::jthread runner([&multi, &done](std::stop_token st) {
@@ -895,9 +830,7 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
   });
 
   // Wait for the server to be running to avoid race condition where rebuildServers destroys the listener
-  while (!multi.isRunning()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  test::WaitForServer(multi);
 
   auto port = multi.port();
   ASSERT_GT(port, 0);
@@ -912,12 +845,8 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
 }
 
 TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
-  HttpServerConfig cfg;
-  cfg.withReusePort();
-  cfg.withNbThreads(1U);
-  cfg.withPollInterval(10ms);
-  MultiHttpServer multi(cfg);
-  multi.router().setDefault([](const HttpRequestView&) { return HttpResponse("Token"); });
+  MultiHttpServer multi(MakeConfig(1U));
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("Token"); });
 
   std::stop_source stopSource;
   auto handle = multi.startDetachedWithStopToken(stopSource.get_token());
@@ -940,9 +869,7 @@ TEST(MultiHttpServer, StartDetachedWithStopTokenStopsOnRequest) {
 }
 
 TEST(MultiHttpServer, DefaultStopTokenDoesNotRequestStop) {
-  HttpServerConfig cfg;
-  cfg.withNbThreads(1U).withPollInterval(1ms);
-  MultiHttpServer multi(std::move(cfg));
+  MultiHttpServer multi(MakeConfig(1U));
   multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("No token"); });
 
   auto handle = multi.startDetachedWithStopToken(std::stop_token{});
@@ -958,9 +885,7 @@ TEST(MultiHttpServer, SaveConfigRejectsDirectoryPath) {
   test::ScopedTempDir tmpDir;
   const auto directoryPath = tmpDir.dirPath() / "not-a-file.json";
   ASSERT_TRUE(std::filesystem::create_directory(directoryPath));
-  HttpServerConfig cfg;
-  cfg.withNbThreads(1U);
-  MultiHttpServer multi(std::move(cfg));
+  MultiHttpServer multi(MakeConfig(1U));
 
   EXPECT_THROW(multi.saveConfig(directoryPath), std::runtime_error);
 }
@@ -970,10 +895,9 @@ TEST(MultiHttpServer, SaveConfigRejectsDirectoryPath) {
 // so the port-availability pre-check via tryBind() is ineffective.
 #ifndef AERONET_WINDOWS
 TEST(MultiHttpServer, ExplicitPortWithNoReusePortShouldCheckPortAvailability) {
-  HttpServerConfig cfg;
+  HttpServerConfig cfg = MakeConfig(2U);
   cfg.withReusePort(false);
 
-  cfg.withNbThreads(2U);
   MultiHttpServer firstServer(cfg);
 
   auto port = firstServer.port();
@@ -1006,11 +930,11 @@ std::pair<uint16_t, uint16_t> GrabTwoFreePorts() {
 
 MultiHttpServer MakeProbeServer(uint16_t appPort, uint16_t probePort, uint16_t nbThreads,
                                 std::chrono::milliseconds livenessThreshold, Router router) {
-  HttpServerConfig cfg;
+  HttpServerConfig cfg = MakeConfig(nbThreads);
   // The liveness heartbeat is published once per worker event-loop iteration, so an idle worker only refreshes it
   // every pollInterval. Keep pollInterval well below the (deliberately tiny) livenessThreshold used in these tests
   // so an idle-but-healthy worker never looks stale; production keeps the default 10s threshold >> 500ms pollInterval.
-  cfg.withPort(appPort).withReusePort().withNbThreads(nbThreads).withPollInterval(std::chrono::milliseconds{20});
+  cfg.withPort(appPort);
   BuiltinProbesConfig bp;
   bp.enabled = true;
   bp.withDedicatedPort(probePort).withLivenessStaleThreshold(livenessThreshold);
@@ -1025,8 +949,8 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
   Router router;
   router.setDefault([](const HttpRequestView& req) { return req.makeResponse("APP"); });
 
-  HttpServerConfig cfg;
-  cfg.withPort(appPort).withReusePort().withNbThreads(2U);
+  HttpServerConfig cfg = MakeConfig(2U);
+  cfg.withPort(appPort);
   BuiltinProbesConfig bp;
   bp.enabled = true;
   bp.withDedicatedPort(probePort);
@@ -1054,10 +978,22 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
 TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHandler) {
   const auto [appPort, probePort] = GrabTwoFreePorts();
 
+  std::mutex mtx;
+  std::condition_variable handlerEnteredCv;
+  std::condition_variable releaseCv;
+  bool handlerEntered = false;
+  bool released = false;
+
   Router router;
-  router.setDefault([](const HttpRequestView& req) {
+  router.setDefault([&](const HttpRequestView& req) {
     if (req.path() == "/slow") {
-      std::this_thread::sleep_for(1000ms);  // monopolises the single worker event loop
+      std::unique_lock lock(mtx);
+      handlerEntered = true;
+      handlerEnteredCv.notify_all();
+      // Bounded wait: released almost immediately once the test has its probe responses.
+      // The timeout is only a safety net against a hang if probes were ever (incorrectly)
+      // routed through this same blocked worker.
+      releaseCv.wait_for(lock, 2s, [&released] { return released; });
     }
     return req.makeResponse("APP");
   });
@@ -1067,11 +1003,19 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
   MultiHttpServer multi = MakeProbeServer(appPort, probePort, 1U, 30s, std::move(router));
   auto handle = multi.startDetached();
 
-  // Occupy the single worker with a slow request in the background.
-  std::thread slow([appPort = appPort] { (void)test::simpleGet(appPort, "/slow"); });
-  std::this_thread::sleep_for(100ms);  // let the slow handler start blocking the worker
+  test::WaitForServer(multi);
 
-  // The dedicated probe listener must answer promptly, far below the slow handler's runtime.
+  // Occupy the single worker with a slow request in the background; it will block until we release it below.
+  std::thread slow([appPort = appPort] { (void)test::simpleGet(appPort, "/slow"); });
+
+  // Wait until the worker has actually entered the handler and is blocked — no more guessing with sleeps.
+  {
+    std::unique_lock lock(mtx);
+    ASSERT_TRUE(handlerEnteredCv.wait_for(lock, 2s, [&handlerEntered] { return handlerEntered; }))
+        << "worker never entered the slow handler";
+  }
+
+  // The dedicated probe listener must answer promptly while the sole worker is wedged in the handler.
   const auto start = std::chrono::steady_clock::now();
   const std::string live = test::simpleGet(probePort, "/livez");
   const std::string ready = test::simpleGet(probePort, "/readyz");
@@ -1079,7 +1023,14 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
 
   EXPECT_TRUE(live.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(ready.starts_with("HTTP/1.1 200"));
-  EXPECT_LT(elapsed, 700ms) << "probe port was starved by the busy worker";
+  EXPECT_LT(elapsed, 200ms) << "probe port was starved by the busy worker";
+
+  // Release the handler now that we've captured what we needed.
+  {
+    std::scoped_lock lock(mtx);
+    released = true;
+  }
+  releaseCv.notify_all();
 
   slow.join();
   handle.stop();
@@ -1089,17 +1040,26 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
 TEST(MultiHttpServerDedicatedProbes, LivenessTripsWhenWorkerWedgedBeyondThreshold) {
   const auto [appPort, probePort] = GrabTwoFreePorts();
 
+  std::mutex mtx;
+  std::condition_variable releaseCv;
+  bool released = false;
+
   Router router;
-  router.setDefault([](const HttpRequestView& req) {
+  router.setDefault([&](const HttpRequestView& req) {
     if (req.path() == "/wedge") {
-      std::this_thread::sleep_for(800ms);
+      std::unique_lock lock(mtx);
+      // Bounded wait: released as soon as the test has observed the liveness trip (and checked
+      // readiness). The timeout is only a safety net against a hang if liveness never trips.
+      releaseCv.wait_for(lock, 2s, [&released] { return released; });
     }
-    return HttpResponse("APP");
+    return req.makeResponse("APP");
   });
 
   // Short liveness threshold: a handler blocking the (only) worker beyond it must report the pod unhealthy.
   MultiHttpServer multi = MakeProbeServer(appPort, probePort, 1U, 100ms, std::move(router));
   auto handle = multi.startDetached();
+
+  ASSERT_TRUE(test::WaitForServer(multi));
 
   EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
 
@@ -1115,16 +1075,32 @@ TEST(MultiHttpServerDedicatedProbes, LivenessTripsWhenWorkerWedgedBeyondThreshol
       readyStayed200 = test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200");
       break;
     }
-    std::this_thread::sleep_for(20ms);
+    std::this_thread::sleep_for(1ms);
   }
+
+  // Release the wedged handler now that we've captured what we needed — no reason to hold it any longer.
+  {
+    std::scoped_lock lock(mtx);
+    released = true;
+  }
+  releaseCv.notify_all();
   wedger.join();
 
   EXPECT_TRUE(saw503) << "liveness never reported the wedged worker unhealthy";
   EXPECT_TRUE(readyStayed200) << "readiness should stay 200 for a busy-but-Running worker";
 
-  // Once the handler returns, the heartbeat clears and liveness recovers.
-  std::this_thread::sleep_for(50ms);
-  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
+  // Once the handler returns, the heartbeat refreshes and liveness should recover.
+  // Poll instead of guessing a fixed delay.
+  bool recovered = false;
+  const auto recoveryDeadline = std::chrono::steady_clock::now() + 500ms;
+  while (std::chrono::steady_clock::now() < recoveryDeadline) {
+    if (test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200")) {
+      recovered = true;
+      break;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_TRUE(recovered) << "liveness never recovered after the wedged handler returned";
 
   handle.stop();
   handle.rethrowIfError();
@@ -1134,10 +1110,10 @@ TEST(MultiHttpServerDedicatedProbes, ReadinessReportsNotReadyWhileDraining) {
   const auto [appPort, probePort] = GrabTwoFreePorts();
 
   Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse("APP"); });
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse("APP"); });
 
-  HttpServerConfig cfg;
-  cfg.withPort(appPort).withReusePort().withNbThreads(2U).withKeepAliveTimeout(2000ms);
+  HttpServerConfig cfg = MakeConfig(2U);
+  cfg.withPort(appPort).withKeepAliveTimeout(2000ms);
   BuiltinProbesConfig bp;
   bp.enabled = true;
   bp.withDedicatedPort(probePort);
@@ -1171,13 +1147,12 @@ TEST(MultiHttpServerDedicatedProbes, ReadinessReportsNotReadyWhileDraining) {
 
 TEST(MultiHttpServerDedicatedProbes, DedicatedPortEqualToAppPortThrows) {
   const auto [appPort, unused] = GrabTwoFreePorts();
-  (void)unused;
 
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse("APP"); });
 
-  HttpServerConfig cfg;
-  cfg.withPort(appPort).withNbThreads(1U);
+  HttpServerConfig cfg = MakeConfig(1U);
+  cfg.withPort(appPort);
   BuiltinProbesConfig bp;
   bp.enabled = true;
   bp.withDedicatedPort(appPort);  // clashes with the application port
@@ -1189,10 +1164,9 @@ TEST(MultiHttpServerDedicatedProbes, DedicatedPortEqualToAppPortThrows) {
 
 TEST(MultiHttpServerDedicatedProbes, ZeroDedicatedPortKeepsInlineProbes) {
   Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse("APP"); });
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse("APP"); });
 
-  HttpServerConfig cfg;
-  cfg.withReusePort().withNbThreads(2U);
+  HttpServerConfig cfg = MakeConfig(2U);
   cfg.enableBuiltinProbes(true);  // dedicatedPort stays 0 => inline probes on the app port
 
   MultiHttpServer multi(std::move(cfg), std::move(router));
@@ -1208,3 +1182,5 @@ TEST(MultiHttpServerDedicatedProbes, ZeroDedicatedPortKeepsInlineProbes) {
   handle.stop();
   handle.rethrowIfError();
 }
+
+}  // namespace aeronet
