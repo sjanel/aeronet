@@ -10,7 +10,7 @@ All notable changes to aeronet are documented in this file.
 - **StaticFileConfig.maxMultipartRanges** zero value has no more special value meaning 'unlimited'. All queries containing ranges will be rejected with HTTP error 416. Also, the order of the configuration fields in `StaticFileConfig` slightly changed to decrease padding, beware if you used the aggregate constructor.
 - **Http2Config.maxStreamsPerConnection** default value changed from `0` to `1000000`, and `0` does not have special **unlimited** meaning anymore.
 - **DecompressionConfig.decoderChunkSize** is now a `uint32_t` and has been moved as the second field of `DecompressionConfig`.
-- **DecompressionConfig.maxCompressedBytes** default value changed from 0 to `128MiB`, and `0` does not have special **unlimied** meaning anymore.
+- **DecompressionConfig.maxCompressedBytes** default value changed from 0 to `128MiB`, and `0` does not have special **unlimited** meaning anymore.
 - **DecompressionConfig.maxExpansionRatio** default value changed from `0.0` to `1000.0`, and `0` does not have special **unlimited** meaning anymore.
 - **DecompressionConfig.streamingDecompressionThresholdBytes**'s `0` value is not special anymore (previous meaning was "always use aggregated mode"). So a value of `0` will now use streaming decompression for all bodies.
 - **HttpServerConfig.zerocopyMinBytes** cannot be `0` anymore. The recommended value is to be `10KB` at minimum anyway when used.
@@ -28,6 +28,7 @@ All notable changes to aeronet are documented in this file.
 - **Validate Content-Type header given to HttpResponseWriter**: throw an exception in case of invalid content-type header value (in particular, an empty value will throw).
 - **Throwing an exception in a streaming handler now returns HTTP error 500**: it was previously correctly caught, but the user HTTP response was returned silently instead.
 - **Streaming handlers can no longer be called for HTTP/1.0 queries**: only HTTP/1.1 requests streaming handlers can be called (and HTTP/2 of course).
+- **Added missing header name and value validation of a HTTP/1.1 response in the client**
 
 ## Improvements
 

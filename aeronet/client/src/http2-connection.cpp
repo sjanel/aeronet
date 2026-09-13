@@ -5,12 +5,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <system_error>
 
 #include "aeronet/client-connection.hpp"
 #include "aeronet/event.hpp"
@@ -35,7 +37,6 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
@@ -284,20 +285,34 @@ class Http2ClientEngine : private EventSink {
     }
     if (!_finalHeadersSeen) {
       const auto statusIt = headers.find(http::PseudoHeaderStatus);
-      if (statusIt == headers.end() || statusIt->second.size() != 3) {
+      if (statusIt == headers.end()) {
+        log::error("HTTP/2 client: response HEADERS on stream {} without a :status", streamId);
+        setFailure(Failure::Malformed);
+        return;
+      }
+
+      const auto pBeg = statusIt->second.data();
+      const auto pEnd = pBeg + statusIt->second.size();
+      if (pEnd - pBeg != 3) {
         log::error("HTTP/2 client: response HEADERS on stream {} without a valid :status", streamId);
         setFailure(Failure::Malformed);
         return;
       }
-      // The size()==3 check above guarantees read3 stays within the view.
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      const auto statusCode = static_cast<http::StatusCode>(read3(statusIt->second.data()));
-      if (statusCode < 100) {
+
+      http::StatusCode statusCode;
+      const auto [pActualEnd, err] = std::from_chars(pBeg, pEnd, statusCode);
+      if (err != std::errc{} || pActualEnd != pEnd) {
+        log::error("HTTP/2 client: response HEADERS on stream {} without a valid :status", streamId);
         setFailure(Failure::Malformed);
         return;
       }
+
+      // 1xx interim block: skip it and await the final response headers
       if (statusCode < 200) {
-        return;  // 1xx interim block: skip it and await the final response headers
+        if (statusCode < 100) {
+          setFailure(Failure::Malformed);
+        }
+        return;
       }
       _resp->status(statusCode);
       _finalHeadersSeen = true;
@@ -306,7 +321,8 @@ class Http2ClientEngine : private EventSink {
     // reconstructs via body(), mirroring the HTTP/1.1 response parser. Names are normalized to lower-case. The
     // decoded views only live for this callback, so values are copied.
     for (const auto& [name, value] : headers) {
-      if (name.starts_with(':')) {
+      assert(!name.empty());
+      if (name.front() == ':') {
         continue;
       }
       if (name == http::ContentType) {
