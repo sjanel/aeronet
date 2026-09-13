@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <thread>
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
@@ -32,7 +33,7 @@ class TestServer {
  public:
   TestServer() noexcept;
 
-  explicit TestServer(HttpServerConfig cfg, RouterConfig routerCfg = {},
+  explicit TestServer(HttpServerConfig cfg, RouterConfig routerCfg = RouterConfig(),
                       std::chrono::milliseconds poll = std::chrono::milliseconds{1}) noexcept;
 
   [[nodiscard]] uint16_t port() const noexcept;
@@ -103,7 +104,16 @@ class ScopedConfigUpdate {
   T _previous;
 };
 
-bool WaitForServer(SingleHttpServer& server, bool running = true,
-                   std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+inline bool WaitForServer(auto& server, bool running = true,
+                          std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    if (server.isRunning() == running) {
+      return true;
+    }
+  }
+  return false;
+}
 
 }  // namespace aeronet::test

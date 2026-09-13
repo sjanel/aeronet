@@ -275,7 +275,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   // Send payload that upstream will partially echo
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   // We need a much smaller payload here otherwise the tests takes too long with additional memory checks
-  std::string payload(1024UL * 1024, 'a');
+  std::string payload(1UL << 20U, 'a');
 #else
   std::string payload(16UL << 20U, 'a');
 #endif
