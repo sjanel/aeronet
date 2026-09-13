@@ -235,7 +235,10 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
  public:
   enum class ResponseMode : uint8_t {
     MissingStatus,
-    InvalidStatus,
+    InvalidStatus1,
+    InvalidStatus2,
+    InvalidStatus3,
+    InvalidStatus4,
     InterimThenOk,
     EmptyData,
     NoContentType,
@@ -299,9 +302,30 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
       case ResponseMode::MissingStatus:
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView{}, true), http2::ErrorCode::NoError);
         break;
-      case ResponseMode::InvalidStatus: {
+      case ResponseMode::InvalidStatus1: {
         RawChars headers;
         headers.append(":status: 099\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true),
+                  http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::InvalidStatus2: {
+        RawChars headers;
+        headers.append(":status: E70\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true),
+                  http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::InvalidStatus3: {
+        RawChars headers;
+        headers.append(":status: 37o\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true),
+                  http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::InvalidStatus4: {
+        RawChars headers;
+        headers.append(":status: 1000\r\n");
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true),
                   http2::ErrorCode::NoError);
         break;
@@ -420,10 +444,15 @@ TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses)
   HttpClientConfig config;
   config.withHttpVersion(HttpVersionMode::Http2);
   HttpClient client(config);
+  HttpRequest req = MakeFinalizedHttp2Request(client);
 
-  for (const auto mode :
-       {LoopbackHttp2Transport::ResponseMode::MissingStatus, LoopbackHttp2Transport::ResponseMode::InvalidStatus}) {
-    HttpRequest req = MakeFinalizedHttp2Request(client);
+  for (const auto mode : {
+           LoopbackHttp2Transport::ResponseMode::MissingStatus,
+           LoopbackHttp2Transport::ResponseMode::InvalidStatus1,
+           LoopbackHttp2Transport::ResponseMode::InvalidStatus2,
+           LoopbackHttp2Transport::ResponseMode::InvalidStatus3,
+           LoopbackHttp2Transport::ResponseMode::InvalidStatus4,
+       }) {
     LoopbackHttp2Transport transport(config.http2, mode);
     internal::ClientConnection connection(config);
     bool requestSent = false;

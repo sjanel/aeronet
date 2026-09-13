@@ -865,7 +865,10 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
     case FrameType::Ping:
       return handlePingFrame(header, payload);
     case FrameType::GoAway:
-      return handleGoAwayFrame(header, payload);
+      if (header.streamId != 0) {
+        return connectionError(ErrorCode::ProtocolError, ErrorMsg::GOAWAYFrameOnNonZeroStream);
+      }
+      return handleGoAwayFrame(payload);
     case FrameType::WindowUpdate:
       return handleWindowUpdateFrame(header, payload);
     case FrameType::Continuation:
@@ -1057,7 +1060,7 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   }
 
   PriorityFrame frame;
-  FrameParseResult parseResult = ParsePriorityFrame(header, payload, frame);
+  FrameParseResult parseResult = ParsePriorityFrame(payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidPRIORITYFrame);
   }
@@ -1090,7 +1093,7 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
   }
 
   RstStreamFrame frame;
-  FrameParseResult parseResult = ParseRstStreamFrame(header, payload, frame);
+  FrameParseResult parseResult = ParseRstStreamFrame(payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidRST_STREAMFrame);
   }
@@ -1224,14 +1227,9 @@ Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader head
   return ProcessResult{ProcessResult::Action::Continue};
 }
 
-Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(FrameHeader header,
-                                                                  std::span<const std::byte> payload) {
-  if (header.streamId != 0) {
-    return connectionError(ErrorCode::ProtocolError, ErrorMsg::GOAWAYFrameOnNonZeroStream);
-  }
-
+Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(std::span<const std::byte> payload) {
   GoAwayFrame frame;
-  FrameParseResult parseResult = ParseGoAwayFrame(header, payload, frame);
+  FrameParseResult parseResult = ParseGoAwayFrame(payload, frame);
   if (parseResult != FrameParseResult::Ok) [[unlikely]] {
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidGOAWAYFrame);
   }

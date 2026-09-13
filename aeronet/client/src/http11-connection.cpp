@@ -196,7 +196,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   bool eof = false;
   const auto minReadChunkBytes = config.minReadChunkBytes;
 
-  for (;;) {
+  while (true) {
     responseBuffer.ensureAvailableCapacityExponential(minReadChunkBytes);
     const TransportResult transportRes =
         transport.read(responseBuffer.data() + responseBuffer.size(), minReadChunkBytes);
@@ -226,7 +226,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     }
     // Guaranteed by the parser: once eof is set, it always resolves to Complete/Error here,
     // never NeedMore, so this assert still holds under the new ordering.
-    assert(!eof);
+    assert(st == Http1ResponseParser::Status::NeedMore && !eof);
   }
 
   _keepAlive = parser.keepAlive();

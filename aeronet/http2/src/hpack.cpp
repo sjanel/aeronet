@@ -55,7 +55,7 @@ constexpr http::HeaderView kStaticTable[]{
     {"authorization", ""},
     {"cache-control", ""},
     {"content-disposition", ""},
-    {"content-encoding", ""},
+    {http::ContentEncoding, ""},
     {"content-language", ""},
     {http::ContentLength, ""},
     {"content-location", ""},
@@ -82,7 +82,7 @@ constexpr http::HeaderView kStaticTable[]{
     {"range", ""},
     {"referer", ""},
     {"refresh", ""},
-    {"retry-after", ""},
+    {http::RetryAfter, ""},
     {"server", ""},
     {"set-cookie", ""},
     {"strict-transport-security", ""},
@@ -790,7 +790,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
       recordFieldError(storeHeader(header.name, header.value, seenRegularHeader));
 
-    } else if ((firstByte & 0xE0U) == 0x20) {
+    } else if ((firstByte & 0xE0U) == 0x20U) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
       const auto sizeResult = DecodeInteger(data.subspan(pos), 5);
       if (sizeResult.index == DecodedIndex::kInvalidIndex) {
@@ -803,8 +803,8 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
     } else {
       // Literal Header Field - determine indexing mode and prefix bits
-      const bool withIndexing = (firstByte & 0xC0U) == 0x40;  // Format: 01xxxxxx
-      const uint8_t prefixBits = withIndexing ? 6 : 4;
+      const bool withIndexing = (firstByte & 0xC0U) == 0x40U;  // Format: 01xxxxxx
+      const uint8_t prefixBits = withIndexing ? 6U : 4U;
 
       auto indexResult = DecodeInteger(data.subspan(pos), prefixBits);
       if (indexResult.index == DecodedIndex::kInvalidIndex) {

@@ -1739,7 +1739,7 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
 
   RstStreamFrame rst;
   const auto payloadView = out.subspan(FrameHeader::kSize, outHeader.length);
-  ASSERT_EQ(ParseRstStreamFrame(outHeader, payloadView, rst), FrameParseResult::Ok);
+  ASSERT_EQ(ParseRstStreamFrame(payloadView, rst), FrameParseResult::Ok);
   EXPECT_EQ(rst.errorCode, ErrorCode::ProtocolError);
 }
 
@@ -1796,7 +1796,7 @@ TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
     if (fh.type == FrameType::RstStream && fh.length == 4U) {
       RstStreamFrame rst;
       const auto payloadView = out.subspan(pos + FrameHeader::kSize, fh.length);
-      ASSERT_EQ(ParseRstStreamFrame(fh, payloadView, rst), FrameParseResult::Ok);
+      ASSERT_EQ(ParseRstStreamFrame(payloadView, rst), FrameParseResult::Ok);
       EXPECT_EQ(rst.errorCode, ErrorCode::FlowControlError);
       foundRst = true;
       break;
@@ -2496,7 +2496,7 @@ TEST(Http2Connection, MalformedFieldSectionResetsStreamWithoutClosingConnection)
   const auto outputHeader = ParseFrameHeader(output);
   EXPECT_EQ(outputHeader.type, FrameType::RstStream);
   RstStreamFrame reset;
-  ASSERT_EQ(ParseRstStreamFrame(outputHeader, output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
+  ASSERT_EQ(ParseRstStreamFrame(output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
   EXPECT_EQ(reset.errorCode, ErrorCode::ProtocolError);
 }
 
@@ -2534,7 +2534,7 @@ TEST(Http2Connection, MalformedContinuationFieldSectionResetsStreamWithoutClosin
   const auto outputHeader = ParseFrameHeader(output);
   EXPECT_EQ(outputHeader.type, FrameType::RstStream);
   RstStreamFrame reset;
-  ASSERT_EQ(ParseRstStreamFrame(outputHeader, output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
+  ASSERT_EQ(ParseRstStreamFrame(output.subspan(FrameHeader::kSize), reset), FrameParseResult::Ok);
   EXPECT_EQ(reset.errorCode, ErrorCode::ProtocolError);
 }
 
@@ -2907,7 +2907,7 @@ TEST(Http2Connection, ContinuationDecodedHeaderListOverLocalLimitResetsStream) {
   ASSERT_EQ(outputHeader.type, FrameType::RstStream);
   RstStreamFrame reset;
   const auto payload = output.subspan(FrameHeader::kSize, outputHeader.length);
-  ASSERT_EQ(ParseRstStreamFrame(outputHeader, payload, reset), FrameParseResult::Ok);
+  ASSERT_EQ(ParseRstStreamFrame(payload, reset), FrameParseResult::Ok);
   EXPECT_EQ(reset.errorCode, ErrorCode::EnhanceYourCalm);
 }
 

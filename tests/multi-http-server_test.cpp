@@ -962,6 +962,8 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
   auto handle = multi.startDetached();
   ASSERT_EQ(multi.port(), appPort);
 
+  test::WaitForServer(multi);
+
   // Probes answered on the dedicated port.
   EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200"));

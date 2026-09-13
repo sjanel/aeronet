@@ -332,14 +332,8 @@ TEST(Http2Frame, ParsePriorityFrame) {
       std::byte{0x0F},                                                     // weight 15 on wire => 16 actual
   };
 
-  FrameHeader header{};
-  header.length = 5;
-  header.type = FrameType::Priority;
-  header.flags = 0;
-  header.streamId = 5;
-
   PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(header, payload, frame);
+  FrameParseResult result = ParsePriorityFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.exclusive);
@@ -372,14 +366,8 @@ TEST(Http2Frame, ParseRstStreamFrame) {
       std::byte{0x08},  // CANCEL
   };
 
-  FrameHeader header{};
-  header.length = 4;
-  header.type = FrameType::RstStream;
-  header.flags = 0;
-  header.streamId = 1;
-
   RstStreamFrame frame;
-  FrameParseResult result = ParseRstStreamFrame(header, payload, frame);
+  FrameParseResult result = ParseRstStreamFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.errorCode, ErrorCode::Cancel);
@@ -487,14 +475,8 @@ TEST(Http2Frame, ParseGoAwayFrame) {
       std::byte{'t'},  std::byte{'e'},  std::byte{'s'},  std::byte{'t'},  std::byte{0x00},  // debug data
   };
 
-  FrameHeader header{};
-  header.length = 13;
-  header.type = FrameType::GoAway;
-  header.flags = 0;
-  header.streamId = 0;
-
   GoAwayFrame frame;
-  FrameParseResult result = ParseGoAwayFrame(header, payload, frame);
+  FrameParseResult result = ParseGoAwayFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_EQ(frame.lastStreamId, 5U);
@@ -620,14 +602,8 @@ TEST(Http2Frame, ParsePingFrameInvalidLength) {
 TEST(Http2Frame, ParseRstStreamFrameInvalidLength) {
   const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
-  FrameHeader header{};
-  header.length = 3;
-  header.type = FrameType::RstStream;
-  header.flags = 0;
-  header.streamId = 1;
-
   RstStreamFrame frame;
-  FrameParseResult result = ParseRstStreamFrame(header, payload, frame);
+  FrameParseResult result = ParseRstStreamFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -635,14 +611,8 @@ TEST(Http2Frame, ParseRstStreamFrameInvalidLength) {
 TEST(Http2Frame, ParsePriorityFrameInvalidLength) {
   const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
 
-  FrameHeader header{};
-  header.length = 4;
-  header.type = FrameType::Priority;
-  header.flags = 0;
-  header.streamId = 1;
-
   PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(header, payload, frame);
+  FrameParseResult result = ParsePriorityFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
