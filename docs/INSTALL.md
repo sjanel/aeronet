@@ -41,6 +41,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
 | `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
 | `AERONET_ENABLE_HTTP_CLIENT` | ON | Enable the synchronous `HttpClient` module |
+| `AERONET_ENABLE_HTTP_SERVER` | ON | Enable the `HttpServer` module |
 | `AERONET_ENABLE_JWT` | ON when OpenSSL + Glaze are ON | Enable JWS-profile JWT/JWKS support; forced OFF without both prerequisites |
 | `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib / zlib-ng) compression + decompression |
 | `AERONET_ENABLE_ZLIBNG` | ON | Use `zlib-ng` implementation instead of classic `zlib` |

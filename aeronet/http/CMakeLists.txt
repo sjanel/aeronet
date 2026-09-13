@@ -1,12 +1,11 @@
 aux_source_directory(src AERONET_HTTP_SRC_LIST)
 
-# Remove upgrade-handler.cpp if neither HTTP/2 nor WebSocket is enabled
-if(NOT AERONET_ENABLE_HTTP2 AND NOT AERONET_ENABLE_WEBSOCKET)
-    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/upgrade-handler.cpp)
-endif()
-
-if(NOT AERONET_ENABLE_GLAZE)
-    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/config-loader.cpp)
+if(NOT AERONET_ENABLE_HTTP_SERVER)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/http-request-dispatch.cpp)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/path-handler-entry.cpp)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-constraint.cpp)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-group.cpp)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/router.cpp)
 endif()
 
 AeronetAddProjectLibrary(aeronet_http
@@ -66,14 +65,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http-error-build_test
-    test/http-error-build_test.cpp
-    LIBRARIES
-    aeronet_http
-    aeronet_basic_test_support
-)
-
-AeronetAddUnitTest(
     http-headers-view_test
     test/http-headers-view_test.cpp
     LIBRARIES
@@ -118,78 +109,32 @@ AeronetAddUnitTest(
     aeronet_tech
 )
 
-AeronetAddUnitTest(
-    multipart-form-data_test
-    test/multipart-form-data_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    path-handler-entry_test
-    test/path-handler-entry_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    route-constraint_test
-    test/route-constraint_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    route-group_test
-    test/route-group_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    rate-limit_test
-    test/rate-limit_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    rate-limit-middleware_test
-    test/rate-limit-middleware_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    router_test
-    test/router_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
-    static-file-handler_test
-    test/static-file-handler_test.cpp
-    LIBRARIES
-    aeronet_http
-    aeronet_test_support
-)
-
-if (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET)
+if(AERONET_ENABLE_HTTP_SERVER)
     AeronetAddUnitTest(
-        upgrade-handler_test
-        test/upgrade-handler_test.cpp
+        path-handler-entry_test
+        test/path-handler-entry_test.cpp
         LIBRARIES
         aeronet_http
-        aeronet_basic_test_support
     )
-endif()
 
-if(AERONET_ENABLE_GLAZE)
     AeronetAddUnitTest(
-        config-loader_test
-        test/config-loader_test.cpp
+        route-constraint_test
+        test/route-constraint_test.cpp
         LIBRARIES
-        aeronet
+        aeronet_http
+    )
+
+    AeronetAddUnitTest(
+        route-group_test
+        test/route-group_test.cpp
+        LIBRARIES
+        aeronet_http
+    )
+
+    AeronetAddUnitTest(
+        router_test
+        test/router_test.cpp
+        LIBRARIES
+        aeronet_http
     )
 endif()

@@ -63,14 +63,16 @@ AeronetAddUnitTest(
     aeronet_client
 )
 
-AeronetAddUnitTest(
-    http-client-core_test
-    test/http-client-core_test.cpp
-    LIBRARIES
-    aeronet_client
-    aeronet
-    aeronet_test_support
-)
+if(AERONET_ENABLE_HTTP_SERVER)
+    AeronetAddUnitTest(
+        http-client-core_test
+        test/http-client-core_test.cpp
+        LIBRARIES
+        aeronet_client
+        aeronet
+        aeronet_test_support
+    )
+endif()
 
 AeronetAddUnitTest(
     http-client-exception_test
@@ -81,7 +83,7 @@ AeronetAddUnitTest(
 
 # Native HTTP/2 client engine: h2c prior knowledge over plain http, Auto/Http1_1/Http2 version modes,
 # flow control both ways, pooling; plus ALPN negotiation over TLS when OpenSSL is enabled.
-if(AERONET_ENABLE_HTTP2)
+if(AERONET_ENABLE_HTTP_SERVER AND AERONET_ENABLE_HTTP2)
     AeronetAddUnitTest(
         http-client-http2-e2e_test
         test/http-client-http2-e2e_test.cpp
@@ -92,7 +94,7 @@ if(AERONET_ENABLE_HTTP2)
     )
 endif()
 
-if(AERONET_ENABLE_OPENSSL)
+if(AERONET_ENABLE_HTTP_SERVER AND AERONET_ENABLE_OPENSSL)
     AeronetAddUnitTest(
         http-client-tls-e2e_test
         test/http-client-tls-e2e_test.cpp

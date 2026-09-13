@@ -18,14 +18,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { compiler: gcc-13, features: OFF, build: Debug }
-          - { compiler: gcc-13, features: ON, build: Debug }
-          - { compiler: clang-21, features: OFF, build: Debug }
-          - { compiler: clang-21, features: ON, build: Debug }
+          - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug }
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug }
+          - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug }
+          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug }
+          - { compiler: clang-21, features: ON, client: ON, server: OFF, build: Debug }
           # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
           # caught (Release's -DNDEBUG strips assert()-based invariants), and Release is
           # already exercised independently by the arm/macos/windows/packaging jobs.
-          - { compiler: gcc-13, features: ON, build: Release }
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release }
     runs-on: ubuntu-latest
 
     env:
@@ -87,6 +88,8 @@ jobs:
             -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.client }} \
+            -DAERONET_ENABLE_HTTP_SERVER=${{ matrix.server }} \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_ASAN=ON \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
@@ -99,8 +102,7 @@ jobs:
             -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
             -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
             -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
-            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.features }}
+            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
       - name: Build
         run: |

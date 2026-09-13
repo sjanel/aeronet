@@ -175,7 +175,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   std::string_view cacheKey;
   if (isCacheEligible) {
     cacheKey = buildCacheKey(req);
-    HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
+    const HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
     if (pCachedHttpResponse != nullptr) {
       return pCachedHttpResponse->cloneFinalized();
     }
@@ -250,6 +250,15 @@ void HttpClient::clearIdleConnections() {
     dropIdleBucket(bucket);
   }
   _idle.clear();
+}
+
+void HttpClient::ActiveConnection::reset() noexcept {
+  transport.reset();
+  idleSince = {};
+  proto.reset();
+  cnx = {};
+  protocol = ClientProtocol::Http1_1;
+  reused = false;
 }
 
 bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
@@ -752,7 +761,7 @@ void HttpClient::pruneExpiredCache(SteadyClock::time_point now) {
   }
 }
 
-HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
+const HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
   // Amortized housekeeping: every so often sweep expired entries so a cache of one-shot URLs does not keep
   // dead entries around until it hits maxEntries. Cheap relative to a network round trip.
   static constexpr uint32_t kCachePruneInterval = 256;
@@ -760,7 +769,7 @@ HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
     _cachePruneCounter = 0;
     pruneExpiredCache(SteadyClock::now());
   }
-  auto it = _cache.find(key);
+  const auto it = _cache.find(key);
   if (it == _cache.end()) {
     return nullptr;  // miss
   }
@@ -777,18 +786,17 @@ void HttpClient::cacheStore(std::string_view key, const HttpResponse& resp) {
   auto cloned = resp.cloneFinalized();
   auto [it, inserted] = _cache.try_emplace(key, std::move(cloned), now);
 
-  if (!inserted) {
+  if (inserted) {
+    if (_cache.size() > _config.cache.maxEntries) {
+      pruneExpiredCache(now);
+      if (_cache.size() > _config.cache.maxEntries) {
+        _cache.erase(std::ranges::min_element(_cache, {}, [](const auto& kv) { return kv.second.lastUpdated; }));
+      }
+    }
+  } else {
     // The above move actually did not happen, so it's safe to move again here.
     it->second.response = std::move(cloned);
     it->second.lastUpdated = now;
-    return;
-  }
-
-  if (_cache.size() > _config.cache.maxEntries) {
-    pruneExpiredCache(now);
-    if (_cache.size() > _config.cache.maxEntries) {
-      _cache.erase(std::ranges::min_element(_cache, {}, [](const auto& kv) { return kv.second.lastUpdated; }));
-    }
   }
 }
 

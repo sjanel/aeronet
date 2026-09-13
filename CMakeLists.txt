@@ -183,6 +183,13 @@ option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BE
 # All features are optional, and independent of each other.
 # For example, you may activate WebSocket without zlib support, in which case the WebSocket implementation will simply not support permessage-deflate compression.
 
+option(AERONET_ENABLE_HTTP_CLIENT "Enable the HTTP client (HttpClient)" ON)
+option(AERONET_ENABLE_HTTP_SERVER "Enable the HTTP server (HttpServer)" ON)
+
+if (NOT AERONET_ENABLE_HTTP_CLIENT AND NOT AERONET_ENABLE_HTTP_SERVER)
+  message(FATAL_ERROR "[aeronet] invalid configuration - client and server cannot be both disabled")
+endif()
+
 # Features needing external dependencies (disabled by default, except if compiled as main project)
 option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
@@ -193,10 +200,9 @@ option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PRO
 option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJECT_IS_TOP_LEVEL})
 
 # Features without external dependencies (enabled by default, but you can disable them if you don't need them to reduce binary size and compilation time)
-option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ON)
+option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ${AERONET_ENABLE_HTTP_SERVER})
 option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
-option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ON)
-option(AERONET_ENABLE_HTTP_CLIENT "Enable the HTTP client (HttpClient)" ON)
+option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ${AERONET_ENABLE_HTTP_SERVER})
 
 # JWT (JWS-profile) support reuses the OpenSSL crypto already linked for TLS and the glaze JSON
 # parser; it adds no new dependency. It is therefore not a standalone opt-in: it is available by
@@ -261,7 +267,8 @@ if(AERONET_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
-if(AERONET_BUILD_TESTS)
+if(AERONET_BUILD_TESTS AND AERONET_ENABLE_HTTP_SERVER)
+  # Tests need the server to be compiled.
   add_subdirectory(tests)
 endif()
 
@@ -290,12 +297,15 @@ if(AERONET_INSTALL)
     @ONLY
   )
 
-  set(_AERONET_EXPORT_TARGETS aeronet aeronet_server aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
   if(AERONET_ENABLE_HTTP2)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_http2)
   endif()
   if(AERONET_ENABLE_HTTP_CLIENT)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_client)
+  endif()
+  if(AERONET_ENABLE_HTTP_SERVER)
+    list(APPEND _AERONET_EXPORT_TARGETS aeronet_server)
   endif()
   if(AERONET_ENABLE_WEBSOCKET)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_websocket)
@@ -328,13 +338,15 @@ if(AERONET_INSTALL)
 
   # Headers: install each public include tree
   install(DIRECTORY aeronet/main/include/ DESTINATION include)
-  install(DIRECTORY aeronet/server/include/ DESTINATION include)
   install(DIRECTORY aeronet/http/include/ DESTINATION include)
   if(AERONET_ENABLE_HTTP2)
     install(DIRECTORY aeronet/http2/include/ DESTINATION include)
   endif()
   if(AERONET_ENABLE_HTTP_CLIENT)
     install(DIRECTORY aeronet/client/include/ DESTINATION include)
+  endif()
+  if(AERONET_ENABLE_HTTP_SERVER)
+    install(DIRECTORY aeronet/server/include/ DESTINATION include)
   endif()
   if(AERONET_ENABLE_JWT)
     install(DIRECTORY aeronet/jwt/include/ DESTINATION include)

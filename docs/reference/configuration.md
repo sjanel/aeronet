@@ -29,6 +29,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_HTTP2` | ON | HTTP/2, HPACK, h2c, and ALPN negotiation | Pair with OpenSSL for HTTP/2 over TLS |
 | `AERONET_ENABLE_WEBSOCKET` | ON | RFC 6455 endpoints | `AERONET_ENABLE_ZLIB` additionally enables permessage-deflate |
 | `AERONET_ENABLE_HTTP_CLIENT` | ON | Synchronous `HttpClient`, pool, proxy, cache, retry | OpenSSL for HTTPS; HTTP/2 option for h2 client |
+| `AERONET_ENABLE_HTTP_SERVER` | ON | Activates `HttpServer` & `SingleHttpServer` servers and handlers | OpenSSL for HTTPS; HTTP/2 option for h2 client |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Coroutine routing APIs | No external dependency |
 | `AERONET_ENABLE_ZLIB` | top-level | gzip and deflate encoders/decoders | zlib-ng is preferred by default |
 | `AERONET_ENABLE_ZLIBNG` | ON | Use zlib-ng in place of classic zlib | Meaningful only with zlib enabled |
@@ -84,5 +85,5 @@ When Glaze is enabled, `aeronet-config-dump` can emit the complete serializable 
 
 Two configuration headers are intentionally not application configuration objects:
 
-- [`aeronet-config.hpp`](../../aeronet/http/include/aeronet/aeronet-config.hpp) contains the internal combined server/router representation used by the config loader. Use a server file-path constructor or the public `LoadServerConfig` path instead of depending on `TopLevelConfig` or its parser helpers.
+- [`aeronet-config.hpp`](../../aeronet/server/include/aeronet/aeronet-config.hpp) contains the internal combined server/router representation used by the config loader. Use a server file-path constructor or the public `LoadServerConfig` path instead of depending on `TopLevelConfig` or its parser helpers.
 - [`compiler-config.hpp`](../../aeronet/tech/include/aeronet/compiler-config.hpp) selects portability attributes such as `AERONET_RESTRICT` and `AERONET_ALWAYS_INLINE` for the active compiler. Applications should not define or override these macros; select the compiler/toolchain through CMake.

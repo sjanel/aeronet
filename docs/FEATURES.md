@@ -716,15 +716,12 @@ SingleHttpServer server(cfg, std::move(router));
 
 ## Multipart/form-data utilities (RFC 7578)
 
-`MultipartFormData` parses aggregated `multipart/form-data`
-payloads with zero-copy `std::string_view` slices referencing the original request buffer. Use it after calling
-`req.body()` / `co_await req.bodyAwaitable()` so the full payload is buffered.
+`MultipartFormData` parses aggregated `multipart/form-data` payloads with zero-copy `std::string_view` slices referencing the original request buffer.
+Use it after calling `req.body()` / `co_await req.bodyAwaitable()` so the full payload is buffered.
 
 ### Basic usage
 
 ```cpp
-#include <aeronet/log.hpp>
-
 Router router;
 router.setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
   const auto body = req.body();
@@ -738,7 +735,7 @@ router.setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
   }
 
   if (const auto* note = form.part("description")) {
-    log::info("desc={} bytes", note->value.size());
+    // Read note part...
   }
 
   if (const auto* file = form.part("file")) {
@@ -2491,7 +2488,7 @@ The handler is designed to plug into the existing routing API: it is an invocabl
   **least-recently-used** entry so the cache stays bounded while keeping the hot working set resident. Set
   `headerCacheCapacity` to **0** (or use `withHeaderCacheCapacity(0)`) to disable the cache. A
   `contentTypeResolver` callback, when installed, is invoked at most once per (file, stat) rather than on every request.
-  See [tests](../aeronet/http/test/static-file-handler_test.cpp) (`HeaderCache*`).
+  See [tests](../aeronet/server/test/static-file-handler_test.cpp) (`HeaderCache*`).
 
 - **Content-Type resolution**: when serving files the handler resolves the `Content-Type` header with the following
   precedence: (1) a user-provided content-type resolver callback (if installed) and returning a non-empty value,
@@ -2550,7 +2547,7 @@ curl -i http://localhost:8080/somefile.txt
 curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
 ```
 
-Testing lives in `tests/http-core_test.cpp` which exercises full-body responses, single-range `206`, multi-range `206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit behaviour. Unit tests in `aeronet/http/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing, coalescing, boundary generation, and multipart body assembly paths.
+Testing lives in `tests/http-core_test.cpp` which exercises full-body responses, single-range `206`, multi-range `206 multipart/byteranges`, range coalescing, unsatisfiable requests, `If-None-Match`, `If-Range`, and safety-limit behaviour. Unit tests in `aeronet/server/test/static-file-handler_test.cpp` provide fine-grained coverage of the parsing, coalescing, boundary generation, and multipart body assembly paths.
 
 ```bash
 # Test multi-range request
@@ -3511,7 +3508,7 @@ multiWithRouter.run();
 For advanced use (e.g. loading only `HttpServerConfig`):
 
 ```cpp
-#include "aeronet/config-loader.hpp"
+#include "aeronet/server-config-loader.hpp"
 
 auto serverCfg = LoadServerConfig("/etc/aeronet/server.json");
 auto serverCfg2 = LoadServerConfig(R"({"server":{"port":8080}})", ConfigFormat::json);
@@ -3540,7 +3537,7 @@ Serialize any Glaze-compatible object directly into the response body, avoiding 
 > the Glaze dependency, which is expensive to compile. To keep that cost out of the widely-included core
 > headers, their definitions live in `<aeronet/http-json.hpp>`. Include it wherever you serialize/parse
 > JSON or YAML (the `<aeronet/aeronet.hpp>` umbrella already does). Tests:
-> [config-loader_test.cpp](../aeronet/http/test/config-loader_test.cpp) (response side),
+> [server-config-loader_test.cpp](../aeronet/server/test/server-config-loader_test.cpp) (response side),
 > [http-request-view_test.cpp](../aeronet/http/test/http-request-view_test.cpp) (request side `bodyAs`/`bodyAsYaml`).
 
 ```cpp
