@@ -6,7 +6,9 @@ target_include_directories(aeronet
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(aeronet INTERFACE aeronet_server)
+if(AERONET_ENABLE_HTTP_SERVER)
+    target_link_libraries(aeronet INTERFACE aeronet_server)
+endif()
 
 if(AERONET_ENABLE_HTTP_CLIENT)
     target_link_libraries(aeronet INTERFACE aeronet_client)

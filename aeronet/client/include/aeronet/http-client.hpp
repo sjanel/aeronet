@@ -79,6 +79,8 @@ class HttpClient {
   // following, retry, ...).
   explicit HttpClient(HttpClientConfig config = {});
 
+  // TODO: Make it copyable like the HttpServer?
+
   // Build a request with the given method and url. The returned HttpRequest is mutable and
   // can be further configured (headers, body, ...). The request is pre-configured based on the client config (e.g.
   // Accept-Encoding, User-Agent, ...).
@@ -152,17 +154,12 @@ class HttpClient {
   // when the cache is disabled. See HttpClientConfig::cache.
   void clearResponseCache() noexcept { _cache.clear(); }
 
+  // TODO: add a shrink_to_fit() method ? May be useful for long-running clients
+
  private:
   // A live transport (plain or TLS) plus the socket it owns.
   struct ActiveConnection {
-    void reset() noexcept {
-      transport.reset();
-      idleSince = {};
-      proto.reset();
-      cnx = {};
-      protocol = ClientProtocol::Http1_1;
-      reused = false;
-    }
+    void reset() noexcept;
 
     using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<internal::ClientConnection> &&
                                                      amc::is_trivially_relocatable_v<Connection>>::type;
@@ -198,7 +195,7 @@ class HttpClient {
   std::string_view buildCacheKey(const HttpRequest& req);
   // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
   // Amortized periodic pruning of expired entries happens here.
-  HttpResponse* cacheLookupFresh(std::string_view key);
+  const HttpResponse* cacheLookupFresh(std::string_view key);
   // Store (a deep copy of) `resp` under `key`, refreshing an existing entry or inserting a new one; enforces
   // the cache.maxEntries bound (prune expired, then evict the least-recently-refreshed entry).
   void cacheStore(std::string_view key, const HttpResponse& resp);
@@ -268,6 +265,7 @@ class HttpClient {
   void dropIdleBucket(vector<ActiveConnection>& bucket) noexcept;
 
   [[nodiscard]] RawChars& responseBuffer() noexcept { return _responseBuffer; }
+
   [[nodiscard]] RawChars& bodyBuffer() noexcept { return _reqBodyScratch; }
 
   // Draw a uniform value in [0, 1) from the backoff jitter PRNG (a tiny xorshift; quality is irrelevant

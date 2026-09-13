@@ -325,13 +325,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    server-stats_test
-    test/server-stats_test.cpp
-    LIBRARIES
-    aeronet_objects
-)
-
-AeronetAddUnitTest(
     static-file-config_test
     src/static-file-config.cpp
     test/static-file-config_test.cpp

@@ -1,4 +1,4 @@
-#include "aeronet/sha1.hpp"
+#include "../src/sha1.hpp"
 
 #include <gtest/gtest.h>
 

@@ -1,4 +1,4 @@
-#include "aeronet/websocket-compress.hpp"
+#include "websocket-compress.hpp"
 
 #include <array>
 #include <cstddef>
