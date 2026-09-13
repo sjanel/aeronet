@@ -191,15 +191,4 @@ void LogScopedConfigUpdateDestructorError() {
   log::error("Failed to restore HttpServerConfig field in ScopedConfigUpdate destructor");
 }
 
-bool WaitForServer(SingleHttpServer& server, bool running, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner)
-    if (server.isRunning() == running) {
-      return true;
-    }
-  }
-  return server.isRunning() == running;
-}
-
 }  // namespace aeronet::test
