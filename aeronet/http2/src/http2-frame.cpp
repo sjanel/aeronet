@@ -179,7 +179,7 @@ FrameParseResult ParseGoAwayFrame(FrameHeader /*header*/, std::span<const std::b
 }
 
 FrameParseResult ParseWindowUpdateFrame(std::span<const std::byte> payload, WindowUpdateFrame& out) noexcept {
-  if (payload.size() != 4) {
+  if (payload.size() != 4U) {
     return FrameParseResult::FrameSizeError;
   }
 
@@ -197,10 +197,14 @@ void ParseContinuationFrame(FrameHeader header, std::span<const std::byte> paylo
 // ============================
 
 std::byte* PrepareDataFrameGetStartPtr(RawBytes& buffer, uint32_t streamId, uint32_t dataSz, bool endStream) {
-  uint8_t flags = endStream ? FrameFlags::DataEndStream : FrameFlags::None;
+  const uint8_t flags = endStream ? FrameFlags::DataEndStream : FrameFlags::None;
+
   WriteFrame(buffer, FrameType::Data, flags, streamId, dataSz);
+
   std::byte* pData = buffer.end();
+
   buffer.addSize(dataSz);
+
   return pData;
 }
 
@@ -221,11 +225,11 @@ std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, s
   // Write priority
   uint32_t depWithExcl = streamDependency;
   if (exclusive) {
-    depWithExcl |= 0x80000000;
+    depWithExcl |= 0x80000000U;
   }
 
   Write32BE(pData, depWithExcl);
-  pData += 4;
+  pData += sizeof(uint32_t);
 
   *pData++ = static_cast<std::byte>(weight);
   pData = Append(headerBlock.data(), headerBlock.size(), pData);
@@ -253,7 +257,7 @@ std::size_t WritePriorityFrame(RawBytes& buffer, uint32_t streamId, uint32_t str
 std::size_t WriteRstStreamFrame(RawBytes& buffer, uint32_t streamId, ErrorCode errorCode) {
   const auto ret = WriteFrame(buffer, FrameType::RstStream, FrameFlags::None, streamId, 4U);
   Write32BE(buffer.end(), static_cast<uint32_t>(errorCode));
-  buffer.addSize(4);
+  buffer.addSize(4U);
   return ret;
 }
 
@@ -271,8 +275,9 @@ std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> 
   // Write settings entries
   for (const auto& entry : entries) {
     Write16BE(pData, static_cast<uint16_t>(entry.id));
-    Write32BE(pData + 2, entry.value);
-    pData += 6;
+    pData += sizeof(uint16_t);
+    Write32BE(pData, entry.value);
+    pData += sizeof(uint32_t);
   }
   buffer.setEnd(pData);
 
@@ -304,9 +309,9 @@ std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode 
 
   // Write last stream ID and error code
   Write32BE(pData, lastStreamId);
-  pData += 4;
+  pData += sizeof(uint32_t);
   Write32BE(pData, static_cast<uint32_t>(errorCode));
-  pData += 4;
+  pData += sizeof(uint32_t);
 
   // Write debug data
   pData = Append(reinterpret_cast<const std::byte*>(debugData.data()), debugData.size(), pData);
@@ -318,7 +323,7 @@ std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode 
 std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t windowSizeIncrement) {
   const auto ret = WriteFrame(buffer, FrameType::WindowUpdate, FrameFlags::None, streamId, 4U);
   Write32BE(buffer.end(), windowSizeIncrement & kMaxWindowSize);  // Clear reserved bit
-  buffer.addSize(4);
+  buffer.addSize(4U);
   return ret;
 }
 

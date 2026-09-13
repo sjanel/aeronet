@@ -172,12 +172,12 @@ bool IsConnectionStale(NativeHandle fd) noexcept {
   for (;;) {
     const ssize_t peeked = ::recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
     if (peeked < 0) {
-      if (errno == EINTR) {
+      if (errno == error::kInterrupted) {
         continue;
       }
       // EAGAIN/EWOULDBLOCK => no pending data, the connection is quiet and presumed alive; any other
       // errno (ECONNRESET, ...) => the connection is dead.
-      return errno != EAGAIN && errno != EWOULDBLOCK;
+      return errno != error::kWouldBlock;
     }
     return true;  // EOF (peeked == 0) or unexpected pending bytes (peeked > 0): discard the connection
   }

@@ -182,7 +182,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   }
   HttpClientResult result = requestUncached(std::move(req));
   // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
-  // Both HTTP/1.1 (ResponseParser::decideFraming(), gated on _statusCode >= 200) and HTTP/2 (interim HEADERS are
+  // Both HTTP/1.1 (Http1ResponseParser::decideFraming(), gated on _statusCode >= 200) and HTTP/2 (interim HEADERS are
   // consumed before a final response completes the exchange) guarantee a completed exchange never surfaces status() <
   // 200 here; asserted rather than left as a permanently-uncovered branch.
   assert(!result || result->status() >= 200);

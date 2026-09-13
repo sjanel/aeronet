@@ -306,7 +306,7 @@ class HttpClient {
   // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are
   // never live at once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy
   // CONNECT line); once it is fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target
-  // (borrowed by ResponseParser, which clears it in reset()). Kept distinct from _responseBuffer because
+  // (borrowed by Http1ResponseParser, which clears it in reset()). Kept distinct from _responseBuffer because
   // chunked de-framing reads from that receive buffer while writing into this one. HTTP/2 only uses the
   // phase-1 role. On body completion, a suitably-sized allocation moves into the response and gets an equal-capacity
   // replacement; an oversized scratch is retained and the smaller body copied. This preserves steady-state reuse

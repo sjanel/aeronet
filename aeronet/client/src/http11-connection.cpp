@@ -23,7 +23,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-#include "response-parser.hpp"
+#include "http1-response-parser.hpp"
 
 namespace aeronet::internal {
 
@@ -96,7 +96,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
   // a large file is never fully materialized in memory (the head already declared the exact Content-Length).
   static constexpr std::size_t kFileChunk = 64UL * 1024UL;
   // Reuse the client's request/body scratch buffer as the file read staging area: it is idle during the
-  // send phase (only borrowed later by ResponseParser, which clears it) and reused across requests.
+  // send phase (only borrowed later by Http1ResponseParser, which clears it) and reused across requests.
   RawChars& chunkBuf = client.bodyBuffer();
   chunkBuf.clear();
   while (remaining != 0) {
@@ -178,7 +178,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   // The chunked-body reassembly and raw receive buffers are borrowed from the client. Suitably-sized allocations move
   // into the response and get an equal-capacity replacement; oversized scratch stays with the client while its small
   // body is copied. Both paths preserve reuse without making a later request invalidate the returned response.
-  ResponseParser parser(client.bodyBuffer());
+  Http1ResponseParser parser(client.bodyBuffer());
   parser.reset(req.method() == http::Method::HEAD);
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
@@ -217,11 +217,11 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       eof = true;
     }
 
-    const ResponseParser::Status st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
-    if (st == ResponseParser::Status::Complete) {
+    const Http1ResponseParser::Status st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
+    if (st == Http1ResponseParser::Status::Complete) {
       break;
     }
-    if (st == ResponseParser::Status::Error) {
+    if (st == Http1ResponseParser::Status::Error) {
       return std::unexpected(HttpClientErrc::malformedResponse);
     }
     // Guaranteed by the parser: once eof is set, it always resolves to Complete/Error here,
