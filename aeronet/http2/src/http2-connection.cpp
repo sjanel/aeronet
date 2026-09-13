@@ -22,11 +22,11 @@
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 #include "http2-read-write.hpp"
@@ -111,8 +111,7 @@ Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffs
       _maxFrameSize(maxFrameSize),
       _framed(true) {
   assert(dataOffset <= _payload.size());
-  assert(dataSize != 0);
-  assert(dataSize <= _payload.size() - dataOffset);
+  assert(dataSize != 0 && dataSize <= _payload.size() - dataOffset);
   assert(maxFrameSize != 0);
 
   const auto frameCount = static_cast<uint32_t>((dataSize + maxFrameSize - 1U) / maxFrameSize);
@@ -555,9 +554,8 @@ void Http2Connection::pruneClosedStreams() {
     const auto streamId = _closedStreamsFifo.front();
     _closedStreamsFifo.pop_front();
 
-    auto it = _streams.find(streamId);
-    assert(it != _streams.end());
-    assert(it->second.isClosed());
+    const auto it = _streams.find(streamId);
+    assert(it != _streams.end() && it->second.isClosed());
     _streams.erase(it);
   }
 }
@@ -1362,8 +1360,15 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
                                     uint64_t headerListSize) {
   assert(statusCode == 0 || statusCode == http::MagicForHttpRequest || (statusCode >= 100 && statusCode <= 999));
 
-  // Encode :status pseudo-header first if present
-  if (statusCode >= 100) {
+  auto headersFirst = headersView.begin();
+  auto headersLast = headersView.end();
+
+  if (statusCode == http::MagicForHttpRequest) {
+    // For requests, skip the Host header (we use :authority instead)
+    assert(headersFirst != headersLast && (*headersFirst).name == http::Host);
+    ++headersFirst;
+  } else if (statusCode >= 100) {
+    // Encode :status pseudo-header first if present
     char statusBuf[3];
     writeStatusCode(statusBuf, statusCode);
     const std::string_view statusStr(statusBuf, sizeof(statusBuf));
@@ -1371,21 +1376,16 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 
-  // For requests, skip the Host header (we use :authority instead)
-  bool skipHostHeader = statusCode == http::MagicForHttpRequest;
-  for (const auto& [name, value] : headersView) {
-    if (skipHostHeader) {
-      assert(name == http::Host);
-      skipHostHeader = false;
-      continue;
-    }
+  for (; headersFirst != headersLast; ++headersFirst) {
+    const auto [name, value] = *headersFirst;
 
-    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where
-    // it is tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec
-    // pads Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a
-    // strict peer (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
-    // TODO: avoid const_cast by bringing a non-const headersView.
-    tolower(const_cast<char*>(name.data()), name.size());
+    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
+    // tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec  pads
+    // Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a strict peer
+    // (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values. All header names
+    // should be normalized to lower-case at this step.
+    assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
+    // TODO: cannot we sanitize all header / trailer values with TrimOws as well to avoid doing it here?
     const std::string_view trimmedValue = TrimOws(value);
     headerListSize += HpackHeaderFieldSize(name, trimmedValue);
     _hpackEncoder.encode(_outputBuffer, name, trimmedValue);
@@ -1404,6 +1404,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
         continue;
       }
 
+      assert(headerValue == TrimOws(headerValue));
       headerListSize += HpackHeaderFieldSize(headerName, headerValue);
       _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }

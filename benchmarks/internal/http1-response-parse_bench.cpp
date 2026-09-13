@@ -1,4 +1,4 @@
-// Micro-benchmark for the HTTP/1.1 client ResponseParser body ownership paths.
+// Micro-benchmark for the HTTP/1.1 client Http1ResponseParser body ownership paths.
 //
 // On completion, the parser transfers a suitably-sized identity receive or chunked reassembly allocation into
 // HttpResponse and installs an equal-capacity empty replacement. These benchmarks cover that steady-state rotation:
@@ -14,7 +14,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "response-parser.hpp"
+#include "http1-response-parser.hpp"
 
 namespace aeronet {
 namespace {
@@ -66,7 +66,7 @@ void BM_ChunkedTransferBody(benchmark::State& state) {
   RawChars bodyBuf;
   for (auto _ : state) {
     HttpResponse resp;
-    ResponseParser parser(bodyBuf);
+    Http1ResponseParser parser(bodyBuf);
     parser.reset(false);
     auto st = parser.parse(response, false, resp, kMaxResponseBytes);
     benchmark::DoNotOptimize(st);
@@ -83,7 +83,7 @@ void BM_IdentityTransferBody(benchmark::State& state) {
   for (auto _ : state) {
     receiveBuffer.assign(response);
     HttpResponse resp;
-    ResponseParser parser(bodyBuf);
+    Http1ResponseParser parser(bodyBuf);
     parser.reset(false);
     auto status = parser.parse(receiveBuffer, false, resp, kMaxResponseBytes);
     benchmark::DoNotOptimize(status);
@@ -99,7 +99,7 @@ void BM_ResponseHeadScan(benchmark::State& state) {
   RawChars bodyBuf;
   for (auto _ : state) {
     HttpResponse resp;
-    ResponseParser parser(bodyBuf);
+    Http1ResponseParser parser(bodyBuf);
     parser.reset(false);
     auto st = parser.parse(response, false, resp, kMaxResponseBytes);
     benchmark::DoNotOptimize(st);

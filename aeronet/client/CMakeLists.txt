@@ -112,8 +112,8 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    response-parser_test
-    test/response-parser_test.cpp
+    http1-response-parser_test
+    test/http1-response-parser_test.cpp
     LIBRARIES
     aeronet_client
     aeronet_test_support

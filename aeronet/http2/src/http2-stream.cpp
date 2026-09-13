@@ -1,6 +1,7 @@
 #include "aeronet/http2-stream.hpp"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 
