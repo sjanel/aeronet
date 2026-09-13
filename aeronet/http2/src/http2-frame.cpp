@@ -125,8 +125,7 @@ FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParsePriorityFrame(FrameHeader /*header*/, std::span<const std::byte> payload,
-                                    PriorityFrame& out) noexcept {
+FrameParseResult ParsePriorityFrame(std::span<const std::byte> payload, PriorityFrame& out) noexcept {
   if (payload.size() != 5) {
     return FrameParseResult::FrameSizeError;
   }
@@ -135,51 +134,49 @@ FrameParseResult ParsePriorityFrame(FrameHeader /*header*/, std::span<const std:
   out.exclusive = (depAndExcl & 0x80000000U) != 0;
   out.streamDependency = depAndExcl & kMaxWindowSize;
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-  out.weight = static_cast<uint8_t>(payload[4]) + 1;
+  out.weight = static_cast<uint8_t>(payload[sizeof(uint32_t)]) + 1;
 
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParseRstStreamFrame(FrameHeader /*header*/, std::span<const std::byte> payload,
-                                     RstStreamFrame& out) noexcept {
-  if (payload.size() != 4) {
+FrameParseResult ParseRstStreamFrame(std::span<const std::byte> payload, RstStreamFrame& out) noexcept {
+  if (payload.size() != sizeof(uint32_t)) {
     return FrameParseResult::FrameSizeError;
   }
 
-  static_assert(sizeof(ErrorCode) == 4, "ErrorCode must be 4 bytes (or logic below needs to change)");
+  static_assert(sizeof(ErrorCode) == sizeof(uint32_t), "ErrorCode must be 4 bytes (or logic below needs to change)");
 
   out.errorCode = static_cast<ErrorCode>(Read32BE(payload.data()));
   return FrameParseResult::Ok;
 }
 
 FrameParseResult ParsePingFrame(FrameHeader header, std::span<const std::byte> payload, PingFrame& out) noexcept {
-  if (payload.size() != 8) {
+  if (payload.size() != 8U) {
     return FrameParseResult::FrameSizeError;
   }
 
   out.isAck = header.hasFlag(FrameFlags::PingAck);
-  std::memcpy(out.opaqueData, payload.data(), 8);
+  std::memcpy(out.opaqueData, payload.data(), 8U);
 
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParseGoAwayFrame(FrameHeader /*header*/, std::span<const std::byte> payload,
-                                  GoAwayFrame& out) noexcept {
-  if (payload.size() < 8U) {
+FrameParseResult ParseGoAwayFrame(std::span<const std::byte> payload, GoAwayFrame& out) noexcept {
+  if (payload.size() < 2 * sizeof(uint32_t)) {
     return FrameParseResult::FrameSizeError;
   }
 
-  static_assert(sizeof(ErrorCode) == 4, "ErrorCode must be 4 bytes (or logic below needs to change)");
+  static_assert(sizeof(ErrorCode) == sizeof(uint32_t), "ErrorCode must be 4 bytes (or logic below needs to change)");
 
   out.lastStreamId = Read32BE(payload.data()) & kMaxWindowSize;
-  out.errorCode = static_cast<ErrorCode>(Read32BE(payload.data() + 4));
-  out.debugData = payload.subspan(8);
+  out.errorCode = static_cast<ErrorCode>(Read32BE(payload.data() + sizeof(uint32_t)));
+  out.debugData = payload.subspan(2 * sizeof(uint32_t));
 
   return FrameParseResult::Ok;
 }
 
 FrameParseResult ParseWindowUpdateFrame(std::span<const std::byte> payload, WindowUpdateFrame& out) noexcept {
-  if (payload.size() != 4U) {
+  if (payload.size() != sizeof(uint32_t)) {
     return FrameParseResult::FrameSizeError;
   }
 
@@ -241,23 +238,24 @@ std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, s
 
 std::size_t WritePriorityFrame(RawBytes& buffer, uint32_t streamId, uint32_t streamDependency, uint8_t weight,
                                bool exclusive) {
-  const auto ret = WriteFrame(buffer, FrameType::Priority, FrameFlags::None, streamId, 5U);
+  static constexpr std::uint8_t kPayloadSize = 5U;
+  const auto ret = WriteFrame(buffer, FrameType::Priority, FrameFlags::None, streamId, kPayloadSize);
 
   uint32_t depWithExcl = streamDependency;
   if (exclusive) {
     depWithExcl |= 0x80000000U;
   }
   Write32BE(buffer.end(), depWithExcl);
-  buffer.end()[4] = static_cast<std::byte>(weight);
+  buffer.end()[sizeof(uint32_t)] = static_cast<std::byte>(weight);
 
-  buffer.addSize(5);
+  buffer.addSize(kPayloadSize);
   return ret;
 }
 
 std::size_t WriteRstStreamFrame(RawBytes& buffer, uint32_t streamId, ErrorCode errorCode) {
-  const auto ret = WriteFrame(buffer, FrameType::RstStream, FrameFlags::None, streamId, 4U);
+  const auto ret = WriteFrame(buffer, FrameType::RstStream, FrameFlags::None, streamId, sizeof(uint32_t));
   Write32BE(buffer.end(), static_cast<uint32_t>(errorCode));
-  buffer.addSize(4U);
+  buffer.addSize(sizeof(uint32_t));
   return ret;
 }
 
@@ -321,9 +319,9 @@ std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode 
 }
 
 std::size_t WriteWindowUpdateFrame(RawBytes& buffer, uint32_t streamId, uint32_t windowSizeIncrement) {
-  const auto ret = WriteFrame(buffer, FrameType::WindowUpdate, FrameFlags::None, streamId, 4U);
+  const auto ret = WriteFrame(buffer, FrameType::WindowUpdate, FrameFlags::None, streamId, sizeof(uint32_t));
   Write32BE(buffer.end(), windowSizeIncrement & kMaxWindowSize);  // Clear reserved bit
-  buffer.addSize(4U);
+  buffer.addSize(sizeof(uint32_t));
   return ret;
 }
 

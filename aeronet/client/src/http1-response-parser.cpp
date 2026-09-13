@@ -12,6 +12,7 @@
 
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -500,6 +501,10 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     const std::string_view name = line.substr(0, colon);
     const std::string_view value = TrimOws(line.substr(colon + 1));
 
+    if (!http::IsValidHeaderValue(value)) {
+      return Status::Error;
+    }
+
     // Content-Type / Content-Length / Transfer-Encoding are normalized by HttpResponse::body()
     // (Content-Type + decoded Content-Length) and by de-framing (chunked), so they are consumed
     // locally rather than stored. Every other header, including otherwise-reserved ones such as Connection, Date,
@@ -521,8 +526,10 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     } else {
       if (name == http::Connection) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
+      } else if (!http::IsValidHeaderName(name)) {
+        return Status::Error;
       }
-      // TODO: header names and values should be checked
+
       resp.headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
   }

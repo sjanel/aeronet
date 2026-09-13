@@ -125,20 +125,17 @@ enum class FrameParseResult : uint8_t { Ok, NeedMoreData, FrameSizeError, Protoc
                                                  HeadersFrame& out) noexcept;
 
 /// Parse a PRIORITY frame payload.
-[[nodiscard]] FrameParseResult ParsePriorityFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                  PriorityFrame& out) noexcept;
+[[nodiscard]] FrameParseResult ParsePriorityFrame(std::span<const std::byte> payload, PriorityFrame& out) noexcept;
 
 /// Parse a RST_STREAM frame payload.
-[[nodiscard]] FrameParseResult ParseRstStreamFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                   RstStreamFrame& out) noexcept;
+[[nodiscard]] FrameParseResult ParseRstStreamFrame(std::span<const std::byte> payload, RstStreamFrame& out) noexcept;
 
 /// Parse a PING frame payload.
 [[nodiscard]] FrameParseResult ParsePingFrame(FrameHeader header, std::span<const std::byte> payload,
                                               PingFrame& out) noexcept;
 
 /// Parse a GOAWAY frame payload.
-[[nodiscard]] FrameParseResult ParseGoAwayFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                GoAwayFrame& out) noexcept;
+[[nodiscard]] FrameParseResult ParseGoAwayFrame(std::span<const std::byte> payload, GoAwayFrame& out) noexcept;
 
 /// Parse a WINDOW_UPDATE frame payload.
 [[nodiscard]] FrameParseResult ParseWindowUpdateFrame(std::span<const std::byte> payload,
