@@ -42,11 +42,11 @@ class Http1WriterTransport;
 class HttpCodec;
 struct CompressionState;
 
-namespace internal {
 #ifdef AERONET_ENABLE_HTTP_CLIENT
+namespace internal {
 class ClientConnection;
-#endif
 }  // namespace internal
+#endif
 
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2 {
@@ -68,7 +68,7 @@ class HttpMessage {
 
  protected:
   // This is an internal base class - it should not be constructed directly.
-  HttpMessage(std::size_t dataCapacity) : _data(dataCapacity) {}
+  explicit HttpMessage(std::size_t dataCapacity) : _data(dataCapacity) {}
 
  public:
   // Returns the size needed to store a body with given length and optional content type header.
@@ -607,7 +607,9 @@ class HttpMessage {
   friend class HttpResponse;
   friend class HttpResponseWriter;
   friend class HttpCodec;
+#ifdef AERONET_ENABLE_HTTP_SERVER
   friend class SingleHttpServer;
+#endif
   friend class StaticFileHandler;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::internal::Http2ClientEngine;

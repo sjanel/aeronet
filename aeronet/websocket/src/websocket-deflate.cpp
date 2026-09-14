@@ -22,7 +22,7 @@
 
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/websocket-compress.hpp"
+#include "websocket-compress.hpp"
 #endif
 
 namespace aeronet::websocket {

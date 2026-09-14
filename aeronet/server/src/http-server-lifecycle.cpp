@@ -41,7 +41,7 @@
 #include <string>
 
 #include "aeronet/aeronet-config.hpp"
-#include "aeronet/config-loader.hpp"
+#include "aeronet/server-config-loader.hpp"
 #endif
 
 namespace aeronet {

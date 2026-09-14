@@ -24,7 +24,6 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-error-build.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
@@ -59,6 +58,7 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
+#include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -79,7 +79,7 @@
 #endif
 
 #if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
-#include "aeronet/upgrade-handler.hpp"
+#include "upgrade-handler.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-error-code-name.hpp"

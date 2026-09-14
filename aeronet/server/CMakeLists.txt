@@ -4,6 +4,15 @@ if(NOT AERONET_ENABLE_TEST_HOOKS)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/transport-test-hook.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_GLAZE)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/server-config-loader.cpp)
+endif()
+
+# Remove upgrade-handler.cpp if neither HTTP/2 nor WebSocket is enabled
+if(NOT AERONET_ENABLE_HTTP2 AND NOT AERONET_ENABLE_WEBSOCKET)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/upgrade-handler.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_server
     ${AERONET_SERVER_SRC_LIST}
 )
@@ -41,6 +50,10 @@ if(AERONET_ENABLE_HTTP2)
     target_link_libraries(aeronet_server PUBLIC aeronet_http2)
 endif()
 
+if(AERONET_ENABLE_TEST_HOOKS)
+    target_compile_definitions(aeronet_server PUBLIC AERONET_ENABLE_TEST_HOOKS)
+endif()
+
 AeronetAddUnitTest(
     access-log-writer_test
     src/access-log-writer.cpp
@@ -65,6 +78,15 @@ AeronetAddUnitTest(
     test/date-header-cache_test.cpp
     LIBRARIES
     aeronet_server
+)
+
+AeronetAddUnitTest(
+    http-error-build_test
+    src/http-error-build.cpp
+    test/http-error-build_test.cpp
+    LIBRARIES
+    aeronet_objects
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(
@@ -99,6 +121,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    multipart-form-data_test
+    src/multipart-form-data.cpp
+    test/multipart-form-data_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     pending-updates_test
     src/pending-updates.cpp
     test/pending-updates_test.cpp
@@ -107,16 +137,71 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    rate-limit_test
+    src/rate-limit.cpp
+    test/rate-limit_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
+    rate-limit-middleware_test
+    src/rate-limit.cpp
+    src/rate-limit-middleware.cpp
+    test/rate-limit-middleware_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        server-config-loader_test
+        test/server-config-loader_test.cpp
+        LIBRARIES
+        aeronet
+    )
+endif()
+
+AeronetAddUnitTest(
     server-lifecycle-tracker_test
     test/server-lifecycle-tracker_test.cpp
 )
 
-if(AERONET_ENABLE_TEST_HOOKS)
-    target_compile_definitions(aeronet_server PUBLIC AERONET_ENABLE_TEST_HOOKS)
-endif()
+AeronetAddUnitTest(
+    server-stats_test
+    src/server-stats.cpp
+    test/server-stats_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
 
 if(AERONET_BUILD_TESTS)
     if(AERONET_ENABLE_OPENSSL)
         target_link_libraries(connection-storage_test PUBLIC aeronet_tls)
+    endif()
+endif()
+
+AeronetAddUnitTest(
+    static-file-handler_test
+    src/static-file-handler.cpp
+    test/static-file-handler_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_test_support
+)
+
+if (AERONET_BUILD_TESTS AND (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET))
+    AeronetAddUnitTest(
+        upgrade-handler_test
+        src/upgrade-handler.cpp
+        test/upgrade-handler_test.cpp
+        LIBRARIES
+        aeronet_basic_test_support
+    )
+    if(AERONET_ENABLE_HTTP2)
+        target_link_libraries(upgrade-handler_test PUBLIC aeronet_http2)
+    endif()
+    if(AERONET_ENABLE_WEBSOCKET)
+        target_link_libraries(upgrade-handler_test PUBLIC aeronet_websocket)
     endif()
 endif()

@@ -108,7 +108,9 @@ set(AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD ${AERONET_BENCH_ROOT}/internal/init
 set(AERONET_BENCH_INTERNAL_HTTP_MESSAGE_HEADER_SEARCH ${AERONET_BENCH_ROOT}/internal/http-message-header-search_bench.cpp)
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
-set(AERONET_BENCH_INTERNAL_RATE_LIMIT ${AERONET_BENCH_ROOT}/internal/rate-limit_bench.cpp)
+if(AERONET_ENABLE_HTTP_SERVER)
+  set(AERONET_BENCH_INTERNAL_RATE_LIMIT ${AERONET_BENCH_ROOT}/internal/rate-limit_bench.cpp)
+endif()
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
 set(AERONET_BENCH_INTERNAL_SEARCH_CRLF ${AERONET_BENCH_ROOT}/internal/search-crlf_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
@@ -175,8 +177,10 @@ set_target_properties(aeronet-bench-internal-keep-alive-deadline-queue PROPERTIE
 AeronetAddProjectBenchmark(aeronet-bench-internal-request-parse ${AERONET_BENCH_INTERNAL_REQUEST_PARSE})
 set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-rate-limit ${AERONET_BENCH_INTERNAL_RATE_LIMIT} LIBRARIES aeronet_http)
-set_target_properties(aeronet-bench-internal-rate-limit PROPERTIES FOLDER "benchmarks/internal")
+if(AERONET_ENABLE_HTTP_SERVER)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-rate-limit ${AERONET_BENCH_INTERNAL_RATE_LIMIT} LIBRARIES aeronet_server)
+  set_target_properties(aeronet-bench-internal-rate-limit PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
 set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
@@ -344,7 +348,9 @@ add_custom_target(run-aeronet-bench-json
 
 # Scripted server benchmarks (wrk-based external load testing)
 # These are standalone HTTP servers meant to be tested with wrk/lua scripts
-add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benchmarks/scripted-servers)
+if(AERONET_ENABLE_HTTP_SERVER)
+  add_subdirectory(${AERONET_BENCH_ROOT}/scripted-servers ${CMAKE_BINARY_DIR}/benchmarks/scripted-servers)
+endif()
 
 # Scripted client benchmarks (aeronet HttpClient vs libcurl/drogon/beast against an over-provisioned server).
 # Added after scripted-servers so the beast driver can reuse the Boost include dirs it resolves. Built
