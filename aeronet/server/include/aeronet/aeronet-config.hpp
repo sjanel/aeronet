@@ -4,9 +4,9 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/config-loader.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/server-config-loader.hpp"
 
 namespace aeronet {
 

@@ -57,7 +57,7 @@
 #endif
 
 #ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/config-loader.hpp"
+#include "aeronet/server-config-loader.hpp"
 #endif
 
 namespace aeronet {

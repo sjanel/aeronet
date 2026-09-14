@@ -281,6 +281,8 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
     return true;
   });
 
+  test::WaitForServer(multi);
+
   auto port = multi.port();
   ASSERT_GT(port, 0);
   auto resp = test::simpleGet(port, "/predicate");

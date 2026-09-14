@@ -6,8 +6,8 @@
 #include <string_view>
 
 #include "aeronet/base64.hpp"
-#include "aeronet/sha1.hpp"
 #include "aeronet/websocket-constants.hpp"
+#include "sha1.hpp"
 
 namespace aeronet {
 

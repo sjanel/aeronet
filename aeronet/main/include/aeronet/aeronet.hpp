@@ -22,7 +22,9 @@
 
 #pragma once
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
 #include "aeronet/aeronet-server.hpp"  // IWYU pragma: export
+#endif
 
 #ifdef AERONET_ENABLE_HTTP_CLIENT
 #include "aeronet/aeronet-client.hpp"  // IWYU pragma: export

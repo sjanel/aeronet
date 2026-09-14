@@ -725,8 +725,10 @@ class HttpResponse final : public HttpMessage {
   friend class HttpRequestView;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
+#ifdef AERONET_ENABLE_HTTP_SERVER
   friend class SingleHttpServer;
   friend class StaticFileHandler;
+#endif
   friend class Http1WriterTransport;  // HTTP/1.1 transport for streaming
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
