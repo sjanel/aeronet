@@ -90,6 +90,7 @@ class Http2ClientEngine : private EventSink {
     _resp = &resp;
     _bodyBuf = &bodyBuf;
     _maxResponseBytes = maxResponseBytes;
+    _receivedBytes = 0;
     _contentType.clear();
     _streamId = _nextStreamId;
     _nextStreamId += 2;
@@ -197,9 +198,8 @@ class Http2ClientEngine : private EventSink {
 
   // Flush the connection's pending output to the transport, pumping the event loop on would-block. Sets
   // `requestSent` as soon as any byte reaches the transport.
-  [[nodiscard]] std::expected<void, HttpClientErrc> flushOutput(HttpClient& client, Transport& transport,
-                                                                NativeHandle fd, SteadyClock::time_point deadline,
-                                                                bool& requestSent) {
+  [[nodiscard]] HttpClientErrc flushOutput(HttpClient& client, Transport& transport, NativeHandle fd,
+                                           SteadyClock::time_point deadline, bool& requestSent) {
     auto& fragments = client._outputFragmentsScratch;
     while (_conn.hasPendingOutput()) {
       _conn.getPendingOutputFragments(fragments);
@@ -210,17 +210,17 @@ class Http2ClientEngine : private EventSink {
         requestSent = true;
       }
       if (res.want == TransportHint::Error) {
-        return std::unexpected(HttpClientErrc::writeError);
+        return HttpClientErrc::writeError;
       }
       if (!_conn.hasPendingOutput() || (res.bytesProcessed != 0 && res.want == TransportHint::None)) {
         continue;
       }
       const EventBmp interest = res.want == TransportHint::ReadReady ? EventIn : EventOut;
       if (!client.waitIo(fd, interest, deadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
+        return HttpClientErrc::timeout;
       }
     }
-    return {};
+    return HttpClientErrc::noError;
   }
 
   // Feed buffered / freshly read bytes to the connection until at least one frame is consumed, pumping
@@ -228,8 +228,8 @@ class Http2ClientEngine : private EventSink {
   // partial frame) stay in the engine's input buffer so nothing is lost across calls -- or exchanges, on
   // a pooled connection. Bytes already buffered are re-processed before reading: processInput stops
   // early at a GOAWAY frame, so complete frames may still be waiting behind it from a previous call.
-  [[nodiscard]] std::expected<void, HttpClientErrc> readAndProcess(HttpClient& client, Transport& transport,
-                                                                   NativeHandle fd, SteadyClock::time_point deadline) {
+  [[nodiscard]] HttpClientErrc readAndProcess(HttpClient& client, Transport& transport, NativeHandle fd,
+                                              SteadyClock::time_point deadline) {
     for (;;) {
       if (!_inBuf.empty()) {
         const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
@@ -237,15 +237,15 @@ class Http2ClientEngine : private EventSink {
         if (processed.action == Action::Error) {
           log::error("HTTP/2 client: protocol error: {} ({})", ErrorCodeName(processed.errorCode),
                      ConvertProcessResultErrorMsgToSv(processed.errorMsg));
-          return std::unexpected(HttpClientErrc::malformedResponse);
+          return HttpClientErrc::malformedResponse;
         }
         if (processed.action == Action::Closed) {
-          return std::unexpected(HttpClientErrc::connectionClosed);
+          return HttpClientErrc::connectionClosed;
         }
         // Continue / OutputReady / GoAway: frames were handled (GOAWAY effects arrive via the callback).
         if (processed.bytesConsumed != 0) {
           _inBuf.erase_front(processed.bytesConsumed);
-          return {};
+          return HttpClientErrc::noError;
         }
         // Only a partial frame is buffered: fall through and read more.
       }
@@ -257,18 +257,18 @@ class Http2ClientEngine : private EventSink {
       }
       if (res.want == TransportHint::ReadReady) {
         if (!client.waitIo(fd, EventIn, deadline)) {
-          return std::unexpected(HttpClientErrc::timeout);
+          return HttpClientErrc::timeout;
         }
         continue;
       }
       if (res.want == TransportHint::WriteReady) {
         if (!client.waitIo(fd, EventOut, deadline)) {
-          return std::unexpected(HttpClientErrc::timeout);
+          return HttpClientErrc::timeout;
         }
         continue;
       }
       // 0 bytes, no want => orderly close before the exchange completed.
-      return std::unexpected(HttpClientErrc::connectionClosed);
+      return HttpClientErrc::connectionClosed;
     }
   }
 
@@ -317,14 +317,26 @@ class Http2ClientEngine : private EventSink {
       _resp->status(statusCode);
       _finalHeadersSeen = true;
     }
+
     // Regular header and trailer values are preserved, except Content-Type and Content-Length which HttpResponse
     // reconstructs via body(), mirroring the HTTP/1.1 response parser. Names are normalized to lower-case. The
     // decoded views only live for this callback, so values are copied.
     for (const auto& [name, value] : headers) {
       assert(!name.empty());
+
+      // Count the received bytes for this header line
+      const std::size_t incoming = name.size() + value.size();
+      if (_receivedBytes + incoming > _maxResponseBytes) {
+        log::error("HTTP/2 client: response headers on stream {} exceed maxResponseBytes", streamId);
+        setFailure(Failure::TooBig);
+        return;  // stop copying the rest of this header block
+      }
+      _receivedBytes += incoming;
+
       if (name.front() == ':') {
         continue;
       }
+
       if (name == http::ContentType) {
         _contentType.assign(value);
         continue;
@@ -349,12 +361,13 @@ class Http2ClientEngine : private EventSink {
     if (data.empty() || _failure != Failure::None) {
       return;
     }
-    if (_bodyBuf->size() + data.size() > _maxResponseBytes) {
+    if (_receivedBytes + data.size() > _maxResponseBytes) {
       log::error("HTTP/2 client: response body on stream {} exceeds maxResponseBytes", streamId);
       setFailure(Failure::TooBig);
       return;
     }
-    _bodyBuf->append(std::string_view{reinterpret_cast<const char*>(data.data()), data.size()});
+    _receivedBytes += data.size();
+    _bodyBuf->append(reinterpret_cast<const char*>(data.data()), data.size());
   }
 
   void onStreamReset(uint32_t streamId, ErrorCode errorCode) override {
@@ -386,6 +399,7 @@ class Http2ClientEngine : private EventSink {
   RawChars* _bodyBuf{nullptr};   // borrowed body accumulator (HttpClient::responseBuffer())
   RawChars _inBuf;               // frame input accumulator; persists so a partial frame survives exchanges
   RawChars32 _contentType;       // owned copy of the response Content-Type value (views die with decode)
+  std::size_t _receivedBytes{0};
   std::size_t _maxResponseBytes{0};
   uint32_t _streamId{0};      // stream id of the in-flight exchange
   uint32_t _nextStreamId{1};  // next client-initiated (odd) stream id
@@ -477,8 +491,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   // the upload; the leftover half-open stream is aborted below.
   auto ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
   std::size_t bodyOff = 0;
-  while (ioRes && bodyOff < bodyLen && engine.failure() == http2::internal::Http2ClientEngine::Failure::None &&
-         !engine.responseComplete()) {
+  while (ioRes == HttpClientErrc::noError && bodyOff < bodyLen &&
+         engine.failure() == http2::internal::Http2ClientEngine::Failure::None && !engine.responseComplete()) {
     const std::size_t window = engine.sendWindow(streamId);
     if (window == 0) {
       // Flow-control stall: pump the connection until the server grants more window.
@@ -527,7 +541,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
 
   // Ship the request trailers once the whole body has gone out. Skipped when the exchange already failed
   // or the server answered early (RFC 9113 §8.1) -- the half-open stream is then aborted with RST_STREAM.
-  if (hasTrailers && ioRes && bodyOff == bodyLen &&
+  if (hasTrailers && ioRes == HttpClientErrc::noError && bodyOff == bodyLen &&
       engine.failure() == http2::internal::Http2ClientEngine::Failure::None && !engine.responseComplete()) {
     const auto trailerErr = conn.sendRequestHeaders(streamId, method, isTlsRequest, {}, {},
                                                     HeadersView(req.trailersFlatView()), /*endStream=*/true);
@@ -541,7 +555,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   }
 
   // Await the response: pump frames until it is fully received (or the exchange fails).
-  while (ioRes) {
+  while (ioRes == HttpClientErrc::noError) {
     if (engine.failure() != http2::internal::Http2ClientEngine::Failure::None) {
       engine.endExchange();
       return std::unexpected(engine.failureErrc());
@@ -552,14 +566,14 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     // Flush housekeeping frames first (WINDOW_UPDATE for received DATA, SETTINGS ack) so a server
     // streaming a large response is never stalled on flow control.
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
-    if (ioRes) {
+    if (ioRes == HttpClientErrc::noError) {
       ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
     }
   }
 
   engine.endExchange();
-  if (!ioRes) {
-    return std::unexpected(ioRes.error());
+  if (ioRes != HttpClientErrc::noError) {
+    return std::unexpected(ioRes);
   }
 
   // A stream that did not close through the frame-receive path needs explicit closure: finalize a stream
@@ -580,7 +594,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   // reusability, never the (already complete) response.
   bool flushedClean = true;
   if (conn.hasPendingOutput()) {
-    flushedClean = static_cast<bool>(engine.flushOutput(client, transport, fd, ioDeadline, requestSent));
+    flushedClean = engine.flushOutput(client, transport, fd, ioDeadline, requestSent) == HttpClientErrc::noError;
   }
   _keepAlive = flushedClean && engine.reusable();
 

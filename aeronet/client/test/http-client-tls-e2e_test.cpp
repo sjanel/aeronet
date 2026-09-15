@@ -32,6 +32,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/scoped-env-var.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
@@ -266,6 +267,18 @@ TEST(HttpClientTlsErrorTest, GarbageInMemoryClientCertThrows) {
   HttpClient client(cfg);
   EXPECT_THROW({ [[maybe_unused]] auto res = client.get("https://localhost:9/"); }, HttpClientException);
 }
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+
+TEST(HttpClientTlsErrorTest, SSLCtxAllocationFailureThrows) {
+  // Simulate an SSL_CTX allocation failure by providing an invalid configuration that triggers the failure.
+  HttpClientConfig cfg;
+
+  test::FailNextMalloc(1);
+  EXPECT_THROW(internal::HttpClientTlsContext{cfg}, HttpClientException);
+}
+
+#endif
 
 TEST(HttpClientTlsErrorTest, ValidCertificateWithGarbageInMemoryKeyThrows) {
   auto [cert, key] = test::MakeEphemeralCertKey("client");

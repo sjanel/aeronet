@@ -24,8 +24,8 @@ namespace aeronet {
 
 namespace {
 
-inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequestView& request, MiddlewareMetrics::Phase phase,
-                                             uint32_t index, bool isGlobal, bool streaming, tracing::SpanPtr span) {
+tracing::SpanRAII StartMiddlewareSpan(const HttpRequestView& request, MiddlewareMetrics::Phase phase, uint32_t index,
+                                      bool isGlobal, bool streaming, tracing::SpanPtr span) {
   tracing::SpanRAII spanScope(std::move(span));
 
   if (spanScope.span) {
@@ -41,9 +41,9 @@ inline tracing::SpanRAII StartMiddlewareSpan(const HttpRequestView& request, Mid
   return spanScope;
 }
 
-inline void CallMiddlewareMetricsCallback(const HttpRequestView& request, MiddlewareMetrics::Phase phase, bool isGlobal,
-                                          uint32_t index, bool shortCircuited, bool threw, bool streaming,
-                                          const MiddlewareMetricsCallback& metricsCallback) {
+void CallMiddlewareMetricsCallback(const HttpRequestView& request, MiddlewareMetrics::Phase phase, bool isGlobal,
+                                   uint32_t index, bool shortCircuited, bool threw, bool streaming,
+                                   const MiddlewareMetricsCallback& metricsCallback) {
   if (metricsCallback) {
     MiddlewareMetrics metrics;
     metrics.phase = phase;
@@ -123,9 +123,8 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
         // If this request arrived over TLS, disallow TRACE
         allowTrace = !config.isTls;
         break;
-      case HttpServerConfig::TraceMethodPolicy::Disabled:
-        [[fallthrough]];
       default:
+        assert(config.tracePolicy == HttpServerConfig::TraceMethodPolicy::Disabled);
         allowTrace = false;
         break;
     }

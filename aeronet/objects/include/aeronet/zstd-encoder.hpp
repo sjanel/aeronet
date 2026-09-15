@@ -53,7 +53,7 @@ class ZstdEncoder {
  public:
   ZstdEncoder() noexcept = default;
 
-  explicit ZstdEncoder(CompressionConfig::Zstd cfg) : _cfg(cfg) {}
+  explicit ZstdEncoder(CompressionConfig::Zstd cfg) noexcept : _cfg(cfg) {}
 
   EncoderResult encodeFull(std::string_view data, std::size_t availableCapacity, char* buf);
 

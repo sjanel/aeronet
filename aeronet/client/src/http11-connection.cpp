@@ -27,11 +27,9 @@
 
 namespace aeronet::internal {
 
-std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClient& client, Transport& transport,
-                                                                        NativeHandle fd, std::string_view head,
-                                                                        std::string_view body,
-                                                                        SteadyClock::time_point deadline,
-                                                                        bool& requestSent) {
+HttpClientErrc ClientConnection::writeAllForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
+                                                   std::string_view head, std::string_view body,
+                                                   SteadyClock::time_point deadline, bool& requestSent) {
   const std::size_t total = head.size() + body.size();
   assert(total != 0);
   for (std::size_t off = 0;;) {
@@ -50,21 +48,19 @@ std::expected<void, HttpClientErrc> ClientConnection::writeAllForHttp11(HttpClie
       break;
     }
     if (transportRes.want == TransportHint::Error) {
-      return std::unexpected(HttpClientErrc::writeError);
+      return HttpClientErrc::writeError;
     }
     const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
     if (!client.waitIo(fd, interest, deadline)) {
-      return std::unexpected(HttpClientErrc::timeout);
+      return HttpClientErrc::timeout;
     }
   }
-  return {};
+  return HttpClientErrc::noError;
 }
 
-std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(HttpClient& client, Transport& transport,
-                                                                             NativeHandle fd,
-                                                                             const FilePayload& filePayload,
-                                                                             SteadyClock::time_point deadline,
-                                                                             bool& requestSent) {
+HttpClientErrc ClientConnection::writeFileBodyForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
+                                                        const FilePayload& filePayload,
+                                                        SteadyClock::time_point deadline, bool& requestSent) {
   const File& file = filePayload.file;
   std::size_t fileOffset = filePayload.offset;
   std::size_t remaining = filePayload.length;
@@ -81,14 +77,14 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
       }
       if (transportRes.want == TransportHint::Error) {
         log::error("HTTP/1.1 client: sendfile of request body failed (offset={}, remaining={})", fileOffset, remaining);
-        return std::unexpected(HttpClientErrc::writeError);
+        return HttpClientErrc::writeError;
       }
       const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
       if (!client.waitIo(fd, interest, deadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
+        return HttpClientErrc::timeout;
       }
     }
-    return {};
+    return HttpClientErrc::noError;
   }
 
   // TLS (or any transport that cannot sendfile): read the file in bounded chunks and write it through the
@@ -107,7 +103,7 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
       // A short read to 0 (file truncated under us) or an I/O error leaves the declared Content-Length
       // unfulfilled: the request framing is broken, so abort the exchange.
       log::error("HTTP/1.1 client: reading request file body failed (offset={}, remaining={})", fileOffset, remaining);
-      return std::unexpected(HttpClientErrc::writeError);
+      return HttpClientErrc::writeError;
     }
     const std::string_view chunk(chunkBuf.data(), nread);
 
@@ -121,17 +117,17 @@ std::expected<void, HttpClientErrc> ClientConnection::writeFileBodyForHttp11(Htt
         break;
       }
       if (transportRes.want == TransportHint::Error) {
-        return std::unexpected(HttpClientErrc::writeError);
+        return HttpClientErrc::writeError;
       }
       const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
       if (!client.waitIo(fd, interest, deadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
+        return HttpClientErrc::timeout;
       }
     }
     fileOffset += nread;
     remaining -= nread;
   }
-  return {};
+  return HttpClientErrc::noError;
 }
 
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
@@ -150,19 +146,21 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     HttpRequest wireReq = req.finalizeTrailersForHttp11(config.minCapturedBodySize);
     const std::string_view head = wireReq.completeRequestForHttp11();
     const std::string_view body = wireReq.hasBodyCaptured() ? wireReq.capturedPayloadForHttp11() : std::string_view{};
-    if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent); !wr) {
-      return std::unexpected(wr.error());
+    if (auto wr = writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent);
+        wr != HttpClientErrc::noError) {
+      return std::unexpected(wr);
     }
   } else if (req.hasBodyFile()) {
     // A captured file body is streamed from disk after the head (never copied into the head buffer, nor
     // fully loaded in memory). The head already carries the exact Content-Length of the file payload.
     if (auto wr = writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), std::string_view{},
                                     ioDeadline, requestSent);
-        !wr) {
-      return std::unexpected(wr.error());
+        wr != HttpClientErrc::noError) {
+      return std::unexpected(wr);
     }
-    if (auto wr = writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent); !wr) {
-      return std::unexpected(wr.error());
+    if (auto wr = writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent);
+        wr != HttpClientErrc::noError) {
+      return std::unexpected(wr);
     }
   } else {
     // A captured (not inlined) in-memory body is streamed separately so it is never copied into the head
@@ -170,8 +168,8 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     const std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
     if (auto wr =
             writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), body, ioDeadline, requestSent);
-        !wr) {
-      return std::unexpected(wr.error());
+        wr != HttpClientErrc::noError) {
+      return std::unexpected(wr);
     }
   }
 

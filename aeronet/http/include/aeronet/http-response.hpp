@@ -110,8 +110,9 @@ class HttpResponse final : public HttpMessage {
  public:
   // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
-  static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1;  // index of first status code digit
-  static constexpr std::size_t kReasonBeg = kStatusCodeBeg + 3 + 1;    // index of first reason phrase character
+  static constexpr std::size_t kStatusCodeBeg = kHttp1VersionLen + 1U;  // index of first status code digit
+  static constexpr std::size_t kReasonBeg =
+      kStatusCodeBeg + http::StatusCodeLen + 1U;  // index of first reason phrase character
 
   // Minimum initial capacity for HttpMessage internal buffer to avoid too-small allocations.
   // The minimal valid HTTP response that will be returned by aeronet is (note the mandatory SP after the
@@ -171,7 +172,9 @@ class HttpResponse final : public HttpMessage {
   }
 
   // Get the current status code string view stored in this HttpResponse
-  [[nodiscard]] std::string_view statusStr() const noexcept { return {_data.data() + kStatusCodeBeg, 3UL}; }
+  [[nodiscard]] std::string_view statusStr() const noexcept {
+    return {_data.data() + kStatusCodeBeg, http::StatusCodeLen};
+  }
 
   // Get the size of the status line including CRLF (with HTTP version, status code, reason if any).
   [[nodiscard]] std::size_t statusLineSize() const noexcept { return dateHeaderStartPos() + http::CRLF.size(); }

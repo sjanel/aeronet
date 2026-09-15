@@ -53,7 +53,7 @@ struct DecompressionState {
 struct CompressionState {
   CompressionState() noexcept = default;
 
-  explicit CompressionState(const CompressionConfig& cfg);
+  explicit CompressionState(const CompressionConfig& cfg) noexcept;
 
   EncoderResult encodeFull(Encoding encoding, std::string_view data, std::size_t availableCapacity, char* buf);
 

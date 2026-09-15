@@ -1,6 +1,7 @@
 #include "aeronet/http-client-config.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -25,22 +26,27 @@ HttpClientConfig& HttpClientConfig::withGlobalHeaders(std::span<const http::Head
 }
 
 void HttpClientConfig::validate() const {
-  decompression.validate();  // no-op when disabled
-  if (requestCompression.enabled()) {
-    requestCompression.codec.validate();
-#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
-    if (!IsEncodingEnabled(requestCompression.encoding)) {
-      throw std::invalid_argument("requestCompression.encoding is not a supported / compiled-in content coding");
-    }
-#endif
-  }
-
-  Validate(globalHeaders, HeaderType::Request);
-
   const auto connectMs = connectTimeout.count();
   if (connectMs < 1 || connectMs > std::numeric_limits<int>::max()) {
     throw std::invalid_argument("connectTimeout must be between 1 ms and INT_MAX ms");
   }
+  if (requestTimeout <= std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("requestTimeout must be greater than 0");
+  }
+  if (keepAliveTimeout < std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("keepAliveTimeout must be greater than or equal to 0");
+  }
+  if (maxResponseBytes < 1U) {
+    throw std::invalid_argument("maxResponseBytes must be > 0");
+  }
+  if (minReadChunkBytes < 1U) {
+    throw std::invalid_argument("minReadChunkBytes must be > 0");
+  }
+
+  Validate(globalHeaders, HeaderType::Request);
+
+  retry.validate();
+
   if (httpVersion != HttpVersionMode::Http1_1) {
 #ifdef AERONET_ENABLE_HTTP2
     http2.validate();
@@ -64,8 +70,14 @@ void HttpClientConfig::validate() const {
     }
   }
 
-  if (minReadChunkBytes == 0) {
-    throw std::invalid_argument("minReadChunkBytes must be > 0");
+  decompression.validate();
+  if (requestCompression.enabled()) {
+    requestCompression.codec.validate();
+#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
+    if (!IsEncodingEnabled(requestCompression.encoding)) {
+      throw std::invalid_argument("requestCompression.encoding is not a supported / compiled-in content coding");
+    }
+#endif
   }
 }
 
