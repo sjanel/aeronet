@@ -804,6 +804,23 @@ TEST_F(HttpResponseTest, AppendHeaderValueSupportsNumericOverload) {
   EXPECT_TRUE(full.contains("x-numeric: 1|42\r\n")) << full;
 }
 
+TEST_F(HttpResponseTest, HeaderRemoveLineNoHeadersAtAll) {
+  HttpResponse resp(http::StatusCodeOK);
+  // No headers added at all -> headersFlatView() is empty.
+  resp.headerRemoveLine("x-nonexistent");  // must be a safe no-op
+  EXPECT_FALSE(resp.hasHeader("x-nonexistent"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveLinePrefixCollisionNotFound) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-ab", "value1");
+
+  resp.headerRemoveLine("x-a");  // "x-a" is a prefix of "x-ab", not a real header
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-ab"), "value1");
+  EXPECT_FALSE(resp.hasHeader("x-a"));
+}
+
 TEST_F(HttpResponseTest, HeaderRemoveLineNotFound) {
   HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine("x-first", "value1");

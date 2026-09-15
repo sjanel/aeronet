@@ -10,7 +10,9 @@ namespace aeronet {
 // connection.
 enum class ClientProtocol : uint8_t {
   Http1_1,  // ALPN "http/1.1" (default)
-  Http2,    // ALPN "h2" (https) or h2c prior knowledge (plain http)
+#ifdef AERONET_ENABLE_HTTP2
+  Http2,  // ALPN "h2" (https) or h2c prior knowledge (plain http)
+#endif
 };
 
 // Which HTTP version(s) HttpClient may speak, and how the version is chosen per connection
@@ -22,16 +24,21 @@ enum class HttpVersionMode : uint8_t {
   Auto,
   // HTTP/1.1 only: never advertise nor speak HTTP/2.
   Http1_1,
+
+#ifdef AERONET_ENABLE_HTTP2
   // HTTP/2 only: https advertises only "h2" via ALPN (an origin that does not select it fails the request
   // with HttpClientErrc::protocolUnsupported); plain http speaks h2c with prior knowledge (RFC 9113 §3.4).
   Http2,
+#endif
 };
 
 // ALPN protocol identifier advertised / negotiated for a ClientProtocol.
 [[nodiscard]] constexpr std::string_view ToAlpnId(ClientProtocol protocol) noexcept {
   switch (protocol) {
+#ifdef AERONET_ENABLE_HTTP2
     case ClientProtocol::Http2:
       return "h2";
+#endif
     default:
       return "http/1.1";
   }
@@ -40,9 +47,11 @@ enum class HttpVersionMode : uint8_t {
 // Map a negotiated ALPN identifier back to a ClientProtocol. An unknown or empty selection (e.g. a server
 // that does not speak ALPN) falls back to HTTP/1.1.
 [[nodiscard]] constexpr ClientProtocol ClientProtocolFromAlpnId(std::string_view alpn) noexcept {
+#ifdef AERONET_ENABLE_HTTP2
   if (alpn == "h2") {
     return ClientProtocol::Http2;
   }
+#endif
   return ClientProtocol::Http1_1;
 }
 

@@ -36,6 +36,7 @@ namespace aeronet {
 // Implicitly convertible back to std::string_view (see operator std::string_view() below) so that, once constructed, it
 // behaves exactly like a plain string_view everywhere downstream (map lookups, comparisons, etc.) -- the friction is
 // only ever on the way in, never on the way out.
+// TODO: we may also enforce not empty? A header key cannot be empty.
 class LowerAsciiKey {
  public:
   // Default-constructed LowerAsciiKey is empty (and obviously valid).

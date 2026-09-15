@@ -13,6 +13,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/otlp_test_collector.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -21,7 +22,8 @@
 #include "aeronet/vector.hpp"
 
 using namespace std::chrono_literals;
-using namespace aeronet;
+
+namespace aeronet {
 
 namespace {
 
@@ -228,3 +230,54 @@ TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
   EXPECT_TRUE(histogramFound);
   EXPECT_TRUE(timingFound);
 }
+
+TEST(OpenTelemetryEndToEnd, EmitsMiddlewareSpanAttributes) {
+  test::OtlpTestCollector collector;
+
+  TelemetryConfig telemetryCfg;
+  telemetryCfg.otelEnabled = true;
+  telemetryCfg.withEndpoint(collector.endpointForTraces());
+  telemetryCfg.withServiceName("aeronet-mw-e2e");
+  telemetryCfg.withSampleRate(1.0);
+  telemetryCfg.exportInterval = std::chrono::milliseconds{200};
+  telemetryCfg.exportTimeout = std::chrono::milliseconds{199};
+
+  HttpServerConfig serverCfg;
+  serverCfg.withTelemetryConfig(telemetryCfg);
+  serverCfg.enableKeepAlive = false;
+
+  test::TestServer server(serverCfg);
+  server.router().addRequestMiddleware([](HttpRequestView&) { return MiddlewareResult::Continue(); });
+  server.router().addResponseMiddleware([](const HttpRequestView&, HttpResponse&) {});
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("mw-ok"); });
+
+  const auto response = test::simpleGet(server.port(), "/mw");
+  ASSERT_FALSE(response.empty());
+
+  bool sawMiddlewareSpan = false;
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  while (!sawMiddlewareSpan && std::chrono::steady_clock::now() < deadline) {
+    try {
+      auto req = collector.waitForRequest(500ms);
+      if (req.path != "/v1/traces") {
+        continue;
+      }
+      ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest proto;
+      ASSERT_TRUE(proto.ParseFromString(req.body));
+      for (const auto& rs : proto.resource_spans()) {
+        for (const auto& ss : rs.scope_spans()) {
+          for (const auto& span : ss.spans()) {
+            if (span.name() == "aeronet.middleware") {
+              sawMiddlewareSpan = true;
+            }
+          }
+        }
+      }
+    } catch (const std::exception&) { /* keep polling */
+      log::error("caught exception in ttest EmitsMiddlewareSpanAttributes");
+    }
+  }
+  EXPECT_TRUE(sawMiddlewareSpan);
+}
+
+}  // namespace aeronet

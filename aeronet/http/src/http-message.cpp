@@ -28,6 +28,7 @@
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -146,13 +147,11 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
     return {};
   }
 
-  std::size_t lineEnd = flatHeaders.size();
-  if (flatHeaders.ends_with(http::CRLF)) {
-    lineEnd -= http::CRLF.size();
-  }
+  assert(flatHeaders.ends_with(http::CRLF));
+  std::size_t lineEnd = flatHeaders.size() - http::CRLF.size();
 
   while (true) {
-    const std::size_t previousEnd = lineEnd == 0 ? std::string_view::npos : flatHeaders.rfind(http::CRLF, lineEnd - 1U);
+    const std::size_t previousEnd = flatHeaders.rfind(http::CRLF, lineEnd - 1U);
     const std::size_t lineStart = previousEnd == std::string_view::npos ? 0 : previousEnd + http::CRLF.size();
     const std::size_t valuePos = lineStart + key.size();
 
@@ -170,7 +169,8 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
 
 constexpr char* GetContentTypeValuePtr(char* pContentLengthHeaderLine) {
   char* ptr = pContentLengthHeaderLine - http::HeaderSep.size() - http::ContentTypeMinLen;
-  for (; *ptr != ':'; --ptr) {
+  while (*ptr != ':') {
+    --ptr;
   }
   return ptr + http::HeaderSep.size();
 }
@@ -384,8 +384,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
     if (!contentType.empty()) {
       char* pContentTypeValuePtr = GetContentTypeValuePtr(getContentLengthHeaderLinePtr());
       const auto it = SearchCRLF(pContentTypeValuePtr, _data.end());
-      assert(it != _data.end());
-      assert(it[1] == '\n');
+      assert(it != _data.end() && it[1] == '\n');
       const std::size_t oldContentTypeValueSize = static_cast<std::size_t>(it - pContentTypeValuePtr);
 
       neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
@@ -958,7 +957,8 @@ inline bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const c
     return false;
   }
   pData += http::HTTP10Sv.size() + 1;  // skip "HTTP/1.1 "
-  return pData[0] >= '2' && std::memcmp(pData, "204", 3U) != 0 && std::memcmp(pData, "304", 3U) != 0;
+  return pData[0] >= '2' && std::memcmp(pData, "204", http::StatusCodeLen) != 0 &&
+         std::memcmp(pData, "304", http::StatusCodeLen) != 0;
 }
 
 constexpr std::string_view kTrailerHeaderAndSep = JoinStringView_v<http::Trailer, http::HeaderSep>;

@@ -275,32 +275,32 @@ if(AERONET_ENABLE_OPENTELEMETRY)
       _aeronet_ensure_imported_implib(protobuf::libprotoc)
     endif()
     # ABI + feature configuration
-    set(WITH_STL OFF CACHE BOOL "Use nostd for ABI stability" FORCE)
-    set(WITH_HTTP_CLIENT_CURL ON CACHE BOOL "" FORCE)
-    set(WITH_OTLP_HTTP ON CACHE BOOL "" FORCE)
-    set(WITH_OTLP_GRPC OFF CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_STL OFF CACHE BOOL "Use nostd for ABI stability" FORCE)
+    set(OTELCPP_WITH_HTTP_CLIENT_CURL ON CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_OTLP_HTTP ON CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_OTLP_GRPC OFF CACHE BOOL "" FORCE)
 
     # Optional: enable OTLP UTF-8 validation only when utf8_range is available.
     # Some protobuf packages do not ship utf8_range CMake targets, which causes
     # a warning in opentelemetry-cpp during configuration.
     find_package(utf8_range CONFIG QUIET)
     if(TARGET utf8_range::utf8_validity)
-      set(WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
+      set(OTELCPP_WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
     elseif(TARGET utf8_validity AND NOT TARGET utf8_range::utf8_validity)
       add_library(utf8_range::utf8_validity ALIAS utf8_validity)
-      set(WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
+      set(OTELCPP_WITH_OTLP_UTF8_VALIDITY ON CACHE BOOL "" FORCE)
     else()
-      set(WITH_OTLP_UTF8_VALIDITY OFF CACHE BOOL "" FORCE)
+      set(OTELCPP_WITH_OTLP_UTF8_VALIDITY OFF CACHE BOOL "" FORCE)
       message(STATUS "utf8_range::utf8_validity not found; disabling OTLP UTF-8 validity checks")
     endif()
 
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-    set(WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
-    set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(OTELCPP_WITH_FUNC_TESTS OFF CACHE BOOL "" FORCE)
 
-    set(WITH_ABI_VERSION_1 OFF CACHE BOOL "Use ABI v1" FORCE)
-    set(WITH_ABI_VERSION_2 ON CACHE BOOL "Use ABI v2" FORCE)
+    set(OTELCPP_WITH_ABI_VERSION_1 OFF CACHE BOOL "Use ABI v1" FORCE)
+    set(OTELCPP_WITH_ABI_VERSION_2 ON CACHE BOOL "Use ABI v2" FORCE)
 
     aeronet_find_or_declare(
       NAME opentelemetry_cpp
