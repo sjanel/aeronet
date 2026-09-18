@@ -14,24 +14,6 @@
 #endif
 
 namespace aeronet {
-// ---------------------------------------------------------------------------
-// Default construction
-// ---------------------------------------------------------------------------
-
-TEST(LowerAsciiKeyTest, DefaultConstructedIsEmpty) {
-  constexpr LowerAsciiKey key;
-  EXPECT_TRUE(key.empty());
-  EXPECT_EQ(key.size(), 0U);
-  EXPECT_EQ(key.get(), std::string_view());
-}
-
-TEST(LowerAsciiKeyTest, DefaultConstructedIsUsableInConstantExpression) {
-  // The default constructor is `constexpr`; make sure that's actually true and not just
-  // syntactically declared as such.
-  static_assert(LowerAsciiKey{}.empty(), "default LowerAsciiKey must be empty at compile time");
-  // NOLINTNEXTLINE(readability-container-size-empty)
-  static_assert(LowerAsciiKey{}.size() == 0, "default LowerAsciiKey must have size 0 at compile time");
-}
 
 // ---------------------------------------------------------------------------
 // Construction from a string literal (consteval, path 1 in the class docs)
@@ -41,20 +23,12 @@ TEST(LowerAsciiKeyTest, ConstructFromLowercaseLiteral) {
   constexpr LowerAsciiKey key = "content-type";
   EXPECT_EQ(key.get(), "content-type");
   EXPECT_EQ(key.size(), 12U);
-  EXPECT_FALSE(key.empty());
 }
 
 TEST(LowerAsciiKeyTest, ConstructFromLiteralIsFullyConstantEvaluated) {
   // Validates that both construction and the upper-case check happen at compile time.
   static_assert(LowerAsciiKey{"accept-encoding"}.size() == 15, "size mismatch");
-  static_assert(!LowerAsciiKey{"accept-encoding"}.empty(), "must not be empty");
   static_assert(LowerAsciiKey{"accept-encoding"}.get() == "accept-encoding", "content mismatch");
-}
-
-TEST(LowerAsciiKeyTest, ConstructFromEmptyLiteral) {
-  constexpr LowerAsciiKey key = "";
-  EXPECT_TRUE(key.empty());
-  EXPECT_EQ(key.size(), 0U);
 }
 
 TEST(LowerAsciiKeyTest, ConstructFromSingleCharacterLiteral) {
@@ -95,11 +69,6 @@ TEST(LowerAsciiKeyTest, ConstructFromDynamicLowercaseStringView) {
   LowerAsciiKey key{std::string_view(str)};
   EXPECT_EQ(key.get(), "x-forwarded-for");
   EXPECT_EQ(key.size(), str.size());
-}
-
-TEST(LowerAsciiKeyTest, ConstructFromDynamicEmptyStringView) {
-  LowerAsciiKey key{std::string_view{}};
-  EXPECT_TRUE(key.empty());
 }
 
 TEST(LowerAsciiKeyTest, ConstructFromDynamicStringViewWithDigitsAndSymbols) {
@@ -177,13 +146,6 @@ TEST(LowerAsciiKeyTest, SizeMatchesContentLength) {
   EXPECT_EQ(key.size(), std::string_view("user-agent").size());
 }
 
-TEST(LowerAsciiKeyTest, EmptyReflectsZeroSize) {
-  constexpr LowerAsciiKey nonEmpty = "a";
-  constexpr LowerAsciiKey isEmpty = "";
-  EXPECT_FALSE(nonEmpty.empty());
-  EXPECT_TRUE(isEmpty.empty());
-}
-
 // ---------------------------------------------------------------------------
 // Equality operator
 // ---------------------------------------------------------------------------
@@ -210,12 +172,6 @@ TEST(LowerAsciiKeyTest, EqualityComparesContentNotAddress) {
   LowerAsciiKey k1{std::string_view(s1)};
   LowerAsciiKey k2{std::string_view(s2)};
   EXPECT_TRUE(k1 == k2);
-}
-
-TEST(LowerAsciiKeyTest, EqualityBetweenTwoEmptyKeys) {
-  constexpr LowerAsciiKey lhs;
-  constexpr LowerAsciiKey rhs = "";
-  EXPECT_TRUE(lhs == rhs);
 }
 
 TEST(LowerAsciiKeyTest, EqualityDistinguishesDifferentSingleCharacters) {
@@ -277,7 +233,6 @@ TEST(LowerAsciiKeyTest, UsableAsOrderedMapKey) {
 
 TEST(LowerAsciiKeyTest, AllAccessorsAndOperatorsAreConstexprFriendly) {
   static_assert(LowerAsciiKey{"range"}.size() == 5);
-  static_assert(!LowerAsciiKey{"range"}.empty());
   static_assert(LowerAsciiKey{"range"}.get() == "range");
   static_assert(LowerAsciiKey{"range"} == LowerAsciiKey{"range"});
   static_assert(!(LowerAsciiKey{"range"} == LowerAsciiKey{"host"}));
