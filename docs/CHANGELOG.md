@@ -32,6 +32,7 @@ All notable changes to aeronet are documented in this file.
 - **Streaming handlers can no longer be called for HTTP/1.0 queries**: only HTTP/1.1 requests streaming handlers can be called (and HTTP/2 of course).
 - **Added missing header name and value validation of a HTTP/1.1 response in the client**
 - **HttpClientConfig.maxResponseBytes now count header bytes as well**: it was counting only the body bytes.
+- **HttpRequest and HttpResponse headerAppendValue now validates value and separator**: methods will throw `std::invalid_argument` in case the value and / or the separator is not valid per HTTP spec. In addition, because per HTTP semantics a header value should be trimmed (RFC 9113 §8.2.1), if append is called with an empty value and non-empty separator, this is a no-op.
 
 ## Improvements
 

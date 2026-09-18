@@ -636,6 +636,11 @@ TEST_F(HttpResponseTest, InsertingInvalidHeaderNameShouldThrow) {
   EXPECT_THROW(resp.headerAppendValue("invalid header", "value"), std::invalid_argument);
   EXPECT_THROW(resp.headerAppendValue("another:invalid", "value"), std::invalid_argument);
 
+  resp.headerAddLine("valid-key", "valid-value");
+
+  EXPECT_THROW(resp.headerAppendValue("valid-key", "invalid-value\r"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue("valid-key", "valid-value", "invalid-sep\r"), std::invalid_argument);
+
   resp.body("some body");
   EXPECT_THROW(resp.trailerAddLine("invalid trailer", "value"), std::invalid_argument);
   EXPECT_THROW(resp.trailerAddLine("another:invalid", "value"), std::invalid_argument);
@@ -727,6 +732,15 @@ TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
   EXPECT_TRUE(full.contains("x-missing: v1\r\n")) << full;
 }
 
+TEST_F(HttpResponseTest, AppendEmptyHeaderValueWithNonEmptySeparatorDoesNotLeaveTrailingSeparator) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-list", "first");
+  resp.headerAppendValue("x-list", "", ", ");  // should be no-op
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("x-list: first\r\n")) << full;
+}
+
 TEST_F(HttpResponseTest, SetSameReason) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
@@ -753,16 +767,6 @@ TEST_F(HttpResponseTest, AppendHeaderValueEmptySeparator) {
 
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("x-list: firstsecond\r\n")) << full;
-}
-
-TEST_F(HttpResponseTest, AppendHeaderValueEmptyValue) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.reason("OK");
-  resp.header("x-list", "first");
-  resp.headerAppendValue("x-list", "", ", ");
-
-  auto full = concatenated(std::move(resp));
-  EXPECT_TRUE(full.contains("x-list: first, \r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, AppendHeaderValueEmptyValueAndSeparator) {
