@@ -922,8 +922,7 @@ TEST(ResponseParserDecompress, GarbageCompressedBodyIsError) {
 }
 
 // Any non-Connection header name containing a byte outside the HTTP token charset (RFC 9110 §5.1) is
-// rejected. Header validation was previously a no-op (see the removed TODO); this exercises the new
-// IsValidHeaderName check.
+// rejected.
 TEST(ResponseParserTest, RejectsInvalidHeaderName) {
   HttpResponse spaceResp;
   EXPECT_EQ(parseAll("HTTP/1.1 200 OK\r\nX Bad: value\r\n\r\n", spaceResp, /*head=*/false, /*eof=*/true),
