@@ -200,19 +200,25 @@ class HttpClient {
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
   [[nodiscard]] bool cacheEligible(const HttpRequest& req) const noexcept;
+
   // Build the cache key (method + url + headers + body) into the reusable _cacheKeyScratch buffer and return
   // a view of it. Requests fully stored in _data return that buffer directly, avoiding a copy. A file body whose
   // descriptor cannot be statted has no usable key, so caching is bypassed. The view stays valid until the next
   // buildCacheKey call (requestUncached never touches it).
   std::string_view buildCacheKey(const HttpRequest& req);
+
   // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
   // Amortized periodic pruning of expired entries happens here.
   const HttpResponse* cacheLookupFresh(std::string_view key);
+
   // Store (a deep copy of) `resp` under `key`, refreshing an existing entry or inserting a new one; enforces
   // the cache.maxEntries bound (prune expired, then evict the least-recently-refreshed entry).
-  void cacheStore(std::string_view key, const HttpResponse& resp);
+  void cacheStore(std::string_view key, HttpResponse resp);
+
+  enum class EjectType : uint8_t { AtLeastOne, OnlyExpired };
+
   // Erase every cache entry at least refreshPeriod old.
-  void pruneExpiredCache(SteadyClock::time_point now);
+  void pruneExpiredCache(SteadyClock::time_point now, EjectType ejectType);
 
   // Acquire a connection for the origin: reuse an idle pooled one or establish a fresh one.
   std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const HttpRequest& req);
@@ -299,21 +305,21 @@ class HttpClient {
   uint16_t _proxyPort{0};                        // forward-proxy port (see _proxyHost)
   uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
 
+  // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
+  flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
+
   // A cached response plus the timestamp it was last refreshed (for TTL expiry).
   struct CacheEntry {
     HttpResponse response;
     SteadyClock::time_point lastUpdated;
   };
 
-  // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
-  flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
-
-  // Built-in response cache keyed by request identity (method + url + headers + body); transparent
-  // string_view lookup. Empty / unused unless HttpClientConfig::cache is enabled.
+  // Built-in response cache keyed by request identity (method + url + headers + body); transparent string_view lookup.
+  // Empty / unused unless HttpClientConfig::cache is enabled.
   flat_hash_map<RawChars32, CacheEntry, CityHash, std::equal_to<>> _cache;
 
   // reused buffer to build lookup keys without per-request allocation
-  RawChars _cacheKeyScratch;
+  RawChars32 _cacheKeyScratch;
 
   // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are never live at
   // once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy CONNECT line); once it is

@@ -119,6 +119,11 @@ class HttpClientConfig {
     // entries are pruned first, then -- if still full -- the least-recently-refreshed entry is evicted.
     std::uint32_t maxEntries{1024};
 
+    // Maximum size of a cached request in bytes (default: 16 MiB)
+    // Will only consider requests for caching whose total size (headers + body in memory, excluding file payloads)
+    // does not exceed this limit.
+    std::uint32_t maxRequestSize{1U << 24U};
+
     // Request methods eligible for caching. Must be a subset of the safe methods (GET / HEAD / OPTIONS):
     // caching an unsafe or non-idempotent method's response is nonsensical and is rejected by validate().
     http::MethodBmp methods{http::Method::GET | http::Method::HEAD};
@@ -276,6 +281,11 @@ class HttpClientConfig {
   }
   HttpClientConfig& withCacheMethods(http::Method method) {
     cache.methods = static_cast<http::MethodBmp>(method);
+    return *this;
+  }
+
+  HttpClientConfig& withCacheMaxRequestSize(std::uint32_t maxRequestSize) {
+    cache.maxRequestSize = maxRequestSize;
     return *this;
   }
 

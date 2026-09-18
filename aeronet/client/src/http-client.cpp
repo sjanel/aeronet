@@ -232,7 +232,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   // 200 here; asserted rather than left as a permanently-uncovered branch.
   assert(!result || result->status() >= 200);
   if (isCacheEligible && result && result->status() < 300) {
-    cacheStore(cacheKey, *result);
+    cacheStore(cacheKey, result->cloneFinalized());
   }
 
   return result;
@@ -493,22 +493,21 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
   if (_config.keepAlive) {
     if (auto it = _idle.find(req.originKey()); it != _idle.end() && !it->second.empty()) {
       auto& bucket = it->second;
-      // Bucket is LIFO: back() is the most-recently-released (freshest) connection. If even it has
-      // exceeded the idle limit, every older entry has too, so drop the whole bucket and reconnect.
+      // Bucket is LIFO: back() is the most-recently-released (freshest) connection. If even it has exceeded the idle
+      // limit, every older entry has too, so drop the whole bucket and reconnect.
       if (_config.keepAliveTimeout.count() > 0 &&
           SteadyClock::now() - bucket.back().idleSince > _config.keepAliveTimeout) {
         dropIdleBucket(bucket);
       } else {
         ActiveConnection conn = std::move(bucket.back());
         bucket.pop_back();
-        // Vet the pooled connection before reusing it. A keep-alive connection the origin already closed
-        // (its own idle timeout) would otherwise accept the request bytes locally and fail only on the
-        // subsequent read, where a transparent retry could re-submit a non-idempotent request. Discard a
-        // stale connection here (and its likely-stale siblings) so the request is always issued on a socket
-        // we have just confirmed is still open. HTTP/2 first consumes already-arrived control frames so
-        // harmless flow-control traffic does not force a reconnect, while GOAWAY, close, malformed, and
-        // partial frames are rejected before any new request byte is sent. The final raw probe catches EOF,
-        // errors, and data that raced in after the protocol drain.
+        // Vet the pooled connection before reusing it. A keep-alive connection the origin already closed (its own idle
+        // timeout) would otherwise accept the request bytes locally and fail only on the subsequent read, where a
+        // transparent retry could re-submit a non-idempotent request. Discard a  stale connection here (and its
+        // likely-stale siblings) so the request is always issued on a socket we have just confirmed is still open.
+        // HTTP/2 first consumes already-arrived control frames so harmless flow-control traffic does not force a
+        // reconnect, while GOAWAY, close, malformed, and partial frames are rejected before any new request byte is
+        // sent. The final raw probe catches EOF, errors, and data that raced in after the protocol drain.
         const bool reusable = conn.proto.isHttp2() ? conn.proto.prepareForReuse(conn.transport, conn.cnx.fd())
                                                    : !IsConnectionStale(conn.cnx.fd());
         if (reusable && conn.proto.canTakeAnotherStream()) {
@@ -756,8 +755,8 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
 }
 
 bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {
-  // TODO: add a configurable max body size check for cache eligibility ? Because the huge body will be kept in memory.
-  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method());
+  return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method()) &&
+         req.headSize() + req.bodyInMemoryLength() <= _config.cache.maxRequestSize;
 }
 
 std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
@@ -766,6 +765,8 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
     // copying.
     return req._data;
   }
+
+  static_assert(sizeof(_config.cache.maxRequestSize) == 4U, "_cacheKeyScratch is a RawChars32");
 
   _cacheKeyScratch.clear();
   const FilePayload* filePayload = req.filePayloadPtr();
@@ -810,15 +811,29 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   return _cacheKeyScratch;
 }
 
-void HttpClient::pruneExpiredCache(SteadyClock::time_point now) {
+void HttpClient::pruneExpiredCache(SteadyClock::time_point now, EjectType ejectType) {
   const auto refresh = _config.cache.refreshPeriod;
+
+  assert(ejectType != EjectType::AtLeastOne || !_cache.empty());
+
+  bool doEjectOne = ejectType == EjectType::AtLeastOne;
+  auto oldestIt = _cache.end();
 
   for (auto it = _cache.begin(); it != _cache.end();) {
     if (std::chrono::duration_cast<HttpClientConfig::Duration>(now - it->second.lastUpdated) >= refresh) {
       it = _cache.erase(it);
+      doEjectOne = false;
     } else {
+      // Note that doEjectOne check in below if is important and not redundant because if false, an erase has happened
+      // and may have invalidated oldestIt.
+      if (doEjectOne && (oldestIt == _cache.end() || it->second.lastUpdated < oldestIt->second.lastUpdated)) {
+        oldestIt = it;
+      }
       ++it;
     }
+  }
+  if (doEjectOne) {
+    _cache.erase(oldestIt);
   }
 }
 
@@ -826,10 +841,12 @@ const HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
   // Amortized housekeeping: every so often sweep expired entries so a cache of one-shot URLs does not keep
   // dead entries around until it hits maxEntries. Cheap relative to a network round trip.
   static constexpr uint32_t kCachePruneInterval = 256;
+
   if (++_cachePruneCounter >= kCachePruneInterval) {
     _cachePruneCounter = 0;
-    pruneExpiredCache(SteadyClock::now());
+    pruneExpiredCache(SteadyClock::now(), EjectType::OnlyExpired);
   }
+
   const auto it = _cache.find(key);
   if (it == _cache.end()) {
     return nullptr;  // miss
@@ -841,23 +858,18 @@ const HttpResponse* HttpClient::cacheLookupFresh(std::string_view key) {
   return &it->second.response;
 }
 
-void HttpClient::cacheStore(std::string_view key, const HttpResponse& resp) {
+void HttpClient::cacheStore(std::string_view key, HttpResponse resp) {
   const auto now = SteadyClock::now();
 
-  auto cloned = resp.cloneFinalized();
-  auto [it, inserted] = _cache.try_emplace(key, std::move(cloned), now);
+  auto [it, inserted] = _cache.try_emplace(key, std::move(resp), now);
 
-  if (inserted) {
-    if (_cache.size() > _config.cache.maxEntries) {
-      pruneExpiredCache(now);
-      if (_cache.size() > _config.cache.maxEntries) {
-        _cache.erase(std::ranges::min_element(_cache, {}, [](const auto& kv) { return kv.second.lastUpdated; }));
-      }
-    }
-  } else {
+  if (!inserted) {
     // The above move actually did not happen, so it's safe to move again here.
-    it->second.response = std::move(cloned);
+    it->second.response = std::move(resp);
     it->second.lastUpdated = now;
+  } else if (_cache.size() > _config.cache.maxEntries) {
+    // Insert happened, but now we are holding more entries than allowed, so we need to prune.
+    pruneExpiredCache(now, EjectType::AtLeastOne);
   }
 }
 
