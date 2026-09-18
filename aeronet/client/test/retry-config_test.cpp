@@ -1,11 +1,11 @@
-// Pure unit coverage for RetryConfig: the backoff math (delayFor), idempotency classification and the
-// retryable-status predicate. No sockets involved.
 #include "aeronet/retry-config.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 #include "aeronet/http-status-code.hpp"
 
@@ -23,6 +23,7 @@ using namespace std::chrono_literals;
 
 TEST(RetryConfigTest, DefaultsAreConservative) {
   RetryConfig retry;
+  EXPECT_NO_THROW(retry.validate());
   EXPECT_EQ(retry.maxAttempts, 1U);  // backoff retries off by default
   EXPECT_EQ(retry.baseDelay, 100ms);
   EXPECT_EQ(retry.maxDelay, 2s);
@@ -35,6 +36,67 @@ TEST(RetryConfigTest, DefaultsAreConservative) {
   EXPECT_TRUE(ShouldRetryStatus(retry, http::StatusCodeServiceUnavailable));
   EXPECT_FALSE(ShouldRetryStatus(retry, http::StatusCodeInternalServerError));
   EXPECT_FALSE(ShouldRetryStatus(retry, http::StatusCodeOK));
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidBaseDelay) {
+  RetryConfig retry;
+  retry.baseDelay = 0ms;  // invalid, must be > 0
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidMaxDelay) {
+  RetryConfig retry;
+  retry.baseDelay = 100ms;
+  retry.maxDelay = 50ms;  // invalid, must be >= baseDelay
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidMaxAttempts) {
+  RetryConfig retry;
+  retry.maxAttempts = 0;  // invalid, must be at least 1
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidNanMultiplier) {
+  RetryConfig retry;
+  retry.multiplier = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidMultiplier) {
+  RetryConfig retry;
+  retry.multiplier = 0.0F;
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidNanJitter) {
+  RetryConfig retry;
+  retry.jitter = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidJitter1) {
+  RetryConfig retry;
+  retry.jitter = -1.0F;
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidJitter2) {
+  RetryConfig retry;
+  retry.jitter = 2.0F;
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidRetryStatuses) {
+  RetryConfig retry;
+  retry.retryStatuses = {http::StatusCodeOK};  // invalid, < 400
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
+}
+
+TEST(RetryConfigTest, ValidateThrowsForInvalidStatusCode) {
+  RetryConfig retry;
+  retry.retryStatuses = {1024};  // invalid, > 999
+  EXPECT_THROW(retry.validate(), std::invalid_argument);
 }
 
 TEST(RetryConfigTest, DelayGrowsExponentiallyAndCaps) {

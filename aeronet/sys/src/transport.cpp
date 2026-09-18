@@ -160,9 +160,8 @@ TransportResult PlainTransport::write(std::span<const std::string_view> buffers)
         return result;
       }
 
-      const auto written = static_cast<std::size_t>(nbWritten);
-      result.bytesProcessed += written;
-      std::size_t remaining = written;
+      std::size_t remaining = static_cast<std::size_t>(nbWritten);
+      result.bytesProcessed += remaining;
       while (ioVectorIndex < ioVectorCount) {
 #ifdef AERONET_POSIX
         const std::size_t ioVectorSize = ioVectors[ioVectorIndex].iov_len;

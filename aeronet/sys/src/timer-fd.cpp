@@ -81,11 +81,9 @@ void TimerFd::drain() const {
     }
     if (ret == -1) {
       const auto err = LastSystemError();
-      if (err == error::kWouldBlock) {
-        return;
+      if (err != error::kWouldBlock) {
+        log::error("TimerFd drain failed err={}: {}", err, SystemErrorMessage(err));
       }
-      log::error("TimerFd drain failed err={}: {}", err, SystemErrorMessage(err));
-      return;
     }
 
     // Short read should not happen; treat as drained.

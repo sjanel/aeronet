@@ -252,7 +252,7 @@ constexpr CompressResponseResult ConvertEncoderResultErrorToCompressResponseResu
 
 }  // namespace
 
-CompressionState::CompressionState(const CompressionConfig& cfg)
+CompressionState::CompressionState(const CompressionConfig& cfg) noexcept
     : selector(cfg),
       pCompressionConfig(&cfg)
 #ifdef AERONET_ENABLE_BROTLI

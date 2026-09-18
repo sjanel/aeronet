@@ -4,6 +4,7 @@
 
 #include <stdexcept>
 
+#include "aeronet/client-protocol.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/vector.hpp"
@@ -22,8 +23,36 @@ TEST(HttpClientConfigTest, WithGlobalHeadersShouldReplaceAllList) {
   EXPECT_NO_THROW(config.validate());
 }
 
+TEST(HttpClientConfigTest, InvalidRequestTimeout) {
+  HttpClientConfig config;
+  config.requestTimeout = std::chrono::milliseconds{0};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpClientConfigTest, KeepAliveTimeout) {
+  HttpClientConfig config;
+  config.keepAliveTimeout = std::chrono::milliseconds{0};
+  EXPECT_NO_THROW(config.validate());
+
+  config.keepAliveTimeout = std::chrono::milliseconds{-1};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpClientConfigTest, InvalidMaxResponseBytes) {
+  HttpClientConfig config;
+  config.maxResponseBytes = 0;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpClientConfigTest, InvalidGlobalHeaderValueWithControlChars) {
   HttpClientConfig config;
+  config.globalHeaders.append("X-Test:value\x01");  // control char 0x01
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpClientConfigTest, Http2VersionValidation) {
+  HttpClientConfig config;
+  config.httpVersion = HttpVersionMode::Http2;
   config.globalHeaders.append("X-Test:value\x01");  // control char 0x01
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }

@@ -153,7 +153,7 @@ void EncodingSelector::initDefault() noexcept {
   _nbPreferences = kNbSupportedEncodings;
 }
 
-EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) {
+EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) noexcept {
   if (compressionConfig.preferredFormats.empty()) {
     initDefault();
   } else {

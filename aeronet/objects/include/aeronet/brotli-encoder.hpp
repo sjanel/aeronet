@@ -82,7 +82,7 @@ class BrotliEncoder {
  public:
   BrotliEncoder() noexcept = default;
 
-  explicit BrotliEncoder(CompressionConfig::Brotli cfg) : _quality(cfg.quality), _window(cfg.window) {
+  explicit BrotliEncoder(CompressionConfig::Brotli cfg) noexcept : _quality(cfg.quality), _window(cfg.window) {
     _ctx._scratch = &_scratch;
   }
 

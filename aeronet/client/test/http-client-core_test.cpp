@@ -162,6 +162,15 @@ test::TestServer CreateTestServer() {
   routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
   });
+  routerProxy.setPath(http::Method::GET, "/headers", [](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeOK);
+    // Add many headers
+    for (int i = 0; i < 100; ++i) {
+      std::string headerName = "x-custom-" + std::to_string(i);
+      resp.headerAddLine(LowerAsciiKey{headerName}, "value");
+    }
+    return resp;
+  });
   routerProxy.setPath(http::Method::GET, "/large-identity", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, LargeIdentityResponseBody(), "application/octet-stream");
   });
@@ -242,6 +251,65 @@ class HttpClientE2ETest : public ::testing::Test {
 };
 
 }  // namespace
+
+TEST_F(HttpClientE2ETest, MoveConstructor) {
+  HttpClient client;
+  HttpClient movedClient(std::move(client));
+  auto resp = movedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, MoveAssignment) {
+  HttpClient client;
+  HttpClient assignedClient;
+  assignedClient = std::move(client);
+  auto resp = assignedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
+
+  auto& self = assignedClient;
+  // Self move-assignment shouldn't do anything harmful.
+  assignedClient = std::move(self);
+  auto resp2 = assignedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp2.status(), 200);
+  EXPECT_EQ(resp2.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, CopyConstructorShouldCopyConfig) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http1_1);
+  config.addGlobalHeader(http::Header{"x-custom", "value"});
+
+  HttpClient client(std::move(config));
+  HttpClient copiedClient(client);
+  EXPECT_TRUE(copiedClient.config().globalHeaders.contains("x-custom: value"));
+  auto resp = copiedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, CopyAssignmentShouldCopyConfig) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http1_1);
+  config.addGlobalHeader(http::Header{"x-custom", "value"});
+
+  HttpClient client(std::move(config));
+  HttpClient assignedClient;
+  EXPECT_FALSE(assignedClient.config().globalHeaders.contains("x-custom: value"));
+  assignedClient = client;
+  EXPECT_TRUE(assignedClient.config().globalHeaders.contains("x-custom: value"));
+  auto resp = assignedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "world");
+
+  // Self copy-assignment shouldn't do anything harmful.
+  auto& self = assignedClient;
+  assignedClient = self;
+  auto resp2 = assignedClient.get(Url("/hello")).value();
+  EXPECT_EQ(resp2.status(), 200);
+  EXPECT_EQ(resp2.bodyInMemory(), "world");
+}
 
 TEST_F(HttpClientE2ETest, SimpleGet) {
   HttpClient client;
@@ -471,9 +539,31 @@ TEST_F(HttpClientE2ETest, ConnectionRefusedReturnsError) {
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
 }
 
-TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsError) {
+TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeaders) {
   HttpClientConfig cfg;
-  cfg.maxResponseBytes = 2;  // smaller than even the status line
+  cfg.maxResponseBytes = 128;
+  HttpClient client(cfg);
+  auto result = client.get(Url("/headers"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+}
+
+#ifdef AERONET_ENABLE_HTTP2
+TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeadersHttp2) {
+  HttpClientConfig cfg;
+  cfg.maxResponseBytes = 128;
+  cfg.httpVersion = HttpVersionMode::Http2;
+
+  HttpClient client(cfg);
+  auto result = client.get(Url("/headers"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+}
+#endif
+
+TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInBody) {
+  HttpClientConfig cfg;
+  cfg.maxResponseBytes = 24;
   HttpClient client(cfg);
   auto result = client.get(Url("/hello"));
   ASSERT_FALSE(result);
@@ -1958,7 +2048,7 @@ TEST_F(HttpClientProxyTlsE2ETest, HttpsOriginViaConnectTunnel) {
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // self-signed origin cert, not in any trust store
   cfg.withProxy(ProxyUrl(proxy.port()));
-  HttpClient client(cfg);
+  HttpClient client(std::move(cfg));
 
   const auto result = client.get(secureUrl());
   ASSERT_TRUE(result) << ErrcToStr(result.error());
@@ -2042,7 +2132,17 @@ TEST_F(HttpClientProxyTlsE2ETest, ProxyMalformedStatusLineReturnsProxyError) {
 }
 
 TEST_F(HttpClientProxyTlsE2ETest, ProxyInvalidAndInformationalStatusCodesReturnProxyError) {
-  for (std::string response : {"HTTP/1.1 invalid status\r\n\r\n", "HTTP/1.1 199 Informational\r\n\r\n"}) {
+  for (std::string response : {
+           "HTTP/1.1 invalid status\r\n\r\n",
+           "HTTP/1.1 200invalid\r\n\r\n",
+           "HTTP/1.1 2\r\n\r\n",
+           "HTTP/1.1 abc Informational\r\n\r\n",
+           "HTTP/1.1 42 Informational\r\n\r\n",
+           "HTTP/1.1 199 Informational\r\n\r\n",
+           "HTTP/1.1 687 Informational\r\n\r\n",
+           "HTTP/1.1 20O OK\r\n\r\n",
+           "HTTP/1.1 200p OK\r\n\r\n",
+       }) {
     TinyProxy proxy("", std::move(response));
     HttpClientConfig cfg;
     cfg.tlsVerifyPeer = false;
@@ -2542,23 +2642,6 @@ TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
   const auto result = client.get(MakeUrl(serverPort));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
-}
-
-// A maxAttempts of 0 is treated as 1 (a single attempt): a normal request still succeeds.
-TEST(HttpClientErrorE2ETest, ZeroMaxAttemptsTreatedAsSingleAttempt) {
-  RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
-    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhi");
-  });
-  RetryConfig retry;
-  retry.maxAttempts = 0;
-  HttpClientConfig cfg;
-  cfg.withRetry(retry);
-  HttpClient client(cfg);
-
-  const auto result = client.get(MakeUrl(server.port()));
-  ASSERT_TRUE(result);
-  EXPECT_EQ(result->status(), 200);
 }
 
 // An IPv6 literal authority must be bracketed in the Host header: "host: [::1]:<port>", never "::1:<port>".

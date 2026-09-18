@@ -96,6 +96,7 @@ class DynamicConcatenatedStrings {
     pData = AppendFixed<http::HeaderSep>(pData);
     pData = Append(value, pData);
     pData = AppendFixed<kSep>(pData);
+
     _buf.setEnd(pData);
   }
 

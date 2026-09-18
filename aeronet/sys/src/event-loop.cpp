@@ -124,30 +124,21 @@ EventBmp PollReventsToEventBmp(short revents) {
 // ---- Construction / move / destruction ----
 
 EventLoop::EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity)
-    : _nbAllocatedEvents(std::max(1U, initialCapacity)),
-      _timeout(timeoutPolicy),
-      _pEvents(std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * NativeEventSize())) {
+    : _nbAllocatedEvents(std::max(1U, initialCapacity)), _timeout(timeoutPolicy) {
   timeoutPolicy.validate();
-  if (_pEvents == nullptr) {
-    throw std::bad_alloc();
-  }
 
 #ifdef AERONET_LINUX
   _baseFd = BaseFd(::epoll_create1(EPOLL_CLOEXEC));
   if (!_baseFd) {
     auto err = LastSystemError();
-    log::error("event loop creation failed (err={}, msg={})", err, SystemErrorMessage(err));
-    std::free(_pEvents);
-    _pEvents = nullptr;
+    log::critical("event loop creation failed (err={}, msg={})", err, SystemErrorMessage(err));
     throw std::runtime_error("event loop creation failed");
   }
 #elifdef AERONET_MACOS
   _baseFd = BaseFd(::kqueue());
   if (!_baseFd) {
     auto err = LastSystemError();
-    log::error("kqueue creation failed (err={}, msg={})", err, SystemErrorMessage(err));
-    std::free(_pEvents);
-    _pEvents = nullptr;
+    log::critical("kqueue creation failed (err={}, msg={})", err, SystemErrorMessage(err));
     throw std::runtime_error("event loop creation failed");
   }
 #elifdef AERONET_WINDOWS
@@ -155,11 +146,18 @@ EventLoop::EventLoop(PollTimeoutPolicy timeoutPolicy, uint32_t initialCapacity)
   // Allocate the WSAPOLLFD registration array.
   _pPollFds = std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * sizeof(WSAPOLLFD));
   if (_pPollFds == nullptr) {
-    std::free(_pEvents);
-    _pEvents = nullptr;
     throw std::bad_alloc();
   }
 #endif
+
+  _pEvents = std::malloc(static_cast<std::size_t>(_nbAllocatedEvents) * NativeEventSize());
+  if (_pEvents == nullptr) {
+#ifdef AERONET_WINDOWS
+    std::free(_pPollFds);
+    _pPollFds = nullptr;
+#endif
+    throw std::bad_alloc();
+  }
 
   if (initialCapacity == 0) {
     log::warn("EventLoop constructed with initialCapacity=0; promoting to 1");

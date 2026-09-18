@@ -11,7 +11,7 @@ namespace aeronet::internal {
 // cost is just the (de)compression itself. Mirrors the server's per-session codec state and reuses the
 // exact same bricks (DecompressionState / CompressionState / HttpCodec).
 struct HttpClientCodec {
-  explicit HttpClientCodec(const CompressionConfig& compressionCfg) : compressionState(compressionCfg) {}
+  explicit HttpClientCodec(const CompressionConfig& compressionCfg) noexcept : compressionState(compressionCfg) {}
 
   DecompressionState decompressionState;  // inbound response decoders
   CompressionState compressionState;      // outbound request encoders

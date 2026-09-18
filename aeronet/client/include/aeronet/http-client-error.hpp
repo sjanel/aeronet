@@ -15,6 +15,7 @@ namespace aeronet {
 // description comes from ErrcToStr(), and request-specific context (which origin) is reconstructible by
 // the caller, which still holds the URL it asked for.
 enum class HttpClientErrc : uint8_t {
+  noError,
   invalidUrl,           // malformed / unsupported request URL or redirect Location
   connectFailed,        // DNS resolution or TCP connect failure (includes the connect deadline)
   tlsError,             // TLS handshake failed
@@ -51,8 +52,9 @@ enum class HttpClientErrc : uint8_t {
       return "forward proxy failed to establish the CONNECT tunnel";
     case HttpClientErrc::ioError:
       return "internal I/O error";
+    default:
+      return "unknown error";
   }
-  return "unknown error";
 }
 
 }  // namespace aeronet
