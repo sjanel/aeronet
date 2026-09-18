@@ -526,20 +526,13 @@ void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view val
 
 void HttpMessage::overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast,
                                           std::string_view newValue) {
-  char* valueFirst = _data.data() + (oldValueFirst - _data.data());
   const std::size_t oldHeaderValueSz = static_cast<std::size_t>(oldValueLast - oldValueFirst);
-
   const auto diff = static_cast<int64_t>(newValue.size()) - static_cast<int64_t>(oldHeaderValueSz);
-  if (diff == 0) {
-    Copy(newValue, valueFirst);
-    return;
-  }
+  const auto valuePos = static_cast<std::size_t>(oldValueFirst - _data.data());
 
-  const auto valuePos = static_cast<std::size_t>(valueFirst - _data.data());
-  if (diff > 0) {
-    _data.ensureAvailableCapacityExponential(static_cast<uint64_t>(diff));
-    valueFirst = _data.data() + valuePos;
-  }
+  _data.ensureAvailableCapacityExponential(diff);
+
+  char* valueFirst = _data.data() + valuePos;
 
   std::memmove(valueFirst + newValue.size(), valueFirst + oldHeaderValueSz, _data.size() - valuePos - oldHeaderValueSz);
   Copy(newValue, valueFirst);
@@ -555,9 +548,20 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     headerAddLineImpl(key, value);
     return;
   }
-  // TODO: validate value and sep
 
   value = TrimOws(value);
+  if (value.empty()) {
+    // nothing to append; avoids dangling/whitespace-terminated separator.
+    // RFC 9113 §8.2.1: 'A field value MUST NOT start or end with an ASCII whitespace character'
+    return;
+  }
+
+  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header value is invalid");
+  }
+  if (!http::IsValidHeaderValue(sep)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header value separator is invalid");
+  }
 
   const std::size_t extraLen = sep.size() + value.size();
   const std::size_t insertOffset = static_cast<std::size_t>(last - _data.data());
@@ -565,13 +569,12 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
 
   _data.ensureAvailableCapacityExponential(extraLen);
 
-  char* insertPtr = _data.data() + insertOffset;
+  char* pData = _data.data() + insertOffset;
 
-  std::memmove(insertPtr + extraLen, insertPtr, tailLen);
+  std::memmove(pData + extraLen, pData, tailLen);
 
-  char* out = insertPtr;
-  out = Append(sep, out);
-  Copy(value, out);
+  pData = Append(sep, pData);
+  Copy(value, pData);
 
   _data.addSize(extraLen);
   adjustBodyStart(static_cast<int64_t>(extraLen));
