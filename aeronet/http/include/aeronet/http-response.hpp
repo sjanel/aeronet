@@ -773,7 +773,7 @@ class HttpResponse final : public HttpMessage {
   // File payloads and HEAD size-only payloads are not supported (asserted): parsed client responses can own
   // captured receive/decode buffers, but never carry either of those payload forms.
   [[nodiscard]] HttpResponse cloneFinalized() const {
-    HttpResponse copy(HttpMessage::Check{});
+    HttpResponse copy(HttpMessage::Check{HttpMessage::Check::No});
     copy._data = _data;
     copy._posBitmap = _posBitmap;
     assert(!_payloadVariant.isFilePayload());

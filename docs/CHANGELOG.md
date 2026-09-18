@@ -58,6 +58,8 @@ All notable changes to aeronet are documented in this file.
 - **Removed a copy in the HttpClient for HTTP/2 send file**: file content is now directly loaded into the data frame without scratch buffer.
 - **HttpClient is now copy-constructible and copy-assignable**: it simply duplicates the client from the other client's configuration.
 - **For requests timeouts of less than 25ms, HttpClient poll timeout will be adjusted to a much lower value than 25ms**. It was previously hardcoded to 25ms.
+- **HttpClient cache config gains a new field `maxRequestSize`**: configures an upped bound of the total request size eligible to be cached. Use it to filter out request with big bodies for instance.
+- **HttpClient cache pruning is now more efficient**: a second linear scan in the whole cache was performed when the cache size reached its limit with non expired keys to removed the oldest key, it is not removed and done in one pass.
 
 ## Others
 
@@ -66,9 +68,9 @@ All notable changes to aeronet are documented in this file.
 - **Fix test expectations in aeronet client when no compression library is available**.
 - **Removed zstd.h and brotli/encode.h includes from .hpp internal header files**
 - **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-DAERONET_ENABLE_HTTP_SERVER=OFF` to disable compilation of server specific code. The code may not be optimally excluded yet.
-- **Bumped glaze version from 8.1.0 to 8.3.0**
-- **Bumped opentelemetry version from 1.28.0 to 1.29.0**
 - **Fixed compilation in Release when `AERONET_ENABLE_TEST_HOOKS` is not set**
+- **Bumped glaze version from 8.1.0 to 8.4.0**
+- **Bumped opentelemetry version from 1.28.0 to 1.29.0**
 
 ## [1.5.0] - 2026-08-20
 
