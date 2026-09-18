@@ -180,11 +180,11 @@ class Router {
 
     enum class HandlerKind : uint8_t {
       None,
-      Request,
-      Streaming,
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       Async,
 #endif
+      Request,
+      Streaming,
     };
 
     // Captured path parameters for the matched route, if any.

@@ -7,12 +7,12 @@
 
 namespace aeronet {
 
-// A std::string_view guaranteed to contain no ASCII upper-case letter ('A'-'Z') -- guaranteed at compile time when
-// built from a string literal, or via assert() only (debug builds) when built from a dynamic std::string_view. Used
-// wherever an already-normalized-to-lower-case key is required, e.g. all HttpMessage and HttpRequestView methods taking
-// one header or trailer name. Header and trailer names are normalized to lower-case at protocol/configuration ingress,
-// but the type itself carries no HTTP-specific semantics -- it can be reused anywhere a similar "pre-lowered key"
-// contract is needed.
+// A std::string_view guaranteed to be non empty and to not contain any ASCII upper-case letter ('A'-'Z').
+// It is guaranteed at compile time when built from a string literal, or via assert() only (debug builds) when built
+// from a dynamic std::string_view. Used wherever an already-normalized-to-lower-case key is required, e.g. all
+// HttpMessage and HttpRequestView methods taking one header or trailer name. Header and trailer names are normalized to
+// lower-case at protocol/configuration ingress, but the type itself carries no HTTP-specific semantics -- it can be
+// reused anywhere a similar "pre-lowered key" contract is needed.
 //
 // Two construction paths, intentionally asymmetric:
 //
@@ -36,16 +36,16 @@ namespace aeronet {
 // Implicitly convertible back to std::string_view (see operator std::string_view() below) so that, once constructed, it
 // behaves exactly like a plain string_view everywhere downstream (map lookups, comparisons, etc.) -- the friction is
 // only ever on the way in, never on the way out.
-// TODO: we may also enforce not empty? A header key cannot be empty.
 class LowerAsciiKey {
  public:
-  // Default-constructed LowerAsciiKey is empty (and obviously valid).
-  constexpr LowerAsciiKey() noexcept = default;
-
   // Implicit on purpose: lets call sites pass literals directly, e.g. req.headerValue("content-type").
   // See class-level doc, construction path 1, for the compile-time precondition this enforces.
   template <std::size_t N>
   consteval LowerAsciiKey(const char (&str)[N]) : _sv(str, N - 1) {  // NOLINT(*-explicit-constructor)
+    static_assert(N != 0);
+    if (_sv.empty()) {
+      throw std::invalid_argument("LowerAsciiKey: value must not be empty");
+    }
     if (ContainsUpperAscii(_sv)) {
       throw std::invalid_argument("LowerAsciiKey: value must not contain ASCII upper-case letters");
     }
@@ -54,14 +54,12 @@ class LowerAsciiKey {
   // See class-level doc, construction path 2. Explicit so that "this key is only checked at runtime, and only
   // in debug builds" is always visible at the call site -- never accidentally implicit.
   explicit constexpr LowerAsciiKey(std::string_view sv) noexcept : _sv(sv) {
+    assert(!_sv.empty() && "LowerAsciiKey: value must not be empty");
     assert(!ContainsUpperAscii(_sv) && "LowerAsciiKey: value must be ASCII lower-case already (tolower() it first)");
   }
 
   // Returns the underlying string_view.
   [[nodiscard]] constexpr std::string_view get() const noexcept { return _sv; }
-
-  // Returns true if the underlying string_view is empty.
-  [[nodiscard]] constexpr bool empty() const noexcept { return _sv.empty(); }
 
   // Returns the underlying string_view's data pointer.
   [[nodiscard]] constexpr const char* data() const noexcept { return _sv.data(); }
