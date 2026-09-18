@@ -41,9 +41,7 @@ class ZlibEncoderContext final : public EncoderContext {
 
 class ZlibEncoder {
  public:
-  ZlibEncoder() noexcept = default;
-
-  explicit ZlibEncoder(int8_t level) : _level(level) {}
+  explicit ZlibEncoder(int8_t level = 0) noexcept : _level(level) {}
 
   EncoderResult encodeFull(ZStreamRAII::Variant variant, std::string_view data, std::size_t availableCapacity,
                            char* buf);

@@ -6,6 +6,8 @@ namespace aeronet::http {
 
 using StatusCode = int16_t;
 
+inline constexpr uint8_t StatusCodeLen = 3U;
+
 inline constexpr StatusCode StatusCodeContinue = 100;
 inline constexpr StatusCode StatusCodeSwitchingProtocols = 101;
 inline constexpr StatusCode StatusCodeProcessing = 102;

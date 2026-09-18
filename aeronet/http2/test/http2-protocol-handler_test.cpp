@@ -4704,6 +4704,50 @@ TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
   // Restore original telemetry.
   telemetry = std::move(savedTelemetry);
 }
+
+TEST(Http2ProtocolHandler, RouteScopedMiddlewareSpanAttributeIsRoute) {
+  // Temporarily enable OpenTelemetry so createSpan() returns a non-null span,
+  // exactly like TraceSpanAttributesPopulated does.
+  auto savedTelemetry = std::move(telemetry);
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint("http://127.0.0.1:0");
+  cfg.withServiceName("test-http2-route-mw-span");
+  telemetry = tracing::TelemetryContext(cfg);
+
+  Router router;
+  bool middlewareCalled = false;
+
+  // Per-route middleware via .before(): routingResult.preMiddlewareRange() feeds
+  // applyChain(chain, /*isGlobal=*/false) in RunRequestMiddleware, unlike
+  // addRequestMiddleware() which is global (isGlobal == true).
+  router.setPath(http::Method::GET, "/route-mw-span", [](const HttpRequestView&) { return HttpResponse(200); })
+      .before([&middlewareCalled](HttpRequestView&) {
+        middlewareCalled = true;
+        return MiddlewareResult::Continue();
+      });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/route-mw-span"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(middlewareCalled);
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+
+  // Restore original telemetry.
+  telemetry = std::move(savedTelemetry);
+}
 #endif
 
 // ============== asyncTask() nullptr branch coverage ==============
@@ -5505,6 +5549,29 @@ TEST(Http2ProtocolHandler, MiddlewareShortCircuitFileSendFailureLogsAndReleasesS
 
   EXPECT_FALSE(handlerCalled);  // short-circuited before reaching the route handler
   loop.pumpServerToClient();    // drain whatever partial output was queued before the failure
+}
+
+TEST(Http2ProtocolHandler, TraceStillReturns405WhenPolicyAllowsButNoWireFormat) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.traceMethodPolicy = HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS;
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "TRACE"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/test"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  // allowTrace == true mais requestData vide (HTTP/2) → tombe sur 405, pas d'écho
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

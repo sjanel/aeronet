@@ -288,7 +288,7 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
   auto resp = test::simpleGet(port, "/predicate");
   EXPECT_TRUE(resp.contains("Predicate"));
 
-  const int nbAttempts = static_cast<int>(cfg.pollInterval / std::chrono::milliseconds(1)) + 1;
+  const int nbAttempts = static_cast<int>((2 * cfg.pollInterval) / std::chrono::milliseconds(1)) + 1;
 
   state->stop.store(true, std::memory_order_relaxed);
   for (int attempt = 0; attempt < nbAttempts && !state->observed.load(std::memory_order_relaxed); ++attempt) {

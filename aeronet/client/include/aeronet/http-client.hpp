@@ -74,12 +74,24 @@ class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 clie
 // friend so those resources stay private to HttpClient's public API.
 class HttpClient {
  public:
+  // Create a HttpClient with default configuration.
+  HttpClient();
+
   // Create a HttpClient with the given config. The config is copied and can be modified after construction without
   // affecting the client. The config is used to pre-configure every request (global headers, decompression, redirect
   // following, retry, ...).
-  explicit HttpClient(HttpClientConfig config = {});
+  explicit HttpClient(HttpClientConfig config);
 
-  // TODO: Make it copyable like the HttpServer?
+  HttpClient(HttpClient&&) noexcept = default;
+
+  // Duplicates a HttpClient from another instance's configuration.
+  HttpClient(const HttpClient& rhs);
+  HttpClient& operator=(HttpClient&&) noexcept = default;
+
+  // Assigns a HttpClient from another instance's configuration.
+  HttpClient& operator=(const HttpClient& rhs);
+
+  ~HttpClient();
 
   // Build a request with the given method and url. The returned HttpRequest is mutable and
   // can be further configured (headers, body, ...). The request is pre-configured based on the client config (e.g.
@@ -214,20 +226,18 @@ class HttpClient {
   // Open an HTTP CONNECT tunnel to `url`'s origin through the configured proxy, on the already-connected raw
   // socket `fd` (wrapped by the throwaway plain `transport`). Drives the request/response on the event loop
   // up to `deadline`; returns an empty result once the proxy answers 2xx, or an HttpClientErrc otherwise.
-  std::expected<void, HttpClientErrc> establishProxyTunnel(Transport& transport, NativeHandle fd,
-                                                           const HttpRequest& req);
+  HttpClientErrc establishProxyTunnel(Transport& transport, NativeHandle fd, const HttpRequest& req);
 
   void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);
 
   // Drive the TLS handshake to completion (the TCP connect is already established by connectNew), then
   // resolve the negotiated application protocol (ALPN for https; HTTP/1.1 otherwise) into conn.protocol.
-  std::expected<void, HttpClientErrc> finishConnect(ActiveConnection& conn, bool isTls,
-                                                    SteadyClock::time_point deadline);
+  HttpClientErrc finishConnect(ActiveConnection& conn, bool isTls, SteadyClock::time_point deadline);
 
   // Create conn.proto for conn.protocol if it is not already present (fresh connection). Returns
   // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine in this build
   // (ClientProtocol::Http2 without AERONET_ENABLE_HTTP2).
-  std::expected<void, HttpClientErrc> ensureProtocolHandler(ActiveConnection& conn) const;
+  HttpClientErrc ensureProtocolHandler(ActiveConnection& conn) const;
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Lazily build (once) and return the shared OpenSSL client context. Deferred to the first https request
@@ -297,10 +307,14 @@ class HttpClient {
 
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
+
   // Built-in response cache keyed by request identity (method + url + headers + body); transparent
   // string_view lookup. Empty / unused unless HttpClientConfig::cache is enabled.
   flat_hash_map<RawChars32, CacheEntry, CityHash, std::equal_to<>> _cache;
-  RawChars _cacheKeyScratch;  // reused buffer to build lookup keys without per-request allocation
+
+  // reused buffer to build lookup keys without per-request allocation
+  RawChars _cacheKeyScratch;
+
   // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are
   // never live at once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy
   // CONNECT line); once it is fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target
@@ -311,6 +325,7 @@ class HttpClient {
   // without pinning two high-water allocations after a large-to-small response transition. Exposed through the
   // requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
   RawChars _reqBodyScratch;
+
   // HTTP/1.1 raw receive bytes or the HTTP/2 DATA accumulator. A suitably-sized HTTP/1.1 identity-body suffix or
   // assembled HTTP/2 body rotates into the response with an equal-capacity replacement; oversized scratch stays
   // reusable.

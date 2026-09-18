@@ -153,6 +153,55 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevNeedsRetry) {
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
+TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevReturnsZero) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  const int readFd = fds[0];
+  const int writeFd = fds[1];
+
+  BaseFd readFdGuard(readFd);
+  BaseFd writeFdGuard(writeFd);
+
+  // POSIX/Winsock don't define writev()/WSASend() returning 0 for a non-empty
+  // request as a normal "would block" outcome (that's -1/EAGAIN instead), but
+  // the implementation guards against it defensively. Locks in that the guard
+  // returns immediately rather than re-issuing writev() forever: only one
+  // action is registered, so a regression that removes the early return would
+  // make this test fail loudly instead of hanging.
+  test::SetWritevActions(writeFd, {IoAction{0, 0}});
+
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  std::string_view head("HEAD");
+  std::string_view body("BODY-BODY");
+
+  auto res = transport.write(head, body);
+  EXPECT_EQ(res.bytesProcessed, 0U);
+  // Current implementation leaves `want` at its default (None) in this branch.
+  EXPECT_EQ(res.want, TransportHint::None);
+}
+
+TEST(PlainTransport, GatherWriteReturnsEarlyOnZeroWriteAfterPartialBatch) {
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  const int readFd = fds[0];
+  const int writeFd = fds[1];
+
+  BaseFd readFdGuard(readFd);
+  BaseFd writeFdGuard(writeFd);
+
+  // First writev call reports a partial write (6 of 12 bytes), second returns 0.
+  // Verifies bytesProcessed accumulated from the partial write is preserved,
+  // and that the 0-return does not trigger another writev call.
+  test::SetWritevActions(writeFd, {IoAction{6, 0}, IoAction{0, 0}});
+
+  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
+
+  const auto result = transport.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(result.bytesProcessed, 6U);
+  EXPECT_EQ(result.want, TransportHint::None);
+}
+
 TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
   int fds[2];
   ASSERT_EQ(pipe(fds), 0);

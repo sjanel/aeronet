@@ -401,3 +401,16 @@ TEST(TimerFdTest, DrainHandlesNonEagainError) {
   test::SetReadActions(fakeFd, {{-1, EBADF}});
   timer.drain();
 }
+
+TEST(TimerFdTest, DrainSuccess) {
+  TimerfdOverrideGuard guard;
+
+  const int fakeFd = test::CreateMemfd("aeronet-timerfd-drain-err");
+  ASSERT_GE(fakeFd, 0);
+
+  gTimerfd.pushCreateAction(CreateReturnFd(fakeFd));
+  gTimerfd.setSettimeActions(fakeFd, {SettimeSuccess()});
+
+  TimerFd timer;
+  timer.drain();
+}

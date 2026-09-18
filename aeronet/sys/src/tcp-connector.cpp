@@ -1,10 +1,5 @@
 #include "aeronet/tcp-connector.hpp"
 
-#include <type_traits>
-
-#include "aeronet/safe-cast.hpp"
-#include "aeronet/temp-const-char-string.hpp"
-
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
@@ -13,6 +8,8 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -28,9 +25,11 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
-#include "aeronet/socket-ops.hpp"  // GetSocketError (and SetNonBlocking / SetCloseOnExec off-Linux)
+#include "aeronet/safe-cast.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/temp-const-char-string.hpp"
 
 namespace aeronet {
 
@@ -42,16 +41,14 @@ enum class ConnectWait : uint8_t { Connected, Failed, TimedOut };
 // Block until a pending non-blocking connect on `fd` completes, fails, or the deadline elapses.
 // SO_ERROR disambiguates a writable-but-refused socket (POLLOUT is also raised on connect failure).
 ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock::time_point deadline) {
-  for (;;) {
+  while (true) {
     const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
+    const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    if (remainingMs < 1) {
       return ConnectWait::TimedOut;
     }
-    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
     const int timeoutMs =
-        remaining > static_cast<std::remove_const_t<decltype(remaining)>>(std::numeric_limits<int>::max())
-            ? std::numeric_limits<int>::max()
-            : static_cast<int>(remaining);
+        static_cast<int>(std::min<decltype(remainingMs)>(std::numeric_limits<int>::max(), remainingMs));
 #ifdef AERONET_WINDOWS
     WSAPOLLFD pfd{};
     pfd.fd = fd;
@@ -151,23 +148,28 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
         [[fallthrough]];
       case error::kInProgress:
         [[fallthrough]];
-      case error::kAlready:
+      case error::kAlready: {
         // EALREADY: a previous non-blocking connect is already in progress on this socket
         if (!blockingFallback) {
           connectResult.connectPending = true;
           return connectResult;  // caller drives completion via its own event loop
         }
-        switch (WaitForConnectCompletion(connectResult.cnx.fd(), deadline)) {
+        const auto connectWait = WaitForConnectCompletion(connectResult.cnx.fd(), deadline);
+        switch (connectWait) {
           case ConnectWait::Connected:
             return connectResult;  // connectPending stays false: socket is established
-          case ConnectWait::Failed:
-            continue;  // close this socket (reassigned next iteration) and try the next candidate
           case ConnectWait::TimedOut:
+            log::error("ConnectTCP: connect() timed out for addrinfo entry (family={}, socktype={}, protocol={})",
+                       rp->ai_family, rp->ai_socktype, rp->ai_protocol);
             connectResult.cnx = {};
             connectResult.failure = true;
             return connectResult;
+          default:
+            assert(connectWait == ConnectWait::Failed);
+            continue;  // close this socket (reassigned next iteration) and
+                       // try the next candidate
         }
-        break;
+      }
       case error::kInterrupted:
         // Interrupted system call; treat as transient and try next address
         continue;
@@ -179,6 +181,7 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
     }
   }
   // No candidate connected: never hand back a half-open / last-attempted socket on failure.
+  log::error("ConnectTCP: failed to connect to any addrinfo entry");
   connectResult.cnx = {};
   connectResult.failure = true;
   return connectResult;

@@ -66,13 +66,18 @@ namespace aeronet {
 
 namespace {
 
-// Fixed, short poll interval so the synchronous driver re-checks its deadline promptly.
-constexpr EventLoop CreateEventLoop() {
+// Fixed, short poll interval so the synchronous driver re-checks its deadline promptly, unless the request timeout is
+// really small, in which case it will be based on it clamped to a minimum of 1ms.
+PollTimeoutPolicy CreatePollTimeoutPolicy(HttpClientConfig::Duration connectTimeout,
+                                          HttpClientConfig::Duration requestTimeout) {
   PollTimeoutPolicy policy;
-  policy.baseTimeout = std::chrono::milliseconds{25};
+  const auto smallestDeadline = std::min(connectTimeout, requestTimeout);
+  // A few checks against the deadline before it expires, capped so typical (multi-second) timeouts still
+  // get the old 25ms granularity, floored so a pathologically tight timeout can't cause a busy-spin at 0ms.
+  policy.baseTimeout = std::clamp(smallestDeadline / 4, std::chrono::milliseconds{1}, std::chrono::milliseconds{25});
   policy.minFactor = 1.0F;
   policy.maxFactor = 1.0F;
-  return EventLoop{std::move(policy)};
+  return policy;
 }
 
 constexpr bool IsRedirect(http::StatusCode code) noexcept {
@@ -86,7 +91,7 @@ constexpr bool IsRedirect(http::StatusCode code) noexcept {
 // intentionally not parsed here) so the caller can distinguish it from a legitimate "Retry-After: 0" and
 // fall back to the computed backoff.
 RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Duration cap) noexcept {
-  uint64_t seconds = 0;
+  uint64_t seconds;
   const char* end = value.data() + value.size();
   // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   const auto [ptr, ec] = std::from_chars(value.data(), end, seconds);
@@ -99,57 +104,54 @@ RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Durat
 
 // Interpret the status line of a proxy CONNECT response ("HTTP/1.x <code> <reason>"). A 2xx code means the
 // tunnel is open; anything else (or a line we cannot parse a status code out of) is a proxy failure.
-std::expected<void, HttpClientErrc> CheckProxyTunnelStatus(std::string_view statusLine) {
-  const auto sp = statusLine.find(' ');
+HttpClientErrc CheckProxyTunnelStatus(std::string_view statusLine) {
+  auto sp = statusLine.find(' ');
   if (sp == std::string_view::npos) {
-    return std::unexpected(HttpClientErrc::proxyError);
+    return HttpClientErrc::proxyError;
   }
-  const std::string_view rest = statusLine.substr(sp + 1);
-  uint32_t code = 0;
-  const auto [ptr, ec] = std::from_chars(rest.data(), rest.data() + rest.size(), code);
-  if (ec != std::errc{} || code < 200 || code >= 300) {
-    return std::unexpected(HttpClientErrc::proxyError);
+  uint32_t code;
+  const auto pBeg = statusLine.data() + sp + 1;
+  if (pBeg + http::StatusCodeLen >= statusLine.data() + statusLine.size() || pBeg[http::StatusCodeLen] != ' ') {
+    return HttpClientErrc::proxyError;
   }
-  return {};
+  const auto pEnd = pBeg + http::StatusCodeLen;
+  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+  const auto [ptr, ec] = std::from_chars(pBeg, pEnd, code);
+  if (ec != std::errc{} || ptr != pEnd || code < 200 || code >= 300) {
+    return HttpClientErrc::proxyError;
+  }
+  return HttpClientErrc::noError;
 }
 
-}  // namespace
-
-HttpClient::HttpClient(HttpClientConfig config)
-    : _config(std::move(config)),
-      _loop(CreateEventLoop()),
-      _codec(_config.requestCompression.codec),
-      _telemetry(_config.telemetry) {
-  // Fail fast on inconsistent configuration (mirrors the server's validate-on-construct policy): timeouts,
-  // HTTP version selection (Http2 requires a build with AERONET_ENABLE_HTTP2) and HTTP/2 settings.
-  _config.validate();
-
+void FinalizeConfig(HttpClientConfig& config) {
   // Bake the resolved default Accept-Encoding into the per-request global headers so every request the
   // client builds advertises it (a per-request Accept-Encoding header still overrides it, since header()
   // replaces the first occurrence). An explicit defaultAcceptEncoding() wins; otherwise, when response
   // decompression is enabled, advertise exactly what this build can decode so origins know they may compress
   // (and the response is transparently decoded). Nothing is injected when neither applies.
-  {
-    std::string_view acceptEncoding = _config.defaultAcceptEncoding();
-    if (acceptEncoding.empty() && _config.decompression.enable) {
-      acceptEncoding = internal::kSupportedAcceptEncoding;
-    }
-    if (!acceptEncoding.empty() && std::ranges::none_of(_config.globalHeaders, [](std::string_view part) {
-          const auto colon = part.find(':');
-          assert(colon != std::string_view::npos);  // validated in config.validate() above
-          return CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
-        })) {
-      RawChars line(http::AcceptEncoding.size() + http::HeaderSep.size() + acceptEncoding.size());
-      line.unchecked_append(http::AcceptEncoding);
-      line.unchecked_append(http::HeaderSep);
-      line.unchecked_append(acceptEncoding);
-      _config.globalHeaders.append(line);
-    }
+  std::string_view acceptEncoding = config.defaultAcceptEncoding();
+  if (acceptEncoding.empty() && config.decompression.enable) {
+    acceptEncoding = internal::kSupportedAcceptEncoding;
   }
+  if (!acceptEncoding.empty() && std::ranges::none_of(config.globalHeaders, [](std::string_view part) {
+        const auto colon = part.find(':');
+        assert(colon != std::string_view::npos);  // validated in config.validate() above
+        return CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
+      })) {
+    RawChars line(http::AcceptEncoding.size() + http::HeaderSep.size() + acceptEncoding.size());
+    line.unchecked_append(http::AcceptEncoding);
+    line.unchecked_append(http::HeaderSep);
+    line.unchecked_append(acceptEncoding);
+    config.globalHeaders.append(line);
+  }
+}
+
+internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
   // throws here deterministically rather than failing every request. Only cleartext (http) proxies are
   // supported. _proxyHost keeps a spare trailing byte for ConnectTCP's transient null-termination.
-  if (_config.hasProxy()) {
-    std::string_view proxyUrl = _config.proxyUrl();
+  internal::UrlParseResult res;
+  std::string_view proxyUrl = config.proxyUrl();
+  if (!proxyUrl.empty()) {
     const auto schemeEnd = proxyUrl.find("://");
     std::string_view scheme = (schemeEnd == std::string_view::npos) ? "http" : proxyUrl.substr(0, schemeEnd);
     if (!CaseInsensitiveEqual(scheme, "http")) {
@@ -159,13 +161,56 @@ HttpClient::HttpClient(HttpClientConfig config)
       proxyUrl = proxyUrl.substr(schemeEnd + 3);
     }
 
-    internal::UrlParseResult res;
     internal::ParseAuthority(proxyUrl, res);
-
-    _proxyHost = res.host;
-    _proxyPort = res.port;
   }
+  return res;
 }
+
+}  // namespace
+
+HttpClient::HttpClient()
+    : _loop(CreatePollTimeoutPolicy(_config.connectTimeout, _config.requestTimeout)),
+      _codec(_config.requestCompression.codec),
+      _telemetry(_config.telemetry) {
+#ifndef NDEBUG
+  _config.validate();  // default constructed HttpClientConfig should never throw on validate.
+#endif
+  FinalizeConfig(_config);
+
+  const auto proxyRes = FinalizeProxyUrl(_config);
+  _proxyHost = proxyRes.host;
+  _proxyPort = proxyRes.port;
+}
+
+HttpClient::HttpClient(HttpClientConfig config)
+    : _config(std::move(config)),
+      _loop(CreatePollTimeoutPolicy(_config.connectTimeout, _config.requestTimeout)),
+      _codec(_config.requestCompression.codec),
+      _telemetry(_config.telemetry) {
+  // Fail fast on inconsistent configuration (mirrors the server's validate-on-construct policy): timeouts,
+  // HTTP version selection (Http2 requires a build with AERONET_ENABLE_HTTP2) and HTTP/2 settings.
+  _config.validate();
+
+  FinalizeConfig(_config);
+
+  const auto proxyRes = FinalizeProxyUrl(_config);
+  _proxyHost = proxyRes.host;
+  _proxyPort = proxyRes.port;
+}
+
+HttpClient::HttpClient(const HttpClient& rhs) : HttpClient(rhs._config) {
+  _codec.compressionState.pCompressionConfig = &_config.requestCompression.codec;
+}
+
+HttpClient& HttpClient::operator=(const HttpClient& rhs) {
+  if (&rhs != this) {
+    *this = HttpClient(rhs._config);
+    _codec.compressionState.pCompressionConfig = &_config.requestCompression.codec;
+  }
+  return *this;
+}
+
+HttpClient::~HttpClient() = default;
 
 HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   maybeCompressBody(req);
@@ -335,9 +380,9 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
   if (proxied && isTls) {
     Transport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
-    if (auto tunnel = establishProxyTunnel(tunnelTransport, fd, req); !tunnel) {
+    if (auto err = establishProxyTunnel(tunnelTransport, fd, req); err != HttpClientErrc::noError) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
-      return std::unexpected(tunnel.error());
+      return std::unexpected(err);
     }
   }
 #ifdef AERONET_ENABLE_OPENSSL
@@ -352,8 +397,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   return conn;
 }
 
-std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& transport, NativeHandle fd,
-                                                                     const HttpRequest& req) {
+HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHandle fd, const HttpRequest& req) {
   static constexpr std::string_view kConnect = "CONNECT ";
   static constexpr std::string_view kConnectMid = " HTTP/1.1\r\nHost: ";  // between request-target and Host value
 
@@ -386,6 +430,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& 
   pData = AppendFixed<kConnectMid>(pData);
   pData = appendAuthority(pData);
   pData = AppendFixed<http::DoubleCRLF>(pData);
+
   reqBuffer.setEnd(pData);
 
   // Write the CONNECT request in full, pumping the event loop on would-block.
@@ -398,11 +443,11 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& 
       break;
     }
     if (wr.want == TransportHint::Error) {
-      return std::unexpected(HttpClientErrc::proxyError);
+      return HttpClientErrc::proxyError;
     }
     const EventBmp interest = (wr.want == TransportHint::ReadReady) ? EventIn : EventOut;
     if (!waitIo(fd, interest, deadline)) {
-      return std::unexpected(HttpClientErrc::timeout);
+      return HttpClientErrc::timeout;
     }
   }
 
@@ -419,7 +464,7 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& 
       return CheckProxyTunnelStatus(view.substr(0, view.find(http::CRLF)));
     }
     if (respBuffer.size() >= kMaxTunnelResponse) {
-      return std::unexpected(HttpClientErrc::proxyError);
+      return HttpClientErrc::proxyError;
     }
     respBuffer.ensureAvailableCapacityExponential(kReadChunk);
     const TransportResult rd = transport.read(respBuffer.data() + respBuffer.size(), kReadChunk);
@@ -429,18 +474,18 @@ std::expected<void, HttpClientErrc> HttpClient::establishProxyTunnel(Transport& 
     }
     if (rd.want == TransportHint::ReadReady) {
       if (!waitIo(fd, EventIn, deadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
+        return HttpClientErrc::timeout;
       }
       continue;
     }
     if (rd.want == TransportHint::WriteReady) {
       if (!waitIo(fd, EventOut, deadline)) {
-        return std::unexpected(HttpClientErrc::timeout);
+        return HttpClientErrc::timeout;
       }
       continue;
     }
     // 0 bytes and no want => the proxy closed before completing the tunnel handshake.
-    return std::unexpected(HttpClientErrc::proxyError);
+    return HttpClientErrc::proxyError;
   }
 }
 
@@ -495,8 +540,7 @@ void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& co
   bucket.emplace_back(std::move(conn));
 }
 
-std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& conn, bool isTls,
-                                                              SteadyClock::time_point deadline) {
+HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, bool isTls, SteadyClock::time_point deadline) {
   const NativeHandle fd = conn.cnx.fd();
   // The TCP connect (including multi-address fallback) is already complete here: connectNew() resolves it
   // synchronously via ConnectTCP's blocking fallback. Only the TLS handshake remains.
@@ -507,11 +551,11 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
       break;
     }
     if (transportRes.want == TransportHint::Error) {
-      return std::unexpected(HttpClientErrc::tlsError);
+      return HttpClientErrc::tlsError;
     }
     const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
     if (!waitIo(fd, interest, deadline)) {
-      return std::unexpected(HttpClientErrc::timeout);
+      return HttpClientErrc::timeout;
     }
   }
   // This is the single point where conn.protocol is decided for a fresh connection; a reused pooled
@@ -527,39 +571,45 @@ std::expected<void, HttpClientErrc> HttpClient::finishConnect(ActiveConnection& 
     if (alpn != nullptr && alpnLen != 0) {
       conn.protocol = ClientProtocolFromAlpnId(std::string_view(reinterpret_cast<const char*>(alpn), alpnLen));
     }
+#ifdef AERONET_ENABLE_HTTP2
     if (_config.httpVersion == HttpVersionMode::Http2 && conn.protocol != ClientProtocol::Http2) {
       log::error("HTTP/2 required but the origin did not select ALPN \"h2\"");
-      return std::unexpected(HttpClientErrc::protocolUnsupported);
+      return HttpClientErrc::protocolUnsupported;
     }
+#endif
   }
 #endif
+#ifdef AERONET_ENABLE_HTTP2
   // Plain http with HTTP/2 required: speak h2c with prior knowledge (RFC 9113 §3.4) -- the client sends
   // its connection preface directly. Auto stays HTTP/1.1 on cleartext (the Upgrade dance is deprecated).
   if (!isTls && _config.httpVersion == HttpVersionMode::Http2) {
     conn.protocol = ClientProtocol::Http2;
   }
-  return {};
+#endif
+  return HttpClientErrc::noError;
 }
 
-std::expected<void, HttpClientErrc> HttpClient::ensureProtocolHandler(ActiveConnection& conn) const {
+HttpClientErrc HttpClient::ensureProtocolHandler(ActiveConnection& conn) const {
   if (!conn.proto.empty()) {
-    return {};  // reused from the pool: the protocol engine (and any per-connection state) travels with it
+    // reused from the pool: the protocol engine (and any per-connection state) travels with it
+    return HttpClientErrc::noError;
   }
   switch (conn.protocol) {
-    case ClientProtocol::Http2:
-#ifdef AERONET_ENABLE_HTTP2
-      conn.proto = internal::ClientConnection(_config);
-      return {};
-#else
-      // Unreachable in practice: without HTTP/2 support "h2" is never advertised (so ALPN cannot select
-      // it) and HttpVersionMode::Http2 is rejected at construction. Kept as a defensive guard.
-      return std::unexpected(HttpClientErrc::protocolUnsupported);
-#endif
     case ClientProtocol::Http1_1:
       break;
+#ifdef AERONET_ENABLE_HTTP2
+    case ClientProtocol::Http2:
+      conn.proto = internal::ClientConnection(_config);
+      return HttpClientErrc::noError;
+#else
+    // Unreachable in practice: without HTTP/2 support "h2" is never advertised (so ALPN cannot select
+    // it) and HttpVersionMode::Http2 is rejected at construction. Kept as a defensive guard.
+    default:
+      return HttpClientErrc::protocolUnsupported;
+#endif
   }
   conn.proto = internal::ClientConnection(internal::ClientConnection::Type::Http11);
-  return {};
+  return HttpClientErrc::noError;
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -603,15 +653,25 @@ HttpRequest::Options HttpClient::makeRequestOptions() noexcept {
   return opts;
 }
 
+namespace {
+
+[[nodiscard]] constexpr std::expected<void, HttpClientErrc> check(HttpClientErrc ec) noexcept {
+  if (ec == HttpClientErrc::noError) {
+    return {};
+  }
+  return std::unexpected(ec);
+}
+
+}  // namespace
+
 HttpClientResult HttpClient::performExchange(HttpRequest& req) {
   const RetryConfig& retry = _config.retry;
-  const uint32_t maxAttempts = retry.maxAttempts < 1U ? 1U : retry.maxAttempts;
   uint32_t attempt = 0;  // backoff retries already consumed (0-based index of the next one)
 
   // Whether the backoff budget still allows one more retry.
-  const auto canBackoff = [&] { return attempt + 1U < maxAttempts; };
+  const auto canBackoff = [&attempt, maxAttempts = retry.maxAttempts] { return attempt + 1U < maxAttempts; };
   // Sleep `delay` (a zero delay -- e.g. "Retry-After: 0" -- means retry immediately) and consume one slot.
-  const auto sleepBackoff = [&](RetryConfig::Duration delay) {
+  const auto sleepBackoff = [this, &attempt](RetryConfig::Duration delay) {
     if (delay > RetryConfig::Duration::zero()) {
       std::this_thread::sleep_for(delay);
     }
@@ -647,14 +707,14 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
     // it the connection. `requestSent` flips to true as soon as any request byte is written, even when the
     // exchange later returns an error. Any step short-circuits to its HttpClientErrc.
     HttpClientResult result =
-        finishConnect(conn, req.isTlsRequest(), connectDeadline)
-            .and_then([&] { return ensureProtocolHandler(conn); })
+        check(finishConnect(conn, req.isTlsRequest(), connectDeadline))
+            .and_then([&] { return check(ensureProtocolHandler(conn)); })
             .and_then([&] { return conn.proto.exchange(*this, conn.transport, fd, req, ioDeadline, requestSent); });
 
     if (result) {
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
       // a delta-seconds Retry-After when present) and try again, discarding this response.
-      if (canBackoff() && std::ranges::find(retry.retryStatuses, result->status()) != retry.retryStatuses.end()) {
+      if (canBackoff() && retry.retryStatuses.contains(result->status())) {
         RetryConfig::Duration delay = computedBackoff();
         if (retry.honorRetryAfter) {
           const RetryConfig::Duration ra =

@@ -49,8 +49,11 @@ class HttpClientConfig {
  public:
   using Duration = std::chrono::milliseconds;
 
+  void validate() const;
+
   // Maximum time to establish a TCP connection (and, for https, complete the TLS handshake).
   Duration connectTimeout{std::chrono::seconds{10}};
+
   // Maximum time for a single request/response exchange once connected (excludes connect time).
   Duration requestTimeout{std::chrono::seconds{30}};
 
@@ -60,6 +63,9 @@ class HttpClientConfig {
   Duration keepAliveTimeout{std::chrono::seconds{30}};
 
   // Hard cap on the total response size (headers + decoded body) accepted before aborting.
+  // For HTTP/1.1, all the bytes of the response (including headers and body) count towards this limit.
+  // For HTTP/2, all header bytes (including pseudo-headers) and the decoded body count towards this limit.
+  // Must be > 0.
   std::size_t maxResponseBytes{64UL * 1024UL * 1024UL};
 
   // Maximum number of automatic redirections performed.
@@ -108,9 +114,11 @@ class HttpClientConfig {
     // Time-to-live of a cached response: an entry at least this old is refetched on the next request. 0
     // disables the cache; Duration::max() never expires an entry.
     Duration refreshPeriod{Duration::zero()};
+
     // Hard cap on the number of cached entries (memory guard). When inserting into a full cache, expired
     // entries are pruned first, then -- if still full -- the least-recently-refreshed entry is evicted.
     std::uint32_t maxEntries{1024};
+
     // Request methods eligible for caching. Must be a subset of the safe methods (GET / HEAD / OPTIONS):
     // caching an unsafe or non-idempotent method's response is nonsensical and is rejected by validate().
     http::MethodBmp methods{http::Method::GET | http::Method::HEAD};
@@ -183,8 +191,6 @@ class HttpClientConfig {
 
   // Telemetry configuration (OpenTelemetry tracing + DogStatsD metrics)
   TelemetryConfig telemetry;
-
-  void validate() const;
 
   HttpClientConfig& addGlobalHeader(const http::Header& header) {
     globalHeaders.appendAsHttp1Header(header.name(), header.value());

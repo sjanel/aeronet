@@ -14,6 +14,8 @@ All notable changes to aeronet are documented in this file.
 - **DecompressionConfig.maxExpansionRatio** default value changed from `0.0` to `1000.0`, and `0` does not have special **unlimited** meaning anymore.
 - **DecompressionConfig.streamingDecompressionThresholdBytes**'s `0` value is not special anymore (previous meaning was "always use aggregated mode"). So a value of `0` will now use streaming decompression for all bodies.
 - **HttpServerConfig.zerocopyMinBytes** cannot be `0` anymore. The recommended value is to be `10KB` at minimum anyway when used.
+- **RetryConfig.retryStatuses** is now a `std::set` like container instead of a `std::vector` like container.
+- **HttpClientConfig stricter validation**: timeouts, retry config and other fields now check at validation time silly values, and will throw `std::invalid_argument` in case of incorrect config.
 
 ## Bug Fixes
 
@@ -29,6 +31,7 @@ All notable changes to aeronet are documented in this file.
 - **Throwing an exception in a streaming handler now returns HTTP error 500**: it was previously correctly caught, but the user HTTP response was returned silently instead.
 - **Streaming handlers can no longer be called for HTTP/1.0 queries**: only HTTP/1.1 requests streaming handlers can be called (and HTTP/2 of course).
 - **Added missing header name and value validation of a HTTP/1.1 response in the client**
+- **HttpClientConfig.maxResponseBytes now count header bytes as well**: it was counting only the body bytes.
 
 ## Improvements
 
@@ -53,6 +56,8 @@ All notable changes to aeronet are documented in this file.
 - **Added client configurable chunk size HttpClientConfig.minReadChunkBytes**: with default value 16KB, which was the default hardcoded value.
 - **Decreased Http2Connection size from 728 to 524 bytes** by replacing several `std::function` based callbacks into a unique sink object.
 - **Removed a copy in the HttpClient for HTTP/2 send file**: file content is now directly loaded into the data frame without scratch buffer.
+- **HttpClient is now copy-constructible and copy-assignable**: it simply duplicates the client from the other client's configuration.
+- **For requests timeouts of less than 25ms, HttpClient poll timeout will be adjusted to a much lower value than 25ms**. It was previously hardcoded to 25ms.
 
 ## Others
 
@@ -60,7 +65,7 @@ All notable changes to aeronet are documented in this file.
 - **Clean-up glaze adapters**: instead of centralizing all glaze adapters in one file far from the objects definitions, move each object glaze adapter code into its own object header file.
 - **Fix test expectations in aeronet client when no compression library is available**.
 - **Removed zstd.h and brotli/encode.h includes from .hpp internal header files**
-- **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-DAERONET_ENABLE_HTTP_SERVER=OFF` to disable server specific code. The code may not be optimally excluded yet.
+- **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-DAERONET_ENABLE_HTTP_SERVER=OFF` to disable compilation of server specific code. The code may not be optimally excluded yet.
 - **Bumped glaze version from 8.1.0 to 8.3.0**
 - **Bumped opentelemetry version from 1.28.0 to 1.29.0**
 
