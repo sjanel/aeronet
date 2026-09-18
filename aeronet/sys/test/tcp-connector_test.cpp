@@ -380,18 +380,14 @@ int poll(struct pollfd* _fds, nfds_t _nfds, int _timeout) {
 }
 
 #ifdef __GLIBC__
-// Ubuntu's gcc packages enable _FORTIFY_SOURCE by default whenever any
-// optimization is requested (-O1+), even without the build asking for it.
-// That can turn a `poll(fds, nfds, timeout)` call site with a compile-time-
-// known fds array size into a call to the internal __poll_chk symbol
-// instead of plain `poll`, silently bypassing the override above in
-// optimized builds (confirmed: this is exactly what was happening on the
-// Ubuntu x86_64 Release+gcc CI leg - our poll() hook was never being
-// reached at all there). Intercept it too and funnel it through the same
-// mock. `fds` here is a plain pointer parameter, not a locally-sized array,
-// so glibc's fortify wrapper can't determine an object size for it and the
-// call below falls through to the plain, unchecked path rather than
-// recursing back into __poll_chk.
+// Ubuntu's gcc packages enable _FORTIFY_SOURCE by default whenever any optimization is requested (-O1+), even without
+// the build asking for it. That can turn a `poll(fds, nfds, timeout)` call site with a compile-time- known fds array
+// size into a call to the internal __poll_chk symbol instead of plain `poll`, silently bypassing the override above in
+// optimized builds (confirmed: this is exactly what was happening on the Ubuntu x86_64 Release+gcc CI leg - our poll()
+// hook was never being reached at all there). Intercept it too and funnel it through the same mock. `fds` here is a
+// plain pointer parameter, not a locally-sized array, so glibc's fortify wrapper can't determine an object size for it
+// and the call below falls through to the plain, unchecked path rather than recursing back into __poll_chk.
+// NOLINTNEXTLINE(bugprone-reserved-identifier)
 extern "C" __attribute__((no_sanitize("address"))) int __poll_chk(struct pollfd* fds, nfds_t nfds, int timeout,
                                                                   size_t /*fdslen*/) {
   return poll(fds, nfds, timeout);
