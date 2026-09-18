@@ -114,11 +114,7 @@ struct HeaderSearchResult {
 // flatHeaders is supposed to contain a valid (well-formed) flat array of header lines, with http::HeaderSep as key
 // value separator, and http::CRLF as line separator. Returns {nullptr, nullptr} if the header is not found, or a value
 // {valueFirst, valueLast} (may be empty) otherwise.
-constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
-  if (key.empty()) {
-    return {};
-  }
-
+constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, LowerAsciiKey key) noexcept {
   const auto* pEnd = flatHeaders.data() + flatHeaders.size();
   for (std::size_t headerNamePos = 0; headerNamePos < flatHeaders.size();) {
     if (flatHeaders.substr(headerNamePos).starts_with(key) &&
@@ -142,8 +138,8 @@ constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, s
 // flatHeaders should start at the start of the first header, without any leading CRLF.
 // flatHeaders should end immediately after the last header CRLF.
 // Returns {nullptr, nullptr} if the header is not found, or a value {valueFirst, valueLast} (may be empty) otherwise.
-constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHeaders, std::string_view key) noexcept {
-  if (key.empty() || flatHeaders.empty()) {
+constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHeaders, LowerAsciiKey key) noexcept {
+  if (flatHeaders.empty()) {
     return {};
   }
 
@@ -559,15 +555,12 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     headerAddLineImpl(key, value);
     return;
   }
+  // TODO: validate value and sep
 
   value = TrimOws(value);
 
   const std::size_t extraLen = sep.size() + value.size();
-  if (extraLen == 0) {
-    return;
-  }
-
-  const auto insertOffset = static_cast<std::size_t>(last - _data.data());
+  const std::size_t insertOffset = static_cast<std::size_t>(last - _data.data());
   const std::size_t tailLen = _data.size() - insertOffset;
 
   _data.ensureAvailableCapacityExponential(extraLen);
@@ -930,13 +923,9 @@ char* HttpMessage::addContentTypeAndContentLengthHeaders(std::string_view conten
   char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
 
   pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
-
   pData = Append(contentType, pData);
-
   pData = AppendFixed<http::CRLFContentLengthHeaderSep>(pData);
-
   pData = WriteUInt(pData, bodySize, nbDigitsBodySize);
-
   pData = AppendFixed<http::DoubleCRLF>(pData);
 
   const auto bodyStart = static_cast<std::uint64_t>(pData - _data.data());

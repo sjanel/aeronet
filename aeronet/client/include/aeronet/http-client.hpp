@@ -315,15 +315,15 @@ class HttpClient {
   // reused buffer to build lookup keys without per-request allocation
   RawChars _cacheKeyScratch;
 
-  // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are
-  // never live at once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy
-  // CONNECT line); once it is fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target
-  // (borrowed by Http1ResponseParser, which clears it in reset()). Kept distinct from _responseBuffer because
-  // chunked de-framing reads from that receive buffer while writing into this one. HTTP/2 only uses the
-  // phase-1 role. On body completion, a suitably-sized allocation moves into the response and gets an equal-capacity
-  // replacement; an oversized scratch is retained and the smaller body copied. This preserves steady-state reuse
-  // without pinning two high-water allocations after a large-to-small response transition. Exposed through the
-  // requestBuffer() / bodyBuffer() accessors, whose names document the two roles.
+  // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are never live at
+  // once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy CONNECT line); once it is
+  // fully written, phase 2 reuses it as the HTTP/1.1 chunked de-framing target (borrowed by Http1ResponseParser, which
+  // clears it in reset()). Kept distinct from _responseBuffer because chunked de-framing reads from that receive buffer
+  // while writing into this one. HTTP/2 only uses the phase-1 role. On body completion, a suitably-sized allocation
+  // moves into the response and gets an equal-capacity replacement; an oversized scratch is retained and the smaller
+  // body copied. This preserves steady-state reuse without pinning two high-water allocations after a large-to-small
+  // response transition. Exposed through the requestBuffer() / bodyBuffer() accessors, whose names document the two
+  // roles.
   RawChars _reqBodyScratch;
 
   // HTTP/1.1 raw receive bytes or the HTTP/2 DATA accumulator. A suitably-sized HTTP/1.1 identity-body suffix or

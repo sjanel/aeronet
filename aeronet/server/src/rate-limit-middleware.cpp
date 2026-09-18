@@ -3,7 +3,6 @@
 #include <cassert>
 #include <chrono>
 #include <memory>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -48,10 +47,6 @@ RequestMiddleware BuildRateLimitMiddleware(RateLimitRequestMiddlewareBuilder opt
 
   if (!options.store) {
     options.store = std::make_shared<InMemoryTokenBucketRateLimitStore>(options.config.nbShards);
-  }
-
-  if (options.keyStrategy == RateLimitClientKeyStrategy::HeaderValue && options.headerName.empty()) {
-    throw std::invalid_argument("RateLimitRequestMiddlewareBuilder.headerName must be set for HeaderValue strategy");
   }
 
   return [opts = std::move(options)](HttpRequestView& request) mutable {

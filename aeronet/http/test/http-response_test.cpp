@@ -628,31 +628,20 @@ TEST_F(HttpResponseTest, StatusReasonAndBodySimple) {
 // HEADERS TESTS
 // =============================================================================
 
-TEST_F(HttpResponseTest, EmptyHeaderSearchShouldReturnNullopt) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("x-test", "value");
-  auto val = resp.headerValue("");
-  EXPECT_FALSE(val.has_value());
-}
-
 TEST_F(HttpResponseTest, InsertingInvalidHeaderNameShouldThrow) {
   HttpResponse resp(http::StatusCodeOK);
   EXPECT_THROW(resp.headerAddLine("invalid header", "value"), std::invalid_argument);
   EXPECT_THROW(resp.headerAddLine("another:invalid", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAddLine("", "value"), std::invalid_argument);
 
   EXPECT_THROW(resp.headerAppendValue("invalid header", "value"), std::invalid_argument);
   EXPECT_THROW(resp.headerAppendValue("another:invalid", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.headerAppendValue("", "value"), std::invalid_argument);
 
   resp.body("some body");
   EXPECT_THROW(resp.trailerAddLine("invalid trailer", "value"), std::invalid_argument);
   EXPECT_THROW(resp.trailerAddLine("another:invalid", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.trailerAddLine("", "value"), std::invalid_argument);
 
   EXPECT_THROW(resp.header("invalid header", "value"), std::invalid_argument);
   EXPECT_THROW(resp.header("another:invalid", "value"), std::invalid_argument);
-  EXPECT_THROW(resp.header("", "value"), std::invalid_argument);
 }
 
 TEST_F(HttpResponseTest, InsertingInvalidHeaderValueShouldThrow) {
@@ -832,16 +821,6 @@ TEST_F(HttpResponseTest, HeaderRemoveLineNotFound) {
   EXPECT_TRUE(resp.hasHeader("x-second"));
   EXPECT_EQ(resp.headerValueOrEmpty("x-first"), "value1");
   EXPECT_EQ(resp.headerValueOrEmpty("x-second"), "value2");
-}
-
-TEST_F(HttpResponseTest, HeaderRemoveLineEmptyName) {
-  HttpResponse resp(http::StatusCodeOK);
-  resp.headerAddLine("x-test", "value");
-
-  resp.headerRemoveLine("");
-
-  EXPECT_TRUE(resp.hasHeader("x-test"));
-  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "value");
 }
 
 TEST_F(HttpResponseTest, HeaderRemoveLineSimple) {
@@ -3862,10 +3841,10 @@ TEST_F(HttpResponseTest, FuzzStructuralValidation) {
       // periodic checks
       EXPECT_EQ(resp.status(), lastStatus);
       EXPECT_EQ(resp.reason(), lastReason);
-      if (lastHeaderKey.empty()) {
-        EXPECT_FALSE(resp.headerValue(LowerAsciiKey{lastHeaderKey}).has_value());
+      if (!lastTrailerKey.empty()) {
+        EXPECT_EQ(resp.trailerValueOrEmpty(LowerAsciiKey{lastTrailerKey}), lastTrailerValue);
       }
-      EXPECT_EQ(resp.trailerValueOrEmpty(LowerAsciiKey{lastTrailerKey}), lastTrailerValue);
+
       if (resp.hasBodyFile()) {
         const auto& file = *resp.file();
         const auto sz = file.size();
