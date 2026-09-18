@@ -756,6 +756,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
 }
 
 bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {
+  // TODO: add a configurable max body size check for cache eligibility ? Because the huge body will be kept in memory.
   return _config.cache.enabled() && http::IsMethodSet(_config.cache.methods, req.method());
 }
 

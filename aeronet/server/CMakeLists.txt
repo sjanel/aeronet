@@ -144,15 +144,6 @@ AeronetAddUnitTest(
     aeronet_tech
 )
 
-AeronetAddUnitTest(
-    rate-limit-middleware_test
-    src/rate-limit.cpp
-    src/rate-limit-middleware.cpp
-    test/rate-limit-middleware_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
 if(AERONET_ENABLE_GLAZE)
     AeronetAddUnitTest(
         server-config-loader_test

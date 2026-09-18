@@ -30,7 +30,9 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/transport-result.hpp"
+#ifdef AERONET_ENABLE_TEST_HOOKS
 #include "aeronet/transport-test-hook.hpp"
+#endif
 #include "aeronet/transport.hpp"
 
 using namespace std::chrono_literals;
@@ -101,38 +103,6 @@ class PausingWriteTransport final : public TransportBackend<PausingWriteTranspor
   Transport _inner;
 };
 
-Transport PauseAcceptedWriteCompletion(Transport transport) {
-  return Transport(std::make_unique<PausingWriteTransport>(std::move(transport)));
-}
-
-bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (flag.load(std::memory_order_acquire)) {
-      return true;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  return false;
-}
-
-bool WaitForSocketData(NativeHandle fd, std::chrono::milliseconds timeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (std::chrono::steady_clock::now() < deadline) {
-    char byte;
-#ifdef AERONET_WINDOWS
-    const auto received = ::recv(fd, &byte, 1, MSG_PEEK);
-#else
-    const auto received = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
-#endif
-    if (received > 0) {
-      return true;
-    }
-    std::this_thread::sleep_for(1ms);
-  }
-  return false;
-}
-
 void AllowConnectHost(test::TestServer& server, std::string_view host) {
   server.postConfigUpdate([host](HttpServerConfig& cfg) {
     const std::array allowlist{host};
@@ -156,6 +126,44 @@ class HttpConnectDefaultConfig : public ::testing::Test {
   test::ClientConnection client{ts.port()};
   NativeHandle fd{client.fd()};
 };
+
+}  // namespace
+
+#ifdef AERONET_ENABLE_TEST_HOOKS
+
+namespace {
+
+bool WaitForSocketData(NativeHandle fd, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    char byte;
+#ifdef AERONET_WINDOWS
+    const auto received = ::recv(fd, &byte, 1, MSG_PEEK);
+#else
+    const auto received = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+#endif
+    if (received > 0) {
+      return true;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return false;
+}
+
+bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (flag.load(std::memory_order_acquire)) {
+      return true;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return false;
+}
+
+Transport PauseAcceptedWriteCompletion(Transport transport) {
+  return Transport(std::make_unique<PausingWriteTransport>(std::move(transport)));
+}
 
 }  // namespace
 
@@ -195,6 +203,32 @@ TEST(HttpConnectTunnelScheduling, ForwardsDataArrivingAsConnectResponseCompletes
   EXPECT_EQ(test::recvWithTimeout(tunnelClient.fd(), 1s, payload.size()), payload);
 }
 
+TEST(HttpConnectTunnelCleanup, ClientTransportReadErrorClosesTunnel) {
+  test::QueueResetGuard readActionsGuard(test::g_read_actions);
+  gPauseNextAcceptedWrite.store(false, std::memory_order_release);
+  gAcceptedFd.store(kInvalidHandle, std::memory_order_release);
+  test::ScopedTransportDecorator decorator(&PauseAcceptedWriteCompletion);
+  test::TestServer server;
+  AllowConnectHost(server, "127.0.0.1");
+  auto echoSrv = test::startEchoServer();
+  test::ClientConnection tunnelClient(server.port());
+
+  const std::string request =
+      "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+  test::sendAll(tunnelClient.fd(), request, 1s);
+  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
+  ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+
+  const NativeHandle serverClientFd = gAcceptedFd.load(std::memory_order_acquire);
+  ASSERT_NE(serverClientFd, kInvalidHandle);
+  test::SetReadActions(serverClientFd, {{-1, ECONNRESET}});
+  test::sendAll(tunnelClient.fd(), "trigger-read-error", 1s);
+
+  EXPECT_TRUE(test::WaitForPeerClose(tunnelClient.fd(), 2s));
+}
+
+#endif  // AERONET_ENABLE_TEST_HOOKS
+
 TEST_F(HttpConnectDefaultConfig, ForwardsTunnelDataCoalescedWithConnectHead) {
   auto echoSrv = test::startEchoServer();
   AllowConnectHost(ts, "127.0.0.1");
@@ -225,30 +259,6 @@ TEST_F(HttpConnectDefaultConfig, CoalescedDataWriteErrorClosesTunnel) {
   const std::string response = test::recvWithTimeout(fd, 1s);
   EXPECT_TRUE(response.empty() || response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
-}
-
-TEST(HttpConnectTunnelCleanup, ClientTransportReadErrorClosesTunnel) {
-  test::QueueResetGuard readActionsGuard(test::g_read_actions);
-  gPauseNextAcceptedWrite.store(false, std::memory_order_release);
-  gAcceptedFd.store(kInvalidHandle, std::memory_order_release);
-  test::ScopedTransportDecorator decorator(&PauseAcceptedWriteCompletion);
-  test::TestServer server;
-  AllowConnectHost(server, "127.0.0.1");
-  auto echoSrv = test::startEchoServer();
-  test::ClientConnection tunnelClient(server.port());
-
-  const std::string request =
-      "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
-  test::sendAll(tunnelClient.fd(), request, 1s);
-  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
-  ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
-
-  const NativeHandle serverClientFd = gAcceptedFd.load(std::memory_order_acquire);
-  ASSERT_NE(serverClientFd, kInvalidHandle);
-  test::SetReadActions(serverClientFd, {{-1, ECONNRESET}});
-  test::sendAll(tunnelClient.fd(), "trigger-read-error", 1s);
-
-  EXPECT_TRUE(test::WaitForPeerClose(tunnelClient.fd(), 2s));
 }
 
 // A large tunnel payload creates natural upstream backpressure and partial writes.
