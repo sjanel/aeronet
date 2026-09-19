@@ -323,6 +323,22 @@ TEST(HttpParserChunkedTrailers, ValidTrailer) {
   ASSERT_TRUE(resp.contains("abc123")) << resp;
 }
 
+TEST(HttpParserChunkedTrailers, ParsedTrailerValuesShouldBeTrimmed) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    auto val = req.trailerValueOrEmpty("x-checksum");
+    return req.makeResponse(val);
+  });
+  std::string req =
+      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+      "4\r\ndata\r\n"
+      "0\r\n"
+      "X-Checksum: \t abc123  \r\n"
+      "\r\n";
+  std::string resp = test::sendAndCollect(port, req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+  EXPECT_TRUE(resp.ends_with("abc123")) << resp;
+}
+
 // NeedMore in trailer parsing: the trailer line arrives without its CRLF.
 TEST(HttpParserChunkedTrailers, NeedMore_PartialTrailerLine) {
   ts.router().setDefault([](const HttpRequestView& req) {

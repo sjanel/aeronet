@@ -1378,14 +1378,16 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   for (; headersFirst != headersLast; ++headersFirst) {
     const auto [name, value] = *headersFirst;
 
-    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
-    // tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec  pads
-    // Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a strict peer
-    // (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values. All header names
-    // should be normalized to lower-case at this step.
+    // All header names should be normalized to lower-case at this step.
     assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
-    // TODO: cannot we sanitize all header / trailer values with TrimOws as well to avoid doing it here?
-    const std::string_view trimmedValue = TrimOws(value);
+
+    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
+    // tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec pads
+    // Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a strict peer
+    // (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
+    assert(value == TrimOws(value) || name == http::ContentLength);
+
+    const std::string_view trimmedValue = TrimTrailingSpaces(value);
     headerListSize += HpackHeaderFieldSize(name, trimmedValue);
     _hpackEncoder.encode(_outputBuffer, name, trimmedValue);
   }

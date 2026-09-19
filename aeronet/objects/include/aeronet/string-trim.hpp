@@ -22,4 +22,17 @@ AERONET_ALWAYS_INLINE constexpr std::string_view TrimOws(std::string_view sv) no
   return {begin, end};
 }
 
+// Only trim trailing spaces (no tabs) that can exist for content-length header values after compression (to avoid
+// memmove of the full body).
+AERONET_ALWAYS_INLINE constexpr std::string_view TrimTrailingSpaces(std::string_view sv) noexcept {
+  const char* begin = sv.data();
+  const char* end = begin + sv.size();
+
+  while (begin < end && end[-1] == ' ') {
+    --end;
+  }
+
+  return {begin, end};
+}
+
 }  // namespace aeronet

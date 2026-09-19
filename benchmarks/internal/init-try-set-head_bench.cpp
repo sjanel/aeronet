@@ -219,13 +219,13 @@ std::string MakeRequestHead(std::string_view requestHeadLine, const std::vector<
   buf += "\r\n";
   return buf;
 }
-// ================= Isolated ParseHeaderLine loop benchmark =================
+// ================= Isolated ParseHeaderLineTrimValue loop benchmark =================
 //
 // IMPORTANT: these are macro-generated, NOT templated on a function-pointer parameter.
 // Each expansion calls its ParseFunc/ValidateFunc *by name*, exactly like the real call site
 // in initTrySetHead does. A function-pointer-parameter template (ParseLoop<ParseFn,...>)
 // forces a genuine indirect call (`call *%rax` in the disassembly) that the compiler cannot
-// inline across, which understates the real gain -- ParseHeaderLine is constexpr/inlinable
+// inline across, which understates the real gain -- ParseHeaderLineTrimValue is constexpr/inlinable
 // at its direct production call sites. Verified via objdump: this macro form compiles
 // down to the same inlined memchr/scalar-loop code as the plain chrono harness.
 
@@ -256,7 +256,7 @@ std::string MakeRequestHead(std::string_view requestHeadLine, const std::vector<
 
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_Scalar_typical_browser, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         TypicalBrowserHeaders);
-DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_typical_browser, ParseHeaderLine, NameHasWhitespace_AnyOf,
+DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_typical_browser, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf,
                         TypicalBrowserHeaders);
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_CombinedFindFirstOf_typical_browser, ParseHeaderLine_CombinedFindFirstOf,
                         NeverInvalid, TypicalBrowserHeaders);
@@ -267,7 +267,7 @@ DEFINE_PARSE_LOOP_BENCH(ParseLoop_CombinedAnyOf_typical_browser, ParseHeaderLine
 
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_Scalar_api_proxy, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         ApiProxyHeaders);
-DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_api_proxy, ParseHeaderLine, NameHasWhitespace_AnyOf, ApiProxyHeaders);
+DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_api_proxy, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf, ApiProxyHeaders);
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_CombinedFindFirstOf_api_proxy, ParseHeaderLine_CombinedFindFirstOf, NeverInvalid,
                         ApiProxyHeaders);
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_CombinedHandLoop_api_proxy, ParseHeaderLine_CombinedHandLoop, NeverInvalid,
@@ -277,14 +277,15 @@ DEFINE_PARSE_LOOP_BENCH(ParseLoop_CombinedAnyOf_api_proxy, ParseHeaderLine_Combi
 
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_Scalar_short_names, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         ShortNamesHeaders);
-DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_short_names, ParseHeaderLine, NameHasWhitespace_AnyOf, ShortNamesHeaders);
+DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_short_names, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf,
+                        ShortNamesHeaders);
 
 DEFINE_PARSE_LOOP_BENCH(ParseLoop_Scalar_malformed_no_colon, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         MalformedNoColonHeaders);
-DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_malformed_no_colon, ParseHeaderLine, NameHasWhitespace_AnyOf,
+DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_malformed_no_colon, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf,
                         MalformedNoColonHeaders);
 
-// ================= End-to-end: SearchCRLF + ParseHeaderLine + validate =================
+// ================= End-to-end: SearchCRLF + ParseHeaderLineTrimValue + validate =================
 // Same rationale: macro-generated direct calls, not function-pointer parameters.
 
 #define DEFINE_END_TO_END_BENCH(BenchName, ParseFunc, ValidateFunc, HeaderSetFn)    \
@@ -318,18 +319,20 @@ DEFINE_PARSE_LOOP_BENCH(ParseLoop_Prod_malformed_no_colon, ParseHeaderLine, Name
 
 DEFINE_END_TO_END_BENCH(EndToEnd_Scalar_typical_browser, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         TypicalBrowserHeaders);
-DEFINE_END_TO_END_BENCH(EndToEnd_Prod_typical_browser, ParseHeaderLine, NameHasWhitespace_AnyOf, TypicalBrowserHeaders);
+DEFINE_END_TO_END_BENCH(EndToEnd_Prod_typical_browser, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf,
+                        TypicalBrowserHeaders);
 DEFINE_END_TO_END_BENCH(EndToEnd_CombinedAnyOf_typical_browser, ParseHeaderLine_CombinedAnyOf, NeverInvalid,
                         TypicalBrowserHeaders);
 
 DEFINE_END_TO_END_BENCH(EndToEnd_Scalar_api_proxy, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         ApiProxyHeaders);
-DEFINE_END_TO_END_BENCH(EndToEnd_Prod_api_proxy, ParseHeaderLine, NameHasWhitespace_AnyOf, ApiProxyHeaders);
+DEFINE_END_TO_END_BENCH(EndToEnd_Prod_api_proxy, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf, ApiProxyHeaders);
 DEFINE_END_TO_END_BENCH(EndToEnd_CombinedAnyOf_api_proxy, ParseHeaderLine_CombinedAnyOf, NeverInvalid, ApiProxyHeaders);
 
 DEFINE_END_TO_END_BENCH(EndToEnd_Scalar_short_names, ParseHeaderLine_ScalarLoop, NameHasWhitespace_AnyOf,
                         ShortNamesHeaders);
-DEFINE_END_TO_END_BENCH(EndToEnd_Prod_short_names, ParseHeaderLine, NameHasWhitespace_AnyOf, ShortNamesHeaders);
+DEFINE_END_TO_END_BENCH(EndToEnd_Prod_short_names, ParseHeaderLineTrimValue, NameHasWhitespace_AnyOf,
+                        ShortNamesHeaders);
 
 }  // namespace
 

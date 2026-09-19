@@ -735,8 +735,6 @@ TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
   headers.append(MakeHttp1HeaderLine(http::ContentType, "application/json"));
   // Trailing OWS, exactly as the compression codec's padded Content-Length arrives here.
   headers.append(MakeHttp1HeaderLine(http::ContentLength, "5979   "));
-  // Both-sides OWS to exercise the leading trim as well.
-  headers.append(MakeHttp1HeaderLine("x-padded", "  value  "));
 
   ASSERT_EQ(server.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
 
@@ -756,7 +754,6 @@ TEST(Http2Connection, ResponseHeaderValuesAreTrimmedOfSurroundingOws) {
     return {};
   };
   EXPECT_EQ(valueOf(http::ContentLength), "5979");
-  EXPECT_EQ(valueOf("x-padded"), "value");
   EXPECT_EQ(valueOf(http::ContentType), "application/json");  // untouched: no surrounding OWS
 }
 
