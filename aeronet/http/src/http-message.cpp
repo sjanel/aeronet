@@ -702,6 +702,7 @@ void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value)
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid trailer header name");
   }
+  value = TrimOws(value);
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
     throw std::invalid_argument("HTTP header value is invalid");
   }
@@ -735,8 +736,6 @@ void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value)
   // Important note - trailers are stored in the same payload as the body, at the end of it, not separated by a CRLF.
   // It is the responsibility of the finalization code to ensure that the body is in chunked format if trailers are
   // present.
-
-  value = TrimOws(value);
 
   if (isHead()) {
     // If there are trailers in a HEAD response, we can keep content-length header as is, no need to convert to chunked
