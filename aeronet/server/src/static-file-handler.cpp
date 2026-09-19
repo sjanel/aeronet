@@ -426,9 +426,9 @@ RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize)
     return result;
   }
 
-  auto firstPart = spec.substr(0, dashPos);
-  auto secondPart = spec.substr(dashPos + 1);
-  if (firstPart != TrimOws(firstPart) || secondPart != TrimOws(secondPart)) {
+  const std::string_view firstPart = spec.substr(0, dashPos);
+  const std::string_view secondPart = spec.substr(dashPos + 1);
+  if (!IsOwsTrimmed(firstPart) || !IsOwsTrimmed(secondPart)) {
     result.state = RangeSelection::State::Invalid;
     return result;
   }
