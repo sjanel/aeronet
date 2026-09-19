@@ -924,8 +924,7 @@ class HttpMessage {
 
   void replaceHeaderValueNoRealloc(char* first, std::size_t newValue) {
     const auto newValueLen = ndigits(newValue);
-    // TODO: for content-length becoming smaller, could we avoid the memmove for large bodies and fill the remaining
-    // bytes with spaces?
+
     resizeHeaderValue(first, newValueLen);
     WriteUInt(first, newValue, newValueLen);
   }

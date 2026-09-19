@@ -277,18 +277,20 @@ TEST_F(HttpResponseTest, ConstructorFromBytesSpan) {
 
 TEST_F(HttpResponseTest, ConstructorWithConcatenatedHeadersBadFormat) {
   static constexpr std::string_view kBadConcatenatedHeaders[]{
-      "HeaderWithoutSep\r\n",
-      "headerwithnovalue: \r\nAnotherHeaderWithoutSep\r\n",
-      "headerwithnocrlf: Value",
-      "NotUsingHeaderSep:Value",
-      "Invalid Header Name!: Value\r\n",
-      "NotNormalized: Value\r\n",
+      "header-without-sep\r\n",
+      "header-with-no-value: \r\nanother-header-without-sep\r\n",
+      "header-with-no-crlf: Value",
+      "not-using-header-sep:Value\r\n",
+      "invalid-header-name\r: Value\r\n",
+      "NotNormalizedToLowerCase: Value\r\n",
       "valid-header: Invalid\x01Value\r\n",
       "valid-header: Invalid\rValue\r\n",
+      "valid-header: valid-valueNotTrimmed \r\n",
+      "valid-header: \tvalid-valueNotTrimmed\r\n",
   };
 
   for (std::string_view badHeaders : kBadConcatenatedHeaders) {
-    EXPECT_THROW(HttpResponse(0, 200, badHeaders), std::invalid_argument);
+    EXPECT_THROW(HttpResponse(0, 200, badHeaders), std::invalid_argument) << badHeaders;
   }
 }
 
