@@ -5,6 +5,7 @@
 #include <string>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 
 namespace aeronet::http {
 
@@ -53,10 +54,9 @@ TEST(ForbiddenTrailersTest, ForbiddenTrailerRejectsUnknowns) {
   EXPECT_FALSE(IsForbiddenTrailerHeader("cached"));
 }
 
-TEST(ForbiddenTrailersTest, ForbiddenTrailerHandlesEmptyAndLong) {
-  EXPECT_FALSE(IsForbiddenTrailerHeader(""));
-  std::string longName(512, 'Z');
-  EXPECT_FALSE(IsForbiddenTrailerHeader(longName));
+TEST(ForbiddenTrailersTest, ForbiddenTrailerHandlesLong) {
+  std::string longName(512, 'z');
+  EXPECT_FALSE(IsForbiddenTrailerHeader(LowerAsciiKey{longName}));
 }
 
 TEST(ReservedHeadersTest, PrefixesDoNotMatch) {

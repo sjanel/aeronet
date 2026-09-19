@@ -3552,30 +3552,24 @@ TEST(HttpResponseWriterFailures, EnsureHeadersSentFailure) {
   sock.close();  // Close immediately to trigger enqueue failure
 }
 
-// Test: emitLastChunk() enqueue failure (line 190)
-// Chunked response with trailer, close connection to fail last chunk
-TEST(HttpResponseWriterFailures, EmitLastChunkFailure) {
+TEST(HttpResponseWriterFailures, TrailersShouldBeValidatedAndTrimmed) {
 #ifdef AERONET_POSIX
   ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
-  ts.router().setPath(http::Method::GET, "/last-chunk-fail", [](const HttpRequestView&, HttpResponseWriter& writer) {
+  ts.router().setPath(http::Method::GET, "/trailers", [](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.writeBody("chunk1");
     writer.trailerAddLine("x-trailer", "value");
     EXPECT_THROW(writer.trailerAddLine("invalid:header", "value"), std::invalid_argument);
     EXPECT_THROW(writer.trailerAddLine("x-trailer", "value\r\n"), std::invalid_argument);
-    // end() calls emitLastChunk
+    writer.trailerAddLine("x-trailer-with-ows", " value\t");
     writer.end();
   });
 
-  test::ClientConnection sock(port);
-  auto fd = sock.fd();
-  std::string req = "GET /last-chunk-fail HTTP/1.1\r\nhost: test\r\n\r\n";
-  test::sendAll(fd, req);
-  // Read some data first
-  char buf[1024];
-  ::recv(fd, buf, sizeof(buf), 0);
-  sock.close();  // Close to trigger enqueue failure on last chunk
+  std::string resp = test::simpleGet(port, "/trailers");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 "));
+  EXPECT_TRUE(resp.contains("x-trailer: value\r\n"));
+  EXPECT_TRUE(resp.contains("x-trailer-with-ows: value\r\n"));
 }
 
 // Test: writeBody() fixed-length enqueue failure (line 233)

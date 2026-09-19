@@ -214,8 +214,8 @@ class HttpRequestView {
   //     are preserved verbatim (except for deliberate single-space joins in the User-Agent merge case).
   //   * The returned view points into the connection's receive buffer; it is valid only for the lifetime of the
   //     handler invocation (do not persist it beyond the request scope).
-  [[nodiscard]] std::optional<std::string_view> headerValue(LowerAsciiKey headerNameLowerCase) const noexcept {
-    const auto it = _headers.find(headerNameLowerCase);
+  [[nodiscard]] std::optional<std::string_view> headerValue(LowerAsciiKey headerName) const noexcept {
+    const auto it = _headers.find(headerName);
     return it != _headers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
   }
 
@@ -407,21 +407,19 @@ class HttpRequestView {
   [[nodiscard]] const SvToSvMap& trailers() const noexcept { return _trailers; }
 
   // Like headerValue() but for trailers.
-  [[nodiscard]] std::optional<std::string_view> trailerValue(LowerAsciiKey trailerNameLowerCase) const noexcept {
-    const auto it = _trailers.find(trailerNameLowerCase);
+  [[nodiscard]] std::optional<std::string_view> trailerValue(LowerAsciiKey trailerName) const noexcept {
+    const auto it = _trailers.find(trailerName);
     return it != _trailers.end() ? std::optional<std::string_view>{it->second} : std::nullopt;
   }
 
   // Like headerValueOrEmpty() but for trailers.
-  [[nodiscard]] std::string_view trailerValueOrEmpty(LowerAsciiKey trailerNameLowerCase) const noexcept {
-    return trailerValue(trailerNameLowerCase).value_or(std::string_view{});
+  [[nodiscard]] std::string_view trailerValueOrEmpty(LowerAsciiKey trailerName) const noexcept {
+    return trailerValue(trailerName).value_or(std::string_view{});
   }
 
   // Returns true if the given trailer name (in lower-case) is present (regardless of value).
   // Key must be lower-cased (this may be enforced at compile time or via assert() in debug builds).
-  [[nodiscard]] bool hasTrailer(LowerAsciiKey trailerNameLowerCase) const noexcept {
-    return _trailers.contains(trailerNameLowerCase);
-  }
+  [[nodiscard]] bool hasTrailer(LowerAsciiKey trailerName) const noexcept { return _trailers.contains(trailerName); }
 
   // Returns a map-like view over path parameters extracted during route matching.
   // Characteristics:
