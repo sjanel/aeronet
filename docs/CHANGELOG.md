@@ -70,6 +70,7 @@ All notable changes to aeronet are documented in this file.
 - **Removed zstd.h and brotli/encode.h includes from .hpp internal header files**
 - **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-DAERONET_ENABLE_HTTP_SERVER=OFF` to disable compilation of server specific code. The code may not be optimally excluded yet.
 - **Fixed compilation in Release when `AERONET_ENABLE_TEST_HOOKS` is not set**
+- **Lowered severity of HTTP/2 unknown SETTINGS id log from warn to debug**: spec wise, there is nothing wrong to ignore it, so it's part of nominal behavior, no need to emit a warning for that. Also emit the associated value.
 - **Bumped glaze version from 8.1.0 to 8.4.0**
 - **Bumped opentelemetry version from 1.28.0 to 1.29.0**
 
