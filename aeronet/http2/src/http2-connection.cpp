@@ -1178,7 +1178,8 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
         _peerSettings.maxHeaderListSize = value;
         break;
       default:
-        log::warn("Ignoring unknown SETTINGS parameter ID {}", static_cast<int>(id));
+        log::debug("Ignoring unknown HTTP/2 SETTINGS parameter id={} (0x{:04x}), value={}", static_cast<uint16_t>(id),
+                   static_cast<uint16_t>(id), value);
         break;
     }
   }
