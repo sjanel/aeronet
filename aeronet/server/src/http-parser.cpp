@@ -18,6 +18,7 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -182,7 +183,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         }
 
         // Parse trailer field: name:value
-        const auto [nameView, valueView] = http::ParseHeaderLine(lineStart, lineLast);
+        const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(lineStart, lineLast);
         if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
           return BodyDecodeStatus::Error;
@@ -192,7 +193,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
         tolower(lineStart, nameView.size());
 
         // Check forbidden headers
-        if (http::IsForbiddenTrailerHeader(nameView)) {
+        if (http::IsForbiddenTrailerHeader(LowerAsciiKey{nameView})) {
           emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
           return BodyDecodeStatus::Error;
         }
@@ -284,13 +285,13 @@ bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* buffer
   while (first < last) {
     // Find line end
     char* lineEnd = SearchCRLF(first, last);
-    assert(lineEnd != last);
-    assert(lineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
+    assert(lineEnd != last && lineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
 
     // No check is made on header line format here
-    const auto [headerName, headerValue] = http::ParseHeaderLine(first, lineEnd);
+    auto [headerName, headerValue] = http::ParseHeaderLineTrimValue(first, lineEnd);
 
     auto [it, inserted] = headersMap.emplace(headerName, headerValue);
+
     // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
     if (!inserted && !http::MergeHeaderInPlace(headersMap, it, headerValue, _sharedBuffers.buf, bufferBeg, first,
                                                _config.mergeUnknownRequestHeaders)) {

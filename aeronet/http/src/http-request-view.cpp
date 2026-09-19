@@ -364,7 +364,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
 
-    const auto [nameView, valueView] = http::ParseHeaderLine(first, lineLast);
+    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(first, lineLast);
     if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
       return http::StatusCodeBadRequest;
     }

@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
@@ -46,8 +47,8 @@ constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcep
 //   - Content-Encoding, Content-Type, Content-Range (content metadata)
 //   - Expect, Range, If-* conditionals, TE (request control headers)
 // This is a conservative list for safety and correctness.
-constexpr bool IsForbiddenTrailerHeader(std::string_view trailerNameLowerCase) noexcept {
-  static constexpr std::string_view kForbiddenOrderedTrailersLowercase[]{
+constexpr bool IsForbiddenTrailerHeader(LowerAsciiKey trailerName) noexcept {
+  static constexpr LowerAsciiKey kForbiddenTrailers[]{
       "authorization",
       "cache-control",
       "content-encoding",
@@ -71,9 +72,8 @@ constexpr bool IsForbiddenTrailerHeader(std::string_view trailerNameLowerCase) n
       "vary",
   };
 
-  return std::ranges::any_of(kForbiddenOrderedTrailersLowercase, [trailerNameLowerCase](std::string_view candidate) {
-    return trailerNameLowerCase == candidate;
-  });
+  return std::ranges::any_of(kForbiddenTrailers,
+                             [trailerName](LowerAsciiKey candidate) { return trailerName == candidate; });
 }
 
 }  // namespace aeronet::http

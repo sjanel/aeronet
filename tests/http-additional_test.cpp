@@ -1449,7 +1449,8 @@ TEST(SingleHttpServer, EpollCtlModBenignFailure) {
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EBADF);
 
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return req.makeResponse(std::string(24UL * 1024 * 1024, 'Y')); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
@@ -1468,7 +1469,8 @@ TEST(SingleHttpServer, EpollCtlModEaccesFailure) {
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
 
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(24UL * 1024 * 1024, 'Y')); });
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return req.makeResponse(std::string(24UL * 1024 * 1024, 'Y')); });
 
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();

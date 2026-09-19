@@ -68,8 +68,8 @@ constexpr uint32_t Read24BE(const std::byte* data) noexcept {
       return (static_cast<uint32_t>(data[0]) << 16U) | (static_cast<uint32_t>(data[1]) << 8U) |
              static_cast<uint32_t>(data[2]);
     } else {
-      uint32_t value = 0;
-      std::memcpy(reinterpret_cast<std::byte*>(&value) + 1, data, 3);
+      uint32_t value{};
+      std::memcpy(reinterpret_cast<std::byte*>(&value) + 1, data, 3U);
       return value;
     }
   } else {

@@ -213,6 +213,7 @@ void HttpResponseWriter::trailerAddLine(LowerAsciiKey name, std::string_view val
   if (!http::IsValidHeaderName(name)) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP header name");
   }
+  value = TrimOws(value);
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
     throw std::invalid_argument("HTTP header value is invalid");
   }
