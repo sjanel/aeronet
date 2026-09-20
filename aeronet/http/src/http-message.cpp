@@ -838,6 +838,10 @@ char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
   assert(last != nullptr);
   const auto oldValueLen = static_cast<std::size_t>(last - first);
   if (newValueLen != oldValueLen) {
+    // TODO: for content-length becoming smaller, could we avoid the memmove for large bodies and prefix the
+    // content-length value with zeroes? For instance: content-length: 00000000000000045678\r\n
+    // Question is - how many zeroes to allocate ? Heuristic keeping only needed + n ? Or
+    // std::numeric_limits<std::size_t>::digits10 + 1 ?
     const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
     std::memmove(last + diff, last, static_cast<std::size_t>(end - last));
     _data.adjustSize(diff);
@@ -873,12 +877,12 @@ std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size
 
 void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
   assert(_opts.isAutomaticDirectCompression() && !isHead() && !hasBodyCaptured() && !hasBodyFile());
-  std::size_t oldBodyLen = internalBodyAndTrailersLen();
+  std::size_t bodyLen = internalBodyAndTrailersLen();
   auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
   const std::size_t chunkSize = encoder.endChunkSize();
   while (true) {
-    const auto nbCharsOldBodyLen = nchars(oldBodyLen);
-    const auto nbCharsNewBodyLen = nchars(oldBodyLen + chunkSize);
+    const auto nbCharsOldBodyLen = nchars(bodyLen);
+    const auto nbCharsNewBodyLen = nchars(bodyLen + chunkSize);
 
     const int64_t neededCapacity =
         additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
@@ -891,12 +895,12 @@ void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
     }
 
     _data.addSize(written);
-    oldBodyLen += written;
-
-    // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
-    // bytes) by playing on 'spaces' after the content-length value.
-    replaceHeaderValueNoRealloc(getContentLengthValuePtr(), oldBodyLen);
+    bodyLen += written;
   }
+
+  // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000
+  // bytes) by playing on 'spaces' after the content-length value.
+  replaceHeaderValueNoRealloc(getContentLengthValuePtr(), bodyLen);
 }
 
 #endif

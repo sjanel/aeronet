@@ -321,6 +321,9 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
         }
       }
     } else {
+      // TODO: In HTTP/2, content-length is optional. And not sending it could be an optimization for HttpMessage /
+      // HttpResponse because there is no need to memmove data each time we append to the body.
+      // In some cases, we should keep it, for instance for HEAD requests, and maybe 204/304 responses.
       req._headers[storedName] = storedValue;
     }
   }
