@@ -84,6 +84,9 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     }
 
     std::string_view headerValue(first, endLine);
+    if (!IsOwsTrimmed(headerValue)) {
+      throw std::invalid_argument("Header value in concatenated headers should be trimmed");
+    }
     if (!http::IsValidHeaderValue(headerValue)) {
       throw std::invalid_argument("Invalid header value in concatenated headers");
     }
