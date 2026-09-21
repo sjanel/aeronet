@@ -29,7 +29,7 @@ namespace aeronet::http2 {
 class HpackDynamicTable {
  public:
   /// Create a dynamic table with the specified maximum size in bytes.
-  explicit HpackDynamicTable(std::size_t maxSizeBytes) noexcept : _maxSizeBytes(maxSizeBytes) {}
+  explicit HpackDynamicTable(uint32_t maxSizeBytes) noexcept : _maxSizeBytes(maxSizeBytes) {}
 
   /// Add a new entry to the front of the table.
   /// May trigger eviction of old entries if the new entry doesn't fit.
@@ -53,7 +53,7 @@ class HpackDynamicTable {
 
   /// Update the maximum size of the dynamic table.
   /// May trigger eviction if the new size is smaller than the current size.
-  void setMaxSize(std::size_t maxSize);
+  void setMaxSize(uint32_t maxSize);
 
   /// Clear all entries from the dynamic table.
   void clear() noexcept;
@@ -71,7 +71,7 @@ class HpackDynamicTable {
   // the decoder stay valid across add(), evict() and compact().
   vector<http::Header> _entries;
   std::size_t _currentSizeBytes{0};
-  std::size_t _maxSizeBytes;
+  uint32_t _maxSizeBytes;
   decltype(_entries)::size_type _firstLive{0};
 };
 
@@ -94,7 +94,7 @@ struct HpackLookupResult {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders);
+  HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept;
 
   /// Decode result for a single header block.
   struct DecodeResult {
@@ -140,7 +140,7 @@ class HpackDecoder {
   DecodeResult decode(std::span<const std::byte> data);
 
   /// Update the maximum dynamic table size (from SETTINGS frame).
-  void setMaxDynamicTableSize(std::size_t maxSize) { _dynamicTable.setMaxSize(maxSize); }
+  void setMaxDynamicTableSize(uint32_t maxSize) { _dynamicTable.setMaxSize(maxSize); }
 
   /// Get the current dynamic table for inspection.
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
@@ -167,7 +167,7 @@ class HpackDecoder {
 
   /// Look up a header by combined index (1-61 = static, 62+ = dynamic).
   /// Returns an empty header name if index is out of bounds.
-  [[nodiscard]] http::HeaderView lookupIndex(uint64_t index) const;
+  [[nodiscard]] http::HeaderView lookupIndex(uint32_t index) const;
 
   // Store a decoded header into internal storage.
   // Returns an error message on failure, or nullptr on success.
@@ -188,7 +188,7 @@ class HpackDecoder {
 class HpackEncoder {
  public:
   /// Create an encoder with the specified maximum dynamic table size.
-  explicit HpackEncoder(std::size_t maxDynamicTableSize = 4096) : _dynamicTable(maxDynamicTableSize) {}
+  explicit HpackEncoder(uint32_t maxDynamicTableSize = 4096) noexcept : _dynamicTable(maxDynamicTableSize) {}
 
   /// Encoding options for a header field.
   enum class IndexingMode : std::uint8_t {
@@ -198,14 +198,18 @@ class HpackEncoder {
   };
 
   /// Encode a header field and append to the output buffer.
+  /// @param output The buffer to append the encoded header field to.
+  /// @param name The header field name.
+  /// @param value The header field value (should be trimmed from OWS).
+  /// @param mode The indexing mode for the header field (default is Indexed).
   void encode(RawBytes& output, std::string_view name, std::string_view value,
               IndexingMode mode = IndexingMode::Indexed);
 
   /// Encode a dynamic table size update.
-  void encodeDynamicTableSizeUpdate(RawBytes& output, std::size_t newSize);
+  void encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize);
 
   /// Update the maximum dynamic table size (from SETTINGS frame).
-  void setMaxDynamicTableSize(std::size_t maxSize) { _pendingTableSizeUpdate = maxSize; }
+  void setMaxDynamicTableSize(uint32_t maxSize);
 
   /// Get the current dynamic table for inspection.
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
@@ -228,7 +232,8 @@ class HpackEncoder {
 
   HpackDynamicTable _dynamicTable;
   flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
-  std::size_t _pendingTableSizeUpdate = static_cast<std::size_t>(~0ULL);
+  uint32_t _pendingTableSizeUpdate{};
+  bool _hasPendingTableSizeUpdate{false};
   uint64_t _newestDynamicSerial{0U};
 };
 

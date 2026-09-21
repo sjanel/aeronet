@@ -459,6 +459,16 @@ constexpr auto kAppendZeroOrOneABytes = [](std::byte* buf) {
 // STATUS TESTS
 // =============================================================================
 
+TEST_F(HttpResponseTest, StatusCodeNoReason) {
+  HttpResponse resp(http::StatusCodeOK);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.reason(), "");
+
+  auto full = concatenated(std::move(resp));
+  EXPECT_EQ(full,
+            "HTTP/1.1 200 \r\ndate: Thu, 01 Jan 1970 00:00:00 GMT\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+}
+
 // =============================================================================
 // REASON TESTS
 // =============================================================================

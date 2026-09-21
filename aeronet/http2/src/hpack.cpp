@@ -147,8 +147,8 @@ constexpr uint32_t StaticNameKey(std::string_view name) noexcept {
          (static_cast<uint32_t>(static_cast<uint8_t>(name.back())) << 16U);
 }
 
-constexpr uint32_t kStaticNameHashBits = 7;
-constexpr uint32_t kStaticNameHashSize = 1UL << kStaticNameHashBits;
+constexpr uint32_t kStaticNameHashBits = 7U;
+constexpr uint32_t kStaticNameHashSize = 1U << kStaticNameHashBits;
 constexpr uint32_t kStaticNameHashMultiplier = 0x8FEBA71BU;
 constexpr uint32_t kHpackOverhead = 32U;  // RFC 7541 §4.1: 32 bytes overhead per dynamic table entry
 
@@ -629,9 +629,8 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
     // Add the entry after the eviction(s).
     _entries.push_back(std::move(newEntry));
   } else {
-    // Fast path (no eviction) - construct then noexcept-move into the vector.
-    // Using push_back (noexcept move) instead of emplace_back avoids exception-handling
-    // code around the malloc inside the constructor, producing tighter codegen.
+    // Fast path (no eviction), construct then noexcept-move into the vector. Using push_back (noexcept move) instead of
+    // emplace_back avoids exception-handling code around the malloc inside the constructor, producing tighter codegen.
     _entries.push_back(http::Header(name, value));
   }
 
@@ -640,7 +639,7 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
   return true;
 }
 
-void HpackDynamicTable::setMaxSize(std::size_t maxSize) {
+void HpackDynamicTable::setMaxSize(uint32_t maxSize) {
   _maxSizeBytes = maxSize;
 
   // Evict entries until we fit
@@ -684,9 +683,9 @@ http::Header HpackDynamicTable::evict() {
 
 namespace {
 struct DecodedIndex {
-  static constexpr uint64_t kInvalidIndex = std::numeric_limits<uint64_t>::max();
+  static constexpr uint32_t kInvalidIndex = std::numeric_limits<uint32_t>::max();
 
-  uint64_t index{kInvalidIndex};
+  uint32_t index{kInvalidIndex};
   uint8_t consumed{0};
 };
 
@@ -703,7 +702,7 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
 
   if (value < prefixMask) {
     // Value fits in prefix
-    ret.index = value;
+    ret.index = static_cast<uint32_t>(value);
     ret.consumed = 1;
     return ret;
   }
@@ -728,11 +727,11 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
     static_assert(kMaxContinuationBytes * 7 < static_cast<uint8_t>(sizeof(uint64_t) * 8),
                   "Multiplier overflow possible in DecodeInteger");
 
-    multiplier *= 128;
+    multiplier *= 128U;
     ++pos;
 
     if ((currByte & 0x80U) == 0) {
-      ret.index = value;
+      ret.index = static_cast<uint32_t>(value);
       ret.consumed = pos;
       break;
     }
@@ -743,7 +742,7 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
 
 }  // namespace
 
-HpackDecoder::HpackDecoder(std::size_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders)
+HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept
     : _dynamicTable(maxDynamicTableSize),
       _decodedStrings(128U),
       _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
@@ -964,18 +963,21 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   return {buf, sz};
 }
 
-http::HeaderView HpackDecoder::lookupIndex(uint64_t index) const {
+http::HeaderView HpackDecoder::lookupIndex(uint32_t index) const {
+  assert(index != 0);
+
   // Static table: indices 1-61
   http::HeaderView ret;
+
   if (index <= std::size(kStaticTable)) {
-    const auto& entry = kStaticTable[index - 1];
+    const auto& entry = kStaticTable[index - 1U];
     ret.name = entry.name;
     ret.value = entry.value;
     return ret;
   }
 
   // Dynamic table: indices 62+
-  const uint32_t dynamicIndex = static_cast<uint32_t>(index - std::size(kStaticTable) - 1);
+  const uint32_t dynamicIndex = static_cast<uint32_t>(index - std::size(kStaticTable) - 1U);
   if (dynamicIndex >= _dynamicTable.entryCount()) {
     return ret;
   }
@@ -1091,9 +1093,7 @@ void HpackEncoder::addToDynamicIndex(std::string_view name, std::string_view val
 
   // FIFO eviction leaves old hashes behind. Rebuild after stale entries double the live index rather than paying
   // for two erases on every insertion. The hashes contain no views into Header storage, so stale slots are safe.
-  if ((_dynamicTable.entryCount() * 4U) + 32U < _dynamicIndex.size()) {
-    rebuildDynamicIndex();
-  }
+  resizeDynamicIndex();
 }
 
 void HpackEncoder::resizeDynamicIndex() {
@@ -1141,9 +1141,11 @@ void HpackEncoder::indexDynamicHeader(std::string_view name, std::string_view va
 void HpackEncoder::rebuildDynamicIndex() {
   _dynamicIndex.clear();
   _dynamicIndex.reserve(_dynamicTable.entryCount() * 2U);
+
   for (std::size_t idx = _dynamicTable.entryCount(); idx != 0U; --idx) {
     const auto tableIdx = idx - 1U;
     const auto& entry = _dynamicTable[static_cast<uint32_t>(tableIdx)];
+
     indexDynamicHeader(entry.name(), entry.value(), _newestDynamicSerial - tableIdx);
   }
 }
@@ -1154,8 +1156,9 @@ void HpackEncoder::resetDynamicIndex() {
 }
 
 namespace {
+
 void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t prefixMask) {
-  const uint8_t maxPrefix = static_cast<uint8_t>((1U << prefixBits) - 1);
+  const uint8_t maxPrefix = static_cast<uint8_t>((1U << prefixBits) - 1U);
 
   if (value < maxPrefix) {
     output.push_back(static_cast<std::byte>(prefixMask | static_cast<uint8_t>(value)));
@@ -1166,7 +1169,7 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
 
   // Bytes needed to varint-encode `value`: 1 byte per 7 bits, minimum 1 byte
   // (this matches exactly what the while-loop below produces).
-  const std::size_t continuationBytes = value < 128 ? 1 : (static_cast<std::size_t>(std::bit_width(value)) + 6) / 7;
+  const std::size_t continuationBytes = value < 128U ? 1U : (static_cast<std::size_t>(std::bit_width(value)) + 6U) / 7;
 
   output.ensureAvailableCapacityExponential(1U + continuationBytes);
 
@@ -1189,57 +1192,65 @@ std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
          8;
 }
 
-/// Encode 'str' with the RFC 7541 Huffman code. 'encodedLen' must be HuffmanEncodedLength(str): the caller already
-/// needs it to decide between Huffman and raw, so it is passed in rather than walking the string a second time.
-void EncodeHuffman(RawBytes& output, std::string_view str, std::size_t encodedLen) {
-  uint64_t currentCode = 0;
-  uint8_t currentBits = 0;
+void EncodeString(RawBytes& output, std::string_view str) {
+  const std::size_t encodedLen = HuffmanEncodedLength(str);
+  if (encodedLen < str.size()) {
+    // Huffman encoding is more efficient.
 
-  assert(encodedLen == HuffmanEncodedLength(str));
-  output.ensureAvailableCapacityExponential(encodedLen);
+    /// Encode 'str' with the RFC 7541 Huffman code. 'encodedLen' must be HuffmanEncodedLength(str): the caller already
+    /// needs it to decide between Huffman and raw, so it is passed in rather than walking the string a second time.
 
-  std::byte* pData = output.data() + output.size();
+    EncodeInteger(output, encodedLen, 7, 0x80);
+    uint64_t currentCode = 0;
+    uint8_t currentBits = 0;
 
-  for (char ch : str) {
-    const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
+    assert(encodedLen == HuffmanEncodedLength(str));
+    output.ensureAvailableCapacityExponential(encodedLen);
 
-    currentCode = (currentCode << code.bitLength) | code.code;
-    currentBits += code.bitLength;
-    while (currentBits >= 8) {
-      currentBits -= 8;
-      *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFFU);
+    std::byte* pData = output.data() + output.size();
+
+    for (char ch : str) {
+      const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
+
+      currentCode = (currentCode << code.bitLength) | code.code;
+      currentBits += code.bitLength;
+      while (currentBits >= 8U) {
+        currentBits -= 8U;
+        *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFFU);
+      }
     }
-  }
 
-  // Pad with EOS prefix (all 1s)
-  if (currentBits > 0) {
-    const uint8_t padding = static_cast<uint8_t>((1U << static_cast<uint8_t>(8U - currentBits)) - 1);
-    *pData++ = static_cast<std::byte>((currentCode << static_cast<uint8_t>(8U - currentBits)) | padding);
+    // Pad with EOS prefix (all 1s)
+    if (currentBits > 0) {
+      const uint8_t padding = static_cast<uint8_t>((1U << static_cast<uint8_t>(8U - currentBits)) - 1U);
+      *pData++ = static_cast<std::byte>((currentCode << static_cast<uint8_t>(8U - currentBits)) | padding);
+    }
+    output.setEnd(pData);
+  } else {
+    // Raw string (no Huffman)
+    EncodeInteger(output, str.size(), 7, 0x00);
+    output.append(reinterpret_cast<const std::byte*>(str.data()), str.size());
   }
-  output.setEnd(pData);
 }
 
-void EncodeString(RawBytes& output, std::string_view str) {
-  const std::size_t huffmanLen = HuffmanEncodedLength(str);
-  if (huffmanLen < str.size()) {
-    // Huffman encoding is more efficient
-    EncodeInteger(output, huffmanLen, 7, 0x80);
-    EncodeHuffman(output, str, huffmanLen);
-    return;
+void EncodeNameValue(RawBytes& output, std::string_view name, std::string_view value, HpackLookupResult lookup,
+                     uint8_t prefixBits, uint8_t prefixMask) {
+  if (lookup.match == HpackLookupResult::Match::NameOnly) {
+    EncodeInteger(output, lookup.index, prefixBits, prefixMask);
+  } else {
+    output.push_back(static_cast<std::byte>(prefixMask));
+    EncodeString(output, name);
   }
-
-  // Raw string (no Huffman)
-  EncodeInteger(output, str.size(), 7, 0x00);
-  output.append(reinterpret_cast<const std::byte*>(str.data()), str.size());
+  EncodeString(output, value);
 }
 
 }  // namespace
 
 void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
   // Check for pending table size update
-  if (_pendingTableSizeUpdate != std::numeric_limits<std::size_t>::max()) {
+  if (_hasPendingTableSizeUpdate) {
     encodeDynamicTableSizeUpdate(output, _pendingTableSizeUpdate);
-    _pendingTableSizeUpdate = std::numeric_limits<std::size_t>::max();
+    _hasPendingTableSizeUpdate = false;
   }
 
   // Try to find in tables
@@ -1255,13 +1266,7 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
   if (mode == IndexingMode::Indexed) {
     // Literal Header Field with Incremental Indexing (RFC 7541 §6.2.1)
     // Format: 01xxxxxx
-    if (lookup.match == HpackLookupResult::Match::NameOnly) {
-      EncodeInteger(output, lookup.index, 6, 0x40);
-    } else {
-      output.push_back(static_cast<std::byte>(0x40));
-      EncodeString(output, name);
-    }
-    EncodeString(output, value);
+    EncodeNameValue(output, name, value, lookup, 6, 0x40);
 
     // Add to dynamic table. Large tables get a lazy encoder-only index once a linear scan becomes expensive.
     const bool added = _dynamicTable.add(name, value);
@@ -1279,30 +1284,16 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
   } else if (mode == IndexingMode::NeverIndexed) {
     // Literal Header Field Never Indexed (RFC 7541 §6.2.3)
     // Format: 0001xxxx
-    if (lookup.match == HpackLookupResult::Match::NameOnly) {
-      EncodeInteger(output, lookup.index, 4, 0x10);
-    } else {
-      output.push_back(static_cast<std::byte>(0x10));
-      EncodeString(output, name);
-    }
-    EncodeString(output, value);
-
+    EncodeNameValue(output, name, value, lookup, 4, 0x10);
   } else {
     // Literal Header Field without Indexing (RFC 7541 §6.2.2)
     // Format: 0000xxxx
-    if (lookup.match == HpackLookupResult::Match::NameOnly) {
-      EncodeInteger(output, lookup.index, 4, 0x00);
-    } else {
-      output.push_back(static_cast<std::byte>(0x00));
-      EncodeString(output, name);
-    }
-    EncodeString(output, value);
+    EncodeNameValue(output, name, value, lookup, 4, 0x00);
   }
 }
 
-void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, std::size_t newSize) {
-  // Dynamic Table Size Update (RFC 7541 §6.3)
-  // Format: 001xxxxx
+void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize) {
+  // Dynamic Table Size Update (RFC 7541 §6.3). Format: 001xxxxx
   EncodeInteger(output, newSize, 5, 0x20);
   _dynamicTable.setMaxSize(newSize);
   if (!_dynamicIndex.empty()) {
@@ -1312,6 +1303,11 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, std::size_t ne
       resetDynamicIndex();
     }
   }
+}
+
+void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
+  _pendingTableSizeUpdate = maxSize;
+  _hasPendingTableSizeUpdate = true;
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {
@@ -1324,8 +1320,8 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
   if (name.size() >= kStaticHeaderNameMinLen && name.size() <= kStaticHeaderNameMaxLen) {
     const auto& hashEntry = kStaticNameHashTable.slots[StaticNameSlot(name)];
     if (hashEntry.name == name) {
-      for (uint8_t ii = 0; ii < hashEntry.count; ++ii) {
-        const auto entryIdx = kStaticTableByName[hashEntry.sortedStart + ii].index;
+      for (uint8_t hashIdx = 0; hashIdx < hashEntry.count; ++hashIdx) {
+        const auto entryIdx = kStaticTableByName[hashEntry.sortedStart + hashIdx].index;
         const auto& entry = kStaticTable[entryIdx];
         if (result.match == HpackLookupResult::Match::None) {
           result.index = 1U + entryIdx;  // RFC 7541 is 1-based
