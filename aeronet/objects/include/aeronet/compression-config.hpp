@@ -30,12 +30,10 @@ struct CompressionConfig {
     return static_cast<std::size_t>(std::ceil(static_cast<double>(uncompressedBytes) * maxCompressRatio));
   }
 
-  // Server-side preference order used to break ties during
-  // Accept-Encoding negotiation.
+  // Server-side preference order used to break ties during Accept-Encoding negotiation.
   //
-  // The client q-value always takes precedence. When multiple
-  // encodings share the same effective q-value, this list
-  // determines the winner (first match wins).
+  // The client q-value always takes precedence.
+  // When multiple encodings share the same effective q-value, this list determines the winner (first match wins).
   //
   // If empty, the default enumeration order of Encoding is used.
   //
@@ -91,6 +89,33 @@ struct CompressionConfig {
   // HttpResponse instances, which can be overridden on a per-response basis by calling
   // HttpResponse::setDirectCompressionMode.
   DirectCompressionMode defaultDirectCompressionMode{DirectCompressionMode::Auto};
+
+  // Controls how Content-Length is rewritten after automatic compression.
+  //
+  // If true, the reserved Content-Length field keeps its full reserved width.
+  // When the compressed body size uses fewer decimal digits, the value is left-padded with ASCII '0' characters. This
+  // avoids moving the compressed body and trailers solely because Content-Length became shorter.
+  //
+  // If false, Content-Length is written using only the digits required to represent the compressed body size. If this
+  // is shorter than the reserved width, the compressed body and trailers are moved backwards accordingly.
+  //
+  // Enabling leading zeroes avoids an additional O(body size) memmove when the number of Content-Length digits
+  // decreases.
+  //
+  // Leading zeroes are valid HTTP syntax (`Content-Length = 1*DIGIT`), but buggy HTTP parsers may interpret
+  // zero-prefixed values using non-decimal integer parsing (for example, `strtoll(..., 0)` interprets `010` as octal 8
+  // instead of decimal 10). Such parser differentials can cause request-smuggling vulnerabilities in proxy/backend
+  // chains.
+  //
+  // See the HTTP Garden differential-fuzzing research for a documented OpenLiteSpeed example:
+  // https://github.com/Ramzansmith/http-garden-fuzzing-http-servers
+  //
+  // Default: true.
+  //
+  // Example:
+  //   true  -> Content-Length: 0001234
+  //   false -> Content-Length: 1234
+  bool useLeadingZeroesInContentLength{true};
 
   // Maximum allowed compressed size ratio relative to the
   // uncompressed body size.

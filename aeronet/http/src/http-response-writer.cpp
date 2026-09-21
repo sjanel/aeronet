@@ -22,6 +22,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/writer-transport.hpp"
 
 namespace aeronet {
