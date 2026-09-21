@@ -121,9 +121,9 @@ struct Http2Config {
   bool enablePush{false};
 
   /// Enable cleartext HTTP/2 (h2c) via prior knowledge.
-  /// When enabled, the server accepts HTTP/2 connections on non-TLS ports
-  /// if the client sends the HTTP/2 connection preface directly.
-  /// Default: true (useful for internal microservices).
+  /// When enabled, the server accepts HTTP/2 connections on non-TLS ports if the client sends the HTTP/2 connection
+  /// preface directly.
+  // Default: true (useful for internal microservices).
   bool enableH2c{true};
 
   /// Enable cleartext HTTP/2 (h2c) via HTTP/1.1 Upgrade mechanism.
