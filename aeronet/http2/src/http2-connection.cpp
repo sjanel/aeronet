@@ -26,10 +26,13 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 #include "http2-read-write.hpp"
+
+#ifndef NDEBUG
+#include "aeronet/string-trim.hpp"
+#endif
 
 namespace aeronet::http2 {
 
@@ -403,10 +406,6 @@ void Http2Connection::getPendingOutputFragments(vector<std::string_view>& fragme
                            _outputBuffer.size() - _outputWritePos);
   }
   assert(fragments.size() == fragmentCount);
-}
-
-std::size_t Http2Connection::pendingOutputSize() const noexcept {
-  return _outputBlocksSize + _outputBuffer.size() - _outputWritePos;
 }
 
 void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
@@ -1382,14 +1381,11 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
 
     // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
-    // tolerated). The HTTP/1.1 serializer legitimately emits such OWS -- e.g. the compression codec pads
-    // Content-Length with trailing spaces (see http-codec.cpp) -- so trim before HPACK-encoding, or a strict peer
-    // (nghttp2/curl) rejects the field and RST_STREAMs. TrimOws fast-paths already-clean values.
-    assert(value == TrimOws(value) || name == http::ContentLength);
+    // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
+    assert(value == TrimOws(value));
 
-    const std::string_view trimmedValue = TrimTrailingSpaces(value);
-    headerListSize += HpackHeaderFieldSize(name, trimmedValue);
-    _hpackEncoder.encode(_outputBuffer, name, trimmedValue);
+    headerListSize += HpackHeaderFieldSize(name, value);
+    _hpackEncoder.encode(_outputBuffer, name, value);
   }
 
   if (pGlobalHeaders != nullptr) {

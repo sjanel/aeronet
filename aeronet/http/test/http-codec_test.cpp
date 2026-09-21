@@ -26,6 +26,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/lower-ascii-key.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
@@ -103,6 +104,9 @@ HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool 
       (static_cast<std::size_t>(addTrailer) * http::HeaderSize(kTrailerName.size(), kTrailerValue.size())) +
       (static_cast<std::size_t>(hasVaryContent) * http::HeaderSize(http::Vary.size(), varyContent.size()));
   HttpResponse resp(additionalSize, http::StatusCodeOK);
+  // Hack to have a correct CRLF at the end of status line (we are not calling finalizeForHttp1 here in this test, it's
+  // a private method).
+  CopyFixed<http::CRLF>(const_cast<char*>(resp.reason().data()));
   if (hasVaryContent) {
     resp.headerAddLine(http::Vary, varyContent);
   }
@@ -114,6 +118,7 @@ HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool 
   if (addTrailer) {
     resp.trailerAddLine(kTrailerName, kTrailerValue);
   }
+
   return resp;
 }
 
@@ -536,7 +541,7 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
   cfg.minBytes = 16U;
   cfg.addVaryAcceptEncodingHeader = true;
   cfg.maxCompressRatio = 0.6F;
-  cfg.initialCompressionBufferLimit = 12UL << 10U;
+  cfg.initialCompressionBufferLimit = 12U << 10U;
 
   for (Encoding enc : test::SupportedEncodings()) {
     cfg.preferredFormats.assign(1U, enc);
@@ -578,76 +583,79 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
 
   static const auto kTrailerLine = MakeHttp1HeaderLine(kTrailerName, kTrailerValue);
 
-  for (bool addTrailer : {false, true}) {
-    for (std::string_view body : {compressibleBodyView, incompressibleBodyView, mixedBodyView}) {
-      for (std::uint32_t initialCompressionBufferLimit : {bodySz << 1U, bodySz >> 3U}) {
-        cfg.initialCompressionBufferLimit = initialCompressionBufferLimit;
+  for (bool useLeadingZeroesInContentLength : {false, true}) {
+    cfg.useLeadingZeroesInContentLength = useLeadingZeroesInContentLength;
+    for (bool addTrailer : {false, true}) {
+      for (std::string_view body : {compressibleBodyView, incompressibleBodyView, mixedBodyView}) {
+        for (std::uint32_t initialCompressionBufferLimit : {bodySz << 1U, bodySz >> 3U}) {
+          cfg.initialCompressionBufferLimit = initialCompressionBufferLimit;
 
-        for (Encoding enc : test::SupportedEncodings()) {
-          cfg.preferredFormats.assign(1U, enc);
+          for (Encoding enc : test::SupportedEncodings()) {
+            cfg.preferredFormats.assign(1U, enc);
 
-          CompressionState state(cfg);
+            CompressionState state(cfg);
 
-          std::string_view acceptEncoding = GetEncodingStr(enc);
+            std::string_view acceptEncoding = GetEncodingStr(enc);
 
-          for (bool capturedBody : {false, true}) {
-            for (std::string_view varyContent : kVaryHeaderContent) {
-              HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
+            // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
+            const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
+            EXPECT_EQ(neg.encoding, enc);
 
-              // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
-              const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
-              EXPECT_EQ(neg.encoding, enc);
+            for (bool capturedBody : {false, true}) {
+              for (std::string_view varyContent : kVaryHeaderContent) {
+                HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
 
-              const CompressResponseResult result = HttpCodec::TryCompressBody(state, neg.encoding, resp);
-              if (result != CompressResponseResult::Compressed) {
-                // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
-                // be empty.
-                EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
-                EXPECT_EQ(resp.bodyInMemory(), body);
-                continue;
-              }
-
-              EXPECT_LE(resp.bodyInMemoryLength(), cfg.maxCompressedBytes(bodySz));
-
-              auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
-
-              EXPECT_EQ(std::string_view(decompressedBody), body);
-
-              EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
-              const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
-              ASSERT_FALSE(contentLen.empty());
-              EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
-
-              // If a Vary header exists, merge ", Accept-Encoding" into its value.
-              // If Vary already contains Accept-Encoding or '*', it must be left untouched.
-              std::size_t varyCount = 0;
-              for (const auto& hdr : resp.headers()) {
-                if (CaseInsensitiveEqual(hdr.name, http::Vary)) {
-                  ++varyCount;
+                const CompressResponseResult result = HttpCodec::TryCompressBody(state, neg.encoding, resp);
+                if (result != CompressResponseResult::Compressed) {
+                  // Incompressible body should not be compressed even if encoder is present, so Content-Encoding should
+                  // be empty.
+                  EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+                  EXPECT_EQ(resp.bodyInMemory(), body);
+                  continue;
                 }
-              }
-              EXPECT_EQ(varyCount, 1UL);
 
-              const std::string_view varyValue = resp.headerValueOrEmpty(http::Vary);
-              ASSERT_FALSE(varyValue.empty());
+                EXPECT_LE(resp.bodyInMemoryLength(), cfg.maxCompressedBytes(bodySz));
 
-              if (varyContent.data() == nullptr) {
-                EXPECT_EQ(varyValue, http::AcceptEncoding);
-              } else if (VaryHasToken(varyContent, "*") || VaryHasToken(varyContent, http::AcceptEncoding)) {
-                EXPECT_EQ(varyValue, varyContent);
-              } else {
-                std::string expected(varyContent);
-                if (!varyContent.empty()) {
-                  expected.append(", ");
+                auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
+
+                EXPECT_EQ(std::string_view(decompressedBody), body);
+
+                EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
+                const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+                ASSERT_FALSE(contentLen.empty());
+                EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
+
+                // If a Vary header exists, merge ", Accept-Encoding" into its value.
+                // If Vary already contains Accept-Encoding or '*', it must be left untouched.
+                std::size_t varyCount = 0;
+                for (const auto& hdr : resp.headers()) {
+                  if (CaseInsensitiveEqual(hdr.name, http::Vary)) {
+                    ++varyCount;
+                  }
                 }
-                expected.append(http::AcceptEncoding);
-                EXPECT_EQ(varyValue, expected);
-              }
+                EXPECT_EQ(varyCount, 1UL);
 
-              if (addTrailer) {
-                EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
-              } else {
-                EXPECT_FALSE(resp.hasTrailer(kTrailerName));
+                const std::string_view varyValue = resp.headerValueOrEmpty(http::Vary);
+                ASSERT_FALSE(varyValue.empty());
+
+                if (varyContent.data() == nullptr) {
+                  EXPECT_EQ(varyValue, http::AcceptEncoding);
+                } else if (VaryHasToken(varyContent, "*") || VaryHasToken(varyContent, http::AcceptEncoding)) {
+                  EXPECT_EQ(varyValue, varyContent);
+                } else {
+                  std::string expected(varyContent);
+                  if (!varyContent.empty()) {
+                    expected.append(", ");
+                  }
+                  expected.append(http::AcceptEncoding);
+                  EXPECT_EQ(varyValue, expected);
+                }
+
+                if (addTrailer) {
+                  EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+                } else {
+                  EXPECT_FALSE(resp.hasTrailer(kTrailerName));
+                }
               }
             }
           }
@@ -1226,5 +1234,243 @@ TEST(HttpCodecFullBody, DecompressExpansionRatioGuard) {
 }
 
 #endif
+
+#ifdef AERONET_ENABLE_ZLIB
+
+// Verifies the core formatting difference the toggle controls: with useLeadingZeroesInContentLength
+// == true the Content-Length value keeps the full reserved (worst-case) width, zero-padded; with it
+// == false the value is exactly as wide as needed. Uses a non-captured body so it isolates the
+// formatting/positioning logic from the captured-body trailer-ordering issue exercised separately below.
+TEST(HttpCodecCompression, UseLeadingZeroesInContentLengthTogglePadsWithZeroes) {
+  // Highly compressible + sizeable body: maxCompressedBytes() stays close to the uncompressed size
+  // (5 digits) while the actual gzip output collapses to a couple dozen bytes (2 digits), guaranteeing
+  // a real padding gap so the test actually exercises the feature.
+  const std::string body(32UL * 1024UL, 'A');
+
+  auto makeConfig = [](bool useLeadingZeroes) {
+    CompressionConfig cfg;
+    cfg.minBytes = 16U;
+    cfg.addVaryAcceptEncodingHeader = false;
+    cfg.contentTypeAllowList.clear();
+    cfg.preferredFormats.clear();
+    cfg.preferredFormats.push_back(Encoding::gzip);
+    cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // allow (almost) any compression
+    cfg.useLeadingZeroesInContentLength = useLeadingZeroes;
+    return cfg;
+  };
+
+  const auto cfgWithLeadingZeroes = makeConfig(true);
+  const auto cfgWithoutLeadingZeroes = makeConfig(false);
+  CompressionState paddedState(cfgWithLeadingZeroes);
+  CompressionState compactState(cfgWithoutLeadingZeroes);
+
+  HttpResponse paddedResp(http::StatusCodeOK);
+  paddedResp.body(body, http::ContentTypeTextPlain);
+  ASSERT_EQ(HttpCodec::TryCompressBody(paddedState, Encoding::gzip, paddedResp), CompressResponseResult::Compressed);
+
+  HttpResponse compactResp(http::StatusCodeOK);
+  compactResp.body(body, http::ContentTypeTextPlain);
+  ASSERT_EQ(HttpCodec::TryCompressBody(compactState, Encoding::gzip, compactResp), CompressResponseResult::Compressed);
+
+  // Same encoder, same input => identical compressed bytes; only the header formatting/layout differs.
+  EXPECT_EQ(paddedResp.bodyInMemory(), compactResp.bodyInMemory());
+
+  const std::string_view paddedLen = paddedResp.headerValueOrEmpty(http::ContentLength);
+  const std::string_view compactLen = compactResp.headerValueOrEmpty(http::ContentLength);
+  ASSERT_FALSE(paddedLen.empty());
+  ASSERT_FALSE(compactLen.empty());
+
+  EXPECT_EQ(ParseContentLength(paddedLen), paddedResp.bodyInMemoryLength());
+  EXPECT_EQ(ParseContentLength(compactLen), compactResp.bodyInMemoryLength());
+
+  ASSERT_GE(paddedLen.size(), compactLen.size());
+  const std::size_t padding = paddedLen.size() - compactLen.size();
+  EXPECT_GT(padding, 0UL) << "test payload did not produce a digit-width gap; scenario needs adjusting";
+  for (std::size_t idx = 0; idx < padding; ++idx) {
+    EXPECT_EQ(paddedLen[idx], '0');
+  }
+  EXPECT_EQ(paddedLen.substr(padding), compactLen);
+  EXPECT_NE(compactLen.front(), '0');
+
+  RawChars outPadded;
+  RawChars outCompact;
+  ZlibDecoder decoderPadded(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoderCompact(ZStreamRAII::Variant::gzip);
+  ASSERT_TRUE(decoderPadded.decompressFull(paddedResp.bodyInMemory(), 1UL << 20U, 32U * 1024, outPadded));
+  ASSERT_TRUE(decoderCompact.decompressFull(compactResp.bodyInMemory(), 1UL << 20U, 32U * 1024, outCompact));
+  EXPECT_EQ(std::string_view(outPadded), std::string_view(body));
+  EXPECT_EQ(std::string_view(outCompact), std::string_view(body));
+}
+
+// Broad coverage of the toggle across captured/inline bodies, trailers, and Vary handling. NOTE: the
+// (capturedBody=true, addTrailer=true, useLeadingZeroes=false) corner is expected to fail until the
+// trailer/body relocation ordering bug described in review is fixed.
+TEST(HttpCodecCompression, UseLeadingZeroesInContentLengthToggle_RoundTripsAcrossScenarios) {
+  static constexpr std::uint32_t bodySz = 24U << 10U;
+  const std::string body = test::MakePatternedPayload(bodySz);
+
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.addVaryAcceptEncodingHeader = true;
+  cfg.contentTypeAllowList.clear();
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);
+
+  for (Encoding enc : test::SupportedEncodings()) {
+    cfg.preferredFormats.assign(1U, enc);
+    const std::string_view acceptEncoding = GetEncodingStr(enc);
+
+    for (bool useLeadingZeroes : {true, false}) {
+      cfg.useLeadingZeroesInContentLength = useLeadingZeroes;
+      CompressionState state(cfg);
+
+      const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
+      EXPECT_EQ(neg.encoding, enc);
+
+      for (bool addTrailer : {false, true}) {
+        for (bool capturedBody : {false, true}) {
+          for (std::string_view varyContent : {std::string_view(), std::string_view("accept-encoding")}) {
+            HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
+
+            ASSERT_EQ(HttpCodec::TryCompressBody(state, neg.encoding, resp), CompressResponseResult::Compressed)
+                << "useLeadingZeroes=" << useLeadingZeroes << " captured=" << capturedBody << " trailer=" << addTrailer;
+
+            auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
+            EXPECT_EQ(std::string_view(decompressedBody), body)
+                << "useLeadingZeroes=" << useLeadingZeroes << " captured=" << capturedBody << " trailer=" << addTrailer;
+
+            const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+            ASSERT_FALSE(contentLen.empty());
+            EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
+
+            if (!useLeadingZeroes) {
+              EXPECT_TRUE(contentLen.size() == 1 || contentLen.front() != '0');
+            }
+
+            if (addTrailer) {
+              EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+            } else {
+              EXPECT_FALSE(resp.hasTrailer(kTrailerName));
+            }
+
+            if (!varyContent.empty()) {
+              EXPECT_TRUE(VaryHasToken(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Minimal, isolated regression reproducer for the ordering bug: with useLeadingZeroesInContentLength
+// == false, a captured body, non-empty trailers, and a real digit-width gap, the trailer relocation
+// (which runs before the body relocation) writes into the tail of the not-yet-moved compressed body,
+// corrupting the last few bytes actually delivered to the client. Expected to currently FAIL.
+TEST(HttpCodecCompression, UseLeadingZeroesDisabled_CapturedBodyWithTrailersPreservesCompressedTail) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.addVaryAcceptEncodingHeader = false;
+  cfg.contentTypeAllowList.clear();
+  cfg.preferredFormats.clear();
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.useLeadingZeroesInContentLength = false;
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // maximize the digit-width gap
+
+  CompressionState state(cfg);
+
+  const std::string body(32UL * 1024UL, 'A');
+
+  HttpResponse resp(http::StatusCodeOK);
+  std::string captured = body;
+  resp.body(std::move(captured), http::ContentTypeTextPlain);
+  resp.trailerAddLine(kTrailerName, kTrailerValue);
+  ASSERT_TRUE(resp.hasBodyCaptured());
+
+  ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::Compressed);
+
+  EXPECT_FALSE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+
+  const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+  ASSERT_FALSE(contentLen.empty());
+  EXPECT_TRUE(contentLen.size() == 1 || contentLen.front() != '0');
+  EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
+
+  RawChars out;
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ASSERT_TRUE(decoder.decompressFull(resp.bodyInMemory(), /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out))
+      << "compressed body tail was corrupted by trailer relocation (see TryCompressBody trailer/body "
+         "move ordering)";
+  EXPECT_EQ(std::string_view(out), std::string_view(body));
+}
+
+TEST(HttpCodecCompression, UseLeadingZeroesDisabled_NoNeedToMemmove) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.addVaryAcceptEncodingHeader = false;
+  cfg.contentTypeAllowList.clear();
+  cfg.preferredFormats.clear();
+  cfg.preferredFormats.push_back(Encoding::gzip);
+  cfg.useLeadingZeroesInContentLength = false;
+  cfg.maxCompressRatio = std::nextafter(1.0F, 0.0F);  // permissive: max allowed ~= body size
+
+  static constexpr std::size_t bodySz = 9999UL;
+
+  const std::size_t maxCompressedBytes = cfg.maxCompressedBytes(bodySz);
+  const std::size_t maxDigits = std::to_string(maxCompressedBytes).size();
+
+  CompressionState state(cfg);
+
+  RawChars body;
+  std::size_t compressedSize = 0;
+
+  for (std::size_t step = 1; step < 20; ++step) {
+    const auto randomPart = static_cast<std::uint32_t>((bodySz * step) / 20);
+    const auto patternPart = static_cast<std::uint32_t>(bodySz - randomPart);
+    RawChars candidate = test::MakeMixedPayload(randomPart, patternPart);
+    ASSERT_EQ(candidate.size(), bodySz);
+
+    HttpResponse probe(http::StatusCodeOK);
+    probe.body(std::string_view(candidate), http::ContentTypeApplicationOctetStream);
+
+    if (HttpCodec::TryCompressBody(state, Encoding::gzip, probe) != CompressResponseResult::Compressed) {
+      continue;
+    }
+
+    const std::size_t candidateCompressedSize = probe.bodyInMemoryLength();
+    if (std::to_string(candidateCompressedSize).size() == maxDigits) {
+      body = std::move(candidate);
+      compressedSize = candidateCompressedSize;
+      break;
+    }
+  }
+
+  ASSERT_FALSE(body.empty());
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string(body), http::ContentTypeApplicationOctetStream);
+  resp.trailerAddLine(kTrailerName, kTrailerValue);
+  ASSERT_TRUE(resp.hasBodyCaptured());
+
+  ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::Compressed);
+
+  EXPECT_FALSE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+  EXPECT_EQ(resp.bodyInMemoryLength(), compressedSize);
+
+  const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+  ASSERT_FALSE(contentLen.empty());
+  EXPECT_EQ(contentLen.size(), maxDigits);
+  EXPECT_EQ(contentLen.size(), std::to_string(compressedSize).size());
+  EXPECT_EQ(ParseContentLength(contentLen), compressedSize);
+  EXPECT_TRUE(contentLen.size() == 1 || contentLen.front() != '0');
+
+  RawChars out;
+  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ASSERT_TRUE(decoder.decompressFull(resp.bodyInMemory(), /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out));
+  EXPECT_EQ(std::string_view(out), std::string_view(body));
+}
+
+#endif  // AERONET_ENABLE_ZLIB
 
 }  // namespace aeronet::internal

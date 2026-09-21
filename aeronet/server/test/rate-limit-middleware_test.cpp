@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/rate-limit.hpp"

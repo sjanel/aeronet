@@ -209,6 +209,7 @@ class HttpClientConfig {
   // override that (e.g. "identity" to opt out, or a curated list). Responses are still auto-decoded when
   // `decompression.enable` is set, regardless of what was advertised.
   [[nodiscard]] std::string_view defaultAcceptEncoding() const { return _strings[kAcceptEncoding]; }
+
   HttpClientConfig& withDefaultAcceptEncoding(std::string_view acceptEncoding) {
     _strings.set(kAcceptEncoding, acceptEncoding);
     return *this;

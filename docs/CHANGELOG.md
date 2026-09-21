@@ -63,6 +63,7 @@ All notable changes to aeronet are documented in this file.
 - **For requests timeouts of less than 25ms, HttpClient poll timeout will be adjusted to a much lower value than 25ms**. It was previously hardcoded to 25ms.
 - **HttpClient cache config gains a new field `maxRequestSize`**: configures an upped bound of the total request size eligible to be cached. Use it to filter out request with big bodies for instance.
 - **HttpClient cache pruning is now more efficient**: a second linear scan in the whole cache was performed when the cache size reached its limit with non expired keys to removed the oldest key, it is not removed and done in one pass.
+- **Changed content-length padding in automatic compression re-writing to zeroes prefix**: added a configuration toggle to control the behavior. See `CompressionConfig.useLeadingZeroesInContentLength` documentation for more details. Previously, the padding was forced (no configuration possible) and added trailing spaces instead of zeroes prefix.
 
 ## Others
 

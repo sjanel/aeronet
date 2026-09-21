@@ -136,13 +136,9 @@ void FinalizeConfig(HttpClientConfig& config) {
   if (!acceptEncoding.empty() && std::ranges::none_of(config.globalHeaders, [](std::string_view part) {
         const auto colon = part.find(':');
         assert(colon != std::string_view::npos);  // validated in config.validate() above
-        return CaseInsensitiveEqual(part.substr(0, colon), http::AcceptEncoding);
+        return part.substr(0, colon) == http::AcceptEncoding;
       })) {
-    RawChars line(http::AcceptEncoding.size() + http::HeaderSep.size() + acceptEncoding.size());
-    line.unchecked_append(http::AcceptEncoding);
-    line.unchecked_append(http::HeaderSep);
-    line.unchecked_append(acceptEncoding);
-    config.globalHeaders.append(line);
+    config.globalHeaders.appendAsHttp1Header(http::AcceptEncoding, acceptEncoding);
   }
 }
 
