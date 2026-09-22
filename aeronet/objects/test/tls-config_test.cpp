@@ -14,6 +14,15 @@
 
 #include "aeronet/http-server-config.hpp"
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <glaze/glaze.hpp>
+
+using TlsVersion = aeronet::TLSConfig::Version;
+
+static_assert(glz::meta<TlsVersion>::custom_write);
+
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -570,5 +579,46 @@ TEST(TlsConfigTest, WithoutTlsTrustedClientCertClearsList) {
   auto after = cfg.trustedClientCertsPem();
   EXPECT_EQ(std::distance(after.begin(), after.end()), 0);
 }
+
+#ifdef AERONET_ENABLE_GLAZE
+
+TEST(GlazeAdaptersTest, TlsVersionYamlAcceptsShortForm) {
+  TlsVersion version;
+
+  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("1.3")");
+  ASSERT_FALSE(bool(error));
+
+  EXPECT_TRUE(version.isValid());
+  EXPECT_EQ(version.major(), 1);
+  EXPECT_EQ(version.minor(), 3);
+}
+
+TEST(GlazeAdaptersTest, TlsVersionYamlAcceptsFullForm) {
+  TlsVersion version;
+
+  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.2")");
+  ASSERT_FALSE(bool(error));
+
+  EXPECT_TRUE(version.isValid());
+  EXPECT_EQ(version.major(), 1);
+  EXPECT_EQ(version.minor(), 2);
+}
+
+TEST(GlazeAdaptersTest, TlsVersionYamlRejectsInvalidFullForm) {
+  TlsVersion version;
+
+  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.10")");
+
+  EXPECT_TRUE(bool(error));
+}
+
+TEST(GlazeAdaptersTest, TlsVersionYamlSerializesValidVersionAsShortForm) {
+  auto yaml = glz::write<glz::opts{.format = glz::YAML}>(TlsVersion{1, 3});
+  ASSERT_TRUE(yaml);
+
+  EXPECT_TRUE(yaml.value().contains("1.3"));
+}
+
+#endif
 
 }  // namespace aeronet

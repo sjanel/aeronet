@@ -1499,13 +1499,14 @@ TEST_F(HttpRequestViewTest, SemiValidRequests) {
 
 // Fuzz test with mutation of valid requests
 TEST_F(HttpRequestViewTest, MutatedValidRequests) {
-  constexpr std::size_t kIterations = 5000;
+  constexpr std::size_t kIterations = 6000;
 
   // Base valid requests to mutate
-  static const std::array<std::string_view, 5> kBaseRequests = {
+  static const std::string_view kBaseRequests[]{
       "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
       "POST /api/data HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 0\r\n\r\n",
       "PUT /resource HTTP/1.0\r\nHost: host\r\nContent-Type: application/json\r\n\r\n",
+      "OPTIONS /longer/path HTTP/1.3\r\nHost: another-host\r\nX-Header:some value\r\n\r\n",
       "DELETE /item/123 HTTP/1.1\r\nHost: h\r\nAuthorization: Bearer token\r\n\r\n",
       "GET /path?key=value&foo=bar HTTP/1.1\r\nHost: h\r\nAccept: */*\r\n\r\n",
   };
@@ -1514,7 +1515,7 @@ TEST_F(HttpRequestViewTest, MutatedValidRequests) {
     FuzzRng rng(seed + 2000000);
 
     // Pick a base request
-    std::string_view base = kBaseRequests[rng.range(0, kBaseRequests.size())];
+    std::string_view base = kBaseRequests[rng.range(0, std::size(kBaseRequests))];
     std::string input(base);
 
     // Apply mutations

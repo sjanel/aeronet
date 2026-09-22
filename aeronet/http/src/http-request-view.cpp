@@ -334,7 +334,11 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     // malformed version token
     return http::StatusCodeBadRequest;
   }
-  if (_version.major() != 1 || _version.minor() > 1U) {
+  if (_version.major() != 1) {
+    // RFC 9110 §2.5 - "The first digit (major version) indicates the messaging syntax, whereas the second digit (minor
+    // version) indicates the highest minor version within that major version to which the sender is conformant (able to
+    // understand for future communication)."
+    // In other words, we accept something like HTTP/1.9
     return http::StatusCodeHTTPVersionNotSupported;
   }
 

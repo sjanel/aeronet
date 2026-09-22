@@ -64,6 +64,7 @@ All notable changes to aeronet are documented in this file.
 - **HttpClient cache config gains a new field `maxRequestSize`**: configures an upped bound of the total request size eligible to be cached. Use it to filter out request with big bodies for instance.
 - **HttpClient cache pruning is now more efficient**: a second linear scan in the whole cache was performed when the cache size reached its limit with non expired keys to removed the oldest key, it is not removed and done in one pass.
 - **Changed content-length padding in automatic compression re-writing to zeroes prefix**: added a configuration toggle to control the behavior. See `CompressionConfig.useLeadingZeroesInContentLength` documentation for more details. Previously, the padding was forced (no configuration possible) and added trailing spaces instead of zeroes prefix.
+- **HTTP/1.X requests are now all accepted by the server**: RFC 9110 says that the minor version represent the maximum minor version supported by the client.
 
 ## Others
 
