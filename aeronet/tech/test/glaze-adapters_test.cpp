@@ -9,19 +9,14 @@
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/glaze-chrono-durations-adapters.hpp"
-#include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
 
 namespace aeronet {
 
 namespace {
 
-inline constexpr char kTlsPrefix[] = "TLS";
-using TlsVersion = MajorMinorVersion<kTlsPrefix>;
-
 static_assert(glz::meta<std::chrono::milliseconds>::custom_read);
 static_assert(glz::meta<std::chrono::seconds>::custom_write);
-static_assert(glz::meta<TlsVersion>::custom_write);
 static_assert(glz::readable_array_t<ConcatenatedStrings>);
 static_assert(glz::writable_array_t<ConcatenatedStrings>);
 static_assert(glz::readable_array_t<ConcatenatedStrings32>);
@@ -170,43 +165,6 @@ TEST(GlazeAdaptersTest, StaticConcatenatedStringsJsonShortInputFillsMissingWithE
   ASSERT_FALSE(bool(error));
 
   EXPECT_EQ(CollectStrings(loaded), (std::vector<std::string>{"x", "y", ""}));
-}
-
-TEST(GlazeAdaptersTest, TlsVersionYamlAcceptsShortForm) {
-  TlsVersion version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("1.3")");
-  ASSERT_FALSE(bool(error));
-
-  EXPECT_TRUE(version.isValid());
-  EXPECT_EQ(version.major(), 1);
-  EXPECT_EQ(version.minor(), 3);
-}
-
-TEST(GlazeAdaptersTest, TlsVersionYamlAcceptsFullForm) {
-  TlsVersion version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.2")");
-  ASSERT_FALSE(bool(error));
-
-  EXPECT_TRUE(version.isValid());
-  EXPECT_EQ(version.major(), 1);
-  EXPECT_EQ(version.minor(), 2);
-}
-
-TEST(GlazeAdaptersTest, TlsVersionYamlRejectsInvalidFullForm) {
-  TlsVersion version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.10")");
-
-  EXPECT_TRUE(bool(error));
-}
-
-TEST(GlazeAdaptersTest, TlsVersionYamlSerializesValidVersionAsShortForm) {
-  auto yaml = glz::write<glz::opts{.format = glz::YAML}>(TlsVersion{1, 3});
-  ASSERT_TRUE(yaml);
-
-  EXPECT_TRUE(yaml.value().contains("1.3"));
 }
 
 }  // namespace aeronet

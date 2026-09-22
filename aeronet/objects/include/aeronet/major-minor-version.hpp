@@ -22,7 +22,7 @@ class MajorMinorVersion {
   // Constructs a version with given major and minor version numbers.
   // If the numbers are not both single-digit (0-9), equivalent to default constructed.
   constexpr MajorMinorVersion(std::uint8_t majorVer, std::uint8_t minorVer) noexcept {
-    if (majorVer > 0 && majorVer <= 9 && minorVer <= 9) {
+    if (majorVer <= 9 && minorVer <= 9) {
       _data = static_cast<std::uint8_t>((majorVer << 4U) | minorVer);
     }
   }
@@ -31,7 +31,7 @@ class MajorMinorVersion {
     if (len == kStrLen) {
       const char major = pStr[kPrefix.size()];
       const char minor = pStr[kPrefix.size() + 2UL];
-      if (major >= '1' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
+      if (major >= '0' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
         _data = static_cast<std::uint8_t>(static_cast<std::uint8_t>(static_cast<std::uint8_t>(major - '0') << 4U) |
                                           static_cast<std::uint8_t>(minor - '0'));
       }

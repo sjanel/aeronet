@@ -4,6 +4,7 @@
 #include <cassert>
 #include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -13,8 +14,6 @@
 #ifndef NDEBUG
 #include <system_error>
 #endif
-
-#include <cstdint>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/decimal-writer.hpp"
