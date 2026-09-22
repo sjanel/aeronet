@@ -108,13 +108,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    major-minor-version_test
-    test/major-minor-version_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-AeronetAddUnitTest(
     mime-mappings_test
     src/mime-mappings.cpp
     test/mime-mappings_test.cpp

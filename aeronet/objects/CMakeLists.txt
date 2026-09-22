@@ -325,6 +325,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    major-minor-version_test
+    test/major-minor-version_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     static-file-config_test
     src/static-file-config.cpp
     test/static-file-config_test.cpp
