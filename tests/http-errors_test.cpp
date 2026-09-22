@@ -29,6 +29,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/simple-charconv.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
@@ -52,9 +53,17 @@ namespace {
 struct Capture {
   std::mutex m;
   vector<http::StatusCode> errors;
+
   void push(http::StatusCode err) {
     std::scoped_lock lk(m);
     errors.push_back(err);
+  }
+
+  [[nodiscard]] bool checkAndClear(http::StatusCode err) {
+    std::scoped_lock lk(m);
+    const bool found = std::ranges::find(errors, err) != errors.end();
+    errors.clear();
+    return found;
   }
 };
 
@@ -63,29 +72,49 @@ using test::SimpleGetRequest;
 test::TestServer ts;
 auto port = ts.port();
 
+struct RequestDataAndExpectedStatusCode {
+  [[nodiscard]] std::string_view expectedReqStart() {
+    char* pLast = writeStatusCode(statusStrBuf + std::size(aeronet::http::kHttpPrefix) + 1U + 1U + 1U, statusCode);
+    *pLast = ' ';
+    return {statusStrBuf, std::size(statusStrBuf)};
+  }
+
+  std::string_view data;
+  http::StatusCode statusCode{};
+  char statusStrBuf[std::size(aeronet::http::kHttpPrefix) + 1U + 1U + 1U + http::StatusCodeLen + 1U]{"HTTP/1.1 "};
+};
+
 }  // namespace
 
-TEST(HttpParserErrors, InvalidVersion505) {
+TEST(HttpParserErrors, InvalidHTTPVersion) {
   Capture cap;
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
-  test::ClientConnection clientConnection(port);
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string bad = "GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n";  // unsupported version
-  test::sendAll(fd, bad);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.contains("505")) << resp;
-  bool seen = false;
-  {
-    std::scoped_lock lk(cap.m);
-    for (auto err : cap.errors) {
-      if (err == http::StatusCodeHTTPVersionNotSupported) {
-        seen = true;
-      }
-    }
+
+  for (RequestDataAndExpectedStatusCode expected : {
+           RequestDataAndExpectedStatusCode("GET / HTTP/4.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeHTTPVersionNotSupported),
+           RequestDataAndExpectedStatusCode("GET / HTTP/9.9\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeHTTPVersionNotSupported),
+           RequestDataAndExpectedStatusCode("GET /test HTTP/0.9\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeHTTPVersionNotSupported),
+           RequestDataAndExpectedStatusCode("GET /test HTTP/1.32\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+           RequestDataAndExpectedStatusCode("GET /test HTTP/91.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+           RequestDataAndExpectedStatusCode("GET /test HTTP/r.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+           RequestDataAndExpectedStatusCode("GET /test HTTP/-1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+       }) {
+    test::ClientConnection clientConnection(port);
+    NativeHandle fd = clientConnection.fd();
+    ASSERT_GE(fd, 0);
+    test::sendAll(fd, expected.data);
+    std::string resp = test::recvUntilClosed(fd);
+    ASSERT_TRUE(resp.starts_with(expected.expectedReqStart())) << "for case:\n" << expected.data << "\nresp:\n" << resp;
+    ASSERT_TRUE(cap.checkAndClear(expected.statusCode));
   }
-  ASSERT_TRUE(seen);
 }
 
 TEST(HttpParserErrors, ExceptionInParserShouldBeControlled) {
