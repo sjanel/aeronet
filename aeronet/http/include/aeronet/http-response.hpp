@@ -8,11 +8,11 @@
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
-#include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
 
@@ -793,26 +793,7 @@ class HttpResponse final : public HttpMessage {
   // and returns the internal buffers stolen from this HttpMessage instance.
   // So this instance must not be used anymore after this call.
   HttpMessageData finalizeForHttp1(const char* cachedDateHeader, http::Version version, Options opts,
-                                   const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize) {
-    // Write the Http version (1.0 or 1.1)
-    version.writeFull(_data.data());
-
-    // Write date header
-    CopyCRLFDateHeader(cachedDateHeader, _data.data() + dateHeaderStartPos());
-
-    HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
-
-    HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
-
-    if (opts.isHeadMethod()) {
-      auto* pFilePayload = prepared.getIfFilePayload();
-      if (pFilePayload != nullptr) {
-        pFilePayload->length = 0;
-      }
-    }
-
-    return prepared;
-  }
+                                   const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize);
 };
 
 }  // namespace aeronet

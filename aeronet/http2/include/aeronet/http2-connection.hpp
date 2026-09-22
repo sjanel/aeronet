@@ -139,7 +139,9 @@ class Http2Connection {
   void getPendingOutputFragments(vector<std::string_view>& fragments) const;
 
   /// Get the total number of pending output bytes across all fragments.
-  [[nodiscard]] std::size_t pendingOutputSize() const noexcept;
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept {
+    return _outputBlocksSize + _outputBuffer.size() - _outputWritePos;
+  }
 
   /// Notify that output was successfully written to the transport.
   /// @param bytesWritten Number of bytes written

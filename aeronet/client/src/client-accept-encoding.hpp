@@ -41,7 +41,7 @@ inline constexpr std::array<Encoding,
     };
 
 // Exact byte length of the comma-separated list of the enabled codings (separators included).
-constexpr std::size_t ComputeAcceptEncodingSize() {
+consteval std::size_t ComputeAcceptEncodingSize() {
   std::size_t size = 0;
   for (const Encoding encoding : kSupportedEncodings) {
     if (size != 0) {
@@ -54,10 +54,10 @@ constexpr std::size_t ComputeAcceptEncodingSize() {
 
 // Static storage holding exactly the list bytes; the +1 keeps the array non-empty and null-terminated.
 struct AcceptEncodingStorage {
-  char storage[ComputeAcceptEncodingSize() + 1]{};
+  char storage[ComputeAcceptEncodingSize() + 1U]{};
 };
 
-constexpr AcceptEncodingStorage MakeAcceptEncoding() {
+consteval AcceptEncodingStorage MakeAcceptEncoding() {
   AcceptEncodingStorage out;
   std::size_t pos = 0;
   for (const Encoding encoding : kSupportedEncodings) {

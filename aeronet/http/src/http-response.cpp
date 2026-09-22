@@ -6,11 +6,14 @@
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-message-common.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -18,6 +21,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
@@ -186,6 +190,7 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
 
   _data.ensureAvailableCapacityExponential(diff);
+
   // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
   // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
   // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
@@ -201,6 +206,32 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
   }
   _data.adjustSize(diff);
   return *this;
+}
+
+// IMPORTANT: This method finalizes the response by appending reserved headers,
+// and returns the internal buffers stolen from this HttpMessage instance.
+// So this instance must not be used anymore after this call.
+HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, http::Version version, Options opts,
+                                               const ConcatenatedHeaders* pGlobalHeaders,
+                                               std::size_t minCapturedBodySize) {
+  // Write the Http version (1.0 or 1.1)
+  version.writeFull(_data.data());
+
+  // Write date header
+  CopyCRLFDateHeader(cachedDateHeader, _data.data() + dateHeaderStartPos());
+
+  HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
+
+  HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
+
+  if (opts.isHeadMethod()) {
+    auto* pFilePayload = prepared.getIfFilePayload();
+    if (pFilePayload != nullptr) {
+      pFilePayload->length = 0;
+    }
+  }
+
+  return prepared;
 }
 
 }  // namespace aeronet
