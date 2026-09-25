@@ -17,6 +17,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -39,7 +40,7 @@
 #include "aeronet/zlib-stream-raii.hpp"
 #endif
 
-namespace aeronet::internal {
+namespace aeronet {
 
 namespace {
 [[nodiscard]] std::size_t ParseContentLength(std::string_view value) {
@@ -97,32 +98,41 @@ constexpr std::string_view kVaryHeaderContent[]{
 constexpr LowerAsciiKey kTrailerName = "x-trailer";
 constexpr std::string_view kTrailerValue = "Some trailer value that should be preserved";
 
-HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool addTrailer, std::string_view body) {
-  const bool hasVaryContent = varyContent.data() != nullptr;
-  const auto additionalSize =
-      (static_cast<std::size_t>(!capturedBody) * HttpResponse::BodySize(body.size())) +
-      (static_cast<std::size_t>(addTrailer) * http::HeaderSize(kTrailerName.size(), kTrailerValue.size())) +
-      (static_cast<std::size_t>(hasVaryContent) * http::HeaderSize(http::Vary.size(), varyContent.size()));
-  HttpResponse resp(additionalSize, http::StatusCodeOK);
-  // Hack to have a correct CRLF at the end of status line (we are not calling finalizeForHttp1 here in this test, it's
-  // a private method).
-  CopyFixed<http::CRLF>(const_cast<char*>(resp.reason().data()));
-  if (hasVaryContent) {
-    resp.headerAddLine(http::Vary, varyContent);
-  }
-  if (capturedBody) {
-    resp.body(std::string(body));
-  } else {
-    resp.body(body);
-  }
-  if (addTrailer) {
-    resp.trailerAddLine(kTrailerName, kTrailerValue);
-  }
-
-  return resp;
-}
-
 }  // namespace
+
+class HttpResponseTest {
+ public:
+  static HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool addTrailer,
+                                   std::string_view body, [[maybe_unused]] bool sendContentLengthHeader = true) {
+    const bool hasVaryContent = varyContent.data() != nullptr;
+    const auto additionalSize =
+        (static_cast<std::size_t>(!capturedBody) * HttpResponse::BodySize(body.size())) +
+        (static_cast<std::size_t>(addTrailer) * http::HeaderSize(kTrailerName.size(), kTrailerValue.size())) +
+        (static_cast<std::size_t>(hasVaryContent) * http::HeaderSize(http::Vary.size(), varyContent.size()));
+    HttpResponse resp(additionalSize, http::StatusCodeOK);
+#ifdef AERONET_ENABLE_HTTP2
+    if (!sendContentLengthHeader) {
+      resp._opts.setDoNotSendContentLengthHeader();
+    }
+#endif
+    // Hack to have a correct CRLF at the end of status line (we are not calling finalizeForHttp1 here in this test,
+    // it's a private method).
+    CopyFixed<http::CRLF>(const_cast<char*>(resp.reason().data()));
+    if (hasVaryContent) {
+      resp.headerAddLine(http::Vary, varyContent);
+    }
+    if (capturedBody) {
+      resp.body(std::string(body));
+    } else {
+      resp.body(body);
+    }
+    if (addTrailer) {
+      resp.trailerAddLine(kTrailerName, kTrailerValue);
+    }
+
+    return resp;
+  }
+};
 
 TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
   CompressionConfig cfg;
@@ -192,53 +202,58 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
 
     for (bool addTrailer : {false, true}) {
       for (bool capturedBody : {false, true}) {
-        for (std::string_view varyContent : kVaryHeaderContent) {
-          HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
-          // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
-          const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
-          EXPECT_EQ(neg.encoding, enc);
+        for (bool sendContentLengthHeader : {!http2Enabled(), true}) {
+          for (std::string_view varyContent : kVaryHeaderContent) {
+            HttpResponse resp =
+                HttpResponseTest::MakeResponse(varyContent, capturedBody, addTrailer, body, sendContentLengthHeader);
+            // Diagnostics: ensure negotiation chooses gzip and encoder is present when expected.
+            const auto neg = state.selector.negotiateAcceptEncoding(acceptEncoding);
+            EXPECT_EQ(neg.encoding, enc);
 
-          ASSERT_EQ(HttpCodec::TryCompressBody(state, neg.encoding, resp), CompressResponseResult::Compressed);
+            ASSERT_EQ(HttpCodec::TryCompressBody(state, neg.encoding, resp), CompressResponseResult::Compressed);
 
-          auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
+            auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
 
-          EXPECT_EQ(std::string_view(decompressedBody), body);
+            EXPECT_EQ(std::string_view(decompressedBody), body);
 
-          EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
-          const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
-          ASSERT_FALSE(contentLen.empty());
-          EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
-
-          // If a Vary header exists, merge ", Accept-Encoding" into its value.
-          // If Vary already contains Accept-Encoding or '*', it must be left untouched.
-          std::size_t varyCount = 0;
-          for (const auto& hdr : resp.headers()) {
-            if (CaseInsensitiveEqual(hdr.name, http::Vary)) {
-              ++varyCount;
+            EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), acceptEncoding);
+            const auto contentLen = resp.headerValueOrEmpty(http::ContentLength);
+            ASSERT_EQ(contentLen.empty(), !sendContentLengthHeader);
+            if (sendContentLengthHeader) {
+              EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
             }
-          }
-          EXPECT_EQ(varyCount, 1UL);
 
-          const std::string_view varyValue = resp.headerValueOrEmpty(http::Vary);
-          ASSERT_FALSE(varyValue.empty());
-
-          if (varyContent.data() == nullptr) {
-            EXPECT_EQ(varyValue, http::AcceptEncoding);
-          } else if (VaryHasToken(varyContent, "*") || VaryHasToken(varyContent, http::AcceptEncoding)) {
-            EXPECT_EQ(varyValue, varyContent);
-          } else {
-            std::string expected(varyContent);
-            if (!varyContent.empty()) {
-              expected.append(", ");
+            // If a Vary header exists, merge ", Accept-Encoding" into its value.
+            // If Vary already contains Accept-Encoding or '*', it must be left untouched.
+            std::size_t varyCount = 0;
+            for (const auto& hdr : resp.headers()) {
+              if (CaseInsensitiveEqual(hdr.name, http::Vary)) {
+                ++varyCount;
+              }
             }
-            expected.append(http::AcceptEncoding);
-            EXPECT_EQ(varyValue, expected);
-          }
+            EXPECT_EQ(varyCount, 1UL);
 
-          if (addTrailer) {
-            EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
-          } else {
-            EXPECT_FALSE(resp.hasTrailer(kTrailerName));
+            const std::string_view varyValue = resp.headerValueOrEmpty(http::Vary);
+            ASSERT_FALSE(varyValue.empty());
+
+            if (varyContent.data() == nullptr) {
+              EXPECT_EQ(varyValue, http::AcceptEncoding);
+            } else if (VaryHasToken(varyContent, "*") || VaryHasToken(varyContent, http::AcceptEncoding)) {
+              EXPECT_EQ(varyValue, varyContent);
+            } else {
+              std::string expected(varyContent);
+              if (!varyContent.empty()) {
+                expected.append(", ");
+              }
+              expected.append(http::AcceptEncoding);
+              EXPECT_EQ(varyValue, expected);
+            }
+
+            if (addTrailer) {
+              EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+            } else {
+              EXPECT_FALSE(resp.hasTrailer(kTrailerName));
+            }
           }
         }
       }
@@ -603,7 +618,7 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
 
             for (bool capturedBody : {false, true}) {
               for (std::string_view varyContent : kVaryHeaderContent) {
-                HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
+                HttpResponse resp = HttpResponseTest::MakeResponse(varyContent, capturedBody, addTrailer, body);
 
                 const CompressResponseResult result = HttpCodec::TryCompressBody(state, neg.encoding, resp);
                 if (result != CompressResponseResult::Compressed) {
@@ -1329,7 +1344,7 @@ TEST(HttpCodecCompression, UseLeadingZeroesInContentLengthToggle_RoundTripsAcros
       for (bool addTrailer : {false, true}) {
         for (bool capturedBody : {false, true}) {
           for (std::string_view varyContent : {std::string_view(), std::string_view("accept-encoding")}) {
-            HttpResponse resp = MakeResponse(varyContent, capturedBody, addTrailer, body);
+            HttpResponse resp = HttpResponseTest::MakeResponse(varyContent, capturedBody, addTrailer, body);
 
             ASSERT_EQ(HttpCodec::TryCompressBody(state, neg.encoding, resp), CompressResponseResult::Compressed)
                 << "useLeadingZeroes=" << useLeadingZeroes << " captured=" << capturedBody << " trailer=" << addTrailer;
@@ -1473,4 +1488,4 @@ TEST(HttpCodecCompression, UseLeadingZeroesDisabled_NoNeedToMemmove) {
 
 #endif  // AERONET_ENABLE_ZLIB
 
-}  // namespace aeronet::internal
+}  // namespace aeronet

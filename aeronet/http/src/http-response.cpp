@@ -140,7 +140,8 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                            std::string_view body, std::string_view contentType, Options opts)
     : HttpMessage(kHttpResponseInitialSize + concatenatedHeaders.size() +
-                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
+                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size(),
+                                            opts.sendContentLengthHeader()) +
                       body.size() + additionalCapacity,
                   opts) {
   if (!_opts.isPrepared()) {
@@ -165,7 +166,14 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
     char* pData = _data.data() + bodyStartPos - http::CRLF.size();
     pData = AppendFixed<http::CRLF>(pData);
 
-    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
+    if (_opts.sendContentLengthHeader()) {
+      pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
+    } else {
+      pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
+      pData = Append(contentType, pData);
+      pData = AppendFixed<http::DoubleCRLF>(pData);
+    }
+
     bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
     Copy(body, pData);
   }

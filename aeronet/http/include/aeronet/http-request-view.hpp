@@ -683,6 +683,9 @@ class HttpRequestView {
   bool _headPinned{false};
   bool _addTrailerHeader{false};
   bool _addVaryAcceptEncoding{false};
+#ifdef AERONET_ENABLE_HTTP2
+  bool _doNotSendContentLengthHeader{false};
+#endif
 };
 
 }  // namespace aeronet
