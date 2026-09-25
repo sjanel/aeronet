@@ -63,12 +63,14 @@ TEST(HttpClientConfigTest, InvalidGlobalHeaderValueWithControlChars) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpClientConfigTest, Http2VersionValidation) {
   HttpClientConfig config;
   config.httpVersion = HttpVersionMode::Http2;
   config.globalHeaders.append("X-Test:value\x01");  // control char 0x01
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
+#endif
 
 TEST(HttpClientConfigTest, NoGlobalHeadersIsValidAndShouldNotAddDefaultOnes) {
   HttpClientConfig config;
@@ -290,12 +292,14 @@ TEST(HttpClientConfigTest, HttpVersionDefaultsToAuto) {
   EXPECT_EQ(cfg.httpVersion, HttpVersionMode::Auto);
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpClientConfigTest, WithHttpVersionAndHttp2ConfigBuilders) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withMaxConcurrentStreams(7));
   EXPECT_EQ(cfg.httpVersion, HttpVersionMode::Http2);
   EXPECT_EQ(cfg.http2.maxConcurrentStreams, 7U);
 }
+#endif
 
 TEST(HttpClientConfigTest, ValidateChecksHttp2SettingsWhenHttp2IsPossible) {
   HttpClientConfig cfg;
@@ -308,18 +312,16 @@ TEST(HttpClientConfigTest, ValidateChecksHttp2SettingsWhenHttp2IsPossible) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
   cfg.withHttpVersion(HttpVersionMode::Http2);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
-#else
-  // Requiring HTTP/2 in a build without the engine is rejected outright.
-  cfg.withHttpVersion(HttpVersionMode::Http2);
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 #endif
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpClientConfigTest, ValidateRejectsHttp2Push) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withEnablePush(true));
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
+#endif
 
 TEST(HttpClientConfigTest, ProxyDefaultsToDisabled) {
   HttpClientConfig cfg;

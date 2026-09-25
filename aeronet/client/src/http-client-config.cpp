@@ -50,10 +50,6 @@ void HttpClientConfig::validate() const {
   if (httpVersion != HttpVersionMode::Http1_1) {
 #ifdef AERONET_ENABLE_HTTP2
     http2.validate();
-#else
-    if (httpVersion == HttpVersionMode::Http2) {
-      throw std::invalid_argument("httpVersion requires HTTP/2 but aeronet was built without AERONET_ENABLE_HTTP2");
-    }
 #endif
     if (http2.enablePush) {
       throw std::invalid_argument("HTTP/2 client cannot enable server push");

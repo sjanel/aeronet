@@ -34,7 +34,8 @@ All notable changes to aeronet are documented in this file.
 - **HttpClientConfig.maxResponseBytes now count header bytes as well**: it was counting only the body bytes.
 - **HttpRequest and HttpResponse headerAppendValue now validates value and separator**: methods will throw `std::invalid_argument` in case the value and / or the separator is not valid per HTTP spec. In addition, because per HTTP semantics a header value should be trimmed (RFC 9113 §8.2.1), if append is called with an empty value and non-empty separator, this is a no-op.
 - **HttpResponseWriter::trailerAddLine now trims the value**: because it is forbidden to have OWS around trailer values in HTTP/2. And this mirrors the headers process.
-- **Concatenated headers in HttpResponse constructors were not checking if the value was trimmed**: it is now enforced, and will throw `std::invalid_argument` if user passes a header value with trailing / prefix OWS. 
+- **Concatenated headers in HttpResponse constructors were not checking if the value was trimmed**: it is now enforced, and will throw `std::invalid_argument` if user passes a header value with trailing / prefix OWS.
+- **Fix compilation when AERONET_ENABLE_HTTP2 is OFF but AERONET_ENABLE_WEBSOCKET is ON**: unfortunately I cannot run all combinations of features in the CI, it would take too much time.
 
 ## Improvements
 

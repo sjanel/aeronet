@@ -197,6 +197,7 @@ if (AERONET_BUILD_TESTS AND (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET))
         LIBRARIES
         aeronet_basic_test_support
     )
+    target_link_libraries(upgrade-handler_test PUBLIC aeronet_http)
     if(AERONET_ENABLE_HTTP2)
         target_link_libraries(upgrade-handler_test PUBLIC aeronet_http2)
     endif()
