@@ -66,10 +66,6 @@ class HttpMessage {
 
   enum class BodySetContext : std::uint8_t { Inline, Captured };
 
- protected:
-  // This is an internal base class - it should not be constructed directly.
-  explicit HttpMessage(std::size_t dataCapacity) : _data(dataCapacity) {}
-
  public:
   // Returns the size needed to store a body with given length and optional content type header.
   // It takes into account the required headers (Content-Type and Content-Length).
@@ -504,6 +500,7 @@ class HttpMessage {
   template <class Writer>
   void bodyInlineAppend(std::size_t maxLen, Writer&& writer, std::string_view contentType = {}) {
     if (!hasNoExternalPayload() && !_payloadVariant.isSizeOnly()) [[unlikely]] {
+      // TODO: cannot we append to captured bodies?
       throw std::logic_error("bodyInlineAppend can only be used with inline body responses");
     }
     bodyPrecheckContentType(contentType);
@@ -624,10 +621,6 @@ class HttpMessage {
   friend class HttpRequestTest;
 #endif
 
-  // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
-  // Use with care! All setters currently take the assumption that the internal buffer is allocated.
-  explicit constexpr HttpMessage([[maybe_unused]] Check check) noexcept {}
-
   [[nodiscard]] constexpr bool isHead() const noexcept { return _opts.isHeadMethod(); }
 
   constexpr void setHeadSize(std::size_t size) {
@@ -637,7 +630,7 @@ class HttpMessage {
 
   void headerAddLineUnchecked(LowerAsciiKey key, std::string_view value);
 
-  // warning: this method should only be called if you are sure that the header already exists.
+  // Warning: this method should only be called if the header already exists.
   void overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast, std::string_view newValue);
 
   constexpr void setCapturedPayload(auto payload) {
@@ -801,9 +794,18 @@ class HttpMessage {
     DirectCompressionMode _directCompressionMode{DirectCompressionMode::Off};
   };
 
+ protected:
+  // This is an internal base class - it should not be constructed directly.
+  HttpMessage(std::size_t dataCapacity, Options opts) : _data(dataCapacity), _opts(std::move(opts)) {}
+
+ private:
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.
-  explicit constexpr HttpMessage(Options opts) noexcept : _opts(opts) {}
+  explicit constexpr HttpMessage([[maybe_unused]] Check check) noexcept {}
+
+  // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
+  // Use with care! All setters currently take the assumption that the internal buffer is allocated.
+  explicit constexpr HttpMessage(Options opts) noexcept : _opts(std::move(opts)) {}
 
   constexpr FilePayload* filePayloadPtr() noexcept { return _payloadVariant.getIfFilePayload(); }
 

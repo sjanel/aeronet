@@ -50,6 +50,7 @@ class Http2WriterTransport final : public IWriterTransport {
     // Finalize Date header (same as sendResponse path).
     CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
 
+    // TODO: adding global headers is probably not needed - they are already added in the HttpResponse
     const std::size_t globalHeadersSize = _globalHeaders.fullStringWithLastSep().size();
     const std::size_t headerBytes = FrameHeader::kSize + response.headersFlatViewWithDate().size() + globalHeadersSize;
     if (headerBytes > _maxConnectionPendingBytes || !hasConnectionCapacity(headerBytes)) {

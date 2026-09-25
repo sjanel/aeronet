@@ -65,6 +65,7 @@ All notable changes to aeronet are documented in this file.
 - **HttpClient cache pruning is now more efficient**: a second linear scan in the whole cache was performed when the cache size reached its limit with non expired keys to removed the oldest key, it is not removed and done in one pass.
 - **Changed content-length padding in automatic compression re-writing to zeroes prefix**: added a configuration toggle to control the behavior. See `CompressionConfig.useLeadingZeroesInContentLength` documentation for more details. Previously, the padding was forced (no configuration possible) and added trailing spaces instead of zeroes prefix.
 - **HTTP/1.X requests are now all accepted by the server**: RFC 9110 says that the minor version represent the maximum minor version supported by the client.
+- **HttpResponseWriter skips data copy to internal temporary buffer if first chunk of writeBody is large enough**: if first call to `writeBody` has data larger than `CompressionConfig.minBytes`, does not copy data in a temporary internal buffer before compression is triggered, directly call compression on the body chunk view.
 
 ## Others
 

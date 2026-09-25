@@ -967,13 +967,18 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
   test::WaitForServer(multi);
 
   // Probes answered on the dedicated port.
-  EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(test::simpleGet(probePort, "/readyz").starts_with("HTTP/1.1 200"));
-  EXPECT_TRUE(test::simpleGet(probePort, "/startupz").starts_with("HTTP/1.1 200"));
+  auto resp = test::simpleGet(probePort, "/livez");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  resp = test::simpleGet(probePort, "/readyz");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  resp = test::simpleGet(probePort, "/startupz");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 
   // The probe endpoints are NOT exposed on the (contended) application port: they hit the default app handler.
-  EXPECT_TRUE(test::simpleGet(appPort, "/livez").ends_with("APP"));
-  EXPECT_TRUE(test::simpleGet(appPort, "/readyz").ends_with("APP"));
+  resp = test::simpleGet(appPort, "/livez");
+  EXPECT_TRUE(resp.ends_with("APP")) << resp;
+  resp = test::simpleGet(appPort, "/readyz");
+  EXPECT_TRUE(resp.ends_with("APP")) << resp;
 
   handle.stop();
   handle.rethrowIfError();

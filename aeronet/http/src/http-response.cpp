@@ -57,7 +57,7 @@ constexpr void InitData(char* data) {
   // Set last, so the debug pre-write above lands on this byte;
   // the marker must win so hasReason() stays correct before finalization (it is overwritten by the
   // status-line CRLF at finalization anyway).
-  data[HttpResponse::kReasonBeg] = '\n';  // marker for no reason
+  data[HttpResponse::kReasonBeg] = '\n';  // marker for 'no reason'
 }
 
 constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
@@ -103,8 +103,9 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
 
 HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType)
     : HttpMessage(kHttpResponseInitialSize +
-                  NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
-                  body.size()) {
+                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
+                      body.size(),
+                  Options()) {
   InitData(_data.data());
   status(code);
   setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
@@ -127,7 +128,7 @@ HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::st
 }
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code)
-    : HttpMessage(kHttpResponseInitialSize + additionalCapacity) {
+    : HttpMessage(kHttpResponseInitialSize + additionalCapacity, Options()) {
   InitData(_data.data());
   status(code);
   setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
@@ -137,11 +138,12 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
 }
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-                           std::string_view body, std::string_view contentType, Check check)
+                           std::string_view body, std::string_view contentType, Options opts)
     : HttpMessage(kHttpResponseInitialSize + concatenatedHeaders.size() +
-                  NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) + body.size() +
-                  additionalCapacity) {
-  if (check == Check::Yes) {
+                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
+                      body.size() + additionalCapacity,
+                  opts) {
+  if (!_opts.isPrepared()) {
     CheckConcatenatedHeaders(concatenatedHeaders);
   }
   InitData(_data.data());
