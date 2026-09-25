@@ -29,24 +29,15 @@ namespace aeronet {
 
 HttpResponseWriter::HttpResponseWriter(IWriterTransport& transport, const HttpRequestView& request, Encoding encoding,
                                        const CompressionConfig& compressionConfig, CompressionState& compressionState,
-                                       std::string_view globalHeadersStr, bool addTrailerHeader)
+                                       std::string_view globalHeadersStr, HttpMessage::Options opts)
     : _transport(&transport),
       _request(&request),
       _head(request.method() == http::Method::HEAD),
       _encoding(encoding),
       // 64UL for Transfer-Encoding: chunked, Content-Length and other headers
-      _fixedResponse(64UL, http::StatusCodeOK, globalHeadersStr),
+      _fixedResponse(64UL, http::StatusCodeOK, globalHeadersStr, std::string_view{}, std::string_view{}, opts),
       _pCompressionConfig(&compressionConfig),
       _pCompressionState(&compressionState) {
-  HttpMessage::Options opts;
-  if (addTrailerHeader) {
-    opts.addTrailerHeader();
-  }
-  if (_head) {
-    opts.setHeadMethod();
-  }
-  opts.setPrepared();
-  _fixedResponse._opts = opts;
   _fixedResponse.headerAddLineUnchecked(http::ContentType, http::ContentTypeApplicationOctetStream);
 }
 
@@ -90,6 +81,8 @@ void HttpResponseWriter::contentType(std::string_view ct) {
   }
   ct = CheckContentType(false, ct);
 
+  // Not using headerImpl / other header public methods to avoid std::invalid_argument on ContentType header set without
+  // the body.
   std::string_view oldCT = _fixedResponse.headerValueOrEmpty(http::ContentType);
   assert(!oldCT.empty());
   _fixedResponse.overrideHeaderUnchecked(oldCT.data(), oldCT.data() + oldCT.size(), ct);
@@ -119,8 +112,9 @@ void HttpResponseWriter::ensureHeadersSent() {
   // Compute needed header size and reserve capacity in the fixed response buffer to have at most 1 allocation.
   std::size_t neededSize = 0UL;
 
-  const bool addContentEncoding = _compressionActivated && !_fixedResponse._opts.hasContentEncoding();
-  const bool addVary = _compressionActivated && _pCompressionConfig->addVaryAcceptEncodingHeader;
+  const bool isCompressionActive = _activeEncoderCtx != nullptr;
+  const bool addContentEncoding = isCompressionActive && !_fixedResponse._opts.hasContentEncoding();
+  const bool addVary = isCompressionActive && _pCompressionConfig->addVaryAcceptEncodingHeader;
 
   if (addContentEncoding) {
     neededSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_encoding).size());
@@ -166,9 +160,25 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
-  if (_encoding != Encoding::none && !_compressionActivated &&
+  if (_encoding != Encoding::none && _activeEncoderCtx == nullptr &&
       _preCompressBuffer.size() < _pCompressionConfig->minBytes && !_fixedResponse._opts.hasContentEncoding()) {
-    return accumulateInPreCompressBuffer(data);
+    // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
+    // we cross the threshold (or end() is called).
+
+    if (_preCompressBuffer.empty() && data.size() >= _pCompressionConfig->minBytes) {
+      // Optim without copy - directly activate the encoder if the incoming data already meets the threshold.
+    } else {
+      // Buffer the incoming data until we reach the compression threshold.
+      _preCompressBuffer.append(data);
+      if (_preCompressBuffer.size() < _pCompressionConfig->minBytes) {
+        // Still below threshold; do not emit headers/body yet.
+        return true;
+      }
+      data = _preCompressBuffer;
+    }
+
+    // Threshold reached exactly or exceeded: activate encoder.
+    _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
   }
 
   ensureHeadersSent();
@@ -176,29 +186,24 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     return false;
   }
 
-  if (_activeEncoderCtx != nullptr && _encoding != Encoding::none) {
-    _compressedBuffer.clear();
-    _compressedBuffer.ensureAvailableCapacity(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
+  if (_activeEncoderCtx != nullptr) {
+    assert(_encoding != Encoding::none);
+    _compressedBuffer.reserve(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
     const auto result = _activeEncoderCtx->encodeChunk(data, _compressedBuffer.capacity(), _compressedBuffer.data());
     if (result.hasError()) [[unlikely]] {
       _state = State::Failed;
       return false;
     }
     const auto written = result.writtenIfNoError();
-    if (written > 0) {
-      _compressedBuffer.setSize(written);
-      if (!_head && !_transport->emitData(_compressedBuffer)) {
-        _state = State::Failed;
-        return false;
-      }
-#ifndef NDEBUG
-      _bytesWritten += written;
-#endif
+    if (written == 0) {
+      // This happens regularly - the compressors often keeps data in their own internal buffers before any flush
+      // occurs.
+      return true;
     }
-    return true;
+    _compressedBuffer.setSize(written);
+    data = _compressedBuffer;
   }
 
-  // Uncompressed path
   if (!_head && !_transport->emitData(data)) {
     _state = State::Failed;
     log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
@@ -255,7 +260,7 @@ void HttpResponseWriter::end() {
     return;
   }
 
-  if (_compressionActivated) {
+  if (_activeEncoderCtx != nullptr) {
     const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
     // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
     _compressedBuffer.clear();
@@ -295,7 +300,7 @@ void HttpResponseWriter::end() {
   _state = State::Ended;
 #ifndef NDEBUG
   // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (!_head && _declaredLength != 0 && (!_compressionActivated || _encoding == Encoding::none)) {
+  if (!_head && _declaredLength != 0 && (_activeEncoderCtx == nullptr || _encoding == Encoding::none)) {
     assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
   }
 #endif
@@ -312,50 +317,11 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
     _declaredLength = 0;
   }
   _encoding = Encoding::none;
-  _compressionActivated = false;
+  _activeEncoderCtx = nullptr;
   _preCompressBuffer.clear();
 
   _fixedResponse.file(std::move(file), offset, length, contentType);
   _declaredLength = _fixedResponse.bodyLength();
-  return true;
-}
-
-bool HttpResponseWriter::accumulateInPreCompressBuffer(std::string_view data) {
-  // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
-  // we cross the threshold (or end() is called).
-  _preCompressBuffer.append(data);
-  if (_preCompressBuffer.size() < _pCompressionConfig->minBytes) {
-    // Still below threshold; do not emit headers/body yet.
-    return true;
-  }
-  // Threshold reached exactly or exceeded: activate encoder.
-  _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
-
-  _compressedBuffer.clear();
-  _compressedBuffer.ensureAvailableCapacity(_activeEncoderCtx->minEncodeChunkCapacity(_preCompressBuffer.size()));
-  const auto result =
-      _activeEncoderCtx->encodeChunk(_preCompressBuffer, _compressedBuffer.capacity(), _compressedBuffer.data());
-  if (result.hasError()) [[unlikely]] {
-    _state = State::Failed;
-    return false;
-  }
-
-  const auto written = result.writtenIfNoError();
-
-  _compressedBuffer.setSize(written);
-
-  _compressionActivated = true;
-
-  ensureHeadersSent();
-  if (_state == State::Failed) {
-    return false;
-  }
-
-  _preCompressBuffer.clear();
-  if (!_head && written > 0 && !_transport->emitData(_compressedBuffer)) {
-    _state = State::Failed;
-    return false;
-  }
   return true;
 }
 

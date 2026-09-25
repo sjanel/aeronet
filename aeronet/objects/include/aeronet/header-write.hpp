@@ -54,13 +54,11 @@ inline char* CopyCRLFDateHeader(const char* cachedHeader, char* pData) noexcept 
   return pData + RFC7231DateStrLen;
 }
 
-inline char* WriteContentTypeContentLengthDoubleCRLF(std::string_view contentType, std::size_t bodySize, char* pData) {
+constexpr char* WriteContentTypeContentLengthDoubleCRLF(std::string_view contentType, std::size_t bodySize,
+                                                        char* pData) {
   pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
-
   pData = Append(contentType, pData);
-
   pData = AppendFixed<http::CRLFContentLengthHeaderSep>(pData);
-
   pData = WriteUInt(pData, bodySize, ndigits(bodySize));
 
   return AppendFixed<http::DoubleCRLF>(pData);

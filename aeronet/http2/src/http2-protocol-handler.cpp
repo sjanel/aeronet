@@ -737,8 +737,10 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
 
   // CORS preflight rejection
   if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
+    HttpResponse::Options opts;
+    opts.setPrepared();
     HttpResponse corsResp(0ULL, http::StatusCodeForbidden, _pServerConfig->globalHeaders.fullStringWithLastSep(),
-                          "Forbidden by CORS policy", http::ContentTypeTextPlain, HttpMessage::Check::No);
+                          "Forbidden by CORS policy", http::ContentTypeTextPlain, std::move(opts));
     ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
                             *_pTelemetryContext, true, {});
     request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
@@ -755,11 +757,18 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   Http2WriterTransport transport(_connection, streamId, _pServerConfig->globalHeaders, _pCachedDateHeader,
                                  _deferredOutputBytes, _pServerConfig->maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
+  HttpMessage::Options opts;
+  if (_pServerConfig->addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (request.method() == http::Method::HEAD) {
+    opts.setHeadMethod();
+  }
+  opts.setPrepared();
 
   // Negotiate compression has been done in onHeadersDecoded.
   HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
-                            *_pCompressionState, _pServerConfig->globalHeaders.fullStringWithLastSep(),
-                            _pServerConfig->addTrailerHeader);
+                            *_pCompressionState, _pServerConfig->globalHeaders.fullStringWithLastSep(), opts);
 
   // Note: response middleware and CORS are applied above only for the preflight-rejection path.
   // For the normal streaming path, Http2WriterTransport does not run response middleware -

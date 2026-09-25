@@ -690,9 +690,17 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
       // Create the protocol-specific transport backend and the protocol-agnostic writer
       Http1WriterTransport transport(*this, cnxFd, wantClose, pCorsPolicy, responseMiddlewareRange);
+      HttpMessage::Options opts;
+      if (_config.addTrailerHeader) {
+        opts.addTrailerHeader();
+      }
+      if (request.method() == http::Method::HEAD) {
+        opts.setHeadMethod();
+      }
+      opts.setPrepared();
+
       HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
-                                _compressionState, _config.globalHeaders.fullStringWithLastSep(),
-                                _config.addTrailerHeader);
+                                _compressionState, _config.globalHeaders.fullStringWithLastSep(), opts);
 
       try {
         (*routingResult.streamingHandler())(request, writer);

@@ -108,7 +108,6 @@ class Http2WriterTransport;
 // -----------------------------------------------------------------------------
 class HttpResponse final : public HttpMessage {
  public:
-  // "HTTP/x.y". Should be changed if version major / minor exceed 1 digit
   static constexpr std::size_t kHttp1VersionLen = http::HTTP10Sv.size();
 
   // index of first status code digit
@@ -162,7 +161,7 @@ class HttpResponse final : public HttpMessage {
   // Throws std::invalid_argument if the concatenatedHeaders format is invalid.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain)
-      : HttpResponse(additionalCapacity, code, concatenatedHeaders, body, contentType, HttpMessage::Check::Yes) {}
+      : HttpResponse(additionalCapacity, code, concatenatedHeaders, body, contentType, Options()) {}
 
   // --------/
   // GETTERS /
@@ -757,7 +756,7 @@ class HttpResponse final : public HttpMessage {
 
   // Private constructor bypassing checks for internal use only.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-               std::string_view body, std::string_view contentType, Check check);
+               std::string_view body, std::string_view contentType, Options opts);
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept {
     return {_data.data() + dateHeaderStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};
