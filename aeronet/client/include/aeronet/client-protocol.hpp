@@ -46,7 +46,7 @@ enum class HttpVersionMode : uint8_t {
 
 // Map a negotiated ALPN identifier back to a ClientProtocol. An unknown or empty selection (e.g. a server
 // that does not speak ALPN) falls back to HTTP/1.1.
-[[nodiscard]] constexpr ClientProtocol ClientProtocolFromAlpnId(std::string_view alpn) noexcept {
+[[nodiscard]] constexpr ClientProtocol ClientProtocolFromAlpnId([[maybe_unused]] std::string_view alpn) noexcept {
 #ifdef AERONET_ENABLE_HTTP2
   if (alpn == "h2") {
     return ClientProtocol::Http2;
